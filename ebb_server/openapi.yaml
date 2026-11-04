@@ -2236,7 +2236,7 @@
         {
           "get":
             {
-              "description": "Returns every uploaded version of the name, newest first, with its status, timestamps, pin, and creator. Code is never returned. Requires the deploy credential. A disabled name still lists its versions, which is how an operator finds the version to activate again.",
+              "description": "Returns every uploaded version of the name, newest first, with its status, timestamps, pin, creator, and deployment hash. Code is never returned. Requires the deploy credential. A disabled name still lists its versions, which is how an operator finds the version to activate again.",
               "operationId": "listFunctionVersions",
               "parameters":
                 [
@@ -2288,6 +2288,12 @@
                                                     },
                                                   "createdBy":
                                                     { "nullable": true, "type": "string" },
+                                                  "deploymentHash":
+                                                    {
+                                                      "description": "The upload's opaque `sha256:<hex>` deployment hash; omitted on rows uploaded without one",
+                                                      "nullable": true,
+                                                      "type": "string",
+                                                    },
                                                   "pinned": { "type": "boolean" },
                                                   "status":
                                                     {
@@ -2421,7 +2427,7 @@
             },
           "post":
             {
-              "description": "Stores one bundle as a new `(name, version)` row. Requires the deploy credential in `Authorization: Bearer <admin token>`; holding it never grants invoke permission. The envelope is verified before the row exists — digest, contract, name grammar, and both JSON Schemas — and a version that already exists is `409` rather than a code replacement. Uploading does not activate: the stored version is `retired` until `POST /functions/{name}/activate` points the name at it.",
+              "description": "Stores one bundle as a new `(name, version)` row. Requires the deploy credential in `Authorization: Bearer <admin token>`; holding it never grants invoke permission. The envelope is verified before the row exists — digest, contract, name grammar, and both JSON Schemas — and a version that already exists is `409` rather than a code replacement. `deploymentHash` is an optional `sha256:<hex>` the CLI computes over the code digest and the behaviour-bearing envelope fields; the server stores it verbatim and returns it in the version history, so a deploy whose hash matches the active version can be skipped. Uploading does not activate: the stored version is `retired` until `POST /functions/{name}/activate` points the name at it.",
               "operationId": "uploadFunctionVersion",
               "parameters":
                 [
@@ -2453,6 +2459,12 @@
                                   "code":
                                     {
                                       "description": "The bundled ESM source the digest is computed over",
+                                      "type": "string",
+                                    },
+                                  "deploymentHash":
+                                    {
+                                      "description": "Opaque `sha256:<hex>` the CLI computes over the code digest and the behaviour-bearing envelope fields, so an unchanged deploy can be skipped by comparing it with the active version's. Optional, so an older CLI still uploads; the server stores it and returns it in the version history.",
+                                      "nullable": true,
                                       "type": "string",
                                     },
                                   "envelope":

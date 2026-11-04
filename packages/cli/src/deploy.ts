@@ -13,12 +13,16 @@ import {
 } from "./envelope.ts";
 import {
   activateVersion,
+  CliHttpError,
   listFunctions,
+  listVersions,
   uploadVersion,
   type FetchLike,
   type FunctionSummary,
+  type FunctionVersionInfo,
 } from "./api.ts";
 import { loadConfig, type ResolvedConfig } from "./config.ts";
+import { deploymentHashFor } from "./deployment-hash.ts";
 import {
   checkDrift,
   hasDrift,
@@ -39,6 +43,8 @@ export interface DeployOptions {
   activate?: boolean;
   /** `--keep` pins the uploaded version against retention. */
   keep?: boolean;
+  /** `--force` uploads and activates even when the deployment is unchanged. */
+  force?: boolean;
   /** Pins the version for every entry; tests use it instead of the clock. */
   version?: string;
   fetchImpl?: FetchLike;
@@ -57,6 +63,8 @@ export interface DeployedFunction {
   code: string;
   activated: boolean;
   pinned: boolean;
+  /** True when the deployment hash already existed and nothing was uploaded. */
+  unchanged: boolean;
 }
 
 export interface DeployResult {
@@ -183,6 +191,7 @@ export async function prepareDeployment(
     code,
     activated: false,
     pinned: options.keep === true,
+    unchanged: false,
   };
 }
 
@@ -219,11 +228,41 @@ async function deployEntriesFor(
   for (const entry of entries) {
     const prepared = await prepareDeployment(entry.path, options);
     const { envelope, code, name, version } = prepared;
+    // Bundling still runs: the digest of the emitted code is part of the hash.
+    const deploymentHash = deploymentHashFor(envelope);
+
+    // A pin belongs to a version row and there is no pin route, so `--keep`
+    // is an explicit request for a new pinned version, not a no-op.
+    const reuse =
+      options.force === true || options.keep === true
+        ? null
+        : await matchingVersion(config, name, deploymentHash, options.fetchImpl);
+
+    if (reuse !== null) {
+      // An unchanged deploy that is already up to date needs no activation, and
+      // `--no-activate` must leave the pointer alone either way.
+      const activated = options.activate !== false && reuse.status !== "active";
+      print(`unchanged ${name}@${reuse.version}`);
+
+      if (activated) {
+        await activateVersion(config, name, reuse.version, { fetchImpl: options.fetchImpl });
+        print(`activated ${name}@${reuse.version}`);
+      }
+
+      functions.push({
+        ...prepared,
+        version: reuse.version,
+        envelope: { ...prepared.envelope, version: reuse.version },
+        activated,
+        unchanged: true,
+      });
+      continue;
+    }
 
     await uploadVersion(
       config,
       name,
-      { envelope, code, pinned: options.keep === true },
+      { envelope, code, pinned: options.keep === true, deploymentHash },
       { fetchImpl: options.fetchImpl },
     );
     print(`deployed ${name}@${version}`);
@@ -237,7 +276,7 @@ async function deployEntriesFor(
     }
 
     print(`grant function.${name}`);
-    functions.push({ ...prepared, activated });
+    functions.push({ ...prepared, activated, unchanged: false });
   }
 
   const typesOut = config.functions.typesOut;
@@ -251,6 +290,43 @@ async function deployEntriesFor(
       : await reportDrift(config, mapEntries, options.fetchImpl, print);
 
   return { functions, drift, typesOut };
+}
+
+/**
+ * An uploaded version that already carries this deployment hash: the active
+ * one if there is one, otherwise the newest duplicate. A name with no history
+ * at all is not an error: it has nothing to match.
+ */
+async function matchingVersion(
+  config: ResolvedConfig,
+  name: string,
+  deploymentHash: string,
+  fetchImpl: FetchLike | undefined,
+): Promise<FunctionVersionInfo | null> {
+  let versions: FunctionVersionInfo[];
+  try {
+    versions = (await listVersions(config, name, { fetchImpl })).versions;
+  } catch (error) {
+    if (error instanceof CliHttpError && error.status === 404 && error.code === "not_found") {
+      return null;
+    }
+    throw error;
+  }
+
+  const matches = versions.filter((version) => version.deploymentHash === deploymentHash);
+
+  // The active row wins over a newer duplicate: the duplicate adds nothing a
+  // deploy wants, and moving the pointer to it would silently undo a rollback.
+  const active = matches.find((version) => version.status === "active");
+  if (active !== undefined) return active;
+
+  // History arrives newest first; compare on `createdAt` so a caller that
+  // reorders it cannot pick an older duplicate of the same deployment.
+  return matches.reduce<FunctionVersionInfo | null>(
+    (newest, version) =>
+      newest === null || version.createdAt > newest.createdAt ? version : newest,
+    null,
+  );
 }
 
 async function reportDrift(

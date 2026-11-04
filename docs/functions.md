@@ -26,7 +26,7 @@ per-function environment, and bundle signing are **not** in v1; they are
 
 ```
 functions/<name>.ts        defineFunction(schema, params, handler)
-ebb deploy                 bundle → upload → activate
+ebb deploy                 bundle → upload → activate when the bundle changed
 src/ebb-functions.generated.ts   type-only contract map
 client.functions.<name>()  typed invocation
 ```
@@ -172,9 +172,10 @@ proofread example is this convention end to end.
 ## Deploy and dev
 
 ```bash
-ebb deploy                 # bundle, upload, and activate
-ebb deploy --no-activate   # upload a version without switching to it
-ebb deploy --keep          # pin this version against retention
+ebb deploy                 # bundle, upload, and activate when the deployment changed
+ebb deploy --no-activate   # upload only a changed deployment, never move the pointer
+ebb deploy --keep          # always upload, pinning the new version against retention
+ebb deploy --force         # upload and activate even when nothing changed
 ebb deploy --url http://localhost:4000 --token "$EBB_ADMIN_TOKEN"
 ebb dev                    # redeploy the active version while editing
 ebb functions types        # refresh src/ebb-functions.generated.ts
@@ -182,9 +183,43 @@ ebb functions types        # refresh src/ebb-functions.generated.ts
 
 `ebb deploy` reads `ebb.config.ts`, scans `functions.dir`, builds each file with
 esbuild into the envelope the runner expects (`name`, `version`, `digest`,
-`entry`, RPC schemas, limits), and uploads it to
-`POST /functions/:name/versions`. The version is immutable; activation moves
-the name's pointer.
+`entry`, RPC schemas, limits), and skips the upload when that deployment is
+already in the name's history.
+
+### Unchanged deploys
+
+A **deployment hash** identifies what a deployment would do: the digest of the
+emitted code plus `access`, `runtime`, `contract`, `timeoutMs`, `memoryBytes`,
+`entry`, `paramsSchema`, and `outputSchema`. It deliberately excludes `version`
+(the upload timestamp) and `signature`, so redeploying the same project
+directory from a fresh checkout is a no-op. The hash is stored with the version
+row and returned by `GET /functions/:name/versions`; the CLI never needs a local
+manifest.
+
+The hash covers the **compiled bundle**, not the source text: an editor autosave,
+or a rewrite of quotes, semicolons, indentation, and blank lines, emits the same
+bytes and is a no-op. A formatter that re-wraps a call changes the emitted bytes
+and therefore deploys. The bundle also names the entry file relative to the CLI's
+working directory, so deploy from the project root for the hash to survive a
+fresh checkout.
+
+- A match prints `unchanged <name>@<version>` and makes **no** upload request.
+  If that version is not the active one, the deploy activates it, so a
+  rolled-back function returns to the checked-in state. An unchanged deploy
+  prints no `grant` line; the grant did not change.
+- `--force` uploads and activates regardless of the history. Use it when a
+  version row itself is suspect.
+- `--keep` also always uploads: a pin is a property of a version row and there
+  is no route that pins an existing one, so asking to pin is asking for a new
+  pinned version.
+- `--no-activate` uploads only a changed deployment and never moves the
+  pointer; an unchanged deploy makes no request at all beyond the history read.
+
+The generated contract map and the drift check are not deploy steps, so they
+still run on an unchanged deploy. `ebb dev` uses the same check: a save that
+leaves the deployment hash unchanged creates no new version.
+
+The version is immutable; activation moves the name's pointer.
 
 The generated contract map imports each definition **as a type** and records
 its deployed name:

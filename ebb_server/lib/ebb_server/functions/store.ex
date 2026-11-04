@@ -9,6 +9,9 @@ defmodule EbbServer.Functions.Store.Version do
   / `activated_at` are epoch milliseconds. `previous_version_id` is the version
   that was active when this one was last activated; rollback follows it, so the
   chain walks back through activations rather than toggling between two rows.
+  `deployment_hash` is the CLI's opaque `sha256:` marker over the code plus the
+  behaviour-bearing envelope fields, or `nil` when an older CLI uploaded the
+  row without one. The store never interprets it.
   """
 
   @enforce_keys [
@@ -47,7 +50,8 @@ defmodule EbbServer.Functions.Store.Version do
     :activated_at,
     :created_by,
     :pinned,
-    :previous_version_id
+    :previous_version_id,
+    :deployment_hash
   ]
 
   @type status :: String.t()
@@ -72,7 +76,8 @@ defmodule EbbServer.Functions.Store.Version do
           activated_at: integer() | nil,
           created_by: String.t() | nil,
           pinned: boolean(),
-          previous_version_id: String.t() | nil
+          previous_version_id: String.t() | nil,
+          deployment_hash: String.t() | nil
         }
 end
 
@@ -114,12 +119,14 @@ defmodule EbbServer.Functions.Store do
 
   ## Deviation from the issue's DDL
 
-  Issue #595 lists sixteen columns. Five more are here: `runtime`, `entry` and
+  Issue #595 lists sixteen columns. Six more are here: `runtime`, `entry` and
   `access` are the envelope's execution identity and permission posture, which
   are not derivable from stored code; `pinned` is how a `--keep` pin survives
-  retention; and `previous_version_id` is the activation chain `rollback/2`
+  retention; `previous_version_id` is the activation chain `rollback/2`
   follows (migration v2, so a database created before it gains the column
-  without losing rows).
+  without losing rows); and `deployment_hash` is opaque bookkeeping the CLI
+  uses to skip a deploy whose code and behaviour-bearing envelope fields are
+  unchanged (migration v3, nullable so existing rows and older CLIs are fine).
 
   `contract` is stored as TEXT per that DDL and parsed on read. `params_schema`
   and `output_schema` are draft-7 JSON Schema documents as JSON text, or NULL
@@ -166,12 +173,14 @@ defmodule EbbServer.Functions.Store do
   @default_retention 20
 
   # Every column, in the order every statement below reads. `runtime`, `entry`,
-  # `access`, `pinned` and `previous_version_id` are the deviation documented in
-  # the moduledoc.
+  # `access`, `pinned`, `previous_version_id` and `deployment_hash` are the
+  # deviation documented in the moduledoc. New columns go at the end so no
+  # existing statement has to be reordered.
   @columns """
   id, name, version, code, digest, signature, signer_key_id, runtime, entry,
   access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-  status, created_at, activated_at, created_by, pinned, previous_version_id
+  status, created_at, activated_at, created_by, pinned, previous_version_id,
+  deployment_hash
   """
 
   # ---------------------------------------------------------------------------
@@ -222,6 +231,12 @@ defmodule EbbServer.Functions.Store do
     # activated is what lets rollback walk back instead of toggling.
     """
     ALTER TABLE function_versions ADD COLUMN previous_version_id TEXT;
+    """,
+    # v3 — the CLI's deployment hash: opaque here, stored only so a later deploy
+    # can tell that nothing that affects behaviour changed. Nullable, because
+    # rows uploaded before it, and by older CLIs, carry none.
+    """
+    ALTER TABLE function_versions ADD COLUMN deployment_hash TEXT;
     """
   ]
 
@@ -229,8 +244,9 @@ defmodule EbbServer.Functions.Store do
   INSERT INTO function_versions (
     id, name, version, code, digest, signature, signer_key_id, runtime, entry,
     access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-    status, created_at, activated_at, created_by, pinned, previous_version_id
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    status, created_at, activated_at, created_by, pinned, previous_version_id,
+    deployment_hash
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   """
 
   @get_sql "SELECT #{@columns} FROM function_versions WHERE name = ? AND version = ?"
@@ -322,12 +338,13 @@ defmodule EbbServer.Functions.Store do
   Required attributes: `:name`, `:version`, `:code`, `:digest`, `:runtime`,
   `:contract`, `:access`, `:timeout_ms`, `:memory_bytes`, `:entry`. Optional:
   `:signature`, `:signer_key_id`, `:params_schema`, `:output_schema`,
-  `:created_by`, `:pinned`.
+  `:created_by`, `:pinned`, `:deployment_hash`.
 
   `params_schema` and `output_schema` are validated here, before the row
   exists: a schema that draft-7 resolution rejects can never be stored, so it
   can never be activated. The digest is the caller's to verify against `:code`;
-  this module only records it.
+  this module only records it. `deployment_hash` is stored verbatim too: it is
+  the CLI's bookkeeping, not something this module derives or interprets.
 
   A `(name, version)` that already exists answers `{:error, :already_exists}`
   and leaves the stored code untouched.
@@ -650,7 +667,8 @@ defmodule EbbServer.Functions.Store do
          timeout_ms: attrs.timeout_ms,
          memory_bytes: attrs.memory_bytes,
          created_by: Map.get(attrs, :created_by),
-         pinned: Map.get(attrs, :pinned, false)
+         pinned: Map.get(attrs, :pinned, false),
+         deployment_hash: Map.get(attrs, :deployment_hash)
        }}
     end
   end
@@ -674,7 +692,8 @@ defmodule EbbServer.Functions.Store do
     signature: :binary,
     signer_key_id: :binary,
     created_by: :binary,
-    pinned: :boolean
+    pinned: :boolean,
+    deployment_hash: :binary
   ]
 
   defp check_required(attrs) do
@@ -729,7 +748,8 @@ defmodule EbbServer.Functions.Store do
       activated_at: nil,
       created_by: attrs.created_by,
       pinned: attrs.pinned,
-      previous_version_id: nil
+      previous_version_id: nil,
+      deployment_hash: attrs.deployment_hash
     }
   end
 
@@ -853,7 +873,8 @@ defmodule EbbServer.Functions.Store do
       version.activated_at,
       version.created_by,
       if(version.pinned, do: 1, else: 0),
-      version.previous_version_id
+      version.previous_version_id,
+      version.deployment_hash
     ]
 
     write(db, stmt, params)
@@ -975,7 +996,8 @@ defmodule EbbServer.Functions.Store do
          activated_at,
          created_by,
          pinned,
-         previous_version_id
+         previous_version_id,
+         deployment_hash
        ]) do
     %Version{
       id: id,
@@ -998,7 +1020,8 @@ defmodule EbbServer.Functions.Store do
       activated_at: activated_at,
       created_by: created_by,
       pinned: pinned == 1,
-      previous_version_id: previous_version_id
+      previous_version_id: previous_version_id,
+      deployment_hash: deployment_hash
     }
   end
 

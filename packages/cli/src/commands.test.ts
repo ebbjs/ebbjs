@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { main } from "./commands.ts";
+import { prepareDeployment } from "./deploy.ts";
+import { deploymentHashFor } from "./deployment-hash.ts";
 import {
   jsonBody,
   jsonResponse,
@@ -176,6 +178,74 @@ describe("commands", () => {
     expect(code).toBe(0);
     expect(written).toContain('import type { echo } from "../functions/echo";');
     expect(written).toContain('echo: functionContract<typeof echo>("echo"),');
+  });
+
+  it("deploys with --force even when the version is unchanged", async () => {
+    const cwd = await project();
+    await mkdir(join(cwd, "functions"), { recursive: true });
+    await writeFile(
+      join(cwd, "functions", "echo.ts"),
+      `import { defineFunction } from "@ebbjs/server";\nexport const echo = defineFunction({}, () => 1);`,
+      "utf8",
+    );
+    const version = "2026-10-23T12:00:00.000Z";
+    const hash = deploymentHashFor(
+      (await prepareDeployment(join(cwd, "functions", "echo.ts"), { version })).envelope,
+    );
+
+    const { fetchImpl, calls } = recordingFetch((call) => {
+      if (call.url.endsWith("/versions") && call.init.method === "GET") {
+        return jsonResponse(200, {
+          versions: [
+            {
+              version,
+              status: "active",
+              createdAt: 1,
+              activatedAt: 1,
+              pinned: false,
+              createdBy: null,
+              deploymentHash: hash,
+            },
+          ],
+        });
+      }
+      if (call.url.endsWith("/versions")) {
+        return jsonResponse(201, {
+          ok: true,
+          name: "echo",
+          version,
+          status: "retired",
+          pinned: false,
+        });
+      }
+      return jsonResponse(200, { ok: true, name: "echo", version, status: "active" });
+    });
+
+    const code = await main(
+      ["deploy", "--force", "--url", "http://api.test", "--token", "admin-token"],
+      { cwd, fetchImpl, print: () => {} },
+    );
+
+    expect(code).toBe(0);
+    const uploads = calls.filter(
+      (call) => call.url.endsWith("/versions") && call.init.method === "POST",
+    );
+    expect(uploads).toHaveLength(1);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
+  });
+
+  it("rejects an unknown deploy flag", async () => {
+    const cwd = await project();
+    const errors: string[] = [];
+
+    const code = await main(["deploy", "--nope"], {
+      cwd,
+      print: () => {},
+      printError: (line) => errors.push(line),
+    });
+
+    expect(code).toBe(1);
+    expect(errors.join("\n")).toContain("unknown option");
   });
 
   it("exits non-zero for an unknown command", async () => {

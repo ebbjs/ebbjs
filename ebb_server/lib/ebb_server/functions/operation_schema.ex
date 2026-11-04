@@ -76,6 +76,15 @@ defmodule EbbServer.Functions.Router.OperationSchema do
           type: :boolean,
           nullable: true,
           description: "Keep this version past retention (default false)"
+        },
+        deploymentHash: %OpenApiSpex.Schema{
+          type: :string,
+          nullable: true,
+          description:
+            "Opaque `sha256:<hex>` the CLI computes over the code digest and the " <>
+              "behaviour-bearing envelope fields, so an unchanged deploy can be skipped by " <>
+              "comparing it with the active version's. Optional, so an older CLI still " <>
+              "uploads; the server stores it and returns it in the version history."
         }
       }
     }
@@ -142,7 +151,14 @@ defmodule EbbServer.Functions.Router.OperationSchema do
           description: "Epoch milliseconds; null until the version is first activated"
         },
         pinned: %OpenApiSpex.Schema{type: :boolean},
-        createdBy: %OpenApiSpex.Schema{type: :string, nullable: true}
+        createdBy: %OpenApiSpex.Schema{type: :string, nullable: true},
+        deploymentHash: %OpenApiSpex.Schema{
+          type: :string,
+          nullable: true,
+          description:
+            "The upload's opaque `sha256:<hex>` deployment hash; omitted on rows uploaded " <>
+              "without one"
+        }
       }
     }
   end

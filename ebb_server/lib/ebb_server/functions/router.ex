@@ -16,8 +16,8 @@ defmodule EbbServer.Functions.Router do
     - `POST /:name` — invoke one function; JSON params in, JSON result out.
     - `POST /:name/versions` — upload a bundle for `:name`.
     - `GET /:name/versions` — the name's version history (status, timestamps,
-      pin, creator; never code). Admin, because it includes retired and
-      disabled versions an operator uses to roll back or re-enable.
+      pin, creator, deployment hash; never code). Admin, because it includes
+      retired and disabled versions an operator uses to roll back or re-enable.
     - `POST /:name/activate` — point `:name` at one of its uploaded versions.
     - `POST /:name/rollback` — activate the version that was active when the
       current one was last activated, walking back through the chain
@@ -118,11 +118,18 @@ defmodule EbbServer.Functions.Router do
 
   ## Upload and activation
 
-  An upload is `{"envelope": {...}, "code": "...", "pinned": false}`. The
-  envelope is the bundle's own declaration — name, version, digest, runtime,
-  contract, access, limits, entry, and the optional schemas — and
-  `EbbServer.Functions.Bundle.new/2` verifies the digest, contract, name,
-  grammar, and every schema before the row exists. A re-upload of an existing
+  An upload is `{"envelope": {...}, "code": "...", "pinned": false}` plus an
+  optional `deploymentHash`. The envelope is the bundle's own declaration —
+  name, version, digest, runtime, contract, access, limits, entry, and the
+  optional schemas — and `EbbServer.Functions.Bundle.new/2` verifies the digest,
+  contract, name, grammar, and every schema before the row exists.
+  `deploymentHash` is opaque to this server: the CLI computes it over the code
+  digest and the behaviour-bearing envelope fields, uploads it, and reads it
+  back from the history to skip a deploy that changes nothing. The route checks
+  only its shape (`sha256:` and 64 lowercase hex characters) and stores it; an
+  absent or `null` value is a row from an older CLI, and anything else present
+  that does not match the shape is `400 invalid_bundle`. A re-upload of an
+  existing
   `(name, version)` is `409` and never replaces stored code. Uploading does not
   activate; the reply says which version was stored and that it is `retired`
   until somebody activates it.
@@ -172,6 +179,10 @@ defmodule EbbServer.Functions.Router do
   @read_chunk_bytes 64 * 1024
   @idempotency_key_header "idempotency-key"
   @max_idempotency_key_bytes 255
+  # The CLI's deployment hash has the same shape as a bundle digest. This server
+  # never recomputes it: it is the CLI's bookkeeping, so the route only checks
+  # that what the history will echo back is a well-formed one.
+  @deployment_hash_pattern ~r/\Asha256:[0-9a-f]{64}\z/
   @admin_denied_details "an admin credential is required to deploy or activate"
   # Handed to the runner in the invoke frame. The runner is what counts calls
   # (plan §2.12); v1's only ops are one pure read and one commit, so the server
@@ -373,9 +384,9 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp put_version(conn, name, actor_id, payload) do
-    with {:ok, envelope, code, pinned} <- upload_payload(payload, name),
+    with {:ok, envelope, code, pinned, deployment_hash} <- upload_payload(payload, name),
          {:ok, bundle} <- Bundle.new(envelope, code) do
-      record_version(conn, bundle, pinned, actor_id)
+      record_version(conn, bundle, pinned, actor_id, deployment_hash)
     else
       {:error, reason} ->
         send_json(conn, 400, %{
@@ -392,8 +403,8 @@ defmodule EbbServer.Functions.Router do
     })
   end
 
-  defp record_version(conn, %Bundle{} = bundle, pinned, actor_id) do
-    case store_put_version(conn, version_attrs(bundle, pinned, actor_id)) do
+  defp record_version(conn, %Bundle{} = bundle, pinned, actor_id, deployment_hash) do
+    case store_put_version(conn, version_attrs(bundle, pinned, actor_id, deployment_hash)) do
       {:ok, %Version{} = version} ->
         send_json(conn, 201, %{
           "ok" => true,
@@ -429,7 +440,7 @@ defmodule EbbServer.Functions.Router do
     :exit, reason -> {:error, {:store_unavailable, reason}}
   end
 
-  defp version_attrs(%Bundle{} = bundle, pinned, actor_id) do
+  defp version_attrs(%Bundle{} = bundle, pinned, actor_id, deployment_hash) do
     %{
       name: bundle.name,
       version: bundle.version,
@@ -444,7 +455,8 @@ defmodule EbbServer.Functions.Router do
       params_schema: bundle.params_schema,
       output_schema: bundle.output_schema,
       created_by: actor_id,
-      pinned: pinned
+      pinned: pinned,
+      deployment_hash: deployment_hash
     }
   end
 
@@ -459,6 +471,7 @@ defmodule EbbServer.Functions.Router do
     envelope = payload["envelope"]
     code = payload["code"]
     pinned = Map.get(payload, "pinned", false)
+    deployment_hash = Map.get(payload, "deploymentHash")
 
     cond do
       not is_map(envelope) ->
@@ -473,10 +486,22 @@ defmodule EbbServer.Functions.Router do
       not is_boolean(pinned) ->
         {:error, :pinned_not_boolean}
 
+      not valid_deployment_hash?(deployment_hash) ->
+        {:error, :invalid_deployment_hash}
+
       true ->
-        {:ok, envelope, code, pinned}
+        {:ok, envelope, code, pinned, deployment_hash}
     end
   end
+
+  # Absent is an older CLI, not an error; anything present has to be the shape
+  # the CLI publishes, because the history echoes it back verbatim.
+  defp valid_deployment_hash?(nil), do: true
+
+  defp valid_deployment_hash?(hash) when is_binary(hash),
+    do: Regex.match?(@deployment_hash_pattern, hash)
+
+  defp valid_deployment_hash?(_hash), do: false
 
   # Every reason is a sentence for the uploader, never a stack or an internal
   # term. The status already says which class of refusal it is.
@@ -490,6 +515,9 @@ defmodule EbbServer.Functions.Router do
 
   defp invalid_bundle_details(:pinned_not_boolean),
     do: "pinned must be a boolean"
+
+  defp invalid_bundle_details(:invalid_deployment_hash),
+    do: "deploymentHash must be `sha256:` followed by 64 lowercase hex characters"
 
   defp invalid_bundle_details({:missing_field, field}),
     do: "envelope is missing #{field}"
@@ -659,7 +687,9 @@ defmodule EbbServer.Functions.Router do
   end
 
   # The history says what an operator needs to choose a version and what a CLI
-  # needs to print; code stays out of it.
+  # needs to print or to skip a no-op deploy; code stays out of it. The
+  # deployment hash is present only on rows that carried one, so a row from an
+  # older CLI does not report a value it never had.
   defp version_info(%Version{} = version) do
     %{
       "version" => version.version,
@@ -669,7 +699,13 @@ defmodule EbbServer.Functions.Router do
       "pinned" => version.pinned,
       "createdBy" => version.created_by
     }
+    |> put_deployment_hash(version.deployment_hash)
   end
+
+  defp put_deployment_hash(info, nil), do: info
+
+  defp put_deployment_hash(info, hash),
+    do: Map.put(info, "deploymentHash", hash)
 
   defp rollback_version(conn, name) do
     with_actor(conn, fn conn, _actor_id ->
@@ -1100,8 +1136,12 @@ defmodule EbbServer.Functions.Router do
           "in `Authorization: Bearer <admin token>`; holding it never grants invoke " <>
           "permission. The envelope is verified before the row exists — digest, contract, " <>
           "name grammar, and both JSON Schemas — and a version that already exists is `409` " <>
-          "rather than a code replacement. Uploading does not activate: the stored version " <>
-          "is `retired` until `POST /functions/{name}/activate` points the name at it.",
+          "rather than a code replacement. `deploymentHash` is an optional `sha256:<hex>` " <>
+          "the CLI computes over the code digest and the behaviour-bearing envelope fields; " <>
+          "the server stores it verbatim and returns it in the version history, so a deploy " <>
+          "whose hash matches the active version can be skipped. Uploading does not activate: " <>
+          "the stored version is `retired` until `POST /functions/{name}/activate` points the " <>
+          "name at it.",
       tags: ["Functions"],
       parameters: [
         OperationSchema.path_param("name", "string", "The function name"),
@@ -1172,9 +1212,9 @@ defmodule EbbServer.Functions.Router do
       summary: "List a function's version history",
       description:
         "Returns every uploaded version of the name, newest first, with its status, " <>
-          "timestamps, pin, and creator. Code is never returned. Requires the deploy " <>
-          "credential. A disabled name still lists its versions, which is how an operator " <>
-          "finds the version to activate again.",
+          "timestamps, pin, creator, and deployment hash. Code is never returned. Requires " <>
+          "the deploy credential. A disabled name still lists its versions, which is how an " <>
+          "operator finds the version to activate again.",
       tags: ["Functions"],
       parameters: [
         OperationSchema.path_param("name", "string", "The function name"),

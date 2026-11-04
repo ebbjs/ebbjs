@@ -273,24 +273,24 @@ hot-path behavior. Read those before making non-trivial changes.
 
 ### HTTP endpoint table
 
-| Method | Path                                             | Purpose                                                                    |
-| ------ | ------------------------------------------------ | -------------------------------------------------------------------------- |
-| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required          |
-| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)       |
-| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)     |
-| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                             |
-| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                  |
-| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                           |
-| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                             |
-| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)            |
-| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                   |
-| `GET`  | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code) |
-| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params)                                   |
-| `POST` | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                  |
-| `GET`  | `/functions/:name/versions`                      | Version history: status, timestamps, pin (admin; never code)               |
-| `POST` | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)               |
-| `POST` | `/functions/:name/rollback`                      | Activate the previous version (admin `Authorization: Bearer`)              |
-| `POST` | `/functions/:name/disable`                       | Per-function kill switch (admin `Authorization: Bearer`)                   |
+| Method | Path                                             | Purpose                                                                                |
+| ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required                      |
+| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)                   |
+| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)                 |
+| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                                         |
+| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                              |
+| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                                       |
+| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                                         |
+| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)                        |
+| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                               |
+| `GET`  | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code)             |
+| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params)                                               |
+| `POST` | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                              |
+| `GET`  | `/functions/:name/versions`                      | Version history: status, timestamps, pin, creator, deployment hash (admin; never code) |
+| `POST` | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)                           |
+| `POST` | `/functions/:name/rollback`                      | Activate the previous version (admin `Authorization: Bearer`)                          |
+| `POST` | `/functions/:name/disable`                       | Per-function kill switch (admin `Authorization: Bearer`)                               |
 
 Every `/functions` route is absent (`404`) while functions are disabled.
 

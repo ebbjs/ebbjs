@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { digestFor } from "./envelope.ts";
-import { deployEntries } from "./deploy.ts";
+import { deploymentHashFor } from "./deployment-hash.ts";
+import { deployEntries, prepareDeployment, type DeployOptions } from "./deploy.ts";
 import {
   jsonResponse,
   jsonBody,
@@ -15,6 +16,12 @@ import {
 
 const version = "2026-10-23T12:00:00.000Z";
 const functionName = "proofreadDocument";
+
+/** GET `/versions` is history; POST `/versions` is an upload. */
+const isHistory = (call: FetchCall): boolean =>
+  call.url.endsWith("/versions") && (call.init.method ?? "GET") === "GET";
+
+const noHistory = () => jsonResponse(404, { error: "not_found", details: "no versions" });
 
 const functionSource = `
   import { defineFunction, p } from "@ebbjs/server";
@@ -49,6 +56,7 @@ describe("deployEntries", () => {
 
   const uploadAwareFetch = (name = functionName) =>
     recordingFetch((call) => {
+      if (isHistory(call)) return noHistory();
       if (call.url.endsWith("/versions")) {
         return jsonResponse(201, { ok: true, name, version, status: "retired", pinned: false });
       }
@@ -60,6 +68,51 @@ describe("deployEntries", () => {
       }
       throw new Error(`unexpected request ${call.url}`);
     });
+
+  /** A server that already knows `versions` for this name. */
+  const fetchWithHistory = (versions: readonly Record<string, unknown>[]) =>
+    recordingFetch((call) => {
+      if (isHistory(call)) return jsonResponse(200, { versions });
+      if (call.url.endsWith("/versions")) {
+        return jsonResponse(201, {
+          ok: true,
+          name: functionName,
+          version,
+          status: "retired",
+          pinned: false,
+        });
+      }
+      if (call.url.endsWith("/activate")) {
+        return jsonResponse(200, {
+          ok: true,
+          name: functionName,
+          version,
+          status: "active",
+        });
+      }
+      return jsonResponse(200, { functions: [] });
+    });
+
+  const historyEntry = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    version,
+    status: "active",
+    createdAt: 1,
+    activatedAt: 1,
+    pinned: false,
+    createdBy: null,
+    ...overrides,
+  });
+
+  /** The hash this checkout would send, without going over the network. */
+  const hashOfEntry = async (cwd: string): Promise<string> => {
+    const prepared = await prepareDeployment(join(cwd, "functions", `${functionName}.ts`), {
+      version,
+    });
+    return deploymentHashFor(prepared.envelope);
+  };
+
+  const uploadsOf = (calls: readonly FetchCall[]) =>
+    calls.filter((call) => call.url.endsWith("/versions") && !isHistory(call));
 
   const uploadBody = (call: FetchCall): Record<string, unknown> => jsonBody(call);
 
@@ -77,7 +130,7 @@ describe("deployEntries", () => {
       print: (line) => lines.push(line),
     });
 
-    const upload = calls.find((call) => call.url.endsWith("/versions"))!;
+    const upload = uploadsOf(calls)[0]!;
     const body = uploadBody(upload);
     const envelope = body.envelope as Record<string, unknown>;
 
@@ -86,6 +139,7 @@ describe("deployEntries", () => {
     expect(new Headers(upload.init.headers).get("authorization")).toBe("Bearer admin-token");
     expect(body.code).toBeTypeOf("string");
     expect(body.pinned).toBe(false);
+    expect(String(body.deploymentHash)).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(envelope.name).toBe(functionName);
     expect(envelope.entry).toBe(functionName);
     expect(envelope.access).toBe("authenticated");
@@ -145,7 +199,7 @@ describe("deployEntries", () => {
       print: () => {},
     });
 
-    expect(calls.some((call) => call.url.endsWith("/functions/realName/versions"))).toBe(true);
+    expect(uploadsOf(calls)[0]!.url).toBe(`http://localhost:4000/functions/realName/versions`);
 
     const generated = await readFile(join(cwd, "src/ebb-functions.generated.ts"), "utf8");
     expect(generated).toContain('import type { realName } from "../functions/wrongFile";');
@@ -167,7 +221,7 @@ describe("deployEntries", () => {
       print: (line) => lines.push(line),
     });
 
-    expect(calls.filter((call) => call.url.endsWith("/versions"))).toHaveLength(1);
+    expect(uploadsOf(calls)).toHaveLength(1);
     expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(false);
     expect(lines).toContain(`left ${functionName} active version unchanged`);
   });
@@ -185,7 +239,7 @@ describe("deployEntries", () => {
       print: () => {},
     });
 
-    const upload = calls.find((call) => call.url.endsWith("/versions"))!;
+    const upload = uploadsOf(calls)[0]!;
     expect(uploadBody(upload).pinned).toBe(true);
   });
 
@@ -207,7 +261,7 @@ describe("deployEntries", () => {
       print: () => {},
     });
 
-    const upload = calls.find((call) => call.url.endsWith("/versions"))!;
+    const upload = uploadsOf(calls)[0]!;
     expect(upload.url).toBe(`http://right:4100/functions/${functionName}/versions`);
     expect(new Headers(upload.init.headers).get("authorization")).toBe("Bearer right-token");
   });
@@ -215,6 +269,7 @@ describe("deployEntries", () => {
   it("warns about contract-map drift when an actor is configured", async () => {
     const cwd = await project();
     const { fetchImpl } = recordingFetch((call) => {
+      if (isHistory(call)) return noHistory();
       if (call.url.endsWith("/versions")) {
         return jsonResponse(201, {
           ok: true,
@@ -250,6 +305,7 @@ describe("deployEntries", () => {
   it("reports deployed functions that have no local entry as drift", async () => {
     const cwd = await project();
     const { fetchImpl } = recordingFetch((call) => {
+      if (isHistory(call)) return noHistory();
       if (call.url.endsWith("/versions")) {
         return jsonResponse(201, {
           ok: true,
@@ -282,5 +338,213 @@ describe("deployEntries", () => {
 
     expect(lines).toContain("  missing: deployedOnly is deployed but has no local entry");
     expect(lines.some((line) => line.includes(`extra: ${functionName}`))).toBe(false);
+  });
+
+  const deployProject = async (
+    cwd: string,
+    fetchImpl: DeployOptions["fetchImpl"],
+    extra: DeployOptions = {},
+  ) => {
+    const lines: string[] = [];
+    const result = await deployEntries({
+      cwd,
+      token: "admin-token",
+      version,
+      fetchImpl,
+      print: (line) => lines.push(line),
+      ...extra,
+    });
+    return { result, lines };
+  };
+
+  it("skips the upload and activation when the active version is unchanged", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const { fetchImpl, calls } = fetchWithHistory([
+      historyEntry({ version: "2026-10-01T00:00:00.000Z", deploymentHash: hash }),
+    ]);
+
+    const { result, lines } = await deployProject(cwd, fetchImpl, { actor: "a_author" });
+
+    expect(uploadsOf(calls)).toHaveLength(0);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(false);
+    expect(lines).toContain(`unchanged ${functionName}@2026-10-01T00:00:00.000Z`);
+    expect(lines).not.toContain(`grant function.${functionName}`);
+
+    const [deployed] = result.functions;
+    expect(deployed!.unchanged).toBe(true);
+    expect(deployed!.activated).toBe(false);
+    expect(deployed!.version).toBe("2026-10-01T00:00:00.000Z");
+    expect(deployed!.envelope.version).toBe("2026-10-01T00:00:00.000Z");
+
+    // The map and the drift check are not deploy steps: they still run.
+    expect(await readFile(join(cwd, "src/ebb-functions.generated.ts"), "utf8")).toContain(
+      `functionContract<typeof ${functionName}>("${functionName}")`,
+    );
+    expect(lines).toContain(`  extra: ${functionName} has a local entry but no deployed version`);
+  });
+
+  it("uploads when a hashed envelope field changed", async () => {
+    const cwd = await project();
+    const prepared = await prepareDeployment(join(cwd, "functions", `${functionName}.ts`), {
+      version,
+    });
+    const staleHash = deploymentHashFor({ ...prepared.envelope, access: "granted" });
+    const { fetchImpl, calls } = fetchWithHistory([historyEntry({ deploymentHash: staleHash })]);
+
+    const { result, lines } = await deployProject(cwd, fetchImpl);
+
+    expect(uploadsOf(calls)).toHaveLength(1);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
+    expect(lines).toContain(`deployed ${functionName}@${version}`);
+    expect(lines).toContain(`activated ${functionName}@${version}`);
+    expect(result.functions[0]!.unchanged).toBe(false);
+  });
+
+  it("uploads and activates with --force even when the version exists", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const { fetchImpl, calls } = fetchWithHistory([historyEntry({ deploymentHash: hash })]);
+
+    const { result, lines } = await deployProject(cwd, fetchImpl, { force: true });
+
+    expect(uploadsOf(calls)).toHaveLength(1);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
+    expect(lines).toContain(`deployed ${functionName}@${version}`);
+    expect(result.functions[0]!.unchanged).toBe(false);
+  });
+
+  it("uploads a new pinned version with --keep even when the version exists", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const { fetchImpl, calls } = fetchWithHistory([historyEntry({ deploymentHash: hash })]);
+
+    await deployProject(cwd, fetchImpl, { keep: true });
+
+    const uploads = uploadsOf(calls);
+    expect(uploads).toHaveLength(1);
+    expect(uploadBody(uploads[0]!).pinned).toBe(true);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
+  });
+
+  it("leaves the pointer alone with --no-activate when the version exists", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const { fetchImpl, calls } = fetchWithHistory([
+      historyEntry({ version: "2026-10-01T00:00:00.000Z", deploymentHash: hash }),
+    ]);
+
+    const { lines } = await deployProject(cwd, fetchImpl, { activate: false });
+
+    expect(uploadsOf(calls)).toHaveLength(0);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(false);
+    expect(lines).toContain(`unchanged ${functionName}@2026-10-01T00:00:00.000Z`);
+    expect(lines.some((line) => line.startsWith("activated "))).toBe(false);
+    expect(lines.some((line) => line.startsWith("left "))).toBe(false);
+  });
+
+  it("activates the newest matching version when the active one differs", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const newest = "2026-11-02T00:00:00.000Z";
+    const { fetchImpl, calls } = fetchWithHistory([
+      historyEntry({
+        version: newest,
+        status: "retired",
+        createdAt: 3,
+        activatedAt: null,
+        deploymentHash: hash,
+      }),
+      historyEntry({
+        version: "2026-11-01T00:00:00.000Z",
+        status: "retired",
+        createdAt: 2,
+        activatedAt: null,
+        deploymentHash: hash,
+      }),
+      historyEntry({
+        version: "2026-10-01T00:00:00.000Z",
+        createdAt: 1,
+        deploymentHash: `sha256:${"0".repeat(64)}`,
+      }),
+    ]);
+
+    const { result, lines } = await deployProject(cwd, fetchImpl);
+
+    expect(uploadsOf(calls)).toHaveLength(0);
+    const activates = calls.filter((call) => call.url.endsWith("/activate"));
+    expect(activates).toHaveLength(1);
+    expect(jsonBody(activates[0]!)).toEqual({ version: newest });
+    expect(lines).toContain(`unchanged ${functionName}@${newest}`);
+    expect(lines).toContain(`activated ${functionName}@${newest}`);
+    expect(result.functions[0]!.activated).toBe(true);
+  });
+
+  it("uploads when the name has no version history", async () => {
+    const cwd = await project();
+    const { fetchImpl, calls } = uploadAwareFetch();
+
+    const { lines } = await deployProject(cwd, fetchImpl);
+
+    expect(calls.filter(isHistory)).toHaveLength(1);
+    expect(uploadsOf(calls)).toHaveLength(1);
+    expect(lines).toContain(`deployed ${functionName}@${version}`);
+  });
+
+  it("keeps the active duplicate rather than activating a newer one", async () => {
+    const cwd = await project();
+    const hash = await hashOfEntry(cwd);
+    const { fetchImpl, calls } = fetchWithHistory([
+      historyEntry({ status: "retired", createdAt: 2, activatedAt: null, deploymentHash: hash }),
+      historyEntry({
+        version: "2026-10-01T00:00:00.000Z",
+        createdAt: 1,
+        deploymentHash: hash,
+      }),
+    ]);
+
+    const { result, lines } = await deployProject(cwd, fetchImpl);
+
+    expect(uploadsOf(calls)).toHaveLength(0);
+    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(false);
+    expect(lines).toContain(`unchanged ${functionName}@2026-10-01T00:00:00.000Z`);
+    expect(result.functions[0]!.activated).toBe(false);
+  });
+
+  it("surfaces a history read failure instead of redeploying", async () => {
+    const cwd = await project();
+    const { fetchImpl, calls } = recordingFetch((call) => {
+      if (isHistory(call)) {
+        return jsonResponse(500, { error: "internal_error", details: "the store is down" });
+      }
+      throw new Error(`unexpected request ${call.url}`);
+    });
+
+    await expect(deployProject(cwd, fetchImpl)).rejects.toThrow(/internal_error/);
+    expect(uploadsOf(calls)).toHaveLength(0);
+  });
+
+  it("treats a quote, semicolon, and indent rewrite as the same deployment", async () => {
+    const cwd = await project();
+    const before = await hashOfEntry(cwd);
+    const reformatted = `
+      import { defineFunction, p } from '@ebbjs/server'
+
+      export const ${functionName} = defineFunction(
+        {},
+        p.object({ documentId: p.string() }),
+        async (_ctx, params) => ({ count: params.documentId.length }),
+        {
+          access: 'authenticated',
+          timeoutMs: 5000,
+          memoryMb: 64,
+          output: p.object({ count: p.number() })
+        }
+      )
+    `;
+
+    await writeFile(join(cwd, "functions", `${functionName}.ts`), reformatted, "utf8");
+
+    expect(await hashOfEntry(cwd)).toBe(before);
   });
 });

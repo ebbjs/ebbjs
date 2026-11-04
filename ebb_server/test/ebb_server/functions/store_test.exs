@@ -71,6 +71,7 @@ defmodule EbbServer.Functions.StoreTest do
       assert version.timeout_ms == 5_000
       assert version.memory_bytes == 64 * 1024 * 1024
       assert version.pinned == false
+      assert version.deployment_hash == nil
       assert String.starts_with?(version.id, "fv_")
       assert version.params_schema["type"] == "object"
       assert version.output_schema == %{"type" => "number"}
@@ -153,6 +154,22 @@ defmodule EbbServer.Functions.StoreTest do
       assert {:ok, stored} = Store.get(@name, "1.0.0", store)
       assert stored.created_by == "actor_1"
       assert stored.pinned == true
+    end
+
+    test "deployment_hash round-trips, and an upload without one stores nil", context do
+      store = start_store(context)
+      hash = "sha256:" <> String.duplicate("0123456789abcdef", 4)
+
+      assert {:ok, version} = Store.put_version(attrs(%{deployment_hash: hash}), store)
+      assert version.deployment_hash == hash
+
+      assert {:ok, _} = Store.activate(@name, "1.0.0", store)
+      assert {:ok, %{deployment_hash: ^hash}} = Store.active(@name, store)
+
+      assert {:ok, other} = Store.put_version(attrs(%{version: "2.0.0"}), store)
+      assert other.deployment_hash == nil
+
+      assert [%{deployment_hash: nil}, %{deployment_hash: ^hash}] = versions(@name, store)
     end
   end
 
@@ -467,6 +484,21 @@ defmodule EbbServer.Functions.StoreTest do
       assert active.previous_version_id == nil
       assert {:ok, [%{version: "1.0.0"}]} = Store.versions(@name, store)
     end
+
+    test "a v2 database gains deployment_hash without losing rows", context do
+      {:ok, db} = Sqlite3.open(db_path(context))
+      :ok = Sqlite3.execute(db, v2_ddl())
+      :ok = Sqlite3.execute(db, "PRAGMA user_version = 2")
+      assert :done == insert_direct!(db, "fv_v2", @name, "1.0.0", "active")
+      :ok = Sqlite3.close(db)
+
+      store = start_store(context)
+
+      assert {:ok, active} = Store.active(@name, store)
+      assert active.id == "fv_v2"
+      assert active.previous_version_id == nil
+      assert active.deployment_hash == nil
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -511,6 +543,10 @@ defmodule EbbServer.Functions.StoreTest do
     CREATE UNIQUE INDEX idx_function_active ON function_versions(name) WHERE status = 'active';
     CREATE INDEX idx_function_versions_name ON function_versions(name, created_at DESC);
     """
+  end
+
+  defp v2_ddl do
+    v1_ddl() <> "ALTER TABLE function_versions ADD COLUMN previous_version_id TEXT;\n"
   end
 
   defp insert_direct!(db, id, name, version, status) do
