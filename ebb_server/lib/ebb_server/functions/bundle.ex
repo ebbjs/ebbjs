@@ -1,7 +1,7 @@
 defmodule EbbServer.Functions.Bundle do
   @contract_version 1
 
-  alias ExJsonSchema.Schema, as: JsonSchema
+  alias EbbServer.Functions.Schema
 
   @moduledoc """
   One function version: its decoded envelope plus the code bytes.
@@ -155,9 +155,9 @@ defmodule EbbServer.Functions.Bundle do
          {:ok, memory_bytes} <- limit_field(envelope, "memoryBytes"),
          {:ok, digest} <- verify_digest(envelope["digest"], code),
          {:ok, params_schema, resolved_params_schema} <-
-           resolve_schema(envelope["paramsSchema"], "paramsSchema"),
+           Schema.resolve(envelope["paramsSchema"], "paramsSchema"),
          {:ok, output_schema, resolved_output_schema} <-
-           resolve_schema(envelope["outputSchema"], "outputSchema") do
+           Schema.resolve(envelope["outputSchema"], "outputSchema") do
       {:ok,
        %__MODULE__{
          name: name,
@@ -222,23 +222,6 @@ defmodule EbbServer.Functions.Bundle do
       _value -> {:error, {:invalid_field, field}}
     end
   end
-
-  defp resolve_schema(nil, _field), do: {:ok, nil, nil}
-
-  defp resolve_schema(schema, _field) when is_boolean(schema) do
-    {:ok, schema, JsonSchema.resolve(schema)}
-  end
-
-  defp resolve_schema(schema, field) when is_map(schema) do
-    {:ok, schema, JsonSchema.resolve(schema)}
-  rescue
-    error -> {:error, {:invalid_schema, field, Exception.message(error)}}
-  catch
-    kind, reason -> {:error, {:invalid_schema, field, inspect({kind, reason})}}
-  end
-
-  defp resolve_schema(_schema, field),
-    do: {:error, {:invalid_schema, field, "schema must be a JSON object or boolean"}}
 
   defp verify_digest(digest, code) do
     with true <- is_binary(digest),

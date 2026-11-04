@@ -153,8 +153,8 @@ defmodule EbbServer.Functions.Store do
 
   use GenServer
 
+  alias EbbServer.Functions.Schema
   alias EbbServer.Functions.Store.Version
-  alias ExJsonSchema.Schema, as: JsonSchema
   alias Exqlite.Sqlite3
 
   @db_file "functions.db"
@@ -492,8 +492,8 @@ defmodule EbbServer.Functions.Store do
 
   defp do_put_version(state, attrs) do
     with {:ok, attrs} <- normalize(attrs),
-         :ok <- verify_schema(attrs.params_schema, "params_schema"),
-         :ok <- verify_schema(attrs.output_schema, "output_schema"),
+         :ok <- Schema.validate(attrs.params_schema, "params_schema"),
+         :ok <- Schema.validate(attrs.output_schema, "output_schema"),
          :ok <- ensure_absent(state, attrs.name, attrs.version),
          version = build_version(attrs, new_id(), now_ms()),
          :ok <- insert_version(state.db, state.stmts.insert, version) do
@@ -687,54 +687,11 @@ defmodule EbbServer.Functions.Store do
 
   defp now_ms, do: System.system_time(:millisecond)
 
-  # ---------------------------------------------------------------------------
-  # Schema checks
-  # ---------------------------------------------------------------------------
-
-  defp verify_schema(nil, _field), do: :ok
-
-  # Draft-7 allows a schema to be a boolean: `true` accepts everything and
-  # `false` accepts nothing. The validator resolves both, so the store does not
-  # narrow the language the bundles are allowed to speak.
-  defp verify_schema(schema, _field) when is_boolean(schema), do: :ok
-
-  defp verify_schema(schema, field) when is_map(schema) do
-    JsonSchema.resolve(schema)
-    :ok
-  rescue
-    error -> {:error, {:invalid_schema, field, Exception.message(error)}}
-  catch
-    kind, reason -> {:error, {:invalid_schema, field, inspect({kind, reason})}}
-  end
-
-  defp verify_schema(_schema, field) do
-    {:error, {:invalid_schema, field, "schema must be a JSON object or boolean"}}
-  end
-
-  # Activation reads the raw text rather than the decoded struct so a row whose
-  # JSON was corrupted after upload is refused, instead of reading as "no
-  # schema".
-  defp verify_schema_text(nil, _field), do: :ok
-
-  defp verify_schema_text(text, field) when is_binary(text) do
-    case Jason.decode(text) do
-      {:ok, schema} ->
-        verify_schema(schema, field)
-
-      {:error, reason} ->
-        {:error, {:invalid_schema, field, "invalid JSON: #{Exception.message(reason)}"}}
-    end
-  end
-
-  defp verify_schema_text(_text, field) do
-    {:error, {:invalid_schema, field, "schema must be JSON text"}}
-  end
-
   defp verify_stored_schemas(db, stmts, name, version) do
     case run(db, stmts.get_schemas, [name, version]) do
       {:row, [params, output]} ->
-        with :ok <- verify_schema_text(params, "params_schema") do
-          verify_schema_text(output, "output_schema")
+        with :ok <- Schema.validate_text(params, "params_schema") do
+          Schema.validate_text(output, "output_schema")
         end
 
       :done ->

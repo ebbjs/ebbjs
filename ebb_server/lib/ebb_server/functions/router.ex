@@ -233,7 +233,7 @@ defmodule EbbServer.Functions.Router do
   defp with_actor(conn, fun) do
     case conn.assigns[:actor_id] do
       actor_id when is_binary(actor_id) and actor_id != "" -> fun.(conn, actor_id)
-      _missing -> respond(conn, plain(401, %{"error" => "unauthorized"}))
+      _missing -> send_json(conn, 401, %{"error" => "unauthorized"})
     end
   end
 
@@ -241,10 +241,13 @@ defmodule EbbServer.Functions.Router do
     Admin.authorize(conn, admin_token: admin_token(conn)) == :ok
   end
 
-  defp plain(status, body), do: {status, body, []}
+  # A plain `{ok|error}` body with no invocation envelope or headers, used by
+  # the catalogue and deploy routes. `EbbServer.Sync.Router` names the same
+  # helper the same way.
+  defp send_json(conn, status, body), do: respond(conn, {status, body, []})
 
   defp internal_error(conn) do
-    respond(conn, plain(500, %{"error" => "internal_error", "details" => store_unavailable()}))
+    send_json(conn, 500, %{"error" => "internal_error", "details" => store_unavailable()})
   end
 
   defp store_unavailable, do: "the functions store is unavailable"
@@ -267,7 +270,7 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp unencodable(_response) do
-    plain(500, %{"error" => "internal_error", "details" => "response could not be encoded"})
+    {500, %{"error" => "internal_error", "details" => "response could not be encoded"}, []}
   end
 
   defp send_body(conn, status, json, headers) do
@@ -295,7 +298,7 @@ defmodule EbbServer.Functions.Router do
   defp list_functions(conn, _actor_id) do
     case list_versions(conn) do
       {:ok, versions} ->
-        respond(conn, plain(200, %{"functions" => Enum.map(versions, &function_summary/1)}))
+        send_json(conn, 200, %{"functions" => Enum.map(versions, &function_summary/1)})
 
       {:error, _reason} ->
         internal_error(conn)
@@ -343,7 +346,7 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp admin_denied(conn) do
-    respond(conn, plain(403, %{"error" => "denied", "details" => @admin_denied_details}))
+    send_json(conn, 403, %{"error" => "denied", "details" => @admin_denied_details})
   end
 
   defp put_version(conn, name, actor_id, payload) do
@@ -352,42 +355,36 @@ defmodule EbbServer.Functions.Router do
       record_version(conn, bundle, pinned, actor_id)
     else
       {:error, reason} ->
-        respond(
-          conn,
-          plain(400, %{"error" => "invalid_bundle", "details" => invalid_bundle_details(reason)})
-        )
+        send_json(conn, 400, %{
+          "error" => "invalid_bundle",
+          "details" => invalid_bundle_details(reason)
+        })
     end
   end
 
   defp invalid_schema(conn, field, reason) do
-    respond(
-      conn,
-      plain(422, %{
-        "error" => "invalid_schema",
-        "details" => "#{field} is not a valid JSON Schema: #{reason}"
-      })
-    )
+    send_json(conn, 422, %{
+      "error" => "invalid_schema",
+      "details" => "#{field} is not a valid JSON Schema: #{reason}"
+    })
   end
 
   defp record_version(conn, %Bundle{} = bundle, pinned, actor_id) do
     case store_put_version(conn, version_attrs(bundle, pinned, actor_id)) do
       {:ok, %Version{} = version} ->
-        respond(
-          conn,
-          plain(201, %{
-            "ok" => true,
-            "name" => version.name,
-            "version" => version.version,
-            "status" => version.status,
-            "pinned" => version.pinned
-          })
-        )
+        send_json(conn, 201, %{
+          "ok" => true,
+          "name" => version.name,
+          "version" => version.version,
+          "status" => version.status,
+          "pinned" => version.pinned
+        })
 
       {:error, :already_exists} ->
-        respond(
-          conn,
-          plain(409, %{"error" => "already_exists", "details" => duplicate_details(bundle)})
-        )
+        send_json(conn, 409, %{
+          "error" => "already_exists",
+          "details" => duplicate_details(bundle)
+        })
 
       {:error, {:invalid_schema, field, reason}} ->
         invalid_schema(conn, field, reason)
@@ -499,7 +496,7 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp decode_upload("", conn) do
-    {:error, plain(400, %{"error" => "invalid_json", "details" => "request body is required"}),
+    {:error, {400, %{"error" => "invalid_json", "details" => "request body is required"}, []},
      conn}
   end
 
@@ -510,14 +507,15 @@ defmodule EbbServer.Functions.Router do
 
       {:ok, _other} ->
         {:error,
-         plain(400, %{
-           "error" => "invalid_json",
-           "details" => "request body must be a JSON object"
-         }), conn}
+         {400,
+          %{
+            "error" => "invalid_json",
+            "details" => "request body must be a JSON object"
+          }, []}, conn}
 
       {:error, _reason} ->
         {:error,
-         plain(400, %{"error" => "invalid_json", "details" => "request body is not valid JSON"}),
+         {400, %{"error" => "invalid_json", "details" => "request body is not valid JSON"}, []},
          conn}
     end
   end
@@ -546,24 +544,18 @@ defmodule EbbServer.Functions.Router do
   defp activate(conn, name, version) do
     case store_activate(conn, name, version) do
       {:ok, %Version{} = activated} ->
-        respond(
-          conn,
-          plain(200, %{
-            "ok" => true,
-            "name" => activated.name,
-            "version" => activated.version,
-            "status" => activated.status
-          })
-        )
+        send_json(conn, 200, %{
+          "ok" => true,
+          "name" => activated.name,
+          "version" => activated.version,
+          "status" => activated.status
+        })
 
       {:error, :not_found} ->
-        respond(
-          conn,
-          plain(404, %{
-            "error" => "not_found",
-            "details" => "no version #{version} of #{name} was uploaded"
-          })
-        )
+        send_json(conn, 404, %{
+          "error" => "not_found",
+          "details" => "no version #{version} of #{name} was uploaded"
+        })
 
       {:error, {:invalid_schema, field, reason}} ->
         invalid_schema(conn, field, reason)
@@ -591,13 +583,14 @@ defmodule EbbServer.Functions.Router do
 
       {:ok, _payload} ->
         {:error,
-         plain(400, %{
-           "error" => "invalid_input",
-           "details" => "version must be a non-empty string"
-         }), conn}
+         {400,
+          %{
+            "error" => "invalid_input",
+            "details" => "version must be a non-empty string"
+          }, []}, conn}
 
       {:error, details} ->
-        {:error, plain(400, %{"error" => "invalid_json", "details" => details}), conn}
+        {:error, {400, %{"error" => "invalid_json", "details" => details}, []}, conn}
     end
   end
 
@@ -691,14 +684,15 @@ defmodule EbbServer.Functions.Router do
 
       {:more, _partial, conn} ->
         {:error,
-         plain(413, %{
-           "error" => "payload_too_large",
-           "details" => "request body exceeds #{max_bytes} bytes"
-         }), conn}
+         {413,
+          %{
+            "error" => "payload_too_large",
+            "details" => "request body exceeds #{max_bytes} bytes"
+          }, []}, conn}
 
       {:error, _reason} ->
         {:error,
-         plain(400, %{"error" => "invalid_json", "details" => "request body could not be read"}),
+         {400, %{"error" => "invalid_json", "details" => "request body could not be read"}, []},
          conn}
     end
   end
