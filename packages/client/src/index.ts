@@ -26,6 +26,22 @@ export {
 } from "./sync/client";
 
 export {
+  functionContract,
+  FunctionCallError,
+  type BoundFunction,
+  type FunctionCallOptions,
+  type FunctionCallResult,
+  type FunctionContract,
+  type FunctionDefLike,
+  type FunctionErrorEnvelope,
+  type FunctionInput,
+  type FunctionIssue,
+  type FunctionOutput,
+  type FunctionReturn,
+  type FunctionsNamespace,
+} from "./functions";
+
+export {
   ActionRejectedError,
   ActionResolutionError,
   type ActionDrafts,
