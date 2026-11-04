@@ -1,0 +1,31 @@
+{
+  "name": "proofread",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read → external call → write example for ebb functions",
+  "type": "module",
+  "scripts": {
+    "dev": "ebb dev",
+    "deploy": "ebb deploy",
+    "types": "ebb functions types",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "lint": "pnpm --root ../../ lint",
+    "lint:fix": "pnpm --root ../../ lint:fix",
+    "fmt": "pnpm --root ../../ fmt",
+    "fmt:check": "pnpm --root ../../ fmt:check"
+  },
+  "dependencies": {
+    "@ebbjs/client": "workspace:*",
+    "@ebbjs/schema": "workspace:*",
+    "@ebbjs/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@ebbjs/functions-runtime": "workspace:*",
+    "@types/node": "^25.2.3",
+    "esbuild": "^0.27.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.0"
+  }
+}
