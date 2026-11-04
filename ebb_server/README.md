@@ -110,6 +110,56 @@ is absent (`404`), not a `503`. Versions live in `<data_dir>/functions.db`;
 nested `:functions` key; see `EbbServer.Functions` and
 `EbbServer.Functions.Admin`.
 
+## Functions
+
+Functions let an app ship a small TypeScript handler that runs beside the
+server: it reads entities, can call an external service, and commits one
+Action. Authoring, deployment, and operations are covered in
+[`docs/functions.md`](../docs/functions.md); this section is the server-side
+shape.
+
+### Supervision and storage
+
+The feature is opt-in and boot-resolved (`EBB_FUNCTIONS_ENABLED`, then
+`:functions, enabled`, then `false`). When enabled,
+`EbbServer.Functions.children/1` starts:
+
+- **`EbbServer.Functions.Store`** — SQLite at `<data_dir>/functions.db`. It
+  owns every uploaded version, the active pointer per name, the previous-version
+  chain rollback follows, pinned versions, and the disabled status that gives a
+  name its kill switch. It is
+  separate from the RocksDB Action log and the materialized entity cache: a
+  function deploy never writes to either.
+- **`EbbServer.Functions.BundleCache`** — the active bundle for each function
+  name, over a loader (`StoreLoader` by default, `DirLoader` when `:bundle_dir`
+  is set). It verifies the digest and envelope before serving a bundle, so a
+  tampered or half-written file is an error rather than a new active version.
+
+Each invocation then runs in a **Bun process**: `EbbServer.Functions.Worker.Bun`
+spawns one runner with its own temp directory, process group, and Unix socket
+under `<data_dir>/function_sockets`; `EbbServer.Functions.Invocation` drives the
+host-call/result frame loop and owns the deadline. The worker contract
+(`EbbServer.Functions.Worker`) is a seam, so a pre-warmed pool can replace the
+per-invocation spawn without changing the invocation loop. The runner entry
+point lives in `packages/runner`; it is not embedded in the BEAM.
+
+The runner requires **Bun 1.4.3**, pinned in `.bun-version`; the server image
+ships that version. An enabled node without a usable `bun` fails its function
+invocations, not the sync path.
+
+### Trusted authors, not a sandbox
+
+Out-of-process execution is for **resilience**, not a security boundary. A
+runaway loop or an out-of-memory function kills its worker, not the Writer or
+the SSE connections, and committed writes survive. But functions are trusted
+authors: Bun globals stay reachable (native `fetch`, npm packages, `Bun.spawn`),
+and a function runs with the deploy credential's ability to execute code. The
+`function.<name>` grant decides _who may invoke_, not _what the handler may do_.
+Treat a deploy grant like write access to the server.
+
+The CLI and runner live in `packages/cli` / `packages/runner`; the server never
+shells out to the CLI, and the CLI never opens the store directly.
+
 ## Self-hosting in Docker
 
 The image in `ebb_server/Dockerfile` assembles the release in a builder
@@ -203,6 +253,11 @@ concurrently.
 | `EbbServer.Storage.{DirtyTracker,GroupCache,EntityGroupCache,RelationshipCache}` | In-memory state children of `SystemCache`                                               |
 | `EbbServer.Storage.GsnCounter`                                                   | Lock-free GSN claiming + restart reconcile (`:atomics`)                                 |
 | `EbbServer.Telemetry.Sampler`                                                    | Periodic watermark / dirty-set / in-flight / fan-out gauges                             |
+| `EbbServer.Functions`                                                            | Boot-resolved enable flag, children, admin token, and bundle source                     |
+| `EbbServer.Functions.Store`                                                      | SQLite version rows, active pointers, rollback chain, pins, disable flags               |
+| `EbbServer.Functions.BundleCache`                                                | Verifies digest + envelope and serves the active bundle per name                        |
+| `EbbServer.Functions.Invocation`                                                 | One worker through the host-call/result frame loop and deadline                         |
+| `EbbServer.Functions.Worker.Bun`                                                 | One Bun runner process per invocation: socket, process group, temp dir                  |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
@@ -268,6 +323,7 @@ EbbServer.Supervisor (one_for_one)
 │       └── Storage.CommitterPool           — supervised workers; contains a worker death per range
 │           ├── DynamicSupervisor
 │           └── Storage.Committer × N       — wrapper encode + op assembly + durable write
+├── Functions.Store                        — opt-in; versions in <data_dir>/functions.db
 ├── Functions.BundleCache                  — opt-in; active bundle per function name
 ├── Telemetry.Sampler                      — 1 Hz watermark / dirty-set / in-flight / fan-out gauges
 ├── Sync Supervisor (one_for_one)
@@ -574,22 +630,22 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                                    | Default          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `:port`                      | HTTP listen port                                                                                               | 4000             |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                           | `./data`         |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                              | (none)           |
-| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                           | (required)       |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                              | 1000             |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                | 0                |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                     | 1                |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                               | 2                |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                      | 1024             |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                        | 2000             |
-| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset       | 2000             |
-| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset | 256              |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                         | (unset)          |
-| `:functions`                 | Nested functions key: `enabled`, `bundle_dir`, `transport`, `worker_opts` (see `EbbServer.Functions`)          | `enabled: false` |
+| Key                          | Description                                                                                                                       | Default          |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `:port`                      | HTTP listen port                                                                                                                  | 4000             |
+| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                                              | `./data`         |
+| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                                                 | (none)           |
+| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                                              | (required)       |
+| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                                                 | 1000             |
+| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                                   | 0                |
+| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                                        | 1                |
+| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                                                  | 2                |
+| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                                         | 1024             |
+| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                                           | 2000             |
+| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset                          | 2000             |
+| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset                    | 256              |
+| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                                            | (unset)          |
+| `:functions`                 | Nested functions key: `enabled`, `bundle_dir`, `admin_token`, `retention`, `transport`, `worker_opts` (see `EbbServer.Functions`) | `enabled: false` |
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:

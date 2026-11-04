@@ -26,3 +26,51 @@ export {
   type BundleOptions,
   type BundleResult,
 } from "./bundle.ts";
+
+export {
+  ConfigError,
+  DEFAULT_CONFIG_FILE,
+  DEFAULT_FUNCTIONS_DIR,
+  DEFAULT_TYPES_OUT,
+  DEFAULT_URL,
+  loadConfig,
+  type LoadConfigOptions,
+  type ResolvedConfig,
+} from "./config.ts";
+
+export {
+  CliHttpError,
+  MissingAdminTokenError,
+  activateVersion,
+  disable,
+  listFunctions,
+  rollback,
+  uploadVersion,
+  type ApiOptions,
+  type ApiOptionsInput,
+  type FunctionSummary,
+  type ListFunctionsResponse,
+  type UploadVersionInput,
+} from "./api.ts";
+
+export {
+  deployEntries,
+  deployFiles,
+  discoverEntries,
+  prepareDeployment,
+  type DeployOptions,
+  type DeployResult,
+  type DeployedFunction,
+} from "./deploy.ts";
+
+export {
+  checkDrift,
+  hasDrift,
+  renderContractMap,
+  writeContractMap,
+  type ContractDrift,
+  type ContractEntry,
+  type ContractEntryInput,
+} from "./contract-map.ts";
+
+export { main, watchFunctions, type CommandDeps } from "./commands.ts";

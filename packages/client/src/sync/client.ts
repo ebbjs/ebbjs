@@ -87,7 +87,20 @@ import { groupMembersOf } from "@ebbjs/write";
 import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
-import { createActionRuntime, type ActionCapability } from "./drafts";
+import {
+  ActionRejectedError,
+  createActionRuntime,
+  type ActionCapability,
+  type ActionRejection,
+} from "./drafts";
+import {
+  FunctionCallError,
+  toFunctionReturn,
+  type AnyFunctionContract,
+  type FunctionCallOptions,
+  type FunctionCallResult,
+  type FunctionsNamespace,
+} from "../functions";
 import {
   PermissionError,
   collectPermissionViolations,
@@ -1034,6 +1047,45 @@ export class SyncClient implements PermissionQuery {
       throw new Error(`queryEntities failed: ${response.status} ${text}`);
     }
     return (await response.json()) as EntityQueryResponse;
+  }
+
+  /**
+   * `POST /functions/:name` — invoke a deployed function by name.
+   *
+   * The low-level call behind `client.functions.<name>`. `input` is the JSON
+   * body; an absent one sends `{}` so a no-params function takes no argument.
+   *
+   * A rejected commit (`422 rejected`) is the write path's answer: it throws
+   * the same {@link ActionRejectedError} a rejected Action batch does, with
+   * the server's `{id, reason, details?}` rejection list. Every other failure
+   * is a {@link FunctionCallError} built from the response envelope.
+   */
+  async invokeFunction<O = unknown>(
+    name: string,
+    input?: unknown,
+    options: FunctionCallOptions = {},
+  ): Promise<FunctionCallResult<O>> {
+    const headers = this.authHeaders({ "content-type": "application/json" });
+    if (typeof options.idempotencyKey === "string") {
+      headers["idempotency-key"] = options.idempotencyKey;
+    }
+    const response = await this.fetchImpl(
+      `${this.serverUrl}/functions/${encodeURIComponent(name)}`,
+      { method: "POST", headers, body: JSON.stringify(input ?? {}) },
+    );
+    const body = (await response.json().catch(() => ({}))) as {
+      result?: O;
+      replayed?: unknown;
+      error?: string;
+      rejected?: readonly ActionRejection[];
+    };
+    if (response.status === 422 && body.error === "rejected") {
+      throw new ActionRejectedError(body.rejected ?? []);
+    }
+    if (!response.ok) {
+      throw new FunctionCallError(response.status, body);
+    }
+    return { result: body.result as O, replayed: body.replayed === true };
   }
 
   /**
@@ -2187,7 +2239,11 @@ export type ActionNamespaces<
 export type NamespacedClient<
   S,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
-> = SyncClient & EntityNamespaces<S> & ActionNamespaces<S, TActions>;
+  TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
+> = SyncClient &
+  EntityNamespaces<S> &
+  ActionNamespaces<S, TActions> &
+  FunctionsNamespace<TFunctions>;
 
 /**
  * Factory for {@link SyncClient}. Prefer this over `new SyncClient(...)`
@@ -2204,13 +2260,35 @@ export type NamespacedClient<
 export function createClient<
   S extends AnySchema | undefined = undefined,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
->(opts: SyncClientOptions & { schema?: S; actions?: TActions }): NamespacedClient<S, TActions> {
+  TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
+>(
+  opts: SyncClientOptions & { schema?: S; actions?: TActions; functions?: TFunctions },
+): NamespacedClient<S, TActions, TFunctions> {
   if (opts.actions !== undefined && opts.schema === undefined) {
     throw new ActionDefinitionError([{ message: "createClient: `actions` requires a `schema`" }]);
   }
   const client = new SyncClient(opts);
+  // Functions do not need a schema: an invocation is a network call, not a
+  // local Action, so the map mounts on whatever client `createClient` built.
+  if (opts.functions !== undefined) {
+    const functions: Record<
+      string,
+      (input?: unknown, options?: FunctionCallOptions) => Promise<unknown>
+    > = {};
+    for (const [key, contract] of Object.entries(opts.functions)) {
+      functions[key] = (input, options) =>
+        client
+          .invokeFunction(contract.name, input, options)
+          .then(({ result, replayed }) => toFunctionReturn(result, replayed));
+    }
+    Object.defineProperty(client, "functions", {
+      value: functions,
+      enumerable: false,
+      configurable: true,
+    });
+  }
   if (opts.schema === undefined) {
-    return client as NamespacedClient<S, TActions>;
+    return client as NamespacedClient<S, TActions, TFunctions>;
   }
   // The read path's capability: the registry its accessors resolve
   // against and the document opener a collaborative-text body hydrates
@@ -2305,5 +2383,5 @@ export function createClient<
       }
       return value;
     },
-  }) as NamespacedClient<S, TActions>;
+  }) as NamespacedClient<S, TActions, TFunctions>;
 }
