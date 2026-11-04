@@ -76,13 +76,13 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable                | Default                        | Description                                                                              |
-| ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                         |
-| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory                                                          |
-| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass` or `external`. The node refuses to boot without one.                 |
-| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`.                            |
-| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the functions bundle cache and `POST /functions/:name` (`true`/`false`, `1`/`0`). |
+| Variable                | Default                        | Description                                                                        |
+| ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                   |
+| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory (including `functions.db`)                         |
+| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass` or `external`. The node refuses to boot without one.           |
+| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`.                      |
+| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`). |
 
 Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
 `EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
@@ -104,8 +104,11 @@ the winner is resolved **once at boot** and written back into
 `config :ebb_server, :functions, enabled:`. A booted node never re-reads the
 variable, so the flag cannot half-apply: the route and the bundle cache either
 both exist or neither does. With functions disabled — the default — the route
-is absent (`404`), not a `503`. Enabling requires `:bundle_dir`; see
-`EbbServer.Functions`.
+is absent (`404`), not a `503`. Versions live in `<data_dir>/functions.db`;
+`:bundle_dir` selects the directory loader instead (tests and dev), and
+`:admin_token` is the separate deploy credential. All three are under the one
+nested `:functions` key; see `EbbServer.Functions` and
+`EbbServer.Functions.Admin`.
 
 ## Self-hosting in Docker
 
@@ -215,21 +218,29 @@ hot-path behavior. Read those before making non-trivial changes.
 
 ### HTTP endpoint table
 
-| Method | Path                                             | Purpose                                                                      |
-| ------ | ------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required            |
-| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)         |
-| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)       |
-| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                               |
-| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                    |
-| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                             |
-| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                               |
-| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)              |
-| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                     |
-| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params); absent when functions are disabled |
+| Method | Path                                             | Purpose                                                                    |
+| ------ | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required          |
+| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)       |
+| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)     |
+| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                             |
+| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                  |
+| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                           |
+| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                             |
+| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)            |
+| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                   |
+| `GET`  | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code) |
+| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params)                                   |
+| `POST` | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                  |
+| `POST` | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)               |
+
+Every `/functions` route is absent (`404`) while functions are disabled.
 
 The OpenAPI 3.1 spec is generated from router annotations via
-`mix openapi.gen.spec` and lives at `ebb_server/openapi.yaml`.
+`mix openapi.gen.spec` and lives at `ebb_server/openapi.yaml`. The generator
+writes plain JSON; the committed file is `oxfmt`-formatted, so run
+`pnpm exec oxfmt --write ebb_server/openapi.yaml` from the repo root after
+generating to keep the diff to what changed.
 
 ### Supervision tree
 

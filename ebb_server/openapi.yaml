@@ -444,6 +444,1687 @@
               "tags": ["Entities"],
             },
         },
+      "/functions":
+        {
+          "get":
+            {
+              "description": "Returns one entry per function name that currently has an active version: its name, version, permission posture, and RPC schemas. Code is never returned. Any resolved actor may list; admin is only required to deploy or activate.",
+              "operationId": "listFunctions",
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "functions":
+                                        {
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "access":
+                                                    {
+                                                      "description": "`granted` needs a `function.<name>` or `function.*` permission; `authenticated` admits any resolved actor",
+                                                      "enum": ["granted", "authenticated"],
+                                                      "type": "string",
+                                                    },
+                                                  "name":
+                                                    {
+                                                      "description": "Function name",
+                                                      "type": "string",
+                                                    },
+                                                  "outputSchema":
+                                                    {
+                                                      "description": "Stored draft-7 output JSON Schema; omitted when the bundle declared none",
+                                                      "nullable": true,
+                                                      "type": "object",
+                                                    },
+                                                  "paramsSchema":
+                                                    {
+                                                      "description": "Stored draft-7 params JSON Schema; omitted when the bundle declared none",
+                                                      "nullable": true,
+                                                      "type": "object",
+                                                    },
+                                                  "version":
+                                                    {
+                                                      "description": "Active version",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["name", "version", "access"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                    },
+                                  "required": ["functions"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The active version of every deployed function",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The functions store could not be read",
+                    },
+                },
+              "summary": "List deployed functions",
+              "tags": ["Functions"],
+            },
+        },
+      "/functions/{name}":
+        {
+          "post":
+            {
+              "description": 'Runs the function''s active version as the authenticated actor and returns its result. The actor needs a `function.<name>` (or `function.*`) grant unless the function declares `access: "authenticated"`; access is checked before the params schema, and both are checked before a worker runs. A result that fails the function''s output schema is `422 invalid_output` — committed writes stay committed. `invocation_id` and `version` travel in the body and the `x-ebb-invocation-id` / `x-ebb-function-version` headers. An `Idempotency-Key` request header makes a retry reuse the invocation id, so a repeated commit is answered as a replay (`"replayed": true`) instead of writing twice.',
+              "operationId": "invokeFunction",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "Caller-chosen retry key, scoped to the actor and function. A retry with the same key reuses the invocation id, so the commit is deduped and answered as a replay. At most 255 bytes and never repeated.",
+                    "in": "header",
+                    "name": "Idempotency-Key",
+                    "required": false,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "requestBody":
+                {
+                  "content":
+                    {
+                      "application/json":
+                        {
+                          "schema":
+                            {
+                              "additionalProperties": true,
+                              "description": "The function's params object, validated against its stored params schema before a worker runs. An empty body is `{}`.",
+                              "type": "object",
+                            },
+                        },
+                    },
+                  "required": false,
+                },
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "invocation_id": { "type": "string" },
+                                      "ok": { "enum": [true], "type": "boolean" },
+                                      "replayed":
+                                        {
+                                          "description": "Present only when the invocation committed; true means the Action was already durable or in flight, so no GSN was assigned to this caller",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "result": { "description": "The handler's return value" },
+                                      "version": { "type": "string" },
+                                    },
+                                  "required": ["ok", "result", "invocation_id", "version"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The function returned successfully",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "`invalid_input` with `issues`, or a malformed JSON body",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unauthenticated",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No invoke grant for this function",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unknown function, or a name with no active version (including a disabled one)",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "408":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Deadline exceeded; retryable",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Request body or frame is oversize",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "`invalid_output`, `handler_error`, or `rejected` with a `rejected` list",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "429":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Worker pool is saturated; retryable",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                  "503":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                      "invocation_id": { "type": "string" },
+                                      "issues":
+                                        {
+                                          "description": "Present on `invalid_input` and `invalid_output`",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "message": { "type": "string" },
+                                                  "path":
+                                                    {
+                                                      "description": "Dotted path into the value, e.g. `items[0].name`",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["path", "message"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "rejected":
+                                        {
+                                          "description": "Present when a commit was rejected",
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "details": { "nullable": true, "type": "string" },
+                                                  "id":
+                                                    {
+                                                      "description": "ID of the rejected action",
+                                                      "type": "string",
+                                                    },
+                                                  "reason":
+                                                    {
+                                                      "description": "Rejection reason code",
+                                                      "type": "string",
+                                                    },
+                                                },
+                                              "required": ["id", "reason"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                      "retryable":
+                                        {
+                                          "description": "True on 408, 429 and 503",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "version":
+                                        {
+                                          "description": "The version that answered; absent when no active version was resolved",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                    },
+                                  "required": ["error", "invocation_id"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Runner unavailable; retryable",
+                      "headers":
+                        {
+                          "x-ebb-function-version":
+                            {
+                              "description": "The version that answered; absent when none was resolved",
+                              "schema": { "type": "string" },
+                            },
+                          "x-ebb-invocation-id":
+                            {
+                              "description": "The invocation id, also present in the body",
+                              "schema": { "type": "string" },
+                            },
+                        },
+                    },
+                },
+              "summary": "Invoke a deployed function",
+              "tags": ["Functions"],
+            },
+        },
+      "/functions/{name}/activate":
+        {
+          "post":
+            {
+              "description": "Makes one uploaded version the name's serving version in a single transaction: whatever was active is retired and the target becomes active. Requires the deploy credential in `Authorization: Bearer <admin token>`. The target's stored schemas are re-resolved first, so a row tampered with after upload cannot become active. Rollback is a store operation and CLI verb, not a route of its own.",
+              "operationId": "activateFunction",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>` — the node's separate deploy credential. Missing, wrong, or unconfigured answers `403 denied`. It does not grant invoke permission.",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "requestBody":
+                {
+                  "content":
+                    {
+                      "application/json":
+                        {
+                          "schema":
+                            {
+                              "properties":
+                                {
+                                  "version":
+                                    {
+                                      "description": "The uploaded version to make active",
+                                      "type": "string",
+                                    },
+                                },
+                              "required": ["version"],
+                              "type": "object",
+                            },
+                        },
+                    },
+                  "required": true,
+                },
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "name": { "type": "string" },
+                                      "ok": { "enum": [true], "type": "boolean" },
+                                      "pinned":
+                                        {
+                                          "description": "Present on upload; whether retention will keep this version",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "status":
+                                        {
+                                          "description": "The row's status after the write",
+                                          "enum": ["active", "retired", "disabled"],
+                                          "type": "string",
+                                        },
+                                      "version": { "type": "string" },
+                                    },
+                                  "required": ["ok", "name", "version", "status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The version is now active",
+                    },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Malformed body, or a missing/empty version",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unknown name or version",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The target's stored schema cannot be resolved",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                    },
+                },
+              "summary": "Activate a function version",
+              "tags": ["Functions"],
+            },
+        },
+      "/functions/{name}/versions":
+        {
+          "post":
+            {
+              "description": "Stores one bundle as a new `(name, version)` row. Requires the deploy credential in `Authorization: Bearer <admin token>`; holding it never grants invoke permission. The envelope is verified before the row exists — digest, contract, name grammar, and both JSON Schemas — and a version that already exists is `409` rather than a code replacement. Uploading does not activate: the stored version is `retired` until `POST /functions/{name}/activate` points the name at it.",
+              "operationId": "uploadFunctionVersion",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>` — the node's separate deploy credential. Missing, wrong, or unconfigured answers `403 denied`. It does not grant invoke permission.",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "requestBody":
+                {
+                  "content":
+                    {
+                      "application/json":
+                        {
+                          "schema":
+                            {
+                              "properties":
+                                {
+                                  "code":
+                                    {
+                                      "description": "The bundled ESM source the digest is computed over",
+                                      "type": "string",
+                                    },
+                                  "envelope":
+                                    {
+                                      "description": "The bundle's declaration: name, version, digest, runtime, contract, access, timeoutMs, memoryBytes, entry, and optional paramsSchema/outputSchema",
+                                      "type": "object",
+                                    },
+                                  "pinned":
+                                    {
+                                      "description": "Keep this version past retention (default false)",
+                                      "nullable": true,
+                                      "type": "boolean",
+                                    },
+                                },
+                              "required": ["envelope", "code"],
+                              "type": "object",
+                            },
+                        },
+                    },
+                  "required": true,
+                },
+              "responses":
+                {
+                  "201":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "name": { "type": "string" },
+                                      "ok": { "enum": [true], "type": "boolean" },
+                                      "pinned":
+                                        {
+                                          "description": "Present on upload; whether retention will keep this version",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "status":
+                                        {
+                                          "description": "The row's status after the write",
+                                          "enum": ["active", "retired", "disabled"],
+                                          "type": "string",
+                                        },
+                                      "version": { "type": "string" },
+                                    },
+                                  "required": ["ok", "name", "version", "status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The version was stored, retired",
+                    },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Malformed JSON, or an envelope the bundle validator refuses (`invalid_bundle`)",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "409":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This name and version already exists",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Upload body exceeds 8 MiB",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "A stored schema could not be resolved",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                    },
+                },
+              "summary": "Upload a function version",
+              "tags": ["Functions"],
+            },
+        },
       "/healthz":
         {
           "get":

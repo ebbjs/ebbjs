@@ -107,7 +107,8 @@ defmodule EbbServer.Functions.BundleCache do
   end
 
   # Every field that reaches the struct is part of the fingerprint, so an
-  # access or timeout edit with the same code and digest is still picked up.
+  # access, timeout or schema edit with the same code and digest is still
+  # picked up.
   defp fingerprint(envelope, code) do
     {
       envelope["version"],
@@ -116,6 +117,7 @@ defmodule EbbServer.Functions.BundleCache do
       envelope["timeoutMs"],
       envelope["memoryBytes"],
       envelope["entry"],
+      :erlang.phash2({envelope["paramsSchema"], envelope["outputSchema"]}),
       :erlang.phash2(code)
     }
   end

@@ -3,8 +3,11 @@ defmodule EbbServer.Functions.BundleCacheTest do
 
   alias EbbServer.Functions.Bundle
   alias EbbServer.Functions.Bundle.DirLoader
+  alias EbbServer.Functions.Bundle.StoreLoader
   alias EbbServer.Functions.BundleCache
+  alias EbbServer.Functions.Store
   alias EbbServer.TestFunctions.Bundles
+  alias EbbServer.TestHelpers
 
   defmodule CountingLoader do
     @moduledoc false
@@ -54,6 +57,42 @@ defmodule EbbServer.Functions.BundleCacheTest do
       {BundleCache,
        Keyword.merge([name: nil, loader_opts: loader_opts], Keyword.delete(opts, :loader_opts))}
     )
+  end
+
+  defp start_store(context) do
+    start_supervised!(
+      Supervisor.child_spec(
+        {Store, name: nil, data_dir: TestHelpers.tmp_dir(context)},
+        id: make_ref()
+      )
+    )
+  end
+
+  defp start_store_cache(store) do
+    start_supervised!(
+      Supervisor.child_spec(
+        {BundleCache, name: nil, loader: StoreLoader, loader_opts: [store: store]},
+        id: make_ref()
+      )
+    )
+  end
+
+  defp deploy!(store, name, version, code) do
+    attrs = %{
+      name: name,
+      version: version,
+      code: code,
+      digest: Bundle.digest_for(code),
+      runtime: "bun",
+      entry: name,
+      access: "granted",
+      contract: 1,
+      timeout_ms: 5_000,
+      memory_bytes: 64 * 1024 * 1024
+    }
+
+    assert {:ok, _stored} = Store.put_version(attrs, store)
+    assert {:ok, _activated} = Store.activate(name, version, store)
   end
 
   describe "active/1" do
@@ -260,6 +299,25 @@ defmodule EbbServer.Functions.BundleCacheTest do
                BundleCache.active("proofreadDocument", cache)
     end
 
+    test "picks up a schema change that keeps the code and digest", %{dir: dir} do
+      envelope = Bundles.envelope("proofreadDocument")
+      Bundles.write_bundle!(dir, envelope)
+      cache = start_cache(dir)
+
+      assert {:ok, %Bundle{params_schema: nil, resolved_params_schema: nil, code: code}} =
+               BundleCache.active("proofreadDocument", cache)
+
+      params_schema = %{"type" => "object", "required" => ["documentId"]}
+      Bundles.write_bundle!(dir, Map.put(envelope, "paramsSchema", params_schema))
+
+      assert {:ok,
+              %Bundle{
+                params_schema: ^params_schema,
+                resolved_params_schema: %ExJsonSchema.Schema.Root{schema: ^params_schema},
+                code: ^code
+              }} = BundleCache.active("proofreadDocument", cache)
+    end
+
     test "keeps serving a good name after another name fails", %{dir: dir} do
       Bundles.write_bundle!(dir, Bundles.envelope("goodFunction"))
       Bundles.write_envelope!(dir, Bundles.envelope("badFunction"))
@@ -271,6 +329,32 @@ defmodule EbbServer.Functions.BundleCacheTest do
                BundleCache.active("badFunction", cache)
 
       assert {:ok, %Bundle{name: "goodFunction"}} = BundleCache.active("goodFunction", cache)
+    end
+  end
+
+  describe "an activation during an invocation" do
+    test "does not affect that invocation", context do
+      store = start_store(context)
+      v1_code = "export const pinned = () => ({ version: 1 });"
+      v2_code = "export const pinned = () => ({ version: 2 });"
+
+      deploy!(store, "pinnedFunction", "1.0.0", v1_code)
+      cache = start_store_cache(store)
+
+      # An invocation resolves its bundle once and holds the struct for the
+      # rest of the run; what the store serves afterwards is not its concern.
+      assert {:ok, %Bundle{version: "1.0.0"} = held} = BundleCache.active("pinnedFunction", cache)
+      assert held.code == v1_code
+
+      deploy!(store, "pinnedFunction", "2.0.0", v2_code)
+
+      assert held.version == "1.0.0"
+      assert held.code == v1_code
+
+      assert {:ok, %Bundle{version: "2.0.0"} = fresh} =
+               BundleCache.active("pinnedFunction", cache)
+
+      assert fresh.code == v2_code
     end
   end
 

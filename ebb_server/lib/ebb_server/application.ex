@@ -30,7 +30,7 @@ defmodule EbbServer.Application do
       [
         {EbbServer.Storage.Supervisor, [data_dir: data_dir]}
       ] ++
-        functions_children() ++
+        functions_children(data_dir) ++
         [
           EbbServer.Telemetry.Sampler,
           {Registry, keys: :unique, name: EbbServer.Sync.GroupRegistry},
@@ -56,16 +56,11 @@ defmodule EbbServer.Application do
     end
   end
 
-  # The functions bundle cache is opt-in and, like the auth resolution below,
-  # may refuse to boot: enabling functions without a `:bundle_dir` is a
-  # deployment mistake that must not read as "no bundles deployed".
-  defp functions_children do
-    EbbServer.Functions.children()
-  rescue
-    error in RuntimeError ->
-      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
-      reraise error, __STACKTRACE__
-  end
+  # The functions store and bundle cache are opt-in: `children/1` is `[]` when
+  # the flag is off, the store then the cache when versions live in SQLite, or
+  # the cache alone over `:bundle_dir`. The data dir is the one the node
+  # resolved once, so the functions database always sits beside the others.
+  defp functions_children(data_dir), do: EbbServer.Functions.children(data_dir: data_dir)
 
   defp resolve_functions! do
     EbbServer.Functions.resolve!()

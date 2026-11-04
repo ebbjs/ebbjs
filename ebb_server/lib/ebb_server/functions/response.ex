@@ -11,10 +11,10 @@ defmodule EbbServer.Functions.Response do
   Success is `{"ok": true, "result": ..., "invocation_id": ..., "version": ...}`,
   plus `"replayed"` when the invocation's commit reported one. Failure is
   `{"error": "<code>", "invocation_id": ..., "version": ...}` plus
-  `"details"` when the caller has text for it, `"rejected"` when a commit was
-  rejected, and `"retryable": true` on `408`/`429`/`503`. `error` is the code,
-  as on every other endpoint: there is no `message` field and no second
-  vocabulary.
+  `"details"` when the caller has text for it, `"issues"` on validation
+  failures, `"rejected"` when a commit was rejected, and `"retryable": true`
+  on `408`/`429`/`503`. `error` is the code, as on every other endpoint: there
+  is no `message` field and no second vocabulary.
 
   `"replayed": true` is not an error and not a new status: it means the
   commit's Action was already durable or in flight, so no GSN was assigned to
@@ -35,24 +35,24 @@ defmodule EbbServer.Functions.Response do
   bundle that failed verification). The map is the fallback, not a second
   vocabulary: both paths end in the same `"error"` field.
 
-  ## No stacks
+  ## Issues and details
 
   `details` is text for a person, never a stack. A runner that reports a
   handler failure from its runtime can carry `error.stack`; the envelope drops
   lines shaped like stack frames and caps the rest, so an implementation detail
-  of the worker cannot leak through the API. `#595` adds structured `issues`
-  for validation, which is a different field.
+  of the worker cannot leak through the API.
 
-  Structured `issues: [{"path", "message"}]` is deliberately not built here.
-  `#595` adds it, and only for `invalid_input`/`invalid_output`; offering a
-  helper now would invite endpoints to attach issues to statuses whose client
-  schema expects a plain `details` string.
+  Structured `issues: [{"path", "message"}]` is the validation vocabulary, and
+  is offered only on `400 invalid_input` and `422 invalid_output` — the client
+  schema promises `details` to be a plain string everywhere else. An empty or
+  absent list adds nothing to the body.
   """
 
   @type headers :: [{String.t(), String.t()}]
   @type response :: {pos_integer(), map(), headers()}
 
   @retryable_statuses [408, 429, 503]
+  @issues_statuses [400, 422]
   @max_details_bytes 1024
   @stack_frame ~r/^\s+at\s/
 
@@ -101,6 +101,8 @@ defmodule EbbServer.Functions.Response do
     * `:version` — the invoked function's active version; `nil` when unknown
     * `:code` — the error code, when the cause already named one
     * `:details` — optional human-readable reason; omitted when nil or empty
+    * `:issues` — optional `[%{"path", "message"}]` validation issues; only
+      emitted on `400` and `422`, and omitted when nil or empty
     * `:rejected` — the rejection list from a rejected commit; omitted when
       empty
   """
@@ -113,6 +115,7 @@ defmodule EbbServer.Functions.Response do
         "version" => version(opts)
       }
       |> put_details(Keyword.get(opts, :details))
+      |> put_issues(status, Keyword.get(opts, :issues))
       |> put_rejected(Keyword.get(opts, :rejected))
       |> put_retryable(status)
 
@@ -148,6 +151,12 @@ defmodule EbbServer.Functions.Response do
   end
 
   defp put_details(body, _details), do: body
+
+  defp put_issues(body, status, [_ | _] = issues) when status in @issues_statuses do
+    Map.put(body, "issues", issues)
+  end
+
+  defp put_issues(body, _status, _issues), do: body
 
   defp put_replayed(body, replayed) when is_boolean(replayed) do
     Map.put(body, "replayed", replayed)

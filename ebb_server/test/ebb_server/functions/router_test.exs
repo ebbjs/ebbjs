@@ -6,10 +6,13 @@ defmodule EbbServer.Functions.RouterTest do
   import Plug.Test
 
   alias EbbServer.Functions.{Bundle, BundleCache, Protocol}
+  alias EbbServer.Functions.Bundle.StoreLoader
   alias EbbServer.Functions.Router
+  alias EbbServer.Functions.Store
   alias EbbServer.Functions.Worker.Fake
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Sync.Router, as: SyncRouter
+  alias EbbServer.TestHelpers
 
   alias EbbServer.TestFunctions.{Bundles, InputScriptedWorker}
 
@@ -111,6 +114,48 @@ defmodule EbbServer.Functions.RouterTest do
       assert conn.resp_body == ""
       assert get_resp_header(conn, "x-ebb-invocation-id") == []
       refute conn.resp_body =~ "disabled"
+    end
+
+    test "GET /functions falls through too" do
+      configure_boot(enabled: false, bundle_dir: "/nonexistent")
+
+      conn =
+        conn(:get, "/functions")
+        |> put_req_header("x-ebb-actor-id", @actor)
+        |> SyncRouter.call([])
+
+      assert conn.status == 404
+      assert conn.resp_body == ""
+    end
+  end
+
+  describe "the whole /functions subtree" do
+    test "GET /functions reaches the child router through the parent when the flag is on", ctx do
+      publish_group_members_table(ctx.table)
+
+      start_supervised!(
+        Supervisor.child_spec(
+          {Store, data_dir: TestHelpers.tmp_dir(ctx)},
+          id: :functions_registered_store
+        )
+      )
+
+      start_supervised!(
+        Supervisor.child_spec(
+          {BundleCache, loader: StoreLoader, loader_opts: [store: Store]},
+          id: :functions_registered_store_cache
+        )
+      )
+
+      configure_boot(transport: InputScriptedWorker)
+
+      conn =
+        conn(:get, "/functions")
+        |> put_req_header("x-ebb-actor-id", @actor)
+        |> SyncRouter.call([])
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body) == %{"functions" => []}
     end
   end
 
@@ -627,6 +672,88 @@ defmodule EbbServer.Functions.RouterTest do
       |> Base.encode16(case: :lower)
 
     "inv_" <> binary_part(digest, 0, 16)
+  end
+
+  describe "params validation before a worker exists" do
+    test "an input that fails the params schema is 400 invalid_input and spawns nothing", ctx do
+      name = "validatedFunction"
+
+      params_schema = %{
+        "type" => "object",
+        "required" => ["text"],
+        "properties" => %{"text" => %{"type" => "string"}}
+      }
+
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(name, %{"paramsSchema" => params_schema}))
+      grant(ctx.tables, @actor, ["function.*"])
+
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: InputScriptedWorker,
+        worker_opts: [notify: self()]
+      )
+
+      conn = post_function(ctx, name, ~s({"text":3}))
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"] == "invalid_input"
+      assert [issue] = body["issues"]
+      assert issue["path"] == "text"
+      assert is_binary(issue["message"])
+      refute Map.has_key?(body, "details")
+      assert body["version"] == "1.0.0"
+      assert String.starts_with?(body["invocation_id"], "inv_")
+      refute_received :functions_worker_started
+    end
+
+    test "a valid input still reaches the worker", ctx do
+      name = "validatedEcho"
+
+      params_schema = %{
+        "type" => "object",
+        "properties" => %{"text" => %{"type" => "string"}}
+      }
+
+      Bundles.write_bundle!(ctx.dir, Bundles.envelope(name, %{"paramsSchema" => params_schema}))
+      grant(ctx.tables, @actor, ["function.*"])
+      configure_boot(bundle_dir: ctx.dir, transport: InputScriptedWorker)
+
+      conn = post_function(ctx, name, ~s({"text":"hello"}))
+
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["result"] == %{"echo" => %{"text" => "hello"}}
+    end
+  end
+
+  describe "output validation" do
+    test "a result that fails the output schema is 422 invalid_output with its ids", ctx do
+      name = "outputFunction"
+
+      Bundles.write_bundle!(
+        ctx.dir,
+        Bundles.envelope(name, %{"outputSchema" => %{"type" => "string"}})
+      )
+
+      grant(ctx.tables, @actor, ["function.*"])
+
+      configure_boot(
+        bundle_dir: ctx.dir,
+        transport: Fake,
+        worker_opts: [script: scripted_fake(42)]
+      )
+
+      conn = post_function(ctx, name, "{}")
+
+      assert conn.status == 422
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"] == "invalid_output"
+      assert [_ | _] = body["issues"]
+      assert body["version"] == "1.0.0"
+      assert String.starts_with?(body["invocation_id"], "inv_")
+      assert get_resp_header(conn, "x-ebb-invocation-id") == [body["invocation_id"]]
+      assert get_resp_header(conn, "x-ebb-function-version") == ["1.0.0"]
+    end
   end
 
   describe "methods the route does not have" do

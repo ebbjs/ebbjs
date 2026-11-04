@@ -358,3 +358,50 @@ defmodule EbbServer.TestFunctions.InputScriptedWorker do
   @impl true
   def alive?(_handle), do: true
 end
+
+defmodule EbbServer.TestFunctions.BlockingWorker do
+  @moduledoc """
+  A transport whose `invoke` is held open until the test releases it.
+
+  `send_frame/2` reports the frame and the request process pid, then blocks in
+  that process until the test sends it `{:functions_release, value}`. That is
+  how the in-flight pinning test activates another version while one
+  invocation is still running: nothing about the running invocation changes
+  until it is let go, and the release value becomes the result.
+
+  A `:notify` pid (the test) receives `{:functions_invoked, request_pid, frame}`.
+  """
+
+  @behaviour EbbServer.Functions.Worker
+
+  alias EbbServer.Functions.Protocol
+
+  @impl true
+  def start(opts) do
+    {:ok, %{owner: Keyword.fetch!(opts, :owner), notify: Keyword.get(opts, :notify)}}
+  end
+
+  @impl true
+  def send_frame(%{owner: owner, notify: notify}, %{"type" => "invoke"} = frame) do
+    if notify, do: send(notify, {:functions_invoked, self(), frame})
+
+    receive do
+      {:functions_release, value} ->
+        send(owner, {:functions_worker_frame, Protocol.result({:ok, value})})
+        :ok
+    after
+      5_000 -> :ok
+    end
+  end
+
+  def send_frame(_handle, _frame), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def os_pid(_handle), do: nil
+
+  @impl true
+  def alive?(_handle), do: true
+end

@@ -10,6 +10,7 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
 
   use ExUnit.Case, async: true
 
+  alias EbbServer.Functions.Router, as: FunctionsRouter
   alias EbbServer.Sync.Router
   alias EbbServer.Sync.Router.OperationSchema
 
@@ -18,7 +19,7 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
       operations =
         Enum.map(
           Mix.Tasks.Openapi.Gen.Spec.routes(),
-          &Router.openapi_operation(&1.operation_atom)
+          & &1.module.openapi_operation(&1.operation_atom)
         )
 
       for operation <- operations do
@@ -39,6 +40,50 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
 
       ids = Enum.map(operations, & &1.operationId)
       assert length(Enum.uniq(ids)) == length(ids)
+    end
+
+    test "every route names the module that owns its operation" do
+      modules = Mix.Tasks.Openapi.Gen.Spec.routes() |> Enum.map(& &1.module) |> Enum.uniq()
+
+      assert Enum.sort(modules) == [EbbServer.Functions.Router, EbbServer.Sync.Router]
+    end
+
+    test "the functions routes publish their wire shapes" do
+      routes = Mix.Tasks.Openapi.Gen.Spec.routes()
+
+      for operation_atom <- [
+            :upload_function_version,
+            :activate_function,
+            :invoke_function
+          ] do
+        route = Enum.find(routes, &(&1.operation_atom == operation_atom))
+        assert route.module == FunctionsRouter
+
+        operation = route.module.openapi_operation(operation_atom)
+        assert is_map(operation.requestBody)
+        assert Map.has_key?(operation.requestBody.content, "application/json")
+        assert is_list(operation.parameters) and operation.parameters != []
+      end
+
+      list = FunctionsRouter.openapi_operation(:list_functions)
+      refute Map.has_key?(list, :requestBody)
+
+      for admin_atom <- [:upload_function_version, :activate_function] do
+        operation = FunctionsRouter.openapi_operation(admin_atom)
+
+        assert Enum.any?(operation.parameters, fn param ->
+                 param.name == "Authorization" and param.in == :header and param.required
+               end)
+      end
+    end
+
+    test "the functions operations are reachable at their published paths" do
+      paths = Mix.Tasks.Openapi.Gen.Spec.routes() |> Enum.map(& &1.path) |> Enum.uniq()
+
+      assert "/functions" in paths
+      assert "/functions/:name" in paths
+      assert "/functions/:name/versions" in paths
+      assert "/functions/:name/activate" in paths
     end
 
     test "write operations publish a request body and reads publish parameters" do

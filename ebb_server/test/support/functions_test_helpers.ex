@@ -12,11 +12,16 @@ defmodule EbbServer.FunctionsTestHelpers do
   import Plug.Conn
   import Plug.Test
 
-  alias EbbServer.Functions.{BundleCache, Host}
+  alias EbbServer.Functions.{Bundle, BundleCache, Host, Store}
+  alias EbbServer.Functions.Bundle.StoreLoader
+  alias EbbServer.Functions.Router, as: FunctionsRouter
   alias EbbServer.Functions.Worker.Bun, as: BunWorker
   alias EbbServer.Integration.ActionHelpers
+  alias EbbServer.Storage.GroupCache
   alias EbbServer.Sync.Router
   alias EbbServer.TestFunctions.Bun, as: BunSupport
+
+  @grant_group "g_functions_test"
 
   @doc "A value unique to this test run, prefixed for readability."
   def unique(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
@@ -70,6 +75,76 @@ defmodule EbbServer.FunctionsTestHelpers do
     ExUnit.Callbacks.start_supervised!({BundleCache, loader_opts: [dir: dir]})
   end
 
+  @doc """
+  Starts an isolated `Functions.Store` under `data_dir`.
+
+  Unnamed, so a test that also starts the registered store never collides, and
+  with its own supervisor id, so two stores in one test are two processes.
+  """
+  def start_store(data_dir) do
+    ExUnit.Callbacks.start_supervised!(
+      Supervisor.child_spec({Store, name: nil, data_dir: data_dir}, id: make_ref())
+    )
+  end
+
+  @doc "Starts an isolated bundle cache reading `store` through `StoreLoader`."
+  def start_store_cache(store) do
+    ExUnit.Callbacks.start_supervised!(
+      Supervisor.child_spec(
+        {BundleCache, name: nil, loader: StoreLoader, loader_opts: [store: store]},
+        id: make_ref()
+      )
+    )
+  end
+
+  @doc "Grants `permissions` to `actor_id` in the shared functions test group."
+  def grant_function(tables, actor_id, permissions) do
+    :ok =
+      GroupCache.put_group_member(
+        %{
+          id: unique("gm"),
+          actor_id: actor_id,
+          group_id: @grant_group,
+          permissions: permissions
+        },
+        group_members: tables.group_members,
+        group_members_by_id: tables.group_members_by_id,
+        group_members_by_group: tables.group_members_by_group
+      )
+  end
+
+  @doc """
+  Calls the functions router directly, with `path` relative to `/functions`.
+
+  Identity and the admin credential are request-level: pass `:actor_id`
+  (`nil` for an anonymous request) and `:authorization` (the raw header value).
+  The router's own options are passed through unchanged: `:store`, `:cache`,
+  `:group_members_table`, `:admin_token`.
+  """
+  def call_functions(method, path, body, opts \\ []) do
+    conn(method, path, body)
+    |> put_req_header("content-type", "application/json")
+    |> assign(:actor_id, Keyword.get(opts, :actor_id))
+    |> put_optional_header("authorization", Keyword.get(opts, :authorization))
+    |> put_request_headers(Keyword.get(opts, :headers, []))
+    |> FunctionsRouter.call(FunctionsRouter.init(Keyword.take(opts, router_option_keys())))
+  end
+
+  @doc "The upload body for `envelope` and `code`."
+  def upload_body(envelope, code) do
+    Jason.encode!(%{"envelope" => envelope, "code" => code})
+  end
+
+  @doc "An envelope for `name` whose digest matches `code`."
+  def envelope_for(name, code, overrides \\ %{}) do
+    name
+    |> EbbServer.TestFunctions.Bundles.envelope(%{"digest" => Bundle.digest_for(code)})
+    |> Map.merge(overrides)
+  end
+
+  @doc "The decoded JSON body of a response."
+  def json_body(conn), do: Jason.decode!(conn.resp_body)
+
   @doc "Posts to `POST /functions/:name` through the sync router."
   def post_function(name, body, actor_id, headers \\ []) do
     conn(:post, "/functions/#{name}", body)
@@ -85,4 +160,9 @@ defmodule EbbServer.FunctionsTestHelpers do
   defp put_request_headers(conn, headers) do
     Enum.reduce(headers, conn, fn {name, value}, conn -> put_req_header(conn, name, value) end)
   end
+
+  defp put_optional_header(conn, _name, nil), do: conn
+  defp put_optional_header(conn, name, value), do: put_req_header(conn, name, value)
+
+  defp router_option_keys, do: [:store, :cache, :group_members_table, :admin_token]
 end

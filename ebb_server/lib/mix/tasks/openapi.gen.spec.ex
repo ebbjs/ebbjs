@@ -1,15 +1,17 @@
 defmodule Mix.Tasks.Openapi.Gen.Spec do
   @moduledoc """
-  Generates an OpenAPI 3.1 spec from router annotations and writes it to openapi.yaml.
+  Generates an OpenAPI 3.1 spec from the routers' published operations and
+  writes it to `openapi.yaml`.
 
   Usage:
       mix openapi.gen.spec
 
-  The spec is written to the project root (openapi.yaml).
+  Each route names the module that owns it, so a router's operations are its
+  own; the task never has to know which surface a path belongs to. The spec is
+  written to the project root (openapi.yaml).
   """
   use Mix.Task
 
-  alias EbbServer.Sync.Router
   alias EbbServer.Sync.Router.OperationSchema
 
   @impl true
@@ -20,8 +22,8 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
       Enum.reduce(
         routes(),
         %{},
-        fn %{method: method, path: path, operation_atom: op_atom}, acc ->
-          operation = Router.openapi_operation(op_atom)
+        fn %{method: method, path: path, operation_atom: op_atom, module: module}, acc ->
+          operation = module.openapi_operation(op_atom)
           openapi_path = to_openapi_path(path)
 
           path_item =
@@ -84,19 +86,79 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
   @doc false
   def routes do
     [
-      %{method: :get, path: "/healthz", operation_atom: :health},
-      %{method: :post, path: "/sync/actions", operation_atom: :write_actions},
-      %{method: :get, path: "/entities/:id", operation_atom: :get_entity},
-      %{method: :post, path: "/entities/query", operation_atom: :query_entities},
-      %{method: :post, path: "/sync/handshake", operation_atom: :handshake},
-      %{method: :get, path: "/sync/live", operation_atom: :live_updates},
-      %{method: :get, path: "/sync/groups/:group_id", operation_atom: :catch_up_group},
+      %{method: :get, path: "/healthz", operation_atom: :health, module: EbbServer.Sync.Router},
+      %{
+        method: :post,
+        path: "/sync/actions",
+        operation_atom: :write_actions,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :get,
+        path: "/entities/:id",
+        operation_atom: :get_entity,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :post,
+        path: "/entities/query",
+        operation_atom: :query_entities,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :post,
+        path: "/sync/handshake",
+        operation_atom: :handshake,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :get,
+        path: "/sync/live",
+        operation_atom: :live_updates,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :get,
+        path: "/sync/groups/:group_id",
+        operation_atom: :catch_up_group,
+        module: EbbServer.Sync.Router
+      },
       %{
         method: :get,
         path: "/sync/groups/:group_id/entities",
-        operation_atom: :list_group_entities
+        operation_atom: :list_group_entities,
+        module: EbbServer.Sync.Router
       },
-      %{method: :post, path: "/sync/presence", operation_atom: :broadcast_presence}
+      %{
+        method: :post,
+        path: "/sync/presence",
+        operation_atom: :broadcast_presence,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :get,
+        path: "/functions",
+        operation_atom: :list_functions,
+        module: EbbServer.Functions.Router
+      },
+      %{
+        method: :post,
+        path: "/functions/:name",
+        operation_atom: :invoke_function,
+        module: EbbServer.Functions.Router
+      },
+      %{
+        method: :post,
+        path: "/functions/:name/versions",
+        operation_atom: :upload_function_version,
+        module: EbbServer.Functions.Router
+      },
+      %{
+        method: :post,
+        path: "/functions/:name/activate",
+        operation_atom: :activate_function,
+        module: EbbServer.Functions.Router
+      }
     ]
   end
 

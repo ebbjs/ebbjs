@@ -105,6 +105,91 @@ defmodule EbbServer.Functions.ResponseTest do
       end
     end
 
+    test "issues are published on invalid input" do
+      issues = [
+        %{"path" => "documentId", "message" => "Required property documentId was not present."},
+        %{"path" => "items[0].name", "message" => "Type mismatch."}
+      ]
+
+      {400, body, _headers} =
+        Response.failure(400,
+          invocation_id: @invocation_id,
+          version: @version,
+          code: "invalid_input",
+          issues: issues
+        )
+
+      assert body["error"] == "invalid_input"
+      assert body["issues"] == issues
+      assert body["invocation_id"] == @invocation_id
+      assert body["version"] == @version
+    end
+
+    test "issues are published on invalid output" do
+      issues = [%{"path" => "proofread", "message" => "Type mismatch."}]
+
+      {422, body, _headers} =
+        Response.failure(422,
+          invocation_id: @invocation_id,
+          version: @version,
+          code: "invalid_output",
+          issues: issues
+        )
+
+      assert body["issues"] == issues
+      assert Map.has_key?(body, "error")
+    end
+
+    test "issues coexist with the rest of the envelope" do
+      issues = [%{"path" => "", "message" => "Required property documentId was not present."}]
+
+      {422, body, _headers} =
+        Response.failure(422,
+          invocation_id: @invocation_id,
+          version: @version,
+          code: "invalid_output",
+          details: "output did not match the schema",
+          rejected: [%{"id" => "a_1", "reason" => "not_authorized"}],
+          issues: issues
+        )
+
+      assert body["issues"] == issues
+      assert body["details"] == "output did not match the schema"
+      assert body["rejected"] == [%{"id" => "a_1", "reason" => "not_authorized"}]
+      refute Map.has_key?(body, "retryable")
+    end
+
+    test "issues are omitted when absent or empty" do
+      for opts <- [
+            [invocation_id: @invocation_id, version: @version, code: "invalid_input"],
+            [
+              invocation_id: @invocation_id,
+              version: @version,
+              code: "invalid_input",
+              issues: nil
+            ],
+            [invocation_id: @invocation_id, version: @version, code: "invalid_input", issues: []]
+          ] do
+        {400, body, _headers} = Response.failure(400, opts)
+        refute Map.has_key?(body, "issues")
+      end
+    end
+
+    test "issues are never offered outside 400 and 422" do
+      issues = [%{"path" => "", "message" => "boom"}]
+
+      for status <- [401, 403, 404, 408, 413, 429, 500, 503] do
+        {^status, body, _headers} =
+          Response.failure(status,
+            invocation_id: @invocation_id,
+            version: @version,
+            issues: issues
+          )
+
+        refute Map.has_key?(body, "issues"), "expected #{status} not to carry issues"
+      end
+    end
+
     test "rejected carries the rejection list when a commit was rejected" do
       rejected = [
         %{"id" => "a_1", "reason" => "not_authorized", "details" => "no membership"},
