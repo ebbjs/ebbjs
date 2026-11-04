@@ -3,8 +3,8 @@ import { basename, relative, resolve } from "node:path";
 
 import { activateVersion, disable, listFunctions, rollback, type FetchLike } from "./api.ts";
 import { loadConfig, type LoadConfigOptions, type ResolvedConfig } from "./config.ts";
-import { discoverEntries, deployEntries, deployFiles, type DeployResult } from "./deploy.ts";
-import { writeContractMap } from "./contract-map.ts";
+import { deployEntries, deployFiles, writeTypes, type DeployResult } from "./deploy.ts";
+import { isEntryFile, messageOf } from "./util.ts";
 
 export interface CommandDeps {
   cwd?: string;
@@ -178,11 +178,7 @@ export async function disableCommand(parsed: ParsedArgs, deps: CommandDeps = {})
 export async function typesCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
   assertNoPositionals(parsed, "functions types");
   const config = await configFrom(flagValues(parsed), deps);
-  const entries = await discoverEntries(config.functions.dir);
-  const path = await writeContractMap(entries, config.functions.typesOut, {
-    cwd: config.cwd,
-    displayPath: displayPath(config.cwd, config.functions.typesOut),
-  });
+  const path = await writeTypes(config);
   (deps.print ?? console.log)(`wrote ${relative(config.cwd, path) || basename(path)}`);
 }
 
@@ -253,11 +249,7 @@ export async function watchFunctions(options: WatchFunctionsOptions = {}): Promi
 
   const regenerateMap = async (): Promise<void> => {
     try {
-      const entries = await discoverEntries(config.functions.dir);
-      await writeContractMap(entries, config.functions.typesOut, {
-        cwd: config.cwd,
-        displayPath: displayPath(config.cwd, config.functions.typesOut),
-      });
+      await writeTypes(config);
     } catch (error) {
       printError(`contract map failed: ${messageOf(error)}`);
     }
@@ -403,17 +395,4 @@ function requirePositionals(parsed: ParsedArgs, count: number, usage: string): s
     throw new UsageError(`usage: ebb ${usage}`);
   }
   return parsed.positionals;
-}
-
-function isEntryFile(path: string): boolean {
-  const name = basename(path);
-  return name.endsWith(".ts") && !name.endsWith(".d.ts") && !name.endsWith(".test.ts");
-}
-
-function displayPath(cwd: string, path: string): string {
-  return relative(cwd, path).replaceAll("\\", "/");
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

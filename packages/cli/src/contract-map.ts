@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, relative, resolve } from "node:path";
 
+import { toPosix } from "./util.ts";
+
 export interface ContractEntry {
   name: string;
   /** Absolute or cwd-relative path to the function's entry file. */
@@ -67,7 +69,10 @@ export function renderContractMap(
   return `${lines.join("\n")}\n`;
 }
 
-/** Writes the generated contract map, creating its parent directory. */
+/**
+ * The map is written even when there are no entries, so a stale file cannot
+ * keep typing names the functions directory no longer declares.
+ */
 export async function writeContractMap(
   entries: readonly ContractEntryInput[],
   typesOut: string,
@@ -127,8 +132,4 @@ function importSpecifier(fromDir: string, entryPath: string): string {
     "",
   );
   return specifier.startsWith(".") ? specifier : `./${specifier}`;
-}
-
-function toPosix(path: string): string {
-  return path.replaceAll("\\", "/");
 }

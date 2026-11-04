@@ -28,6 +28,7 @@ export {
 export {
   functionContract,
   FunctionCallError,
+  type AnyFunctionContract,
   type BoundFunction,
   type FunctionCallOptions,
   type FunctionCallResult,

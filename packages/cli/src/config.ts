@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
+import { isMissingFile, isRecord, messageOf } from "./util.ts";
+
 export const DEFAULT_URL = "http://localhost:4000";
 export const DEFAULT_FUNCTIONS_DIR = "functions";
 export const DEFAULT_TYPES_OUT = "src/ebb-functions.generated.ts";
@@ -158,21 +160,4 @@ function requireHeaders(value: unknown): Record<string, string> {
     }
   }
   return value as Record<string, string>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isMissingFile(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

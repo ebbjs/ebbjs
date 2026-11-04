@@ -96,9 +96,9 @@ import {
 import {
   FunctionCallError,
   toFunctionReturn,
+  type AnyFunctionContract,
   type FunctionCallOptions,
   type FunctionCallResult,
-  type FunctionContract,
   type FunctionsNamespace,
 } from "../functions";
 import {
@@ -2239,7 +2239,7 @@ export type ActionNamespaces<
 export type NamespacedClient<
   S,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
-  TFunctions extends Record<string, FunctionContract<any, any>> = Record<string, never>,
+  TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
 > = SyncClient &
   EntityNamespaces<S> &
   ActionNamespaces<S, TActions> &
@@ -2260,7 +2260,7 @@ export type NamespacedClient<
 export function createClient<
   S extends AnySchema | undefined = undefined,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
-  TFunctions extends Record<string, FunctionContract<any, any>> = Record<string, never>,
+  TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
 >(
   opts: SyncClientOptions & { schema?: S; actions?: TActions; functions?: TFunctions },
 ): NamespacedClient<S, TActions, TFunctions> {

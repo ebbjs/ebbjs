@@ -36,6 +36,9 @@ export interface FunctionContract<I, O> {
   readonly "~output"?: O;
 }
 
+/** A contract with its input/output erased: the bound of a contract map. */
+export type AnyFunctionContract = FunctionContract<any, any>;
+
 /**
  * Build a contract-map entry from a definition's type.
  *
@@ -167,7 +170,7 @@ export type BoundFunction<C> =
  * The `client.functions` surface, keyed by the contract map's keys. A client
  * built without a map mounts nothing, so its keys map to `never`.
  */
-export type FunctionsNamespace<TFunctions extends Record<string, FunctionContract<any, any>>> = {
+export type FunctionsNamespace<TFunctions extends Record<string, AnyFunctionContract>> = {
   readonly functions: {
     [K in keyof TFunctions]: BoundFunction<TFunctions[K]>;
   };

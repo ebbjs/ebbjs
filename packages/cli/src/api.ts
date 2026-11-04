@@ -7,8 +7,7 @@ export interface ApiOptions {
   fetchImpl?: FetchLike;
 }
 
-/** A call may inject the fetch implementation directly or inside options. */
-export type ApiOptionsInput = ApiOptions | FetchLike;
+export type ApiOptionsInput = ApiOptions;
 
 export interface UploadVersionInput {
   envelope: FunctionEnvelope;
@@ -192,8 +191,7 @@ async function request<T>(
 ): Promise<T> {
   if (kind === "admin" && !config.token) throw new MissingAdminTokenError();
 
-  const fetchImpl =
-    typeof options === "function" ? options : (options.fetchImpl ?? globalThis.fetch);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const headers = requestHeaders(config, kind);
   if (body !== undefined) headers["content-type"] = "application/json";
 

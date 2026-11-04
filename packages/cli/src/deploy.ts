@@ -1,5 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { FunctionBundleError, bundleSource, definitionName } from "./bundle.ts";
 import {
@@ -20,6 +20,7 @@ import {
 } from "./api.ts";
 import { loadConfig, type ResolvedConfig } from "./config.ts";
 import { checkDrift, hasDrift, writeContractMap, type ContractDrift } from "./contract-map.ts";
+import { displayPath, isEntryFile, isMissingFile, isRecord, messageOf } from "./util.ts";
 
 export interface DeployOptions {
   cwd?: string;
@@ -66,10 +67,10 @@ interface FunctionDefinition {
   output?: { toJSONSchema?: () => Record<string, unknown> };
 }
 
-const ENTRY_EXTENSION = /\.ts$/;
-const NOT_AN_ENTRY = /\.(?:d\.ts|test\.ts)$/;
-
-/** Every `*.ts` entry under `dir`, sorted by path, recursively. */
+/**
+ * Recursive and sorted: a project may group entries under the functions
+ * directory, and a deploy should visit them in the same order every time.
+ */
 export async function discoverEntries(dir: string): Promise<string[]> {
   const paths: string[] = [];
 
@@ -93,7 +94,6 @@ export async function discoverEntries(dir: string): Promise<string[]> {
   return paths.sort();
 }
 
-/** Deploys every entry under the configured functions directory. */
 export async function deployEntries(options: DeployOptions = {}): Promise<DeployResult> {
   const config = await configFor(options);
   const paths = await discoverEntries(config.functions.dir);
@@ -115,7 +115,15 @@ export async function deployFiles(
   return deployPaths(selected, options, config, all);
 }
 
-/** Reads, bundles, and evaluates one entry into the upload payload. */
+/** Regenerates the contract map from the current entries on disk. */
+export async function writeTypes(config: ResolvedConfig): Promise<string> {
+  const entries = await discoverEntries(config.functions.dir);
+  return writeContractMap(entries, config.functions.typesOut, {
+    cwd: config.cwd,
+    displayPath: displayPath(config.cwd, config.functions.typesOut),
+  });
+}
+
 export async function prepareDeployment(
   entryPath: string,
   options: DeployOptions = {},
@@ -200,24 +208,21 @@ async function deployPaths(
     );
     print(`deployed ${name}@${version}`);
 
-    if (options.activate === false) {
-      print(`left ${name} active version unchanged`);
-    } else {
+    const activated = options.activate !== false;
+    if (activated) {
       await activateVersion(config, name, version, { fetchImpl: options.fetchImpl });
-      prepared.activated = true;
       print(`activated ${name}@${version}`);
+    } else {
+      print(`left ${name} active version unchanged`);
     }
 
     print(`grant function.${name}`);
-    functions.push(prepared);
+    functions.push({ ...prepared, activated });
   }
 
   const typesOut = config.functions.typesOut;
   if (options.writeTypes !== false) {
-    await writeContractMap(mapEntries, typesOut, {
-      cwd: config.cwd,
-      displayPath: displayPath(config.cwd, typesOut),
-    });
+    await writeTypes(config);
   }
 
   const drift =
@@ -271,31 +276,6 @@ async function configFor(options: DeployOptions): Promise<ResolvedConfig> {
   });
 }
 
-function isEntryFile(name: string): boolean {
-  return ENTRY_EXTENSION.test(name) && !NOT_AN_ENTRY.test(name);
-}
-
-function displayPath(cwd: string, path: string): string {
-  return relative(cwd, path).replaceAll("\\", "/");
-}
-
 function uniqueSorted(paths: readonly string[]): string[] {
   return [...new Set(paths)].sort();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissingFile(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT"
-  );
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
