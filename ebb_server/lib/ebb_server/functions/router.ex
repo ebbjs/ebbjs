@@ -1,6 +1,7 @@
 defmodule EbbServer.Functions.Router do
   @moduledoc """
-  The `/functions` HTTP surface: invoke, list, upload, and activate.
+  The `/functions` HTTP surface: invoke, list, upload, activate, rollback, and
+  disable.
 
   The routes are mounted by `EbbServer.Sync.Router`, which forwards every
   `/functions` subtree here only while `EbbServer.Functions.enabled?/0` is true.
@@ -14,12 +15,22 @@ defmodule EbbServer.Functions.Router do
       what it is allowed to invoke.
     - `POST /:name` — invoke one function; JSON params in, JSON result out.
     - `POST /:name/versions` — upload a bundle for `:name`.
+    - `GET /:name/versions` — the name's version history (status, timestamps,
+      pin, creator; never code). Admin, because it includes retired and
+      disabled versions an operator uses to roll back or re-enable.
     - `POST /:name/activate` — point `:name` at one of its uploaded versions.
+    - `POST /:name/rollback` — activate the version that was active when the
+      current one was last activated, walking back through the chain
+      (v3 → v2 → v1), never a disabled version.
+    - `POST /:name/disable` — the operator kill switch: the name's active version
+      becomes `disabled`, the name resolves `404`, and activating it again
+      re-enables it.
 
-  Upload and activation are admin operations and require the separate deploy
-  credential (`EbbServer.Functions.Admin`). Invocation is an ordinary
-  permission, checked by `EbbServer.Functions.Access` against the actor's
-  grants; holding the admin token never grants it.
+  Upload, activation, rollback, disable, and version history are admin
+  operations and require the separate deploy credential
+  (`EbbServer.Functions.Admin`). Invocation is an ordinary permission, checked
+  by `EbbServer.Functions.Access` against the actor's grants; holding the admin
+  token never grants it.
 
   `AuthPlug` runs before the routes, so a request without an identity is
   refused by that shared plug with its usual `401 unauthorized` body. Every
@@ -35,10 +46,10 @@ defmodule EbbServer.Functions.Router do
   `generateId("inv")`, so it belongs to the one id space the storage layer
   indexes.
 
-  The list, upload, and activate routes are not invocations, so their bodies
-  use a plain envelope — `{"ok": true, ...}` or `{"error": code, "details"?}` —
-  with no `invocation_id`. Only invocation responses go through
-  `EbbServer.Functions.Response`.
+  The list, upload, activate, rollback, disable, and history routes are not
+  invocations, so their bodies use a plain envelope — `{"ok": true, ...}` or
+  `{"error": code, "details"?}` — with no `invocation_id`. Only invocation
+  responses go through `EbbServer.Functions.Response`.
 
   ## Idempotency-Key
 
@@ -178,8 +189,20 @@ defmodule EbbServer.Functions.Router do
     upload_version(conn, conn.path_params["name"])
   end
 
+  get "/:name/versions" do
+    list_function_versions(conn, conn.path_params["name"])
+  end
+
   post "/:name/activate" do
     activate_version(conn, conn.path_params["name"])
+  end
+
+  post "/:name/rollback" do
+    rollback_version(conn, conn.path_params["name"])
+  end
+
+  post "/:name/disable" do
+    disable_function(conn, conn.path_params["name"])
   end
 
   post "/:name" do
@@ -603,6 +626,123 @@ defmodule EbbServer.Functions.Router do
   end
 
   # ---------------------------------------------------------------------------
+  # Version history, rollback, and disable
+  # ---------------------------------------------------------------------------
+
+  defp list_function_versions(conn, name) do
+    with_actor(conn, fn conn, _actor_id ->
+      if admin_authorized?(conn) do
+        history(conn, name)
+      else
+        admin_denied(conn)
+      end
+    end)
+  end
+
+  # An unknown name and a name with no rows are the same answer: the history
+  # endpoint names a function that does not exist. A disabled name still has
+  # rows, so it remains visible and can be re-activated.
+  defp history(conn, name) do
+    case with_store(fn -> Store.versions(name, store(conn)) end) do
+      {:ok, []} ->
+        send_json(conn, 404, %{
+          "error" => "not_found",
+          "details" => "no versions of #{name} were uploaded"
+        })
+
+      {:ok, versions} ->
+        send_json(conn, 200, %{"versions" => Enum.map(versions, &version_info/1)})
+
+      {:error, _reason} ->
+        internal_error(conn)
+    end
+  end
+
+  # The history says what an operator needs to choose a version and what a CLI
+  # needs to print; code stays out of it.
+  defp version_info(%Version{} = version) do
+    %{
+      "version" => version.version,
+      "status" => version.status,
+      "createdAt" => version.created_at,
+      "activatedAt" => version.activated_at,
+      "pinned" => version.pinned,
+      "createdBy" => version.created_by
+    }
+  end
+
+  defp rollback_version(conn, name) do
+    with_actor(conn, fn conn, _actor_id ->
+      if admin_authorized?(conn) do
+        rollback(conn, name)
+      else
+        admin_denied(conn)
+      end
+    end)
+  end
+
+  defp rollback(conn, name) do
+    case with_store(fn -> Store.rollback(name, store(conn)) end) do
+      {:ok, %Version{} = active} ->
+        send_json(conn, 200, %{
+          "ok" => true,
+          "name" => active.name,
+          "version" => active.version,
+          "status" => active.status
+        })
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{
+          "error" => "not_found",
+          "details" => "#{name} has no active version to roll back from"
+        })
+
+      {:error, :no_previous_version} ->
+        send_json(conn, 409, %{
+          "error" => "no_previous_version",
+          "details" => "#{name} has no earlier activation to roll back to"
+        })
+
+      {:error, {:invalid_schema, field, reason}} ->
+        invalid_schema(conn, field, reason)
+
+      {:error, _reason} ->
+        internal_error(conn)
+    end
+  end
+
+  defp disable_function(conn, name) do
+    with_actor(conn, fn conn, _actor_id ->
+      if admin_authorized?(conn) do
+        disable(conn, name)
+      else
+        admin_denied(conn)
+      end
+    end)
+  end
+
+  defp disable(conn, name) do
+    case with_store(fn -> Store.disable(name, store(conn)) end) do
+      {:ok, %Version{} = disabled} ->
+        send_json(conn, 200, %{
+          "ok" => true,
+          "name" => disabled.name,
+          "version" => disabled.version,
+          "status" => disabled.status
+        })
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{
+          "error" => "not_found",
+          "details" => "#{name} has no active version to disable"
+        })
+
+      {:error, _reason} ->
+        internal_error(conn)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # POST /:name — invoke
   # ---------------------------------------------------------------------------
 
@@ -1000,7 +1140,7 @@ defmodule EbbServer.Functions.Router do
           "whatever was active is retired and the target becomes active. Requires the " <>
           "deploy credential in `Authorization: Bearer <admin token>`. The target's stored " <>
           "schemas are re-resolved first, so a row tampered with after upload cannot become " <>
-          "active. Rollback is a store operation and CLI verb, not a route of its own.",
+          "active. Use `POST /functions/{name}/rollback` to return to the previous version.",
       tags: ["Functions"],
       parameters: [
         OperationSchema.path_param("name", "string", "The function name"),
@@ -1021,6 +1161,83 @@ defmodule EbbServer.Functions.Router do
         "403" => OperationSchema.error_response("Missing or wrong admin credential"),
         "404" => OperationSchema.error_response("Unknown name or version"),
         "422" => OperationSchema.error_response("The target's stored schema cannot be resolved"),
+        "500" => OperationSchema.error_response("Platform failure")
+      }
+    }
+  end
+
+  def openapi_operation(:list_function_versions) do
+    %{
+      operationId: "listFunctionVersions",
+      summary: "List a function's version history",
+      description:
+        "Returns every uploaded version of the name, newest first, with its status, " <>
+          "timestamps, pin, and creator. Code is never returned. Requires the deploy " <>
+          "credential. A disabled name still lists its versions, which is how an operator " <>
+          "finds the version to activate again.",
+      tags: ["Functions"],
+      parameters: [
+        OperationSchema.path_param("name", "string", "The function name"),
+        OperationSchema.admin_auth_param()
+      ],
+      responses: %{
+        "200" => OperationSchema.version_history_response(),
+        "401" => OperationSchema.error_response("No resolved actor"),
+        "403" => OperationSchema.error_response("Missing or wrong admin credential"),
+        "404" => OperationSchema.error_response("No version of this name has been uploaded"),
+        "500" => OperationSchema.error_response("Platform failure")
+      }
+    }
+  end
+
+  def openapi_operation(:rollback_function) do
+    %{
+      operationId: "rollbackFunction",
+      summary: "Roll back to the previous function version",
+      description:
+        "Activates the version that was active when the current one was last activated, " <>
+          "following the recorded chain (v3 → v2 → v1). A disabled version is never a " <>
+          "candidate; re-enabling one is an activation. Requires the deploy credential.",
+      tags: ["Functions"],
+      parameters: [
+        OperationSchema.path_param("name", "string", "The function name"),
+        OperationSchema.admin_auth_param()
+      ],
+      responses: %{
+        "200" => OperationSchema.function_version_response("The previous version is active"),
+        "401" => OperationSchema.error_response("No resolved actor"),
+        "403" => OperationSchema.error_response("Missing or wrong admin credential"),
+        "404" => OperationSchema.error_response("The name has no active version"),
+        "409" =>
+          OperationSchema.error_response("`no_previous_version`: nothing earlier to roll back to"),
+        "422" =>
+          OperationSchema.error_response(
+            "The previous version's stored schema cannot be resolved"
+          ),
+        "500" => OperationSchema.error_response("Platform failure")
+      }
+    }
+  end
+
+  def openapi_operation(:disable_function) do
+    %{
+      operationId: "disableFunction",
+      summary: "Disable a function",
+      description:
+        "The per-function kill switch: the active version becomes `disabled`, the name " <>
+          "holds no active slot and resolves `404`, and no worker is spawned. Activating " <>
+          "a version again re-enables it. Requires the deploy credential. A second disable " <>
+          "answers `404` because there is no active version left.",
+      tags: ["Functions"],
+      parameters: [
+        OperationSchema.path_param("name", "string", "The function name"),
+        OperationSchema.admin_auth_param()
+      ],
+      responses: %{
+        "200" => OperationSchema.function_version_response("The active version is now disabled"),
+        "401" => OperationSchema.error_response("No resolved actor"),
+        "403" => OperationSchema.error_response("Missing or wrong admin credential"),
+        "404" => OperationSchema.error_response("The name has no active version to disable"),
         "500" => OperationSchema.error_response("Platform failure")
       }
     }

@@ -31,7 +31,13 @@ defmodule EbbServer.Sync.Router do
     - `GET /functions` — list deployed functions with their active version,
       permission posture, and RPC schemas (never code).
     - `POST /functions/:name/versions` — upload a bundle (admin credential).
+    - `GET /functions/:name/versions` — a name's version history (admin
+      credential; never code).
     - `POST /functions/:name/activate` — activate an uploaded version (admin
+      credential).
+    - `POST /functions/:name/rollback` — activate the previous version (admin
+      credential).
+    - `POST /functions/:name/disable` — the per-function kill switch (admin
       credential).
 
   ## Status codes

@@ -6,7 +6,9 @@ defmodule EbbServer.Functions.Store.Version do
   `nil` when the bundle declared none. `contract` is the integer the TEXT column
   holds. `status` is the row's stored vocabulary: `"active"`, `"retired"` or
   `"disabled"`. `pinned` is what keeps a version past retention and `created_at`
-  / `activated_at` are epoch milliseconds.
+  / `activated_at` are epoch milliseconds. `previous_version_id` is the version
+  that was active when this one was last activated; rollback follows it, so the
+  chain walks back through activations rather than toggling between two rows.
   """
 
   @enforce_keys [
@@ -44,7 +46,8 @@ defmodule EbbServer.Functions.Store.Version do
     :created_at,
     :activated_at,
     :created_by,
-    :pinned
+    :pinned,
+    :previous_version_id
   ]
 
   @type status :: String.t()
@@ -68,7 +71,8 @@ defmodule EbbServer.Functions.Store.Version do
           created_at: integer(),
           activated_at: integer() | nil,
           created_by: String.t() | nil,
-          pinned: boolean()
+          pinned: boolean(),
+          previous_version_id: String.t() | nil
         }
 end
 
@@ -110,11 +114,12 @@ defmodule EbbServer.Functions.Store do
 
   ## Deviation from the issue's DDL
 
-  Issue #595 lists sixteen columns. Four more are here so the bundle loader can
-  reproduce, from the database, what a directory loader reads out of an
-  envelope: `runtime`, `entry` and `access` are the envelope's execution
-  identity and permission posture, which are not derivable from stored code,
-  and `pinned` is how a `--keep` pin survives retention.
+  Issue #595 lists sixteen columns. Five more are here: `runtime`, `entry` and
+  `access` are the envelope's execution identity and permission posture, which
+  are not derivable from stored code; `pinned` is how a `--keep` pin survives
+  retention; and `previous_version_id` is the activation chain `rollback/2`
+  follows (migration v2, so a database created before it gains the column
+  without losing rows).
 
   `contract` is stored as TEXT per that DDL and parsed on read. `params_schema`
   and `output_schema` are draft-7 JSON Schema documents as JSON text, or NULL
@@ -161,11 +166,12 @@ defmodule EbbServer.Functions.Store do
   @default_retention 20
 
   # Every column, in the order every statement below reads. `runtime`, `entry`,
-  # `access` and `pinned` are the deviation documented in the moduledoc.
+  # `access`, `pinned` and `previous_version_id` are the deviation documented in
+  # the moduledoc.
   @columns """
   id, name, version, code, digest, signature, signer_key_id, runtime, entry,
   access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-  status, created_at, activated_at, created_by, pinned
+  status, created_at, activated_at, created_by, pinned, previous_version_id
   """
 
   # ---------------------------------------------------------------------------
@@ -210,6 +216,12 @@ defmodule EbbServer.Functions.Store do
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_function_active ON function_versions(name) WHERE status = 'active';
     CREATE INDEX IF NOT EXISTS idx_function_versions_name ON function_versions(name, created_at DESC);
+    """,
+    # v2 — the rollback chain. `activated_at` is an activation time, not a
+    # history; a pointer to the version that was active when this one was
+    # activated is what lets rollback walk back instead of toggling.
+    """
+    ALTER TABLE function_versions ADD COLUMN previous_version_id TEXT;
     """
   ]
 
@@ -217,8 +229,8 @@ defmodule EbbServer.Functions.Store do
   INSERT INTO function_versions (
     id, name, version, code, digest, signature, signer_key_id, runtime, entry,
     access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-    status, created_at, activated_at, created_by, pinned
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    status, created_at, activated_at, created_by, pinned, previous_version_id
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   """
 
   @get_sql "SELECT #{@columns} FROM function_versions WHERE name = ? AND version = ?"
@@ -236,6 +248,15 @@ defmodule EbbServer.Functions.Store do
   """
 
   @set_active_sql """
+  UPDATE function_versions
+  SET status = 'active', activated_at = ?, previous_version_id = ?
+  WHERE name = ? AND version = ?
+  """
+
+  # Rollback keeps the target's own pointer: following that chain is what walks
+  # back through activations. Rewriting it here would turn rollback into a
+  # toggle.
+  @set_previous_active_sql """
   UPDATE function_versions SET status = 'active', activated_at = ?
   WHERE name = ? AND version = ?
   """
@@ -245,15 +266,12 @@ defmodule EbbServer.Functions.Store do
   WHERE name = ? AND status = 'active'
   """
 
-  # The previous version is the most recently activated one that is still
-  # servable. A `disabled` row is not a rollback candidate: switching it off was
-  # an operator decision, and re-enabling is an activation, not a rollback.
-  # `rowid` breaks a same-millisecond tie by insertion order, the same way
-  # retention does.
+  # The previous version is the one the active row points at, and it must still
+  # be servable. A `disabled` row is not a rollback candidate: switching it off
+  # was an operator decision, and re-enabling is an activation, not a rollback.
   @previous_sql """
   SELECT #{@columns} FROM function_versions
-  WHERE name = ? AND status = 'retired' AND activated_at IS NOT NULL
-  ORDER BY activated_at DESC, rowid DESC LIMIT 1
+  WHERE id = ? AND name = ? AND status = 'retired'
   """
 
   @list_sql "SELECT #{@columns} FROM function_versions WHERE status = 'active' ORDER BY name"
@@ -323,10 +341,12 @@ defmodule EbbServer.Functions.Store do
   Makes `version` the serving version of `name`.
 
   One transaction retires whatever was active and points the name at the
-  target, refreshing `activated_at` when the target was already active. An
-  unknown version answers `{:error, :not_found}` and changes nothing. The
-  target's stored schemas are re-resolved first, so a row tampered with after
-  upload cannot become active.
+  target, refreshing `activated_at` when the target was already active. It also
+  records the target's `previous_version_id` as the row that was active before
+  it (keeping the existing pointer when there is no current active), which is
+  the chain `rollback/2` follows. An unknown version answers
+  `{:error, :not_found}` and changes nothing. The target's stored schemas are
+  re-resolved first, so a row tampered with after upload cannot become active.
   """
   @spec activate(String.t(), String.t(), GenServer.server()) ::
           {:ok, Version.t()}
@@ -336,14 +356,17 @@ defmodule EbbServer.Functions.Store do
   end
 
   @doc """
-  Re-activates the most recently activated version of `name` that is not the
-  current one.
+  Activates the version that was active when the current one was last
+  activated, following `previous_version_id`. Repeated rollbacks therefore walk
+  back through the activation history (v3 → v2 → v1) rather than toggling
+  between the last two; a version that was disabled or pruned is not a
+  candidate.
 
   `{:error, :not_found}` when the name has no active version at all, so there
-  is nothing to roll back from; `{:error, :no_previous_version}` when it has an
-  active version but no earlier one to return to. Stored schemas are re-resolved
-  before the switch, exactly as `activate/3` does, so the answer carries the
-  same `{:invalid_schema, field, reason}` possibility.
+  is nothing to roll back from; `{:error, :no_previous_version}` when the
+  active row has no earlier activation to return to. Stored schemas are
+  re-resolved before the switch, exactly as `activate/3` does, so the answer
+  carries the same `{:invalid_schema, field, reason}` possibility.
   """
   @spec rollback(String.t(), GenServer.server()) ::
           {:ok, Version.t()}
@@ -402,8 +425,12 @@ defmodule EbbServer.Functions.Store do
 
   @doc """
   Every version of `name`, newest first.
+
+  A read failure is an error, not an empty history: an operator UI must not
+  show an unreadable name as one that never had versions.
   """
-  @spec versions(String.t(), GenServer.server()) :: [Version.t()]
+  @spec versions(String.t(), GenServer.server()) ::
+          {:ok, [Version.t()]} | {:error, term()}
   def versions(name, server \\ __MODULE__) do
     GenServer.call(server, {:versions, name})
   end
@@ -471,13 +498,7 @@ defmodule EbbServer.Functions.Store do
 
   @impl true
   def handle_call({:versions, name}, _from, state) do
-    versions =
-      case fetch_many(state.db, state.stmts.versions, [name]) do
-        {:ok, rows} -> rows
-        {:error, _reason} -> []
-      end
-
-    {:reply, versions, state}
+    {:reply, fetch_many(state.db, state.stmts.versions, [name]), state}
   end
 
   @impl true
@@ -523,19 +544,27 @@ defmodule EbbServer.Functions.Store do
   end
 
   defp activate_in(db, stmts, name, version) do
-    with {:ok, _row} <- fetch_target(db, stmts, name, version),
+    with {:ok, target} <- fetch_target(db, stmts, name, version),
          :ok <- verify_stored_schemas(db, stmts, name, version),
-         :ok <- switch_active(db, stmts, name, version) do
+         {:ok, current} <- active_or_nil(db, stmts, name),
+         :ok <- switch_active(db, stmts, name, target, current) do
       fetch_target(db, stmts, name, version)
     end
   end
 
   defp rollback_in(db, stmts, name) do
-    with {:ok, _active} <- fetch_active_or_error(db, stmts, name),
-         {:ok, previous} <- fetch_previous(db, stmts, name),
+    with {:ok, active} <- fetch_active_or_error(db, stmts, name),
+         {:ok, previous} <- fetch_previous(db, stmts, name, active.previous_version_id),
          :ok <- verify_stored_schemas(db, stmts, name, previous.version),
-         :ok <- switch_active(db, stmts, name, previous.version) do
+         :ok <- switch_to_previous(db, stmts, name, previous.version) do
       fetch_target(db, stmts, name, previous.version)
+    end
+  end
+
+  defp active_or_nil(db, stmts, name) do
+    case fetch_one(db, stmts.get_active, [name]) do
+      :not_found -> {:ok, nil}
+      other -> other
     end
   end
 
@@ -553,21 +582,43 @@ defmodule EbbServer.Functions.Store do
     end
   end
 
-  defp fetch_previous(db, stmts, name) do
-    case fetch_one(db, stmts.previous, [name]) do
+  defp fetch_previous(_db, _stmts, _name, nil), do: {:error, :no_previous_version}
+
+  defp fetch_previous(db, stmts, name, version_id) do
+    case fetch_one(db, stmts.previous, [version_id, name]) do
       :not_found -> {:error, :no_previous_version}
       other -> other
     end
   end
 
-  defp switch_active(db, stmts, name, version) do
-    with :ok <- write(db, stmts.retire_active, [name, version]),
-         :ok <- write(db, stmts.set_active, [now_ms(), name, version]) do
-      case Sqlite3.changes(db) do
-        {:ok, 0} -> {:error, :not_found}
-        {:ok, _changed} -> :ok
-        {:error, reason} -> {:error, {:sqlite, reason}}
+  # Activation records what was active when this version took over. Keeping the
+  # target's existing pointer when there is no current active is what lets a
+  # disabled version be re-enabled without erasing its rollback chain.
+  defp switch_active(db, stmts, name, target, current) do
+    previous_id =
+      case current do
+        %Version{id: id} when id != target.id -> id
+        _none_or_same -> target.previous_version_id
       end
+
+    with :ok <- write(db, stmts.retire_active, [name, target.version]),
+         :ok <- write(db, stmts.set_active, [now_ms(), previous_id, name, target.version]) do
+      check_changed(db)
+    end
+  end
+
+  defp switch_to_previous(db, stmts, name, version) do
+    with :ok <- write(db, stmts.retire_active, [name, version]),
+         :ok <- write(db, stmts.set_previous_active, [now_ms(), name, version]) do
+      check_changed(db)
+    end
+  end
+
+  defp check_changed(db) do
+    case Sqlite3.changes(db) do
+      {:ok, 0} -> {:error, :not_found}
+      {:ok, _changed} -> :ok
+      {:error, reason} -> {:error, {:sqlite, reason}}
     end
   end
 
@@ -677,7 +728,8 @@ defmodule EbbServer.Functions.Store do
       created_at: now,
       activated_at: nil,
       created_by: attrs.created_by,
-      pinned: attrs.pinned
+      pinned: attrs.pinned,
+      previous_version_id: nil
     }
   end
 
@@ -758,6 +810,7 @@ defmodule EbbServer.Functions.Store do
         get_schemas: @get_schemas_sql,
         retire_active: @retire_active_sql,
         set_active: @set_active_sql,
+        set_previous_active: @set_previous_active_sql,
         disable: @set_disabled_sql,
         previous: @previous_sql,
         list: @list_sql,
@@ -799,7 +852,8 @@ defmodule EbbServer.Functions.Store do
       version.created_at,
       version.activated_at,
       version.created_by,
-      if(version.pinned, do: 1, else: 0)
+      if(version.pinned, do: 1, else: 0),
+      version.previous_version_id
     ]
 
     write(db, stmt, params)
@@ -920,7 +974,8 @@ defmodule EbbServer.Functions.Store do
          created_at,
          activated_at,
          created_by,
-         pinned
+         pinned,
+         previous_version_id
        ]) do
     %Version{
       id: id,
@@ -942,7 +997,8 @@ defmodule EbbServer.Functions.Store do
       created_at: created_at,
       activated_at: activated_at,
       created_by: created_by,
-      pinned: pinned == 1
+      pinned: pinned == 1,
+      previous_version_id: previous_version_id
     }
   end
 

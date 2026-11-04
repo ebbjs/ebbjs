@@ -232,7 +232,10 @@ hot-path behavior. Read those before making non-trivial changes.
 | `GET`  | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code) |
 | `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params)                                   |
 | `POST` | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                  |
+| `GET`  | `/functions/:name/versions`                      | Version history: status, timestamps, pin (admin; never code)               |
 | `POST` | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)               |
+| `POST` | `/functions/:name/rollback`                      | Activate the previous version (admin `Authorization: Bearer`)              |
+| `POST` | `/functions/:name/disable`                       | Per-function kill switch (admin `Authorization: Bearer`)                   |
 
 Every `/functions` route is absent (`404`) while functions are disabled.
 
