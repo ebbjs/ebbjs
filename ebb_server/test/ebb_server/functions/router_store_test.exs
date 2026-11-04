@@ -592,6 +592,66 @@ defmodule EbbServer.Functions.RouterStoreTest do
     end
   end
 
+  describe "deployment hash" do
+    test "an upload's hash is stored and echoed back in the history", ctx do
+      name = "hashedUpload"
+      hash = "sha256:" <> String.duplicate("0123456789abcdef", 4)
+
+      conn =
+        call_functions(
+          :post,
+          "/#{name}/versions",
+          upload_body(envelope_for(name, @code), @code, %{"deploymentHash" => hash}),
+          router_opts(ctx, admin())
+        )
+
+      assert conn.status == 201
+
+      assert [%{"version" => "1.0.0", "deploymentHash" => ^hash}] =
+               json_body(history(ctx, name, admin()))["versions"]
+    end
+
+    test "an upload without a hash, or with an explicit null, reports none", ctx do
+      for {name, extra} <- [
+            {"unhashedUpload", %{}},
+            {"nullHashedUpload", %{"deploymentHash" => nil}}
+          ] do
+        conn =
+          call_functions(
+            :post,
+            "/#{name}/versions",
+            upload_body(envelope_for(name, @code), @code, extra),
+            router_opts(ctx, admin())
+          )
+
+        assert conn.status == 201
+
+        assert [entry] = json_body(history(ctx, name, admin()))["versions"]
+        refute Map.has_key?(entry, "deploymentHash")
+      end
+    end
+
+    test "a hash that is not sha256 plus 64 lowercase hex is 400 and stores nothing", ctx do
+      name = "badHash"
+      details = "deploymentHash must be `sha256:` followed by 64 lowercase hex characters"
+
+      for bad <- ["sha256:ABC", "not-a-hash", 7] do
+        conn =
+          call_functions(
+            :post,
+            "/#{name}/versions",
+            upload_body(envelope_for(name, @code), @code, %{"deploymentHash" => bad}),
+            router_opts(ctx, admin())
+          )
+
+        assert conn.status == 400
+        assert %{"error" => "invalid_bundle", "details" => ^details} = json_body(conn)
+      end
+
+      assert Store.list(ctx.store) == {:ok, []}
+    end
+  end
+
   describe "in-flight pinning" do
     test "an activation during an invocation does not change that invocation", ctx do
       configure_boot(transport: BlockingWorker, worker_opts: [notify: self()])

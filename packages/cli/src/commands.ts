@@ -33,7 +33,7 @@ type DeployOptionsForWatcher = Parameters<typeof deployEntries>[0];
 export const USAGE = `Usage: ebb <command> [options]
 
 Commands:
-  ebb deploy [--no-activate] [--keep] [--url <url>] [--token <token>] [--config <path>]
+  ebb deploy [--no-activate] [--keep] [--force] [--url <url>] [--token <token>] [--config <path>]
   ebb functions list [--url <url>] [--actor <actor>] [--config <path>]
   ebb functions activate <name> <version> [--url <url>] [--token <token>] [--config <path>]
   ebb functions rollback <name> [--url <url>] [--token <token>] [--config <path>]
@@ -47,7 +47,8 @@ Options:
   --actor <actor>  Actor id for GET /functions and drift checks
   --config <path>  Config file (default ebb.config.ts)
   --no-activate    Upload without moving the active pointer
-  --keep           Pin the uploaded version against retention
+  --keep           Pin the uploaded version against retention (always uploads)
+  --force          Upload and activate even when the deployment is unchanged
   --help           Show this help`;
 
 class UsageError extends Error {
@@ -92,7 +93,7 @@ async function dispatch(argv: string[], deps: CommandDeps): Promise<number> {
 
   if (command === "deploy") {
     await deployCommand(
-      parse(argv.slice(1), ["url", "token", "config"], ["no-activate", "keep"]),
+      parse(argv.slice(1), ["url", "token", "config"], ["no-activate", "keep", "force"]),
       deps,
     );
     return 0;
@@ -138,6 +139,7 @@ export async function deployCommand(parsed: ParsedArgs, deps: CommandDeps = {}):
     token: values.token,
     activate: !parsed.booleans.has("no-activate"),
     keep: parsed.booleans.has("keep"),
+    force: parsed.booleans.has("force"),
     fetchImpl: deps.fetchImpl,
     print: deps.print ?? console.log,
   });

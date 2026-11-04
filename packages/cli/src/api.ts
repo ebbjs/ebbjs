@@ -13,6 +13,7 @@ export interface UploadVersionInput {
   envelope: FunctionEnvelope;
   code: string;
   pinned?: boolean;
+  deploymentHash?: string;
 }
 
 export interface UploadVersionResponse {
@@ -40,6 +41,21 @@ export interface FunctionSummary {
 
 export interface ListFunctionsResponse {
   functions: FunctionSummary[];
+}
+
+export interface FunctionVersionInfo {
+  version: string;
+  status: string;
+  createdAt: number;
+  activatedAt: number | null;
+  pinned: boolean;
+  createdBy: string | null;
+  /** Present only for versions uploaded by a CLI that sent one. */
+  deploymentHash?: string;
+}
+
+export interface ListVersionsResponse {
+  versions: FunctionVersionInfo[];
 }
 
 /**
@@ -87,12 +103,34 @@ export async function uploadVersion(
   input: UploadVersionInput,
   options: ApiOptionsInput = {},
 ): Promise<UploadVersionResponse> {
+  const body: Record<string, unknown> = {
+    envelope: input.envelope,
+    code: input.code,
+    pinned: input.pinned ?? false,
+  };
+  if (input.deploymentHash !== undefined) body.deploymentHash = input.deploymentHash;
+
   return request<UploadVersionResponse>(
     config,
     "admin",
     "POST",
     `/functions/${encodeURIComponent(name)}/versions`,
-    { envelope: input.envelope, code: input.code, pinned: input.pinned ?? false },
+    body,
+    options,
+  );
+}
+
+export async function listVersions(
+  config: ResolvedConfig,
+  name: string,
+  options: ApiOptionsInput = {},
+): Promise<ListVersionsResponse> {
+  return request<ListVersionsResponse>(
+    config,
+    "admin",
+    "GET",
+    `/functions/${encodeURIComponent(name)}/versions`,
+    undefined,
     options,
   );
 }

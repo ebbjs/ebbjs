@@ -44,14 +44,19 @@ export {
   activateVersion,
   disable,
   listFunctions,
+  listVersions,
   rollback,
   uploadVersion,
   type ApiOptions,
   type ApiOptionsInput,
   type FunctionSummary,
+  type FunctionVersionInfo,
   type ListFunctionsResponse,
+  type ListVersionsResponse,
   type UploadVersionInput,
 } from "./api.ts";
+
+export { DEPLOYMENT_HASH_VERSION, deploymentHashFor } from "./deployment-hash.ts";
 
 export {
   deployEntries,

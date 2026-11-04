@@ -130,9 +130,9 @@ defmodule EbbServer.FunctionsTestHelpers do
     |> FunctionsRouter.call(FunctionsRouter.init(Keyword.take(opts, router_option_keys())))
   end
 
-  @doc "The upload body for `envelope` and `code`."
-  def upload_body(envelope, code) do
-    Jason.encode!(%{"envelope" => envelope, "code" => code})
+  @doc "The upload body for `envelope` and `code`, plus any extra top-level fields."
+  def upload_body(envelope, code, extra \\ %{}) do
+    Jason.encode!(Map.merge(%{"envelope" => envelope, "code" => code}, extra))
   end
 
   @doc "An envelope for `name` whose digest matches `code`."
