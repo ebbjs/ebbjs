@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from "vitest";
 
-import { createClient, functionContract, type FunctionContract } from "../index";
+import { createClient, functionContract, type FunctionContract, type SyncClient } from "../index";
 
 /**
  * Hand-written stand-ins for `defineFunction`'s definition type. The real
@@ -65,6 +65,14 @@ describe("client.functions types", () => {
 
   it("keeps a void result as replayed alone", () => {
     expectTypeOf(client.functions.noop()).toEqualTypeOf<Promise<{ readonly replayed: boolean }>>();
+  });
+
+  it("does not require a functions property when the map is erased", () => {
+    // `ReturnType<typeof createClient>` instantiates the map generic to its
+    // constraint, not to the empty default. A bare SyncClient must still be
+    // accepted, or props typed as `ReturnType<typeof createClient>` break.
+    const acceptsErased = (value: ReturnType<typeof createClient>) => value;
+    acceptsErased({} as SyncClient);
   });
 
   it("rejects params that do not match the definition", () => {

@@ -167,11 +167,17 @@ export type BoundFunction<C> =
       ) => Promise<FunctionReturn<FunctionOutput<C>>>;
 
 /**
- * The `client.functions` surface, keyed by the contract map's keys. A client
- * built without a map mounts nothing, so its keys map to `never`.
+ * The `client.functions` surface, keyed by the contract map's keys.
+ *
+ * A bare `Record<string, …>` is what `ReturnType<typeof createClient>`
+ * instantiates the map's generic to; it is not a concrete map, so it adds no
+ * `functions` property. A generated map has literal keys and always does.
  */
-export type FunctionsNamespace<TFunctions extends Record<string, AnyFunctionContract>> = {
-  readonly functions: {
-    [K in keyof TFunctions]: BoundFunction<TFunctions[K]>;
-  };
-};
+export type FunctionsNamespace<TFunctions extends Record<string, AnyFunctionContract>> =
+  string extends keyof TFunctions
+    ? Record<never, never>
+    : {
+        readonly functions: {
+          [K in keyof TFunctions]: BoundFunction<TFunctions[K]>;
+        };
+      };
