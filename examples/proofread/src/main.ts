@@ -15,6 +15,8 @@ export interface ProofreadRun {
   readonly actorId: string;
   readonly documentId: string;
   readonly workspaceId: string;
+  /** Same key on a retry so the server replays instead of writing twice. */
+  readonly idempotencyKey?: string;
 }
 
 export type ProofreadClient = ReturnType<typeof createProofreadClient>;
@@ -24,9 +26,12 @@ export const createProofreadClient = (serverUrl: string, actorId: string) =>
 
 export const proofread = async (run: ProofreadRun) => {
   const client = createProofreadClient(run.serverUrl, run.actorId);
-  const { commentCount, replayed } = await client.functions.proofreadDocument({
-    documentId: run.documentId,
-    workspaceId: run.workspaceId,
-  });
+  const { commentCount, replayed } = await client.functions.proofreadDocument(
+    {
+      documentId: run.documentId,
+      workspaceId: run.workspaceId,
+    },
+    { idempotencyKey: run.idempotencyKey },
+  );
   return { commentCount, replayed };
 };

@@ -14,6 +14,27 @@ describe("watchFunctions", () => {
     await Promise.all(projects.splice(0).map(removeProject));
   });
 
+  it("is an idle no-op when the project has no functions directory", async () => {
+    const cwd = await tempProject("dev-empty-");
+    projects.push(cwd);
+
+    const printed: string[] = [];
+    let deployed = false;
+
+    const close = await watchFunctions({
+      cwd,
+      deployAll: async () => {
+        deployed = true;
+        return emptyResult;
+      },
+      print: (line) => printed.push(line),
+    });
+
+    expect(deployed).toBe(false);
+    expect(printed).toEqual([`no functions directory at ${join(cwd, "functions")}; not watching`]);
+    close();
+  });
+
   it("deploys everything once, then only the changed entry after the debounce", async () => {
     const cwd = await tempProject("dev-");
     projects.push(cwd);

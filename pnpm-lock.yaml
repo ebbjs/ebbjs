@@ -250,6 +250,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/server
     devDependencies:
+      '@ebbjs/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@ebbjs/functions-runtime':
         specifier: workspace:*
         version: link:../../packages/functions-runtime

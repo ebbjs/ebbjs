@@ -1,4 +1,4 @@
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 
 import { activateVersion, disable, listFunctions, rollback, type FetchLike } from "./api.ts";
@@ -231,6 +231,15 @@ export async function watchFunctions(options: WatchFunctionsOptions = {}): Promi
     }));
   const print = options.print ?? console.log;
   const printError = options.printError ?? console.error;
+
+  // `pnpm dev` runs this pane for every project, including one with no
+  // functions yet. An absent directory is an idle pane, not a crashed
+  // process that takes the server and app down with it.
+  if (!existsSync(config.functions.dir)) {
+    print(`no functions directory at ${config.functions.dir}; not watching`);
+    return () => {};
+  }
+
   const deployAll = options.deployAll ?? deployEntries;
   const deployChanged = options.deployChanged ?? deployFiles;
   const debounceMs = options.debounceMs ?? 150;

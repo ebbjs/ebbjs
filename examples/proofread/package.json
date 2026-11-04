@@ -22,6 +22,7 @@
     "@ebbjs/server": "workspace:*"
   },
   "devDependencies": {
+    "@ebbjs/cli": "workspace:*",
     "@ebbjs/functions-runtime": "workspace:*",
     "@types/node": "^25.2.3",
     "esbuild": "^0.27.0",

@@ -27,10 +27,12 @@ POST /functions/proofreadDocument
 ## What the contract map is
 
 `ebb deploy` (and `ebb functions types`) emits
-`src/ebb-functions.generated.ts`. It imports each function definition with
-`import type` and records its deployed name:
+`src/ebb-functions.generated.ts`. The emitted file starts with its path and
+imports each function definition with `import type`, recording its deployed
+name:
 
 ```ts
+// src/ebb-functions.generated.ts — emitted by `ebb deploy` / `ebb functions types`
 import { functionContract } from "@ebbjs/client";
 import type { proofreadDocument } from "../functions/proofreadDocument";
 
@@ -66,11 +68,9 @@ the comments and their `entityGroup` rows commit together.
 ## Run it
 
 Prerequisites: Node `>=22.8`, pnpm, and **Bun 1.4.3** (the version in
-`.bun-version`) — the server runs each function in a Bun process. The
-`ebb` CLI lands in `packages/cli` with this issue; until it is built, the
-`deploy` / `dev` / `types` scripts in this package are placeholders for the
-commands that task adds. The config file and generated-file shapes above are
-the interface it implements.
+`.bun-version`) — the server runs each function in a Bun process. The `ebb`
+CLI is the `@ebbjs/cli` workspace package, so the root build below links its
+`ebb` binary into this example's `node_modules/.bin`.
 
 1. Build the workspace once from the repo root:
 
@@ -106,7 +106,8 @@ the interface it implements.
    ```
 
    `--no-activate` uploads a version without switching to it, and `--keep`
-   uploads without retiring older versions beyond retention. The admin token is
+   pins the uploaded version so retention keeps it alongside the last 20
+   unpinned versions. The admin token is
    only the deploy credential; it is never an invoke grant.
 
 4. Grant the caller. The invoking actor needs a `groupMember` row whose
@@ -137,6 +138,7 @@ the interface it implements.
      actorId: "a_proofreader",
      documentId: "doc_1",
      workspaceId: "grp_workspace",
+     idempotencyKey: "proofread:doc_1", // reuse this exact key on a retry
    });
    ```
 
