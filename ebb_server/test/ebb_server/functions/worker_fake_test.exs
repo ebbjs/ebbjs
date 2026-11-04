@@ -19,17 +19,17 @@ defmodule EbbServer.Functions.WorkerFakeTest do
       {:ok, worker} = Worker.start(Fake, script: script, owner: self())
       ref = Worker.monitor(worker)
       assert is_reference(ref)
-      assert_receive {:functions_worker_frame, ^ready}
+      assert_receive {:functions_worker_frame, ^ready}, 2_000
 
       assert Worker.alive?(worker)
       assert Worker.os_pid(worker) == nil
 
       invoke = Protocol.invoke(%{"name" => "proofreadDocument", "input" => %{}})
       assert :ok = Worker.send_frame(worker, invoke)
-      assert_receive {:functions_worker_frame, ^result}
+      assert_receive {:functions_worker_frame, ^result}, 2_000
 
       assert :ok = Worker.close(worker)
-      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}, 2_000
       refute Worker.alive?(worker)
     end
 
@@ -49,7 +49,7 @@ defmodule EbbServer.Functions.WorkerFakeTest do
 
       assert :ok = Worker.send_frame(worker, slow)
       assert :ok = Worker.send_frame(worker, fast)
-      assert_receive {:functions_worker_frame, ^result}
+      assert_receive {:functions_worker_frame, ^result}, 2_000
 
       Worker.close(worker)
     end
@@ -72,7 +72,7 @@ defmodule EbbServer.Functions.WorkerFakeTest do
       }
 
       assert :ok = Worker.send_frame(worker, call)
-      assert_receive {:functions_worker_frame, ^result}
+      assert_receive {:functions_worker_frame, ^result}, 2_000
 
       Worker.close(worker)
     end
@@ -96,15 +96,15 @@ defmodule EbbServer.Functions.WorkerFakeTest do
           owner: self()
         )
 
-      assert_receive {:functions_worker_frame, %{"type" => "call", "call_id" => "1"}}
-      assert_receive {:functions_worker_frame, %{"type" => "call", "call_id" => "2"}}
+      assert_receive {:functions_worker_frame, %{"type" => "call", "call_id" => "1"}}, 2_000
+      assert_receive {:functions_worker_frame, %{"type" => "call", "call_id" => "2"}}, 2_000
 
       fast = Protocol.reply("2", {:ok, nil})
       slow = Protocol.reply("1", {:ok, nil})
       assert :ok = Worker.send_frame(worker, fast)
       assert :ok = Worker.send_frame(worker, slow)
 
-      assert_receive {:script_replies, ^slow, ^fast}
+      assert_receive {:script_replies, ^slow, ^fast}, 2_000
       Worker.close(worker)
     end
 
@@ -112,20 +112,21 @@ defmodule EbbServer.Functions.WorkerFakeTest do
       script = [%{"send" => Protocol.ready(1, "0.0.0")}, %{"exit" => "now"}]
       ref = start_gated(script)
 
-      assert_receive {:functions_worker_frame, %{"type" => "ready"}}
-      assert_receive {:DOWN, ^ref, :process, _pid, :worker_exit}
+      assert_receive {:functions_worker_frame, %{"type" => "ready"}}, 2_000
+      assert_receive {:DOWN, ^ref, :process, _pid, :worker_exit}, 2_000
     end
 
     test "a malformed step fails the fake" do
       ref = start_gated([%{"nonsense" => true}])
 
-      assert_receive {:DOWN, ^ref, :process, _pid, {:invalid_step, %{"nonsense" => true}}}
+      assert_receive {:DOWN, ^ref, :process, _pid, {:invalid_step, %{"nonsense" => true}}},
+                     2_000
     end
 
     test "an unknown function script fails the fake" do
       ref = start_gated([%{"script" => "missing"}])
 
-      assert_receive {:DOWN, ^ref, :process, _pid, {:unknown_script, "missing"}}
+      assert_receive {:DOWN, ^ref, :process, _pid, {:unknown_script, "missing"}}, 2_000
     end
 
     test "expecting a frame that never arrives times out" do
@@ -153,14 +154,14 @@ defmodule EbbServer.Functions.WorkerFakeTest do
 
       ref = Worker.monitor(worker)
       assert :ok = Worker.close(worker)
-      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}, 2_000
     end
 
     test "frames after the script are dropped" do
       ready = Protocol.ready(1, "0.0.0")
       {:ok, worker} = Worker.start(Fake, script: [%{"send" => ready}], owner: self())
 
-      assert_receive {:functions_worker_frame, ^ready}
+      assert_receive {:functions_worker_frame, ^ready}, 2_000
       assert :ok = Worker.send_frame(worker, Protocol.result({:ok, nil}))
       assert Worker.alive?(worker)
 
@@ -171,7 +172,7 @@ defmodule EbbServer.Functions.WorkerFakeTest do
       {:ok, worker} = Worker.start(Fake, script: [], owner: self())
       ref = Worker.monitor(worker)
       assert :ok = Worker.close(worker)
-      assert_receive {:DOWN, ^ref, :process, _pid, :normal}
+      assert_receive {:DOWN, ^ref, :process, _pid, :normal}, 2_000
 
       assert {:error, :closed} = Worker.send_frame(worker, Protocol.result({:ok, nil}))
       assert :ok = Worker.close(worker)

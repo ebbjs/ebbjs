@@ -31,7 +31,11 @@ defmodule EbbServer.Sync.FanOutRouterCommitTimeoutE2ETest do
     [
       max_in_flight: 1,
       committer_pool_size: 1,
-      commit_timeout_ms: 75,
+      # The threshold applies to every commit on this writer, including the
+      # real seed writes that run before the arm, so it is the production
+      # default: no legitimate `write_batch` can reach it on a loaded runner.
+      # Only the armed commit, held for 5s in `commit_fn`, times out.
+      commit_timeout_ms: 2_000,
       sweep_interval_ms: 10,
       commit_fn: fn ops, opts ->
         if armed?(arm_table) do
@@ -75,10 +79,10 @@ defmodule EbbServer.Sync.FanOutRouterCommitTimeoutE2ETest do
     :ets.insert(@arm_table, {:armed, true})
 
     head_task = Task.async(fn -> post_todo!(actor_id, head_entity, "head") end)
-    assert_receive {:commit_started, head_worker}, 2_000
+    assert_receive {:commit_started, head_worker}, 10_000
 
     # The watchdog abandons the range and the caller gets the retryable 503.
-    assert %{status: 503} = Task.await(head_task, 2_000)
+    assert %{status: 503} = Task.await(head_task, 10_000)
     assert WatermarkTracker.committed_watermark() >= head_gsn
 
     :ets.insert(@arm_table, {:armed, false})

@@ -360,16 +360,18 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       ref = Process.monitor(pid)
       Process.exit(pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-      assert_receive {:EXIT, ^pid, :killed}
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 2_000
+      assert_receive {:EXIT, ^pid, :killed}, 2_000
 
       # The killed process never reached `terminate/2`, so its handles are
       # still published — and that `db_ref` is what holds the RocksDB LOCK
       # file. The replacement has to release it before it can open.
       assert :persistent_term.get({:ebb_rocksdb_db, name}, :absent) != :absent
 
-      assert {:ok, replacement} =
-               RocksDB.start_link(data_dir: dir, name: name, open_retry_delays_ms: [50, 100, 200])
+      # The production retry schedule: the kernel drops the dead owner's
+      # lock descriptor asynchronously, so a short budget here would report
+      # the recovery path as broken whenever it merely ran out of patience.
+      assert {:ok, replacement} = RocksDB.start_link(data_dir: dir, name: name)
 
       on_exit(fn -> safe_stop(replacement) end)
 

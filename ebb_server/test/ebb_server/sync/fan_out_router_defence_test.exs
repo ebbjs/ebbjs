@@ -78,7 +78,15 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
       %{max_children: max_children} = :sys.get_state(supervisor)
 
       on_exit(fn ->
-        if Process.alive?(supervisor), do: set_max_children(supervisor, max_children)
+        # The Router crash can take the group supervisor down with it, and the
+        # restore only matters for the supervisor that still holds the cap. A
+        # liveness check would race that teardown, so the sys call itself is
+        # the check.
+        try do
+          set_max_children(supervisor, max_children)
+        catch
+          :exit, _ -> :ok
+        end
       end)
 
       # The group supervisor handle is the seam: a real DynamicSupervisor

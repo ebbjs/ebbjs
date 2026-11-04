@@ -101,6 +101,9 @@ defmodule EbbServer.Storage.CommitterPoolTest do
   end
 
   describe "commit watchdog" do
+    # The production default, so a legitimate job is not retired as hung just
+    # because its worker was descheduled; only the hangs below, which never
+    # return before it, can time out.
     test "times out a hung job, retires its worker, and restores capacity" do
       test_pid = self()
       hung_ref = make_ref()
@@ -109,7 +112,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       pool =
         start_pool(
           size: 1,
-          commit_timeout_ms: 50,
+          commit_timeout_ms: 2_000,
           sweep_interval_ms: 10,
           commit_fn: fn _ops, _opts ->
             send(test_pid, {:job_started, self()})
@@ -128,7 +131,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       assert_receive {:committer_assigned, ^hung_ref, hung_worker}, 2_000
       assert_receive {:job_started, ^hung_worker}, 2_000
 
-      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 2_000
+      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 5_000
 
       # The stuck worker is gone from the pool's live slots even though its
       # `write_batch` has not returned.
@@ -145,7 +148,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       # Let the retired worker finish. Its late result is ignored and the
       # pool stops it, because it no longer owns a slot.
       send(hung_worker, :finish)
-      assert_receive {:DOWN, ^watcher, :process, ^hung_worker, _reason}, 2_000
+      assert_receive {:DOWN, ^watcher, :process, ^hung_worker, _reason}, 5_000
       assert :sys.get_state(pool).retired == %{}
 
       # The replacement is a real pool slot, not just bookkeeping.
@@ -164,7 +167,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       pool =
         start_pool(
           size: 1,
-          commit_timeout_ms: 50,
+          commit_timeout_ms: 2_000,
           sweep_interval_ms: 10,
           commit_fn: fn _ops, _opts ->
             send(test_pid, {:job_started, self()})
@@ -180,7 +183,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       :ok = CommitterPool.commit(pool, hung_ref, [], 1, 1)
       assert_receive {:committer_assigned, ^hung_ref, hung_worker}, 2_000
       assert_receive {:job_started, ^hung_worker}, 2_000
-      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 2_000
+      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 5_000
 
       # A stuck NIF can still finish and report, and its exit signal can
       # still deliver a DOWN; neither may resolve or fail anything twice.
@@ -202,7 +205,7 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       pool =
         start_pool(
           size: 1,
-          commit_timeout_ms: 50,
+          commit_timeout_ms: 2_000,
           sweep_interval_ms: 10,
           commit_fn: fn _ops, _opts ->
             send(test_pid, {:job_started, self()})
@@ -213,10 +216,10 @@ defmodule EbbServer.Storage.CommitterPoolTest do
       :ok = CommitterPool.commit(pool, hung_ref, [], 1, 1)
       assert_receive {:committer_assigned, ^hung_ref, hung_worker}, 2_000
       assert_receive {:job_started, ^hung_worker}, 2_000
-      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 2_000
+      assert_receive {:committer_result, ^hung_ref, {:crashed, :commit_timeout}}, 5_000
 
       watcher = Process.monitor(hung_worker)
-      assert_receive {:DOWN, ^watcher, :process, ^hung_worker, _reason}, 2_000
+      assert_receive {:DOWN, ^watcher, :process, ^hung_worker, _reason}, 10_000
       assert :sys.get_state(pool).retired == %{}
     end
 

@@ -10,6 +10,8 @@ defmodule EbbServer.Bench.SubscriberTest do
 
   alias EbbServer.Bench.Subscriber
 
+  import EbbServer.TestHelpers, only: [wait_until: 1]
+
   setup do
     ctx = %{
       group_id: "grp_bench_sub_#{:erlang.unique_integer([:positive])}",
@@ -22,10 +24,12 @@ defmodule EbbServer.Bench.SubscriberTest do
   test "lean mode sums per-subscriber counters and reports no lag samples", %{ctx: ctx} do
     subscribers = Subscriber.start_all(3, ctx, lean: true)
 
+    # Nothing joins the sends with the subscriber loops, so poll for the
+    # counters instead of sleeping and hoping the sends landed.
     for pid <- subscribers.pids, do: send(pid, {:sse_data, chunk(2)})
-    Process.sleep(50)
 
-    assert Subscriber.delivered(subscribers) == 6
+    assert wait_until(fn -> Subscriber.delivered(subscribers) == 6 end),
+           "delivered #{Subscriber.delivered(subscribers)} of 6 frames"
 
     stats = Subscriber.stop_all(subscribers)
 
@@ -39,9 +43,10 @@ defmodule EbbServer.Bench.SubscriberTest do
     subscribers = Subscriber.start_all(3, ctx, count_only: true)
 
     for pid <- subscribers.pids, do: send(pid, {:sse_data, chunk(2)})
-    Process.sleep(50)
 
-    assert Subscriber.delivered(subscribers) == 6
+    assert wait_until(fn -> Subscriber.delivered(subscribers) == 6 end),
+           "delivered #{Subscriber.delivered(subscribers)} of 6 frames"
+
     assert subscribers.count_only
 
     stats = Subscriber.stop_all(subscribers)
@@ -54,9 +59,10 @@ defmodule EbbServer.Bench.SubscriberTest do
     subscribers = Subscriber.start_all(3, ctx)
 
     for pid <- subscribers.pids, do: send(pid, {:sse_data, chunk(2)})
-    Process.sleep(50)
 
-    assert Subscriber.delivered(subscribers) == 6
+    assert wait_until(fn -> Subscriber.delivered(subscribers) == 6 end),
+           "delivered #{Subscriber.delivered(subscribers)} of 6 frames"
+
     assert Subscriber.stop_all(subscribers).delivered_total == 6
   end
 
@@ -70,9 +76,9 @@ defmodule EbbServer.Bench.SubscriberTest do
         send(pid, {:sse_data, chunk(2), meta})
       end
 
-      Process.sleep(50)
+      assert wait_until(fn -> Subscriber.delivered(subscribers) == 8 end),
+             "delivered #{Subscriber.delivered(subscribers)} of 8 frames"
 
-      assert Subscriber.delivered(subscribers) == 8
       assert Subscriber.stop_all(subscribers).delivered_total == 8
     end
   end
