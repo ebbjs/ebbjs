@@ -1,3 +1,5 @@
+export { defineConfig } from "./config";
+export type { EbbConfig, FunctionsConfig } from "./config";
 export { defineFunction } from "./function";
 export type { FunctionDef, FunctionOptions } from "./function";
 export { p } from "./schema";
@@ -8,4 +10,12 @@ export type {
   ObjectShape,
   OptionalFunctionSchema,
 } from "./schema";
-export type { Context } from "./context";
+export type {
+  CommitOutcome,
+  Context,
+  CreateOptions,
+  EntityName,
+  RelationshipTarget,
+  UnrelateOptions,
+  WriteOptions,
+} from "./context";

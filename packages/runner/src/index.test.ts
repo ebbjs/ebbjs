@@ -71,6 +71,38 @@ describe("runInvocation", () => {
     });
   });
 
+  it("runs a deployed definition and resolves the schema from it", async () => {
+    exposeSchema();
+    const { transport, commits } = journal();
+
+    // The shape `@ebbjs/cli` produces: `export const proofreadDocument =
+    // defineFunction(schema, ...)` becomes `{ proofreadDocument: definition }`.
+    const value = await runInvocation({
+      transport,
+      invocationId: "inv_runner1b",
+      subjectActorId: "a_test",
+      bundle: `
+        var __ebbFunction = {
+          proofreadDocument: {
+            schema: globalThis.__runnerTestSchema,
+            handler: async (ctx) => {
+              const created = ctx.create("issue", { title: "Proofread" }, { groups: ["g_1"] });
+              return { id: created.id };
+            },
+          },
+        };
+      `,
+      entry: "proofreadDocument",
+      input: undefined,
+    });
+
+    expect(value).toMatchObject({ id: expect.stringMatching(/^e_/) });
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toMatchObject({
+      updates: [{ subject_type: "issue", method: "put" }, { subject_type: "entityGroup" }],
+    });
+  });
+
   it("commits nothing when the handler throws", async () => {
     exposeSchema();
     const { transport, commits } = journal();
@@ -136,5 +168,22 @@ describe("runInvocation", () => {
     expect(schemaRegistryOf({})).toBeUndefined();
     expect(schemaRegistryOf({ schema: {} })).toBeUndefined();
     expect(schemaRegistryOf({ schema: { _registry: { get: () => undefined } } })).toBeUndefined();
+  });
+
+  it("resolves the registry from the entry's definition", () => {
+    expect(schemaRegistryOf({ proofreadDocument: { schema } }, "proofreadDocument")).toBe(
+      schema._registry,
+    );
+    expect(schemaRegistryOf({ proofreadDocument: { schema } })).toBeUndefined();
+    expect(schemaRegistryOf({ proofreadDocument: {} }, "proofreadDocument")).toBeUndefined();
+    expect(
+      schemaRegistryOf({ proofreadDocument: { schema: {} } }, "proofreadDocument"),
+    ).toBeUndefined();
+  });
+
+  it("prefers the module's schema over the entry's definition", () => {
+    expect(
+      schemaRegistryOf({ schema, proofreadDocument: { schema: {} } }, "proofreadDocument"),
+    ).toBe(schema._registry);
   });
 });

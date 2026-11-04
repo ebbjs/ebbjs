@@ -18,10 +18,12 @@
   },
   "dependencies": {
     "@ebbjs/client": "workspace:^",
+    "@ebbjs/write": "workspace:^",
     "@sinclair/typebox": "^0.34.52",
     "@standard-schema/spec": "^1.1.0"
   },
   "devDependencies": {
+    "@ebbjs/schema": "workspace:^",
     "@types/node": "^25.2.3",
     "vitest": "^4.1.0"
   }
