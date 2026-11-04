@@ -108,3 +108,34 @@ _Avoid_: scope, acl
 **Group**:
 The unit of permission and delivery; every entity belongs to at least one.
 _Avoid_: workspace, tenant, room
+
+### Functions
+
+**Function**:
+A named, deployed handler invoked over `POST /functions/:name`, authored with
+`defineFunction` and granted by `function.<name>`.
+_Avoid_: endpoint, lambda, RPC method
+
+**Invocation**:
+One run of a Function for one Subject, committing at most one Action.
+_Avoid_: call, request, execution
+
+**Subject**:
+The actor an Invocation runs as, whose grants decide whether it may invoke and
+what it may read and write.
+_Avoid_: caller, user, principal
+
+**Bundle**:
+The esbuild output plus the envelope — name, version, digest, entry, RPC
+schemas — that names one deployable Function version.
+_Avoid_: artifact, package, script
+
+**Runner**:
+The Bun process that evaluates a Bundle and runs one Invocation against the
+host-call frame protocol.
+_Avoid_: worker, sandbox, executor
+
+**Worker**:
+The server's transport to one Runner process: its socket, process group, and
+deadline.
+_Avoid_: runner, pool, sandbox

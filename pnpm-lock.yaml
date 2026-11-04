@@ -238,6 +238,34 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
 
+  examples/proofread:
+    dependencies:
+      '@ebbjs/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@ebbjs/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+      '@ebbjs/server':
+        specifier: workspace:*
+        version: link:../../packages/server
+    devDependencies:
+      '@ebbjs/functions-runtime':
+        specifier: workspace:*
+        version: link:../../packages/functions-runtime
+      '@types/node':
+        specifier: ^25.2.3
+        version: 25.5.0
+      esbuild:
+        specifier: ^0.27.0
+        version: 0.27.4
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@opentelemetry/api@1.9.0)(@types/node@25.5.0)(happy-dom@17.6.3)(vite@7.3.1(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1))
+
   packages/cli:
     dependencies:
       '@ebbjs/functions-protocol':
