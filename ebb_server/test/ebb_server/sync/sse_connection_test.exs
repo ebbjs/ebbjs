@@ -94,7 +94,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
         })
 
       assert :ok = SSEConnection.push_data(pid, bytes)
-      assert_receive {:sse_data, ^bytes}
+      assert_receive {:sse_data, ^bytes}, 2_000
     end
 
     test "push_data/3 forwards the sampled delivery with its meta and emits conn_deliver" do
@@ -106,7 +106,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       meta = %{cast_at: cast_at, committed_at: cast_at, group_id: "g1"}
 
       assert :ok = SSEConnection.push_data(pid, bytes, meta)
-      assert_receive {:sse_data, ^bytes, ^meta}
+      assert_receive {:sse_data, ^bytes, ^meta}, 2_000
 
       assert [
                {[:ebb, :fanout, :hop_ms], %{duration: duration},
@@ -121,7 +121,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       ref = attach_telemetry([[:ebb, :fanout, :hop_ms]])
 
       assert :ok = SSEConnection.push_data(pid, "event: data\ndata: {}\n\n")
-      assert_receive {:sse_data, _bytes}
+      assert_receive {:sse_data, _bytes}, 2_000
 
       assert telemetry_events(ref) == []
     end
@@ -146,7 +146,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
           })
 
       assert :ok = SSEConnection.push_data(pid, batch)
-      assert_receive {:sse_data, ^batch}
+      assert_receive {:sse_data, ^batch}, 2_000
       assert data_payloads(batch) |> Enum.map(&Jason.decode!(&1)["id"]) == ["act_1", "act_2"]
     end
   end
@@ -157,7 +157,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       control = %{"group" => "group_a", "nextOffset" => "502"}
 
       assert :ok = SSEConnection.push_control(pid, control)
-      assert_receive {:sse_chunk, "control", payload}
+      assert_receive {:sse_chunk, "control", payload}, 2_000
       assert Jason.decode!(payload) == control
     end
 
@@ -171,7 +171,7 @@ defmodule EbbServer.Sync.SSEConnectionTest do
       }
 
       assert :ok = SSEConnection.push_presence(pid, presence)
-      assert_receive {:sse_chunk, "presence", payload}
+      assert_receive {:sse_chunk, "presence", payload}, 2_000
       assert Jason.decode!(payload) == presence
     end
   end

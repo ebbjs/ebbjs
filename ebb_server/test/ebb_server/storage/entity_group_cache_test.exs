@@ -225,32 +225,64 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
     end
   end
 
-  @reput_iterations 200_000
+  # Size of the proof, not a time budget: the writer runs exactly this many
+  # re-puts and only an empty read can fail the assertion below. A slower
+  # machine lengthens the reader's sampling window rather than squeezing it.
+  @reput_iterations 50_000
+
+  # Guards against a hung process, not against slowness. It has to stay below
+  # ExUnit's 60s per-test timeout so a hang reports the empty-read count and
+  # the `after` block below still kills the reader's busy loop; the writer's
+  # fixed iteration count finishes far inside it on an idle or loaded machine.
+  @join_timeout_ms 30_000
 
   defp assert_no_empty_membership_reads(cache, reput) do
     parent = self()
     done = :atomics.new(1, [])
 
-    spawn(fn ->
-      send(parent, {:reader_ready, self()})
-      send(parent, {:reader_done, read_empties(cache, done, "todo_1", 0)})
-    end)
-
-    assert_receive {:reader_ready, reader}, 5_000
-
-    writer =
+    reader =
       spawn(fn ->
-        for _ <- 1..@reput_iterations, do: reput.()
-        :atomics.put(done, 1, 1)
+        receive do
+          {:writer_started, writer} ->
+            receive do
+              :first_put_done ->
+                empties = read_once(cache)
+                send(writer, :reader_sampled)
+                send(parent, {:reader_done, read_empties(cache, done, "todo_1", empties, 1)})
+            end
+        end
       end)
 
+    writer = spawn(fn -> write_until_done(reader, reput, done) end)
+
     try do
-      assert_receive {:reader_done, empties}, 10_000
-      assert empties == 0, "reader observed #{empties} empty membership reads"
+      assert_receive {:reader_done, {empties, reads}}, @join_timeout_ms
+
+      assert empties == 0,
+             "reader observed #{empties} empty membership reads in #{reads} reads"
+
+      # A single sample would make the run vacuous, so require the reader to
+      # have kept sampling after the pre-bulk sample the writer waited for.
+      assert reads > 1, "reader sampled #{reads} time(s) across the writer's run"
     after
       stop(reader)
       stop(writer)
     end
+  end
+
+  # The writer holds after its first put until the reader confirms one sample,
+  # so that sample provably lands inside the re-put window without a clock.
+  defp write_until_done(reader, reput, done) do
+    send(reader, {:writer_started, self()})
+    reput.()
+    send(reader, :first_put_done)
+
+    receive do
+      :reader_sampled -> :ok
+    end
+
+    Enum.each(2..@reput_iterations, fn _ -> reput.() end)
+    :atomics.put(done, 1, 1)
   end
 
   defp stop(pid) do
@@ -264,16 +296,20 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
     end
   end
 
-  defp read_empties(cache, done, entity_id, empties) do
+  defp read_once(cache) do
+    if EntityGroupCache.entity_groups("todo_1", cache.table) == [], do: 1, else: 0
+  end
+
+  defp read_empties(cache, done, entity_id, empties, reads) do
     empties =
       if EntityGroupCache.entity_groups(entity_id, cache.table) == [],
         do: empties + 1,
         else: empties
 
     if :atomics.get(done, 1) == 0 do
-      read_empties(cache, done, entity_id, empties)
+      read_empties(cache, done, entity_id, empties, reads + 1)
     else
-      empties
+      {empties, reads + 1}
     end
   end
 

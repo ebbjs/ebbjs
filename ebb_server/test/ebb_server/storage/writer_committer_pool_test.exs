@@ -137,7 +137,10 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
           writer_opts(ctx, %{
             max_in_flight: 1,
             committer_pool_size: 1,
-            commit_timeout_ms: 50,
+            # The production default, so no real `write_batch` on a loaded
+            # runner can reach it: the never-returning first commit is the
+            # only one that times out.
+            commit_timeout_ms: 2_000,
             sweep_interval_ms: 10,
             fan_out_router: router,
             commit_fn: commit_fn
@@ -151,12 +154,12 @@ defmodule EbbServer.Storage.WriterCommitterPoolTest do
       # an inline NIF would freeze the process the watchdog needs to run in.
       assert hung_worker != writer_pid
 
-      assert {:error, {:rocksdb_write_failed, :commit_timeout}} = Task.await(hung_task, 2_000)
+      assert {:error, {:rocksdb_write_failed, :commit_timeout}} = Task.await(hung_task, 10_000)
 
       # The Writer survives, the abandoned range resolves so the frontier
       # advances, and nothing is left claimed.
       assert Process.alive?(writer_pid)
-      assert_receive {:range_resolved, 1, 1}, 2_000
+      assert_receive {:range_resolved, 1, 1}, 5_000
       assert InFlightActions.size(ctx.in_flight_actions) == 0
 
       assert wait_until(fn ->

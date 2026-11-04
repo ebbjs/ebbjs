@@ -69,20 +69,63 @@ defmodule EbbServer.Storage.SupervisorRestartTest do
         end
       end)
 
-    assert_receive :name_held
+    assert_receive :name_held, 2_000
     on_exit(fn -> Process.exit(holder, :kill) end)
 
-    spawn(fn ->
-      Process.sleep(300)
-      send(holder, :release)
+    # The replacement is unlinked from its starter, so an assertion between the
+    # start and the await must not leave it registered for the rest of the run.
+    on_exit(fn ->
+      case Process.whereis(StorageSupervisor) do
+        nil ->
+          :ok
+
+        ^sup ->
+          # Still the tree this case owns; the case's own cleanup stops it.
+          :ok
+
+        pid ->
+          TestHelpers.safe_stop(pid)
+      end
     end)
 
-    started_at = System.monotonic_time(:millisecond)
-    assert {:ok, replacement} = StorageSupervisor.start_link(data_dir: tmp_dir)
-    waited = System.monotonic_time(:millisecond) - started_at
+    # `Supervisor.start_link/1` registers the supervisor before `init/1` runs,
+    # so a live name means `init/1` has begun. It does not prove the wait has
+    # started, but a tree that did not wait fails on the held name below.
+    task =
+      Task.async(fn ->
+        case StorageSupervisor.start_link(data_dir: tmp_dir) do
+          {:ok, pid} = started ->
+            # The starter is not the tree's owner; unlinking keeps the Task's
+            # exit from taking the replacement down with it.
+            Process.unlink(pid)
+            started
+
+          other ->
+            other
+        end
+      end)
+
+    # The budget stays below `@predecessor_timeout_ms` (5s), so on the
+    # regression this test guards — `init/1` not waiting at all and failing on
+    # the held name — the poll reports that instead of racing the give-up.
+    assert TestHelpers.wait_until(fn -> Process.whereis(StorageSupervisor) != nil end, 400),
+           "the replacement never reached init/1 while #{inspect(WatermarkTracker)} was held"
+
+    # The wait only ends once the held name is free, so the holder still owns
+    # it here while the replacement is starting.
+    assert Process.whereis(WatermarkTracker) == holder
+    assert Task.yield(task, 0) == nil
+
+    send(holder, :release)
+
+    # Generous: the wait above already proved the blocking property, and this
+    # only bounds the tree start that follows the release, which opens RocksDB
+    # and SQLite and can take seconds on a loaded runner. The replacement still
+    # rides the production 5s predecessor budget; overrunning it is the
+    # behaviour under test, not a test defect.
+    assert {:ok, replacement} = Task.await(task, 30_000)
     on_exit(fn -> TestHelpers.safe_stop(replacement) end)
 
-    assert waited >= 300
     assert Health.status() == :ok
   end
 end
