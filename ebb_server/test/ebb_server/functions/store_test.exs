@@ -47,6 +47,11 @@ defmodule EbbServer.Functions.StoreTest do
     version
   end
 
+  defp versions(name, store) do
+    assert {:ok, versions} = Store.versions(name, store)
+    versions
+  end
+
   describe "put_version/2" do
     test "stores a retired row with decoded schemas", %{data_dir: _} = context do
       store = start_store(context)
@@ -71,7 +76,7 @@ defmodule EbbServer.Functions.StoreTest do
       assert version.output_schema == %{"type" => "number"}
       assert is_integer(version.created_at)
 
-      assert [stored] = Store.versions(@name, store)
+      assert [stored] = versions(@name, store)
       assert stored.id == version.id
       assert Store.active(@name, store) == :not_found
     end
@@ -95,7 +100,7 @@ defmodule EbbServer.Functions.StoreTest do
 
       assert {:ok, stored} = Store.get(@name, "1.0.0", store)
       assert stored.code == @code
-      assert length(Store.versions(@name, store)) == 1
+      assert length(versions(@name, store)) == 1
     end
 
     test "an unresolvable params schema is refused before the row exists", context do
@@ -105,7 +110,7 @@ defmodule EbbServer.Functions.StoreTest do
                Store.put_version(attrs(%{params_schema: %{"type" => "nonsense"}}), store)
 
       assert is_binary(reason)
-      assert Store.versions(@name, store) == []
+      assert versions(@name, store) == []
     end
 
     test "an unresolvable output schema is refused", context do
@@ -114,7 +119,7 @@ defmodule EbbServer.Functions.StoreTest do
       assert {:error, {:invalid_schema, "output_schema", _reason}} =
                Store.put_version(attrs(%{output_schema: %{"properties" => "nope"}}), store)
 
-      assert Store.versions(@name, store) == []
+      assert versions(@name, store) == []
     end
 
     test "accepts a boolean draft-7 schema, which accepts everything or nothing", context do
@@ -133,7 +138,7 @@ defmodule EbbServer.Functions.StoreTest do
       assert {:error, {:missing_field, :code}} =
                Store.put_version(Map.delete(attrs(), :code), store)
 
-      assert Store.versions(@name, store) == []
+      assert versions(@name, store) == []
     end
 
     test "created_by and pinned round-trip", context do
@@ -210,12 +215,12 @@ defmodule EbbServer.Functions.StoreTest do
       put!(store)
       put!(store, %{version: "2.0.0"})
       assert {:ok, _} = Store.activate(@name, "1.0.0", store)
-      before = Store.versions(@name, store)
+      before = versions(@name, store)
 
       assert {:error, :not_found} = Store.activate(@name, "9.9.9", store)
 
       assert {:ok, %{version: "1.0.0"}} = Store.active(@name, store)
-      assert Store.versions(@name, store) == before
+      assert versions(@name, store) == before
     end
 
     test "a row whose stored schema was corrupted cannot be activated", context do
@@ -232,20 +237,51 @@ defmodule EbbServer.Functions.StoreTest do
   end
 
   describe "rollback/2" do
-    test "restores the previous version, and a second rollback toggles back", context do
+    test "walks back through activations rather than toggling", context do
+      store = start_store(context)
+      put!(store)
+      put!(store, %{version: "2.0.0"})
+      put!(store, %{version: "3.0.0"})
+
+      assert {:ok, _} = Store.activate(@name, "1.0.0", store)
+      assert {:ok, _} = Store.activate(@name, "2.0.0", store)
+      assert {:ok, _} = Store.activate(@name, "3.0.0", store)
+
+      assert {:ok, %{version: "2.0.0", status: "active"}} = Store.rollback(@name, store)
+      assert {:ok, %{version: "2.0.0"}} = Store.active(@name, store)
+
+      assert {:ok, %{version: "1.0.0", status: "active"}} = Store.rollback(@name, store)
+      assert {:ok, %{version: "1.0.0"}} = Store.active(@name, store)
+
+      assert {:error, :no_previous_version} = Store.rollback(@name, store)
+    end
+
+    test "activation records the row that was active before it", context do
+      store = start_store(context)
+      v1 = put!(store)
+      v2 = put!(store, %{version: "2.0.0"})
+
+      assert {:ok, _} = Store.activate(@name, "1.0.0", store)
+      assert {:ok, active} = Store.activate(@name, "2.0.0", store)
+
+      assert active.previous_version_id == v1.id
+      assert {:ok, %{previous_version_id: nil}} = Store.get(@name, "1.0.0", store)
+      assert v2.previous_version_id == nil
+    end
+
+    test "re-enabling a disabled version keeps its rollback chain", context do
       store = start_store(context)
       put!(store)
       put!(store, %{version: "2.0.0"})
 
       assert {:ok, _} = Store.activate(@name, "1.0.0", store)
       assert {:ok, _} = Store.activate(@name, "2.0.0", store)
+      assert {:ok, %{status: "disabled"}} = Store.disable(@name, store)
 
-      assert {:ok, %{version: "1.0.0", status: "active"}} = Store.rollback(@name, store)
-      assert {:ok, %{version: "1.0.0"}} = Store.active(@name, store)
-      assert {:ok, %{version: "2.0.0", status: "retired"}} = Store.get(@name, "2.0.0", store)
+      assert {:ok, active} = Store.activate(@name, "2.0.0", store)
+      assert active.previous_version_id != nil
 
-      assert {:ok, %{version: "2.0.0", status: "active"}} = Store.rollback(@name, store)
-      assert {:ok, %{version: "2.0.0"}} = Store.active(@name, store)
+      assert {:ok, %{version: "1.0.0"}} = Store.rollback(@name, store)
     end
 
     test "a disabled version is not a rollback candidate", context do
@@ -256,11 +292,16 @@ defmodule EbbServer.Functions.StoreTest do
 
       assert {:ok, _} = Store.activate(@name, "1.0.0", store)
       assert {:ok, _} = Store.activate(@name, "2.0.0", store)
-      assert {:ok, %{status: "disabled"}} = Store.disable(@name, store)
-
       assert {:ok, _} = Store.activate(@name, "3.0.0", store)
 
-      assert {:ok, %{version: "1.0.0", status: "active"}} = Store.rollback(@name, store)
+      # v3 points at v2; rolling back makes v2 active, then disabling it leaves
+      # v3's pointer aimed at a row that is no longer a rollback candidate.
+      assert {:ok, %{version: "2.0.0"}} = Store.rollback(@name, store)
+      assert {:ok, %{status: "disabled"}} = Store.disable(@name, store)
+      assert {:ok, %{version: "3.0.0"}} = Store.activate(@name, "3.0.0", store)
+
+      assert {:error, :no_previous_version} = Store.rollback(@name, store)
+      assert {:ok, %{version: "3.0.0"}} = Store.active(@name, store)
     end
 
     test "a name with no active version has nothing to roll back from", context do
@@ -345,7 +386,7 @@ defmodule EbbServer.Functions.StoreTest do
 
       for version <- ~w(1.0.0 2.0.0 3.0.0 4.0.0 5.0.0), do: put!(store, %{version: version})
 
-      assert ~w(5.0.0 4.0.0 3.0.0) = Enum.map(Store.versions(@name, store), & &1.version)
+      assert ~w(5.0.0 4.0.0 3.0.0) = Enum.map(versions(@name, store), & &1.version)
     end
 
     test "a pinned version survives past N", context do
@@ -354,7 +395,7 @@ defmodule EbbServer.Functions.StoreTest do
 
       for version <- ~w(2.0.0 3.0.0 4.0.0 5.0.0), do: put!(store, %{version: version})
 
-      assert ~w(5.0.0 4.0.0 3.0.0 1.0.0) = Enum.map(Store.versions(@name, store), & &1.version)
+      assert ~w(5.0.0 4.0.0 3.0.0 1.0.0) = Enum.map(versions(@name, store), & &1.version)
     end
 
     test "a pinned version does not consume a retention slot", context do
@@ -364,7 +405,7 @@ defmodule EbbServer.Functions.StoreTest do
       for version <- ~w(1.0.0 3.0.0 4.0.0), do: put!(store, %{version: version})
 
       assert ~w(1.0.0 2.0.0 3.0.0 4.0.0) =
-               @name |> Store.versions(store) |> Enum.map(& &1.version) |> Enum.sort()
+               @name |> versions(store) |> Enum.map(& &1.version) |> Enum.sort()
     end
 
     test "the active version is never pruned", context do
@@ -375,7 +416,7 @@ defmodule EbbServer.Functions.StoreTest do
       for version <- ~w(2.0.0 3.0.0 4.0.0 5.0.0), do: put!(store, %{version: version})
 
       assert {:ok, %{version: "1.0.0"}} = Store.active(@name, store)
-      assert ~w(5.0.0 4.0.0 3.0.0 1.0.0) = Enum.map(Store.versions(@name, store), & &1.version)
+      assert ~w(5.0.0 4.0.0 3.0.0 1.0.0) = Enum.map(versions(@name, store), & &1.version)
     end
 
     test "retention is per name", context do
@@ -384,8 +425,8 @@ defmodule EbbServer.Functions.StoreTest do
       for version <- ~w(1.0.0 2.0.0 3.0.0), do: put!(store, %{version: version})
       put!(store, %{name: "otherFunction", version: "1.0.0"})
 
-      assert ~w(3.0.0 2.0.0) = Enum.map(Store.versions(@name, store), & &1.version)
-      assert [%{version: "1.0.0"}] = Store.versions("otherFunction", store)
+      assert ~w(3.0.0 2.0.0) = Enum.map(versions(@name, store), & &1.version)
+      assert [%{version: "1.0.0"}] = versions("otherFunction", store)
     end
   end
 
@@ -407,7 +448,24 @@ defmodule EbbServer.Functions.StoreTest do
       assert active.params_schema == activated.params_schema
       assert active.output_schema == activated.output_schema
 
-      assert length(Store.versions(@name, restarted)) == 2
+      assert length(versions(@name, restarted)) == 2
+    end
+  end
+
+  describe "migrations" do
+    test "a v1 database gains previous_version_id without losing rows", context do
+      {:ok, db} = Sqlite3.open(db_path(context))
+      :ok = Sqlite3.execute(db, v1_ddl())
+      :ok = Sqlite3.execute(db, "PRAGMA user_version = 1")
+      assert :done == insert_direct!(db, "fv_v1", @name, "1.0.0", "active")
+      :ok = Sqlite3.close(db)
+
+      store = start_store(context)
+
+      assert {:ok, active} = Store.active(@name, store)
+      assert active.id == "fv_v1"
+      assert active.previous_version_id == nil
+      assert {:ok, [%{version: "1.0.0"}]} = Store.versions(@name, store)
     end
   end
 
@@ -421,6 +479,38 @@ defmodule EbbServer.Functions.StoreTest do
   defp open_direct(context) do
     {:ok, db} = Sqlite3.open(db_path(context))
     db
+  end
+
+  # The exact schema `functions.db` had before migration v2. A database created
+  # by #595 must upgrade in place.
+  defp v1_ddl do
+    """
+    CREATE TABLE function_versions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      code TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      signature TEXT,
+      signer_key_id TEXT,
+      runtime TEXT NOT NULL,
+      entry TEXT NOT NULL,
+      access TEXT NOT NULL,
+      params_schema TEXT,
+      output_schema TEXT,
+      contract TEXT NOT NULL,
+      timeout_ms INTEGER NOT NULL,
+      memory_bytes INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active','retired','disabled')),
+      created_at INTEGER NOT NULL,
+      activated_at INTEGER,
+      created_by TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (name, version)
+    );
+    CREATE UNIQUE INDEX idx_function_active ON function_versions(name) WHERE status = 'active';
+    CREATE INDEX idx_function_versions_name ON function_versions(name, created_at DESC);
+    """
   end
 
   defp insert_direct!(db, id, name, version, status) do

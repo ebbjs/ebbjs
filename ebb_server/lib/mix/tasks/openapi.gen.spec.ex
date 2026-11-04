@@ -158,6 +158,24 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
         path: "/functions/:name/activate",
         operation_atom: :activate_function,
         module: EbbServer.Functions.Router
+      },
+      %{
+        method: :get,
+        path: "/functions/:name/versions",
+        operation_atom: :list_function_versions,
+        module: EbbServer.Functions.Router
+      },
+      %{
+        method: :post,
+        path: "/functions/:name/rollback",
+        operation_atom: :rollback_function,
+        module: EbbServer.Functions.Router
+      },
+      %{
+        method: :post,
+        path: "/functions/:name/disable",
+        operation_atom: :disable_function,
+        module: EbbServer.Functions.Router
       }
     ]
   end

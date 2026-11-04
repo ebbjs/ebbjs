@@ -69,6 +69,15 @@ defmodule EbbServer.Functions.RouterStoreTest do
 
   defp admin(opts \\ []), do: Keyword.put(opts, :authorization, "Bearer " <> @admin_token)
 
+  defp history(ctx, name, opts),
+    do: call_functions(:get, "/#{name}/versions", "", router_opts(ctx, opts))
+
+  defp rollback(ctx, name, opts),
+    do: call_functions(:post, "/#{name}/rollback", "", router_opts(ctx, opts))
+
+  defp disable(ctx, name, opts),
+    do: call_functions(:post, "/#{name}/disable", "", router_opts(ctx, opts))
+
   describe "upload, activate, invoke" do
     test "the uploaded code is what the invocation runs", ctx do
       configure_boot(
@@ -126,6 +135,193 @@ defmodule EbbServer.Functions.RouterStoreTest do
 
       assert conn.status == 201
       assert json_body(conn)["pinned"] == true
+    end
+  end
+
+  describe "version history, rollback, and disable" do
+    test "history lists every version, newest first, without code", ctx do
+      name = "history"
+      v2_code = "export const history = () => ({ version: 2 });\n"
+      v3_code = "export const history = () => ({ version: 3 });\n"
+
+      assert upload(ctx, name, envelope_for(name, @code), @code, admin()).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v2_code, %{"version" => "2.0.0"}),
+               v2_code,
+               admin()
+             ).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v3_code, %{"version" => "3.0.0"}),
+               v3_code,
+               admin()
+             ).status == 201
+
+      assert activate(ctx, name, "1.0.0", admin()).status == 200
+
+      conn = history(ctx, name, admin())
+      assert conn.status == 200
+      assert %{"versions" => versions} = json_body(conn)
+      assert Enum.map(versions, & &1["version"]) == ["3.0.0", "2.0.0", "1.0.0"]
+      assert Enum.map(versions, & &1["status"]) == ["retired", "retired", "active"]
+      assert Enum.all?(versions, &(not Map.has_key?(&1, "code")))
+      assert Enum.all?(versions, &is_integer(&1["createdAt"]))
+      assert Enum.all?(versions, &(&1["pinned"] == false))
+    end
+
+    test "history of an unknown name is 404, while a disabled name remains visible", ctx do
+      assert history(ctx, "neverUploaded", admin()).status == 404
+
+      name = "disabledHistory"
+      deploy!(ctx, name, %{}, admin())
+      assert disable(ctx, name, admin()).status == 200
+
+      conn = history(ctx, name, admin())
+      assert conn.status == 200
+      assert [%{"version" => "1.0.0", "status" => "disabled"}] = json_body(conn)["versions"]
+    end
+
+    test "history, rollback, and disable require the admin credential and an actor", ctx do
+      name = "guardedLifecycle"
+      deploy!(ctx, name, %{}, admin())
+
+      for call <- [
+            fn opts -> history(ctx, name, opts) end,
+            fn opts -> rollback(ctx, name, opts) end,
+            fn opts -> disable(ctx, name, opts) end
+          ] do
+        assert call.([]).status == 403
+        assert call.(authorization: "Bearer wrong").status == 403
+        assert call.(admin(actor_id: nil)).status == 401
+      end
+    end
+
+    test "rollback walks back through activations and then stops", ctx do
+      name = "walkBack"
+      v2_code = "export const walkBack = () => 2;\n"
+      v3_code = "export const walkBack = () => 3;\n"
+
+      assert upload(ctx, name, envelope_for(name, @code), @code, admin()).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v2_code, %{"version" => "2.0.0"}),
+               v2_code,
+               admin()
+             ).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v3_code, %{"version" => "3.0.0"}),
+               v3_code,
+               admin()
+             ).status == 201
+
+      for version <- ~w(1.0.0 2.0.0 3.0.0) do
+        assert activate(ctx, name, version, admin()).status == 200
+      end
+
+      first = rollback(ctx, name, admin())
+      assert first.status == 200
+      assert json_body(first)["version"] == "2.0.0"
+      assert json_body(first)["status"] == "active"
+
+      second = rollback(ctx, name, admin())
+      assert second.status == 200
+      assert json_body(second)["version"] == "1.0.0"
+
+      third = rollback(ctx, name, admin())
+      assert third.status == 409
+      assert json_body(third)["error"] == "no_previous_version"
+    end
+
+    test "rollback with no active version is 404", ctx do
+      name = "inactive"
+      assert upload(ctx, name, envelope_for(name, @code), @code, admin()).status == 201
+
+      conn = rollback(ctx, name, admin())
+      assert conn.status == 404
+      assert json_body(conn)["error"] == "not_found"
+    end
+
+    test "rollback refuses a pointer to a disabled version", ctx do
+      name = "disabledRollback"
+      v2_code = "export const disabledRollback = () => 2;\n"
+      v3_code = "export const disabledRollback = () => 3;\n"
+
+      assert upload(ctx, name, envelope_for(name, @code), @code, admin()).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v2_code, %{"version" => "2.0.0"}),
+               v2_code,
+               admin()
+             ).status == 201
+
+      assert upload(
+               ctx,
+               name,
+               envelope_for(name, v3_code, %{"version" => "3.0.0"}),
+               v3_code,
+               admin()
+             ).status == 201
+
+      for version <- ~w(1.0.0 2.0.0 3.0.0) do
+        assert activate(ctx, name, version, admin()).status == 200
+      end
+
+      assert rollback(ctx, name, admin()).status == 200
+      assert disable(ctx, name, admin()).status == 200
+      assert activate(ctx, name, "3.0.0", admin()).status == 200
+
+      conn = rollback(ctx, name, admin())
+      assert conn.status == 409
+      assert json_body(conn)["error"] == "no_previous_version"
+    end
+
+    test "disable is the kill switch and a second disable is 404", ctx do
+      configure_boot(transport: InputScriptedWorker)
+
+      name = "routedKillSwitch"
+      deploy!(ctx, name, %{}, admin())
+      grant_function(ctx.tables, @actor, ["function.*"])
+
+      assert invoke(ctx, name, "{}").status == 200
+
+      disabled = disable(ctx, name, admin())
+      assert disabled.status == 200
+      assert json_body(disabled)["status"] == "disabled"
+
+      missing = invoke(ctx, name, "{}")
+      assert missing.status == 404
+      assert json_body(missing)["error"] == "not_found"
+
+      assert disable(ctx, name, admin()).status == 404
+
+      assert activate(ctx, name, "1.0.0", admin()).status == 200
+      assert invoke(ctx, name, "{}").status == 200
+    end
+
+    test "a store that cannot answer is a 500 on every lifecycle route", ctx do
+      name = "storelessLifecycle"
+
+      for call <- [
+            fn -> history(ctx, name, admin(store: :functions_store_that_is_not_running)) end,
+            fn -> rollback(ctx, name, admin(store: :functions_store_that_is_not_running)) end,
+            fn -> disable(ctx, name, admin(store: :functions_store_that_is_not_running)) end
+          ] do
+        conn = call.()
+        assert conn.status == 500
+        assert json_body(conn)["error"] == "internal_error"
+      end
     end
   end
 

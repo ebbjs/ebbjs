@@ -1608,7 +1608,7 @@
         {
           "post":
             {
-              "description": "Makes one uploaded version the name's serving version in a single transaction: whatever was active is retired and the target becomes active. Requires the deploy credential in `Authorization: Bearer <admin token>`. The target's stored schemas are re-resolved first, so a row tampered with after upload cannot become active. Rollback is a store operation and CLI verb, not a route of its own.",
+              "description": "Makes one uploaded version the name's serving version in a single transaction: whatever was active is retired and the target becomes active. Requires the deploy credential in `Authorization: Bearer <admin token>`. The target's stored schemas are re-resolved first, so a row tampered with after upload cannot become active. Use `POST /functions/{name}/rollback` to return to the previous version.",
               "operationId": "activateFunction",
               "parameters":
                 [
@@ -1846,8 +1846,579 @@
               "tags": ["Functions"],
             },
         },
+      "/functions/{name}/disable":
+        {
+          "post":
+            {
+              "description": "The per-function kill switch: the active version becomes `disabled`, the name holds no active slot and resolves `404`, and no worker is spawned. Activating a version again re-enables it. Requires the deploy credential. A second disable answers `404` because there is no active version left.",
+              "operationId": "disableFunction",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>` — the node's separate deploy credential. Missing, wrong, or unconfigured answers `403 denied`. It does not grant invoke permission.",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "name": { "type": "string" },
+                                      "ok": { "enum": [true], "type": "boolean" },
+                                      "pinned":
+                                        {
+                                          "description": "Present on upload; whether retention will keep this version",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "status":
+                                        {
+                                          "description": "The row's status after the write",
+                                          "enum": ["active", "retired", "disabled"],
+                                          "type": "string",
+                                        },
+                                      "version": { "type": "string" },
+                                    },
+                                  "required": ["ok", "name", "version", "status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The active version is now disabled",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The name has no active version to disable",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                    },
+                },
+              "summary": "Disable a function",
+              "tags": ["Functions"],
+            },
+        },
+      "/functions/{name}/rollback":
+        {
+          "post":
+            {
+              "description": "Activates the version that was active when the current one was last activated, following the recorded chain (v3 → v2 → v1). A disabled version is never a candidate; re-enabling one is an activation. Requires the deploy credential.",
+              "operationId": "rollbackFunction",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>` — the node's separate deploy credential. Missing, wrong, or unconfigured answers `403 denied`. It does not grant invoke permission.",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "name": { "type": "string" },
+                                      "ok": { "enum": [true], "type": "boolean" },
+                                      "pinned":
+                                        {
+                                          "description": "Present on upload; whether retention will keep this version",
+                                          "nullable": true,
+                                          "type": "boolean",
+                                        },
+                                      "status":
+                                        {
+                                          "description": "The row's status after the write",
+                                          "enum": ["active", "retired", "disabled"],
+                                          "type": "string",
+                                        },
+                                      "version": { "type": "string" },
+                                    },
+                                  "required": ["ok", "name", "version", "status"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The previous version is active",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The name has no active version",
+                    },
+                  "409":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "`no_previous_version`: nothing earlier to roll back to",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The previous version's stored schema cannot be resolved",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                    },
+                },
+              "summary": "Roll back to the previous function version",
+              "tags": ["Functions"],
+            },
+        },
       "/functions/{name}/versions":
         {
+          "get":
+            {
+              "description": "Returns every uploaded version of the name, newest first, with its status, timestamps, pin, and creator. Code is never returned. Requires the deploy credential. A disabled name still lists its versions, which is how an operator finds the version to activate again.",
+              "operationId": "listFunctionVersions",
+              "parameters":
+                [
+                  {
+                    "description": "The function name",
+                    "in": "path",
+                    "name": "name",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>` — the node's separate deploy credential. Missing, wrong, or unconfigured answers `403 denied`. It does not grant invoke permission.",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "versions":
+                                        {
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "activatedAt":
+                                                    {
+                                                      "description": "Epoch milliseconds; null until the version is first activated",
+                                                      "format": "int64",
+                                                      "nullable": true,
+                                                      "type": "integer",
+                                                    },
+                                                  "createdAt":
+                                                    {
+                                                      "description": "Epoch milliseconds",
+                                                      "format": "int64",
+                                                      "type": "integer",
+                                                    },
+                                                  "createdBy":
+                                                    { "nullable": true, "type": "string" },
+                                                  "pinned": { "type": "boolean" },
+                                                  "status":
+                                                    {
+                                                      "description": "The row's current status",
+                                                      "enum": ["active", "retired", "disabled"],
+                                                      "type": "string",
+                                                    },
+                                                  "version": { "type": "string" },
+                                                },
+                                              "required":
+                                                ["version", "status", "createdAt", "pinned"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                    },
+                                  "required": ["versions"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Every uploaded version of the name, newest first",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No resolved actor",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "No version of this name has been uploaded",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable reason, never a stack",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Platform failure",
+                    },
+                },
+              "summary": "List a function's version history",
+              "tags": ["Functions"],
+            },
           "post":
             {
               "description": "Stores one bundle as a new `(name, version)` row. Requires the deploy credential in `Authorization: Bearer <admin token>`; holding it never grants invoke permission. The envelope is verified before the row exists — digest, contract, name grammar, and both JSON Schemas — and a version that already exists is `409` rather than a code replacement. Uploading does not activate: the stored version is `retired` until `POST /functions/{name}/activate` points the name at it.",

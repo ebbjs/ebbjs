@@ -117,6 +117,47 @@ defmodule EbbServer.Functions.Router.OperationSchema do
   end
 
   @doc """
+  One row of a name's version history. Never includes code.
+  """
+  def version_info do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["version", "status", "createdAt", "pinned"],
+      properties: %{
+        version: %OpenApiSpex.Schema{type: :string},
+        status: %OpenApiSpex.Schema{
+          type: :string,
+          enum: ["active", "retired", "disabled"],
+          description: "The row's current status"
+        },
+        createdAt: %OpenApiSpex.Schema{
+          type: :integer,
+          format: :int64,
+          description: "Epoch milliseconds"
+        },
+        activatedAt: %OpenApiSpex.Schema{
+          type: :integer,
+          format: :int64,
+          nullable: true,
+          description: "Epoch milliseconds; null until the version is first activated"
+        },
+        pinned: %OpenApiSpex.Schema{type: :boolean},
+        createdBy: %OpenApiSpex.Schema{type: :string, nullable: true}
+      }
+    }
+  end
+
+  def version_history do
+    %OpenApiSpex.Schema{
+      type: :object,
+      required: ["versions"],
+      properties: %{
+        versions: %OpenApiSpex.Schema{type: :array, items: version_info()}
+      }
+    }
+  end
+
+  @doc """
   The invocation request body: the function's params.
 
   The shape is the function's own params schema, so this documents the
@@ -208,6 +249,10 @@ defmodule EbbServer.Functions.Router.OperationSchema do
 
   def function_version_response(description) do
     json_response(description, function_version())
+  end
+
+  def version_history_response do
+    json_response("Every uploaded version of the name, newest first", version_history())
   end
 
   def invocation_success_response do
