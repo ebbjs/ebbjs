@@ -27,7 +27,12 @@ defmodule EbbServer.FunctionsTest do
     :ok
   end
 
-  defp configure(config), do: Application.put_env(:ebb_server, :functions, config)
+  # Merge over the environment's base so a test that only changes `enabled`
+  # still gets the suite's fake transport and never trips the Bun boot check.
+  defp configure(config) do
+    base = Application.get_env(:ebb_server, :functions, [])
+    Application.put_env(:ebb_server, :functions, Keyword.merge(base, config))
+  end
 
   describe "enabled?/0" do
     test "is false when nothing is configured" do
@@ -134,7 +139,8 @@ defmodule EbbServer.FunctionsTest do
     test "is a bundle cache over the directory loader when a bundle_dir is configured" do
       configure(enabled: true, bundle_dir: "/srv/functions/bundles")
 
-      assert [spec] = Functions.children(data_dir: "/tmp/functions")
+      assert [stats_spec, spec] = Functions.children(data_dir: "/tmp/functions")
+      assert Supervisor.child_spec(stats_spec, []).id == EbbServer.Functions.Stats
 
       assert %{
                id: BundleCache,
@@ -148,7 +154,8 @@ defmodule EbbServer.FunctionsTest do
     test "is the store then the cache over the store loader without a bundle_dir" do
       configure(enabled: true, retention: 5, admin_token: "deploy-secret")
 
-      assert [store_spec, cache_spec] = Functions.children(data_dir: "/srv/ebb/data")
+      assert [_stats_spec, store_spec, cache_spec] =
+               Functions.children(data_dir: "/srv/ebb/data")
 
       assert %{
                id: Store,
@@ -179,14 +186,15 @@ defmodule EbbServer.FunctionsTest do
         end
       end)
 
-      assert [{Store, opts}, {BundleCache, _cache_opts}] = Functions.children()
+      assert [_stats, {Store, opts}, {BundleCache, _cache_opts}] = Functions.children()
+
       assert opts[:data_dir] == "/srv/ebb/configured"
     end
 
     test "a blank bundle_dir is not configured" do
       configure(enabled: true, bundle_dir: "")
 
-      assert [{Store, _store_opts}, {BundleCache, _cache_opts}] =
+      assert [_stats, {Store, _store_opts}, {BundleCache, _cache_opts}] =
                Functions.children(data_dir: "/srv/ebb/data")
     end
 
@@ -226,7 +234,7 @@ defmodule EbbServer.FunctionsTest do
   end
 
   describe "the worker seam" do
-    test "defaults to the in-process fake with no options" do
+    test "reads the suite's fake transport from the environment" do
       configure(enabled: true, bundle_dir: "/srv/functions/bundles")
 
       assert Functions.transport() == Fake

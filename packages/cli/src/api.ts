@@ -58,6 +58,25 @@ export interface ListVersionsResponse {
   versions: FunctionVersionInfo[];
 }
 
+/** Per-version counters and the pool gauges behind `ebb functions health`. */
+export interface FunctionHealth {
+  name: string;
+  version: string;
+  access?: string;
+  invocations?: number;
+  errors?: number;
+  timeouts?: number;
+  worker_kills?: number;
+  fetch_calls?: number;
+}
+
+export interface HealthResponse {
+  ok: true;
+  storage: "ok" | "unavailable";
+  functions: FunctionHealth[];
+  pool: Record<string, number>;
+}
+
 /**
  * A request the server refused, or a response the CLI could not read.
  *
@@ -186,6 +205,13 @@ export async function listFunctions(
   options: ApiOptionsInput = {},
 ): Promise<ListFunctionsResponse> {
   return request<ListFunctionsResponse>(config, "actor", "GET", "/functions", undefined, options);
+}
+
+export async function getHealth(
+  config: ResolvedConfig,
+  options: ApiOptionsInput = {},
+): Promise<HealthResponse> {
+  return request<HealthResponse>(config, "admin", "GET", "/functions/health", undefined, options);
 }
 
 type RequestKind = "admin" | "actor";

@@ -228,6 +228,10 @@ jobs:
       # through their dist entries, exactly as a deployment does.
       - name: Build the workspace packages
         run: pnpm build:packages
+      # The release ships the committed single-file runner; a source change
+      # that was not rebuilt would run an old bundle in production.
+      - name: Verify the committed runner bundle
+        run: bash scripts/build-runner.sh --check
       - name: Run the real-runner tests
         working-directory: ebb_server
         run: |

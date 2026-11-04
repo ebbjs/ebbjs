@@ -8,6 +8,14 @@ import Config
 config :ebb_server, port: 4001
 config :ebb_server, data_dir: Path.join(System.tmp_dir!(), "ebb_server_test_app_storage")
 config :ebb_server, auth_mode: :bypass
+# Functions are on in production; the suite configures its own cache, store,
+# and transport per test, so the application never starts a pool or opens a
+# production database here.
+config :ebb_server, :functions,
+  enabled: false,
+  transport: EbbServer.Functions.Worker.Fake,
+  worker_opts: []
+
 # The commit watchdog is disabled in the suite by default so the depth-1
 # Writer keeps its inline commit path, which most storage tests pin. Watchdog
 # tests pass an explicit `:commit_timeout_ms` through `start_writer/1`.

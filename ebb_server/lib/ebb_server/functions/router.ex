@@ -164,15 +164,24 @@ defmodule EbbServer.Functions.Router do
   use Plug.Router, copy_opts_to_assign: :functions_opts
 
   alias EbbServer.Functions
-  alias EbbServer.Functions.{Access, Admin, Bundle, BundleCache, Invocation, Protocol, Response}
+
+  alias EbbServer.Functions.{
+    Access,
+    Admin,
+    Bundle,
+    BundleCache,
+    Invocation,
+    Principal,
+    Protocol,
+    Response
+  }
+
   alias EbbServer.Functions.Router.OperationSchema
-  alias EbbServer.Functions.{Store, Validate}
+  alias EbbServer.Functions.{Stats, Store, Validate}
   alias EbbServer.Functions.Store.Version
+  alias EbbServer.Functions.Worker.Pool
   alias EbbServer.Storage.CacheTables
 
-  # The body of an `invoke` frame is the bundle's code plus this request's
-  # input; a request body can never usefully be larger than a whole frame.
-  @max_body_bytes Protocol.max_frame_bytes()
   # An upload carries code plus its envelope, which the frame bound does not
   # describe.
   @max_upload_bytes 8 * 1024 * 1024
@@ -184,16 +193,16 @@ defmodule EbbServer.Functions.Router do
   # that what the history will echo back is a well-formed one.
   @deployment_hash_pattern ~r/\Asha256:[0-9a-f]{64}\z/
   @admin_denied_details "an admin credential is required to deploy or activate"
-  # Handed to the runner in the invoke frame. The runner is what counts calls
-  # (plan §2.12); v1's only ops are one pure read and one commit, so the server
-  # has nothing to count here yet.
-  @max_host_calls 1000
 
   plug(:match)
   plug(:dispatch)
 
   get "/" do
-    with_actor(conn, &list_functions/2)
+    with_principal(conn, &list_functions/2)
+  end
+
+  get "/health" do
+    health(conn)
   end
 
   post "/:name/versions" do
@@ -218,17 +227,22 @@ defmodule EbbServer.Functions.Router do
 
   post "/:name" do
     name = conn.path_params["name"]
-    actor_id = conn.assigns[:actor_id]
 
-    case idempotency_key(conn) do
-      {:ok, key} ->
-        case actor_id do
-          nil -> respond(conn, Response.failure(401, invocation_id: new_invocation_id()))
-          actor -> invoke(conn, name, actor, invocation_id_for(actor, name, key))
-        end
+    case Principal.resolve(conn, principal_opts(conn)) do
+      {:ok, principal} ->
+        with_idempotency_key(conn, name, principal)
 
-      {:error, details} ->
-        respond(conn, invalid_key_response(details))
+      {:error, :unauthenticated} ->
+        respond(conn, Response.failure(401, invocation_id: new_invocation_id()))
+
+      {:error, :denied} ->
+        respond(
+          conn,
+          Response.failure(403,
+            invocation_id: new_invocation_id(),
+            details: "the service token is not recognized"
+          )
+        )
     end
   end
 
@@ -268,6 +282,32 @@ defmodule EbbServer.Functions.Router do
     case conn.assigns[:actor_id] do
       actor_id when is_binary(actor_id) and actor_id != "" -> fun.(conn, actor_id)
       _missing -> send_json(conn, 401, %{"error" => "unauthorized"})
+    end
+  end
+
+  defp principal_opts(conn) do
+    case Keyword.fetch(conn.assigns.functions_opts, :services) do
+      {:ok, services} -> [services: services]
+      :error -> []
+    end
+  end
+
+  # Invocation and the catalogue accept either principal kind; a service has no
+  # actor assign, so the actor-only `with_actor/2` would deny it.
+  defp with_principal(conn, fun) do
+    case Principal.resolve(conn, principal_opts(conn)) do
+      {:ok, principal} -> fun.(conn, principal)
+      {:error, _reason} -> send_json(conn, 401, %{"error" => "unauthorized"})
+    end
+  end
+
+  defp with_idempotency_key(conn, name, principal) do
+    case idempotency_key(conn) do
+      {:ok, key} ->
+        invoke(conn, name, principal, invocation_id_for(principal, name, key))
+
+      {:error, details} ->
+        respond(conn, invalid_key_response(details))
     end
   end
 
@@ -329,7 +369,7 @@ defmodule EbbServer.Functions.Router do
   # schemas of what it may invoke, and none of that is code. The admin
   # credential is what lets a caller publish, never what lets it read the
   # catalogue.
-  defp list_functions(conn, _actor_id) do
+  defp list_functions(conn, _principal) do
     case list_versions(conn) do
       {:ok, versions} ->
         send_json(conn, 200, %{"functions" => Enum.map(versions, &function_summary/1)})
@@ -341,6 +381,77 @@ defmodule EbbServer.Functions.Router do
 
   defp list_versions(conn) do
     with_store(fn -> Store.list(store(conn)) end)
+  end
+
+  # --- GET /health ---------------------------------------------------------
+
+  # Admin-only: the counters name every version the node has served, including
+  # retired and disabled ones, and an operator is the reader. The pool gauges
+  # are the same numbers the telemetry event carries.
+  defp health(conn) do
+    if admin_authorized?(conn) do
+      # Health answers even when the store is unavailable: the counters and
+      # pool gauges are exactly what an operator needs to diagnose that.
+      {storage, versions} =
+        case list_versions(conn) do
+          {:ok, versions} -> {"ok", versions}
+          {:error, _reason} -> {"unavailable", []}
+        end
+
+      snapshot = Stats.snapshot()
+
+      send_json(conn, 200, %{
+        "ok" => true,
+        "storage" => storage,
+        "functions" => merge_health(versions, snapshot["functions"]),
+        "pool" => snapshot["pool"]
+      })
+    else
+      send_json(conn, 403, %{
+        "error" => "denied",
+        "details" => @admin_denied_details
+      })
+    end
+  end
+
+  # The store's active versions are the rows an operator expects to see even
+  # before anything invoked them; the counters fill in whatever has run.
+  defp merge_health(versions, counters) do
+    counted = Map.new(counters, fn row -> {{row["name"], row["version"]}, row} end)
+
+    active =
+      Enum.map(versions, fn %Version{} = version ->
+        counted
+        |> Map.get({version.name, version.version}, %{})
+        |> Map.merge(%{
+          "name" => version.name,
+          "version" => version.version,
+          "access" => version.access
+        })
+        |> zero_counters()
+      end)
+
+    active_names = MapSet.new(active, &{&1["name"], &1["version"]})
+
+    retired =
+      counters
+      |> Enum.reject(&MapSet.member?(active_names, {&1["name"], &1["version"]}))
+      |> Enum.map(&zero_counters/1)
+
+    active ++ retired
+  end
+
+  defp zero_counters(row) do
+    Map.merge(
+      %{
+        "invocations" => 0,
+        "errors" => 0,
+        "timeouts" => 0,
+        "worker_kills" => 0,
+        "fetch_calls" => 0
+      },
+      row
+    )
   end
 
   defp function_summary(%Version{} = version) do
@@ -807,14 +918,17 @@ defmodule EbbServer.Functions.Router do
 
   defp validate_key(key), do: {:ok, key}
 
-  defp invocation_id_for(_actor_id, _name, nil), do: new_invocation_id()
-  defp invocation_id_for(actor_id, name, key), do: derived_invocation_id(actor_id, name, key)
+  defp invocation_id_for(_principal, _name, nil), do: new_invocation_id()
+  defp invocation_id_for(principal, name, key), do: derived_invocation_id(principal, name, key)
 
-  # The actor and function scope the key: it is caller-chosen, so two callers
-  # that pick the same string are not retrying the same request.
-  defp derived_invocation_id(actor_id, name, key) do
+  # The principal and function scope the key: it is caller-chosen, so two
+  # callers that pick the same string are not retrying the same request. For a
+  # service credential the principal is the credential, so two credentials
+  # sharing a subject actor still get distinct Actions. Callers behind one
+  # credential share this key space and must use their own keys.
+  defp derived_invocation_id(%{id: principal_id}, name, key) do
     digest =
-      :crypto.hash(:sha256, [actor_id, "\n", name, "\n", key])
+      :crypto.hash(:sha256, [principal_id, "\n", name, "\n", key])
       |> Base.encode16(case: :lower)
 
     "inv_" <> binary_part(digest, 0, 16)
@@ -828,10 +942,10 @@ defmodule EbbServer.Functions.Router do
     )
   end
 
-  defp invoke(conn, name, actor_id, invocation_id) do
+  defp invoke(conn, name, principal, invocation_id) do
     case active_bundle(conn, name, invocation_id) do
       {:ok, bundle} ->
-        authorize(conn, bundle, actor_id, invocation_id)
+        authorize(conn, bundle, principal, invocation_id)
 
       {:error, response} ->
         respond(conn, response)
@@ -841,7 +955,7 @@ defmodule EbbServer.Functions.Router do
   # An empty body is no parameters; a JSON body must be an object because the
   # frame's `input` is the function's argument map.
   defp read_input(conn) do
-    case read_limited_body(conn, @max_body_bytes) do
+    case read_limited_body(conn, Functions.max_invoke_body_bytes()) do
       {:ok, "", conn} ->
         {:ok, %{}, conn}
 
@@ -908,12 +1022,12 @@ defmodule EbbServer.Functions.Router do
   # A caller that may not invoke this function never reaches the transport, so
   # a denied request spawns nothing. Authorization also precedes the body read:
   # a denied caller should not be able to make the server read a megabyte first.
-  defp authorize(conn, bundle, actor_id, invocation_id) do
+  defp authorize(conn, bundle, principal, invocation_id) do
     table = group_members_table(conn)
 
-    case Access.authorize(bundle.access, actor_id, bundle.name, table: table) do
+    case Access.authorize(bundle.access, principal, bundle.name, table: table) do
       :ok ->
-        read_and_execute(conn, bundle, actor_id, invocation_id)
+        with_secrets(conn, bundle, principal, invocation_id)
 
       {:error, :denied} ->
         respond(
@@ -923,10 +1037,30 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  defp read_and_execute(conn, bundle, actor_id, invocation_id) do
+  # A configured secret with no value fails before the body is read and before
+  # a worker exists. The response names the missing keys, never a value.
+  defp with_secrets(conn, bundle, principal, invocation_id) do
+    case Functions.invocation_env(bundle.name) do
+      {:ok, env} ->
+        read_and_execute(conn, bundle, principal, invocation_id, env)
+
+      {:error, {:missing_secret, keys}} ->
+        respond(
+          conn,
+          Response.failure(422,
+            invocation_id: invocation_id,
+            version: bundle.version,
+            code: "missing_secret",
+            details: "missing secret: #{Enum.join(keys, ", ")}"
+          )
+        )
+    end
+  end
+
+  defp read_and_execute(conn, bundle, principal, invocation_id, env) do
     case read_input(conn) do
       {:ok, input, conn} ->
-        respond(conn, execute(bundle, actor_id, invocation_id, input))
+        respond(conn, execute(bundle, principal, invocation_id, input, env))
 
       {:error, status, details, conn} ->
         respond(
@@ -942,19 +1076,19 @@ defmodule EbbServer.Functions.Router do
 
   # Params are validated before the frame exists, so a request whose input
   # cannot satisfy the schema never reaches a worker.
-  defp execute(bundle, actor_id, invocation_id, input) do
+  defp execute(bundle, principal, invocation_id, input, env) do
     case Validate.params(bundle, input) do
-      :ok -> frame_and_run(bundle, actor_id, invocation_id, input)
+      :ok -> frame_and_run(bundle, principal, invocation_id, input, env)
       {:error, issues} -> invalid_input(bundle, invocation_id, issues)
     end
   end
 
-  defp frame_and_run(bundle, actor_id, invocation_id, input) do
-    frame = invoke_frame(bundle, actor_id, invocation_id, input)
+  defp frame_and_run(bundle, principal, invocation_id, input, env) do
+    frame = invoke_frame(bundle, principal, invocation_id, input, env)
 
     if Protocol.fits?(frame) do
       bundle
-      |> run_invocation(frame)
+      |> run_invocation(frame, principal, input)
       |> to_response(invocation_id, bundle)
     else
       Response.failure(413,
@@ -974,7 +1108,7 @@ defmodule EbbServer.Functions.Router do
     )
   end
 
-  defp invoke_frame(bundle, actor_id, invocation_id, input) do
+  defp invoke_frame(bundle, principal, invocation_id, input, env) do
     Protocol.invoke(%{
       "invocation_id" => invocation_id,
       "name" => bundle.name,
@@ -983,20 +1117,49 @@ defmodule EbbServer.Functions.Router do
       "bundle" => bundle.code,
       "entry" => bundle.entry,
       "input" => input,
-      "subject_actor_id" => actor_id,
-      # Secrets are #597; v1 hands a function no environment.
-      "env" => %{},
-      "limits" => %{"timeout_ms" => bundle.timeout_ms, "max_host_calls" => @max_host_calls}
+      "subject_actor_id" => principal.actor_id,
+      "caller_kind" => Atom.to_string(principal.kind),
+      "env" => env,
+      "limits" =>
+        Functions.limits()
+        |> Map.put("timeout_ms", bundle.timeout_ms)
+        |> Map.put("memory_bytes", bundle.memory_bytes)
     })
   end
 
-  defp run_invocation(bundle, frame) do
-    Invocation.run(
-      transport: Functions.transport(),
+  defp run_invocation(bundle, frame, principal, input) do
+    opts = [
       invoke: frame,
-      worker_opts: Functions.worker_opts(),
-      deadline_ms: bundle.timeout_ms
-    )
+      deadline_ms: bundle.timeout_ms,
+      max_host_calls: Functions.max_host_calls(),
+      max_log_lines: Functions.max_log_lines(),
+      max_log_bytes: Functions.max_log_bytes(),
+      input_bytes: input_bytes(input),
+      telemetry_meta: %{
+        name: bundle.name,
+        version: bundle.version,
+        actor_id: principal.actor_id,
+        caller_kind: principal.kind
+      }
+    ]
+
+    if pooled?() do
+      Invocation.run(opts ++ [transport: Pool.Transport, worker_opts: [pool: Pool]])
+    else
+      Invocation.run(
+        opts ++ [transport: Functions.transport(), worker_opts: Functions.worker_opts()]
+      )
+    end
+  end
+
+  defp pooled? do
+    Functions.pool?() and Process.whereis(Pool) != nil
+  end
+
+  defp input_bytes(input) do
+    IO.iodata_length(Jason.encode_to_iodata!(input))
+  rescue
+    _error -> 0
   end
 
   # The result is checked against the optional output schema. A failure here is

@@ -45,8 +45,13 @@ defmodule EbbServer.FunctionsTestHelpers do
   """
   def configure_boot(overrides) do
     previous = Application.get_env(:ebb_server, :functions)
+    base = previous || []
 
-    Application.put_env(:ebb_server, :functions, Keyword.merge([enabled: true], overrides))
+    Application.put_env(
+      :ebb_server,
+      :functions,
+      base |> Keyword.merge(enabled: true) |> Keyword.merge(overrides)
+    )
 
     ExUnit.Callbacks.on_exit(fn ->
       case previous do

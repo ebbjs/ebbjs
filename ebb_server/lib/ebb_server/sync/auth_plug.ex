@@ -34,9 +34,26 @@ defmodule EbbServer.Sync.AuthPlug do
 
   @impl true
   def call(conn, _opts) do
-    case auth_mode() do
-      :bypass -> bypass_auth(conn)
-      :external -> external_auth(conn)
+    # A function service credential authenticates the request at the functions
+    # router, which verifies it against the configured credentials. This plug
+    # must not also try to resolve an actor for it: the service is the
+    # principal, and asking the identity service about a job token would both
+    # fail and leak the token. On a sync route no actor is assigned, so the
+    # route denies exactly as an anonymous request would.
+    if service_token?(conn) do
+      assign(conn, :service_token, hd(get_req_header(conn, "x-ebb-service-token")))
+    else
+      case auth_mode() do
+        :bypass -> bypass_auth(conn)
+        :external -> external_auth(conn)
+      end
+    end
+  end
+
+  defp service_token?(conn) do
+    case get_req_header(conn, "x-ebb-service-token") do
+      [token] when token != "" -> true
+      _missing_or_repeated -> false
     end
   end
 
