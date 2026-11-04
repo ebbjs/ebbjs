@@ -13,6 +13,6 @@ config :ebb_server, :functions,
 # Function logs carry the invocation they came from. The keys are declared
 # here so the formatter prints them and Credo can see every metadata key the
 # code uses.
-config :logger, :default_formatter, metadata: [:function, :version, :invocation_id]
+config :logger, :default_formatter, metadata: [:function_name, :version, :invocation_id]
 
 import_config "#{config_env()}.exs"

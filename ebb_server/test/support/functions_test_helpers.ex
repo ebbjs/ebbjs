@@ -67,11 +67,16 @@ defmodule EbbServer.FunctionsTestHelpers do
   The socket directory is derived from the bundle directory, so each test gets
   its own set of runner sockets.
   """
-  def configure_bun(dir) do
+  def configure_bun(dir, overrides \\ []) do
     configure_boot(
-      bundle_dir: dir,
-      transport: BunWorker,
-      worker_opts: BunSupport.transport_opts(dir)
+      Keyword.merge(
+        [
+          bundle_dir: dir,
+          transport: BunWorker,
+          worker_opts: BunSupport.transport_opts(dir)
+        ],
+        overrides
+      )
     )
   end
 

@@ -238,7 +238,8 @@ jobs:
           mix test --include bun \
             test/ebb_server/functions/worker_bun_test.exs \
             test/ebb_server/functions/bun_integration_test.exs \
-            test/ebb_server/functions/write_bun_integration_test.exs
+            test/ebb_server/functions/write_bun_integration_test.exs \
+            test/ebb_server/functions/hardening_bun_test.exs
 
   # ─────────────────────────────────────────────────────────
   # Release builder — runs on every push/PR so typescript-test

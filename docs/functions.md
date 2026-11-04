@@ -185,7 +185,7 @@ const apiKey = ctx.env.PROOFREAD_API_KEY;
 - Values travel in the invoke frame, never in logs, telemetry, or error
   responses. The runner sees only the keys the function declared; its process
   environment is scrubbed.
-- `console.*` and `ctx.log` become Logger lines tagged with `function`,
+- `console.*` and `ctx.log` become Logger lines tagged with `function_name`,
   `version`, and `invocation_id`, capped at 200 lines / 64 KiB per invocation.
   Past the cap, frames are dropped and one truncation line is written; logging
   can never fail an invocation.
@@ -377,7 +377,8 @@ server runs normally.
   ebb functions health --url http://localhost:4000 --token "$EBB_ADMIN_TOKEN"
   ```
 
-- `ctx.log` / `console` lines carry `function`, `version`, and `invocation_id`.
+- `ctx.log` / `console` lines carry `function_name`, `version`, and
+  `invocation_id`.
   `fetch_audit` emits a telemetry event with URL, status, and duration only.
 - Every invocation response carries `invocation_id` in the body and in
   `x-ebb-invocation-id`, including failures.

@@ -5,7 +5,9 @@ defmodule EbbServer.Functions.Log do
   The runner turns `ctx.log` and `console.*` into `log` frames. This module is
   the one place they become Logger lines, tagged with `function`, `version`,
   and `invocation_id`, so an operator can find every line an invocation
-  produced and no line carries a value the server did not already have.
+  produced. The key is `function_name`, not `function`: Logger already owns
+  `:function` for the logging call site, and printing both would add a stack
+  frame to every line. and no line carries a value the server did not already have.
 
   Caps are enforced by the caller (`EbbServer.Functions.Invocation`) because
   the budget is per invocation: 200 lines and 64 KiB by default. Once either is
@@ -76,7 +78,7 @@ defmodule EbbServer.Functions.Log do
     Logger.log(
       Map.get(@levels, to_string(level), :info),
       fn -> text end,
-      function: meta.name,
+      function_name: meta.name,
       version: meta.version,
       invocation_id: meta.invocation_id
     )
