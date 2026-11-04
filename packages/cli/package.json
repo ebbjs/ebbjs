@@ -3,10 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "description": "Build and envelope helpers for ebb functions",
+  "bin": {
+    "ebb": "./dist/bin.js"
+  },
   "type": "module",
   "exports": {
     "./bundle": "./src/bundle.ts",
-    "./envelope": "./src/envelope.ts"
+    "./envelope": "./src/envelope.ts",
+    "./config": "./src/config.ts",
+    "./deploy": "./src/deploy.ts",
+    "./contract-map": "./src/contract-map.ts",
+    "./api": "./src/api.ts",
+    "./commands": "./src/commands.ts"
   },
   "scripts": {
     "test": "vitest --run",
@@ -14,7 +22,9 @@
     "lint": "pnpm --root ../../ lint",
     "lint:fix": "pnpm --root ../../ lint:fix",
     "fmt": "pnpm --root ../../ fmt",
-    "fmt:check": "pnpm --root ../../ fmt:check"
+    "fmt:check": "pnpm --root ../../ fmt:check",
+    "build": "esbuild src/bin.ts --bundle --platform=node --format=esm --outfile=dist/bin.js --banner:js='#!/usr/bin/env node' --packages=external",
+    "dev": "tsx src/bin.ts dev"
   },
   "dependencies": {
     "@ebbjs/functions-protocol": "workspace:*",
@@ -24,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.2.3",
+    "tsx": "^4.21.0",
     "vitest": "^4.1.0"
   }
 }

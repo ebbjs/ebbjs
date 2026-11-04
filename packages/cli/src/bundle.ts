@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build, type Plugin } from "esbuild";
 
 import {
@@ -137,6 +138,9 @@ export async function bundleSource(
     conditions: ["browser"],
     write: false,
     logLevel: "silent",
+    // The CLI's own install can supply the authoring SDK when the entry lives
+    // somewhere without its own node_modules, such as a scratch directory.
+    nodePaths: [resolve(dirname(fileURLToPath(import.meta.url)), "..", "node_modules")],
     plugins: [rejectNodeImports()],
   });
 
