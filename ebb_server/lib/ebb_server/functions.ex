@@ -93,7 +93,7 @@ defmodule EbbServer.Functions do
   # at the function's budget alone kills a perfectly ordinary worker at boot, so
   # the OS cap is the budget plus this headroom; it bounds what a runaway
   # handler can allocate rather than pretending to be a byte-exact heap limit.
-  @address_space_overhead_bytes 256 * 1024 * 1024
+  @address_space_overhead_bytes 768 * 1024 * 1024
 
   @doc """
   Whether functions are enabled on this node.
@@ -494,11 +494,17 @@ defmodule EbbServer.Functions do
       Application.app_dir(:ebb_server, "priv/runner/main.js")
   end
 
-  @bun_version File.read!(Path.expand("../../../.bun-version", __DIR__)) |> String.trim()
+  @doc """
+  The Bun version this node expects, for the boot failure text.
 
-  @doc "The Bun version this node was built against; for the boot failure text."
+  Not read from `.bun-version` at compile time: the Docker builder copies the
+  app to a path with a different depth, so a relative read would fail there.
+  A deployment that needs a different wording can set `:bun_version`.
+  """
   @spec bun_version() :: String.t()
-  def bun_version, do: @bun_version
+  def bun_version do
+    Keyword.get(config(), :bun_version, "the version pinned in .bun-version")
+  end
 
   defp config, do: Application.get_env(:ebb_server, @config_key, [])
 

@@ -47,6 +47,8 @@ export interface RunInvocationOptions {
   transport: RunnerTransport;
   invocationId: string;
   subjectActorId: string;
+  /** How the host resolved the subject; absent means an actor. */
+  callerKind?: "actor" | "service";
   bundle: string;
   entry: string;
   input: unknown;

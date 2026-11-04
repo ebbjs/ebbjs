@@ -408,6 +408,9 @@ jobs:
         env:
           EBB_AUTH_MODE: bypass
           EBB_DATA_DIR: /tmp/ebb-integration-data
+          # This job exercises sync, not functions; the release defaults the
+          # feature on, and this environment has no Bun.
+          EBB_FUNCTIONS_ENABLED: "false"
         run: |
           mkdir -p "$EBB_DATA_DIR"
           rm -rf "$EBB_DATA_DIR"/*

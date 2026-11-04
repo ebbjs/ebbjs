@@ -248,7 +248,10 @@ defmodule EbbServer.Functions.HardeningTest do
       configure(
         enabled: true,
         transport: Bun,
-        worker_opts: [runner_path: "/definitely/missing/main.js"]
+        worker_opts: [
+          runner_path: "/definitely/missing/main.js",
+          bun_path: System.find_executable("sh")
+        ]
       )
 
       assert_raise RuntimeError, ~r/runner file is missing/, fn -> Functions.children() end

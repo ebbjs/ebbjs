@@ -43,7 +43,7 @@ defmodule EbbServer.Functions.Worker.Bun do
   @close_timeout_ms 1_000
   @accept_poll_ms 5
   @safe_path "/usr/local/bin:/usr/bin:/bin"
-  @default_memory_limit_bytes 512 * 1024 * 1024
+  @default_memory_limit_bytes 1024 * 1024 * 1024
   @lang "C.UTF-8"
 
   @type handle :: %{
@@ -66,7 +66,7 @@ defmodule EbbServer.Functions.Worker.Bun do
     * `:bun_path` — Bun executable (default `System.find_executable("bun")`)
     * `:accept_timeout_ms` — how long the runner may take to connect (default 5000)
     * `:spawn_timeout_ms` — how long setup may take before `start/1` gives up (default 5000)
-    * `:memory_limit_bytes` — Linux `ulimit -v` address space (default 512 MiB)
+    * `:memory_limit_bytes` — Linux `ulimit -v` address space (default 1 GiB)
   """
   @impl true
   @spec start(keyword()) :: {:ok, handle()} | {:error, term()}
