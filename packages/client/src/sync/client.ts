@@ -47,7 +47,12 @@ import {
 import type { ReplicaRecord, StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
-import { createPresenceMap, PresenceManager, type PresenceMap } from "../presence/presence";
+import {
+  createPresence,
+  type AnyPresenceRegistry,
+  type Presence,
+  type PresenceApi,
+} from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import {
@@ -191,7 +196,14 @@ export interface SyncObservables {
   readonly backfill: ReadonlyObservable<readonly string[]>;
 }
 
-export class SyncClient implements PermissionQuery {
+/**
+ * The sync client. `R` is the presence channel registry the client was built
+ * with (`definePresence(...)`); it defaults to `undefined`, which leaves
+ * `client.presence` on dynamic, unvalidated channels.
+ */
+export class SyncClient<
+  R extends AnyPresenceRegistry | undefined = undefined,
+> implements PermissionQuery {
   readonly serverUrl: string;
   readonly actorId: string;
   readonly storage: StorageAdapter;
@@ -212,15 +224,19 @@ export class SyncClient implements PermissionQuery {
   readonly queries: QueryCache;
   /** The shared per-revision notification stream the cache and watchers read. */
   readonly replicaSignal: ReplicaSignal;
-  readonly presence: PresenceManager;
   /**
-   * Peers seen on the live stream, keyed by entity + actor (#666). The
-   * client owns it because the stream does: `handleSSEEvent` folds every
-   * `presence` packet in before the subscriber sees it, and
-   * {@link closeStream} drops it because a disconnected client cannot know
-   * the peer set.
+   * Ephemeral presence: send on declared channels, read the peers observed on
+   * the live stream (#677). Typed by the registry passed to
+   * {@link SyncClientOptions.presence}, untyped without one.
    */
-  private readonly presenceMap: PresenceMap;
+  readonly presence: PresenceApi<R>;
+  /**
+   * The runtime behind {@link presence}. The client owns it because the stream
+   * does: `handleSSEEvent` folds every `presence` packet in before the
+   * subscriber sees it, and {@link closeStream} drops the peers because a
+   * disconnected client cannot know its peer set.
+   */
+  private readonly presenceRuntime: Presence;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
   /**
@@ -375,7 +391,7 @@ export class SyncClient implements PermissionQuery {
   private readonly replicaSaveEvery: number;
   private readonly replicaSaveIntervalMs: number;
 
-  constructor(opts: SyncClientOptions) {
+  constructor(opts: SyncClientOptions<R>) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
     this.actorId = opts.actorId;
     this.storage = opts.storage ?? createMemoryAdapter();
@@ -402,11 +418,18 @@ export class SyncClient implements PermissionQuery {
     this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
     this.replicaSaveIntervalMs = opts.replicaSaveIntervalMs ?? DEFAULT_REPLICA_SAVE_INTERVAL_MS;
     // Presence rides the live stream `subscribe()` opens: the client feeds
-    // its map from `handleSSEEvent`, and `presence` is the public API for
-    // sending local cursors and reading the remote ones. Both live for the
-    // lifetime of the client; `close()` tears them down.
-    this.presenceMap = createPresenceMap(this.actorId);
-    this.presence = new PresenceManager(this, this.presenceMap);
+    // its receive store from `handleSSEEvent`, and `presence` is the public
+    // API for sending on declared channels and reading the peers observed.
+    // Both live for the lifetime of the client; `close()` tears them down.
+    this.presenceRuntime = createPresence({
+      serverUrl: this.serverUrl,
+      actorId: this.actorId,
+      fetchImpl: this.fetchImpl,
+      registry: opts.presence,
+    });
+    // The runtime's untyped methods are the same call shape the typed surface
+    // exposes; the cast only restores the registry's channel typing.
+    this.presence = this.presenceRuntime as unknown as PresenceApi<R>;
     // The outbox owns the whole write lifecycle, including a detected
     // conflict: a loser is a status + payload on its own row, so detection
     // is one durable write and the flush path holds it structurally.
@@ -554,8 +577,8 @@ export class SyncClient implements PermissionQuery {
     }
     sub.stream = null;
     // Presence arrives only over the stream, so a closed stream leaves the
-    // peer set unknown. Stale cursors must not outlive the connection.
-    this.presenceMap.clear();
+    // peer set unknown. Stale peers must not outlive the connection.
+    this.presenceRuntime.reset();
   }
 
   /**
@@ -1360,8 +1383,8 @@ export class SyncClient implements PermissionQuery {
       this.cancelSubscription(this.activeSub);
     }
     this.stateMachine.transition("offline");
-    this.presenceMap.clear();
-    this.presence.dispose();
+    this.presenceRuntime.reset();
+    this.presenceRuntime.close();
   }
 
   // -------------------------------------------------------------------------
@@ -1667,7 +1690,7 @@ export class SyncClient implements PermissionQuery {
     } else if (event.type === "presence") {
       // Before the subscriber sees the packet: one live subscription feeds
       // both the action path and `client.presence`.
-      this.presenceMap.ingest(event.presence);
+      this.presenceRuntime.ingest(event.presence);
     }
 
     this.emitToSubscriber(sub, event);
@@ -2258,7 +2281,8 @@ export type NamespacedClient<
   S,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
   TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
-> = SyncClient &
+  R extends AnyPresenceRegistry | undefined = undefined,
+> = SyncClient<R> &
   EntityNamespaces<S> &
   ActionNamespaces<S, TActions> &
   FunctionsNamespace<TFunctions>;
@@ -2279,9 +2303,10 @@ export function createClient<
   S extends AnySchema | undefined = undefined,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
   TFunctions extends Record<string, AnyFunctionContract> = Record<string, never>,
+  R extends AnyPresenceRegistry | undefined = undefined,
 >(
-  opts: SyncClientOptions & { schema?: S; actions?: TActions; functions?: TFunctions },
-): NamespacedClient<S, TActions, TFunctions> {
+  opts: SyncClientOptions<R> & { schema?: S; actions?: TActions; functions?: TFunctions },
+): NamespacedClient<S, TActions, TFunctions, R> {
   if (opts.actions !== undefined && opts.schema === undefined) {
     throw new ActionDefinitionError([{ message: "createClient: `actions` requires a `schema`" }]);
   }
@@ -2306,7 +2331,7 @@ export function createClient<
     });
   }
   if (opts.schema === undefined) {
-    return client as NamespacedClient<S, TActions, TFunctions>;
+    return client as NamespacedClient<S, TActions, TFunctions, R>;
   }
   // The read path's capability: the registry its accessors resolve
   // against and the document opener a collaborative-text body hydrates
@@ -2401,5 +2426,5 @@ export function createClient<
       }
       return value;
     },
-  }) as NamespacedClient<S, TActions, TFunctions>;
+  }) as NamespacedClient<S, TActions, TFunctions, R>;
 }

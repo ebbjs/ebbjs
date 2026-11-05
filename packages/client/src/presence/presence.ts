@@ -1,43 +1,87 @@
 /**
- * Ephemeral presence — cursors and selections from other actors on the
- * same doc. The server's `/sync/presence` endpoint broadcasts whatever
- * payload we POST to every SSE subscriber for the same entity.
+ * Ephemeral presence — the client's per-entity, per-channel view of the
+ * other actors on the live stream.
  *
- * This module is transport-only (no CodeMirror dependency). The CM6
- * cursor widget/selection decoration lives in
- * `@ebbjs/codemirror/src/presence/cursor-decoration` and reads the
- * same `forEntity()` map.
+ * The server's `/sync/presence` endpoint broadcasts whatever payload we POST
+ * to every SSE subscriber for the same entity. Presence therefore rides the
+ * single stream `subscribe()` already holds (#666): `SyncClient` folds each
+ * `presence` packet into the receive store before the subscriber's `onEvent`
+ * sees it, so presence covers exactly the groups you subscribe to, and the
+ * peer set is dropped when that stream closes.
  *
- * Shape:
- *   - `setLocalCursor(entityId, cursor)` → POSTs to `/sync/presence`,
- *     debounced to avoid spamming on every keystroke
- *   - `forEntity(entityId)` → Map<actorId, Cursor> for the entity,
- *     excluding the local actor
- *   - `onUpdate(cb)` → fires whenever the map changes (local send or
- *     remote event)
+ * Three pieces, each with one job:
  *
- * ## Scope: the groups you subscribe to
+ *   - `definePresence` (./define) declares channels and their options.
+ *   - `createPresenceTransport` (./transport) coalesces sends per
+ *     `(entityId, channel)` and POSTs `{entity_id, data: {channel, value}}`.
+ *   - `createPresenceStore` (./store) holds `(entityId, channel, actorId)`
+ *     entries, applies the channel TTL and entry cap, and reports changes.
  *
- * Presence rides the client's live SSE stream. `SyncClient` folds every
- * `presence` packet from that stream into its map before the subscriber's
- * `onEvent` sees the same packet, so presence covers exactly **the groups
- * you `subscribe()` to**. Earlier versions opened a stream of their own and
- * covered every group the actor's handshake returned; a second connection
- * made the server fan each packet out to the client twice and pushed action
- * batches into a stream that discarded them.
- *
- * While disconnected the peer set is unknown, so closing the live stream
- * clears the map: peers reappear only when they send presence again.
+ * This module is transport-only (no CodeMirror dependency). The CM6 cursor
+ * rendering lives in `@ebbjs/codemirror/src/presence/cursor-decoration` and
+ * reads the same `forEntity()` map.
  *
  * Network model:
- *   - Outgoing: `POST /sync/presence` with `{entity_id, data}` body
+ *   - Outgoing: `POST /sync/presence` with `{entity_id, data: {channel, value}}`
  *   - Incoming: `presence` events on the `/sync/live` stream that
  *     `subscribe()` already holds open
  */
 
-import type { SyncClient } from "../sync/client";
+import type { Static, TSchema } from "@sinclair/typebox/type";
+import { Value } from "@sinclair/typebox/value";
 
-/** A local cursor/selection position expressed in run-id coordinates. */
+import {
+  UndeclaredPresenceChannelError,
+  PresenceValidationError,
+  type AnyPresenceRegistry,
+  type PresenceChannelConfig,
+} from "./define";
+import {
+  createPresenceStore,
+  type PeerPresence,
+  type PresenceChange,
+  type PresenceStore,
+} from "./store";
+import { createPresenceTransport, type PresenceTransport } from "./transport";
+
+export {
+  definePresence,
+  DEFAULT_PRESENCE_DEBOUNCE_MS,
+  DEFAULT_PRESENCE_MAX_ENTRIES,
+  DEFAULT_PRESENCE_TTL_MS,
+  MAX_PRESENCE_PAYLOAD_BYTES,
+  PresencePayloadTooLargeError,
+  PresenceValidationError,
+  UndeclaredPresenceChannelError,
+  type AnyPresenceRegistry,
+  type NormalizedPresenceChannel,
+  type PresenceChannelConfig,
+  type PresenceChannelOptions,
+  type PresenceChannelSpec,
+  type PresenceChannels,
+  type PresenceRegistry,
+} from "./define";
+export {
+  createPresenceStore,
+  type PeerPresence,
+  type PresenceChange,
+  type PresenceChannelConfigs,
+  type PresenceStore,
+  type PresenceStoreOptions,
+} from "./store";
+export {
+  createPresenceTransport,
+  type PresenceTransport,
+  type PresenceTransportOptions,
+} from "./transport";
+
+/**
+ * A local cursor/selection position expressed in run-id coordinates.
+ *
+ * Presence itself is channel-agnostic; this is the payload shape the
+ * collaborative-text demo puts on its `cursor` channel, kept here so the
+ * CodeMirror helper and the demo agree on one type.
+ */
 export interface CursorPresence {
   /** Run id at the selection anchor. */
   readonly anchorId: string;
@@ -49,207 +93,140 @@ export interface CursorPresence {
   readonly headOffset: number;
 }
 
-/** A presence entry for one actor on one entity. */
-export interface PresenceEntry {
-  /** The actor this entry is for. */
-  readonly actorId: string;
-  /** The entity (document) the cursor/selection is on. */
-  readonly entityId: string;
-  /** The cursor/selection position in run-id coordinates. */
-  readonly cursor: CursorPresence;
-}
+/** The value a declared channel carries: `Static<>` of its schema. */
+export type PresenceValue<
+  C extends Readonly<Record<string, PresenceChannelConfig>>,
+  K extends keyof C,
+> = C[K]["schema"] extends TSchema ? Static<C[K]["schema"]> : unknown;
 
-const SEND_DEBOUNCE_MS = 100;
+/** The normalized channel map behind a registry type. */
+export type PresenceChannelsOf<R> = R extends { readonly channels: infer C }
+  ? C extends Readonly<Record<string, PresenceChannelConfig>>
+    ? C
+    : Readonly<Record<string, PresenceChannelConfig>>
+  : Readonly<Record<string, PresenceChannelConfig>>;
 
 /**
- * The peers observed on the live stream. `SyncClient` owns one instance per
- * client and feeds it from `handleSSEEvent`, so the map's lifetime is the
- * connection's lifetime.
+ * The `client.presence` surface. With a declared registry the channel name and
+ * the value type are checked at the call site; without one, channels are
+ * dynamic strings and values are unvalidated `unknown`.
  */
-export interface PresenceMap {
-  /**
-   * Fold one server `presence` packet into the map. The local actor and
-   * payload shapes we cannot read are ignored.
-   */
-  ingest(payload: unknown): void;
-  /**
-   * Read the entries for one entity, keyed by actor. Excludes the local
-   * actor (you would not want to render your own cursor back to yourself).
-   */
-  forEntity(entityId: string): Map<string, PresenceEntry>;
-  /** Fires whenever the map changes. Returns an unsubscribe function. */
-  onUpdate(callback: () => void): () => void;
-  /** Drop every peer: the connection they were observed on is gone. */
-  clear(): void;
+export type PresenceApi<R = undefined> = R extends AnyPresenceRegistry
+  ? TypedPresenceApi<PresenceChannelsOf<R>>
+  : UntypedPresenceApi;
+
+/** `client.presence` on a client built without a registry. */
+export interface UntypedPresenceApi {
+  set(entityId: string, channel: string, value: unknown): void;
+  clear(entityId: string, channel: string): void;
+  forEntity<T = unknown>(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<T>>;
+  onUpdate(callback: (change: PresenceChange) => void): () => void;
+  /** Send every pending (debounced) write now; resolves once they settle. */
+  flush(): Promise<void>;
 }
 
-export function createPresenceMap(localActorId: string): PresenceMap {
-  /** Keyed by `${entityId}::${actorId}` for fast lookup. */
-  const entries = new Map<string, PresenceEntry>();
-  const listeners = new Set<() => void>();
+/** `client.presence` on a client built with `definePresence(...)`. */
+export interface TypedPresenceApi<C extends Readonly<Record<string, PresenceChannelConfig>>> {
+  set<K extends keyof C & string>(entityId: string, channel: K, value: PresenceValue<C, K>): void;
+  clear(entityId: string, channel: keyof C & string): void;
+  forEntity<K extends keyof C & string>(
+    entityId: string,
+    channel: K,
+  ): ReadonlyMap<string, PeerPresence<PresenceValue<C, K>>>;
+  onUpdate(callback: (change: PresenceChange) => void): () => void;
+  /** Send every pending (debounced) write now; resolves once they settle. */
+  flush(): Promise<void>;
+}
 
-  const notify = (): void => {
-    for (const listener of listeners) {
-      try {
-        listener();
-      } catch {
-        // Don't let one listener's error break the others.
-      }
-    }
+/**
+ * The runtime behind `client.presence`: the public surface plus the two
+ * connection hooks the client owns.
+ */
+export interface Presence extends UntypedPresenceApi {
+  /** Fold one `presence` packet from the live stream into the store. */
+  ingest(payload: unknown): void;
+  /** Drop every observed peer: the stream that carried them is gone. */
+  reset(): void;
+  /** Cancel pending sends; the client is shutting down. */
+  close(): void;
+}
+
+export interface PresenceOptions {
+  readonly serverUrl: string;
+  readonly actorId: string;
+  readonly fetchImpl: typeof fetch;
+  /** Channel declarations; absent means dynamic, unvalidated channels. */
+  readonly registry?: AnyPresenceRegistry;
+}
+
+/**
+ * Build the client's presence runtime. Declared channels validate on send and
+ * enforce their options; an undeclared channel on a registered client is a
+ * runtime error (JS callers) as well as a compile error (TypeScript callers).
+ */
+export function createPresence(opts: PresenceOptions): Presence {
+  const channels = opts.registry?.channels;
+  const declared = channels === undefined ? [] : Object.keys(channels);
+  const store: PresenceStore = createPresenceStore({
+    localActorId: opts.actorId,
+    channels,
+  });
+  const transport: PresenceTransport = createPresenceTransport({
+    serverUrl: opts.serverUrl,
+    actorId: opts.actorId,
+    fetchImpl: opts.fetchImpl,
+    channels,
+  });
+
+  /**
+   * Resolve a channel's config, or `null` on an untyped client. A registered
+   * client must not send on a channel it never declared: peers would receive a
+   * shape no one agreed to.
+   */
+  const assertChannel = (channel: string): PresenceChannelConfig | null => {
+    if (channels === undefined) return null;
+    const config = channels[channel];
+    if (config === undefined) throw new UndeclaredPresenceChannelError(channel, declared);
+    return config;
   };
 
   return {
-    ingest(payload) {
-      const entry = serverEventToEntry(payload);
-      if (entry === null || entry.actorId === localActorId) return;
-      entries.set(mapKey(entry.entityId, entry.actorId), entry);
-      notify();
-    },
-    forEntity(entityId) {
-      const out = new Map<string, PresenceEntry>();
-      for (const entry of entries.values()) {
-        if (entry.entityId === entityId && entry.actorId !== localActorId) {
-          out.set(entry.actorId, entry);
-        }
+    set(entityId, channel, value) {
+      const config = assertChannel(channel);
+      if (config !== null && !Value.Check(config.schema, value)) {
+        throw new PresenceValidationError(channel, value);
       }
-      return out;
+      transport.send(entityId, channel, value);
     },
+
+    clear(entityId, channel) {
+      assertChannel(channel);
+      transport.send(entityId, channel, null);
+    },
+
+    forEntity<T>(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<T>> {
+      return store.forEntity<T>(entityId, channel);
+    },
+
     onUpdate(callback) {
-      listeners.add(callback);
-      return () => {
-        listeners.delete(callback);
-      };
+      return store.onUpdate(callback);
     },
-    clear() {
-      if (entries.size === 0) return;
-      entries.clear();
-      notify();
+
+    flush() {
+      return transport.flush();
+    },
+
+    ingest(payload) {
+      store.ingest(payload);
+    },
+
+    reset() {
+      store.clear();
+    },
+
+    close() {
+      transport.cancel();
+      store.close();
     },
   };
-}
-
-/**
- * The client's presence surface: debounced local cursor sends plus reads
- * over the map `SyncClient` feeds from its live stream.
- */
-export class PresenceManager {
-  private readonly client: SyncClient;
-  private readonly localActorId: string;
-  private readonly map: PresenceMap;
-  private pending: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(client: SyncClient, map: PresenceMap) {
-    this.client = client;
-    this.localActorId = client.actorId;
-    this.map = map;
-  }
-
-  /**
-   * @deprecated Presence needs no start-up: it rides the live stream that
-   * `subscribe()` opens. This is a no-op and is removed in #677.
-   */
-  start(): void {}
-
-  /**
-   * @deprecated The connection owns the presence map, so `SyncClient.close()`
-   * is the teardown path. This only cancels a debounced local send, and is
-   * removed in #677.
-   */
-  dispose(): void {
-    if (this.pending === null) return;
-    clearTimeout(this.pending);
-    this.pending = null;
-  }
-
-  /**
-   * Update the local cursor/selection. Debounced — repeated calls
-   * within `SEND_DEBOUNCE_MS` collapse to a single POST.
-   */
-  setLocalCursor(entityId: string, cursor: CursorPresence): void {
-    if (this.pending !== null) clearTimeout(this.pending);
-    this.pending = setTimeout(() => {
-      this.pending = null;
-      void this.sendNow(entityId, cursor).catch(() => {
-        // Send failures are non-fatal — next cursor move will retry.
-      });
-    }, SEND_DEBOUNCE_MS);
-  }
-
-  /**
-   * Force an immediate POST (bypassing the debounce). Mostly useful for
-   * tests; production code should use `setLocalCursor` so rapid moves
-   * don't spam the server.
-   */
-  async sendNow(entityId: string, cursor: CursorPresence): Promise<void> {
-    const url = `${this.client.serverUrl}/sync/presence`;
-    const body = JSON.stringify({ entity_id: entityId, data: cursor });
-    const res = await this.client["fetchImpl"](url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-ebb-actor-id": this.localActorId,
-      },
-      body,
-    });
-    if (!res.ok && res.status !== 204) {
-      throw new Error(`presence send failed: ${res.status} ${await res.text().catch(() => "")}`);
-    }
-  }
-
-  /**
-   * Read the current presence map for an entity. Returns a fresh Map each
-   * call so callers can't mutate our state.
-   */
-  forEntity(entityId: string): Map<string, PresenceEntry> {
-    return this.map.forEntity(entityId);
-  }
-
-  /**
-   * Subscribe to map changes. Fires whenever a remote presence event is
-   * received and when the map is cleared on disconnect.
-   */
-  onUpdate(callback: () => void): () => void {
-    return this.map.onUpdate(callback);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function mapKey(entityId: string, actorId: string): string {
-  return `${entityId}::${actorId}`;
-}
-
-/**
- * The server's `/sync/presence` endpoint forwards a generic JSON
- * payload. We expect the payload to look like `CursorPresence` (the
- * shape we POST), but treat unknown shapes as missing fields rather
- * than throwing — the demo is the only caller and we want a flaky
- * payload to degrade gracefully, not break the map.
- */
-function serverEventToEntry(presence: unknown): PresenceEntry | null {
-  if (typeof presence !== "object" || presence === null) return null;
-  const e = presence as Record<string, unknown>;
-  const actorId = typeof e["actor_id"] === "string" ? e["actor_id"] : null;
-  const entityId = typeof e["entity_id"] === "string" ? e["entity_id"] : null;
-  const data =
-    typeof e["data"] === "object" && e["data"] !== null
-      ? (e["data"] as Record<string, unknown>)
-      : null;
-  if (!actorId || !entityId || !data) return null;
-  const cursor = extractCursor(data);
-  if (!cursor) return null;
-  return { actorId, entityId, cursor };
-}
-
-function extractCursor(data: Record<string, unknown>): CursorPresence | null {
-  const anchorId = typeof data["anchorId"] === "string" ? data["anchorId"] : null;
-  const headId = typeof data["headId"] === "string" ? data["headId"] : null;
-  const anchorOffset = typeof data["anchorOffset"] === "number" ? data["anchorOffset"] : null;
-  const headOffset = typeof data["headOffset"] === "number" ? data["headOffset"] : null;
-  if (!anchorId || !headId || anchorOffset === null || headOffset === null) {
-    return null;
-  }
-  return { anchorId, anchorOffset, headOffset, headId };
 }

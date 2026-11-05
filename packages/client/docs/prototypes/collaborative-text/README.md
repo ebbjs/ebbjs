@@ -248,29 +248,52 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 
 > **Status: shipped (slice 3, not deferred).** See `packages/client/src/presence/presence.ts` and `packages/codemirror/src/presence/cursor-decoration.ts`. Wired in `examples/collaborative-text-demo/src/Editor.tsx`.
 
-The POC had a complete presence implementation in `experiment/collaborative-text/src/presence.ts`. The port replaces BroadcastChannel with `POST /sync/presence` (the server endpoint already exists) and adds a dedicated SSE stream filtered to `presence` events. The CM6 rendering is a `ViewPlugin` in `@ebbjs/codemirror` rather than a React component, so it can read the map synchronously during transaction dispatch.
+The POC had a complete presence implementation in `experiment/collaborative-text/src/presence.ts`. The port replaces BroadcastChannel with `POST /sync/presence` (the server endpoint already exists) and carries incoming packets on the live stream `subscribe()` already holds — presence opens no connection of its own. The CM6 rendering is a `ViewPlugin` in `@ebbjs/codemirror` rather than a React component, so it can read the map synchronously during transaction dispatch.
 
 **Why cursors are expressed as RunNode IDs, not positions.** When two users are typing concurrently, document positions shift. RunNode IDs are stable across edits (a run's ID comes from its HLC, which doesn't change). So a remote cursor's `anchorId` and `headId` stay meaningful even as the document rearranges around them. The `getRunAtPosition` / `getPositionOfRun` helpers in `@ebbjs/codemirror/src/bridge.ts` resolve IDs to current positions for rendering.
 
-**API shape (shipped):**
+**API shape (shipped).** Presence is declared per client as typed channels; the text demo declares one `cursor` channel. A `presence` declaration is optional — without it, channels are dynamic strings and values are unvalidated.
 
 ```ts
-// Local side: report cursor/selection on every CodeMirror selection change
-client.presence.setLocalCursor(entityId, {
+import { Type } from "@sinclair/typebox";
+import { createClient, definePresence } from "@ebbjs/client";
+
+const presence = definePresence({
+  cursor: Type.Object({
+    anchorId: Type.String(),
+    anchorOffset: Type.Number(),
+    headId: Type.String(),
+    headOffset: Type.Number(),
+  }),
+});
+const client = createClient({ serverUrl, actorId, presence });
+
+// Local side: report cursor/selection on every CodeMirror selection change.
+// Debounced per (entity, channel); the POST body is
+// {entity_id, data: {channel, value}}.
+client.presence.set(entityId, "cursor", {
   anchorId,
   anchorOffset,
   headId,
   headOffset,
 });
 
-// Per-entity map of remote actors' cursors (excludes self)
-const presenceMap = client.presence.forEntity(entityId); // Map<actor_id, PresenceEntry>
+// Peers on one channel of one entity, keyed by actor (excludes self).
+// Each entry is {actorId, entityId, channel, data, updatedAt}.
+const peers = client.presence.forEntity(entityId, "cursor");
 
-// React to map changes (local send or remote event)
-const unsub = client.presence.onUpdate(() => {
+// React to changes. The change names the (entity, channel) pair, so a
+// high-frequency channel cannot force unrelated decorations to rebuild.
+const unsub = client.presence.onUpdate(({ entityId, channel }) => {
+  if (channel !== "cursor") return;
   /* refresh CM decorations */
 });
+
+// Stop sharing a channel without waiting out the TTL.
+client.presence.clear(entityId, "cursor"); // sends {channel: "cursor", value: null}
 ```
+
+Each channel has a receiver-side TTL (default 30 s, `Infinity` opts out) and a per-`(entity, channel)` entry cap (default 100). A peer that stops sending ages out locally and the eviction fires `onUpdate`.
 
 **CM6 rendering.** `createPresenceExtension({ getPresence, getPositionOfRun, getRunAtPosition })` produces a `ViewPlugin` that reads `getPresence()` and decorates remote cursors as `Decoration.widget` (colored bar + actor label) and selections as `Decoration.mark`. The demo's `Editor.tsx` mounts the extension and uses the bridge's `idMapField` to translate run-id coordinates to CM positions.
 
@@ -336,7 +359,7 @@ doc.localDelete({ runId, offset: 0, count: 5 });
 const { rejected } = await client.write(doc.pendingActions());
 
 // Presence (optional in slice 3, recommended)
-client.presence.setLocalCursor({
+client.presence.set(docId, "cursor", {
   anchorId: "a_<...>", // RunNode ID at the anchor
   anchorOffset: 3, // offset within that run
   headId: "a_<...>",
@@ -410,7 +433,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 4. ✅ Hardcoded group ID `grp_demo`; seed via `@ebbjs/testing`'s `seed()` on first load (POST bootstrap group + member + document if they don't exist). Seed is inlined in the demo (`src/seed.ts`) because the `@ebbjs/testing` package pulls in Node-only deps that can't ship to the browser.
 5. ✅ Connection state indicator (connecting / live / offline badge) — `ConnectionBadge.tsx`
 6. ✅ Conflict panel (collapsible right sidebar showing last N conflicts) — `ConflictPanel.tsx`
-7. ✅ Presence (ephemeral cursors/selections) — `client.presence` + `createPresenceExtension`. Remote cursors render as colored bars with actor labels; selections as highlight marks. Round-trip is unit-tested (`packages/client/src/presence/presence.test.ts`) and integration-tested (`packages/client/src/__tests__/integration/presence.test.ts`).
+7. ✅ Presence (ephemeral cursors/selections) — `definePresence({cursor})` + `client.presence` + `createPresenceExtension`. Remote cursors render as colored bars with actor labels; selections as highlight marks. Round-trip is unit-tested (`packages/client/src/presence/presence.test.ts`, `packages/codemirror/src/presence/cursor-decoration.test.ts`) and integration-tested (`packages/client/src/__tests__/integration/presence.test.ts`).
 8. ✅ Test: manual two-tab test against `mix dev`. The bridge has 14 unit tests covering insert / extend / delete / tombstone round-trips.
 
 **Acceptance:** `pnpm --filter collaborative-text-demo dev` + `cd ebb_server && mix dev` → open two tabs with different actor IDs → typing in one appears in the other in <100ms over the Action/SSE stack. Concurrent edits at the same position surface in the conflict panel on both tabs.
@@ -461,9 +484,11 @@ packages/client/src/fields/collaborative-text/tree.ts  # port of experiment/caus
 packages/client/src/fields/collaborative-text/types.ts # RunNode, Conflict, etc.
 packages/client/src/sync/conflicts.ts                 # client.conflicts — conflicted outbox rows + resolution
 packages/client/src/fields/collaborative-text/text-document.ts  # new — client.textDocument(docId) API + Registry
-packages/client/src/presence/                          # new — port of experiment/presence.ts (slice 3 optional)
-packages/client/src/presence/presence.ts               # PresenceData, positionToRunRef, runRefToPosition, usePresence
-packages/client/src/presence/cursor-widget.ts          # CM6 CursorWidget
+packages/client/src/presence/                          # new — generic ephemeral presence channels
+packages/client/src/presence/define.ts                 # definePresence, channel config, typed errors
+packages/client/src/presence/transport.ts              # per-(entity, channel) send coalescer
+packages/client/src/presence/store.ts                  # receive store: TTL, entry cap, onUpdate
+packages/codemirror/src/presence/cursor-decoration.ts   # CM6 CursorWidget + selection marks
 
 packages/storage/src/memory/                            # modify — add subscribe hook for live updates
 packages/storage/src/types/storage-adapter.ts           # modify — add subscribe(callback) for live updates

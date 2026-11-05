@@ -1,12 +1,13 @@
 /**
  * Presence round-trip integration test against a running ebb_server.
  *
- * Two clients (drew and alice) both subscribe to grp_demo. Drew calls
- * `setLocalCursor`; alice should see drew's cursor in
- * `client.presence.forEntity` within a couple of seconds (the
- * 100ms debounce + SSE delivery). Presence rides the subscription's live
- * stream, so the test also asserts that each client holds exactly one
- * `/sync/live` request and issues no `/sync/handshake` for presence.
+ * Two clients (drew and alice) both subscribe to grp_demo and declare the
+ * same `cursor` channel. Drew calls `presence.set(docId, "cursor", ...)`;
+ * alice should see the entry in `client.presence.forEntity(docId, "cursor")`
+ * within a couple of seconds (the 100ms debounce + SSE delivery). Presence
+ * rides the subscription's live stream, so the test also asserts that each
+ * client holds exactly one `/sync/live` request and issues no
+ * `/sync/handshake` for presence.
  *
  * Requires a pre-seeded `grp_demo` group with a `demo-seeder` member
  * that the standard integration CI job does not bootstrap. The test
@@ -16,15 +17,34 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient } from "@ebbjs/client";
-import type { SSEEvent, SyncClient } from "@ebbjs/client";
+import { Type } from "@sinclair/typebox";
+import { createClient, definePresence } from "@ebbjs/client";
+import type { CursorPresence, PeerPresence, SSEEvent } from "@ebbjs/client";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const GROUP_ID = "grp_demo";
 
+/**
+ * The demo's declared `cursor` channel. The integration test exercises the
+ * same typed surface an app gets, not an untyped shortcut.
+ */
+const presence = definePresence({
+  cursor: Type.Object({
+    anchorId: Type.String(),
+    anchorOffset: Type.Number(),
+    headId: Type.String(),
+    headOffset: Type.Number(),
+  }),
+});
+
+const createPresenceClient = (actorId: string, fetchImpl: typeof fetch) =>
+  createClient({ serverUrl: SERVER_URL, actorId, fetchImpl, presence });
+
+type PresenceClient = ReturnType<typeof createPresenceClient>;
+
 interface ClientHandle {
-  client: SyncClient;
+  client: PresenceClient;
   /** Every request URL this client issued, in order. */
   calls: string[];
   /** Events the client's live subscription delivered. */
@@ -150,13 +170,13 @@ async function setupActor(actorId: string): Promise<ClientHandle> {
     return fetch(input as RequestInfo, init);
   };
 
-  const client = createClient({ serverUrl: SERVER_URL, actorId, fetchImpl });
+  const client = createPresenceClient(actorId, fetchImpl);
   const { groups } = await client.handshake();
   if (!groups.find((g) => g.id === GROUP_ID)) {
     throw new Error(`actor ${actorId} is not a member of ${GROUP_ID}`);
   }
-  // A real subscription, not `presence.start()`: the live stream is what
-  // carries presence.
+  // Presence rides this subscription's live stream; there is no separate
+  // presence connection to start.
   const unsubscribe = client.subscribe([GROUP_ID], (event) => events.push(event));
   return {
     client,
@@ -194,31 +214,30 @@ describe("integration: presence", () => {
     const anchor = "r:drew:" + RUN_ID;
     const head = anchor;
 
-    drew.client.presence.setLocalCursor("doc_demo", {
+    drew.client.presence.set("doc_demo", "cursor", {
       anchorId: anchor,
       anchorOffset: 0,
       headId: head,
       headOffset: 5,
     });
 
-    // Poll alice's presence map for drew's entry.
+    // Poll alice's presence map for drew's entry on the cursor channel.
     const deadline = Date.now() + 5000;
-    let drewEntry: ReturnType<typeof alice.client.presence.forEntity> extends Map<string, infer V>
-      ? V | undefined
-      : never;
+    let drewEntry: PeerPresence<CursorPresence> | undefined;
     while (Date.now() < deadline) {
-      const map = alice.client.presence.forEntity("doc_demo");
-      const entry = map.get(drew.client.actorId);
+      const entry = alice.client.presence.forEntity("doc_demo", "cursor").get(drew.client.actorId);
       if (entry) {
-        drewEntry = entry as typeof drewEntry;
+        drewEntry = entry;
         break;
       }
       await new Promise((r) => setTimeout(r, 50));
     }
 
     expect(drewEntry).toBeDefined();
-    expect(drewEntry?.cursor.anchorId).toBe(anchor);
-    expect(drewEntry?.cursor.headOffset).toBe(5);
+    expect(drewEntry?.entityId).toBe("doc_demo");
+    expect(drewEntry?.channel).toBe("cursor");
+    expect(drewEntry?.data.anchorId).toBe(anchor);
+    expect(drewEntry?.data.headOffset).toBe(5);
 
     // One subscription, one stream, and the packet arrives once.
     expect(countCalls(alice.calls, "/sync/live")).toBe(1);
@@ -229,6 +248,6 @@ describe("integration: presence", () => {
 
     // Closing the subscription drops the peers it observed.
     alice.unsubscribe();
-    expect(alice.client.presence.forEntity("doc_demo").size).toBe(0);
+    expect(alice.client.presence.forEntity("doc_demo", "cursor").size).toBe(0);
   });
 });
