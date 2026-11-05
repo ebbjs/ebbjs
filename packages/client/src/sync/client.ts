@@ -740,8 +740,15 @@ export class SyncClient<
     if (sub === null) return;
     const kept = sub.groupIds.filter((groupId) => inScope.has(groupId));
     if (kept.length === sub.groupIds.length) return;
-    sub.groupIds = kept;
     this.applyReplicaScope(kept);
+    if (kept.length === 0) {
+      // An empty group list is not a valid live subscription, so end the
+      // session instead of reconnecting into a 400 forever. A later
+      // `subscribe()` reopens it.
+      this.cancelSubscription(sub);
+      return;
+    }
+    sub.groupIds = kept;
     this.closeStream(sub);
   }
 

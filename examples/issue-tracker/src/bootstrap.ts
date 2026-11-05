@@ -14,7 +14,13 @@ import { createClient } from "@ebbjs/client";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { demoActions } from "./actions";
 import { schema } from "./schema";
-import { SEEDER_ACTOR_ID, buildActorSeed, buildSharedSeed, deriveActorSeedIds } from "./seed";
+import {
+  APP_ID,
+  SEEDER_ACTOR_ID,
+  buildActorSeed,
+  buildSharedSeed,
+  deriveActorSeedIds,
+} from "./seed";
 import { handshakeGroupIds, syncAllGroups } from "./sync-groups";
 
 /**
@@ -25,7 +31,7 @@ export const createIssueTrackerClient = (opts: {
   serverUrl: string;
   actorId: string;
   storage?: StorageAdapter;
-}) => createClient({ ...opts, schema, actions: demoActions });
+}) => createClient({ ...opts, appId: APP_ID, schema, actions: demoActions });
 
 /** The client type, read off the factory's return value rather than restated. */
 export type IssueTrackerClient = ReturnType<typeof createIssueTrackerClient>;

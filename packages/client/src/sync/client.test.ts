@@ -1673,5 +1673,38 @@ describe("app scope (#732)", () => {
 
       unsubscribe();
     });
+
+    it("ends the session when no subscribed group remains in scope", async () => {
+      const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/sync/handshake")) {
+          return jsonResponse({
+            actor_id: "a_test",
+            groups: [handshakeGroup("g_other", ["issues"])],
+          });
+        }
+        if (url.includes("/sync/live")) return openSseResponse();
+        if (url.includes("/entities")) return emptyListingResponse();
+        if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+        return jsonResponse({});
+      }) as typeof fetch;
+
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId: "notes",
+        reconnectInitialMs: 1,
+        fetchImpl,
+      });
+
+      client.subscribe(["g_notes"], () => {});
+      await waitFor(() => client.state === "live");
+
+      await client.handshake();
+
+      expect((client as unknown as { activeSub: unknown }).activeSub).toBeNull();
+      expect(client.state).toBe("offline");
+    });
   });
 });
