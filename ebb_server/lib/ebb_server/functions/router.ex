@@ -164,6 +164,7 @@ defmodule EbbServer.Functions.Router do
 
   use Plug.Router, copy_opts_to_assign: :functions_opts
 
+  alias EbbServer.Actor
   alias EbbServer.Functions
 
   alias EbbServer.Functions.{
@@ -280,8 +281,8 @@ defmodule EbbServer.Functions.Router do
   # The parent's `AuthPlug` answers this first in production; the branch is for
   # a direct call and says the same thing in the plain envelope.
   defp with_actor(conn, fun) do
-    case conn.assigns[:actor_id] do
-      actor_id when is_binary(actor_id) and actor_id != "" -> fun.(conn, actor_id)
+    case conn.assigns[:actor] do
+      %Actor{id: actor_id} when is_binary(actor_id) and actor_id != "" -> fun.(conn, actor_id)
       _missing -> send_json(conn, 401, %{"error" => "unauthorized"})
     end
   end

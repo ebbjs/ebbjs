@@ -134,7 +134,7 @@ defmodule EbbServer.FunctionsTestHelpers do
   def call_functions(method, path, body, opts \\ []) do
     conn(method, path, body)
     |> put_req_header("content-type", "application/json")
-    |> assign(:actor_id, Keyword.get(opts, :actor_id))
+    |> EbbServer.TestHelpers.put_actor(Keyword.get(opts, :actor_id))
     |> put_optional_header("authorization", Keyword.get(opts, :authorization))
     |> put_request_headers(Keyword.get(opts, :headers, []))
     |> FunctionsRouter.call(FunctionsRouter.init(Keyword.take(opts, router_option_keys())))

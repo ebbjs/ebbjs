@@ -24,6 +24,7 @@ defmodule EbbServer.Functions.Principal do
 
   import Plug.Conn, only: [get_req_header: 2]
 
+  alias EbbServer.Actor
   alias EbbServer.Functions
 
   @service_header "x-ebb-service-token"
@@ -63,8 +64,8 @@ defmodule EbbServer.Functions.Principal do
   def services(opts), do: Keyword.get(opts, :services) || Functions.services()
 
   defp actor_principal(conn) do
-    case conn.assigns[:actor_id] do
-      actor_id when is_binary(actor_id) and actor_id != "" ->
+    case conn.assigns[:actor] do
+      %Actor{id: actor_id} when is_binary(actor_id) and actor_id != "" ->
         {:ok, %{kind: :actor, id: actor_id, actor_id: actor_id, permissions: nil}}
 
       _missing ->
