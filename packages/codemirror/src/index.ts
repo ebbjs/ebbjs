@@ -43,4 +43,4 @@ export {
   type PresenceDecorationConfig,
 } from "./presence/cursor-decoration";
 
-export type { PresenceEntry, CursorPresence } from "@ebbjs/client";
+export type { CursorPresence, PeerPresence, PresenceChange } from "@ebbjs/client";
