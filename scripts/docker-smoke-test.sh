@@ -267,6 +267,22 @@ if ! docker exec "$NAME" curl --fail --silent --show-error --max-time 2 \
 fi
 echo "tailscale mode is healthy on loopback with nothing published"
 
+# The container points the gateway at a dead control port, so the only two
+# outcomes are a login URL or the explicit unreachable line, emitted after the
+# 5s grace. Either proves the gateway started and reported through the BEAM.
+# Read from this container: it has already been up for the 15s above.
+log "logs show a login URL, or why the node is not up"
+TAILSCALE_LOGS="$(docker logs "$NAME" 2>&1 || true)"
+if ! printf '%s\n' "$TAILSCALE_LOGS" | grep -Eq \
+    -e 'tailscale login required: https://login\.tailscale\.com/a/' \
+    -e 'ebb_tsnode: control server unreachable or node not authorized'; then
+  echo "FAIL: neither a login URL nor the control-unreachable message in the tailscale logs"
+  printf '%s\n' "$TAILSCALE_LOGS" | tail -n 50
+  exit 1
+fi
+printf '%s\n' "$TAILSCALE_LOGS" | grep -E \
+  'tailscale login required|control server unreachable' | tail -n 5 || true
+
 log "the loopback bind holds even when the port is published"
 docker rm -f "$NAME" >/dev/null
 start_tailscale -p "${PORT}:4000"
@@ -283,17 +299,6 @@ if [ "$HOST_HEALTH" = "200" ] || [ "$HOST_HANDSHAKE" = "200" ]; then
 fi
 echo "host port ${PORT} is refused (healthz ${HOST_HEALTH}, handshake ${HOST_HANDSHAKE})"
 
-log "logs show a login URL, or why the node is not up"
-TAILSCALE_LOGS="$(docker logs "$NAME" 2>&1 || true)"
-if ! printf '%s\n' "$TAILSCALE_LOGS" | grep -Eqi \
-    -e 'https://login\.tailscale\.com/a/' \
-    -e 'tailscale.*(error|failed|unreachable|refused|timeout|needs.login)' \
-    -e '(control|connect|dial|proxy|gateway|tsnode).*(error|failed|exit|unreachable|refused|timeout)'; then
-  echo "FAIL: neither a login URL nor a control-unreachable message in the tailscale logs"
-  printf '%s\n' "$TAILSCALE_LOGS" | tail -n 50
-  exit 1
-fi
-printf '%s\n' "$TAILSCALE_LOGS" | grep -Ei -e 'tailscale|tsnode|tsnet|ebb_tsnode|control' | tail -n 10 || true
 docker rm -f "$NAME" >/dev/null
 
 log "docker compose dev profile boots the same image with a named volume"

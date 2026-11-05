@@ -271,7 +271,9 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        # `-race`: the emitter serialises concurrent listeners, and an
+        # unguarded write there would only show up under load.
+        run: go test -race ./...
       - name: Build with the image's flags
         # The same script the Dockerfile runs, so a flag change cannot land in
         # the image without passing here first. It writes relative to the

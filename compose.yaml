@@ -17,7 +17,8 @@
 
 name: ebb
 
-# Shared by both profiles; only `environment` (and the demo profile) differ.
+# Shared by the `ebb` and `ebb-dev` services; `ebb-tailscale` sets its own,
+# narrower environment because the tailnet is its only ingress.
 x-ebb-service: &ebb-service
   image: ${EBB_IMAGE:-ghcr.io/ebbjs/ebb_server:latest}
   build:

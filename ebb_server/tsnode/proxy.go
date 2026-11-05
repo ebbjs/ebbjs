@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -30,20 +31,26 @@ func newProxyHandler(cfg proxyConfig) http.Handler {
 	reverseProxy := httputil.NewSingleHostReverseProxy(cfg.Backend)
 	// SSE must reach the browser on each upstream write, not on a buffer flush.
 	reverseProxy.FlushInterval = -1
+	// Errors here are reached before the response headers: a failed round trip
+	// or protocol switch. A body copy that fails mid-stream makes the standard
+	// library abort the connection itself, so nothing is appended to a stream
+	// the client is already reading.
 	reverseProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		cfg.logf("proxy %s %s: %v", r.Method, r.URL.Path, err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 	}
 
-	upstreamDirector := reverseProxy.Director
-	reverseProxy.Director = func(out *http.Request) {
-		host := out.Host
-		upstreamDirector(out)
+	// `Rewrite` replaces `Director` so the standard library drops the client's
+	// own `Forwarded`/`X-Forwarded-*` before `SetXForwarded` writes the address
+	// this gateway accepted.
+	reverseProxy.Director = nil
+	reverseProxy.Rewrite = func(request *httputil.ProxyRequest) {
+		host := request.In.Host
+		request.SetURL(cfg.Backend)
+		request.SetXForwarded()
 		// The BEAM binds on loopback, so the tailnet host it was addressed by
 		// must survive the rewrite to the backend address.
-		out.Host = host
-		out.Header.Set("X-Forwarded-Host", host)
-		out.Header.Set("X-Forwarded-Proto", forwardedProto(out))
+		request.Out.Host = host
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +59,11 @@ func newProxyHandler(cfg proxyConfig) http.Handler {
 		profile, err := resolveIdentity(r.Context(), cfg.WhoIs, r.RemoteAddr)
 		if err != nil {
 			cfg.logf("proxy %s: %v", r.RemoteAddr, err)
-			http.Error(w, "forbidden", http.StatusForbidden)
+			status, message := http.StatusBadGateway, "bad gateway"
+			if errors.Is(err, errNoUserIdentity) {
+				status, message = http.StatusForbidden, "forbidden"
+			}
+			http.Error(w, message, status)
 			return
 		}
 
@@ -89,30 +100,30 @@ func resolveIdentity(ctx context.Context, whois whoisFunc, remoteAddr string) (*
 func stripGatewayHeaders(header http.Header) {
 	for name := range header {
 		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "tailscale-") ||
-			strings.HasPrefix(lower, "x-ebb-tailscale-") ||
-			lower == "x-ebb-actor-id" {
+		if slices.Contains(strippedHeaders, lower) || hasAnyPrefix(lower, strippedPrefixes) {
 			delete(header, name)
 		}
 	}
 }
 
-func injectIdentity(header http.Header, profile *tailcfg.UserProfile, secret string) {
-	header.Set("Tailscale-User-Login", profile.LoginName)
-	if profile.DisplayName != "" {
-		header.Set("Tailscale-User-Name", profile.DisplayName)
+func hasAnyPrefix(value string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
 	}
-	if profile.ID != 0 {
-		header.Set("X-Ebb-Tailscale-User-Id", strconv.FormatInt(int64(profile.ID), 10))
-	}
-	if secret != "" {
-		header.Set("X-Ebb-Tailscale-Secret", secret)
-	}
+	return false
 }
 
-func forwardedProto(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
+func injectIdentity(header http.Header, profile *tailcfg.UserProfile, secret string) {
+	header.Set(headerLogin, profile.LoginName)
+	if profile.DisplayName != "" {
+		header.Set(headerName, profile.DisplayName)
 	}
-	return "http"
+	if profile.ID != 0 {
+		header.Set(headerUserID, strconv.FormatInt(int64(profile.ID), 10))
+	}
+	if secret != "" {
+		header.Set(headerSecret, secret)
+	}
 }

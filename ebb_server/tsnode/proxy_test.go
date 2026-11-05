@@ -94,6 +94,9 @@ func TestProxyInjectsIdentityAndStripsSpoofedHeaders(t *testing.T) {
 		r.Header.Set("X-Ebb-Tailscale-Secret", "guessed")
 		r.Header.Set("X-Ebb-Tailscale-User-Id", "999")
 		r.Header.Set("X-Ebb-Actor-Id", "mallory")
+		r.Header.Set("X-Forwarded-For", "203.0.113.9")
+		r.Header.Set("X-Forwarded-Host", "spoofed.example")
+		r.Header.Set("X-Forwarded-Proto", "https")
 		r.Header.Set("X-Keep", "kept")
 	})
 	if response.StatusCode != http.StatusOK {
@@ -133,8 +136,10 @@ func TestProxyInjectsIdentityAndStripsSpoofedHeaders(t *testing.T) {
 	if got := headers.Get("X-Ebb-Actor-Id"); got != "" {
 		t.Errorf("X-Ebb-Actor-Id = %q, want it stripped", got)
 	}
-	if got := headers.Get("X-Forwarded-For"); got == "" {
-		t.Error("X-Forwarded-For is empty, want the client address")
+	// The peer's own forwarding headers are dropped, not appended to: the BEAM
+	// has to see the address this gateway accepted.
+	if got := headers.Values("X-Forwarded-For"); len(got) != 1 || strings.Contains(got[0], "203.0.113.9") {
+		t.Errorf("X-Forwarded-For = %v, want only the proxied client address", got)
 	}
 }
 
@@ -170,9 +175,6 @@ func TestProxyOmitsAbsentDisplayNameAndUserID(t *testing.T) {
 
 func TestProxyForbidsPeersWithoutUserIdentity(t *testing.T) {
 	cases := map[string]whoisFunc{
-		"whois error": func(context.Context, string) (*apitype.WhoIsResponse, error) {
-			return nil, errors.New("peer not found")
-		},
 		"nil response": func(context.Context, string) (*apitype.WhoIsResponse, error) {
 			return nil, nil
 		},
@@ -191,6 +193,20 @@ func TestProxyForbidsPeersWithoutUserIdentity(t *testing.T) {
 				t.Fatalf("status = %d, want 403", response.StatusCode)
 			}
 		})
+	}
+}
+
+// A WhoIs failure means the gateway cannot name the peer, not that the peer is
+// forbidden: the client needs to see a gateway problem so it can retry, and a
+// 403 would be cached and reported as an authorization decision.
+func TestProxyTreatsWhoIsFailureAsBadGateway(t *testing.T) {
+	proxy := newTestProxy(t, echoBackend(t).URL, func(context.Context, string) (*apitype.WhoIsResponse, error) {
+		return nil, errors.New("peer not found")
+	}, "s3cret")
+
+	response := getThroughProxy(t, proxy.URL, "/sync", nil)
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", response.StatusCode)
 	}
 }
 
