@@ -9,8 +9,9 @@
  * client holds exactly one `/sync/live` request and issues no
  * `/sync/handshake` for presence.
  *
- * Requires a pre-seeded `grp_demo` group with a `demo-seeder` member
- * that the standard integration CI job does not bootstrap. The test
+ * Requires a pre-seeded `grp_demo` group with a `demo-seeder` member and the
+ * demo's document (`doc_grp_demo`) that the standard integration CI job does
+ * not bootstrap. The test
  * probes for that fixture at load time and skips cleanly with a
  * warning when it's missing. See `packages/client/README.md` for how
  * to seed the demo fixtures locally.
@@ -24,6 +25,8 @@ import type { CursorPresence, PeerPresence, SSEEvent } from "@ebbjs/client";
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const GROUP_ID = "grp_demo";
+/** The document `examples/collaborative-text-demo` seeds for `grp_demo`. */
+const DOC_ID = "doc_grp_demo";
 
 /**
  * The demo's declared `cursor` channel. The integration test exercises the
@@ -214,7 +217,7 @@ describe("integration: presence", () => {
     const anchor = "r:drew:" + RUN_ID;
     const head = anchor;
 
-    drew.client.presence.set("doc_demo", "cursor", {
+    drew.client.presence.set(DOC_ID, "cursor", {
       anchorId: anchor,
       anchorOffset: 0,
       headId: head,
@@ -225,7 +228,7 @@ describe("integration: presence", () => {
     const deadline = Date.now() + 5000;
     let drewEntry: PeerPresence<CursorPresence> | undefined;
     while (Date.now() < deadline) {
-      const entry = alice.client.presence.forEntity("doc_demo", "cursor").get(drew.client.actorId);
+      const entry = alice.client.presence.forEntity(DOC_ID, "cursor").get(drew.client.actorId);
       if (entry) {
         drewEntry = entry;
         break;
@@ -234,7 +237,7 @@ describe("integration: presence", () => {
     }
 
     expect(drewEntry).toBeDefined();
-    expect(drewEntry?.entityId).toBe("doc_demo");
+    expect(drewEntry?.entityId).toBe(DOC_ID);
     expect(drewEntry?.channel).toBe("cursor");
     expect(drewEntry?.data.anchorId).toBe(anchor);
     expect(drewEntry?.data.headOffset).toBe(5);
@@ -248,6 +251,6 @@ describe("integration: presence", () => {
 
     // Closing the subscription drops the peers it observed.
     alice.unsubscribe();
-    expect(alice.client.presence.forEntity("doc_demo", "cursor").size).toBe(0);
+    expect(alice.client.presence.forEntity(DOC_ID, "cursor").size).toBe(0);
   });
 });
