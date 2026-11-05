@@ -5,8 +5,8 @@
  * Last-write-wins per key. The wire carries no timestamp, so `updatedAt` is
  * the local receive time and staleness is a purely local judgement: an entry
  * is swept once its channel's TTL has elapsed since the last packet. The sweep
- * runs lazily on read-path-independent ingests and on a timer armed only while
- * the map is non-empty, so an idle client holds no timer.
+ * runs lazily on every ingest and on a timer armed only while the map is
+ * non-empty, so an idle client holds no timer and a read never waits on one.
  *
  * `SyncClient` owns one store per client and feeds it from `handleSSEEvent`.
  * The store outlives individual packets but not the connection: closing the
@@ -19,6 +19,8 @@ import {
   DEFAULT_PRESENCE_TTL_MS,
   type PresenceChannelConfig,
 } from "./define";
+import { entryKey, targetKey } from "./keys";
+import { unrefTimer } from "./timers";
 
 /** One observed peer on one channel of one entity. */
 export interface PeerPresence<T = unknown> {
@@ -123,21 +125,26 @@ export function createPresenceStore(opts: PresenceStoreOptions): PresenceStore {
     unrefTimer(timer);
   };
 
-  const sweep = (): void => {
-    timer = null;
-    const cutoff = now();
+  /** Drop every entry past its channel's TTL at `cutoff`, by changed target. */
+  const expireAt = (cutoff: number): Map<string, PresenceChange> => {
     const changed = new Map<string, PresenceChange>();
     for (const [key, entry] of entries) {
       const ttl = ttlOf(entry.channel);
       if (!Number.isFinite(ttl) || entry.updatedAt + ttl > cutoff) continue;
       entries.delete(key);
-      changed.set(changeKey(entry.entityId, entry.channel), {
+      changed.set(targetKey(entry.entityId, entry.channel), {
         entityId: entry.entityId,
         channel: entry.channel,
       });
     }
+    return changed;
+  };
+
+  const sweep = (): void => {
+    timer = null;
+    const expired = expireAt(now());
     armTimer();
-    notifyEach(changed.values());
+    notifyEach(expired.values());
   };
 
   /** Evict the least-recently-updated entries past the channel's cap. */
@@ -160,23 +167,34 @@ export function createPresenceStore(opts: PresenceStoreOptions): PresenceStore {
       if (closed) return;
       const event = parsePresenceEvent(payload);
       if (event === null || event.actorId === localActorId) return;
+      const receivedAt = now();
+      // Lazy half of the sweep: a packet is evidence the stream is live, so
+      // age out anything the timer could not reach (a throttled tab).
+      const changes = expireAt(receivedAt);
       const key = entryKey(event.entityId, event.channel, event.actorId);
       if (event.value === null) {
-        if (!entries.delete(key)) return;
-        armTimer();
-        notify({ entityId: event.entityId, channel: event.channel });
-        return;
+        if (entries.delete(key)) {
+          changes.set(targetKey(event.entityId, event.channel), {
+            entityId: event.entityId,
+            channel: event.channel,
+          });
+        }
+      } else {
+        entries.set(key, {
+          actorId: event.actorId,
+          entityId: event.entityId,
+          channel: event.channel,
+          data: event.value,
+          updatedAt: receivedAt,
+        });
+        enforceCap(event.entityId, event.channel);
+        changes.set(targetKey(event.entityId, event.channel), {
+          entityId: event.entityId,
+          channel: event.channel,
+        });
       }
-      entries.set(key, {
-        actorId: event.actorId,
-        entityId: event.entityId,
-        channel: event.channel,
-        data: event.value,
-        updatedAt: now(),
-      });
-      enforceCap(event.entityId, event.channel);
       armTimer();
-      notify({ entityId: event.entityId, channel: event.channel });
+      notifyEach(changes.values());
     },
 
     forEntity<T>(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<T>> {
@@ -200,7 +218,7 @@ export function createPresenceStore(opts: PresenceStoreOptions): PresenceStore {
       if (entries.size === 0) return;
       const changed = new Map<string, PresenceChange>();
       for (const entry of entries.values()) {
-        changed.set(changeKey(entry.entityId, entry.channel), {
+        changed.set(targetKey(entry.entityId, entry.channel), {
           entityId: entry.entityId,
           channel: entry.channel,
         });
@@ -221,11 +239,6 @@ export function createPresenceStore(opts: PresenceStoreOptions): PresenceStore {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const entryKey = (entityId: string, channel: string, actorId: string): string =>
-  `${entityId}\u0000${channel}\u0000${actorId}`;
-
-const changeKey = (entityId: string, channel: string): string => `${entityId}\u0000${channel}`;
 
 interface ParsedPresenceEvent {
   readonly actorId: string;
@@ -253,10 +266,4 @@ function parsePresenceEvent(payload: unknown): ParsedPresenceEvent | null {
   if (typeof channel !== "string" || channel.length === 0) return null;
   if (!("value" in envelope)) return null;
   return { actorId, entityId, channel, value: envelope["value"] };
-}
-
-/** An armed TTL timer must never be the reason a process stays alive. */
-function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
-  const maybe = handle as unknown as { unref?: () => void };
-  if (typeof maybe.unref === "function") maybe.unref();
 }

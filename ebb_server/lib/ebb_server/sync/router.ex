@@ -59,7 +59,7 @@ defmodule EbbServer.Sync.Router do
   every subscriber of every group the entity belongs to, so it is bounded by
   volume instead: a body over `:presence_max_body_bytes` (default 32 KiB, four
   times the client's 8 KiB payload cap) is `413 payload_too_large`, and an
-  actor over `:presence_rate_limit` (default `{20, 40}` tokens, see
+  actor over `:presence_rate_limit` (default `{100, 200}` tokens, see
   `EbbServer.Sync.PresenceRateLimit`) gets `429 rate_limited` with
   `Retry-After`. Neither changes the `{entity_id, data}` request shape, and
   neither applies to the Action path.
@@ -404,9 +404,7 @@ defmodule EbbServer.Sync.Router do
       {:ok, body, conn} ->
         broadcast_presence(conn, body)
 
-      # `read_body/2` returns `{:more, partial, conn}` when the body exceeds
-      # `:length`; without this clause an over-cap body crashed into a
-      # `CaseClauseError` (a 500) instead of a rejection.
+      # A body over the cap is a 413, not a crashed route (500).
       {:more, _partial, conn} ->
         send_json(conn, 413, %{"error" => "payload_too_large"})
 

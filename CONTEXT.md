@@ -65,7 +65,7 @@ _Avoid_: cursor state, awareness, ephemeral data
 
 **Presence channel**:
 A named, declared slice of an entity's presence — `cursor`, `camera`, `tool` —
-with its own value schema, send debounce, and receive TTL.
+with its own value schema, send debounce, receive TTL, and entry cap.
 _Avoid_: topic, room, stream, event type
 
 **Peer**:

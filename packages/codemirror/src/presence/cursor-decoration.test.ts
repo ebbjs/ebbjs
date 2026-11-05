@@ -2,10 +2,10 @@
  * Remote cursor/selection decorations.
  *
  * The extension's seam is `getPresence()` — the demo binds it to
- * `client.presence.forEntity(docId, "cursor")`. So these tests mount a real
- * presence runtime, feed it packets, and read the rendered DOM: what a peer
- * on the declared `cursor` channel produces, and that a peer on another
- * channel or another entity produces nothing.
+ * `client.presence.forEntity(docId, "cursor")`. So these tests feed a small
+ * presence-shaped map and read the rendered DOM: what a peer on the declared
+ * `cursor` channel produces, and that a peer on another channel or another
+ * entity produces nothing.
  *
  * Run positions come from an injected resolver, so the decoration can be
  * tested without a TextDocument; the bridge's run-id mapping has its own
@@ -15,17 +15,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import {
-  createPresence,
-  type CursorPresence,
-  type Presence,
-  type PresenceChange,
-} from "@ebbjs/client";
+import type { CursorPresence, PeerPresence, PresenceChange } from "@ebbjs/client";
 
 import { createPresenceExtension } from "./cursor-decoration";
 
 const DOC_ID = "doc_test";
-const LOCAL_ACTOR = "a_local";
 
 /** Run ids mapped to their document start; offsets are added on top. */
 const RUN_STARTS: Record<string, number> = { r_a: 0, r_b: 6 };
@@ -42,10 +36,67 @@ const cursorAt = (
   headOffset,
 });
 
+type ChangeListener = (change: PresenceChange) => void;
+
+/**
+ * The two methods the extension reads, plus a setter so a test can drive an
+ * update the way `client.presence.onUpdate` would.
+ */
+interface FakePresence {
+  forEntity(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<CursorPresence>>;
+  onUpdate(callback: ChangeListener): () => void;
+  set(actorId: string, entityId: string, channel: string, value: CursorPresence | null): void;
+  close(): void;
+}
+
+const presenceKey = (entityId: string, channel: string, actorId: string): string =>
+  `${entityId}\u0000${channel}\u0000${actorId}`;
+
+function createFakePresence(): FakePresence {
+  const entries = new Map<string, PeerPresence<CursorPresence>>();
+  const listeners = new Set<ChangeListener>();
+
+  return {
+    forEntity(entityId, channel) {
+      const out = new Map<string, PeerPresence<CursorPresence>>();
+      for (const entry of entries.values()) {
+        if (entry.entityId === entityId && entry.channel === channel) {
+          out.set(entry.actorId, entry);
+        }
+      }
+      return out;
+    },
+    onUpdate(callback) {
+      listeners.add(callback);
+      return () => {
+        listeners.delete(callback);
+      };
+    },
+    set(actorId, entityId, channel, value) {
+      const key = presenceKey(entityId, channel, actorId);
+      if (value === null) {
+        entries.delete(key);
+      } else {
+        entries.set(key, { actorId, entityId, channel, data: value, updatedAt: Date.now() });
+      }
+      for (const listener of listeners) listener({ entityId, channel });
+    },
+    close() {
+      listeners.clear();
+      entries.clear();
+    },
+  };
+}
+
 interface Mounted {
-  readonly presence: Presence;
+  readonly presence: FakePresence;
   readonly view: EditorView;
-  dispatchPresence: (payload: unknown) => void;
+  update: (
+    actorId: string,
+    entityId: string,
+    channel: string,
+    value: CursorPresence | null,
+  ) => void;
 }
 
 let mounted: Mounted | null = null;
@@ -58,13 +109,9 @@ afterEach(() => {
 });
 
 function mount(channel = "cursor", entityId = DOC_ID): Mounted {
-  const presence = createPresence({
-    serverUrl: "http://localhost:4000",
-    actorId: LOCAL_ACTOR,
-    fetchImpl: async () => new Response(null, { status: 204 }),
-  });
+  const presence = createFakePresence();
   const extension = createPresenceExtension({
-    getPresence: () => presence.forEntity<CursorPresence>(entityId, channel),
+    getPresence: () => presence.forEntity(entityId, channel),
     getPositionOfRun: (runId, offset) => {
       const start = RUN_STARTS[runId];
       return start === undefined ? undefined : start + offset;
@@ -82,19 +129,13 @@ function mount(channel = "cursor", entityId = DOC_ID): Mounted {
   const result: Mounted = {
     presence,
     view,
-    dispatchPresence: (payload) => {
-      presence.ingest(payload);
+    update: (actorId, targetEntity, targetChannel, value) => {
+      presence.set(actorId, targetEntity, targetChannel, value);
     },
   };
   mounted = result;
   return result;
 }
-
-const packet = (actorId: string, entityId: string, channel: string, value: unknown): unknown => ({
-  actor_id: actorId,
-  entity_id: entityId,
-  data: { channel, value },
-});
 
 const labels = (view: EditorView): string[] =>
   [...view.dom.querySelectorAll(".cm-remote-cursor-label")].map((node) => node.textContent ?? "");
@@ -105,9 +146,9 @@ const selections = (view: EditorView): unknown[] => [
 
 describe("createPresenceExtension", () => {
   it("renders a collapsed peer cursor as a labelled widget", () => {
-    const { view, dispatchPresence } = mount();
+    const { view, update } = mount();
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_b", 2)));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_b", 2));
 
     expect(labels(view)).toEqual(["a_alice"]);
     expect(selections(view)).toHaveLength(0);
@@ -118,49 +159,49 @@ describe("createPresenceExtension", () => {
   });
 
   it("renders a peer selection as a mark plus a cursor at the head", () => {
-    const { view, dispatchPresence } = mount();
+    const { view, update } = mount();
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_a", 0, "r_b", 3)));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 0, "r_b", 3));
 
     expect(labels(view)).toEqual(["a_alice"]);
     expect(selections(view)).toHaveLength(1);
   });
 
   it("keeps peers on different channels and entities out of the decorations", () => {
-    const { view, dispatchPresence } = mount("cursor", DOC_ID);
+    const { view, update } = mount("cursor", DOC_ID);
 
-    dispatchPresence(packet("a_bob", DOC_ID, "camera", cursorAt("r_a", 0)));
+    update("a_bob", DOC_ID, "camera", cursorAt("r_a", 0));
     expect(labels(view)).toEqual([]);
 
-    dispatchPresence(packet("a_carol", "other_doc", "cursor", cursorAt("r_a", 0)));
+    update("a_carol", "other_doc", "cursor", cursorAt("r_a", 0));
     expect(labels(view)).toEqual([]);
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_a", 1)));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 1));
     expect(labels(view)).toEqual(["a_alice"]);
   });
 
   it("skips a peer whose run no longer resolves", () => {
-    const { view, dispatchPresence } = mount();
+    const { view, update } = mount();
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_deleted", 0)));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_deleted", 0));
 
     expect(labels(view)).toEqual([]);
     expect(selections(view)).toHaveLength(0);
   });
 
   it("drops a peer after its channel clears", () => {
-    const { view, dispatchPresence } = mount();
+    const { view, update } = mount();
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_a", 1)));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 1));
     expect(labels(view)).toEqual(["a_alice"]);
 
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", null));
+    update("a_alice", DOC_ID, "cursor", null);
     expect(labels(view)).toEqual([]);
   });
 });
 
 /** The change payload a consumer receives; used to document the filter seam. */
-const cursorChanges = (presence: Presence): PresenceChange[] => {
+const cursorChanges = (presence: FakePresence): PresenceChange[] => {
   const changes: PresenceChange[] = [];
   presence.onUpdate((change) => {
     if (change.channel === "cursor") changes.push(change);
@@ -170,11 +211,11 @@ const cursorChanges = (presence: Presence): PresenceChange[] => {
 
 describe("presence change filtering", () => {
   it("reports only the changed channel", () => {
-    const { presence, dispatchPresence } = mount();
+    const { presence, update } = mount();
     const changes = cursorChanges(presence);
 
-    dispatchPresence(packet("a_alice", DOC_ID, "camera", cursorAt("r_a", 0)));
-    dispatchPresence(packet("a_alice", DOC_ID, "cursor", cursorAt("r_a", 0)));
+    update("a_alice", DOC_ID, "camera", cursorAt("r_a", 0));
+    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 0));
 
     expect(changes).toEqual([{ entityId: DOC_ID, channel: "cursor" }]);
   });

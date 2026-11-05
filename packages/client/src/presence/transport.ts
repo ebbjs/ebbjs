@@ -18,6 +18,8 @@ import {
   PresencePayloadTooLargeError,
   type PresenceChannelConfig,
 } from "./define";
+import { targetKey } from "./keys";
+import { unrefTimer } from "./timers";
 
 export interface PresenceTransportOptions {
   readonly serverUrl: string;
@@ -94,7 +96,7 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
           limit: MAX_PRESENCE_PAYLOAD_BYTES,
         });
       }
-      const key = `${entityId}\u0000${channel}`;
+      const key = targetKey(entityId, channel);
       const previous = pending.get(key);
       if (previous !== undefined) clearTimeout(previous.timer);
       const debounceMs = opts.channels?.[channel]?.debounceMs ?? DEFAULT_PRESENCE_DEBOUNCE_MS;
@@ -124,9 +126,3 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
 const encoder = new TextEncoder();
 
 const byteLength = (text: string): number => encoder.encode(text).length;
-
-/** A pending debounce must never be the reason a process stays alive. */
-function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
-  const maybe = handle as unknown as { unref?: () => void };
-  if (typeof maybe.unref === "function") maybe.unref();
-}

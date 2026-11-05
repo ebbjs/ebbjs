@@ -50,8 +50,8 @@ import { ConnectionStateMachine, type ConnectionState } from "./connection-state
 import {
   createPresence,
   type AnyPresenceRegistry,
-  type Presence,
   type PresenceApi,
+  type PresenceRuntime,
 } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
@@ -236,7 +236,7 @@ export class SyncClient<
    * subscriber sees it, and {@link closeStream} drops the peers because a
    * disconnected client cannot know its peer set.
    */
-  private readonly presenceRuntime: Presence;
+  private readonly presenceRuntime: PresenceRuntime;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
   /**

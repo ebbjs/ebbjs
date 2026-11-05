@@ -142,7 +142,7 @@ export interface TypedPresenceApi<C extends Readonly<Record<string, PresenceChan
  * The runtime behind `client.presence`: the public surface plus the two
  * connection hooks the client owns.
  */
-export interface Presence extends UntypedPresenceApi {
+export interface PresenceRuntime extends UntypedPresenceApi {
   /** Fold one `presence` packet from the live stream into the store. */
   ingest(payload: unknown): void;
   /** Drop every observed peer: the stream that carried them is gone. */
@@ -164,7 +164,7 @@ export interface PresenceOptions {
  * enforce their options; an undeclared channel on a registered client is a
  * runtime error (JS callers) as well as a compile error (TypeScript callers).
  */
-export function createPresence(opts: PresenceOptions): Presence {
+export function createPresence(opts: PresenceOptions): PresenceRuntime {
   const channels = opts.registry?.channels;
   const declared = channels === undefined ? [] : Object.keys(channels);
   const store: PresenceStore = createPresenceStore({

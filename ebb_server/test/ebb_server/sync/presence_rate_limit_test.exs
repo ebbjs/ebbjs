@@ -19,11 +19,12 @@ defmodule EbbServer.Sync.PresenceRateLimit.BucketsTest do
   end
 
   describe "rate/0" do
-    test "defaults to a rate the client's debounce cannot trip" do
-      # 100 ms per-tab debounce => 10 sends/s per tab; two tabs fit inside the
-      # sustained rate. Raise this test's expectation with the default, not the
-      # other way around.
-      assert PresenceRateLimit.rate() == {20, 40}
+    test "defaults to a rate the client's per-channel debounce cannot trip" do
+      # 100 ms per (entity, channel) per tab => 10 sends/s per tab/channel. The
+      # default leaves room for several channels and tabs, including a channel
+      # that declares a 16 ms debounce. Raise this expectation with the
+      # default, not the other way around.
+      assert PresenceRateLimit.rate() == {100, 200}
     end
   end
 

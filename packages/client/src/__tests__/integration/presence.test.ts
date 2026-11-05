@@ -22,6 +22,8 @@ import { Type } from "@sinclair/typebox";
 import { createClient, definePresence } from "@ebbjs/client";
 import type { CursorPresence, PeerPresence, SSEEvent } from "@ebbjs/client";
 
+import { waitFor } from "../../sync/test-utils";
+
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const GROUP_ID = "grp_demo";
@@ -111,13 +113,8 @@ const countCalls = (calls: readonly string[], needle: string): number =>
  * Poll the request log so the test waits on the stream opening rather than
  * a fixed sleep.
  */
-async function waitForStream(calls: readonly string[], timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (countCalls(calls, "/sync/live") < 1) {
-    if (Date.now() > deadline) throw new Error("timed out waiting for the live stream to open");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-}
+const waitForStream = (calls: readonly string[], timeoutMs = 10_000): Promise<void> =>
+  waitFor(() => countCalls(calls, "/sync/live") >= 1, timeoutMs);
 
 /**
  * Add an actor as a member of grp_demo (sent as demo-seeder, who has

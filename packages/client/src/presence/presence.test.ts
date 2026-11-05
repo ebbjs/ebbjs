@@ -530,6 +530,31 @@ describe("presence receive store", () => {
     ]);
   });
 
+  it("sweeps expired peers lazily on the next ingest, without the timer", () => {
+    let clock = 0;
+    const store = createPresenceStore({
+      localActorId: LOCAL_ACTOR,
+      ...channelsWith({ ttlMs: 1_000 }),
+      now: () => clock,
+    });
+    const changes: PresenceChange[] = [];
+    store.onUpdate((change) => changes.push(change));
+
+    store.ingest(packet("a_alice", "doc_a", "cursor", cursor));
+    clock = 2_000;
+    // A packet on another target is evidence the stream is live: the expired
+    // cursor is swept now, not whenever a throttled timer gets to run.
+    store.ingest(packet("a_bob", "doc_b", "cursor", cursor));
+
+    expect(store.forEntity("doc_a", "cursor").size).toBe(0);
+    expect(store.forEntity("doc_b", "cursor").size).toBe(1);
+    expect(changes).toEqual([
+      { entityId: "doc_a", channel: "cursor" },
+      { entityId: "doc_a", channel: "cursor" },
+      { entityId: "doc_b", channel: "cursor" },
+    ]);
+  });
+
   it("never expires a channel whose ttlMs is Infinity", async () => {
     vi.useFakeTimers();
     const store = createPresenceStore({

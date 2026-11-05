@@ -14,6 +14,7 @@ defmodule EbbServer.Sync.RouterTest do
     WatermarkTracker
   }
 
+  alias EbbServer.Sync.PresenceRateLimit.Buckets
   alias EbbServer.Sync.Router
   alias Exqlite.Sqlite3
 
@@ -330,8 +331,10 @@ defmodule EbbServer.Sync.RouterTest do
 
       body = %{"entity_id" => entity_id, "data" => %{"cursor" => %{"line" => 1, "col" => 1}}}
 
+      # Each call is its own conn, as two tabs would be.
       assert post_presence(body, actor_id).status == 204
       assert post_presence(body, actor_id).status == 429
+      assert [_one_bucket] = :ets.lookup(Buckets.table(), actor_id)
     end
 
     test "does not limit other routes" do

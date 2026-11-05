@@ -36,6 +36,10 @@ because the next write of that channel carries newer state. An oversized body
 (over 8 KiB serialized) throws `PresencePayloadTooLargeError` synchronously at
 the call site.
 
+`client.presence.flush()` sends pending coalesced writes immediately (for
+callers that need the last move on the wire before `pagehide`); `close()`
+cancels them instead.
+
 Reads go through `client.presence.forEntity(entityId, channel)`, a
 `ReadonlyMap<actorId, PeerPresence<T>>`, and `client.presence.onUpdate(cb)`
 reports the changed `(entityId, channel)` so a listener can ignore unrelated

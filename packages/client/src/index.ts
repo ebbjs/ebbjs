@@ -148,9 +148,6 @@ export {
   type ReplicaAccess,
 } from "./sync/namespace";
 export {
-  createPresence,
-  createPresenceStore,
-  createPresenceTransport,
   definePresence,
   DEFAULT_PRESENCE_DEBOUNCE_MS,
   DEFAULT_PRESENCE_MAX_ENTRIES,
@@ -163,7 +160,6 @@ export {
   type CursorPresence,
   type NormalizedPresenceChannel,
   type PeerPresence,
-  type Presence,
   type PresenceApi,
   type PresenceChange,
   type PresenceChannelConfig,
@@ -171,8 +167,6 @@ export {
   type PresenceChannelSpec,
   type PresenceChannels,
   type PresenceRegistry,
-  type PresenceStore,
-  type PresenceTransport,
   type PresenceValue,
   type TypedPresenceApi,
   type UntypedPresenceApi,
