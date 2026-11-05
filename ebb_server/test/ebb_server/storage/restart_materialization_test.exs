@@ -115,8 +115,8 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
                2
              )
 
-    # `group` is a system type but has no eager populator, so it is as lazy as
-    # a user type: materialized here, patched without a read.
+    # `group` only became an eager type when the handshake started reading app
+    # scope at boot; this row is materialized here, then patched without a read.
     assert {:ok, {4, 4}, []} =
              write(
                writer_name,
@@ -188,14 +188,12 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     # The eager phases materialize and clear the system-type marks; a surviving
     # one would be a repair candidate, not the normal state.
     assert DirtyTracker.dirty_entity_ids_for_types(
-             ["groupMember", "entityGroup", "relationship"],
+             ["groupMember", "entityGroup", "group", "relationship"],
              dirty_set
            ) == []
 
     assert Enum.sort(DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set)) ==
              Enum.sort([todo_stale, todo_missing])
-
-    assert DirtyTracker.dirty_entity_ids_for_type("group", dirty_set) == [group_id]
 
     assert {:ok, stale} = get(ctx, todo_stale, restarted)
     assert field(stale, "title") == "Patched"

@@ -361,6 +361,7 @@ defmodule EbbServer.Storage.Writer do
     EntityGroupCache,
     EntityIndex,
     EntityTypeCache,
+    GroupAppsCache,
     GroupCache,
     GsnCounter,
     InFlightActions,
@@ -416,6 +417,7 @@ defmodule EbbServer.Storage.Writer do
           entity_groups_by_id: atom(),
           entity_groups_by_group: atom(),
           entity_types: atom(),
+          group_apps: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
           prepare: prepare(),
@@ -456,6 +458,7 @@ defmodule EbbServer.Storage.Writer do
     :entity_groups_by_id,
     :entity_groups_by_group,
     :entity_types,
+    :group_apps,
     :relationships,
     :relationships_by_id,
     :prepare,
@@ -642,6 +645,13 @@ defmodule EbbServer.Storage.Writer do
         CacheTables.entity_types()
       )
 
+    group_apps =
+      Keyword.get(
+        opts,
+        :group_apps,
+        CacheTables.group_apps()
+      )
+
     relationships =
       Keyword.get(
         opts,
@@ -804,6 +814,7 @@ defmodule EbbServer.Storage.Writer do
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
       entity_types: entity_types,
+      group_apps: group_apps,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
       prepare: %{
@@ -2130,12 +2141,13 @@ defmodule EbbServer.Storage.Writer do
     error -> {:error, error}
   end
 
-  # The only two caches a patch merge reads. The planner resolves their
-  # writes itself; this Writer only applies the result.
+  # The caches a patch merge reads. The planner resolves their writes
+  # itself; this Writer only applies the result.
   defp plan_tables(state) do
     %{
       group_members_by_id: state.group_members_by_id,
-      entity_groups_by_id: state.entity_groups_by_id
+      entity_groups_by_id: state.entity_groups_by_id,
+      group_apps: state.group_apps
     }
   end
 
@@ -2180,6 +2192,14 @@ defmodule EbbServer.Storage.Writer do
       relationships: state.relationships,
       relationships_by_id: state.relationships_by_id
     )
+  end
+
+  defp apply_cache_mutation({:group_apps_put, id, field}, state) do
+    GroupAppsCache.put_group_apps(id, field, group_apps: state.group_apps)
+  end
+
+  defp apply_cache_mutation({:group_apps_delete, id}, state) do
+    GroupAppsCache.delete_group_apps(id, group_apps: state.group_apps)
   end
 
   # The dirty mark records the subject type so a query can find the dirty

@@ -103,6 +103,7 @@ defmodule EbbServer.Sync.Router do
     EntityIndex,
     EntityStore,
     EntityView,
+    GroupAppsCache,
     GroupCache,
     PermissionChecker,
     QueryFilter,
@@ -292,6 +293,16 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  # App scope is a sync filter, not authorization: the handshake publishes
+  # it and the client decides which groups it keeps. An unscoped group is
+  # `null`; a scoped one is its truthy app ids, sorted for determinism.
+  defp group_apps(group_id) do
+    case GroupAppsCache.get_apps(group_id) do
+      :unscoped -> nil
+      %MapSet{} = apps -> apps |> MapSet.to_list() |> Enum.sort()
+    end
+  end
+
   defp query_opts(payload) do
     opts = if is_nil(payload["limit"]), do: [], else: [limit: payload["limit"]]
     if is_nil(payload["offset"]), do: opts, else: [{:offset, payload["offset"]} | opts]
@@ -320,10 +331,12 @@ defmodule EbbServer.Sync.Router do
           "groups" =>
             Enum.map(groups, fn %{group_id: gid, permissions: perms} ->
               client_cursor = Map.get(cursors, gid, 0)
+              apps = group_apps(gid)
 
               if client_cursor <= watermark do
                 %{
                   "id" => gid,
+                  "apps" => apps,
                   "permissions" => perms,
                   "cursor_valid" => true,
                   "reason" => nil,
@@ -332,6 +345,7 @@ defmodule EbbServer.Sync.Router do
               else
                 %{
                   "id" => gid,
+                  "apps" => apps,
                   "permissions" => perms,
                   "cursor_valid" => false,
                   "reason" => "behind_watermark",
@@ -1202,9 +1216,15 @@ defmodule EbbServer.Sync.Router.OperationSchema do
   def group_info do
     %OpenApiSpex.Schema{
       type: :object,
-      required: ["id", "permissions", "cursor_valid", "cursor"],
+      required: ["id", "apps", "permissions", "cursor_valid", "cursor"],
       properties: %{
         id: %OpenApiSpex.Schema{type: :string, description: "Group ID"},
+        apps: %OpenApiSpex.Schema{
+          type: :array,
+          items: %OpenApiSpex.Schema{type: :string},
+          nullable: true,
+          description: "App ids whose scope includes this group; null means the group is unscoped"
+        },
         permissions: %OpenApiSpex.Schema{type: :array, items: %OpenApiSpex.Schema{type: :string}},
         cursor_valid: %OpenApiSpex.Schema{type: :boolean},
         reason: %OpenApiSpex.Schema{type: :string, nullable: true},

@@ -21,6 +21,7 @@ defmodule EbbServer.Storage.CacheTablesTest do
     CacheTables,
     EntityGroupCache,
     EntityTypeCache,
+    GroupAppsCache,
     GroupCache,
     RelationshipCache
   }
@@ -41,7 +42,8 @@ defmodule EbbServer.Storage.CacheTablesTest do
           {EntityGroupCache, :entity_groups},
           {EntityGroupCache, :entity_groups_by_id},
           {EntityGroupCache, :entity_groups_by_group},
-          {EntityTypeCache, :entity_types}
+          {EntityTypeCache, :entity_types},
+          {GroupAppsCache, :group_apps}
         ] do
       try do
         :persistent_term.erase({module, key})
@@ -158,6 +160,19 @@ defmodule EbbServer.Storage.CacheTablesTest do
       publish_and_cleanup(EntityTypeCache, :entity_types, name)
 
       assert CacheTables.entity_types() == name
+    end
+  end
+
+  describe "group_apps/0" do
+    test "returns the canonical default when GroupAppsCache has not published" do
+      assert CacheTables.group_apps() == :ebb_group_apps
+    end
+
+    test "returns whatever GroupAppsCache published" do
+      name = :"ga_published_#{System.unique_integer([:positive])}"
+      publish_and_cleanup(GroupAppsCache, :group_apps, name)
+
+      assert CacheTables.group_apps() == name
     end
   end
 

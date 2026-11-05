@@ -96,13 +96,20 @@
             {
               "properties":
                 {
+                  "apps":
+                    {
+                      "description": "App ids whose scope includes this group; null means the group is unscoped",
+                      "items": { "type": "string" },
+                      "nullable": true,
+                      "type": "array",
+                    },
                   "cursor": { "format": "int64", "type": "integer" },
                   "cursor_valid": { "type": "boolean" },
                   "id": { "description": "Group ID", "type": "string" },
                   "permissions": { "items": { "type": "string" }, "type": "array" },
                   "reason": { "nullable": true, "type": "string" },
                 },
-              "required": ["id", "permissions", "cursor_valid", "cursor"],
+              "required": ["id", "apps", "permissions", "cursor_valid", "cursor"],
               "type": "object",
             },
           "Rejection":
@@ -3493,6 +3500,13 @@
                                             {
                                               "properties":
                                                 {
+                                                  "apps":
+                                                    {
+                                                      "description": "App ids whose scope includes this group; null means the group is unscoped",
+                                                      "items": { "type": "string" },
+                                                      "nullable": true,
+                                                      "type": "array",
+                                                    },
                                                   "cursor":
                                                     { "format": "int64", "type": "integer" },
                                                   "cursor_valid": { "type": "boolean" },
@@ -3506,7 +3520,13 @@
                                                   "reason": { "nullable": true, "type": "string" },
                                                 },
                                               "required":
-                                                ["id", "permissions", "cursor_valid", "cursor"],
+                                                [
+                                                  "id",
+                                                  "apps",
+                                                  "permissions",
+                                                  "cursor_valid",
+                                                  "cursor",
+                                                ],
                                               "type": "object",
                                             },
                                           "type": "array",
