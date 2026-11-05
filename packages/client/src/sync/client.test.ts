@@ -1723,11 +1723,13 @@ describe("app scope (#732)", () => {
         fetchImpl,
       });
 
-      const { groups: inScope } = await client.handshake();
-      expect(inScope.map((group) => group.id)).toEqual(["g_notes"]);
-
+      // Subscribe before the first handshake: with no previous scope
+      // baseline, reconcile has nothing to remove.
       const unsubscribe = client.subscribe(["g_notes", "g_issues"], () => {});
       await waitFor(() => client.state === "live");
+
+      const { groups: inScope } = await client.handshake();
+      expect(inScope.map((group) => group.id)).toEqual(["g_notes"]);
       await client.handshake();
 
       const scope = (client as unknown as { replicaScope: Set<string> }).replicaScope;
