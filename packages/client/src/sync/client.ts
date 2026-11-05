@@ -322,6 +322,13 @@ export class SyncClient<
    */
   private handshakeRan = false;
   /**
+   * The groups the previous handshake reported in this app's scope.
+   * Reconcile removes only groups that actually left scope, so a client
+   * that explicitly over-subscribed to an out-of-scope group keeps it:
+   * app scope is not a boundary and never denies a request.
+   */
+  private inAppScope: Set<string> = new Set();
+  /**
    * Per-client HLC clock. Advanced on every local event by
    * {@link submitRelationshipUpdates}; remote HLCs flow in via
    * `_applyAction`. The clock is per-client so writes stay
@@ -730,15 +737,20 @@ export class SyncClient<
 
   /**
    * Drop groups that left this app's scope from the live subscription.
-   * The app owns its subset, so a newly in-scope group is not added here
-   * (#734 covers live additions). A removed group's rows are evicted and
-   * the stream reopens without it, so the server stops pushing it.
+   * Only the difference from the previous handshake counts: a group the
+   * client over-subscribed to was never in scope, so this never takes it
+   * away. The app owns its subset and newly in-scope groups are not added
+   * here (#734 covers live additions). A removed group's rows are evicted
+   * and the stream reopens without it, so the server stops pushing it.
    */
-  private reconcileSubscriptionScope(inScope: ReadonlySet<string>): void {
+  private reconcileSubscriptionScope(nextInScope: ReadonlySet<string>): void {
     if (this.appId === undefined) return;
+    const left = new Set([...this.inAppScope].filter((groupId) => !nextInScope.has(groupId)));
+    this.inAppScope = new Set(nextInScope);
+    if (left.size === 0) return;
     const sub = this.activeSub;
     if (sub === null) return;
-    const kept = sub.groupIds.filter((groupId) => inScope.has(groupId));
+    const kept = sub.groupIds.filter((groupId) => !left.has(groupId));
     if (kept.length === sub.groupIds.length) return;
     this.applyReplicaScope(kept);
     if (kept.length === 0) {

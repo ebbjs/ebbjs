@@ -1631,15 +1631,11 @@ describe("app scope (#732)", () => {
   describe("reconcile", () => {
     it("drops a subscribed group that left the app's scope and reconnects without it", async () => {
       const liveUrls: string[] = [];
+      let groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_old", ["notes"])];
       const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (url.endsWith("/sync/handshake")) {
-          return jsonResponse({
-            actor_id: "a_test",
-            groups: [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_old", ["issues"])],
-          });
-        }
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
         if (url.includes("/sync/live")) {
           liveUrls.push(url);
           return openSseResponse();
@@ -1657,10 +1653,12 @@ describe("app scope (#732)", () => {
         fetchImpl,
       });
 
+      await client.handshake();
       const unsubscribe = client.subscribe(["g_notes", "g_old"], () => {});
       await waitFor(() => liveUrls.length > 0);
       expect(liveUrls[0]).toContain("g_old");
 
+      groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_old", ["issues"])];
       await client.handshake();
 
       const scope = (client as unknown as { replicaScope: Set<string> }).replicaScope;
@@ -1675,15 +1673,11 @@ describe("app scope (#732)", () => {
     });
 
     it("ends the session when no subscribed group remains in scope", async () => {
+      let groups = [handshakeGroup("g_notes", ["notes"])];
       const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
         const url =
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (url.endsWith("/sync/handshake")) {
-          return jsonResponse({
-            actor_id: "a_test",
-            groups: [handshakeGroup("g_other", ["issues"])],
-          });
-        }
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
         if (url.includes("/sync/live")) return openSseResponse();
         if (url.includes("/entities")) return emptyListingResponse();
         if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
@@ -1698,13 +1692,50 @@ describe("app scope (#732)", () => {
         fetchImpl,
       });
 
+      await client.handshake();
       client.subscribe(["g_notes"], () => {});
       await waitFor(() => client.state === "live");
 
+      groups = [handshakeGroup("g_other", ["issues"])];
       await client.handshake();
 
       expect((client as unknown as { activeSub: unknown }).activeSub).toBeNull();
       expect(client.state).toBe("offline");
+    });
+
+    it("keeps an explicitly over-subscribed out-of-scope group", async () => {
+      const groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_issues", ["issues"])];
+      const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
+        if (url.includes("/sync/live")) return openSseResponse();
+        if (url.includes("/entities")) return emptyListingResponse();
+        if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+        return jsonResponse({});
+      }) as typeof fetch;
+
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId: "notes",
+        reconnectInitialMs: 1,
+        fetchImpl,
+      });
+
+      const { groups: inScope } = await client.handshake();
+      expect(inScope.map((group) => group.id)).toEqual(["g_notes"]);
+
+      const unsubscribe = client.subscribe(["g_notes", "g_issues"], () => {});
+      await waitFor(() => client.state === "live");
+      await client.handshake();
+
+      const scope = (client as unknown as { replicaScope: Set<string> }).replicaScope;
+      const sub = (client as unknown as { activeSub: { groupIds: string[] } }).activeSub;
+      expect([...scope]).toEqual(["g_notes", "g_issues"]);
+      expect(sub.groupIds).toEqual(["g_notes", "g_issues"]);
+
+      unsubscribe();
     });
   });
 });

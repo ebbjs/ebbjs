@@ -23,7 +23,8 @@ const { groups } = await notes.handshake(); // only groups scoped to "notes"
 - `client.seed()` scopes every seeded group without an explicit `apps` map to
   the client's app, and `group.create` writes the same scope on the bootstrap
   put. Later edits are single-key patches (`apps.docs = false`), which the
-  wire's per-key merge handles per app id.
+  wire's per-key merge handles per app id. A seed is a put, so re-seeding a
+  group replaces its scope map rather than merging it.
 - `handshake()` drops out-of-scope groups and reconciles an active
   subscription: a group whose scope stops naming the app is evicted and the
   live stream reopens without it. Newly in-scope groups are not auto-added to

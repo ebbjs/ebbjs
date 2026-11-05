@@ -30,7 +30,14 @@ import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
 // Future counter / causal-tree markers extend this union in their own issues.
-export type FieldMarker = { type: "lww" };
+export type FieldMarker = {
+  type: "lww";
+  /**
+   * Declared with `e.map(...)`, so a write carries a `map` envelope and
+   * merges key by key instead of replacing the whole field.
+   */
+  map?: true;
+};
 
 /**
  * Granularity at which a concurrent write to the entity is surfaced as a
@@ -153,7 +160,14 @@ export const e = {
   },
 } as const;
 
-const deriveMarker = (_schema: TSchema): FieldMarker => ({ type: "lww" });
+const isMapSchema = (schema: TSchema): boolean => {
+  if ("patternProperties" in schema) return true;
+  const anyOf = (schema as { anyOf?: readonly TSchema[] }).anyOf;
+  return Array.isArray(anyOf) && anyOf.some(isMapSchema);
+};
+
+const deriveMarker = (schema: TSchema): FieldMarker =>
+  isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
 
 /**
  * True at the type level when `T` is the union shape produced by

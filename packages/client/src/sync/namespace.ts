@@ -23,7 +23,6 @@ import type {
   DerivedKeys,
   EntityDef,
   EntityRegistry,
-  EntityShape,
   GroupFields,
   GroupMemberFields,
   RelationshipDef,
@@ -724,7 +723,7 @@ export function createEntityNamespace<
   TJoins extends object = NoJoins,
 >(
   entityName: string,
-  shape: EntityShape<WireFields<TFields>>,
+  shape: TObject<WireFields<TFields>>,
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
@@ -849,7 +848,9 @@ function createGroupNamespace(
 ): GroupNamespace {
   return createEntityNamespace<GroupFields, MembershipAccessors>(
     "group",
-    groupSystemEntity.shape,
+    // The group shape marks `apps` optional; projection only needs the
+    // per-field schemas, so the wire-field view is the one it reads.
+    groupSystemEntity.shape as unknown as TObject<WireFields<GroupFields>>,
     storage,
     read,
     replica,

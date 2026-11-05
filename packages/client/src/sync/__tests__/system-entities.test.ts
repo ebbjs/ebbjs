@@ -106,6 +106,13 @@ const updateGroup = defineAction(
   },
 );
 
+const updateGroupApps = defineAction(
+  schema,
+  ({ group }, params: { id: string; apps: Record<string, boolean> }): void => {
+    group.update(params.id, { apps: params.apps });
+  },
+);
+
 const deleteGroup = defineAction(schema, ({ group }, params: { id: string }): void => {
   group.delete(params.id);
 });
@@ -177,6 +184,7 @@ const systemActions = {
   updateMembership,
   deleteMembership,
   updateGroup,
+  updateGroupApps,
   deleteGroup,
   duplicateGroup,
   duplicateMembership,
@@ -314,6 +322,18 @@ describe("draft group.create — app scope (#732)", () => {
 
     const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
     expect(groupPut.data!.fields!["apps"]).toBeUndefined();
+  });
+
+  it("writes a map envelope for a scope patch so app keys merge independently", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkEntity("g_1", "group", { name: "Team" }));
+
+    await client.actions.updateGroupApps({ id: "g_1", apps: { issues: false } });
+
+    const patch = updatesOf(seen)[0]!;
+    expect(patch.data!.fields!["apps"]).toEqual({
+      map: { issues: { value: false, update_id: expect.any(String), hlc: expect.any(String) } },
+    });
   });
 });
 

@@ -14,7 +14,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAction, createClock, localEvent } from "@ebbjs/core";
-import { createClient, type SyncClient } from "../..";
+import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { createClient, defineAction, type SyncClient } from "../..";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
@@ -33,10 +34,30 @@ const NOTE = `note_${RUN_ID}`;
  */
 const MEMBER_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
 
-let notes: SyncClient | null = null;
-let issues: SyncClient | null = null;
+/** A schema-bearing client: `group.update` needs the map marker to write scope. */
+const note = defineEntity("note", { title: e.string() });
+const appScopeSchema = defineSchema({ entities: { note }, version: 1 });
+const appScopeActions = {
+  setScope: defineAction(
+    appScopeSchema,
+    ({ group }, params: { id: string; apps: Record<string, boolean> }) => {
+      group.update(params.id, { apps: params.apps });
+    },
+  ),
+};
+
+const createAppScopeClient = (appId: string) =>
+  createClient({
+    serverUrl: SERVER_URL,
+    actorId: ALICE,
+    appId,
+    schema: appScopeSchema,
+    actions: appScopeActions,
+  });
+
+let notes: ReturnType<typeof createAppScopeClient> | null = null;
+let issues: ReturnType<typeof createAppScopeClient> | null = null;
 let plain: SyncClient | null = null;
-let stopNotes: (() => void) | null = null;
 let stopIssues: (() => void) | null = null;
 let reachable = false;
 
@@ -72,27 +93,6 @@ const notePatch = (title: string) => {
         subject_type: "note",
         method: "patch",
         data: { fields: { title: leaf(title, updateId, clock) } },
-      },
-    ],
-  }).action;
-};
-
-const appsPatch = (groupId: string, apps: Record<string, boolean>) => {
-  const clock = createClock();
-  const updateId = `u_apps_${RUN_ID}`;
-  const entries = Object.fromEntries(
-    Object.entries(apps).map(([appId, value]) => [appId, leaf(value, updateId, clock)]),
-  );
-  return createAction({
-    actorId: ALICE,
-    clock,
-    updates: [
-      {
-        id: updateId,
-        subject_id: groupId,
-        subject_type: "group",
-        method: "patch",
-        data: { fields: { apps: { map: entries } } },
       },
     ],
   }).action;
@@ -156,7 +156,7 @@ beforeAll(async () => {
 
   // `seed()` scopes an explicit-less group to the seeding client's app, so
   // each group carries the app that created it without an extra Update.
-  notes = createClient({ serverUrl: SERVER_URL, actorId: ALICE, appId: "notes" });
+  notes = createAppScopeClient("notes");
   await notes.seed({
     groups: [{ id: G_NOTES, name: "Notes" }],
     groupMembers: [
@@ -171,7 +171,7 @@ beforeAll(async () => {
     entityGroups: [{ id: `eg_${RUN_ID}_${NOTE}`, entityId: NOTE, groupId: G_NOTES }],
   });
 
-  issues = createClient({ serverUrl: SERVER_URL, actorId: ALICE, appId: "issues" });
+  issues = createAppScopeClient("issues");
   await issues.seed({
     groups: [{ id: G_ISSUES, name: "Issues", apps: { issues: true } }],
     groupMembers: [
@@ -201,7 +201,6 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  stopNotes?.();
   stopIssues?.();
   notes?.close();
   issues?.close();
@@ -255,7 +254,8 @@ describe("app scope integration", () => {
     if (!reachable) return;
 
     await handshakeIds(notes!);
-    expect((await notes!.write([appsPatch(G_BRIDGE, { issues: false })])).rejected).toEqual([]);
+    // The SDK path: a `group.update` map patch, not a hand-rolled envelope.
+    await notes!.actions.setScope({ id: G_BRIDGE, apps: { issues: false } });
 
     const issuesIds = await handshakeIds(issues!);
     expect(issuesIds).not.toContain(G_BRIDGE);

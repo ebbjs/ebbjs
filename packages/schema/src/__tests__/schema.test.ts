@@ -70,7 +70,7 @@ describe("@ebbjs/schema", () => {
 
 describe("group system entity app scope (#732)", () => {
   it("declares apps as a map field", () => {
-    expect(groupSystemEntity.fields.apps).toEqual({ type: "lww" });
+    expect(groupSystemEntity.fields.apps).toEqual({ type: "lww", map: true });
     expect(groupSystemEntity.shape.properties).toHaveProperty("apps");
   });
 

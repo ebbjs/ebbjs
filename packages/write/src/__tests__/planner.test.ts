@@ -8,6 +8,7 @@ import {
   commit,
   createEntity,
   groupBootstrap,
+  patchEntity,
   writeRelationship,
   type CommitCapability,
   type OpContext,
@@ -106,6 +107,23 @@ describe("@ebbjs/write", () => {
     const group = updates.find((update) => update.subject_type === "group")!;
 
     expect(group.data!.fields!["apps"]).toBeUndefined();
+  });
+
+  it("writes a scope patch as a map envelope so app keys merge independently", async () => {
+    const registry = buildRegistry();
+
+    const updates = await commitUpdates(registry, [
+      call(patchEntity, {
+        entity: "group",
+        id: "g_1",
+        payload: { apps: { issues: false } },
+        groups: ["g_1"],
+      }),
+    ]);
+
+    expect(updates[0]!.data!.fields!["apps"]).toEqual({
+      map: { issues: { value: false, update_id: "u_1", hlc: "hlc-1" } },
+    });
   });
 
   it("builds a relationship delete when the target is null", () => {

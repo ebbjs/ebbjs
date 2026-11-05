@@ -20,6 +20,7 @@ import {
   GROUPS_ACCESSOR,
   validatePayload,
   type EntityRegistry,
+  type FieldMarker,
 } from "@ebbjs/schema";
 
 import { projectFieldValue } from "./field-projection";
@@ -210,7 +211,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc) },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
   });
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
 
@@ -285,30 +286,8 @@ export interface CreateSystemEntityInput {
   readonly entity: "group" | "groupMember";
   readonly id: string;
   readonly fields: Readonly<Record<string, unknown>>;
-  /**
-   * Plain values for a map field, written as a map envelope so each key
-   * is its own leaf and concurrent edits to different keys merge.
-   */
-  readonly mapFields?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly validate?: boolean;
 }
-
-/** Build one map field's wire envelope from plain per-key values. */
-const wrapMapFields = (
-  mapFields: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
-  updateId: string,
-  hlc: string,
-): Record<string, FieldValue> =>
-  Object.fromEntries(
-    Object.entries(mapFields).map(([field, entries]) => [
-      field,
-      {
-        map: Object.fromEntries(
-          Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
-        ),
-      },
-    ]),
-  );
 
 /**
  * Put one system entity row. The row's fan-out scope comes from the
@@ -319,12 +298,7 @@ const wrapMapFields = (
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(
-      def.shape,
-      { ...input.fields, ...input.mapFields },
-      input.entity,
-      false,
-    );
+    const violations = validatePayload(def.shape, input.fields, input.entity, false);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -336,12 +310,7 @@ export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, inpu
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: {
-      fields: {
-        ...wrapFields(input.fields, updateId, hlc),
-        ...wrapMapFields(input.mapFields ?? {}, updateId, hlc),
-      },
-    },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
   };
   return {
     updates: [update],
@@ -368,11 +337,13 @@ export interface CreateGroupInput {
  * `entityGroup` row is emitted for it.
  */
 export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
+  const fields: Record<string, unknown> = { name: input.name };
+  if (input.appId !== undefined) fields["apps"] = { [input.appId]: true };
+
   const group = createSystemEntity(ctx, {
     entity: "group",
     id: input.groupId,
-    fields: { name: input.name },
-    mapFields: input.appId === undefined ? undefined : { apps: { [input.appId]: true } },
+    fields,
     validate: input.validate,
   });
   const member = createSystemEntity(ctx, {
@@ -472,7 +443,7 @@ export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
         subject_id: input.id,
         subject_type: input.entity,
         method: "patch",
-        data: { fields: wrapFields(input.payload, updateId, hlc) },
+        data: { fields: wrapFields(input.payload, updateId, hlc, def?.fields) },
       },
     ],
     groups: [...input.groups],
@@ -824,17 +795,39 @@ const isEmptyPayload = (payload: unknown): boolean => {
  * Flatten a payload into the wire envelope. `undefined` fields are
  * dropped (the wire envelope is absent, not explicitly undefined);
  * `null` is preserved so nullable fields round-trip cleanly.
+ *
+ * The registry supplies the merge marker per field: a map field's plain
+ * object becomes a `map` envelope so its keys merge independently, and
+ * every other field stays a leaf. Without a registry (a schema-less
+ * client) every field is a leaf, as before.
  */
 export const wrapFields = (
   payload: unknown,
   updateId: string,
   hlc: string,
-): Record<string, { value: unknown; update_id: string; hlc: string }> => {
-  const out: Record<string, { value: unknown; update_id: string; hlc: string }> = {};
+  markers?: { readonly [field: string]: FieldMarker },
+): Record<string, FieldValue> => {
+  const out: Record<string, FieldValue> = {};
   if (payload === null || typeof payload !== "object") return out;
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) continue;
-    out[key] = { value, update_id: updateId, hlc };
+    out[key] =
+      markers?.[key]?.map === true && isPlainObject(value)
+        ? wrapMapValue(value, updateId, hlc)
+        : { value, update_id: updateId, hlc };
   }
   return out;
 };
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const wrapMapValue = (
+  entries: Record<string, unknown>,
+  updateId: string,
+  hlc: string,
+): FieldValue => ({
+  map: Object.fromEntries(
+    Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
+  ),
+});

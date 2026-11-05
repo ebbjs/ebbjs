@@ -66,7 +66,14 @@ bootstrap-exempt `group` put (creation via `client.seed()` or
 `group.create()` writes the creating app's scope automatically). Later edits
 are **single-key patches** — `apps.notes = true`, `apps.docs = false` — so the
 per-key merge makes concurrent edits by two admins safe. A whole-map write
-from a stale replica is the only hazard, and the convention avoids it.
+from a stale replica is the only hazard, and the convention avoids it. A
+map-typed patch field is written as the wire's `map` envelope, so
+`group.update(id, { apps: { docs: false } })` touches only `docs`.
+
+Seeding is the exception to the patch convention: `client.seed()` submits
+`group` rows as a **put**, so a re-seed replaces the whole scope map with the
+one it is given rather than merging it. Use single-key patches for scope
+changes after creation.
 
 The Action log is unchanged: `actor_id` remains the user and no `app_id` is
 recorded. A client-declared label is not trustworthy attribution; if trusted
