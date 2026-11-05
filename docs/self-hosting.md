@@ -343,8 +343,12 @@ backend log upload is omitted at build time (`ts_omit_logtail`), and
   immediately; the connection ends when it next closes.
 - One person on two devices is one actor, because the actor is the tailnet
   login. Presence peers for that person collapse into one.
+- With `EBB_TAILSCALE_REQUIRE_TAGS`, a node whose tags were not applied stops
+  the gateway on purpose. `/healthz` stays green because it is a storage check,
+  so the condition shows up as an error line in the logs rather than as an
+  unhealthy container.
 
-Both are recorded in the design record ([#697](https://github.com/ebbjs/ebbjs/issues/697)).
+These are recorded in the design record ([#697](https://github.com/ebbjs/ebbjs/issues/697)).
 
 ### Request body limits
 

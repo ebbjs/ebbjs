@@ -244,9 +244,11 @@ defmodule EbbServer.RuntimeConfigTest do
       original_secret = Application.get_env(:ebb_server, :tailscale_proxy_secret)
       original_env_node = System.get_env("EBB_TAILSCALE_NODE")
       original_env_bin = System.get_env("EBB_TAILSCALE_PROXY_BIN")
+      original_env_state_dir = System.get_env("EBB_TAILSCALE_STATE_DIR")
 
       System.delete_env("EBB_TAILSCALE_NODE")
       System.delete_env("EBB_TAILSCALE_PROXY_BIN")
+      System.delete_env("EBB_TAILSCALE_STATE_DIR")
       Application.delete_env(:ebb_server, :tailscale_node)
       Application.delete_env(:ebb_server, :tailscale_proxy_bin)
       Application.delete_env(:ebb_server, :tailscale_proxy_secret)
@@ -263,6 +265,7 @@ defmodule EbbServer.RuntimeConfigTest do
         restore_env(:ebb_server, :tailscale_proxy_secret, original_secret)
         restore_env_var("EBB_TAILSCALE_NODE", original_env_node)
         restore_env_var("EBB_TAILSCALE_PROXY_BIN", original_env_bin)
+        restore_env_var("EBB_TAILSCALE_STATE_DIR", original_env_state_dir)
         File.rm_rf(dir)
       end)
 
@@ -321,6 +324,38 @@ defmodule EbbServer.RuntimeConfigTest do
         end)
 
       assert stderr =~ "ebb_server boot failed:"
+    end
+
+    test "fails the boot when the state directory cannot be created", %{
+      bin: bin,
+      data_dir: dir
+    } do
+      blocker = Path.join(dir, "state-is-a-file")
+      File.write!(blocker, "")
+
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+      System.put_env("EBB_TAILSCALE_STATE_DIR", Path.join(blocker, "tailscale"))
+
+      stderr =
+        capture_io(:stderr, fn ->
+          assert_raise RuntimeError, ~r/EBB_TAILSCALE_STATE_DIR/, fn ->
+            EbbServer.Application.resolve_tailscale!(dir, 4000)
+          end
+        end)
+
+      assert stderr =~ "ebb_server boot failed:"
+    end
+
+    test "creates the state directory before the gateway starts", %{bin: bin, data_dir: dir} do
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+      System.put_env("EBB_TAILSCALE_STATE_DIR", Path.join(dir, "nested/tailscale"))
+
+      assert [{EbbServer.Tailscale.Node, _opts}] =
+               EbbServer.Application.resolve_tailscale!(dir, 4000)
+
+      assert File.dir?(Path.join(dir, "nested/tailscale"))
     end
 
     test "external mode starts no child and mints no secret", %{data_dir: dir} do

@@ -48,6 +48,11 @@ defmodule EbbServer.Tailscale.Config do
   # does not match is a typo that would otherwise register the node untagged.
   @tag_format ~r/\Atag:[A-Za-z0-9][A-Za-z0-9-]*\z/
 
+  # tsnet uses the hostname as the MagicDNS label, so it has to be one. Control
+  # rejects anything else asynchronously, which the BEAM would see as a gateway
+  # that fails on every start rather than as a bad setting.
+  @hostname_format ~r/\A[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z/
+
   @doc """
   Resolves every setting, raising on a value the gateway cannot use.
 
@@ -75,16 +80,31 @@ defmodule EbbServer.Tailscale.Config do
       backend_addr: "127.0.0.1:#{port}"
     }
 
-    check_proxy_bin!(config)
+    check_embedded!(config)
 
     config
   end
 
-  # Only the embedded node needs a binary: the external mode leaves the node to
-  # the operator's `tailscale serve` or sidecar, and this server is only the
-  # backend. Failing at boot beats a container that serves nothing while its
-  # logs claim tailscale mode.
-  defp check_proxy_bin!(%{node: :external}), do: :ok
+  # Only the embedded node is configured by this server: the external mode
+  # leaves the node to the operator's `tailscale serve` or sidecar, and this
+  # server is only the backend. Failing at boot beats a container that serves
+  # nothing while its logs claim tailscale mode.
+  defp check_embedded!(%{node: :external}), do: :ok
+
+  defp check_embedded!(config) do
+    check_hostname!(config.hostname)
+    check_proxy_bin!(config)
+  end
+
+  defp check_hostname!(hostname) do
+    if Regex.match?(@hostname_format, hostname) do
+      :ok
+    else
+      raise "EBB_TAILSCALE_HOSTNAME must be a DNS label (letters, digits, and " <>
+              "hyphens, at most 63 characters, no leading or trailing hyphen); " <>
+              "got #{inspect(hostname)}"
+    end
+  end
 
   defp check_proxy_bin!(%{node: :embedded, proxy_bin: path}) do
     if executable?(path) do
@@ -103,7 +123,7 @@ defmodule EbbServer.Tailscale.Config do
 
   defp executable?(path) do
     with true <- is_binary(path),
-         {:ok, %File.Stat{mode: mode}} <- File.stat(path) do
+         {:ok, %File.Stat{type: :regular, mode: mode}} <- File.stat(path) do
       Bitwise.band(mode, 0o111) != 0
     else
       _missing -> false

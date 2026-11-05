@@ -21,7 +21,9 @@ defmodule EbbServer.Tailscale.Node do
   A gateway that exits is restarted with exponential backoff, because the usual
   reason is a control-plane outage the operator cannot act on. The attempt
   counter resets on `running`, so a node that never reaches the tailnet retries
-  slowly instead of hammering the control plane.
+  slowly instead of hammering the control plane. An exit the gateway marks as
+  fatal (a bad configuration, or a listener it cannot bind) stops the child
+  instead: the next attempt would fail the same way.
 
   The node stops itself when tags were requested, Tailscale applied none of
   them, and `EBB_TAILSCALE_REQUIRE_TAGS` is set. A tagged node is the
@@ -36,11 +38,19 @@ defmodule EbbServer.Tailscale.Node do
   @default_backoff_max_ms 60_000
 
   # One status line is small; the bound exists so a runaway writer cannot make
-  # the BEAM buffer without limit. A longer line arrives as `:noeol` and is
-  # dropped rather than mistaken for JSON.
+  # the BEAM buffer without limit. A longer line arrives in fragments: the ones
+  # before the final newline are dropped, and the remainder is logged as a
+  # single line rather than mistaken for JSON.
   @max_line_bytes 1_048_576
 
   @expiry_warning_days 14
+
+  # Keep in step with `exitFatal` in `ebb_server/tsnode/main.go`: a fatal exit
+  # means the next attempt cannot succeed either, so the child is not restarted.
+  @fatal_exit_status 2
+
+  @shutdown_timeout_ms 5_000
+  @shutdown_poll_ms 50
 
   @default_tag "tag:ebb"
 
@@ -51,8 +61,8 @@ defmodule EbbServer.Tailscale.Node do
   `:proxy_secret` the gateway must echo per request. The remaining options are
   test knobs so a suite never needs the environment or a real tailnet:
   `:name` (default `__MODULE__`, `nil` for an anonymous process),
-  `:backoff_initial_ms`, `:backoff_max_ms`, and `:spawn_opts` (extra
-  `Port.open/2` options).
+  `:backoff_initial_ms`, `:backoff_max_ms`, `:shutdown_timeout_ms`, and
+  `:spawn_opts` (extra `Port.open/2` options).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -95,11 +105,16 @@ defmodule EbbServer.Tailscale.Node do
 
   @impl true
   def init({config, opts}) do
+    # Without this the supervisor's shutdown signal kills the process outright
+    # and `terminate/2` never runs, so the gateway gets no chance to drain.
+    Process.flag(:trap_exit, true)
+
     state = %{
       config: config,
       backoff_initial_ms: Keyword.get(opts, :backoff_initial_ms, @default_backoff_initial_ms),
       backoff_max_ms: Keyword.get(opts, :backoff_max_ms, @default_backoff_max_ms),
       spawn_opts: Keyword.get(opts, :spawn_opts, []),
+      shutdown_timeout_ms: Keyword.get(opts, :shutdown_timeout_ms, @shutdown_timeout_ms),
       port: nil,
       status: nil,
       login_url: nil,
@@ -125,11 +140,26 @@ defmodule EbbServer.Tailscale.Node do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Logger.warning("ebb_tsnode exited with status #{status}")
-    {:noreply, schedule_restart(%{state | port: nil})}
+    state = %{state | port: nil}
+
+    if status == @fatal_exit_status do
+      Logger.error(
+        "ebb_tsnode exited with status #{status} (fatal: the next attempt cannot " <>
+          "succeed), so the gateway is not being restarted"
+      )
+
+      {:stop, :normal, state}
+    else
+      Logger.warning("ebb_tsnode exited with status #{status}")
+      {:noreply, schedule_restart(state)}
+    end
   end
 
   def handle_info(:restart, state), do: {:noreply, open(state)}
+
+  # The port's own exit signal. The `:exit_status` message above already
+  # decided whether to restart; this one carries no additional information.
+  def handle_info({:EXIT, _port, _reason}, state), do: {:noreply, state}
 
   # A message from a port this process no longer owns, such as an exit status
   # that arrives after the restart opened a replacement. Ignoring it is what
@@ -143,7 +173,7 @@ defmodule EbbServer.Tailscale.Node do
 
   @impl true
   def terminate(_reason, state) do
-    stop_child(state.port)
+    stop_child(state.port, state.shutdown_timeout_ms)
     :ok
   end
 
@@ -370,16 +400,39 @@ defmodule EbbServer.Tailscale.Node do
     %{state | attempts: attempts}
   end
 
-  # Closing the port closes the gateway's stdin, which is its shutdown signal.
-  # The kill is the backstop for a gateway that is already wedged; the OS pid
-  # has to be read before the port is gone.
-  defp stop_child(nil), do: :ok
+  # Closing the port closes the gateway's stdin, which is its shutdown signal:
+  # it drains open streams and exits by itself. Killing it immediately would cut
+  # that drain short, so the kill is only the backstop for a wedged child. The
+  # OS pid has to be read before the port is gone.
+  defp stop_child(nil, _timeout_ms), do: :ok
 
-  defp stop_child(port) do
+  defp stop_child(port, timeout_ms) do
     os_pid = port_os_pid(port)
     close_port(port)
-    if os_pid, do: kill_os_process(os_pid)
+
+    if os_pid && await_exit(os_pid, System.monotonic_time(:millisecond) + timeout_ms) == :timeout do
+      kill_os_process(os_pid)
+    end
+
     :ok
+  end
+
+  defp await_exit(os_pid, deadline) do
+    cond do
+      not os_process_alive?(os_pid) ->
+        :exited
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        :timeout
+
+      true ->
+        Process.sleep(@shutdown_poll_ms)
+        await_exit(os_pid, deadline)
+    end
+  end
+
+  defp os_process_alive?(os_pid) do
+    match?({_output, 0}, System.cmd("kill", ["-0", to_string(os_pid)], stderr_to_stdout: true))
   end
 
   defp port_os_pid(port) do

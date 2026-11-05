@@ -20,6 +20,10 @@ const (
 	readHeaderTimeout  = 10 * time.Second
 	shutdownTimeout    = 5 * time.Second
 
+	// Idle applies between requests on a kept-alive connection, never to a
+	// response in flight, so a long SSE stream is not cut by it.
+	idleTimeout = 2 * time.Minute
+
 	// A node that cannot reach control has no auth URL and never reaches
 	// Running; one diagnosable line beats tsnet's per-retry debug output.
 	controlWarningGrace    = 5 * time.Second
@@ -63,7 +67,7 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 		return fmt.Errorf("backend address: %w", err)
 	}
 
-	servers := &httpServers{logf: logf}
+	servers := &httpServers{logf: logf, errs: make(chan error, 1)}
 	defer func() {
 		servers.shutdown()
 		server.Close()
@@ -102,6 +106,9 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 				return fmt.Errorf("connect: %w", err)
 			}
 
+		case err := <-servers.errs:
+			return err
+
 		case <-poll.C:
 			poll.Reset(statusPollInterval)
 
@@ -138,6 +145,9 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 type httpServers struct {
 	logf    func(format string, args ...any)
 	servers []*http.Server
+	// A listener that stops serving is not recoverable in place; `run` takes
+	// the error so the process exits and the supervisor starts a fresh node.
+	errs chan error
 }
 
 // serve binds the tailnet listeners and only then publishes `running`, so the
@@ -151,11 +161,11 @@ func (h *httpServers) serve(
 ) error {
 	plan, err := planHTTPS(cfg.HTTPS, status)
 	if err != nil {
-		return err
+		return fatal(err)
 	}
 	running, err := runningEventFor(status, plan.TLS)
 	if err != nil {
-		return err
+		return fatal(err)
 	}
 	if plan.Warning != "" {
 		h.logf("%s", plan.Warning)
@@ -164,19 +174,19 @@ func (h *httpServers) serve(
 	if plan.TLS {
 		tlsListener, err := server.ListenTLS("tcp", listenAddrHTTPS)
 		if err != nil {
-			return fmt.Errorf("listen tls: %w", err)
+			return fatal(fmt.Errorf("listen tls: %w", err))
 		}
 		h.start(tlsListener, handler)
 
 		redirectListener, err := server.Listen("tcp", listenAddrHTTP)
 		if err != nil {
-			return fmt.Errorf("listen redirect: %w", err)
+			return fatal(fmt.Errorf("listen redirect: %w", err))
 		}
 		h.start(redirectListener, redirectHandler(running.URL))
 	} else {
 		listener, err := server.Listen("tcp", listenAddrHTTP)
 		if err != nil {
-			return fmt.Errorf("listen: %w", err)
+			return fatal(fmt.Errorf("listen: %w", err))
 		}
 		h.start(listener, handler)
 	}
@@ -190,12 +200,17 @@ func (h *httpServers) start(listener net.Listener, handler http.Handler) {
 		Handler: handler,
 		// No WriteTimeout: an SSE stream stays open for the life of a session.
 		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 	h.servers = append(h.servers, httpServer)
 
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			h.logf("ebb_tsnode: serve: %v", err)
+			select {
+			case h.errs <- fmt.Errorf("serve: %w", err):
+			default:
+			}
 		}
 	}()
 }

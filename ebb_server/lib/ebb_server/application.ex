@@ -95,6 +95,7 @@ defmodule EbbServer.Application do
         # AuthPlug reads the secret per request, so it has to exist before
         # Bandit starts. This runs while `start/2` builds the child list, which
         # is before the supervisor, the listener, and any request.
+        config = prepare_state_dir!(config)
         secret = proxy_secret!()
         Application.put_env(:ebb_server, :tailscale_proxy_secret, secret)
         Logger.info("tailscale node mode: embedded (gateway child starts after Bandit)")
@@ -107,6 +108,20 @@ defmodule EbbServer.Application do
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
       reraise error, __STACKTRACE__
+  end
+
+  # tsnet creates the state directory itself, but a path it cannot create (a
+  # read-only volume, a file in the way) would surface only as a gateway that
+  # dies on every start. Failing here names the setting instead.
+  defp prepare_state_dir!(config) do
+    case File.mkdir_p(config.state_dir) do
+      :ok ->
+        config
+
+      {:error, reason} ->
+        raise "EBB_TAILSCALE_STATE_DIR=#{inspect(config.state_dir)} cannot be created: " <>
+                to_string(:file.format_error(reason))
+    end
   end
 
   # A secret already in the application env belongs to the operator or to a

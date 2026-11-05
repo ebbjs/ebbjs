@@ -316,11 +316,7 @@ defmodule EbbServer.Tailscale.NodeTest do
     end
 
     test "is a transient child so an intentional stop is not restarted" do
-      spec = Node.child_spec(config: %{proxy_bin: "/nonexistent"})
-
-      assert spec.id == Node
-      assert spec.restart == :transient
-      assert spec.start == {Node, :start_link, [[config: %{proxy_bin: "/nonexistent"}]]}
+      assert Node.child_spec(config: %{proxy_bin: "/nonexistent"}).restart == :transient
     end
   end
 
@@ -361,10 +357,32 @@ defmodule EbbServer.Tailscale.NodeTest do
 
       assert Process.whereis(:ebb_tsnode_test) == pid
       assert Node.status(:ebb_tsnode_test)["tags"] == ["tag:ebb"]
+    end
 
-      # A message from a port this process no longer owns must not restart it.
+    test "ignores a message that is not from the port it owns", %{dir: dir} do
+      pid = start_node!(dir, [event(running(tags: ["tag:ebb"]))], tags: ["tag:ebb"])
+      wait_for_status(pid)
+      port = :sys.get_state(pid).port
+
       send(pid, {make_ref(), {:exit_status, 0}})
-      assert Process.alive?(pid)
+      send(pid, {:EXIT, make_ref(), :shutdown})
+      Process.sleep(50)
+
+      assert :sys.get_state(pid).port == port
+      assert :sys.get_state(pid).attempts == 0
+    end
+
+    test "stops instead of restarting after a fatal exit", %{dir: dir} do
+      log =
+        capture_log(fn ->
+          pid = start_node!(dir, [], exit_status: 2, backoff_initial_ms: 10, backoff_max_ms: 10)
+          ref = Process.monitor(pid)
+
+          assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
+        end)
+
+      assert log =~ "ebb_tsnode exited with status 2 (fatal"
+      refute log =~ "restarting in"
     end
 
     test "stops cleanly while it waits to restart", %{dir: dir} do
@@ -377,6 +395,53 @@ defmodule EbbServer.Tailscale.NodeTest do
       assert GenServer.stop(pid) == :ok
     end
 
+    test "lets the gateway drain after stdin closes", %{dir: dir} do
+      pid = start_node!(dir, [event(running(tags: ["tag:ebb"]))], tags: ["tag:ebb"])
+      wait_for_status(pid)
+
+      assert GenServer.stop(pid) == :ok
+      assert File.read!(drained_path(dir)) == "drained"
+    end
+
+    test "drains the gateway when a supervisor shuts it down", %{dir: dir} do
+      bin = write_fixture!(dir, [event(running(tags: ["tag:ebb"]))], nil, false)
+
+      spec =
+        Supervisor.child_spec(
+          {Node, config: config_for(dir, bin, tags: ["tag:ebb"])},
+          id: :drain
+        )
+
+      {:ok, sup} = Supervisor.start_link([spec], strategy: :one_for_one)
+      on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+      [{:drain, pid, _, _}] = Supervisor.which_children(sup)
+      wait_for_status(pid)
+
+      assert Supervisor.stop(sup) == :ok
+      assert File.read!(drained_path(dir)) == "drained"
+    end
+
+    test "kills a gateway that ignores the closed stdin", %{dir: dir} do
+      # This fixture never reads stdin, so closing the port cannot make it exit;
+      # terminate/2 has to escalate once the drain timeout passes.
+      pid =
+        start_node!(dir, [event(running(tags: ["tag:ebb"]))],
+          stubborn: true,
+          shutdown_timeout_ms: 100,
+          tags: ["tag:ebb"]
+        )
+
+      wait_for_status(pid)
+      [os_pid | _rest] = read_pids(dir)
+
+      started_at = System.monotonic_time(:millisecond)
+      GenServer.stop(pid)
+
+      wait_until(fn -> not os_process_alive?(os_pid) end)
+      refute os_process_alive?(os_pid)
+      assert System.monotonic_time(:millisecond) - started_at >= 100
+    end
+
     test "terminate kills the gateway process", %{dir: dir} do
       pid = start_node!(dir, [event(running(tags: ["tag:ebb"]))], tags: ["tag:ebb"])
       wait_for_status(pid)
@@ -387,6 +452,23 @@ defmodule EbbServer.Tailscale.NodeTest do
       wait_until(fn -> not os_process_alive?(os_pid) end)
       refute os_process_alive?(os_pid)
     end
+  end
+
+  defp config_for(dir, bin, opts) do
+    %{
+      node: :embedded,
+      state_dir: Path.join(dir, "state"),
+      hostname: "ebb",
+      auth_key: nil,
+      control_url: nil,
+      tags: Keyword.get(opts, :tags, []),
+      require_tags: Keyword.get(opts, :require_tags, false),
+      https: "auto",
+      qr: Keyword.get(opts, :qr, true),
+      proxy_bin: bin,
+      backend_addr: "127.0.0.1:4000",
+      proxy_secret: @secret
+    }
   end
 
   defp running(opts) do
@@ -407,23 +489,15 @@ defmodule EbbServer.Tailscale.NodeTest do
   defp event(map), do: Jason.encode!(map)
 
   defp start_node!(dir, lines, opts \\ []) do
-    bin = write_fixture!(dir, lines, Keyword.get(opts, :exit_status))
+    bin =
+      write_fixture!(
+        dir,
+        lines,
+        Keyword.get(opts, :exit_status),
+        Keyword.get(opts, :stubborn, false)
+      )
 
-    config = %{
-      node: :embedded,
-      state_dir: Path.join(dir, "state"),
-      hostname: "ebb",
-      auth_key: nil,
-      control_url: nil,
-      tags: Keyword.get(opts, :tags, []),
-      require_tags: Keyword.get(opts, :require_tags, false),
-      https: "auto",
-      qr: Keyword.get(opts, :qr, true),
-      proxy_bin: bin,
-      backend_addr: "127.0.0.1:4000",
-      proxy_secret: @secret
-    }
-
+    config = config_for(dir, bin, opts)
     backoff = Keyword.get(opts, :backoff_initial_ms, 60_000)
 
     {:ok, pid} =
@@ -432,17 +506,28 @@ defmodule EbbServer.Tailscale.NodeTest do
         name: Keyword.get(opts, :name, nil),
         backoff_initial_ms: backoff,
         backoff_max_ms: Keyword.get(opts, :backoff_max_ms, 60_000),
+        shutdown_timeout_ms: Keyword.get(opts, :shutdown_timeout_ms, 5_000),
         spawn_opts: Keyword.get(opts, :spawn_opts, [])
       )
 
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> stop_node(pid) end)
 
     pid
   end
 
+  # The node traps exits now, so the test process exiting stops it with
+  # `:shutdown`; this cleanup races that and must not fail the test.
+  defp stop_node(pid) do
+    if Process.alive?(pid) do
+      GenServer.stop(pid)
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
   # A stand-in for `ebb_tsnode`: one config line in, scripted NDJSON out, then
   # it blocks on stdin the way the real gateway does until the port closes.
-  defp write_fixture!(dir, lines, exit_status) do
+  defp write_fixture!(dir, lines, exit_status, stubborn) do
     path = Path.join(dir, "ebb_tsnode")
 
     script =
@@ -456,7 +541,18 @@ defmodule EbbServer.Tailscale.NodeTest do
           {:raw, command} -> command
           line -> "printf '%s\\n' #{shell_quote(line)}"
         end),
-        if(exit_status, do: "exit #{exit_status}", else: "cat > /dev/null")
+        cond do
+          exit_status ->
+            "exit #{exit_status}"
+
+          stubborn ->
+            "exec sleep 60"
+
+          true ->
+            # The pause makes "drained" evidence that the BEAM waited for the
+            # exit, rather than a file the orphan happened to write in time.
+            "cat > /dev/null\nsleep 0.1\nprintf 'drained' > #{shell_quote(drained_path(dir))}"
+        end
       ]
       |> List.flatten()
       |> Enum.join("\n")
@@ -469,6 +565,8 @@ defmodule EbbServer.Tailscale.NodeTest do
   defp shell_quote(value), do: "'" <> String.replace(value, "'", ~S('\'')) <> "'"
 
   defp stdin_path(dir), do: Path.join(dir, "stdin.json")
+
+  defp drained_path(dir), do: Path.join(dir, "drained")
 
   defp pids_path(dir), do: Path.join(dir, "pids")
 

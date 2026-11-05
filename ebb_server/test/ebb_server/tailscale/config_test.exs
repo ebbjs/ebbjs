@@ -90,6 +90,7 @@ defmodule EbbServer.Tailscale.ConfigTest do
   describe "environment over application env" do
     test "the environment wins for every setting", %{dir: dir} do
       env_bin = write_bin!(dir, "env_gateway")
+      app_bin = write_bin!(dir, "app_gateway")
 
       cases = [
         {"EBB_TAILSCALE_NODE", "external", :tailscale_node, :embedded, :node, :external},
@@ -107,7 +108,7 @@ defmodule EbbServer.Tailscale.ConfigTest do
          true},
         {"EBB_TAILSCALE_HTTPS", "off", :tailscale_https, "on", :https, "off"},
         {"EBB_TAILSCALE_QR", "false", :tailscale_qr, true, :qr, false},
-        {"EBB_TAILSCALE_PROXY_BIN", env_bin, :tailscale_proxy_bin, env_bin, :proxy_bin, env_bin}
+        {"EBB_TAILSCALE_PROXY_BIN", env_bin, :tailscale_proxy_bin, app_bin, :proxy_bin, env_bin}
       ]
 
       Enum.each(cases, fn {env_key, env_value, app_key, app_value, field, expected} ->
@@ -255,12 +256,47 @@ defmodule EbbServer.Tailscale.ConfigTest do
       assert error.message =~ path
     end
 
+    test "rejects a directory that happens to be executable", %{dir: dir} do
+      path = Path.join(dir, "gateway_dir")
+      File.mkdir_p!(path)
+      File.chmod!(path, 0o755)
+
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", path)
+
+      error = assert_raise RuntimeError, fn -> Config.resolve(@data_dir, 4000) end
+      assert error.message =~ "missing or not executable"
+    end
+
     test "is not required for an external node" do
       System.put_env("EBB_TAILSCALE_NODE", "external")
       System.put_env("EBB_TAILSCALE_PROXY_BIN", "/nonexistent/ebb_tsnode")
 
       assert %{node: :external, proxy_bin: "/nonexistent/ebb_tsnode"} =
                Config.resolve(@data_dir, 4000)
+    end
+  end
+
+  describe "the hostname" do
+    test "accepts a DNS label", %{bin: bin} do
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+
+      for hostname <- ["ebb", "ebb-2", "E", String.duplicate("a", 63)] do
+        System.put_env("EBB_TAILSCALE_HOSTNAME", hostname)
+
+        assert %{hostname: hostname} = Config.resolve(@data_dir, 4000)
+      end
+    end
+
+    test "rejects a value tsnet cannot register", %{bin: bin} do
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+
+      for hostname <- ["ebb.example.com", "ebb_1", "-ebb", "ebb-", String.duplicate("a", 64)] do
+        System.put_env("EBB_TAILSCALE_HOSTNAME", hostname)
+
+        error = assert_raise RuntimeError, fn -> Config.resolve(@data_dir, 4000) end
+        assert error.message =~ "EBB_TAILSCALE_HOSTNAME"
+        assert error.message =~ inspect(hostname)
+      end
     end
   end
 

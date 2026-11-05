@@ -12,6 +12,44 @@ import (
 	"syscall"
 )
 
+const (
+	// exitRetry is a failure the supervisor should retry: the control plane is
+	// unreachable, or a listener died after it was bound.
+	exitRetry = 1
+
+	// exitFatal is a failure the next attempt cannot fix. `EbbServer.Tailscale.Node`
+	// stops the child on this status instead of restarting it, so a bad
+	// configuration is one error line rather than a permanent restart loop.
+	exitFatal = 2
+)
+
+// fatalError marks a failure no restart can fix: the configuration is wrong, or
+// the listener the node needs cannot be bound.
+type fatalError struct{ err error }
+
+func (e *fatalError) Error() string { return e.err.Error() }
+
+func (e *fatalError) Unwrap() error { return e.err }
+
+func fatal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &fatalError{err: err}
+}
+
+func isFatal(err error) bool {
+	var target *fatalError
+	return errors.As(err, &target)
+}
+
+func exitStatusFor(err error) int {
+	if isFatal(err) {
+		return exitFatal
+	}
+	return exitRetry
+}
+
 func main() {
 	os.Exit(runMain(os.Stdin, os.Stdout, os.Stderr))
 }
@@ -25,7 +63,7 @@ func runMain(stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		logf("ebb_tsnode: %v", err)
 		newEmitter(stdout, false).write(errorEvent{Event: "error", Message: err.Error()})
-		return 1
+		return exitFatal
 	}
 
 	out := newEmitter(stdout, cfg.QR)
@@ -47,7 +85,7 @@ func runMain(stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := run(signals, cfg, out, logf); err != nil {
 		out.write(errorEvent{Event: "error", Message: err.Error()})
 		logf("ebb_tsnode: %v", err)
-		return 1
+		return exitStatusFor(err)
 	}
 	return 0
 }
