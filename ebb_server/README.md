@@ -535,7 +535,7 @@ sequenceDiagram
   SC->>H: send sse_data bytes
   H->>C: chunk the open SSE response
   opt affected_actors non-empty (the apply changed a group view)
-    F->>F: actor -> connection index, once per connection per range
+    F->>F: look up each affected actor in the connection index, once per range
     F->>SC: cast push_control({groups_changed, reason: membership})
     SC->>H: send sse_chunk control
     H->>C: chunk event: control

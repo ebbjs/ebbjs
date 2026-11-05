@@ -17,8 +17,8 @@ missed event is covered by the reconnect handshake.
 `SyncClient` handles it by re-handshaking and reconciling the live subscription
 against the previous handshake's membership: a gained group joins the
 subscription, is seeded from its group listing, and streams without a reload; a
-lost group leaves and its replica rows are evicted. Groups whose membership did
-not change keep whatever subscription the app chose, so an app subscribed to a
-subset is not widened. The same refresh runs on each reconnect once a handshake
-has run, so a change whose event died with a dropped stream still reconciles.
-The `behind_watermark` stream restart is unchanged.
+lost group leaves and its replica rows are evicted. Only the membership
+difference is applied, so a group whose membership did not change keeps the
+subscription the app chose. The same refresh runs on each reconnect once a
+handshake has run, so a change whose event died with a dropped stream still
+reconciles. The `behind_watermark` stream restart is unchanged.

@@ -131,11 +131,14 @@ Alice uses `notes` (https://notes.example.com) and `issues`
 A live membership change now reaches a connected client: a `groupMember`
 put, patch, or delete pushes a `groups_changed` control event, and the
 client re-handshakes and reconciles its subscription. A group the actor
-just gained joins the subscription and is seeded from its listing; a group
-the actor lost leaves it and its rows are evicted. Groups whose membership
-did not change keep the subscription the app chose.
+gained joins the subscription and is seeded from its listing; a group the
+actor lost leaves it and its rows are evicted. Only the membership
+difference is applied, so a group whose membership did not change keeps
+the subscription the app chose.
 
-A `group.apps` edit on its own is not a trigger yet: it reaches a client on
-its next handshake, which a membership change or a reconnect now causes.
-An app-scope removal applies there; an app-scope addition still needs the
-app to subscribe, because the client's reconcile only follows membership.
+A `group.apps` edit on its own is not a trigger: it wakes nobody. The scope
+is re-read on the next handshake, which a membership change or a reconnect
+now causes, and that handshake applies both directions — a group leaving
+the app's scope is dropped and evicted, and a group the actor already
+belonged to that enters scope joins the subscription and is seeded. Making
+a scope edit wake the group's members is the remaining step.
