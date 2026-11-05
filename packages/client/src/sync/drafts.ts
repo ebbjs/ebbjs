@@ -759,7 +759,7 @@ const createSystemDrafts = (
     group: {
       ...sharedSystemVerbs(group),
       create(input, opts) {
-        const bootstrap = groupBootstrap(cap.registry, input.name, opts?.validate);
+        const bootstrap = groupBootstrap(cap.registry, input.name, opts?.validate, cap.appId);
         record(collector, bootstrap.call);
         return markHandle({
           id: bootstrap.groupId,

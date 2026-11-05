@@ -204,13 +204,17 @@ const addToWorkspace = defineAction(
   },
 );
 
-const mkClientWith = async <TActions extends Record<string, AnyActionDef>>(actions: TActions) => {
+const mkClientWith = async <TActions extends Record<string, AnyActionDef>>(
+  actions: TActions,
+  appId?: string,
+) => {
   const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
   const storage = createMemoryAdapter();
   const seen: RecordedRequest[] = [];
   const client = createClient({
     serverUrl: "http://localhost:4000",
     actorId: "actor_1",
+    appId,
     storage,
     schema,
     actions,
@@ -288,6 +292,28 @@ describe("draft group.create — bootstrap", () => {
     expect(permissions).toContain("group.*");
     expect(permissions).toContain("groupMember.*");
     expect(permissions).toContain("relationship.*");
+  });
+});
+
+describe("draft group.create — app scope (#732)", () => {
+  it("scopes the new group to the client's app", async () => {
+    const { client, seen } = await mkClientWith(systemActions, "notes");
+
+    await client.actions.createGroup({ name: "Team" });
+
+    const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
+    expect(groupPut.data!.fields!["apps"]).toEqual({
+      map: { notes: { value: true, update_id: expect.any(String), hlc: expect.any(String) } },
+    });
+  });
+
+  it("omits apps when the client declares no app", async () => {
+    const { client, seen } = await mkClient();
+
+    await client.actions.createGroup({ name: "Team" });
+
+    const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
+    expect(groupPut.data!.fields!["apps"]).toBeUndefined();
   });
 });
 

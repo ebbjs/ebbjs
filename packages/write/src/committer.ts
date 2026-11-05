@@ -34,6 +34,11 @@ export interface CommitCapability {
   generateId?(prefix: string): string;
   /** Local actor id; collaborative-text run ids embed it. */
   readonly actorId: string;
+  /**
+   * Local app label (#732). A created group is scoped to it; absent
+   * leaves the group unscoped.
+   */
+  readonly appId?: string;
 }
 
 /** The committed batch, as observed by the caller. */

@@ -1,3 +1,5 @@
+import { Value } from "@sinclair/typebox/value";
+import type { TSchema } from "@sinclair/typebox/type";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +10,7 @@ import {
   e,
   EntityRegistry,
   generatedDocEntityName,
+  groupSystemEntity,
 } from "../index";
 
 const buildSchema = () => {
@@ -62,5 +65,20 @@ describe("@ebbjs/schema", () => {
 
     expect(issue).toBeDefined();
     expect(registry.entityNames()).toEqual(["issue"]);
+  });
+});
+
+describe("group system entity app scope (#732)", () => {
+  it("declares apps as a map field", () => {
+    expect(groupSystemEntity.fields.apps).toEqual({ type: "lww" });
+    expect(groupSystemEntity.shape.properties).toHaveProperty("apps");
+  });
+
+  it("models apps as an optional string-keyed map of booleans", () => {
+    const properties = groupSystemEntity.shape.properties as Record<string, TSchema>;
+    const apps = properties.apps as TSchema;
+
+    expect(Value.Check(apps, { notes: true, issues: false })).toBe(true);
+    expect(Value.Check(apps, { notes: "yes" })).toBe(false);
   });
 });

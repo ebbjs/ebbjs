@@ -848,7 +848,9 @@ function createGroupNamespace(
 ): GroupNamespace {
   return createEntityNamespace<GroupFields, MembershipAccessors>(
     "group",
-    groupSystemEntity.shape,
+    // The group shape marks `apps` optional; projection only needs the
+    // per-field schemas, so the wire-field view is the one it reads.
+    groupSystemEntity.shape as unknown as TObject<WireFields<GroupFields>>,
     storage,
     read,
     replica,

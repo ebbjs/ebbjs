@@ -35,6 +35,13 @@ export const relationshipSystemEntity = buildEntityDef("relationship", {
 /** Wire shape of a `Group` record, mirroring `@ebbjs/core`'s `GroupSchema`. */
 export const groupSystemEntity = buildEntityDef("group", {
   name: e.string(),
+  /**
+   * App scope: a group is in scope for an app iff its entry is `true`.
+   * The field is a map so separate app ids merge per key. Absent (or
+   * `null`) means unscoped, which is every app (see #732); nullable so
+   * a group create may omit it.
+   */
+  apps: e.map(e.boolean()).nullable(),
 });
 
 /** Wire shape of a `GroupMember` record, mirroring `@ebbjs/core`'s `GroupMemberSchema`. */

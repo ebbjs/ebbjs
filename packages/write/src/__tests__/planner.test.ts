@@ -7,6 +7,7 @@ import {
   call,
   commit,
   createEntity,
+  groupBootstrap,
   writeRelationship,
   type CommitCapability,
   type OpContext,
@@ -21,6 +22,26 @@ const buildRegistry = () => {
     relationships: { belongsTo },
     version: 1,
   })._registry;
+};
+
+/** Commit one operation under a receiving capability and return its Updates. */
+const commitUpdates = async (
+  registry: ReturnType<typeof buildRegistry>,
+  calls: Parameters<typeof commit>[0],
+): Promise<readonly Update[]> => {
+  const submissions: (readonly Update[])[] = [];
+  const capability: CommitCapability = {
+    registry,
+    actorId: "a_actor",
+    freshHlc: () => "hlc-1",
+    generateUpdateId: () => "u_1",
+    submitRelationshipUpdates: async (updates) => {
+      submissions.push(updates);
+      return { rejected: [] };
+    },
+  };
+  await commit(calls, capability);
+  return submissions[0] ?? [];
 };
 
 const ids = (prefix: string) => {
@@ -63,6 +84,28 @@ describe("@ebbjs/write", () => {
     expect(result.groups).toEqual(["g_project"]);
     expect(submissions).toHaveLength(1);
     expect(submissions[0]?.map((update) => update.subject_type)).toEqual(["issue", "entityGroup"]);
+  });
+
+  it("scopes a bootstrapped group to the app that created it", async () => {
+    const registry = buildRegistry();
+    const bootstrap = groupBootstrap(registry, "Team", undefined, "notes");
+
+    const updates = await commitUpdates(registry, [bootstrap.call]);
+    const group = updates.find((update) => update.subject_type === "group")!;
+
+    expect(group.data!.fields!["apps"]).toEqual({
+      map: { notes: { value: true, update_id: "u_1", hlc: "hlc-1" } },
+    });
+  });
+
+  it("leaves a group unscoped without an app label", async () => {
+    const registry = buildRegistry();
+    const bootstrap = groupBootstrap(registry, "Team");
+
+    const updates = await commitUpdates(registry, [bootstrap.call]);
+    const group = updates.find((update) => update.subject_type === "group")!;
+
+    expect(group.data!.fields!["apps"]).toBeUndefined();
   });
 
   it("builds a relationship delete when the target is null", () => {

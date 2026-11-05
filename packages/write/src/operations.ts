@@ -285,8 +285,30 @@ export interface CreateSystemEntityInput {
   readonly entity: "group" | "groupMember";
   readonly id: string;
   readonly fields: Readonly<Record<string, unknown>>;
+  /**
+   * Plain values for a map field, written as a map envelope so each key
+   * is its own leaf and concurrent edits to different keys merge.
+   */
+  readonly mapFields?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   readonly validate?: boolean;
 }
+
+/** Build one map field's wire envelope from plain per-key values. */
+const wrapMapFields = (
+  mapFields: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+  updateId: string,
+  hlc: string,
+): Record<string, FieldValue> =>
+  Object.fromEntries(
+    Object.entries(mapFields).map(([field, entries]) => [
+      field,
+      {
+        map: Object.fromEntries(
+          Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
+        ),
+      },
+    ]),
+  );
 
 /**
  * Put one system entity row. The row's fan-out scope comes from the
@@ -297,18 +319,29 @@ export interface CreateSystemEntityInput {
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    const violations = validatePayload(
+      def.shape,
+      { ...input.fields, ...input.mapFields },
+      input.entity,
+      false,
+    );
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
   }
   const updateId = ctx.ids.updateId();
+  const hlc = ctx.ids.hlc();
   const update: Update = {
     id: updateId,
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, ctx.ids.hlc()) },
+    data: {
+      fields: {
+        ...wrapFields(input.fields, updateId, hlc),
+        ...wrapMapFields(input.mapFields ?? {}, updateId, hlc),
+      },
+    },
   };
   return {
     updates: [update],
@@ -323,6 +356,8 @@ export interface CreateGroupInput {
   readonly memberId: string;
   readonly name: string;
   readonly permissions: readonly string[];
+  /** Local app label; a created group is scoped to it when set. */
+  readonly appId?: string;
   readonly validate?: boolean;
 }
 
@@ -337,6 +372,7 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
     entity: "group",
     id: input.groupId,
     fields: { name: input.name },
+    mapFields: input.appId === undefined ? undefined : { apps: { [input.appId]: true } },
     validate: input.validate,
   });
   const member = createSystemEntity(ctx, {
@@ -381,6 +417,7 @@ export const groupBootstrap = (
   registry: EntityRegistry,
   name: string,
   validate?: boolean,
+  appId?: string,
 ): GroupBootstrap => {
   const groupId = generateId("e");
   const memberId = generateId("e");
@@ -393,6 +430,7 @@ export const groupBootstrap = (
       name,
       permissions: fullGroupPermissions(registry),
       validate,
+      appId,
     }),
   };
 };
