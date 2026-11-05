@@ -181,6 +181,29 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
     end
   end
 
+  describe "live connections outside the changing group" do
+    test "an added actor following another group still gets the event" do
+      owner_id = unique("a")
+      member_id = unique("a")
+      group_id = unique("g")
+      other_group = unique("g")
+      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+
+      # The membership row is scoped to `group_id`, so nothing is pushed to
+      # this connection; the actor earns the wake-up from its identity, not
+      # from a group it happens to share with the commit.
+      {:ok, member_conn} = subscribe_as(:member, other_group, member_id)
+
+      put_member!(owner_id, group_id, member_id, ["todo.read"], unique("gm"))
+
+      assert_receive {:member, :control, payload}, 5_000
+      assert Jason.decode!(payload) == @control
+      refute_receive {:member, :data, _bytes}, 100
+
+      :ok = FanOutRouter.unsubscribe(member_conn)
+    end
+  end
+
   describe "unaffected writes" do
     test "an Action that touches no groupMember pushes no control event" do
       actor_id = unique("a")

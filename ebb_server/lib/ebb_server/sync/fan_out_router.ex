@@ -108,10 +108,11 @@ defmodule EbbServer.Sync.FanOutRouter do
   Coalescing is per connection per released range. `actor_connections`
   maps an actor to its live connection pids and the Writer's actor list is
   already deduped, so a range that moves several of an actor's rows casts
-  one event. A range that pushes no frames (no live GroupServer) has no
-  client to wake and emits nothing. Delivery is best-effort — a cast to a
-  connection that died is dropped — and a missed event is covered by the
-  reconnect handshake.
+  one event. The actor index alone decides who is woken, not the range's
+  group fan-out: a membership row is scoped to the group it grants, and a
+  newly added actor may be live on a different group. Delivery is
+  best-effort — a cast to a connection that died is dropped — and a missed
+  event is covered by the reconnect handshake.
 
   ## Sibling modules
 
@@ -584,11 +585,10 @@ defmodule EbbServer.Sync.FanOutRouter do
       })
     end)
 
-    # A range that pushed nothing (no live GroupServer) has no client to
-    # wake, so it emits no control event either.
-    if map_size(frames_by_group) > 0 do
-      push_groups_changed(meta.actor_connections, meta.affected_actors)
-    end
+    # The actor index, not the frame fan-out, decides who is woken: a
+    # membership row is scoped to the group it grants, so an actor added to
+    # a group nobody subscribes to can still be live on another one.
+    push_groups_changed(meta.actor_connections, meta.affected_actors)
   end
 
   # One cast per connection per released range, however many membership

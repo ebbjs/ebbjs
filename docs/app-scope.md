@@ -128,6 +128,14 @@ Alice uses `notes` (https://notes.example.com) and `issues`
 - **Revocation is forward-only.** Bytes already synced stay on a device until
   its subscription changes and eviction runs.
 
-Live scope changes — re-handshake and subscription reconcile pushed to a
-connected client — come from the `groups_changed` control event. Until that
-lands, a scope removal takes effect on the app's next handshake.
+A live membership change now reaches a connected client: a `groupMember`
+put, patch, or delete pushes a `groups_changed` control event, and the
+client re-handshakes and reconciles its subscription. A group the actor
+just gained joins the subscription and is seeded from its listing; a group
+the actor lost leaves it and its rows are evicted. Groups whose membership
+did not change keep the subscription the app chose.
+
+A `group.apps` edit on its own is not a trigger yet: it reaches a client on
+its next handshake, which a membership change or a reconnect now causes.
+An app-scope removal applies there; an app-scope addition still needs the
+app to subscribe, because the client's reconcile only follows membership.
