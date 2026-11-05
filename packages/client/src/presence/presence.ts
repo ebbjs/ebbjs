@@ -16,18 +16,26 @@
  *   - `onUpdate(cb)` → fires whenever the map changes (local send or
  *     remote event)
  *
+ * ## Scope: the groups you subscribe to
+ *
+ * Presence rides the client's live SSE stream. `SyncClient` folds every
+ * `presence` packet from that stream into its map before the subscriber's
+ * `onEvent` sees the same packet, so presence covers exactly **the groups
+ * you `subscribe()` to**. Earlier versions opened a stream of their own and
+ * covered every group the actor's handshake returned; a second connection
+ * made the server fan each packet out to the client twice and pushed action
+ * batches into a stream that discarded them.
+ *
+ * While disconnected the peer set is unknown, so closing the live stream
+ * clears the map: peers reappear only when they send presence again.
+ *
  * Network model:
  *   - Outgoing: `POST /sync/presence` with `{entity_id, data}` body
- *   - Incoming: opens a dedicated SSE stream filtered to `presence`
- *     events (the existing `subscribe` for action events is kept
- *     separate). Two SSE connections per client is wasteful but
- *     simpler than coordinating a shared connection. For a demo with
- *     2 actors it's fine; if this becomes a hot spot, the next
- *     iteration can multiplex over a single stream.
+ *   - Incoming: `presence` events on the `/sync/live` stream that
+ *     `subscribe()` already holds open
  */
 
 import type { SyncClient } from "../sync/client";
-import { openSSEStream } from "../sync/sse";
 
 /** A local cursor/selection position expressed in run-id coordinates. */
 export interface CursorPresence {
@@ -54,85 +62,103 @@ export interface PresenceEntry {
 const SEND_DEBOUNCE_MS = 100;
 
 /**
- * Owns the presence map for the current client. Subscribes to a
- * dedicated SSE stream filtered to `presence` events; debounces local
- * cursor sends to the server.
- *
- * One instance per `SyncClient`. Reach it via
- * `client.presence` (exposed by `createClient`).
+ * The peers observed on the live stream. `SyncClient` owns one instance per
+ * client and feeds it from `handleSSEEvent`, so the map's lifetime is the
+ * connection's lifetime.
+ */
+export interface PresenceMap {
+  /**
+   * Fold one server `presence` packet into the map. The local actor and
+   * payload shapes we cannot read are ignored.
+   */
+  ingest(payload: unknown): void;
+  /**
+   * Read the entries for one entity, keyed by actor. Excludes the local
+   * actor (you would not want to render your own cursor back to yourself).
+   */
+  forEntity(entityId: string): Map<string, PresenceEntry>;
+  /** Fires whenever the map changes. Returns an unsubscribe function. */
+  onUpdate(callback: () => void): () => void;
+  /** Drop every peer: the connection they were observed on is gone. */
+  clear(): void;
+}
+
+export function createPresenceMap(localActorId: string): PresenceMap {
+  /** Keyed by `${entityId}::${actorId}` for fast lookup. */
+  const entries = new Map<string, PresenceEntry>();
+  const listeners = new Set<() => void>();
+
+  const notify = (): void => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // Don't let one listener's error break the others.
+      }
+    }
+  };
+
+  return {
+    ingest(payload) {
+      const entry = serverEventToEntry(payload);
+      if (entry === null || entry.actorId === localActorId) return;
+      entries.set(mapKey(entry.entityId, entry.actorId), entry);
+      notify();
+    },
+    forEntity(entityId) {
+      const out = new Map<string, PresenceEntry>();
+      for (const entry of entries.values()) {
+        if (entry.entityId === entityId && entry.actorId !== localActorId) {
+          out.set(entry.actorId, entry);
+        }
+      }
+      return out;
+    },
+    onUpdate(callback) {
+      listeners.add(callback);
+      return () => {
+        listeners.delete(callback);
+      };
+    },
+    clear() {
+      if (entries.size === 0) return;
+      entries.clear();
+      notify();
+    },
+  };
+}
+
+/**
+ * The client's presence surface: debounced local cursor sends plus reads
+ * over the map `SyncClient` feeds from its live stream.
  */
 export class PresenceManager {
   private readonly client: SyncClient;
   private readonly localActorId: string;
-
-  /** Keyed by `${entityId}::${actorId}` for fast lookup. */
-  private readonly map = new Map<string, PresenceEntry>();
-  private readonly listeners = new Set<() => void>();
+  private readonly map: PresenceMap;
   private pending: ReturnType<typeof setTimeout> | null = null;
-  private unsubscribed = false;
-  private streamUnsub: (() => void) | null = null;
 
-  constructor(client: SyncClient) {
+  constructor(client: SyncClient, map: PresenceMap) {
     this.client = client;
     this.localActorId = client.actorId;
-    // Don't auto-open the SSE stream here — the SyncClient tests
-    // construct clients without a real network, and a stray fetch
-    // would log unhandled rejections. The stream is opened lazily on
-    // the first `start()` call (typically from Editor.tsx after
-    // bootstrap completes) or the first `setLocalCursor()`.
+    this.map = map;
   }
 
   /**
-   * Open the SSE stream and start receiving remote presence events.
-   * Idempotent — safe to call multiple times. Reversible: a call
-   * after `dispose()` re-opens the stream (this is the StrictMode
-   * mount/unmount/remount cycle path; see `dispose()` for why).
-   *
-   * Typically called from the editor once bootstrap is done.
+   * @deprecated Presence needs no start-up: it rides the live stream that
+   * `subscribe()` opens. This is a no-op and is removed in #677.
    */
-  start(): void {
-    if (this.streamUnsub) return;
-    // A prior `dispose()` left `unsubscribed === true`. Reset it so
-    // the iterator loop in `openStream()` doesn't bail out before
-    // delivering any events.
-    this.unsubscribed = false;
-    void this.openStream();
-  }
+  start(): void {}
 
   /**
-   * Detach the SSE listener and flush any pending send. Call from
-   * `SyncClient.close()` paths.
-   *
-   * `dispose()` is reversible: subsequent `start()` calls re-open
-   * the SSE stream and resume receiving remote presence events.
-   * This matters under React 19 StrictMode, which intentionally
-   * mount-unmount-remounts every component to surface lifecycle
-   * bugs — the editor's first effect run calls `presence.start()`,
-   * the immediate-unmount cleanup calls `presence.dispose()`, then
-   * the re-mount calls `start()` again. Without reversibility, the
-   * second mount silently no-ops.
-   *
-   * Listeners are preserved across dispose/start so callbacks added
-   * by the Editor effect continue to fire after the restart.
+   * @deprecated The connection owns the presence map, so `SyncClient.close()`
+   * is the teardown path. This only cancels a debounced local send, and is
+   * removed in #677.
    */
   dispose(): void {
-    if (this.unsubscribed) {
-      // Already torn down — nothing to do. Re-calling `dispose()`
-      // is idempotent so the StrictMode unmount-then-remount cycle
-      // doesn't accumulate state.
-      return;
-    }
-    this.unsubscribed = true;
-    if (this.pending !== null) {
-      clearTimeout(this.pending);
-      this.pending = null;
-    }
-    this.streamUnsub?.();
-    this.streamUnsub = null;
-    // Note: we deliberately do NOT clear `this.listeners` here.
-    // Editor's `client.presence.onUpdate(cb)` registers a callback
-    // that survives across the dispose/start cycle so the re-mount
-    // sees the same notification flow as the first mount.
+    if (this.pending === null) return;
+    clearTimeout(this.pending);
+    this.pending = null;
   }
 
   /**
@@ -171,137 +197,19 @@ export class PresenceManager {
   }
 
   /**
-   * Read the current presence map for an entity. Excludes the local
-   * actor (you wouldn't want to render your own cursor back to
-   * yourself).
-   *
-   * Returns a fresh Map each call so callers can't mutate our state.
+   * Read the current presence map for an entity. Returns a fresh Map each
+   * call so callers can't mutate our state.
    */
   forEntity(entityId: string): Map<string, PresenceEntry> {
-    const out = new Map<string, PresenceEntry>();
-    for (const [key, entry] of this.map) {
-      if (key.startsWith(`${entityId}::`) && entry.actorId !== this.localActorId) {
-        out.set(entry.actorId, entry);
-      }
-    }
-    return out;
+    return this.map.forEntity(entityId);
   }
 
   /**
-   * Test seam: inject a presence payload directly into the map as if
-   * it had arrived over the SSE stream. Production code should never
-   * call this; tests use it to avoid the async dance of opening an
-   * EventSource just to assert "if X arrives, the map contains X".
-   */
-  __testInjectEntry__(entry: PresenceEntry): void {
-    if (entry.actorId === this.localActorId) return;
-    const key = mapKey(entry.entityId, entry.actorId);
-    this.map.set(key, entry);
-    this.notify();
-  }
-
-  /**
-   * Subscribe to map changes. Fires whenever a remote presence event
-   * is received.
+   * Subscribe to map changes. Fires whenever a remote presence event is
+   * received and when the map is cleared on disconnect.
    */
   onUpdate(callback: () => void): () => void {
-    this.listeners.add(callback);
-    return () => this.listeners.delete(callback);
-  }
-
-  // -------------------------------------------------------------------------
-  // Internals
-  // -------------------------------------------------------------------------
-
-  private async openStream(): Promise<void> {
-    // We don't know which group(s) to subscribe to at construction
-    // time — groups are configured later via `subscribe()` in Editor.
-    // For the demo there's exactly one group (`grp_demo`), so we pass
-    // it explicitly via a query param when the caller adds us to a
-    // group. We start by subscribing to ALL groups we know about
-    // (currently none) — the demo wires `subscribe` after this and
-    // we piggyback via the same query.
-    //
-    // For simplicity right now: open an EventSource filtered to
-    // presence events. The server doesn't filter by group on the
-    // presence endpoint, so this just dumps every presence event
-    // for any group the actor belongs to. Good enough for a 2-actor
-    // demo.
-    try {
-      // The actor must be a member of at least one group for the SSE
-      // endpoint to open. If not yet, wait briefly and retry.
-      const groups = await this.knownGroups();
-      if (groups.length === 0) {
-        setTimeout(() => {
-          if (!this.unsubscribed) void this.openStream();
-        }, 500);
-        return;
-      }
-
-      const sub = openSSEStream({
-        serverUrl: this.client.serverUrl,
-        groupIds: groups,
-        cursor: 0,
-        actorId: this.localActorId,
-      });
-
-      (async () => {
-        for await (const event of sub.events()) {
-          if (this.unsubscribed) break;
-          if (event.type !== "presence") continue;
-          const entry = serverEventToEntry(event.presence);
-          if (!entry) continue;
-          const key = mapKey(entry.entityId, entry.actorId);
-          this.map.set(key, entry);
-          this.notify();
-        }
-      })().catch(() => {
-        // SSE failure — retry after a short delay.
-        if (!this.unsubscribed) {
-          setTimeout(() => {
-            if (!this.unsubscribed) void this.openStream();
-          }, 2000);
-        }
-      });
-
-      this.streamUnsub = () => sub.close();
-    } catch {
-      // Initial open failed — retry.
-      if (!this.unsubscribed) {
-        setTimeout(() => {
-          if (!this.unsubscribed) void this.openStream();
-        }, 2000);
-      }
-    }
-  }
-
-  /** Read the actor's known groups from a handshake. */
-  private async knownGroups(): Promise<readonly string[]> {
-    try {
-      const res = await this.client["fetchImpl"](`${this.client.serverUrl}/sync/handshake`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-ebb-actor-id": this.localActorId,
-        },
-        body: "{}",
-      });
-      if (!res.ok) return [];
-      const json = (await res.json()) as { groups?: Array<{ id: string }> };
-      return (json.groups ?? []).map((g) => g.id);
-    } catch {
-      return [];
-    }
-  }
-
-  private notify(): void {
-    for (const cb of this.listeners) {
-      try {
-        cb();
-      } catch {
-        // Don't let one listener's error break the others.
-      }
-    }
+    return this.map.onUpdate(callback);
   }
 }
 

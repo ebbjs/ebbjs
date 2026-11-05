@@ -47,7 +47,7 @@ import {
 import type { ReplicaRecord, StorageAdapter } from "@ebbjs/storage/types";
 
 import { ConnectionStateMachine, type ConnectionState } from "./connection-state";
-import { PresenceManager } from "../presence/presence";
+import { createPresenceMap, PresenceManager, type PresenceMap } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import {
@@ -213,6 +213,14 @@ export class SyncClient implements PermissionQuery {
   /** The shared per-revision notification stream the cache and watchers read. */
   readonly replicaSignal: ReplicaSignal;
   readonly presence: PresenceManager;
+  /**
+   * Peers seen on the live stream, keyed by entity + actor (#666). The
+   * client owns it because the stream does: `handleSSEEvent` folds every
+   * `presence` packet in before the subscriber sees it, and
+   * {@link closeStream} drops it because a disconnected client cannot know
+   * the peer set.
+   */
+  private readonly presenceMap: PresenceMap;
   readonly registry: EntityRegistry;
   readonly schema?: AnySchema;
   /**
@@ -393,13 +401,12 @@ export class SyncClient implements PermissionQuery {
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
     this.replicaSaveIntervalMs = opts.replicaSaveIntervalMs ?? DEFAULT_REPLICA_SAVE_INTERVAL_MS;
-    // PresenceManager wires itself to the SSE stream; the `presence`
-    // field on the client is the public API for sending local
-    // cursors and reading the map of remote ones. The manager lives
-    // for the lifetime of the client; consumers should call
-    // `client.close()` (already wired in the existing close path)
-    // when tearing down.
-    this.presence = new PresenceManager(this);
+    // Presence rides the live stream `subscribe()` opens: the client feeds
+    // its map from `handleSSEEvent`, and `presence` is the public API for
+    // sending local cursors and reading the remote ones. Both live for the
+    // lifetime of the client; `close()` tears them down.
+    this.presenceMap = createPresenceMap(this.actorId);
+    this.presence = new PresenceManager(this, this.presenceMap);
     // The outbox owns the whole write lifecycle, including a detected
     // conflict: a loser is a status + payload on its own row, so detection
     // is one durable write and the flush path holds it structurally.
@@ -546,6 +553,9 @@ export class SyncClient implements PermissionQuery {
       // ignore
     }
     sub.stream = null;
+    // Presence arrives only over the stream, so a closed stream leaves the
+    // peer set unknown. Stale cursors must not outlive the connection.
+    this.presenceMap.clear();
   }
 
   /**
@@ -566,6 +576,9 @@ export class SyncClient implements PermissionQuery {
    * Data events are also appended to `storage.actions` so the storage
    * adapter stays in sync; callers that don't want this can pass a
    * different `storage` or use the raw event handler.
+   *
+   * A presence event lands in `client.presence` before the callback runs,
+   * so presence scope is the groups passed here.
    *
    * Calling `subscribe` again replaces the active subscription: the
    * previous stream and callback are torn down, and the previous
@@ -1347,6 +1360,7 @@ export class SyncClient implements PermissionQuery {
       this.cancelSubscription(this.activeSub);
     }
     this.stateMachine.transition("offline");
+    this.presenceMap.clear();
     this.presence.dispose();
   }
 
@@ -1650,6 +1664,10 @@ export class SyncClient implements PermissionQuery {
       }
     } else if (event.type === "control") {
       await this.handleControlEvent(event.control, sub);
+    } else if (event.type === "presence") {
+      // Before the subscriber sees the packet: one live subscription feeds
+      // both the action path and `client.presence`.
+      this.presenceMap.ingest(event.presence);
     }
 
     this.emitToSubscriber(sub, event);

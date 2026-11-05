@@ -1,10 +1,12 @@
 /**
  * Presence round-trip integration test against a running ebb_server.
  *
- * Two clients (drew and alice) both connect to grp_demo. Drew calls
+ * Two clients (drew and alice) both subscribe to grp_demo. Drew calls
  * `setLocalCursor`; alice should see drew's cursor in
  * `client.presence.forEntity` within a couple of seconds (the
- * 100ms debounce + SSE delivery).
+ * 100ms debounce + SSE delivery). Presence rides the subscription's live
+ * stream, so the test also asserts that each client holds exactly one
+ * `/sync/live` request and issues no `/sync/handshake` for presence.
  *
  * Requires a pre-seeded `grp_demo` group with a `demo-seeder` member
  * that the standard integration CI job does not bootstrap. The test
@@ -15,7 +17,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "@ebbjs/client";
-import type { SyncClient } from "@ebbjs/client";
+import type { SSEEvent, SyncClient } from "@ebbjs/client";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -23,6 +25,11 @@ const GROUP_ID = "grp_demo";
 
 interface ClientHandle {
   client: SyncClient;
+  /** Every request URL this client issued, in order. */
+  calls: string[];
+  /** Events the client's live subscription delivered. */
+  events: SSEEvent[];
+  unsubscribe: () => void;
   close: () => void;
 }
 
@@ -74,6 +81,21 @@ if (!serverReachable) {
 
 const itIfReady = serverReachable && fixtureSeeded ? it : it.skip;
 
+const countCalls = (calls: readonly string[], needle: string): number =>
+  calls.filter((url) => url.includes(needle)).length;
+
+/**
+ * Poll the request log so the test waits on the stream opening rather than
+ * a fixed sleep.
+ */
+async function waitForStream(calls: readonly string[], timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (countCalls(calls, "/sync/live") < 1) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the live stream to open");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 /**
  * Add an actor as a member of grp_demo (sent as demo-seeder, who has
  * groupMember.* permission). Idempotent — tolerates already_exists.
@@ -119,14 +141,30 @@ async function addMemberAsSeeder(actorId: string): Promise<void> {
 async function setupActor(actorId: string): Promise<ClientHandle> {
   await addMemberAsSeeder(actorId);
 
-  const client = createClient({ serverUrl: SERVER_URL, actorId });
+  const calls: string[] = [];
+  const events: SSEEvent[] = [];
+  const fetchImpl: typeof fetch = (input, init) => {
+    calls.push(
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+    );
+    return fetch(input as RequestInfo, init);
+  };
+
+  const client = createClient({ serverUrl: SERVER_URL, actorId, fetchImpl });
   const { groups } = await client.handshake();
   if (!groups.find((g) => g.id === GROUP_ID)) {
     throw new Error(`actor ${actorId} is not a member of ${GROUP_ID}`);
   }
+  // A real subscription, not `presence.start()`: the live stream is what
+  // carries presence.
+  const unsubscribe = client.subscribe([GROUP_ID], (event) => events.push(event));
   return {
     client,
+    calls,
+    events,
+    unsubscribe,
     close: () => {
+      unsubscribe();
       client.close();
     },
   };
@@ -147,14 +185,11 @@ describe("integration: presence", () => {
     alice?.close();
   });
 
-  itIfReady("alice sees drew's cursor via the SSE presence stream", async () => {
+  itIfReady("alice sees drew's cursor on her live stream", async () => {
     if (!drew || !alice) throw new Error("test setup failed");
 
-    drew.client.presence.start();
-    alice.client.presence.start();
-
-    // Give the SSE streams a moment to establish on both sides.
-    await new Promise((r) => setTimeout(r, 500));
+    await waitForStream(drew.calls);
+    await waitForStream(alice.calls);
 
     const anchor = "r:drew:" + RUN_ID;
     const head = anchor;
@@ -167,7 +202,7 @@ describe("integration: presence", () => {
     });
 
     // Poll alice's presence map for drew's entry.
-    const deadline = Date.now() + 3000;
+    const deadline = Date.now() + 5000;
     let drewEntry: ReturnType<typeof alice.client.presence.forEntity> extends Map<string, infer V>
       ? V | undefined
       : never;
@@ -184,5 +219,16 @@ describe("integration: presence", () => {
     expect(drewEntry).toBeDefined();
     expect(drewEntry?.cursor.anchorId).toBe(anchor);
     expect(drewEntry?.cursor.headOffset).toBe(5);
+
+    // One subscription, one stream, and the packet arrives once.
+    expect(countCalls(alice.calls, "/sync/live")).toBe(1);
+    // The only handshake is the one `setupActor` made to verify membership.
+    expect(countCalls(alice.calls, "/sync/handshake")).toBe(1);
+    const presenceEvents = alice.events.filter((event) => event.type === "presence");
+    expect(presenceEvents).toHaveLength(1);
+
+    // Closing the subscription drops the peers it observed.
+    alice.unsubscribe();
+    expect(alice.client.presence.forEntity("doc_demo").size).toBe(0);
   });
 });
