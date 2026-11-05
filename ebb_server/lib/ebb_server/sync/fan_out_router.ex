@@ -271,13 +271,13 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
+  # The pre-#534 notification carries no actor set, so it can name no
+  # connection to wake; it still dispatches its Actions.
   def handle_info(
         {:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at, payloads},
         state
       ) do
-    # The pre-#534 notification carries no actor set, so it cannot name the
-    # connections to wake; a recovered range emits no control event.
-    handle_batch_committed(from_gsn, to_gsn, groups_by_gsn, committed_at, payloads, [], state)
+    handle_committed_range(from_gsn, to_gsn, groups_by_gsn, committed_at, payloads, [], state)
   end
 
   def handle_info(
@@ -285,7 +285,7 @@ defmodule EbbServer.Sync.FanOutRouter do
          affected_actors},
         state
       ) do
-    handle_batch_committed(
+    handle_committed_range(
       from_gsn,
       to_gsn,
       groups_by_gsn,
@@ -324,7 +324,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     {:noreply, forget_subscriber(state, pid)}
   end
 
-  defp handle_batch_committed(
+  defp handle_committed_range(
          from_gsn,
          to_gsn,
          groups_by_gsn,
@@ -438,18 +438,12 @@ defmodule EbbServer.Sync.FanOutRouter do
       Telemetry.fanout_hop(:router_queue, span(committed_at, received_at), nil)
       emit_dwell(received_at, released_at, range, just_received)
 
-      push_gsn_range(
-        from,
-        to,
-        state.pending_groups,
-        %{
-          affected_actors: Map.get(meta, :affected_actors) || [],
-          actor_connections: state.actor_connections,
-          committed_at: committed_at,
-          conn_sample_rate: state.conn_sample_rate,
-          payloads: Map.get(meta, :payloads)
-        }
-      )
+      push_gsn_range(from, to, state.pending_groups, state.actor_connections, %{
+        affected_actors: Map.get(meta, :affected_actors) || [],
+        committed_at: committed_at,
+        conn_sample_rate: state.conn_sample_rate,
+        payloads: Map.get(meta, :payloads)
+      })
     end
 
     # Persist after pushing: at-least-once. A crash between the push and
@@ -545,7 +539,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     end
   end
 
-  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, %{} = meta) do
+  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, actor_connections, meta) do
     decode_started_at = System.monotonic_time()
 
     resolve_opts = [
@@ -588,7 +582,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     # The actor index, not the frame fan-out, decides who is woken: a
     # membership row is scoped to the group it grants, so an actor added to
     # a group nobody subscribes to can still be live on another one.
-    push_groups_changed(meta.actor_connections, meta.affected_actors)
+    push_groups_changed(actor_connections, meta.affected_actors)
   end
 
   # One cast per connection per released range, however many membership

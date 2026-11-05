@@ -190,7 +190,7 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
 
       send(
         FanOutRouter,
-        {:batch_committed, gsn, gsn, groups_by_gsn, System.monotonic_time(), [carried]}
+        {:batch_committed, gsn, gsn, groups_by_gsn, System.monotonic_time(), [carried], []}
       )
 
       bytes = receive_sse_data()

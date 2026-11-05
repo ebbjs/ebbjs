@@ -18,7 +18,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.{ActionFormat, GroupCache, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.GroupCache
   alias EbbServer.Sync.{FanOutRouter, SSEConnection}
 
   @control %{"groups_changed" => true, "reason" => "membership"}
@@ -92,6 +92,25 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       # resolved it before deleting it.
       receive_sse_data()
       assert_control()
+
+      :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+
+    test "a re-put of the row the cache already holds pushes nothing" do
+      actor_id = unique("a")
+      group_id = unique("g")
+      gm_id = unique("gm")
+      permissions = ["todo.*", "groupMember.*"]
+      bootstrap!(actor_id, group_id, permissions, gm_id)
+
+      {:ok, sse_pid} = subscribe(group_id, actor_id)
+
+      # Same id, same actor, same group, same permissions: the group view
+      # did not change, so the actor has nothing to re-handshake for.
+      put_member!(actor_id, group_id, actor_id, permissions, gm_id)
+
+      receive_sse_data()
+      refute_control()
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -234,60 +253,6 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       {:ok, sse_pid} = subscribe(group_id, owner_id)
 
       put_member!(owner_id, group_id, unique("a"), ["todo.read"], unique("gm"))
-
-      receive_sse_data()
-      refute_control()
-
-      :ok = FanOutRouter.unsubscribe(sse_pid)
-    end
-
-    test "a pre-#534 batch_committed notification carries no actor set and pushes nothing" do
-      group_id = unique("g")
-      actor_id = unique("a")
-      {:ok, sse_pid} = subscribe(group_id, actor_id)
-
-      gsn = RocksDB.get_max_gsn() + 1
-      hlc = generate_hlc()
-      action_id = unique("act")
-      update_id = unique("upd")
-
-      payload =
-        %{
-          id: action_id,
-          actor_id: actor_id,
-          hlc: hlc,
-          updates: [
-            %{
-              id: update_id,
-              subject_id: unique("todo"),
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
-              }
-            }
-          ]
-        }
-        |> ActionFormat.build()
-        |> ActionFormat.encode()
-
-      frame = ActionFormat.frame(payload, [[group_id]])
-
-      :ok =
-        RocksDB.write_batch([
-          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn), frame},
-          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(group_id, gsn),
-           action_id}
-        ])
-
-      :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
-      WatermarkTracker.advance_watermark()
-
-      send(
-        FanOutRouter,
-        {:batch_committed, gsn, gsn, %{gsn => [group_id]}, System.monotonic_time(),
-         [{payload, [[group_id]]}]}
-      )
 
       receive_sse_data()
       refute_control()

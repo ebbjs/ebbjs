@@ -155,12 +155,16 @@ defmodule EbbServer.Storage.Writer do
   affected entities provisionally dirty, and hands the prepared batch to
   the Committer. Once the ack lands the sequencer
   settles the marks, advances the watermark, and notifies `FanOutRouter`.
-  The notification carries the per-Action group set this pass resolved and
-  the batch's already-encoded payload plus scopes pairs in claim order, so
-  live fan-out indexes the same snapshot `cf_group_actions` was built from
-  rather than re-deriving groups after the system caches have moved, and it
-  dispatches without re-reading `cf_actions`. The payload binaries are
-  refc-shared across processes, so the hand-off adds a list, not a copy.
+  The notification carries the per-Action group set this pass resolved, the
+  batch's already-encoded payload plus scopes pairs in claim order, and the
+  actors whose group view the apply changed, so live fan-out indexes the
+  same snapshot `cf_group_actions` was built from rather than re-deriving
+  groups after the system caches have moved, and it dispatches without
+  re-reading `cf_actions`. The payload binaries are refc-shared across
+  processes, so the hand-off adds a list, not a copy. The actor list is
+  collected while the planned cache mutations are applied, so a
+  `groups_changed` control event that it causes is pushed only after the
+  membership is visible.
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
@@ -2150,36 +2154,36 @@ defmodule EbbServer.Storage.Writer do
   defp apply_cache_mutations(mutations, state) do
     mutations
     |> Enum.flat_map(fn mutation ->
-      actors = affected_actors(mutation, state)
+      actors = group_view_actors(mutation, state)
       apply_cache_mutation(mutation, state)
       actors
     end)
-    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
 
   # A membership row is visible to its actor, so putting, patching, or
-  # deleting one changes that actor's group view. A put can also re-key the
-  # row to another actor; the cache drops the stale row, which changes the
-  # previous actor's view too. A delete's wire form carries only the row id,
-  # so its actor has to be resolved from the by-id cache before the delete
-  # drops it.
-  defp affected_actors({:group_member_put, row}, state) do
-    previous = GroupCache.get_group_member(row.id, state.group_members_by_id)
-    [row.actor_id, previous_actor_id(previous)]
+  # deleting one changes that actor's group view — unless the row says
+  # exactly what the cache already holds. A put can also re-key the row to
+  # another actor; the cache drops the stale row, which changes the previous
+  # actor's view too. A delete's wire form carries only the row id, so its
+  # actor has to be resolved from the by-id cache before the delete drops
+  # it.
+  defp group_view_actors({:group_member_put, row}, state) do
+    case GroupCache.get_group_member(row.id, state.group_members_by_id) do
+      nil -> [row.actor_id]
+      ^row -> []
+      previous -> [row.actor_id, previous.actor_id]
+    end
   end
 
-  defp affected_actors({:group_member_delete, id}, state) do
+  defp group_view_actors({:group_member_delete, id}, state) do
     case GroupCache.get_group_member(id, state.group_members_by_id) do
       nil -> []
       row -> [row.actor_id]
     end
   end
 
-  defp affected_actors(_mutation, _state), do: []
-
-  defp previous_actor_id(nil), do: nil
-  defp previous_actor_id(row), do: row.actor_id
+  defp group_view_actors(_mutation, _state), do: []
 
   # The caches a patch merge reads. The planner resolves their writes
   # itself; this Writer only applies the result.

@@ -329,13 +329,6 @@ export class SyncClient<
    */
   private inAppScope: Set<string> = new Set();
   /**
-   * True while {@link refreshMembership} is in flight. The refresh reconnects
-   * (which runs it again) and a handshake can itself touch the subscription,
-   * so one refresh at a time keeps a change from re-entering its own
-   * handshake.
-   */
-  private membershipRefreshInFlight = false;
-  /**
    * Per-client HLC clock. Advanced on every local event by
    * {@link submitRelationshipUpdates}; remote HLCs flow in via
    * `_applyAction`. The clock is per-client so writes stay
@@ -760,26 +753,20 @@ export class SyncClient<
    * stream is still reconciled.
    */
   private async refreshMembership(): Promise<void> {
-    if (this.membershipRefreshInFlight) return;
-    this.membershipRefreshInFlight = true;
-    try {
-      if (!this.handshakeRan) {
-        // No previous set to diff against. Learn the membership (the write
-        // path and cursor cache read it) but leave the caller's explicit
-        // subscription alone rather than treating every group as gained.
-        await this.handshake();
-        return;
-      }
-      const previous = new Set(this.actorGroups.map((group) => group.id));
-      const { groups } = await this.handshake();
-      const next = new Set(groups.map((group) => group.id));
-      this.reconcileLiveMembership(
-        [...next].filter((groupId) => !previous.has(groupId)),
-        new Set([...previous].filter((groupId) => !next.has(groupId))),
-      );
-    } finally {
-      this.membershipRefreshInFlight = false;
+    if (!this.handshakeRan) {
+      // No previous set to diff against. Learn the membership (the write
+      // path and cursor cache read it) but leave the caller's explicit
+      // subscription alone rather than treating every group as gained.
+      await this.handshake();
+      return;
     }
+    const previous = new Set(this.actorGroups.map((group) => group.id));
+    const { groups } = await this.handshake();
+    const next = new Set(groups.map((group) => group.id));
+    this.reconcileLiveMembership(
+      [...next].filter((groupId) => !previous.has(groupId)),
+      new Set([...previous].filter((groupId) => !next.has(groupId))),
+    );
   }
 
   /**
@@ -787,8 +774,7 @@ export class SyncClient<
    * joins it unconditionally: the client asked to stay current with its
    * membership, and the group starts with no local view, so the reconnect
    * loop's bootstrap seeds it. A removed group leaves, and eviction drops
-   * its resident rows with the rest of the scope. An unchanged set is left
-   * exactly as it is.
+   * its resident rows with the rest of the scope.
    */
   private reconcileLiveMembership(added: readonly string[], removed: ReadonlySet<string>): void {
     const sub = this.activeSub;
@@ -797,20 +783,28 @@ export class SyncClient<
     for (const groupId of added) {
       if (!kept.includes(groupId)) kept.push(groupId);
     }
+    this.applyLiveSubscription(kept);
+  }
+
+  /**
+   * Adopt a new group set on the live subscription: evict what left, reopen
+   * the stream so the reconnect loop seeds and catches up before going live
+   * again, and leave an unchanged set alone. An empty set is not a valid
+   * live subscription, so the session ends instead of reconnecting into a
+   * 400 forever; a later `subscribe()` reopens it.
+   */
+  private applyLiveSubscription(kept: readonly string[]): void {
+    const sub = this.activeSub;
+    if (sub === null || sub.cancelled) return;
     const unchanged =
       kept.length === sub.groupIds.length && kept.every((id, i) => id === sub.groupIds[i]);
     if (unchanged) return;
     this.applyReplicaScope(kept);
     if (kept.length === 0) {
-      // Mirrors `reconcileSubscriptionScope`: an empty group list is not a
-      // valid live subscription, so end the session instead of reconnecting
-      // into a 400 forever. A later `subscribe()` reopens it.
       this.cancelSubscription(sub);
       return;
     }
-    sub.groupIds = kept;
-    // The loop re-runs bootstrap / catch-up on the new set and reopens the
-    // stream on it.
+    sub.groupIds = [...kept];
     this.closeStream(sub);
   }
 
@@ -830,18 +824,7 @@ export class SyncClient<
     if (left.size === 0) return;
     const sub = this.activeSub;
     if (sub === null) return;
-    const kept = sub.groupIds.filter((groupId) => !left.has(groupId));
-    if (kept.length === sub.groupIds.length) return;
-    this.applyReplicaScope(kept);
-    if (kept.length === 0) {
-      // An empty group list is not a valid live subscription, so end the
-      // session instead of reconnecting into a 400 forever. A later
-      // `subscribe()` reopens it.
-      this.cancelSubscription(sub);
-      return;
-    }
-    sub.groupIds = kept;
-    this.closeStream(sub);
+    this.applyLiveSubscription(sub.groupIds.filter((groupId) => !left.has(groupId)));
   }
 
   /**
