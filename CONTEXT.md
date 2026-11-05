@@ -127,6 +127,18 @@ _Avoid_: scope, acl
 The unit of permission and delivery; every entity belongs to at least one.
 _Avoid_: workspace, tenant, room
 
+**App**:
+A client-declared label naming one application of the shared store — `notes`,
+`issues` — carried by `createClient({ appId })`. A label, not an actor,
+credential, or grant.
+_Avoid_: tenant, client, origin, service
+
+**App scope**:
+The groups an app pulls into its replica, declared per group as `group.apps`.
+A sync/residency filter, not an authorization boundary; absent scope means
+every app.
+_Avoid_: permission, ACL, access, filter
+
 ### Functions
 
 **Function**:
