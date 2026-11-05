@@ -24,6 +24,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
   setup do
     original_mode = Application.get_env(:ebb_server, :auth_mode)
     original_url = Application.get_env(:ebb_server, :auth_url)
+    original_secret = Application.get_env(:ebb_server, :tailscale_proxy_secret)
 
     on_exit(fn ->
       if original_mode,
@@ -33,6 +34,10 @@ defmodule EbbServer.Sync.AuthPlugTest do
       if original_url,
         do: Application.put_env(:ebb_server, :auth_url, original_url),
         else: Application.delete_env(:ebb_server, :auth_url)
+
+      if original_secret,
+        do: Application.put_env(:ebb_server, :tailscale_proxy_secret, original_secret),
+        else: Application.delete_env(:ebb_server, :tailscale_proxy_secret)
     end)
 
     :ok
@@ -320,6 +325,198 @@ defmodule EbbServer.Sync.AuthPlugTest do
 
       refute Map.has_key?(headers, "x-internal-foo"),
              "non-allowlisted headers must not be forwarded to the auth URL"
+    end
+  end
+
+  defp tailscale_conn(headers, remote_ip \\ {127, 0, 0, 1}) do
+    conn(:get, "/")
+    |> Map.put(:remote_ip, remote_ip)
+    |> Map.put(:req_headers, headers)
+    |> AuthPlug.call([])
+  end
+
+  describe "tailscale mode" do
+    setup do
+      Application.put_env(:ebb_server, :auth_mode, :tailscale)
+      Application.delete_env(:ebb_server, :tailscale_proxy_secret)
+      :ok
+    end
+
+    test "a loopback peer with a login header becomes the actor" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"tailscale-user-name", "Alice"},
+          {"x-ebb-tailscale-user-id", "42"}
+        ])
+
+      refute conn.halted
+      assert conn.assigns.actor_id == "alice@example.com"
+      assert conn.assigns.actor_provider == "tailscale"
+      assert conn.assigns.actor_display_name == "Alice"
+      assert conn.assigns.actor_provider_id == 42
+    end
+
+    test "IPv6 loopback is trusted" do
+      conn =
+        tailscale_conn(
+          [{"tailscale-user-login", "alice@example.com"}],
+          {0, 0, 0, 0, 0, 0, 0, 1}
+        )
+
+      refute conn.halted
+      assert conn.assigns.actor_id == "alice@example.com"
+    end
+
+    test "a non-loopback peer is rejected even with a valid header" do
+      conn = tailscale_conn([{"tailscale-user-login", "alice@example.com"}], {10, 0, 0, 1})
+
+      assert conn.status == 401
+      assert conn.halted
+      assert conn.resp_body =~ "loopback"
+    end
+
+    test "a missing login header returns 401" do
+      conn = tailscale_conn([{"tailscale-user-name", "Alice"}])
+
+      assert conn.status == 401
+      assert conn.halted
+    end
+
+    test "an empty login header returns 401" do
+      conn = tailscale_conn([{"tailscale-user-login", ""}])
+
+      assert conn.status == 401
+      assert conn.halted
+    end
+
+    test "duplicate login headers return 401" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"tailscale-user-login", "mallory@example.com"}
+        ])
+
+      assert conn.status == 401
+      assert conn.halted
+      assert conn.resp_body =~ "duplicate"
+    end
+
+    test "x-ebb-actor-id alone is not a fallback" do
+      conn = tailscale_conn([{"x-ebb-actor-id", "mallory"}])
+
+      assert conn.status == 401
+      assert conn.halted
+    end
+
+    test "x-ebb-actor-id cannot override the login" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-actor-id", "mallory"}
+        ])
+
+      refute conn.halted
+      assert conn.assigns.actor_id == "alice@example.com"
+    end
+
+    test "an absent display name leaves the assign unset" do
+      conn = tailscale_conn([{"tailscale-user-login", "alice@example.com"}])
+
+      refute Map.has_key?(conn.assigns, :actor_display_name)
+      refute Map.has_key?(conn.assigns, :actor_provider_id)
+    end
+
+    test "a configured secret must match" do
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, "s3cret")
+
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "s3cret"}
+        ])
+
+      refute conn.halted
+      assert conn.assigns.actor_id == "alice@example.com"
+    end
+
+    test "a configured secret rejects an absent header" do
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, "s3cret")
+
+      conn = tailscale_conn([{"tailscale-user-login", "alice@example.com"}])
+
+      assert conn.status == 401
+      assert conn.halted
+      assert conn.resp_body =~ "x-ebb-tailscale-secret"
+    end
+
+    test "a configured secret rejects a wrong or duplicate header" do
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, "s3cret")
+
+      wrong =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "wrong"}
+        ])
+
+      duplicated =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "s3cret"},
+          {"x-ebb-tailscale-secret", "s3cret"}
+        ])
+
+      assert wrong.status == 401
+      assert wrong.halted
+      assert duplicated.status == 401
+      assert duplicated.halted
+    end
+
+    test "a non-numeric provider id is dropped" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-user-id", "u42"}
+        ])
+
+      refute Map.has_key?(conn.assigns, :actor_provider_id)
+    end
+
+    test "a non-string secret configuration fails closed without disclosing it" do
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, :not_a_string)
+
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "not_a_string"}
+        ])
+
+      assert conn.status == 401
+      assert conn.halted
+      assert conn.resp_body =~ "invalid tailscale proxy secret configuration"
+      refute conn.resp_body =~ "not_a_string"
+    end
+
+    test "an unconfigured secret accepts any x-ebb-tailscale-secret value" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "ignored"}
+        ])
+
+      refute conn.halted
+      assert conn.assigns.actor_id == "alice@example.com"
+    end
+
+    test "a service token still short-circuits actor resolution" do
+      conn =
+        tailscale_conn([
+          {"x-ebb-service-token", "job-token"},
+          {"tailscale-user-login", "alice@example.com"}
+        ])
+
+      refute conn.halted
+      refute Map.has_key?(conn.assigns, :actor_id)
     end
   end
 end

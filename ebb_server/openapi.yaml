@@ -3628,6 +3628,83 @@
               "tags": ["Sync"],
             },
         },
+      "/sync/identity":
+        {
+          "get":
+            {
+              "description": "Returns the actor identity the server derived from the request. Clients use it before constructing a sync client when the actor would otherwise be unknown, such as a browser behind a Tailscale gateway.",
+              "operationId": "identity",
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "actor_id": { "type": "string" },
+                                      "display_name":
+                                        {
+                                          "description": "Human-readable name from the identity provider, when it supplies one",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "provider":
+                                        {
+                                          "description": "Auth mode that authenticated the request",
+                                          "enum": ["bypass", "external", "tailscale"],
+                                          "type": "string",
+                                        },
+                                      "provider_id":
+                                        {
+                                          "description": "Numeric provider user id, when the identity provider supplies one; never used for authorization",
+                                          "format": "int64",
+                                          "nullable": true,
+                                          "type": "integer",
+                                        },
+                                    },
+                                  "required": ["actor_id", "provider"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The actor the server resolved from the request",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or invalid credential for the active auth mode",
+                    },
+                },
+              "summary": "Resolve the authenticated actor",
+              "tags": ["Sync"],
+            },
+        },
       "/sync/live":
         {
           "get":

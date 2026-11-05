@@ -158,8 +158,80 @@ defmodule EbbServer.RuntimeConfigTest do
       assert EbbServer.Application.runtime_auth() == {:bypass, nil}
     end
 
+    test "resolves :tailscale without requiring an auth URL" do
+      System.put_env("EBB_AUTH_MODE", "tailscale")
+      System.put_env("EBB_AUTH_URL", "https://ignored.example/auth")
+      Application.put_env(:ebb_server, :auth_url, "https://ignored.example/auth")
+
+      assert EbbServer.Application.runtime_auth() == {:tailscale, nil}
+    end
+
+    test "the unset-mode message names every accepted mode" do
+      System.delete_env("EBB_AUTH_MODE")
+      Application.delete_env(:ebb_server, :auth_mode)
+
+      assert_raise RuntimeError, ~r/bypass, external, tailscale/, fn ->
+        EbbServer.Application.runtime_auth()
+      end
+    end
+
+    test "the invalid-mode message names every accepted mode" do
+      System.put_env("EBB_AUTH_MODE", "tailscalee")
+
+      assert_raise RuntimeError, ~r/bypass, external, tailscale/, fn ->
+        EbbServer.Application.runtime_auth()
+      end
+    end
+
     test "the test suite boots on the explicit :bypass config from config/test.exs" do
       assert Application.get_env(:ebb_server, :auth_mode) == :bypass
+    end
+  end
+
+  describe "bind_ip/1" do
+    test "tailscale mode binds IPv4 loopback" do
+      assert EbbServer.Application.bind_ip(:tailscale) == {127, 0, 0, 1}
+    end
+
+    test "every other mode keeps Bandit's default interface" do
+      assert EbbServer.Application.bind_ip(:bypass) == :any
+      assert EbbServer.Application.bind_ip(:external) == :any
+    end
+  end
+
+  describe "bandit_options/2" do
+    test "tailscale mode hands Bandit the loopback address" do
+      options = EbbServer.Application.bandit_options(4000, :tailscale)
+
+      assert options[:ip] == {127, 0, 0, 1}
+      assert options[:port] == 4000
+      assert options[:plug] == EbbServer.Sync.Router
+    end
+
+    test "other modes leave the interface to Bandit" do
+      refute Keyword.has_key?(EbbServer.Application.bandit_options(4000, :bypass), :ip)
+      refute Keyword.has_key?(EbbServer.Application.bandit_options(4000, :external), :ip)
+    end
+  end
+
+  describe "validate_tailscale_secret!/2" do
+    test "accepts an unset secret or a non-empty string" do
+      assert EbbServer.Application.validate_tailscale_secret!(:tailscale, nil) == :ok
+      assert EbbServer.Application.validate_tailscale_secret!(:tailscale, "abc") == :ok
+    end
+
+    test "rejects an empty or non-string secret at boot" do
+      assert_raise RuntimeError, ~r/tailscale_proxy_secret/, fn ->
+        EbbServer.Application.validate_tailscale_secret!(:tailscale, "")
+      end
+
+      assert_raise RuntimeError, ~r/tailscale_proxy_secret/, fn ->
+        EbbServer.Application.validate_tailscale_secret!(:tailscale, :nope)
+      end
+    end
+
+    test "ignores the secret outside tailscale mode" do
+      assert EbbServer.Application.validate_tailscale_secret!(:bypass, :nope) == :ok
     end
   end
 

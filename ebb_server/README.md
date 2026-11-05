@@ -76,13 +76,13 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable                | Default                        | Description                                                                        |
-| ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------- |
-| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                   |
-| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory (including `functions.db`)                         |
-| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass` or `external`. The node refuses to boot without one.           |
-| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`.                      |
-| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`). |
+| Variable                | Default                        | Description                                                                            |
+| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
+| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                       |
+| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory (including `functions.db`)                             |
+| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass`, `external`, or `tailscale`. The node refuses to boot without one. |
+| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.   |
+| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`).     |
 
 Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
 `EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
@@ -92,6 +92,16 @@ default mode — a bare `mix release` boot without auth configuration
 fails before any child starts rather than silently allowing every client
 to forge an actor identity. `:bypass` logs a warning at boot and must
 never be exposed publicly.
+
+`:tailscale` takes its actor from the `tailscale-user-login` header, which a
+Tailscale gateway (`tailscale serve`, a sidecar, or the embedded node from
+#728) injects. It accepts that header only from a loopback peer and binds
+Bandit to `127.0.0.1`, so the gateway must reverse-proxy to the same host.
+When `:tailscale_proxy_secret` is configured, requests must also carry one
+matching `x-ebb-tailscale-secret` header; without a secret, any local
+process can claim an identity. `x-ebb-actor-id` is ignored in this mode, and
+`GET /sync/identity` returns the resolved actor so a browser can learn an
+identity it cannot know in advance.
 
 `EBB_PORT` and `EBB_DATA_DIR` keep the opposite precedence: a compiled
 `:port` / `:data_dir` (what `MIX_ENV=test` uses) wins over the
@@ -303,7 +313,7 @@ concurrently.
 | `EbbServer.Functions.BundleCache`                                                | Verifies digest + envelope and serves the active bundle per name                        |
 | `EbbServer.Functions.Invocation`                                                 | One worker through the host-call/result frame loop and deadline                         |
 | `EbbServer.Functions.Worker.Bun`                                                 | One Bun runner process per invocation: socket, process group, temp dir                  |
-| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
+| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass, external, tailscale modes)                           |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
 | `EbbServer.Sync.GroupListing`                                                    | Group-scoped cold-bootstrap entity listing                                              |
@@ -322,6 +332,7 @@ hot-path behavior. Read those before making non-trivial changes.
 | ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required                      |
 | `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)                   |
+| `GET`  | `/sync/identity`                                 | Actor the server resolved from the request (`actor_id`, `provider`, optional display)  |
 | `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)                 |
 | `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                                         |
 | `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                              |
@@ -675,26 +686,27 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                              | Description                                                                                                                       | Default          |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `:port`                          | HTTP listen port                                                                                                                  | 4000             |
-| `:data_dir`                      | Directory for RocksDB + SQLite files                                                                                              | `./data`         |
-| `:sync_actions_max_body_bytes`   | `POST /sync/actions` request-body cap in bytes (`413` over it)                                                                    | 8_000_000        |
-| `:sync_handshake_max_body_bytes` | `POST /sync/handshake` request-body cap in bytes (`413` over it)                                                                  | 1_048_576        |
-| `:entities_query_max_body_bytes` | `POST /entities/query` request-body cap in bytes (`413` over it)                                                                  | 1_048_576        |
-| `:presence_max_body_bytes`       | `POST /sync/presence` request-body cap in bytes (`413` over it)                                                                   | 32_768           |
-| `:auth_mode`                     | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                                                 | (none)           |
-| `:auth_url`                      | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                                              | (required)       |
-| `:writer_batch_max_size`         | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                                                 | 1000             |
-| `:writer_batch_timeout_ms`       | Coalescing window (`0` = burst-drain, no timer)                                                                                   | 0                |
-| `:writer_max_in_flight`          | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                                        | 1                |
-| `:writer_prepare_pool_size`      | Prepare workers for payload build and ETF encode                                                                                  | 2                |
-| `:writer_prepare_queue_max`      | In-flight prepare calls before the Writer rejects with `503 write_failed`                                                         | 1024             |
-| `:writer_prepare_timeout_ms`     | Upper bound on one prepare job before it fails the call                                                                           | 2000             |
-| `:writer_commit_timeout_ms`      | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset                          | 2000             |
-| `:writer_max_pending_calls`      | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset                    | 256              |
-| `:on_action`                     | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                                            | (unset)          |
-| `:functions`                     | Nested functions key: `enabled`, `bundle_dir`, `admin_token`, `retention`, `transport`, `worker_opts` (see `EbbServer.Functions`) | `enabled: false` |
+| Key                              | Description                                                                                                                           | Default          |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `:port`                          | HTTP listen port                                                                                                                      | 4000             |
+| `:data_dir`                      | Directory for RocksDB + SQLite files                                                                                                  | `./data`         |
+| `:sync_actions_max_body_bytes`   | `POST /sync/actions` request-body cap in bytes (`413` over it)                                                                        | 8_000_000        |
+| `:sync_handshake_max_body_bytes` | `POST /sync/handshake` request-body cap in bytes (`413` over it)                                                                      | 1_048_576        |
+| `:entities_query_max_body_bytes` | `POST /entities/query` request-body cap in bytes (`413` over it)                                                                      | 1_048_576        |
+| `:presence_max_body_bytes`       | `POST /sync/presence` request-body cap in bytes (`413` over it)                                                                       | 32_768           |
+| `:auth_mode`                     | Auth mode (`:bypass` / `:external` / `:tailscale`); `EBB_AUTH_MODE` overrides it                                                      | (none)           |
+| `:auth_url`                      | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`, unused by `:tailscale`                          | (required)       |
+| `:tailscale_proxy_secret`        | Secret a loopback gateway echoes in `x-ebb-tailscale-secret`; unset trusts any loopback peer, an empty or non-string value fails boot | (unset)          |
+| `:writer_batch_max_size`         | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                                                     | 1000             |
+| `:writer_batch_timeout_ms`       | Coalescing window (`0` = burst-drain, no timer)                                                                                       | 0                |
+| `:writer_max_in_flight`          | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                                            | 1                |
+| `:writer_prepare_pool_size`      | Prepare workers for payload build and ETF encode                                                                                      | 2                |
+| `:writer_prepare_queue_max`      | In-flight prepare calls before the Writer rejects with `503 write_failed`                                                             | 1024             |
+| `:writer_prepare_timeout_ms`     | Upper bound on one prepare job before it fails the call                                                                               | 2000             |
+| `:writer_commit_timeout_ms`      | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset                              | 2000             |
+| `:writer_max_pending_calls`      | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset                        | 256              |
+| `:on_action`                     | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                                                | (unset)          |
+| `:functions`                     | Nested functions key: `enabled`, `bundle_dir`, `admin_token`, `retention`, `transport`, `worker_opts` (see `EbbServer.Functions`)     | `enabled: false` |
 
 The four `*_max_body_bytes` caps bound HTTP/1 `Content-Length` and HTTP/2
 data-frame bodies on their route. Bandit 1.x drains a `Transfer-Encoding:

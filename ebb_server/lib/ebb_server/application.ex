@@ -13,6 +13,7 @@ defmodule EbbServer.Application do
 
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
+    validate_tailscale_secret!(auth_mode)
 
     # Resolved once, before `children/0` reads it and before Bandit can serve
     # the route: `enabled?/0` must not consult the environment per request.
@@ -23,6 +24,13 @@ defmodule EbbServer.Application do
         "auth mode :bypass is active: any client can claim any actor identity via the " <>
           "x-ebb-actor-id header. Never expose this node publicly; set EBB_AUTH_MODE=external " <>
           "and EBB_AUTH_URL for real deployments."
+      )
+    end
+
+    if auth_mode == :tailscale do
+      Logger.info(
+        "auth mode :tailscale is active: trusting `tailscale-user-login` only from " <>
+          "loopback peers and binding Bandit to 127.0.0.1. " <> tailscale_secret_message()
       )
     end
 
@@ -37,11 +45,67 @@ defmodule EbbServer.Application do
           EbbServer.Sync.Supervisor,
           # Attached before Bandit so every request Bandit accepts is sampled.
           EbbServer.Telemetry.HTTP,
-          {Bandit, plug: EbbServer.Sync.Router, port: port}
+          {Bandit, bandit_options(port, auth_mode)}
         ] ++ action_export_children()
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  # `:tailscale` trusts identity headers that any local process could write, so
+  # the listener must be reachable only through the gateway that injects them.
+  # The `remote_ip` check in `AuthPlug` is the enforcement; binding loopback is
+  # defence in depth. Every other mode keeps Bandit's default (all interfaces).
+  @doc false
+  @spec bind_ip(atom()) :: :any | :inet.ip_address()
+  def bind_ip(:tailscale), do: {127, 0, 0, 1}
+  def bind_ip(_mode), do: :any
+
+  # Exposed so a test can boot the same listener the application builds and
+  # assert the address it actually binds, not just the pure `bind_ip/1` answer.
+  @doc false
+  @spec bandit_options(integer(), atom()) :: keyword()
+  def bandit_options(port, auth_mode) do
+    base = [plug: EbbServer.Sync.Router, port: port]
+
+    case bind_ip(auth_mode) do
+      :any -> base
+      ip -> [{:ip, ip} | base]
+    end
+  end
+
+  # The secret is either absent (the `tailscale serve` path, where loopback is
+  # the only credential) or a non-empty string the gateway echoes per request.
+  # Anything else is an operator or integration error that would otherwise
+  # reject every request with an indistinguishable 401, so it fails at boot.
+  @doc false
+  @spec validate_tailscale_secret!(atom(), term()) :: :ok
+  def validate_tailscale_secret!(
+        auth_mode,
+        secret \\ Application.get_env(:ebb_server, :tailscale_proxy_secret)
+      )
+
+  def validate_tailscale_secret!(:tailscale, nil), do: :ok
+
+  def validate_tailscale_secret!(:tailscale, secret) when is_binary(secret) and secret != "",
+    do: :ok
+
+  def validate_tailscale_secret!(:tailscale, other) do
+    raise ":ebb_server, :tailscale_proxy_secret must be a non-empty string when set, " <>
+            "got #{inspect(other)}"
+  end
+
+  def validate_tailscale_secret!(_mode, _secret), do: :ok
+
+  defp tailscale_secret_message do
+    case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
+      secret when is_binary(secret) and secret != "" ->
+        "Requests must also carry the configured x-ebb-tailscale-secret header."
+
+      _unset ->
+        "No proxy secret is configured, so any process on this host can claim an " <>
+          "identity by sending the header. Configure :tailscale_proxy_secret."
+    end
   end
 
   # The exporter is opt-in: without a configured handler it is never
@@ -108,7 +172,8 @@ defmodule EbbServer.Application do
       reraise error, __STACKTRACE__
   end
 
-  @auth_modes %{"bypass" => :bypass, "external" => :external}
+  @auth_modes %{"bypass" => :bypass, "external" => :external, "tailscale" => :tailscale}
+  @auth_mode_names @auth_modes |> Map.keys() |> Enum.join(", ")
 
   # Auth resolution deliberately reverses the precedence used above for
   # the data directory and port: the environment variable wins over
@@ -120,9 +185,10 @@ defmodule EbbServer.Application do
   # to start rather than falling back to `:bypass`, because a silent
   # bypass lets any client forge an actor identity. `:external` also
   # requires a URL here; `EbbServer.Sync.AuthPlug` keeps its request-time
-  # 500 as a defensive path for config mutated after boot.
+  # 500 as a defensive path for config mutated after boot. `:tailscale` also
+  # takes no URL: its identity comes from headers on loopback.
   @doc false
-  @spec runtime_auth() :: {:bypass | :external, String.t() | nil}
+  @spec runtime_auth() :: {:bypass | :external | :tailscale, String.t() | nil}
   def runtime_auth do
     mode = auth_mode()
     {mode, auth_url(mode)}
@@ -132,7 +198,7 @@ defmodule EbbServer.Application do
     case env_over_app("EBB_AUTH_MODE", :auth_mode) do
       nil ->
         raise "EBB_AUTH_MODE is not set and :ebb_server, :auth_mode has no compiled value. " <>
-                "Set EBB_AUTH_MODE to one of: bypass, external."
+                "Set EBB_AUTH_MODE to one of: #{@auth_mode_names}."
 
       raw ->
         case normalize_auth_mode(raw) do
@@ -140,12 +206,15 @@ defmodule EbbServer.Application do
             mode
 
           :error ->
-            raise "EBB_AUTH_MODE must be one of: bypass, external; got #{inspect(raw)}"
+            raise "EBB_AUTH_MODE must be one of: #{@auth_mode_names}; " <>
+                    "got #{inspect(raw)}"
         end
     end
   end
 
   defp auth_url(:bypass), do: nil
+
+  defp auth_url(:tailscale), do: nil
 
   defp auth_url(:external) do
     case env_over_app("EBB_AUTH_URL", :auth_url) do
@@ -159,7 +228,7 @@ defmodule EbbServer.Application do
   end
 
   defp normalize_auth_mode(mode) when is_atom(mode) do
-    if mode in [:bypass, :external], do: {:ok, mode}, else: :error
+    if mode in Map.values(@auth_modes), do: {:ok, mode}, else: :error
   end
 
   defp normalize_auth_mode(mode) when is_binary(mode) do

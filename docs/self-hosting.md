@@ -63,7 +63,7 @@ reason to stderr first:
 
 ```console
 $ docker run --rm "$EBB_IMAGE"
-ebb_server boot failed: EBB_AUTH_MODE is not set and :ebb_server, :auth_mode has no compiled value. Set EBB_AUTH_MODE to one of: bypass, external.
+ebb_server boot failed: EBB_AUTH_MODE is not set and :ebb_server, :auth_mode has no compiled value. Set EBB_AUTH_MODE to one of: bypass, external, tailscale.
 {exit,terminating,[...]}
 Runtime terminating during boot (terminating)
 $ echo $?
@@ -120,13 +120,13 @@ published host port with `EBB_HOST_PORT` (the container keeps listening on
 
 ## 4. Configuration
 
-| Variable        | Default     | Description                                                                        |
-| --------------- | ----------- | ---------------------------------------------------------------------------------- |
-| `EBB_PORT`      | `4000`      | HTTP listen port inside the container. The image also uses it for the healthcheck. |
-| `EBB_HOST_PORT` | `4000`      | Compose only: the host port published for `EBB_PORT`.                              |
-| `EBB_DATA_DIR`  | `/app/data` | RocksDB + SQLite data directory. Point it at the volume, not at a layer path.      |
-| `EBB_AUTH_MODE` | (none)      | `bypass` or `external`. **No default** — the container refuses to boot without it. |
-| `EBB_AUTH_URL`  | (none)      | Identity service URL. Required when `EBB_AUTH_MODE=external`.                      |
+| Variable        | Default     | Description                                                                                      |
+| --------------- | ----------- | ------------------------------------------------------------------------------------------------ |
+| `EBB_PORT`      | `4000`      | HTTP listen port inside the container. The image also uses it for the healthcheck.               |
+| `EBB_HOST_PORT` | `4000`      | Compose only: the host port published for `EBB_PORT`.                                            |
+| `EBB_DATA_DIR`  | `/app/data` | RocksDB + SQLite data directory. Point it at the volume, not at a layer path.                    |
+| `EBB_AUTH_MODE` | (none)      | `bypass`, `external`, or `tailscale`. **No default** — the container refuses to boot without it. |
+| `EBB_AUTH_URL`  | (none)      | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.             |
 
 Auth is the one setting where the environment wins over the release's compiled
 config, so a baked-in value can never silently override the operator's
@@ -135,7 +135,49 @@ instruction.
 > [!WARNING]
 > `EBB_AUTH_MODE=bypass` lets any client forge an actor identity through the
 > `x-ebb-actor-id` header. The server logs a warning at boot when it is active.
-> A public deployment must use `external` with a reachable `EBB_AUTH_URL`.
+> A public deployment must use `external` with a reachable `EBB_AUTH_URL`, or
+> `tailscale` behind a gateway.
+
+### Tailscale identity
+
+`EBB_AUTH_MODE=tailscale` derives the actor from the Tailscale user a gateway
+in front of the container identifies. It needs no `EBB_AUTH_URL`, and it binds
+Bandit to `127.0.0.1` inside the container, so a published container port
+cannot reach it: the gateway must share that loopback (the embedded node, or a
+sidecar with a shared network namespace).
+
+The server trusts these request headers, and only from a loopback peer:
+
+| Header                    | Meaning                                                   |
+| ------------------------- | --------------------------------------------------------- |
+| `tailscale-user-login`    | The actor id (required, exactly one non-empty value)      |
+| `tailscale-user-name`     | Display name, returned by `GET /sync/identity` (optional) |
+| `x-ebb-tailscale-user-id` | Numeric user id, returned as `provider_id` (optional)     |
+| `x-ebb-tailscale-secret`  | Closes local-process spoofing when a secret is configured |
+
+Header names are compared lowercased, so the gateway's casing is irrelevant.
+
+A user-run `tailscale serve` cannot inject a secret, so leave
+`:tailscale_proxy_secret` unset with it and accept that any local process can
+claim an identity. The embedded gateway (a later slice) configures a generated
+secret. In both cases `x-ebb-actor-id` is ignored: there is no fallback to the
+bypass header.
+
+> [!WARNING]
+> These headers are ordinary request headers. They are safe only because the
+> gateway strips any client-supplied copy and injects the identity it looked up
+> itself. A reverse proxy that forwards inbound `tailscale-user-*` or
+> `x-ebb-tailscale-*` headers is a spoofing hole, not a gateway.
+
+`GET /sync/identity` returns the resolved actor so a browser client can learn an
+identity it cannot know before asking:
+
+```console
+$ curl -s http://127.0.0.1:4000/sync/identity \
+    -H 'tailscale-user-login: alice@example.com' \
+    -H 'tailscale-user-name: Alice'
+{"actor_id":"alice@example.com","display_name":"Alice","provider":"tailscale"}
+```
 
 ### Request body limits
 
