@@ -224,6 +224,19 @@ defmodule EbbServer.Tailscale.NodeTest do
       refute log =~ "EBB_TAILSCALE_REQUIRE_TAGS"
     end
 
+    test "warns for the tags that were not applied when some were", %{dir: dir} do
+      status = running(tags: ["tag:ebb"]) |> Map.delete("key_expiry")
+
+      log =
+        capture_log(fn ->
+          pid = start_node!(dir, [event(status)], tags: ["tag:ebb", "tag:other"])
+          wait_for_status(pid)
+        end)
+
+      assert log =~ ~s(did not apply the requested tags ["tag:other"])
+      assert log =~ ~s(\"tag:other\": [\"autogroup:admin\"])
+    end
+
     test "stops instead of serving when the tags are required", %{dir: dir} do
       status = running(tags: []) |> Map.delete("key_expiry")
       test_pid = self()

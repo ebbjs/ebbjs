@@ -272,9 +272,11 @@ defmodule EbbServer.Tailscale.Node do
     requested = config.tags
     applied = applied_tags(status)
 
+    missing = Enum.reject(requested, &(&1 in applied))
+
     cond do
-      requested != [] and not Enum.any?(requested, &(&1 in applied)) ->
-        warn_tags_not_applied(config, requested, applied)
+      missing != [] ->
+        warn_tags_not_applied(config, missing, applied)
 
       applied == [] ->
         warn_untagged(status)
