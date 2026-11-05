@@ -496,7 +496,7 @@ sequenceDiagram
 
   W->>E: mark the range committed, resolution watermark
   W->>E: settle dirty marks, apply cache mutations
-  W->>F: batch_committed(from, to, groups_by_gsn, fanout_started_at, payloads)
+  W->>F: batch_committed(from, to, groups_by_gsn, fanout_started_at, payloads,<br/>affected_actors)
   W-->>R: ok, first and last GSN, rejected list
   R-->>C: 200
 ```
@@ -515,7 +515,7 @@ sequenceDiagram
   participant H as SSEHandler
   participant C as Client
 
-  W->>F: batch_committed(from, to, groups_by_gsn, committed_at, payloads)
+  W->>F: batch_committed(from, to, groups_by_gsn, committed_at, payloads,<br/>affected_actors)
   F->>WP: committed_watermark()
   WP-->>F: frontier
   Note over F: Plan buffers each range until the frontier covers it,<br/>then releases in claim order
@@ -534,6 +534,12 @@ sequenceDiagram
   GS->>GS: hop_ms (group_queue / group_encode / group_cast) + push_latency_ms
   SC->>H: send sse_data bytes
   H->>C: chunk the open SSE response
+  opt affected_actors non-empty (the apply changed a group view)
+    F->>F: look up each affected actor in the connection index, once per range
+    F->>SC: cast push_control({groups_changed, reason: membership})
+    SC->>H: send sse_chunk control
+    H->>C: chunk event: control
+  end
   F->>F: FanOutFrontier.put(last_pushed_gsn) after the push
 ```
 
@@ -664,6 +670,11 @@ head-of-line block every other pending write in the same flush.
   to replay; the router only rejects a cursor _ahead_ of the watermark.
   Gap-filling is the client's HTTP catch-up before it opens the stream,
   and the `control` event re-triggers it on reconnect.
+- **A group-view change wakes the live client.** A committed Action that
+  changes a membership puts the affected actors on the Writer's notify;
+  `FanOutRouter` casts `groups_changed` to each of their live connections,
+  once per range, after the cache apply. The event carries no delta — the
+  client re-handshakes and reconciles its subscription.
 - **Presence bypasses the log entirely.** `POST /sync/presence` casts to
   `FanOutRouter` and on to the `GroupServer`, so it has no durability or
   ordering story beyond the cast order.

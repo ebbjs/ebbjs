@@ -20,7 +20,9 @@ defmodule EbbServer.Sync.SSEHandler do
        `data` frames for one committed batch. A sampled delivery arrives as
        `{:sse_data, bytes, meta}` and also closes the `conn_chunk` hop.
      - `{:sse_chunk, kind, payload}` from the SSEConnection — chunks the
-       formatted SSE event.
+       formatted SSE event. `control` carries the `FanOutRouter`'s
+       `groups_changed` wake-up (the client re-handshakes); `presence` a
+       peer's cursor update.
   4. The loop exits when:
      - A chunk write fails with `{:error, :closed}` (client disconnect), or
      - The SSEConnection dies (its DOWN message arrives).
@@ -34,7 +36,8 @@ defmodule EbbServer.Sync.SSEHandler do
   If the client's cursor exceeds the committed watermark, the router
   short-circuits to `write_stale_cursor_response/2`, which sends a single
   SSE `control` event and returns `:closed`. No connection is opened in
-  that case.
+  that case. A live connection's `control` events (the `FanOutRouter`'s
+  `groups_changed`) are written by the loop above, not by this path.
 
   ## Public Interface
 

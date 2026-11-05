@@ -27,6 +27,16 @@ defmodule EbbServer.Sync.SSEConnection do
      GenServer monitors it and shuts down too, triggering FanOutRouter
      unsubscribe and DynamicSupervisor cleanup.
 
+  ## Control events
+
+  `push_control/2` carries server-to-client instructions. Its caller is
+  the `FanOutRouter`, which wakes every live connection of an actor whose
+  group view a committed Action changed with
+  `{"groups_changed": true, "reason": "membership"}`; the client answers
+  by re-running its handshake. The stale-cursor `reconnect` event is not
+  pushed through here: `SSEHandler` writes it directly on a connection it
+  never opens.
+
   ## Restart strategy
 
   `restart: :temporary` so the DynamicSupervisor never auto-restarts a

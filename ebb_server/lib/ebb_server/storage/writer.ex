@@ -155,12 +155,16 @@ defmodule EbbServer.Storage.Writer do
   affected entities provisionally dirty, and hands the prepared batch to
   the Committer. Once the ack lands the sequencer
   settles the marks, advances the watermark, and notifies `FanOutRouter`.
-  The notification carries the per-Action group set this pass resolved and
-  the batch's already-encoded payload plus scopes pairs in claim order, so
-  live fan-out indexes the same snapshot `cf_group_actions` was built from
-  rather than re-deriving groups after the system caches have moved, and it
-  dispatches without re-reading `cf_actions`. The payload binaries are
-  refc-shared across processes, so the hand-off adds a list, not a copy.
+  The notification carries the per-Action group set this pass resolved, the
+  batch's already-encoded payload plus scopes pairs in claim order, and the
+  actors whose group view the apply changed, so live fan-out indexes the
+  same snapshot `cf_group_actions` was built from rather than re-deriving
+  groups after the system caches have moved, and it dispatches without
+  re-reading `cf_actions`. The payload binaries are refc-shared across
+  processes, so the hand-off adds a list, not a copy. The actor list is
+  collected while the planned cache mutations are applied, so a
+  `groups_changed` control event that it causes is pushed only after the
+  membership is visible.
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
@@ -1837,14 +1841,14 @@ defmodule EbbServer.Storage.Writer do
       if state.after_commit, do: state.after_commit.()
 
       case apply_post_commit(batch, state) do
-        :ok ->
+        {:ok, affected_actors} ->
           state = mark_apply_done(state, batch.ref)
 
           # The fan-out sample starts at the notify send boundary, after the
           # write-side apply, so `router_queue` can be subtracted from it.
           committed_at = System.monotonic_time()
 
-          notify_fanout(state, batch, committed_at)
+          notify_fanout(state, batch, committed_at, affected_actors)
 
           emit_batch_latency(batch)
           emit_actions_accepted(batch.batch_size)
@@ -2132,14 +2136,54 @@ defmodule EbbServer.Storage.Writer do
       :ok = DirtyTracker.mark_dirty_batch(entities, state.dirty_set)
     end
 
-    unless ablate?(:cache, state) do
-      Enum.each(batch.cache_mutations, &apply_cache_mutation(&1, state))
-    end
+    # The actors whose group view this batch changed ride to the Router with
+    # the committed range, so live connections can be told to re-handshake
+    # (#734). The caches are already written when that happens.
+    affected_actors =
+      if ablate?(:cache, state) do
+        []
+      else
+        apply_cache_mutations(batch.cache_mutations, state)
+      end
 
-    :ok
+    {:ok, affected_actors}
   rescue
     error -> {:error, error}
   end
+
+  defp apply_cache_mutations(mutations, state) do
+    mutations
+    |> Enum.flat_map(fn mutation ->
+      actors = group_view_actors(mutation, state)
+      apply_cache_mutation(mutation, state)
+      actors
+    end)
+    |> Enum.uniq()
+  end
+
+  # A membership row is visible to its actor, so putting, patching, or
+  # deleting one changes that actor's group view — unless the row says
+  # exactly what the cache already holds. A put can also re-key the row to
+  # another actor; the cache drops the stale row, which changes the previous
+  # actor's view too. A delete's wire form carries only the row id, so its
+  # actor has to be resolved from the by-id cache before the delete drops
+  # it.
+  defp group_view_actors({:group_member_put, row}, state) do
+    case GroupCache.get_group_member(row.id, state.group_members_by_id) do
+      nil -> [row.actor_id]
+      ^row -> []
+      previous -> [row.actor_id, previous.actor_id]
+    end
+  end
+
+  defp group_view_actors({:group_member_delete, id}, state) do
+    case GroupCache.get_group_member(id, state.group_members_by_id) do
+      nil -> []
+      row -> [row.actor_id]
+    end
+  end
+
+  defp group_view_actors(_mutation, _state), do: []
 
   # The caches a patch merge reads. The planner resolves their writes
   # itself; this Writer only applies the result.
@@ -2366,17 +2410,17 @@ defmodule EbbServer.Storage.Writer do
     :ok
   end
 
-  defp notify_fanout(state, batch, committed_at) do
+  defp notify_fanout(state, batch, committed_at, affected_actors) do
     unless ablate?(:fanout, state) do
-      notify_batch_committed(state, batch, committed_at)
+      notify_batch_committed(state, batch, committed_at, affected_actors)
     end
   end
 
-  defp notify_batch_committed(state, batch, committed_at) do
+  defp notify_batch_committed(state, batch, committed_at, affected_actors) do
     notify_router(
       state,
       {:batch_committed, batch.gsn_start, batch.gsn_end, batch.groups_by_gsn, committed_at,
-       carried_payloads(batch.prepared)}
+       carried_payloads(batch.prepared), affected_actors}
     )
   end
 

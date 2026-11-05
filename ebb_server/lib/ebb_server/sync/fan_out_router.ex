@@ -11,10 +11,11 @@ defmodule EbbServer.Sync.FanOutRouter do
   1. Waits until the committed watermark from `WatermarkTracker` is past
      the batch's end.
   2. Decodes the Actions carried with the commit. The Writer sends each
-     committed Action's pre-encoded payload and pre-resolved scopes in
-     claim order, so live fan-out neither reads `cf_actions` nor joins the
-     stored frame. A recovered range, which has no notification, still
-     reads the log; so does a carried list whose length does not match the
+     committed Action's pre-encoded payload, pre-resolved scopes, and the
+     set of actors whose group view the apply changed, so live fan-out
+     neither reads `cf_actions` nor joins the stored frame. A recovered
+     range, which has no notification, still reads the log and wakes no
+     connection; so does a carried list whose length does not match the
      range.
   3. Takes each Action's group set from the Writer's commit snapshot,
      falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
@@ -33,8 +34,9 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   Carrying the payload binaries costs the hand-off a list, not a copy:
   binaries above 64 bytes are refc-shared across processes. The list lives
-  in `batch_meta` beside the range and is dropped when the range is pushed
-  (or resolved as a hole).
+  in `batch_meta` beside the range, as does the deduped actor set the
+  apply touched, and both are dropped when the range is pushed (or
+  resolved as a hole).
 
   Using the Writer's snapshot keeps live fan-out in agreement with the
   `cf_group_actions` index catch-up reads: the cache has already moved
@@ -83,6 +85,35 @@ defmodule EbbServer.Sync.FanOutRouter do
   `catchUp` before consuming the live stream. The FanOutRouter is free to
   push ranges in release order; clients converge.
 
+  ## groups_changed control events
+
+  A committed, applied range that changes an actor's group view pushes
+  `event: control` with `{"groups_changed": true, "reason":
+  "membership"}` to every live connection of every affected actor. The
+  event carries no delta: the client re-handshakes, and the handshake
+  reads `GroupCache`.
+
+  The Writer decides which actors were affected while it applies its
+  planned cache mutations, so the set rides the `{:batch_committed, ...}`
+  notification and the push happens on the post-apply path, never at
+  commit time. A client that reacts immediately therefore cannot
+  handshake into the pre-apply state.
+
+  Membership is the trigger: a `groupMember` put, patch, or delete,
+  including a permissions-only patch, and a re-put that re-keys the row to
+  another actor (the old actor's view changed too). An Action that touches
+  no membership emits nothing; a recovered range carries no actor set and
+  emits nothing either.
+
+  Coalescing is per connection per released range. `actor_connections`
+  maps an actor to its live connection pids and the Writer's actor list is
+  already deduped, so a range that moves several of an actor's rows casts
+  one event. The actor index alone decides who is woken, not the range's
+  group fan-out: a membership row is scoped to the group it grants, and a
+  newly added actor may be live on a different group. Delivery is
+  best-effort — a cast to a connection that died is dropped — and a missed
+  event is covered by the reconnect handshake.
+
   ## Sibling modules
 
   - `EbbServer.Sync.FanOutRouter.Plan` — pure claim-order release and
@@ -115,9 +146,11 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
   alias EbbServer.Sync.FanOutRouter.{Frames, GroupResolution, Plan, Recovery}
+  alias EbbServer.Sync.SSEConnection
   alias EbbServer.Telemetry
 
   @default_conn_sample_rate 100
+  @groups_changed %{"groups_changed" => true, "reason" => "membership"}
 
   @type t :: %__MODULE__{
           plan: Plan.t(),
@@ -126,12 +159,15 @@ defmodule EbbServer.Sync.FanOutRouter do
             {non_neg_integer(), non_neg_integer()} => %{
               committed_at: integer() | nil,
               received_at: integer() | nil,
-              payloads: [ActionFormat.carried_payload()] | nil
+              payloads: [ActionFormat.carried_payload()] | nil,
+              affected_actors: [String.t()] | nil
             }
           },
           conn_sample_rate: non_neg_integer(),
           subscriptions: %{pid() => [String.t()]},
-          monitors: %{pid() => reference()}
+          monitors: %{pid() => reference()},
+          actor_connections: %{String.t() => MapSet.t(pid())},
+          connection_actors: %{pid() => String.t()}
         }
 
   defstruct plan: %Plan{},
@@ -139,7 +175,9 @@ defmodule EbbServer.Sync.FanOutRouter do
             batch_meta: %{},
             conn_sample_rate: 1,
             subscriptions: %{},
-            monitors: %{}
+            monitors: %{},
+            actor_connections: %{},
+            connection_actors: %{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -233,34 +271,29 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   @impl true
+  # The pre-#534 notification carries no actor set, so it can name no
+  # connection to wake; it still dispatches its Actions.
   def handle_info(
         {:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at, payloads},
         state
       ) do
-    received_at = System.monotonic_time()
-    range = {from_gsn, to_gsn}
+    handle_committed_range(from_gsn, to_gsn, groups_by_gsn, committed_at, payloads, [], state)
+  end
 
-    # Keep the Writer-provided group sets, carried payloads, commit time,
-    # and receive time alongside the buffered ranges, so a range that waits
-    # for the watermark still dispatches from the commit snapshot and
-    # reports its true latency.
-    meta = %{committed_at: committed_at, received_at: received_at, payloads: payloads}
-
-    state = %{
+  def handle_info(
+        {:batch_committed, from_gsn, to_gsn, groups_by_gsn, committed_at, payloads,
+         affected_actors},
+        state
+      ) do
+    handle_committed_range(
+      from_gsn,
+      to_gsn,
+      groups_by_gsn,
+      committed_at,
+      payloads,
+      affected_actors,
       state
-      | pending_groups: Map.merge(state.pending_groups, groups_by_gsn),
-        batch_meta: Map.put(state.batch_meta, range, meta)
-    }
-
-    {to_push, plan} =
-      Plan.process_batch(
-        state.plan,
-        from_gsn,
-        to_gsn,
-        WatermarkTracker.committed_watermark()
-      )
-
-    {:noreply, push_and_update(%{state | plan: plan}, to_push, range)}
+    )
   end
 
   # A resolved hole is not a batch: do not buffer it, read it, or push it.
@@ -289,6 +322,46 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, forget_subscriber(state, pid)}
+  end
+
+  defp handle_committed_range(
+         from_gsn,
+         to_gsn,
+         groups_by_gsn,
+         committed_at,
+         payloads,
+         affected_actors,
+         state
+       ) do
+    received_at = System.monotonic_time()
+    range = {from_gsn, to_gsn}
+
+    # Keep the Writer-provided group sets, carried payloads, affected
+    # actors, commit time, and receive time alongside the buffered ranges,
+    # so a range that waits for the watermark still dispatches from the
+    # commit snapshot and reports its true latency.
+    meta = %{
+      committed_at: committed_at,
+      received_at: received_at,
+      payloads: payloads,
+      affected_actors: affected_actors
+    }
+
+    state = %{
+      state
+      | pending_groups: Map.merge(state.pending_groups, groups_by_gsn),
+        batch_meta: Map.put(state.batch_meta, range, meta)
+    }
+
+    {to_push, plan} =
+      Plan.process_batch(
+        state.plan,
+        from_gsn,
+        to_gsn,
+        WatermarkTracker.committed_watermark()
+      )
+
+    {:noreply, push_and_update(%{state | plan: plan}, to_push, range)}
   end
 
   @impl true
@@ -328,6 +401,8 @@ defmodule EbbServer.Sync.FanOutRouter do
         :error -> Map.put(state.monitors, connection_pid, Process.monitor(connection_pid))
       end
 
+    state = put_actor_connection(state, connection_pid, actor_id)
+
     {:reply, :ok, %{state | subscriptions: new_subscriptions, monitors: monitors}}
   end
 
@@ -363,16 +438,12 @@ defmodule EbbServer.Sync.FanOutRouter do
       Telemetry.fanout_hop(:router_queue, span(committed_at, received_at), nil)
       emit_dwell(received_at, released_at, range, just_received)
 
-      push_gsn_range(
-        from,
-        to,
-        state.pending_groups,
-        %{
-          committed_at: committed_at,
-          conn_sample_rate: state.conn_sample_rate,
-          payloads: Map.get(meta, :payloads)
-        }
-      )
+      push_gsn_range(from, to, state.pending_groups, state.actor_connections, %{
+        affected_actors: Map.get(meta, :affected_actors) || [],
+        committed_at: committed_at,
+        conn_sample_rate: state.conn_sample_rate,
+        payloads: Map.get(meta, :payloads)
+      })
     end
 
     # Persist after pushing: at-least-once. A crash between the push and
@@ -409,16 +480,66 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   # GroupServers monitor their own subscribers and drop them on exit, so
-  # the router only has to forget the connection and its monitor ref.
+  # the router only has to forget the connection, its monitor ref, and its
+  # entry in the actor index.
   defp forget_subscriber(state, pid) do
     {ref, monitors} = Map.pop(state.monitors, pid)
 
     if ref, do: Process.demonitor(ref, [:flush])
 
-    %{state | subscriptions: Map.delete(state.subscriptions, pid), monitors: monitors}
+    state
+    |> forget_actor_connection(pid)
+    |> Map.put(:subscriptions, Map.delete(state.subscriptions, pid))
+    |> Map.put(:monitors, monitors)
   end
 
-  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, %{} = meta) do
+  # One connection belongs to one authenticated actor, so the reverse map
+  # turns unsubscribe and DOWN into a single lookup.
+  defp put_actor_connection(state, connection_pid, actor_id) do
+    state = forget_actor_connection(state, connection_pid)
+
+    %{
+      state
+      | connection_actors: Map.put(state.connection_actors, connection_pid, actor_id),
+        actor_connections:
+          Map.update(
+            state.actor_connections,
+            actor_id,
+            MapSet.new([connection_pid]),
+            &MapSet.put(&1, connection_pid)
+          )
+    }
+  end
+
+  defp forget_actor_connection(state, pid) do
+    case Map.pop(state.connection_actors, pid) do
+      {nil, _connection_actors} ->
+        state
+
+      {actor_id, connection_actors} ->
+        %{
+          state
+          | connection_actors: connection_actors,
+            actor_connections: drop_actor_connection(state.actor_connections, actor_id, pid)
+        }
+    end
+  end
+
+  defp drop_actor_connection(actor_connections, actor_id, pid) do
+    case Map.fetch(actor_connections, actor_id) do
+      :error ->
+        actor_connections
+
+      {:ok, pids} ->
+        remaining = MapSet.delete(pids, pid)
+
+        if MapSet.size(remaining) == 0,
+          do: Map.delete(actor_connections, actor_id),
+          else: Map.put(actor_connections, actor_id, remaining)
+    end
+  end
+
+  defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, actor_connections, meta) do
     decode_started_at = System.monotonic_time()
 
     resolve_opts = [
@@ -456,6 +577,21 @@ defmodule EbbServer.Sync.FanOutRouter do
         cast_at: System.monotonic_time(),
         conn_sample_rate: meta.conn_sample_rate
       })
+    end)
+
+    # The actor index, not the frame fan-out, decides who is woken: a
+    # membership row is scoped to the group it grants, so an actor added to
+    # a group nobody subscribes to can still be live on another one.
+    push_groups_changed(actor_connections, meta.affected_actors)
+  end
+
+  # One cast per connection per released range, however many membership
+  # rows in the range touched its actor.
+  defp push_groups_changed(actor_connections, affected_actors) do
+    Enum.each(affected_actors, fn actor_id ->
+      for pid <- Map.get(actor_connections, actor_id, []) do
+        SSEConnection.push_control(pid, @groups_changed)
+      end
     end)
   end
 

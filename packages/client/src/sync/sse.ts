@@ -22,6 +22,9 @@
  *     event: control
  *     data: {"reconnect":true,"reason":"behind_watermark"}
  *
+ *     event: control
+ *     data: {"groups_changed":true,"reason":"membership"}
+ *
  *     event: presence
  *     data: {"actor_id":"a1","entity_id":"e1","data":{...}}
  *

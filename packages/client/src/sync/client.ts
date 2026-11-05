@@ -736,12 +736,86 @@ export class SyncClient<
   }
 
   /**
+   * Re-run the handshake and reconcile the live subscription with the
+   * membership it reports (#734). The control event is a wake-up, not a
+   * delta, so the handshake is the authority: a group that joined is unioned
+   * into the subscription, a group that left is dropped, and the reconnect
+   * loop re-runs `bootstrapGroupListing` / catch-up on the new set before it
+   * reopens the stream. The console's app scope has already filtered the
+   * handshake result, so an out-of-scope group is never added here either.
+   *
+   * Only the difference counts: a group whose membership did not change
+   * keeps whatever subscription state the caller chose, so an app
+   * deliberately subscribed to a subset is not force-subscribed to the rest.
+   *
+   * Runs on a `groups_changed` control event and on every reconnect once a
+   * handshake has run, so a change whose event was lost with a dropped
+   * stream is still reconciled.
+   */
+  private async refreshMembership(): Promise<void> {
+    if (!this.handshakeRan) {
+      // No previous set to diff against. Learn the membership (the write
+      // path and cursor cache read it) but leave the caller's explicit
+      // subscription alone rather than treating every group as gained.
+      await this.handshake();
+      return;
+    }
+    const previous = new Set(this.actorGroups.map((group) => group.id));
+    const { groups } = await this.handshake();
+    const next = new Set(groups.map((group) => group.id));
+    this.reconcileLiveMembership(
+      [...next].filter((groupId) => !previous.has(groupId)),
+      new Set([...previous].filter((groupId) => !next.has(groupId))),
+    );
+  }
+
+  /**
+   * Merge a membership delta into the active subscription. An added group
+   * joins it unconditionally: the client asked to stay current with its
+   * membership, and the group starts with no local view, so the reconnect
+   * loop's bootstrap seeds it. A removed group leaves, and eviction drops
+   * its resident rows with the rest of the scope.
+   */
+  private reconcileLiveMembership(added: readonly string[], removed: ReadonlySet<string>): void {
+    const sub = this.activeSub;
+    if (sub === null || sub.cancelled) return;
+    const kept = sub.groupIds.filter((groupId) => !removed.has(groupId));
+    for (const groupId of added) {
+      if (!kept.includes(groupId)) kept.push(groupId);
+    }
+    this.applyLiveSubscription(kept);
+  }
+
+  /**
+   * Adopt a new group set on the live subscription: evict what left, reopen
+   * the stream so the reconnect loop seeds and catches up before going live
+   * again, and leave an unchanged set alone. An empty set is not a valid
+   * live subscription, so the session ends instead of reconnecting into a
+   * 400 forever; a later `subscribe()` reopens it.
+   */
+  private applyLiveSubscription(kept: readonly string[]): void {
+    const sub = this.activeSub;
+    if (sub === null || sub.cancelled) return;
+    const unchanged =
+      kept.length === sub.groupIds.length && kept.every((id, i) => id === sub.groupIds[i]);
+    if (unchanged) return;
+    this.applyReplicaScope(kept);
+    if (kept.length === 0) {
+      this.cancelSubscription(sub);
+      return;
+    }
+    sub.groupIds = [...kept];
+    this.closeStream(sub);
+  }
+
+  /**
    * Drop groups that left this app's scope from the live subscription.
    * Only the difference from the previous handshake counts: a group the
    * client over-subscribed to was never in scope, so this never takes it
-   * away. The app owns its subset and newly in-scope groups are not added
-   * here (#734 covers live additions). A removed group's rows are evicted
-   * and the stream reopens without it, so the server stops pushing it.
+   * away. The app owns its subset, and a group the actor merely gained is
+   * not added here — that is a membership question, handled by
+   * {@link refreshMembership}. A removed group's rows are evicted and the
+   * stream reopens without it, so the server stops pushing it.
    */
   private reconcileSubscriptionScope(nextInScope: ReadonlySet<string>): void {
     if (this.appId === undefined) return;
@@ -750,18 +824,7 @@ export class SyncClient<
     if (left.size === 0) return;
     const sub = this.activeSub;
     if (sub === null) return;
-    const kept = sub.groupIds.filter((groupId) => !left.has(groupId));
-    if (kept.length === sub.groupIds.length) return;
-    this.applyReplicaScope(kept);
-    if (kept.length === 0) {
-      // An empty group list is not a valid live subscription, so end the
-      // session instead of reconnecting into a 400 forever. A later
-      // `subscribe()` reopens it.
-      this.cancelSubscription(sub);
-      return;
-    }
-    sub.groupIds = kept;
-    this.closeStream(sub);
+    this.applyLiveSubscription(sub.groupIds.filter((groupId) => !left.has(groupId)));
   }
 
   /**
@@ -1514,8 +1577,13 @@ export class SyncClient<
   // -------------------------------------------------------------------------
 
   private async runSubscriptionLoop(sub: ActiveSubscription): Promise<void> {
+    // The first connect follows the caller's handshake (or none); every
+    // iteration after it is a reconnect, where the membership may have moved
+    // while the stream was gone.
+    let reconnect = false;
     while (!sub.cancelled) {
-      const reason = await this.connectAndDrain(sub);
+      const reason = await this.connectAndDrain(sub, reconnect);
+      reconnect = true;
       if (sub.cancelled) return;
       // Hand off to the backoff state machine. The loop only re-enters
       // after `scheduleReconnect`'s timer fires (or never, if we've
@@ -1541,8 +1609,11 @@ export class SyncClient<
    * and return a short reason string for logging. The stream is always
    * closed in `finally`. Does NOT schedule a reconnect — that's the
    * caller's responsibility.
+   *
+   * `reconnect` marks every connect after the subscription's first, which
+   * runs the membership refresh in the rebase phase.
    */
-  private async connectAndDrain(sub: ActiveSubscription): Promise<string> {
+  private async connectAndDrain(sub: ActiveSubscription, reconnect: boolean): Promise<string> {
     try {
       // The rebase phase gates the wire so a pending Action cannot post
       // before it has been swept against the missed window (#309). The
@@ -1555,6 +1626,14 @@ export class SyncClient<
       const catchUpId = generateId("cu");
       try {
         await this.capturePreSyncSnapshots(catchUpId);
+        // A membership change whose control event died with the stream is
+        // reconciled here: the handshake is the authoritative group set, and
+        // a gained group has to be in `sub.groupIds` before the rebase phase
+        // seeds and drains it.
+        if (reconnect && this.handshakeRan) {
+          await this.refreshMembership();
+          if (sub.cancelled) return "cancelled";
+        }
         await this.catchUpSubscribed(sub, catchUpId);
       } finally {
         // Detection has copied the pass's rows onto the conflict payload,
@@ -1746,6 +1825,12 @@ export class SyncClient<
   }
 
   private async handleControlEvent(control: ControlEvent, sub: ActiveSubscription): Promise<void> {
+    if (control.groups_changed === true) {
+      // A wake-up, not a delta (#734): re-handshake for the authoritative
+      // group set and reconcile the live subscription with it.
+      await this.refreshMembership();
+      return;
+    }
     if (!control.reconnect) return;
     const from = control.catchUpFrom;
     if (from === undefined) return;

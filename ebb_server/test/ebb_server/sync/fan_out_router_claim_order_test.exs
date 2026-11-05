@@ -54,13 +54,13 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       send(
         FanOutRouter,
         {:batch_committed, gsn1, gsn1, %{gsn1 => [group_id]}, System.monotonic_time(),
-         [first_payload]}
+         [first_payload], []}
       )
 
       send(
         FanOutRouter,
         {:batch_committed, gsn2, gsn2, %{gsn2 => [group_id]}, System.monotonic_time(),
-         [second_payload]}
+         [second_payload], []}
       )
 
       # Each released range is its own push, so flatten the chunks to assert

@@ -51,7 +51,8 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
 
       send(
         FanOutRouter,
-        {:batch_committed, first_gsn, last_gsn, groups_by_gsn, System.monotonic_time(), carried}
+        {:batch_committed, first_gsn, last_gsn, groups_by_gsn, System.monotonic_time(), carried,
+         []}
       )
 
       live = receive_group_frames(2)
@@ -101,7 +102,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
           send(
             FanOutRouter,
             {:batch_committed, first_gsn, last_gsn, groups_by_gsn, System.monotonic_time(),
-             [first_payload]}
+             [first_payload], []}
           )
 
           bytes = receive_sse_data()
@@ -182,7 +183,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
 
     send(
       FanOutRouter,
-      {:batch_committed, from_gsn, to_gsn, groups_by_gsn, System.monotonic_time(), payloads}
+      {:batch_committed, from_gsn, to_gsn, groups_by_gsn, System.monotonic_time(), payloads, []}
     )
   end
 
