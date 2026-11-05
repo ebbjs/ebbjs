@@ -142,16 +142,20 @@ instruction.
 
 `EBB_AUTH_MODE=tailscale` derives the actor from the Tailscale user a gateway
 in front of the container identifies. It needs no `EBB_AUTH_URL`, and it binds
-Bandit to `127.0.0.1`, so publish the container only through the gateway — the
-published port then serves nothing useful from the host.
+Bandit to `127.0.0.1` inside the container, so a published container port
+cannot reach it: the gateway must share that loopback (the embedded node, or a
+sidecar with a shared network namespace).
 
 The server trusts these request headers, and only from a loopback peer:
 
-| Header                   | Meaning                                                   |
-| ------------------------ | --------------------------------------------------------- |
-| `Tailscale-User-Login`   | The actor id (required, exactly one non-empty value)      |
-| `Tailscale-User-Name`    | Display name, returned by `GET /sync/identity` (optional) |
-| `X-Ebb-Tailscale-Secret` | Closes local-process spoofing when a secret is configured |
+| Header                    | Meaning                                                   |
+| ------------------------- | --------------------------------------------------------- |
+| `tailscale-user-login`    | The actor id (required, exactly one non-empty value)      |
+| `tailscale-user-name`     | Display name, returned by `GET /sync/identity` (optional) |
+| `x-ebb-tailscale-user-id` | Numeric user id, returned as `provider_id` (optional)     |
+| `x-ebb-tailscale-secret`  | Closes local-process spoofing when a secret is configured |
+
+Header names are compared lowercased, so the gateway's casing is irrelevant.
 
 A user-run `tailscale serve` cannot inject a secret, so leave
 `:tailscale_proxy_secret` unset with it and accept that any local process can
@@ -172,8 +176,8 @@ identity it cannot know before asking:
 
 ```console
 $ curl -s http://127.0.0.1:4000/sync/identity \
-    -H 'Tailscale-User-Login: alice@example.com' \
-    -H 'Tailscale-User-Name: Alice'
+    -H 'tailscale-user-login: alice@example.com' \
+    -H 'tailscale-user-name: Alice'
 {"actor_id":"alice@example.com","display_name":"Alice","provider":"tailscale"}
 ```
 

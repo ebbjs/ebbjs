@@ -26,14 +26,15 @@ defmodule EbbServer.Sync.AuthPlug do
 
   The login becomes `actor_id` unchanged (design D3). `tailscale-user-name` is
   kept as a display name only, and `x-ebb-tailscale-user-id` as an optional
-  gateway-supplied provider id; neither affects authorization. `x-ebb-actor-id`
-  is ignored in this mode: there is no fallback, because a fallback would let
-  the browser choose its own identity.
+  gateway-supplied provider id (published as a JSON number); neither affects
+  authorization. `x-ebb-actor-id` is ignored in this mode: there is no
+  fallback, because a fallback would let the browser choose its own identity.
 
   `tailscale serve` cannot inject a secret, so a deployment without the embedded
   gateway leaves `:tailscale_proxy_secret` unset and relies on loopback alone.
   Any local process could then claim an identity, which is why the embedded
-  gateway always configures one.
+  gateway always configures one. A configured secret must be a non-empty
+  string; the application rejects anything else at boot.
 
   There is no default mode. A node booted without `EBB_AUTH_MODE` (or a
   compiled `:auth_mode`) refuses to start, and `:external` without a URL
@@ -137,34 +138,15 @@ defmodule EbbServer.Sync.AuthPlug do
   # rejected before its headers are inspected.
   defp tailscale_auth(conn) do
     with :ok <- loopback_peer(conn),
-         {:ok, login} <- tailscale_login(conn),
-         :ok <- tailscale_proxy_secret(conn) do
+         {:ok, login} <- single_header(conn, "tailscale-user-login"),
+         :ok <- verify_tailscale_proxy_secret(conn) do
       conn
       |> assign(:actor_id, login)
       |> assign(:actor_provider, "tailscale")
-      |> assign_optional_header(:actor_display_name, "tailscale-user-name")
-      |> assign_optional_header(:actor_provider_id, "x-ebb-tailscale-user-id")
+      |> assign_optional(:actor_display_name, "tailscale-user-name")
+      |> assign_provider_id()
     else
       {:error, details} -> unauthorized(conn, details)
-    end
-  end
-
-  # A gateway forwards the header once. Two copies, an empty value, or a
-  # missing header are all rejected rather than one being picked, because a
-  # duplicate is how a spoofing attempt reaches a trusting proxy.
-  defp tailscale_login(conn) do
-    case get_req_header(conn, "tailscale-user-login") do
-      [login] when login != "" ->
-        {:ok, login}
-
-      [] ->
-        {:error, "missing tailscale-user-login header"}
-
-      [_empty] ->
-        {:error, "empty tailscale-user-login header"}
-
-      _duplicates ->
-        {:error, "duplicate tailscale-user-login header"}
     end
   end
 
@@ -176,48 +158,72 @@ defmodule EbbServer.Sync.AuthPlug do
     end
   end
 
-  # An unset secret is the `tailscale serve` path: loopback is the only
-  # credential. A misconfigured one fails closed instead of silently
-  # degrading to that weaker rule.
-  defp tailscale_proxy_secret(conn) do
-    case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
-      unset when unset in [nil, ""] ->
-        :ok
+  # A gateway forwards a trusted header once. Two copies, an empty value, or a
+  # missing header are all rejected rather than one being picked, because a
+  # duplicate is how a spoofing attempt reaches a trusting proxy.
+  defp single_header(conn, header) do
+    case get_req_header(conn, header) do
+      [value] when value != "" ->
+        {:ok, value}
 
-      secret when is_binary(secret) ->
-        verify_proxy_secret(conn, secret)
+      [] ->
+        {:error, "missing #{header} header"}
 
-      other ->
-        {:error, "tailscale proxy secret is not a string: #{inspect(other)}"}
+      [_empty] ->
+        {:error, "empty #{header} header"}
+
+      _duplicates ->
+        {:error, "duplicate #{header} header"}
     end
   end
 
-  defp verify_proxy_secret(conn, secret) do
-    case get_req_header(conn, "x-ebb-tailscale-secret") do
-      [supplied] when supplied != "" ->
-        if Plug.Crypto.secure_compare(supplied, secret) do
-          :ok
-        else
-          {:error, "wrong x-ebb-tailscale-secret header"}
-        end
+  # An unset secret is the `tailscale serve` path: loopback is the only
+  # credential. A misconfigured one fails closed (the application rejects a bad
+  # value at boot) instead of silently degrading to that weaker rule.
+  defp verify_tailscale_proxy_secret(conn) do
+    case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
+      nil ->
+        :ok
 
-      [] ->
-        {:error, "missing x-ebb-tailscale-secret header"}
+      secret when is_binary(secret) ->
+        compare_proxy_secret(conn, secret)
 
-      [_empty] ->
-        {:error, "empty x-ebb-tailscale-secret header"}
-
-      _duplicates ->
-        {:error, "duplicate x-ebb-tailscale-secret header"}
+      _misconfigured ->
+        {:error, "invalid tailscale proxy secret configuration"}
     end
+  end
+
+  defp compare_proxy_secret(conn, secret) do
+    case single_header(conn, "x-ebb-tailscale-secret") do
+      {:ok, supplied} -> proxy_secret_matches?(supplied, secret)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp proxy_secret_matches?(supplied, secret) do
+    if Plug.Crypto.secure_compare(supplied, secret),
+      do: :ok,
+      else: {:error, "wrong x-ebb-tailscale-secret header"}
   end
 
   # Display metadata is informational, so a malformed value is dropped rather
   # than rejecting an otherwise authenticated request.
-  defp assign_optional_header(conn, assign_key, header) do
-    case get_req_header(conn, header) do
-      [value] when value != "" -> assign(conn, assign_key, value)
-      _missing_empty_or_duplicated -> conn
+  defp assign_optional(conn, assign_key, header) do
+    case single_header(conn, header) do
+      {:ok, value} -> assign(conn, assign_key, value)
+      {:error, _} -> conn
+    end
+  end
+
+  # The gateway supplies Tailscale's numeric user id as text; the endpoint
+  # publishes it as a JSON number, and drops it when it is absent or not
+  # numeric because nothing authorization-related depends on it.
+  defp assign_provider_id(conn) do
+    with {:ok, raw} <- single_header(conn, "x-ebb-tailscale-user-id"),
+         {id, ""} <- Integer.parse(raw) do
+      assign(conn, :actor_provider_id, id)
+    else
+      _absent_or_not_numeric -> conn
     end
   end
 

@@ -6,7 +6,7 @@ defmodule EbbServer.Sync.Router do
 
   ## What this module is
 
-  A `Plug.Router` with ten endpoints and one catch-all 404:
+  A `Plug.Router` with one route per endpoint and one catch-all 404:
 
     - `GET /healthz` — unauthenticated readiness probe backed by
       `EbbServer.Health`; `200` once the storage layer answers, `503`
@@ -1185,10 +1185,11 @@ defmodule EbbServer.Sync.Router.OperationSchema do
                   "Human-readable name from the identity provider, when it supplies one"
               },
               provider_id: %OpenApiSpex.Schema{
-                type: :string,
+                type: :integer,
+                format: :int64,
                 nullable: true,
                 description:
-                  "Provider-specific user id, when the identity provider supplies one; " <>
+                  "Numeric provider user id, when the identity provider supplies one; " <>
                     "never used for authorization"
               }
             }

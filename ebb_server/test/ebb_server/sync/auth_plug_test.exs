@@ -354,7 +354,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
       assert conn.assigns.actor_id == "alice@example.com"
       assert conn.assigns.actor_provider == "tailscale"
       assert conn.assigns.actor_display_name == "Alice"
-      assert conn.assigns.actor_provider_id == "42"
+      assert conn.assigns.actor_provider_id == 42
     end
 
     test "IPv6 loopback is trusted" do
@@ -470,6 +470,31 @@ defmodule EbbServer.Sync.AuthPlugTest do
       assert wrong.halted
       assert duplicated.status == 401
       assert duplicated.halted
+    end
+
+    test "a non-numeric provider id is dropped" do
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-user-id", "u42"}
+        ])
+
+      refute Map.has_key?(conn.assigns, :actor_provider_id)
+    end
+
+    test "a non-string secret configuration fails closed without disclosing it" do
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, :not_a_string)
+
+      conn =
+        tailscale_conn([
+          {"tailscale-user-login", "alice@example.com"},
+          {"x-ebb-tailscale-secret", "not_a_string"}
+        ])
+
+      assert conn.status == 401
+      assert conn.halted
+      assert conn.resp_body =~ "invalid tailscale proxy secret configuration"
+      refute conn.resp_body =~ "not_a_string"
     end
 
     test "an unconfigured secret accepts any x-ebb-tailscale-secret value" do

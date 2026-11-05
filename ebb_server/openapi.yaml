@@ -3661,9 +3661,10 @@
                                         },
                                       "provider_id":
                                         {
-                                          "description": "Provider-specific user id, when the identity provider supplies one; never used for authorization",
+                                          "description": "Numeric provider user id, when the identity provider supplies one; never used for authorization",
+                                          "format": "int64",
                                           "nullable": true,
-                                          "type": "string",
+                                          "type": "integer",
                                         },
                                     },
                                   "required": ["actor_id", "provider"],

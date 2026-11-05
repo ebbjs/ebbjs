@@ -13,6 +13,7 @@ defmodule EbbServer.Application do
 
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
+    validate_tailscale_secret!(auth_mode)
 
     # Resolved once, before `children/0` reads it and before Bandit can serve
     # the route: `enabled?/0` must not consult the environment per request.
@@ -60,7 +61,11 @@ defmodule EbbServer.Application do
   def bind_ip(:tailscale), do: {127, 0, 0, 1}
   def bind_ip(_mode), do: :any
 
-  defp bandit_options(port, auth_mode) do
+  # Exposed so a test can boot the same listener the application builds and
+  # assert the address it actually binds, not just the pure `bind_ip/1` answer.
+  @doc false
+  @spec bandit_options(integer(), atom()) :: keyword()
+  def bandit_options(port, auth_mode) do
     base = [plug: EbbServer.Sync.Router, port: port]
 
     case bind_ip(auth_mode) do
@@ -68,6 +73,29 @@ defmodule EbbServer.Application do
       ip -> [{:ip, ip} | base]
     end
   end
+
+  # The secret is either absent (the `tailscale serve` path, where loopback is
+  # the only credential) or a non-empty string the gateway echoes per request.
+  # Anything else is an operator or integration error that would otherwise
+  # reject every request with an indistinguishable 401, so it fails at boot.
+  @doc false
+  @spec validate_tailscale_secret!(atom(), term()) :: :ok
+  def validate_tailscale_secret!(
+        auth_mode,
+        secret \\ Application.get_env(:ebb_server, :tailscale_proxy_secret)
+      )
+
+  def validate_tailscale_secret!(:tailscale, nil), do: :ok
+
+  def validate_tailscale_secret!(:tailscale, secret) when is_binary(secret) and secret != "",
+    do: :ok
+
+  def validate_tailscale_secret!(:tailscale, other) do
+    raise ":ebb_server, :tailscale_proxy_secret must be a non-empty string when set, " <>
+            "got #{inspect(other)}"
+  end
+
+  def validate_tailscale_secret!(_mode, _secret), do: :ok
 
   defp tailscale_secret_message do
     case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
@@ -145,6 +173,7 @@ defmodule EbbServer.Application do
   end
 
   @auth_modes %{"bypass" => :bypass, "external" => :external, "tailscale" => :tailscale}
+  @auth_mode_names @auth_modes |> Map.keys() |> Enum.join(", ")
 
   # Auth resolution deliberately reverses the precedence used above for
   # the data directory and port: the environment variable wins over
@@ -169,7 +198,7 @@ defmodule EbbServer.Application do
     case env_over_app("EBB_AUTH_MODE", :auth_mode) do
       nil ->
         raise "EBB_AUTH_MODE is not set and :ebb_server, :auth_mode has no compiled value. " <>
-                "Set EBB_AUTH_MODE to one of: bypass, external, tailscale."
+                "Set EBB_AUTH_MODE to one of: #{@auth_mode_names}."
 
       raw ->
         case normalize_auth_mode(raw) do
@@ -177,7 +206,7 @@ defmodule EbbServer.Application do
             mode
 
           :error ->
-            raise "EBB_AUTH_MODE must be one of: bypass, external, tailscale; " <>
+            raise "EBB_AUTH_MODE must be one of: #{@auth_mode_names}; " <>
                     "got #{inspect(raw)}"
         end
     end
@@ -199,7 +228,7 @@ defmodule EbbServer.Application do
   end
 
   defp normalize_auth_mode(mode) when is_atom(mode) do
-    if mode in [:bypass, :external, :tailscale], do: {:ok, mode}, else: :error
+    if mode in Map.values(@auth_modes), do: {:ok, mode}, else: :error
   end
 
   defp normalize_auth_mode(mode) when is_binary(mode) do

@@ -313,7 +313,7 @@ concurrently.
 | `EbbServer.Functions.BundleCache`                                                | Verifies digest + envelope and serves the active bundle per name                        |
 | `EbbServer.Functions.Invocation`                                                 | One worker through the host-call/result frame loop and deadline                         |
 | `EbbServer.Functions.Worker.Bun`                                                 | One Bun runner process per invocation: socket, process group, temp dir                  |
-| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass + external modes)                                     |
+| `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass, external, tailscale modes)                           |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
 | `EbbServer.Sync.GroupListing`                                                    | Group-scoped cold-bootstrap entity listing                                              |

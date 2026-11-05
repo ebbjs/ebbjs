@@ -199,6 +199,42 @@ defmodule EbbServer.RuntimeConfigTest do
     end
   end
 
+  describe "bandit_options/2" do
+    test "tailscale mode hands Bandit the loopback address" do
+      options = EbbServer.Application.bandit_options(4000, :tailscale)
+
+      assert options[:ip] == {127, 0, 0, 1}
+      assert options[:port] == 4000
+      assert options[:plug] == EbbServer.Sync.Router
+    end
+
+    test "other modes leave the interface to Bandit" do
+      refute Keyword.has_key?(EbbServer.Application.bandit_options(4000, :bypass), :ip)
+      refute Keyword.has_key?(EbbServer.Application.bandit_options(4000, :external), :ip)
+    end
+  end
+
+  describe "validate_tailscale_secret!/2" do
+    test "accepts an unset secret or a non-empty string" do
+      assert EbbServer.Application.validate_tailscale_secret!(:tailscale, nil) == :ok
+      assert EbbServer.Application.validate_tailscale_secret!(:tailscale, "abc") == :ok
+    end
+
+    test "rejects an empty or non-string secret at boot" do
+      assert_raise RuntimeError, ~r/tailscale_proxy_secret/, fn ->
+        EbbServer.Application.validate_tailscale_secret!(:tailscale, "")
+      end
+
+      assert_raise RuntimeError, ~r/tailscale_proxy_secret/, fn ->
+        EbbServer.Application.validate_tailscale_secret!(:tailscale, :nope)
+      end
+    end
+
+    test "ignores the secret outside tailscale mode" do
+      assert EbbServer.Application.validate_tailscale_secret!(:bypass, :nope) == :ok
+    end
+  end
+
   # `Application.put_env/3` rejects nil; `System.put_env/2` treats nil as
   # delete. The two restore helpers bridge that asymmetry so we can
   # restore an "unset" snapshot without crashing the on_exit callback.

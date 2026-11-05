@@ -465,6 +465,19 @@ defmodule EbbServer.Sync.RouterTest do
     end
   end
 
+  defp with_auth_mode(mode, fun) do
+    original = Application.get_env(:ebb_server, :auth_mode)
+    Application.put_env(:ebb_server, :auth_mode, mode)
+
+    try do
+      fun.()
+    after
+      if original,
+        do: Application.put_env(:ebb_server, :auth_mode, original),
+        else: Application.delete_env(:ebb_server, :auth_mode)
+    end
+  end
+
   describe "GET /sync/identity" do
     test "401 without an authenticated actor" do
       conn = Router.call(conn(:get, "/sync/identity"), [])
@@ -498,50 +511,52 @@ defmodule EbbServer.Sync.RouterTest do
     end
 
     test "returns the tailscale login with display name and provider id" do
-      original_mode = Application.get_env(:ebb_server, :auth_mode)
-      Application.put_env(:ebb_server, :auth_mode, :tailscale)
+      with_auth_mode(:tailscale, fn ->
+        conn =
+          conn(:get, "/sync/identity")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("tailscale-user-login", "alice@example.com")
+          |> put_req_header("tailscale-user-name", "Alice")
+          |> put_req_header("x-ebb-tailscale-user-id", "42")
+          |> Router.call([])
 
-      on_exit(fn ->
-        if original_mode,
-          do: Application.put_env(:ebb_server, :auth_mode, original_mode),
-          else: Application.delete_env(:ebb_server, :auth_mode)
+        assert conn.status == 200
+
+        assert Jason.decode!(conn.resp_body) == %{
+                 "actor_id" => "alice@example.com",
+                 "display_name" => "Alice",
+                 "provider" => "tailscale",
+                 "provider_id" => 42
+               }
       end)
+    end
 
-      conn =
-        conn(:get, "/sync/identity")
-        |> Map.put(:remote_ip, {127, 0, 0, 1})
-        |> put_req_header("tailscale-user-login", "alice@example.com")
-        |> put_req_header("tailscale-user-name", "Alice")
-        |> put_req_header("x-ebb-tailscale-user-id", "42")
-        |> Router.call([])
+    test "omits a provider id that is not numeric" do
+      with_auth_mode(:tailscale, fn ->
+        conn =
+          conn(:get, "/sync/identity")
+          |> Map.put(:remote_ip, {127, 0, 0, 1})
+          |> put_req_header("tailscale-user-login", "alice@example.com")
+          |> put_req_header("x-ebb-tailscale-user-id", "not-a-number")
+          |> Router.call([])
 
-      assert conn.status == 200
-
-      assert Jason.decode!(conn.resp_body) == %{
-               "actor_id" => "alice@example.com",
-               "display_name" => "Alice",
-               "provider" => "tailscale",
-               "provider_id" => "42"
-             }
+        assert Jason.decode!(conn.resp_body) == %{
+                 "actor_id" => "alice@example.com",
+                 "provider" => "tailscale"
+               }
+      end)
     end
 
     test "a tailscale request from a non-loopback peer is 401" do
-      original_mode = Application.get_env(:ebb_server, :auth_mode)
-      Application.put_env(:ebb_server, :auth_mode, :tailscale)
+      with_auth_mode(:tailscale, fn ->
+        conn =
+          conn(:get, "/sync/identity")
+          |> Map.put(:remote_ip, {10, 0, 0, 1})
+          |> put_req_header("tailscale-user-login", "alice@example.com")
+          |> Router.call([])
 
-      on_exit(fn ->
-        if original_mode,
-          do: Application.put_env(:ebb_server, :auth_mode, original_mode),
-          else: Application.delete_env(:ebb_server, :auth_mode)
+        assert conn.status == 401
       end)
-
-      conn =
-        conn(:get, "/sync/identity")
-        |> Map.put(:remote_ip, {10, 0, 0, 1})
-        |> put_req_header("tailscale-user-login", "alice@example.com")
-        |> Router.call([])
-
-      assert conn.status == 401
     end
   end
 
