@@ -120,8 +120,8 @@ shape.
 
 ### Supervision and storage
 
-The feature is opt-in and boot-resolved (`EBB_FUNCTIONS_ENABLED`, then
-`:functions, enabled`, then `false`). When enabled,
+The feature is on by default and boot-resolved (`EBB_FUNCTIONS_ENABLED`, then
+`:functions, enabled`, then `true`). When enabled,
 `EbbServer.Functions.children/1` starts:
 
 - **`EbbServer.Functions.Store`** — SQLite at `<data_dir>/functions.db`. It
@@ -134,18 +134,56 @@ The feature is opt-in and boot-resolved (`EBB_FUNCTIONS_ENABLED`, then
   name, over a loader (`StoreLoader` by default, `DirLoader` when `:bundle_dir`
   is set). It verifies the digest and envelope before serving a bundle, so a
   tampered or half-written file is an error rather than a new active version.
+- **`EbbServer.Functions.Stats`** — the ETS counters behind
+  `GET /functions/health` and `ebb functions health`: invocations, errors,
+  timeouts, worker kills, and fetch calls per version, plus the pool gauges.
+- **`EbbServer.Functions.Worker.Pool`** — `min(4, schedulers_online)` warm Bun
+  workers (configurable), a 20-deep bounded queue, and `503 saturated` past it.
+  The pool only fronts the real Bun transport; tests and the directory-loader
+  dev loop keep the per-invocation path.
 
 Each invocation then runs in a **Bun process**: `EbbServer.Functions.Worker.Bun`
 spawns one runner with its own temp directory, process group, and Unix socket
 under `<data_dir>/function_sockets`; `EbbServer.Functions.Invocation` drives the
-host-call/result frame loop and owns the deadline. The worker contract
-(`EbbServer.Functions.Worker`) is a seam, so a pre-warmed pool can replace the
-per-invocation spawn without changing the invocation loop. The runner entry
-point lives in `packages/runner`; it is not embedded in the BEAM.
+host-call/result frame loop, owns the deadline, and enforces the host-call and
+log budgets. The worker contract (`EbbServer.Functions.Worker`) is the seam the
+pool uses to hand a warm worker to a caller and take it back. The runner entry
+point is `packages/runner`, bundled into `ebb_server/priv/runner/main.js` by
+`scripts/build-runner.sh` and shipped in the release — it is not embedded in the
+BEAM.
 
 The runner requires **Bun 1.4.3**, pinned in `.bun-version`; the server image
-ships that version. An enabled node without a usable `bun` fails its function
-invocations, not the sync path.
+installs that version and the Dockerfile asserts it. An enabled node without a
+usable `bun` or runner bundle refuses to boot, with a message naming both, rather
+than serving a route that can only answer `503`.
+
+### Configuration
+
+The one key is `config :ebb_server, :functions`; `EBB_FUNCTIONS_ENABLED` and
+`EBB_FUNCTIONS_ADMIN_TOKEN` overlay `:enabled` and `:admin_token` at boot.
+
+| Key                                              | Meaning                                                            |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| `enabled`                                        | Boot flag; off removes every `/functions` route and starts nothing |
+| `admin_token`                                    | Deploy credential; unset means no admin credential, never open     |
+| `services`                                       | Static service credentials (`id`, `token_sha256`, subject, grants) |
+| `env`                                            | Per-function allowlist of environment variable names               |
+| `fetch_allowlist`                                | Hosts the runner's global `fetch` may reach; empty = unrestricted  |
+| `max_invoke_body_bytes`                          | Request body bound (256 KiB)                                       |
+| `max_host_calls`                                 | Host-call budget per invocation (1000)                             |
+| `max_log_lines` / `max_log_bytes`                | Per-invocation log cap (200 / 64 KiB)                              |
+| `pool_size` / `queue_limit` / `queue_timeout_ms` | Pool capacity and queue                                            |
+| `transport` / `worker_opts`                      | Worker seam; defaults to Bun and the shipped runner                |
+
+### Isolation and limits
+
+Worker processes get their own process group, a `kill -9` group fallback, a
+0600 Unix socket in the data dir, a scrubbed environment, and a private temp
+directory. On Linux a `ulimit -v` address-space cap contains a memory bomb;
+macOS has no portable per-process equivalent and is documented as relying on the
+deadline and group kill. The deadline closes the socket and kills the group, so
+a CPU loop cannot outlive its invocation. Out-of-process execution is for
+**resilience**, not a security boundary (see below).
 
 ### Trusted authors, not a sandbox
 
@@ -156,6 +194,13 @@ authors: Bun globals stay reachable (native `fetch`, npm packages, `Bun.spawn`),
 and a function runs with the deploy credential's ability to execute code. The
 `function.<name>` grant decides _who may invoke_, not _what the handler may do_.
 Treat a deploy grant like write access to the server.
+
+The `fetch` allowlist and `fetch_audit` telemetry are a guardrail around the
+global `fetch` for trusted authors, not a sandbox an author cannot bypass; egress
+policy is the control for untrusted code. Bundle signing is deliberately not in
+v1: with a single-operator deploy story, the admin credential plus the digest is
+the trust boundary, and a half-checked signature path would be worse than an
+explicitly absent one.
 
 The CLI and runner live in `packages/cli` / `packages/runner`; the server never
 shells out to the CLI, and the CLI never opens the store directly.

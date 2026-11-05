@@ -10,36 +10,58 @@ defmodule EbbServer.Functions.Invocation do
   read and one commit at return, so concurrency cannot change an Action's
   contents.
 
-  A frame that arrives after `result` or after the deadline is discarded, never
-  answered. A worker that dies without a `result` ends the invocation without
-  taking the caller down. A host call that fails is answered and then ends the
-  invocation: a read is v1's only pure op and a commit is fail-whole, so there
-  is no state in which continuing could produce a correct result.
+  ## Budgets
+
+  `max_host_calls` bounds the calls one invocation may make. The runner refuses
+  a call past the same budget before sending it, and this loop refuses one that
+  nevertheless arrives: the caller gets an error reply and the invocation ends
+  `429 host_call_limit`. The server counts, because the frame is the boundary
+  it actually receives.
+
+  A `log` frame is written through `EbbServer.Functions.Log` under a per
+  invocation budget of `max_log_lines` and `max_log_bytes`; past either, the
+  server drops frames and writes one truncation notice. A `fetch_audit` frame
+  becomes a `[:ebb, :functions, :fetch]` telemetry event and a counter, never a
+  stored payload. Neither can fail the invocation.
+
+  ## Results
 
   Results are `{:ok, value, commit}` or
   `{:error, status, code, details, meta}`. `commit` is `nil` when the
   invocation committed nothing, and `%{replayed: boolean}` once a commit
   reached the Writer: `true` means the Action was already durable or in flight
   and no GSN was assigned — not that the first copy is proven durable. The
-  last commit wins, because one invocation commits
-  at most one Action — every commit in it derives the same `action_id`, so a
-  second one is deduped.
+  last commit wins, because one invocation commits at most one Action — every
+  commit in it derives the same `action_id`, so a second one is deduped.
 
   `meta` is `%{}` except on a rejected commit, where it carries
   `%{rejected: [...]}` — the rejection list `Host` received from
   `ActionSubmission`, in the same shape `POST /sync/actions` returns. A
-  `handler_error` result is `422 handler_error`; every other result kind is
-  `500 runner_error`. A host call's own code survives the boundary — a rejected
-  commit is `422 rejected`, a failed read `500 read_failed` — so the endpoint
-  can put it in the response envelope unchanged. The taxonomy is open, so the
-  mapping is one exhaustive function here rather than a case at each call site.
-  The HTTP envelope that carries these codes is #680's.
+  handler failure is `422 handler_error`; an oversize result is
+  `413 payload_too_large`; a spent host-call budget is `429 host_call_limit`;
+  every other result kind is `500 runner_error`. A host call's own code
+  survives the boundary — a rejected commit is `422 rejected`, a failed read
+  `500 read_failed` — so the endpoint can put it in the response envelope
+  unchanged.
+
+  ## Telemetry and reuse
+
+  `run/1` emits `[:ebb, :functions, :invoke, :start]` and `:stop` around the
+  invocation with `name`, `version`, `actor_id`, `caller_kind`, `outcome`,
+  counters, `duration`, and `worker_pid`; an unexpected raise is an
+  `:exception` event. A successful result *releases* the worker when its
+  transport supports reuse (the pool) and closes it otherwise. Every failure
+  path closes it: a worker that timed out or failed must not serve another
+  caller.
   """
 
-  alias EbbServer.Functions.{Host, Protocol, Worker}
+  alias EbbServer.Functions.{Host, Log, Protocol, Worker}
 
   @default_max_in_flight 8
   @default_deadline_ms 30_000
+  @default_max_host_calls 1_000
+  @default_max_log_lines 200
+  @default_max_log_bytes 64 * 1024
   @liveness_poll_ms 100
 
   @type result ::
@@ -59,9 +81,54 @@ defmodule EbbServer.Functions.Invocation do
     * `:host_opts` — passed to the host module
     * `:max_in_flight` — concurrent host calls (default 8, `1` serial)
     * `:deadline_ms` — wall-clock budget (default 30 s)
+    * `:max_host_calls` — host-call budget (default 1000)
+    * `:max_log_lines`, `:max_log_bytes` — log budget (default 200 / 64 KiB)
+    * `:telemetry_meta` — `name`, `version`, `actor_id`, `caller_kind`
+    * `:input_bytes` — the request's body size, for the span
   """
   @spec run(keyword()) :: result()
   def run(opts) do
+    meta = Keyword.get(opts, :telemetry_meta, %{})
+    started = System.monotonic_time()
+
+    :telemetry.execute(
+      [:ebb, :functions, :invoke, :start],
+      %{system_time: System.system_time()},
+      meta
+    )
+
+    try do
+      {result, measurements} = do_run(opts)
+
+      :telemetry.execute(
+        [:ebb, :functions, :invoke, :stop],
+        Map.put(measurements, :duration, System.monotonic_time() - started),
+        Map.put(meta, :outcome, outcome(result))
+      )
+
+      result
+    rescue
+      error ->
+        :telemetry.execute(
+          [:ebb, :functions, :invoke, :exception],
+          %{duration: System.monotonic_time() - started},
+          Map.merge(meta, %{kind: :error, reason: Exception.message(error)})
+        )
+
+        reraise error, __STACKTRACE__
+    catch
+      kind, reason ->
+        :telemetry.execute(
+          [:ebb, :functions, :invoke, :exception],
+          %{duration: System.monotonic_time() - started},
+          Map.merge(meta, %{kind: kind, reason: inspect(reason)})
+        )
+
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  defp do_run(opts) do
     invoke = Keyword.fetch!(opts, :invoke)
     transport = Keyword.fetch!(opts, :transport)
     deadline_ms = Keyword.get(opts, :deadline_ms, @default_deadline_ms)
@@ -77,16 +144,36 @@ defmodule EbbServer.Functions.Invocation do
       host: Keyword.get(opts, :host, Host),
       host_opts: Keyword.get(opts, :host_opts, []),
       context: context,
+      telemetry_meta: Keyword.get(opts, :telemetry_meta, %{}),
       max_in_flight: Keyword.get(opts, :max_in_flight, @default_max_in_flight),
+      max_host_calls: Keyword.get(opts, :max_host_calls, @default_max_host_calls),
+      max_log_lines: Keyword.get(opts, :max_log_lines, @default_max_log_lines),
+      max_log_bytes: Keyword.get(opts, :max_log_bytes, @default_max_log_bytes),
       in_flight: %{},
       queue: :queue.new(),
+      host_calls: 0,
+      reads: 0,
+      writes: 0,
+      fetch_calls: 0,
+      input_bytes: Keyword.get(opts, :input_bytes, 0),
+      log_budget: Log.new_budget(),
+      worker_pid: nil,
       # `nil` until a commit succeeds, then the reply's `replayed` flag. An
       # invocation commits at most one Action, so there is nothing to merge.
       commit: nil
     }
 
+    checkout_started = System.monotonic_time()
+
     case Worker.start(transport, worker_opts) do
       {:ok, worker} ->
+        queue_ms =
+          System.convert_time_unit(
+            System.monotonic_time() - checkout_started,
+            :native,
+            :millisecond
+          )
+
         monitor = Worker.monitor(worker)
         deadline_ref = make_ref()
 
@@ -95,6 +182,8 @@ defmodule EbbServer.Functions.Invocation do
             worker: worker,
             monitor: monitor,
             deadline_ref: deadline_ref,
+            queue_ms: queue_ms,
+            worker_pid: Worker.os_pid(worker),
             timer: Process.send_after(self(), {:functions_deadline, deadline_ref}, deadline_ms),
             poll_ms: if(monitor, do: :infinity, else: @liveness_poll_ms)
           })
@@ -105,7 +194,7 @@ defmodule EbbServer.Functions.Invocation do
         end
 
       {:error, reason} ->
-        unavailable(reason)
+        {unavailable(reason), zero_measurements()}
     end
   end
 
@@ -163,10 +252,32 @@ defmodule EbbServer.Functions.Invocation do
     finish(state, result_error(frame["kind"], message))
   end
 
-  # `log` and `fetch_audit` are part of the wire contract but not of v1. They are
-  # fire-and-forget, so an older host ignores them rather than failing.
-  defp handle_frame(%{"type" => type}, state) when type in ["log", "fetch_audit"] do
-    loop(state)
+  defp handle_frame(%{"type" => "log"} = frame, state) do
+    budget =
+      Log.emit(
+        frame["level"],
+        frame["message"],
+        log_meta(state),
+        state.log_budget,
+        state.max_log_lines,
+        state.max_log_bytes
+      )
+
+    loop(%{state | log_budget: budget})
+  end
+
+  defp handle_frame(%{"type" => "fetch_audit"} = frame, state) do
+    :telemetry.execute(
+      [:ebb, :functions, :fetch],
+      %{duration: number(frame["duration_ms"])},
+      Map.merge(log_meta(state), %{
+        url: frame["url"],
+        status: frame["status"],
+        blocked: frame["blocked"] == true
+      })
+    )
+
+    loop(%{state | fetch_calls: state.fetch_calls + 1})
   end
 
   defp handle_frame(frame, state) do
@@ -180,7 +291,24 @@ defmodule EbbServer.Functions.Invocation do
 
   defp valid_call(_frame), do: :error
 
+  # The budget is spent by the frame, not by a successful host result: a call
+  # the server refuses to run still arrived, and a handler retrying in a loop
+  # must not be able to spin forever on refusals.
+  defp dispatch_or_queue(call, %{host_calls: used, max_host_calls: max} = state)
+       when used >= max do
+    error = %{
+      "error" => "host_call_limit",
+      "status" => 429,
+      "details" => "the invocation spent its #{max} host calls"
+    }
+
+    _ = Worker.send_frame(state.worker, Protocol.reply(call.call_id, {:error, error}))
+    finish(state, {:error, 429, "host_call_limit", error["details"], %{}})
+  end
+
   defp dispatch_or_queue(call, state) do
+    state = %{state | host_calls: state.host_calls + 1}
+
     if map_size(state.in_flight) < state.max_in_flight do
       loop(start_host_call(call, state))
     else
@@ -217,11 +345,16 @@ defmodule EbbServer.Functions.Invocation do
         state =
           state
           |> Map.put(:in_flight, in_flight)
+          |> count_op(op, result)
           |> record_commit(op, result)
 
         reply_and_continue(call_id, result, state)
     end
   end
+
+  defp count_op(state, "get", {:ok, _value}), do: %{state | reads: state.reads + 1}
+  defp count_op(state, "commit", {:ok, _value}), do: %{state | writes: state.writes + 1}
+  defp count_op(state, _op, _result), do: state
 
   # Only a successful commit says anything about the invocation's writes; a
   # failing one ends the invocation with the host's own error.
@@ -304,6 +437,8 @@ defmodule EbbServer.Functions.Invocation do
 
   defp handle_deadline(_ref, state), do: loop(state)
 
+  # A successful result returns the worker to a pooling transport; every
+  # other result kills it, because it may still be running the handler.
   defp finish(state, result) do
     Process.cancel_timer(state.timer)
 
@@ -316,10 +451,53 @@ defmodule EbbServer.Functions.Invocation do
       Process.exit(pid, :kill)
     end)
 
-    Worker.close(state.worker)
+    release_or_close(state.worker, result)
     flush_deadline(state.deadline_ref)
-    result
+    {result, measurements(state, result)}
   end
+
+  defp release_or_close(worker, {:ok, _value, _commit}), do: Worker.release(worker)
+  defp release_or_close(worker, _result), do: Worker.close(worker)
+
+  defp measurements(state, result) do
+    %{
+      host_calls: state.host_calls,
+      reads: state.reads,
+      writes: state.writes,
+      fetch_calls: state.fetch_calls,
+      queue_ms: state.queue_ms || 0,
+      worker_pid: state.worker_pid,
+      log_lines: state.log_budget.lines,
+      log_bytes: state.log_budget.bytes,
+      input_bytes: state.input_bytes || 0,
+      output_bytes: output_bytes(result),
+      worker_started: true
+    }
+  end
+
+  defp zero_measurements do
+    %{
+      host_calls: 0,
+      reads: 0,
+      writes: 0,
+      fetch_calls: 0,
+      queue_ms: 0,
+      worker_pid: nil,
+      log_lines: 0,
+      log_bytes: 0,
+      input_bytes: 0,
+      output_bytes: 0,
+      worker_started: false
+    }
+  end
+
+  defp output_bytes({:ok, value, _commit}) do
+    IO.iodata_length(Jason.encode_to_iodata!(value))
+  rescue
+    _error -> 0
+  end
+
+  defp output_bytes(_result), do: 0
 
   defp flush_deadline(deadline_ref) do
     receive do
@@ -330,6 +508,15 @@ defmodule EbbServer.Functions.Invocation do
   end
 
   defp result_error("handler_error", message), do: {:error, 422, "handler_error", message, %{}}
+
+  defp result_error("output_too_large", message) do
+    {:error, 413, "payload_too_large", message, %{}}
+  end
+
+  defp result_error("host_call_limit", message) do
+    {:error, 429, "host_call_limit", message, %{}}
+  end
+
   defp result_error(_kind, message), do: {:error, 500, "runner_error", message, %{}}
 
   # A host call answers in the envelope's vocabulary already: `Host` builds
@@ -356,6 +543,26 @@ defmodule EbbServer.Functions.Invocation do
 
   defp protocol_error(message), do: {:error, 500, "protocol_error", message, %{}}
 
+  defp unavailable(:saturated) do
+    {:error, 503, "saturated", "all workers are busy; retry shortly", %{}}
+  end
+
   defp unavailable(reason),
     do: {:error, 503, "unavailable", "worker unavailable: #{inspect(reason)}", %{}}
+
+  defp outcome({:ok, _value, _commit}), do: :ok
+  defp outcome({:error, 408, _code, _details, _meta}), do: :timeout
+  defp outcome({:error, 503, "saturated", _details, _meta}), do: :saturated
+  defp outcome(_result), do: :error
+
+  defp log_meta(state) do
+    %{
+      name: Map.get(state.telemetry_meta, :name, "unknown"),
+      version: Map.get(state.telemetry_meta, :version, "unknown"),
+      invocation_id: state.context.invocation_id
+    }
+  end
+
+  defp number(value) when is_number(value), do: value
+  defp number(_value), do: 0
 end

@@ -18,9 +18,15 @@ map, and typed `client.functions.<name>` calls — ships with
 the function slices ([#593](https://github.com/ebbjs/ebbjs/issues/593) runner,
 [#594](https://github.com/ebbjs/ebbjs/issues/594) writes,
 [#595](https://github.com/ebbjs/ebbjs/issues/595) store/versioning,
-[#716](https://github.com/ebbjs/ebbjs/issues/716) admin routes). Secrets,
-per-function environment, and bundle signing are **not** in v1; they are
-[#597](https://github.com/ebbjs/ebbjs/issues/597).
+[#716](https://github.com/ebbjs/ebbjs/issues/716) admin routes), and
+[#597](https://github.com/ebbjs/ebbjs/issues/597) made the feature safe to
+enable by default: bounded bodies and results, a host-call budget, capped logs,
+a bounded worker pool, service principals, per-function secrets, `fetch`
+auditing, and a boot check for the Bun runner.
+
+Functions are **on by default**. `EBB_FUNCTIONS_ENABLED=false` (or
+`:functions, enabled: false`) removes every `/functions` route at boot and
+starts no store, cache, stats owner, or pool.
 
 ## The loop
 
@@ -63,8 +69,12 @@ export default defineConfig({
 | `functions.dir`      | Directory scanned for one exported definition per file. Defaults to `functions`. |
 | `functions.typesOut` | Generated contract-map path. Defaults to `src/ebb-functions.generated.ts`.       |
 
-The deploy token is configured on the server as `:functions, :admin_token`; an
-unset token means there is no admin credential, not an open route.
+The deploy token is configured on the server as `:functions, :admin_token` or
+`EBB_FUNCTIONS_ADMIN_TOKEN` (the environment wins at boot, and a blank value
+counts as unset); an unset token means there is no admin credential, not an open
+route. Rotating it is a restart: start the node with the new value and stop the
+old one. There is deliberately no two-token overlap, because a token that kept
+working on the old node would not be a rotation.
 
 ## Authoring
 
@@ -105,8 +115,10 @@ export const proofreadDocument = defineFunction(
   runner validates again with the full schema; the handler sees the inferred
   type.
 - `options.access` is `"granted"` (default) or `"authenticated"`;
-  `timeoutMs` and `memoryMb` bound the worker; `output` optionally validates
-  the handler's result.
+  `timeoutMs` bounds the invocation; `output` optionally validates the
+  handler's result. `memoryBytes` is validated and carried in the envelope, but
+  v1 applies a node-wide memory cap (see Limits) rather than a per-function one,
+  because pooled workers are spawned before the bundle is known.
 - The handler returns JSON-serializable data. An object result is spread onto
   the client's resolved value, so `{ commentCount }` becomes
   `{ commentCount, replayed }`.
@@ -152,6 +164,86 @@ handler returns — one GSN, atomic across every Update:
   proof that the first copy committed.
 - One invocation's commit must fit the 1 MiB frame bound. The fix is a smaller
   batch, not a second commit.
+
+## Secrets
+
+A function reads secrets from `ctx.env`, a frozen object the server fills at
+boot from an allowlist:
+
+```elixir
+config :ebb_server, :functions,
+  env: %{"proofreadDocument" => ["PROOFREAD_API_KEY"]}
+```
+
+```ts
+const apiKey = ctx.env.PROOFREAD_API_KEY;
+```
+
+- The values come from the **server process environment** when the node boots.
+  Changing one requires a restart; an invocation never reads the environment.
+- A named key with no value fails the invocation with `422 missing_secret`
+  before the handler runs and before a worker is checked out. The response names
+  the key, never the value.
+- Values travel in the invoke frame, never in logs, telemetry, or error
+  responses. The runner sees only the keys the function declared; its process
+  environment is scrubbed.
+- `console.*` and `ctx.log` become Logger lines tagged with `function_name`,
+  `version`, and `invocation_id`, capped at 200 lines / 64 KiB per invocation.
+  Past the cap, frames are dropped and one truncation line is written; logging
+  can never fail an invocation.
+
+## Principals
+
+Two kinds of caller may invoke a function:
+
+|                         | User / agent                                           | Service (job, webhook)                  |
+| ----------------------- | ------------------------------------------------------ | --------------------------------------- |
+| Authenticates with      | `AuthPlug` (external auth; bypass in dev)              | `x-ebb-service-token`                   |
+| Grant source            | `function.<name>` on any `groupMember.permissions` row | `permissions` on the service credential |
+| Subject (data identity) | The caller                                             | `subject_actor_id` on the credential    |
+| Data permissions        | Caller's memberships                                   | Subject actor's memberships             |
+
+Service credentials are static config; the server compares sha256 of the
+presented token in constant time:
+
+```elixir
+config :ebb_server, :functions,
+  services: [
+    %{
+      id: "svc_webhook",
+      token_sha256: "…64 lowercase hex…",
+      subject_actor_id: "svc_webhook",
+      permissions: ["function.processWebhook"]
+    }
+  ]
+```
+
+- `access: "authenticated"` admits either kind without a grant; `"granted"`
+  checks the credential's own permissions or the actor's membership rows.
+- A service token is accepted only by `/functions`; on a sync route it leaves
+  the request anonymous, so it cannot stand in for an actor.
+- Deploy is a separate admin credential and never implies invoke permission.
+- `Idempotency-Key` is scoped to the **principal** and the function. Two service
+  credentials with the same key therefore make distinct Actions even when they
+  share a subject actor. Callers behind one credential share that key space and
+  must use their own keys.
+
+## Limits
+
+| Limit                  | Default                                 | Enforcement                                                                                                           |
+| ---------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Wall clock             | per-function `timeoutMs`, max 60 s      | Elixir deadline; socket close + process-group kill                                                                    |
+| Memory                 | 256 MB + runtime reservation            | Linux `ulimit -v` on the worker; macOS has no portable per-process limit and is documented as relying on the deadline |
+| Host calls             | 1,000                                   | Runner refuses before sending; the server refuses a frame past the budget (`429 host_call_limit`)                     |
+| Input / output         | 256 KB / 1 MiB                          | HTTP body read bound (`413` before a worker) and the result frame bound (`413 payload_too_large`)                     |
+| Concurrent invocations | pool 4, queue 20                        | Pool checkout; `503 saturated` past the bound                                                                         |
+| Log lines / bytes      | 200 / 64 KB                             | Runner and server both cap; the invocation is unaffected                                                              |
+| Fetch                  | optional host allowlist, 10 MB response | Runner wraps global `fetch`; `fetch_audit` telemetry (URL, status, duration — no headers or bodies)                   |
+
+A handler that buffers an Action larger than the 1 MiB frame bound gets a
+`FrameTooLargeError` at `ctx.commit()`, before anything is sent, so the socket
+stays up and the handler can catch it. One invocation still commits at most one
+Action; the fix is a smaller batch, not a second commit.
 
 ## Read → external → write
 
@@ -269,9 +361,29 @@ restores service.
 
 The other switch is the boot flag. `EBB_FUNCTIONS_ENABLED=false` (or
 `:functions, enabled: false`) removes every `/functions` route — `404`, not
-`503` — and starts no store or bundle cache. It is resolved **once at boot**, so
-changing it requires a restart. With the flag off, the rest of the server runs
-normally.
+`503` — and starts no store, cache, stats owner, or pool. It is resolved **once
+at boot**, so changing it requires a restart. With the flag off, the rest of the
+server runs normally.
+
+## Observability
+
+- `ebb.functions.invoke` is a telemetry span (`start`/`stop`/`exception`) with
+  `name`, `version`, `actor_id`, `caller_kind`, `outcome`, `host_calls`,
+  `reads`, `writes`, `fetch_calls`, `input_bytes`, `output_bytes`, `queue_ms`,
+  and `worker_pid`.
+- Per-version ETS counters (invocations, errors, timeouts, worker kills, fetch
+  calls) and pool gauges (idle, busy, queued, workers, spawn failures, kills,
+  respawning) are behind the admin route `GET /functions/health` and the CLI:
+
+  ```bash
+  ebb functions health --url http://localhost:4000 --token "$EBB_ADMIN_TOKEN"
+  ```
+
+- `ctx.log` / `console` lines carry `function_name`, `version`, and
+  `invocation_id`.
+  `fetch_audit` emits a telemetry event with URL, status, and duration only.
+- Every invocation response carries `invocation_id` in the body and in
+  `x-ebb-invocation-id`, including failures.
 
 ## Data and runtime
 
@@ -280,13 +392,19 @@ normally.
 | Versions, pointers | `<data_dir>/functions.db` (SQLite, separate from RocksDB/SQLite cache) |
 | Active bundles     | Read through `EbbServer.Functions.BundleCache`; never served as JSON   |
 | Worker sockets     | `<data_dir>/function_sockets` (one Unix socket per worker)             |
-| Runner entry point | `packages/runner` (Bun)                                                |
+| Runner entry point | `ebb_server/priv/runner/main.js` (built from `packages/runner`)        |
 
-The runner requires **Bun 1.4.3**, pinned in `.bun-version`. One Bun process
-runs one invocation and exits; the server's `Worker` contract is a seam so a
-pre-warmed pool can replace the per-invocation spawn later. A worker crash or
-timeout fails that invocation only — committed writes survive and sync
-connections stay up.
+The runner requires **Bun 1.4.3**, pinned in `.bun-version`. The server keeps a
+pool of warm workers (default `min(4, schedulers_online)`) and reuses a worker
+after a successful invocation; a timeout, crash, or failed host call kills the
+process group and replaces the slot. A worker crash or timeout fails that
+invocation only — committed writes survive and sync connections stay up.
+
+`scripts/build-runner.sh` bundles the runner into one committed file;
+`scripts/build-runner.sh --check` proves it is current, and CI runs that check.
+An enabled node refuses to boot when Bun or the runner bundle is missing, naming
+both in the error. The Docker image installs the pinned Bun and asserts the
+version; the release ships the committed bundle in `priv/`.
 
 **Process isolation is for resilience, not a security sandbox.** Functions are
 trusted authors: Bun globals including native `fetch` and `Bun.spawn` stay
@@ -295,16 +413,34 @@ reachable. The grant decides who may invoke, not what the code may do.
 See [`ebb_server/README.md`](../ebb_server/README.md#functions) for the
 supervision tree and the server-side modules.
 
-## Deferred to #597
+## Decisions after #597
 
-v1 keeps secrets and signing out of the loop:
+Some items in the milestone are deliberately decisions rather than code:
 
-- no per-function secrets or environment channel; a handler reads constants
-  from source, and the server's admin token lives in server config;
-- no signature verification of uploaded bundles (the digest guards integrity,
-  not authorship);
-- no client-side validation of params beyond the generated types — the server
-  validates, and the runner validates again.
-
-[#597](https://github.com/ebbjs/ebbjs/issues/597) adds the secret/env channel and
-bundle signing. Until then, treat deploy access as the trust boundary.
+- **Bundle signing is deferred, not half-built.** With a single-operator deploy
+  story, the admin credential plus the digest of the code is the trust
+  boundary; `ebb deploy --sign` does not ship. A signature path that is not
+  configured and checked on every node would look like provenance without being
+  one.
+- **The inlined entity schema is trusted.** The bundle carries the schema the
+  runtime plans writes against; the server does not cross-check it against its
+  registry (#167). Trusted authors plus the server-side authorization on the
+  commit is the control.
+- **Authorization at the write buffer is the server's job.** The client planner
+  keeps its structural checks (`missing_ownership`, `last_membership`,
+  `last_group_member`), and the server's `422 rejected` is the backstop for a
+  full `Authorizer.authorize/3` check. One enforcement point, not two that can
+  disagree.
+- **Memory is node-wide, not per-function.** A pooled worker is spawned before
+  an invocation knows which bundle it will run, so `memoryBytes` cannot set the
+  OS cap per function. The node config (`:memory_bytes`, default 256 MB) sets
+  the Linux `ulimit -v` for every worker, and the envelope's value is validated
+  and carried but unused. A per-function cap would need a pool partitioned by
+  memory class, which v1 does not have.
+- **macOS gets no memory cap.** There is no portable per-process
+  address-space limit the server can set without privileges; the deadline and
+  process-group kill remain the containment, and Linux applies `ulimit -v`.
+- **The fetch allowlist is a guardrail, not a sandbox.** The runner wraps global
+  `fetch` for the duration of an invocation and audits each call, but trusted
+  code can still reach the network in other ways; egress policy is the control
+  for untrusted authors.

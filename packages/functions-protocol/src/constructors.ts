@@ -8,8 +8,11 @@
 
 import {
   type CallFrame,
+  type FetchAuditFrame,
   type FrameOp,
   type InvokeFrame,
+  type LogFrame,
+  type LogLevel,
   PROTOCOL_VERSION,
   type ReadyFrame,
   type ReplyFrame,
@@ -29,6 +32,15 @@ export interface InvokeFields {
   readonly env?: Readonly<Record<string, string>>;
   readonly limits?: Readonly<Record<string, unknown>>;
   readonly [field: string]: unknown;
+}
+
+/** The fields a `fetch_audit` frame reports, all measured by the shim. */
+export interface FetchAuditFields {
+  readonly method: string;
+  readonly url: string;
+  readonly status: number | null;
+  readonly duration_ms: number;
+  readonly blocked: boolean;
 }
 
 /** The two outcomes a `reply` can carry. */
@@ -74,6 +86,23 @@ export function result(outcome: ResultOutcome): ResultFrame {
   if (outcome.ok) return { type: "result", ok: true, value: outcome.value };
 
   return { type: "result", ok: false, kind: outcome.kind, message: outcome.message };
+}
+
+/** Builds a `log` frame: one line at one level, already stringified. */
+export function logFrame(level: LogLevel, message: string): LogFrame {
+  return { type: "log", level, message };
+}
+
+/** Builds a `fetch_audit` frame from what the shim measured. */
+export function fetchAudit(fields: FetchAuditFields): FetchAuditFrame {
+  return {
+    type: "fetch_audit",
+    method: fields.method,
+    url: fields.url,
+    status: fields.status,
+    duration_ms: fields.duration_ms,
+    blocked: fields.blocked,
+  };
 }
 
 /** Builds the runner's `ready` frame. */

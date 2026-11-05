@@ -1,6 +1,6 @@
 defmodule EbbServer.Functions.Worker.Bun do
   @moduledoc """
-  A worker transport that runs one Bun process per invocation.
+  A worker transport that runs a Bun process over one Unix socket.
 
   The worker process owns everything the runner needs: a private temp
   directory, a Unix socket inside it, and a Port to the Bun process. The runner
@@ -16,6 +16,22 @@ defmodule EbbServer.Functions.Worker.Bun do
   spawned, before the runner has connected. Host frames sent in that window are
   queued in the worker process and written on connection, so an invocation can
   send its `invoke` immediately.
+
+  ## Pooling
+
+  One process can serve more than one invocation: the runner stays alive after
+  a `result` and accepts another `invoke`. `set_owner/2` moves the frames a
+  worker delivers to whichever process is using it, which is how
+  `EbbServer.Functions.Worker.Pool` keeps a worker warm between callers.
+  Without a pool the invocation closes the worker after its result, so the
+  single-use behaviour is unchanged.
+
+  ## Memory
+
+  On Linux the runner is started under `ulimit -v`, set to the configured
+  budget plus the runtime's own address-space reservation. macOS gets no
+  equivalent limit that a server can set without privileges; that platform is
+  documented as unbounded and relies on the deadline and process-group kill.
   """
 
   @behaviour EbbServer.Functions.Worker
@@ -27,13 +43,15 @@ defmodule EbbServer.Functions.Worker.Bun do
   @close_timeout_ms 1_000
   @accept_poll_ms 5
   @safe_path "/usr/local/bin:/usr/bin:/bin"
+  @default_memory_limit_bytes 1024 * 1024 * 1024
   @lang "C.UTF-8"
 
   @type handle :: %{
           pid: pid(),
           port: port(),
           dir: String.t(),
-          socket_path: String.t()
+          socket_path: String.t(),
+          os_pid: non_neg_integer() | nil
         }
 
   @doc """
@@ -48,6 +66,7 @@ defmodule EbbServer.Functions.Worker.Bun do
     * `:bun_path` — Bun executable (default `System.find_executable("bun")`)
     * `:accept_timeout_ms` — how long the runner may take to connect (default 5000)
     * `:spawn_timeout_ms` — how long setup may take before `start/1` gives up (default 5000)
+    * `:memory_limit_bytes` — Linux `ulimit -v` address space (default 1 GiB)
   """
   @impl true
   @spec start(keyword()) :: {:ok, handle()} | {:error, term()}
@@ -58,6 +77,7 @@ defmodule EbbServer.Functions.Worker.Bun do
     bun_path = Keyword.get_lazy(opts, :bun_path, fn -> System.find_executable("bun") end)
     accept_timeout = Keyword.get(opts, :accept_timeout_ms, @default_accept_timeout_ms)
     spawn_timeout = Keyword.get(opts, :spawn_timeout_ms, @default_spawn_timeout_ms)
+    memory_limit_bytes = Keyword.get(opts, :memory_limit_bytes, @default_memory_limit_bytes)
 
     with :ok <- check_bun(bun_path),
          :ok <- check_runner(runner_path),
@@ -74,7 +94,8 @@ defmodule EbbServer.Functions.Worker.Bun do
             bun_path: bun_path,
             dir: dir,
             socket_path: socket_path,
-            accept_timeout_ms: accept_timeout
+            accept_timeout_ms: accept_timeout,
+            memory_limit_bytes: memory_limit_bytes
           })
         end)
 
@@ -85,7 +106,14 @@ defmodule EbbServer.Functions.Worker.Bun do
   defp await_start(pid, dir, socket_path, timeout) do
     case await_started(pid, timeout) do
       {:ok, port} ->
-        {:ok, %{pid: pid, port: port, dir: dir, socket_path: socket_path}}
+        {:ok,
+         %{
+           pid: pid,
+           port: port,
+           dir: dir,
+           socket_path: socket_path,
+           os_pid: port_os_pid(port)
+         }}
 
       {:error, reason} ->
         if Process.alive?(pid), do: Process.exit(pid, :kill)
@@ -139,6 +167,34 @@ defmodule EbbServer.Functions.Worker.Bun do
   @impl true
   @spec monitor(handle()) :: reference()
   def monitor(%{pid: pid}), do: Process.monitor(pid)
+
+  @doc """
+  Points a worker's frame delivery at `owner`.
+
+  Used by the pool: checkout hands the worker to the invoking process and
+  checkin hands it back, without tearing down the Bun process between them.
+  """
+  @impl true
+  @spec set_owner(handle(), pid()) :: :ok
+  def set_owner(%{pid: pid}, owner) do
+    send(pid, {:functions_set_owner, owner})
+    :ok
+  end
+
+  @doc """
+  Removes a worker that died without running its own cleanup.
+
+  The process group id and temp dir are recorded at start because a dead
+  worker's Port no longer answers `Port.info/2`; without them a hard kill
+  would leave the socket file and any process the runner forked behind.
+  """
+  @impl true
+  @spec cleanup(handle()) :: :ok
+  def cleanup(%{dir: dir, os_pid: os_pid}) do
+    kill_group(os_pid)
+    File.rm_rf(dir)
+    :ok
+  end
 
   @doc """
   The Unix socket the runner connects to. Exposed so a transport test can
@@ -302,14 +358,31 @@ defmodule EbbServer.Functions.Worker.Bun do
   # `kill_group/1` is the fallback when it does not.
   defp runner_command(state) do
     # `set -m` makes the shell a process-group leader, then `exec` replaces it.
+    # The ulimit prefix runs first, in the same shell, so the cap applies to
+    # Bun and everything it spawns. A shell without `ulimit -v` continues: the
+    # deadline and the group kill are still the backstop.
     [
       System.find_executable("sh") || "/bin/sh",
       "-c",
-      "set -m 2>/dev/null; exec \"$0\" \"$@\"",
+      "#{memory_limit_command(state)}set -m 2>/dev/null; exec \"$0\" \"$@\"",
       state.bun_path,
       state.runner_path,
       state.socket_path
     ]
+  end
+
+  # `ulimit -v` is per-process address space on Linux. macOS has no portable
+  # per-process equivalent without privileges, so it gets no prefix rather
+  # than a limit that silently does nothing.
+  defp memory_limit_command(state) do
+    case :os.type() do
+      {:unix, :linux} ->
+        kib = max(div(state.memory_limit_bytes, 1024), 64 * 1024)
+        "ulimit -v #{kib} 2>/dev/null; "
+
+      _other ->
+        ""
+    end
   end
 
   defp await_connection(state, deadline) do
@@ -327,6 +400,9 @@ defmodule EbbServer.Functions.Worker.Bun do
       stop(state, :accept_timeout)
     else
       receive do
+        {:functions_set_owner, owner} ->
+          await_connection_messages(swap_owner(state, owner), deadline)
+
         {:functions_host_frame, data} ->
           await_connection(%{state | queue: :queue.in(data, state.queue)}, deadline)
 
@@ -365,6 +441,9 @@ defmodule EbbServer.Functions.Worker.Bun do
 
   defp loop(state) do
     receive do
+      {:functions_set_owner, owner} ->
+        loop(swap_owner(state, owner))
+
       {:functions_host_frame, data} ->
         case :gen_tcp.send(state.socket, data) do
           :ok -> loop(state)
@@ -404,6 +483,12 @@ defmodule EbbServer.Functions.Worker.Bun do
       {:error, reason} ->
         stop(state, {:invalid_frame, reason})
     end
+  end
+
+  defp swap_owner(state, owner) do
+    if state.owner_ref, do: Process.demonitor(state.owner_ref, [:flush])
+
+    %{state | owner: owner, owner_ref: Process.monitor(owner)}
   end
 
   defp stop(state, reason) do

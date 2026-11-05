@@ -37,6 +37,10 @@ RUN mix deps.compile
 
 COPY ebb_server/config ./config
 COPY ebb_server/lib ./lib
+# `Mix.Project.build_structure/2` symlinks `priv` rather than copying it, and
+# a release only copies an app dir that exists. The committed runner bundle
+# lives here, and the boot check refuses to start without it.
+COPY ebb_server/priv ./priv
 
 # `elixirc_paths(:prod)` is `["lib"]`, so `test/` and `bench/` never reach the
 # compiler and are not part of the build context.
@@ -44,7 +48,8 @@ RUN mix compile
 
 # `include_erts` defaults to true, so the release carries its own runtime and
 # the image needs no Erlang or Elixir install.
-RUN mix release
+RUN mix release && \
+    test -f _build/prod/rel/ebb_server/lib/ebb_server-*/priv/runner/main.js
 
 # Same Debian release as the builder: the bundled ERTS and the NIFs inside the
 # release are linked against bookworm's glibc 2.36 and OpenSSL 3.
@@ -56,7 +61,8 @@ FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2
 #   libssl3       — `crypto.so` links `libcrypto.so.3`
 #   ca-certificates — the external auth mode posts over HTTPS and OTP reads the
 #                   OS trust store
-#   curl          — the HEALTHCHECK below
+#   curl          — the HEALTHCHECK below and the Bun installer
+#   unzip         — the Bun installer ships a zip
 # The `-dev` packages from `scripts/setup-ebb-server.sh` are build-only and
 # deliberately absent here.
 RUN apt-get update && \
@@ -64,8 +70,19 @@ RUN apt-get update && \
       libsnappy1v5 \
       libssl3 \
       ca-certificates \
-      curl && \
+      curl \
+      unzip && \
     rm -rf /var/lib/apt/lists/*
+
+# Bun is a runtime dependency: the functions runner is executed, not compiled
+# into the BEAM. The version is pinned in `.bun-version` and the committed
+# runner bundle is built with it (`scripts/build-runner.sh`), so the installer
+# is pinned to the same tag and the build asserts the version it got. Bun does
+# not publish a digest for the installer, so this is a version pin rather than
+# an image digest; the assertion is what keeps the runtime honest.
+ARG BUN_VERSION=1.4.3
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}" && \
+    test "$(bun --version)" = "${BUN_VERSION}"
 
 # Fixed numeric ids keep volume ownership stable across image rebuilds.
 RUN groupadd --gid 10001 ebb && \

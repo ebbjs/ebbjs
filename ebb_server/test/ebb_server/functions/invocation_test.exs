@@ -7,6 +7,7 @@ defmodule EbbServer.Functions.InvocationTest do
   import ExUnit.CaptureLog
 
   alias EbbServer.Functions.{Invocation, Protocol}
+  alias EbbServer.Functions.Worker.Fake
   alias EbbServer.Storage.{ActionLog, WatermarkTracker}
   alias EbbServer.TestFunctions
 
@@ -152,6 +153,69 @@ defmodule EbbServer.Functions.InvocationTest do
                run_script([], deadline_ms: 50)
 
       assert_received :functions_worker_closed
+      refute_receive :functions_worker_closed, 50
+    end
+  end
+
+  describe "the deadline against a result" do
+    test "a result already delivered wins over the timer" do
+      invoke = TestFunctions.invoke("race")
+
+      assert {:ok, %{"won" => "result"}, nil} =
+               Invocation.run(
+                 transport: Fake,
+                 invoke: invoke,
+                 deadline_ms: 50,
+                 worker_opts: [
+                   script: [
+                     %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+                     %{"send" => Protocol.result({:ok, %{"won" => "result"}})}
+                   ]
+                 ]
+               )
+    end
+
+    test "a result after the deadline is discarded and the worker closes once" do
+      invoke = TestFunctions.invoke("race")
+      parent = self()
+
+      result =
+        Invocation.run(
+          transport: EbbServer.TestFunctions.RecordingWorker,
+          invoke: invoke,
+          deadline_ms: 10,
+          worker_opts: [
+            notify: parent,
+            script: [
+              %{"send" => Protocol.ready(nil, "fake-1.0.0")},
+              %{"script" => "late"}
+            ],
+            scripts: %{
+              "late" => fn api ->
+                api.expect.(%{"type" => "invoke"})
+                owner = api.owner
+
+                Task.start(fn ->
+                  Process.sleep(50)
+
+                  send(
+                    owner,
+                    {:functions_worker_frame, Protocol.result({:ok, %{"late" => true}})}
+                  )
+                end)
+
+                :ok
+              end
+            }
+          ]
+        )
+
+      # The late frame lands in the caller's mailbox after the loop has
+      # already returned the timeout; it cannot change the result, and the
+      # worker is closed exactly once.
+      assert {:error, 408, "timeout", _details, _meta} = result
+      assert_receive {:functions_worker_frame, %{"type" => "result"}}, 200
+      assert_receive :functions_worker_closed, 1_000
       refute_receive :functions_worker_closed, 50
     end
   end

@@ -33,6 +33,11 @@ export type FrameOp = "get" | "commit";
 export interface FunctionLimits {
   readonly timeout_ms?: number;
   readonly max_host_calls?: number;
+  readonly max_output_bytes?: number;
+  readonly max_log_lines?: number;
+  readonly max_log_bytes?: number;
+  readonly fetch_allowlist?: readonly string[];
+  readonly memory_bytes?: number;
   readonly [field: string]: unknown;
 }
 
@@ -102,6 +107,34 @@ export interface ResultErrorFrame {
 /** Runner → host: how the invocation ended. `ok` splits the two shapes. */
 export type ResultFrame = ResultOkFrame | ResultErrorFrame;
 
+/** The levels a `log` frame carries. `log` is `console.log`'s level. */
+export type LogLevel = "debug" | "info" | "log" | "warn" | "error";
+
+/** Runner → host: one log line from the invocation. Fire-and-forget. */
+export interface LogFrame {
+  readonly type: "log";
+  readonly level: LogLevel;
+  readonly message: string;
+  readonly [field: string]: unknown;
+}
+
+/**
+ * Runner → host: egress telemetry for one `fetch`.
+ *
+ * Headers and bodies never cross the boundary. The URL is the URL the handler
+ * asked for; redacting it is the host's job. `blocked` means the shim refused
+ * the request before it was sent, which is also why `status` is `null` there.
+ */
+export interface FetchAuditFrame {
+  readonly type: "fetch_audit";
+  readonly method: string;
+  readonly url: string;
+  readonly status: number | null;
+  readonly duration_ms: number;
+  readonly blocked: boolean;
+  readonly [field: string]: unknown;
+}
+
 /** Runner → host: the worker is up and speaks `protocol_version`. */
 export interface ReadyFrame {
   readonly type: "ready";
@@ -124,10 +157,12 @@ export type Frame =
   | CallFrame
   | ResultFrame
   | ReadyFrame
+  | LogFrame
+  | FetchAuditFrame
   | UnrecognizedFrame;
 
 /** The frames the host sends to a runner. */
 export type HostToRunnerFrame = InvokeFrame | ReplyFrame;
 
 /** The frames a runner sends to the host. */
-export type RunnerToHostFrame = ReadyFrame | CallFrame | ResultFrame;
+export type RunnerToHostFrame = ReadyFrame | CallFrame | ResultFrame | LogFrame | FetchAuditFrame;

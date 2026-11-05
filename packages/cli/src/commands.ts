@@ -1,7 +1,14 @@
 import { existsSync, watch } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 
-import { activateVersion, disable, listFunctions, rollback, type FetchLike } from "./api.ts";
+import {
+  activateVersion,
+  disable,
+  getHealth,
+  listFunctions,
+  rollback,
+  type FetchLike,
+} from "./api.ts";
 import { loadConfig, type LoadConfigOptions, type ResolvedConfig } from "./config.ts";
 import { deployEntries, deployFiles, writeTypes, type DeployResult } from "./deploy.ts";
 import { isEntryFile, messageOf } from "./util.ts";
@@ -38,6 +45,7 @@ Commands:
   ebb functions activate <name> <version> [--url <url>] [--token <token>] [--config <path>]
   ebb functions rollback <name> [--url <url>] [--token <token>] [--config <path>]
   ebb functions disable <name> [--url <url>] [--token <token>] [--config <path>]
+  ebb functions health [--json] [--url <url>] [--token <token>] [--config <path>]
   ebb functions types [--config <path>]
   ebb dev [--url <url>] [--token <token>] [--actor <actor>] [--config <path>]
 
@@ -177,6 +185,39 @@ export async function disableCommand(parsed: ParsedArgs, deps: CommandDeps = {})
   (deps.print ?? console.log)(`disabled ${name}@${response.version}`);
 }
 
+export async function healthCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
+  assertNoPositionals(parsed, "functions health");
+  const config = await configFrom(flagValues(parsed), deps);
+  const print = deps.print ?? console.log;
+  const health = await getHealth(config, fetchOptions(deps));
+
+  if (parsed.booleans.has("json")) {
+    print(JSON.stringify(health, null, 2));
+    return;
+  }
+
+  const pool = Object.entries(health.pool)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(" ");
+  print(`pool\t${pool}`);
+
+  if (health.storage !== "ok") print("storage\tunavailable");
+
+  for (const fn of health.functions) {
+    print(
+      [
+        fn.name,
+        fn.version,
+        `invocations=${fn.invocations ?? 0}`,
+        `errors=${fn.errors ?? 0}`,
+        `timeouts=${fn.timeouts ?? 0}`,
+        `worker_kills=${fn.worker_kills ?? 0}`,
+        `fetch_calls=${fn.fetch_calls ?? 0}`,
+      ].join("\t"),
+    );
+  }
+}
+
 export async function typesCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
   assertNoPositionals(parsed, "functions types");
   const config = await configFrom(flagValues(parsed), deps);
@@ -204,6 +245,9 @@ async function functionsCommand(argv: string[], deps: CommandDeps): Promise<numb
       return 0;
     case "disable":
       await disableCommand(parse(rest, ["url", "token", "config"], []), deps);
+      return 0;
+    case "health":
+      await healthCommand(parse(rest, ["url", "token", "config"], ["json"]), deps);
       return 0;
     case "types":
       await typesCommand(parse(rest, ["config"], []), deps);

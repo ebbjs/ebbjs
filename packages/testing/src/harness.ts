@@ -31,6 +31,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     env: {
       ...process.env,
       EBB_AUTH_MODE: "bypass",
+      // The harness exercises sync; the release defaults functions on and this
+      // environment may not have Bun. A caller can opt back in through `env`.
+      EBB_FUNCTIONS_ENABLED: "false",
       ...env,
       EBB_DATA_DIR: dataDir,
       EBB_PORT: String(port),
