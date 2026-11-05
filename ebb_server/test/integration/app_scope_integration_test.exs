@@ -64,6 +64,7 @@ defmodule EbbServer.AppScopeIntegrationTest do
   end
 
   defp patch_group_apps(group_id, apps) do
+    # One logical millisecond past the bootstrap so the patch outranks it.
     hlc = TestHelpers.generate_hlc() + 0x10000
     update_id = "upd_apps_" <> Nanoid.generate()
 

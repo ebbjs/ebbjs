@@ -27,11 +27,11 @@ const G_BRIDGE = `grp_bridge_${RUN_ID}`;
 const G_SHARED = `grp_shared_${RUN_ID}`;
 const NOTE = `note_${RUN_ID}`;
 
-/** Permissions Alice holds in her own groups; broad enough for the flow. */
+/**
+ * Permissions Alice holds in her own groups. The bridge membership uses the
+ * same list: covering both types is what makes bidirectional edits legal (D6).
+ */
 const MEMBER_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
-
-/** Alice's membership in the bridge covers both types (D6). */
-const BRIDGE_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
 
 let notes: SyncClient | null = null;
 let issues: SyncClient | null = null;
@@ -193,7 +193,7 @@ beforeAll(async () => {
         id: `gm_bridge_${RUN_ID}`,
         actorId: ALICE,
         groupId: G_BRIDGE,
-        permissions: BRIDGE_PERMISSIONS,
+        permissions: MEMBER_PERMISSIONS,
       },
     ],
     entities: [],

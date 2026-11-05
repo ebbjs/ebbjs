@@ -20,7 +20,7 @@ the actor can reach. App scope is the default view, not a fence.
 ```ts
 groupSystemEntity = buildEntityDef("group", {
   name: e.string(),
-  apps: e.map(e.boolean()),
+  apps: e.map(e.boolean()).nullable(),
 });
 ```
 
@@ -53,11 +53,13 @@ or `null` for an unscoped group:
 }
 ```
 
-Group rows are materialized lazily, so the handshake cannot read
-`data.fields.apps` per group from SQLite. A `GroupAppsCache` alongside
-`GroupCache` fills `group_id → apps` on the boot walk over `group` entities,
-and `CacheMutationPlanner` merges incoming `apps` envelopes with the wire's
-`FieldMerge` rule so per-key and same-Action semantics match the client.
+Group rows are otherwise materialized on first read, so the handshake cannot
+read `data.fields.apps` per group from SQLite without a scan. A
+`GroupAppsCache` alongside `GroupCache` fills `group_id → apps` on the boot
+walk over `group` entities — which makes `group` one of the eager system
+types, paying full materialization once at boot — and `CacheMutationPlanner`
+merges incoming `apps` envelopes with the wire's `FieldMerge` rule so per-key
+and same-Action semantics match the client.
 
 Writes are `group.update` in the group. A new group's scope rides the
 bootstrap-exempt `group` put (creation via `client.seed()` or

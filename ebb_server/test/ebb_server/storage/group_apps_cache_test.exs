@@ -1,6 +1,8 @@
 defmodule EbbServer.Storage.GroupAppsCacheTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias EbbServer.Storage.GroupAppsCache
 
   defp with_isolated_cache do
@@ -43,6 +45,21 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
         GroupAppsCache.put_group_apps("g_empty", %{"map" => %{}}, group_apps: cache.table)
 
       assert GroupAppsCache.get_apps("g_empty", cache.table) == MapSet.new()
+    end
+
+    test "an unexpected field shape reads as unscoped and warns" do
+      cache = with_isolated_cache()
+
+      log =
+        capture_log(fn ->
+          :ok =
+            GroupAppsCache.put_group_apps("g_malformed", %{"value" => true},
+              group_apps: cache.table
+            )
+        end)
+
+      assert log =~ "group apps field is not a map"
+      assert GroupAppsCache.get_apps("g_malformed", cache.table) == :unscoped
     end
 
     test "projects only app ids whose leaf value is exactly true" do

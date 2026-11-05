@@ -18,6 +18,8 @@ defmodule EbbServer.Storage.GroupAppsCache do
 
   use GenServer
 
+  require Logger
+
   alias EbbServer.Storage.CacheTables
 
   @default_group_apps :ebb_group_apps
@@ -153,7 +155,13 @@ defmodule EbbServer.Storage.GroupAppsCache do
     |> MapSet.new()
   end
 
-  defp project(_field), do: :unscoped
+  defp project(_field) do
+    # A malformed field must not deny delivery: app scope is not a boundary,
+    # so an unexpected shape reads as unscoped like an absent one. The write
+    # is still visible here rather than silently changing the projection.
+    Logger.warning("group apps field is not a map; treating the group as unscoped")
+    :unscoped
+  end
 
   @impl true
   def init(opts) do

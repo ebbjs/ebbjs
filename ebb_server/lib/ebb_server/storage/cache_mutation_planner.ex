@@ -229,8 +229,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
       :patch ->
         data = update.data || %{}
 
-        if apps_field_present?(data) do
-          field = merge_group_apps(overlay, update.subject_id, data, tables)
+        if Fields.present?(data, "apps") do
+          field = merge_group_apps(update, overlay, data, tables)
 
           {[{:group_apps_put, update.subject_id, field} | mutations],
            Overlay.put(overlay, key, field)}
@@ -290,17 +290,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   defp patch_existing(_update, _overlay, _cache, _table, _fetch), do: %{}
 
-  defp apps_field_present?(data) do
-    is_map(data) and is_map(data["fields"]) and Map.has_key?(data["fields"], "apps")
-  end
-
-  defp merge_group_apps(overlay, group_id, data, tables) do
+  defp merge_group_apps(update, overlay, data, tables) do
     existing =
-      case Overlay.fetch(overlay, :group_apps, group_id) do
-        {:ok, :deleted} -> nil
-        {:ok, field} -> field
-        :error -> GroupAppsCache.get_field(group_id, tables.group_apps)
-      end
+      patch_existing(update, overlay, :group_apps, tables.group_apps, &GroupAppsCache.get_field/2)
 
     FieldMerge.merge(existing, Fields.get(data, "apps"))
   end

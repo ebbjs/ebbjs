@@ -82,13 +82,13 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   @doc """
   Builds the same-Action group + owner `groupMember` bootstrap that
-  `bootstrap_group/3` posts, without sending it. Callers that need the wire
+  `bootstrap_group/4` posts, without sending it. Callers that need the wire
   body (for example to drive the real Router over HTTP) encode it themselves.
   """
   def bootstrap_group_action(actor_id, group_id, permissions, apps \\ nil) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
-    group_id_field = "upd_group_" <> Nanoid.generate()
+    group_update_id = "upd_group_" <> Nanoid.generate()
 
     fields = %{
       "name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
@@ -96,7 +96,7 @@ defmodule EbbServer.Integration.ActionHelpers do
 
     fields =
       if apps,
-        do: Map.put(fields, "apps", group_apps_field(apps, hlc, group_id_field)),
+        do: Map.put(fields, "apps", group_apps_field(apps, hlc, group_update_id)),
         else: fields
 
     %{
@@ -105,7 +105,7 @@ defmodule EbbServer.Integration.ActionHelpers do
       "hlc" => hlc,
       "updates" => [
         %{
-          "id" => group_id_field,
+          "id" => group_update_id,
           "subject_id" => group_id,
           "subject_type" => "group",
           "method" => "put",

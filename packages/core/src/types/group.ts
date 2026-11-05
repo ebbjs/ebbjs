@@ -7,6 +7,8 @@ export const GroupSchema = Type.Object({
   type: Type.Literal("group"),
   data: Type.Object({
     name: Type.String(),
+    /** App scope: a group is in scope for an app iff its entry is `true`. */
+    apps: Type.Optional(Type.Record(Type.String(), Type.Boolean())),
   }),
 });
 export type Group = Static<typeof GroupSchema>;
