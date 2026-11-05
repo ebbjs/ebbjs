@@ -283,7 +283,7 @@ defmodule EbbServer.Tailscale.ConfigTest do
       for hostname <- ["ebb", "ebb-2", "E", String.duplicate("a", 63)] do
         System.put_env("EBB_TAILSCALE_HOSTNAME", hostname)
 
-        assert %{hostname: hostname} = Config.resolve(@data_dir, 4000)
+        assert %{hostname: ^hostname} = Config.resolve(@data_dir, 4000)
       end
     end
 

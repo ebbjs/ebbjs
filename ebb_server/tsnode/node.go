@@ -18,7 +18,9 @@ import (
 const (
 	statusPollInterval = time.Second
 	readHeaderTimeout  = 10 * time.Second
-	shutdownTimeout    = 5 * time.Second
+	// Below the BEAM's 5s drain deadline (see `EbbServer.Tailscale.Node`), so a
+	// gateway that is draining by itself finishes before the node escalates.
+	shutdownTimeout = 3 * time.Second
 
 	// Idle applies between requests on a kept-alive connection, never to a
 	// response in flight, so a long SSE stream is not cut by it.
@@ -52,7 +54,10 @@ func newTailscaleServer(cfg Config, logf func(format string, args ...any)) *tsne
 func run(ctx context.Context, cfg Config, out *emitter, logf func(format string, args ...any)) error {
 	server := newTailscaleServer(cfg, logf)
 	if err := server.Start(); err != nil {
-		return fmt.Errorf("start tsnet: %w", err)
+		// A start failure is local setup: an unusable state directory, a lock
+		// held by another process, or the log-policy requirement tsnet refuses
+		// to run without. Restarting repeats it.
+		return fatal(fmt.Errorf("start tsnet: %w", err))
 	}
 
 	client, err := server.LocalClient()
@@ -64,7 +69,7 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 	backend, err := url.Parse("http://" + cfg.BackendAddr)
 	if err != nil {
 		server.Close()
-		return fmt.Errorf("backend address: %w", err)
+		return fatal(fmt.Errorf("backend address: %w", err))
 	}
 
 	servers := &httpServers{logf: logf, errs: make(chan error, 1)}
@@ -103,7 +108,10 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 		case err := <-connectErr:
 			connectErr = nil
 			if err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-				return fmt.Errorf("connect: %w", err)
+				// `Up` only returns once the backend gives up: a rejected or
+				// expired auth key, a control server that refuses the node, or a
+				// tailnet policy that forbids it. None of those fix themselves.
+				return fatal(fmt.Errorf("connect: %w", err))
 			}
 
 		case err := <-servers.errs:
@@ -145,8 +153,8 @@ func run(ctx context.Context, cfg Config, out *emitter, logf func(format string,
 type httpServers struct {
 	logf    func(format string, args ...any)
 	servers []*http.Server
-	// A listener that stops serving is not recoverable in place; `run` takes
-	// the error so the process exits and the supervisor starts a fresh node.
+	// A listener that stops serving usually means the node needs to reconnect,
+	// so `run` takes the error and a fresh gateway tries again.
 	errs chan error
 }
 
@@ -159,13 +167,16 @@ func (h *httpServers) serve(
 	handler http.Handler,
 	out *emitter,
 ) error {
+	// HTTPS availability and the status shape are read from a netmap that can
+	// still be catching up (an admin-console toggle propagates through it), so
+	// both stay retryable rather than stopping the gateway for good.
 	plan, err := planHTTPS(cfg.HTTPS, status)
 	if err != nil {
-		return fatal(err)
+		return err
 	}
 	running, err := runningEventFor(status, plan.TLS)
 	if err != nil {
-		return fatal(err)
+		return err
 	}
 	if plan.Warning != "" {
 		h.logf("%s", plan.Warning)
@@ -174,19 +185,19 @@ func (h *httpServers) serve(
 	if plan.TLS {
 		tlsListener, err := server.ListenTLS("tcp", listenAddrHTTPS)
 		if err != nil {
-			return fatal(fmt.Errorf("listen tls: %w", err))
+			return fmt.Errorf("listen tls: %w", err)
 		}
 		h.start(tlsListener, handler)
 
 		redirectListener, err := server.Listen("tcp", listenAddrHTTP)
 		if err != nil {
-			return fatal(fmt.Errorf("listen redirect: %w", err))
+			return fmt.Errorf("listen redirect: %w", err)
 		}
 		h.start(redirectListener, redirectHandler(running.URL))
 	} else {
 		listener, err := server.Listen("tcp", listenAddrHTTP)
 		if err != nil {
-			return fatal(fmt.Errorf("listen: %w", err))
+			return fmt.Errorf("listen: %w", err)
 		}
 		h.start(listener, handler)
 	}

@@ -302,6 +302,18 @@ if [ "$HOST_HEALTH" = "200" ] || [ "$HOST_HANDSHAKE" = "200" ]; then
 fi
 echo "host port ${PORT} is refused (healthz ${HOST_HEALTH}, handshake ${HOST_HANDSHAKE})"
 
+# SIGTERM closes the gateway's stdin and the BEAM waits for it to drain. A
+# container the engine has to SIGKILL (exit 137) means the drain path never ran
+# in the image, which Dev/CI shells would not show: it is the packaged probe.
+log "the gateway shuts down inside the stop grace period"
+docker stop --time 10 "$NAME" >/dev/null
+TAILSCALE_EXIT="$(docker inspect -f '{{.State.ExitCode}}' "$NAME")"
+if [ "$TAILSCALE_EXIT" = "137" ]; then
+  echo "FAIL: the container needed SIGKILL after 10s; the gateway did not drain"
+  docker logs "$NAME" 2>&1 | tail -n 30
+  exit 1
+fi
+echo "container exited ${TAILSCALE_EXIT} without needing SIGKILL"
 docker rm -f "$NAME" >/dev/null
 
 log "docker compose dev profile boots the same image with a named volume"

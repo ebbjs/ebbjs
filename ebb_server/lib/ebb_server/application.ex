@@ -110,17 +110,32 @@ defmodule EbbServer.Application do
       reraise error, __STACKTRACE__
   end
 
-  # tsnet creates the state directory itself, but a path it cannot create (a
-  # read-only volume, a file in the way) would surface only as a gateway that
-  # dies on every start. Failing here names the setting instead.
+  # tsnet creates and writes the state directory itself, but a path it cannot
+  # create or write (a read-only volume, a file in the way) would surface only
+  # as a gateway that dies on every start. Failing here names the setting.
   defp prepare_state_dir!(config) do
-    case File.mkdir_p(config.state_dir) do
-      :ok ->
-        config
-
+    with :ok <- File.mkdir_p(config.state_dir),
+         :ok <- probe_write(config.state_dir) do
+      config
+    else
       {:error, reason} ->
-        raise "EBB_TAILSCALE_STATE_DIR=#{inspect(config.state_dir)} cannot be created: " <>
-                to_string(:file.format_error(reason))
+        raise "EBB_TAILSCALE_STATE_DIR=#{inspect(config.state_dir)} cannot be created or " <>
+                "written: #{:file.format_error(reason)}"
+    end
+  end
+
+  # `mkdir_p/1` reports `:ok` for a directory that already exists, writable or
+  # not, and tsnet writes its state and log policy here on start.
+  defp probe_write(dir) do
+    path = Path.join(dir, ".write-probe-#{System.unique_integer([:positive])}")
+
+    case File.write(path, "") do
+      :ok ->
+        _ = File.rm(path)
+        :ok
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

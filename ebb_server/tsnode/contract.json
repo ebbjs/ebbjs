@@ -1,0 +1,11 @@
+{
+  "fatal_exit_status": 78,
+  "headers": {
+    "login": "Tailscale-User-Login",
+    "name": "Tailscale-User-Name",
+    "user_id": "X-Ebb-Tailscale-User-Id",
+    "secret": "X-Ebb-Tailscale-Secret",
+    "stripped_prefixes": ["tailscale-", "x-ebb-tailscale-"],
+    "stripped_headers": ["x-ebb-actor-id"]
+  }
+}

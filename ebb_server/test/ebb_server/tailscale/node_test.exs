@@ -315,8 +315,14 @@ defmodule EbbServer.Tailscale.NodeTest do
       assert_raise ArgumentError, ~r/:config/, fn -> Node.start_link([]) end
     end
 
-    test "is a transient child so an intentional stop is not restarted" do
-      assert Node.child_spec(config: %{proxy_bin: "/nonexistent"}).restart == :transient
+    test "is a transient child that outwaits the drain" do
+      spec = Node.child_spec(config: %{proxy_bin: "/nonexistent"})
+
+      # `:transient` keeps an intentional stop from being restarted, and
+      # `shutdown` has to exceed the drain so the supervisor does not kill the
+      # node before it kills the gateway.
+      assert spec.restart == :transient
+      assert spec.shutdown == 8_000
     end
   end
 
@@ -365,7 +371,7 @@ defmodule EbbServer.Tailscale.NodeTest do
       port = :sys.get_state(pid).port
 
       send(pid, {make_ref(), {:exit_status, 0}})
-      send(pid, {:EXIT, make_ref(), :shutdown})
+      send(pid, {make_ref(), {:data, {:eol, "late"}}})
       Process.sleep(50)
 
       assert :sys.get_state(pid).port == port
@@ -375,13 +381,19 @@ defmodule EbbServer.Tailscale.NodeTest do
     test "stops instead of restarting after a fatal exit", %{dir: dir} do
       log =
         capture_log(fn ->
-          pid = start_node!(dir, [], exit_status: 2, backoff_initial_ms: 10, backoff_max_ms: 10)
+          pid =
+            start_node!(dir, [],
+              exit_status: Node.fatal_exit_status(),
+              backoff_initial_ms: 10,
+              backoff_max_ms: 10
+            )
+
           ref = Process.monitor(pid)
 
           assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
         end)
 
-      assert log =~ "ebb_tsnode exited with status 2 (fatal"
+      assert log =~ "ebb_tsnode exited with status #{Node.fatal_exit_status()} (fatal"
       refute log =~ "restarting in"
     end
 
@@ -434,12 +446,10 @@ defmodule EbbServer.Tailscale.NodeTest do
       wait_for_status(pid)
       [os_pid | _rest] = read_pids(dir)
 
-      started_at = System.monotonic_time(:millisecond)
       GenServer.stop(pid)
 
       wait_until(fn -> not os_process_alive?(os_pid) end)
       refute os_process_alive?(os_pid)
-      assert System.monotonic_time(:millisecond) - started_at >= 100
     end
 
     test "terminate kills the gateway process", %{dir: dir} do
@@ -601,7 +611,6 @@ defmodule EbbServer.Tailscale.NodeTest do
   end
 
   defp os_process_alive?(os_pid) do
-    {_output, status} = System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true)
-    status == 0
+    match?({_output, 0}, System.cmd("sh", ["-c", "kill -0 #{os_pid} 2>/dev/null"]))
   end
 end

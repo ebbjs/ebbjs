@@ -331,6 +331,12 @@ server, or is waiting for authorization, does **not** fail the container
 healthcheck: the BEAM, storage, and the healthcheck stay up while the gateway
 retries with backoff, and the tailnet state is reported in the logs.
 
+On `SIGTERM` the server closes the gateway's stdin, waits up to five seconds for
+it to drain open streams, then kills it; the supervisor waits longer still, so
+the drain wins. A gateway that stops itself because a setting cannot work (a
+configuration the server rejects, a tailnet that refuses the node) logs why and
+is not restarted: fix the setting and restart the container.
+
 The gateway is a static binary using tsnet's userspace network stack. It needs
 no `/dev/net/tun`, no root, no capabilities, and no privileged host port, so the
 container stays non-root with the same hardening as the other modes. Tailscale's

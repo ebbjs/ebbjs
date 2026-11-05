@@ -347,6 +347,32 @@ defmodule EbbServer.RuntimeConfigTest do
       assert stderr =~ "ebb_server boot failed:"
     end
 
+    test "fails the boot when an existing state directory is not writable", %{
+      bin: bin,
+      data_dir: dir
+    } do
+      state_dir = Path.join(dir, "read-only-state")
+      File.mkdir_p!(state_dir)
+      File.chmod!(state_dir, 0o555)
+
+      # Root ignores the permission bits, so this can only prove the probe runs
+      # when the directory actually refuses a write.
+      if match?({:ok, _}, File.write(Path.join(state_dir, "probe"), "")) do
+        File.rm(Path.join(state_dir, "probe"))
+        :ok
+      else
+        System.put_env("EBB_TAILSCALE_NODE", "embedded")
+        System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+        System.put_env("EBB_TAILSCALE_STATE_DIR", state_dir)
+
+        capture_io(:stderr, fn ->
+          assert_raise RuntimeError, ~r/EBB_TAILSCALE_STATE_DIR/, fn ->
+            EbbServer.Application.resolve_tailscale!(dir, 4000)
+          end
+        end)
+      end
+    end
+
     test "creates the state directory before the gateway starts", %{bin: bin, data_dir: dir} do
       System.put_env("EBB_TAILSCALE_NODE", "embedded")
       System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)

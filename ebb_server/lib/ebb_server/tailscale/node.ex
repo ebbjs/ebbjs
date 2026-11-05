@@ -45,12 +45,17 @@ defmodule EbbServer.Tailscale.Node do
 
   @expiry_warning_days 14
 
-  # Keep in step with `exitFatal` in `ebb_server/tsnode/main.go`: a fatal exit
-  # means the next attempt cannot succeed either, so the child is not restarted.
-  @fatal_exit_status 2
+  # `contract.json` pins this for both sides: `ebb_server/tsnode/main.go` exits
+  # with it when the next attempt cannot succeed either, so the child is not
+  # restarted. Not 2, which is the Go runtime's status for an unrecovered panic.
+  @fatal_exit_status 78
 
+  # The drain budget sits between the gateway's own 3s shutdown and the
+  # supervisor's patience, so a draining gateway finishes by itself and a
+  # wedged one is killed before the supervisor gives up on the node.
   @shutdown_timeout_ms 5_000
   @shutdown_poll_ms 50
+  @child_shutdown_ms 8_000
 
   @default_tag "tag:ebb"
 
@@ -84,7 +89,8 @@ defmodule EbbServer.Tailscale.Node do
     %{
       id: Keyword.get(opts, :name, __MODULE__),
       start: {__MODULE__, :start_link, [opts]},
-      restart: :transient
+      restart: :transient,
+      shutdown: @child_shutdown_ms
     }
   end
 
@@ -95,6 +101,10 @@ defmodule EbbServer.Tailscale.Node do
   @doc "The last login URL the gateway reported, or `nil` while authorized."
   @spec last_login_url(GenServer.server()) :: String.t() | nil
   def last_login_url(server \\ __MODULE__), do: GenServer.call(server, :last_login_url)
+
+  @doc false
+  # Exposed for the contract test, which pins it against `tsnode/contract.json`.
+  def fatal_exit_status, do: @fatal_exit_status
 
   defp gen_server_opts(opts) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -173,7 +183,14 @@ defmodule EbbServer.Tailscale.Node do
 
   @impl true
   def terminate(_reason, state) do
-    stop_child(state.port, state.shutdown_timeout_ms)
+    # A raise here would turn a clean stop into an abnormal exit, which the
+    # `:transient` restart policy then restarts.
+    try do
+      stop_child(state.port, state.shutdown_timeout_ms)
+    rescue
+      error -> Logger.error("ebb_tsnode shutdown failed: #{Exception.message(error)}")
+    end
+
     :ok
   end
 
@@ -404,35 +421,33 @@ defmodule EbbServer.Tailscale.Node do
   # it drains open streams and exits by itself. Killing it immediately would cut
   # that drain short, so the kill is only the backstop for a wedged child. The
   # OS pid has to be read before the port is gone.
+  #
+  # The probe and the kill go through `sh`, whose `kill` is a builtin: the
+  # runtime image installs no procps, so there is no `kill` executable to run.
   defp stop_child(nil, _timeout_ms), do: :ok
 
   defp stop_child(port, timeout_ms) do
     os_pid = port_os_pid(port)
     close_port(port)
 
-    if os_pid && await_exit(os_pid, System.monotonic_time(:millisecond) + timeout_ms) == :timeout do
+    if os_pid && await_exit(os_pid, timeout_ms) == :timeout do
       kill_os_process(os_pid)
     end
 
     :ok
   end
 
-  defp await_exit(os_pid, deadline) do
-    cond do
-      not os_process_alive?(os_pid) ->
-        :exited
+  defp await_exit(os_pid, timeout_ms) do
+    polls = max(div(timeout_ms, @shutdown_poll_ms), 1)
 
-      System.monotonic_time(:millisecond) >= deadline ->
-        :timeout
+    script =
+      "i=0; while kill -0 #{os_pid} 2>/dev/null; do " <>
+        "i=$((i+1)); if [ \"$i\" -ge #{polls} ]; then exit 1; fi; sleep 0.05; done"
 
-      true ->
-        Process.sleep(@shutdown_poll_ms)
-        await_exit(os_pid, deadline)
+    case System.cmd("sh", ["-c", script], stderr_to_stdout: true) do
+      {_output, 0} -> :exited
+      _timeout -> :timeout
     end
-  end
-
-  defp os_process_alive?(os_pid) do
-    match?({_output, 0}, System.cmd("kill", ["-0", to_string(os_pid)], stderr_to_stdout: true))
   end
 
   defp port_os_pid(port) do
@@ -446,7 +461,7 @@ defmodule EbbServer.Tailscale.Node do
   end
 
   defp kill_os_process(os_pid) do
-    _ = System.cmd("kill", ["-9", to_string(os_pid)], stderr_to_stdout: true)
+    _ = System.cmd("sh", ["-c", "kill -9 #{os_pid} 2>/dev/null"], stderr_to_stdout: true)
     :ok
   end
 end

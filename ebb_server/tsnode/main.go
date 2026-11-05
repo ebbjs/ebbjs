@@ -20,7 +20,10 @@ const (
 	// exitFatal is a failure the next attempt cannot fix. `EbbServer.Tailscale.Node`
 	// stops the child on this status instead of restarting it, so a bad
 	// configuration is one error line rather than a permanent restart loop.
-	exitFatal = 2
+	//
+	// Not 2: the Go runtime exits 2 on an unrecovered panic, and a crash must
+	// stay retryable. `contract.json` pins this value for the BEAM.
+	exitFatal = 78
 )
 
 // fatalError marks a failure no restart can fix: the configuration is wrong, or
