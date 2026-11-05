@@ -422,7 +422,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
       assert conn.assigns.actor.id == "alice@example.com"
     end
 
-    test "an absent display name leaves the assign unset" do
+    test "an absent display name leaves the metadata fields nil" do
       conn = tailscale_conn([{"tailscale-user-login", "alice@example.com"}])
 
       assert conn.assigns.actor.display_name == nil

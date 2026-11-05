@@ -3,8 +3,8 @@ defmodule EbbServer.Actor do
   The authenticated principal `EbbServer.Sync.AuthPlug` resolved for a request.
 
   The plug assigns one to `conn.assigns.actor`. A request authenticated only by
-  a functions service token has none: the service is the principal, so
-  `conn.assigns[:actor]` is `nil` there.
+  a functions service token has none: the service is the principal, so the key
+  stays absent and `conn.assigns[:actor]` is `nil` there.
 
   `id` is the provider's own identifier, unprefixed, and the only field used for
   authorization. `provider` names the auth mode that resolved it, which lets a

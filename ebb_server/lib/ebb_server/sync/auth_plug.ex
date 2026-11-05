@@ -24,7 +24,7 @@ defmodule EbbServer.Sync.AuthPlug do
     - when `:tailscale_proxy_secret` is configured, exactly one
       `x-ebb-tailscale-secret` header matches it.
 
-  The login becomes `actor_id` unchanged (design D3). `tailscale-user-name` is
+  The login becomes the actor's `id` unchanged (design D3). `tailscale-user-name` is
   kept as a display name only, and `x-ebb-tailscale-user-id` as an optional
   gateway-supplied provider id (published as a JSON number); neither affects
   authorization. `x-ebb-actor-id` is ignored in this mode: there is no
