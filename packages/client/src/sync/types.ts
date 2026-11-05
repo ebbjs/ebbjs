@@ -145,7 +145,8 @@ export type EntityQueryResponse = readonly EntityResponse[];
  * Discriminated union of all events the SSE stream can emit.
  *
  * - `data` — server pushed an Action; client appends to storage
- * - `control` — server sent a control event (today: stale cursor)
+ * - `control` — server sent a control event (stale cursor, or a live
+ *   membership change)
  * - `presence` — server forwarded another actor's presence payload
  */
 export type SSEEvent =
@@ -154,15 +155,26 @@ export type SSEEvent =
   | { type: "presence"; presence: PresenceEvent };
 
 /**
- * Control event payload. Today the server only emits one control event:
- * `{ reconnect: true, reason: "behind_watermark", catchUpFrom: <gsn> }`.
- * Future events may carry `group` / `nextOffset`. Unknown keys are
- * dropped at parse time.
+ * Control event payload. The server emits two:
+ *
+ * - the stale-cursor restart, `{ reconnect: true, reason: "behind_watermark",
+ *   catchUpFrom: <gsn> }`, which rewrites the client's cursors and closes the
+ *   stream so reconnect catches up from the server's point;
+ * - the membership wake-up (#734), `{ groups_changed: true, reason:
+ *   "membership" }`, which carries no delta: the client re-handshakes for the
+ *   authoritative group set and reconciles its live subscription.
+ *
+ * Keys are read as they arrive on the wire; the SSE parser does not
+ * transform them, so `groups_changed` stays snake_case here and in
+ * {@link ControlEvent}. Future events may carry `group` / `nextOffset`.
+ * Unknown keys are dropped at parse time.
  */
 export const ControlEventSchema = Type.Object({
   reconnect: Type.Optional(Type.Boolean()),
   reason: Type.Optional(Type.String()),
   catchUpFrom: Type.Optional(Type.Number()),
+  /** The actor's group set changed; re-handshake and reconcile (#734). */
+  groups_changed: Type.Optional(Type.Boolean()),
   group: Type.Optional(Type.String()),
   nextOffset: Type.Optional(Type.Number()),
 });
