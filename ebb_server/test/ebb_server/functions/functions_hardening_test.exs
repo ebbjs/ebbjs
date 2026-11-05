@@ -2,6 +2,7 @@ defmodule EbbServer.Functions.HardeningTest do
   use ExUnit.Case, async: false
 
   import Plug.Test
+  import EbbServer.TestHelpers, only: [put_actor: 2]
 
   alias EbbServer.Functions
   alias EbbServer.Functions.{Access, Principal}
@@ -147,7 +148,7 @@ defmodule EbbServer.Functions.HardeningTest do
       conn =
         conn(:post, "/functions/greet")
         |> Plug.Conn.put_req_header("x-ebb-service-token", "wrong")
-        |> Plug.Conn.assign(:actor_id, "a_someone")
+        |> put_actor("a_someone")
 
       assert Principal.resolve(conn, services: services) == {:error, :denied}
     end
@@ -166,7 +167,7 @@ defmodule EbbServer.Functions.HardeningTest do
     test "a resolved actor is the actor principal when no service token is present" do
       conn =
         conn(:post, "/functions/greet")
-        |> Plug.Conn.assign(:actor_id, "a_person")
+        |> put_actor("a_person")
 
       assert {:ok, %{kind: :actor, actor_id: "a_person", permissions: nil}} =
                Principal.resolve(conn, services: [])

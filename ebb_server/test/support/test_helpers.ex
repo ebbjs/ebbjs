@@ -13,6 +13,9 @@ defmodule EbbServer.TestHelpers do
   **Configuration**
   - `put_config/2` - Set an `:ebb_server` application-env key for one test and restore it on exit
 
+  **Auth**
+  - `put_actor/2` - Assign the actor `AuthPlug` would resolve, for suites that call a router directly
+
   **Storage Setup** (for unit tests)
   - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache, WatermarkTracker, InFlightActions)
   - `start_rocks/1` - Start isolated RocksDB instance
@@ -90,6 +93,20 @@ defmodule EbbServer.TestHelpers do
         previous -> Application.put_env(:ebb_server, key, previous)
       end
     end)
+  end
+
+  @doc """
+  Assigns the actor a bypass request would resolve, for a suite that calls a
+  router directly instead of going through `AuthPlug`.
+
+  Pass `nil` to assign no actor, which is how a service-token request reaches a
+  router.
+  """
+  @spec put_actor(Plug.Conn.t(), String.t() | nil) :: Plug.Conn.t()
+  def put_actor(conn, nil), do: Plug.Conn.assign(conn, :actor, nil)
+
+  def put_actor(conn, actor_id) do
+    Plug.Conn.assign(conn, :actor, EbbServer.Actor.new(:bypass, actor_id))
   end
 
   @doc """

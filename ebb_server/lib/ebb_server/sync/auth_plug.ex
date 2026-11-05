@@ -54,6 +54,8 @@ defmodule EbbServer.Sync.AuthPlug do
 
   import Plug.Conn
 
+  alias EbbServer.Actor
+
   @loopback_addresses [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
 
   @impl true
@@ -102,9 +104,7 @@ defmodule EbbServer.Sync.AuthPlug do
 
     case actor_id do
       id when is_binary(id) and id != "" ->
-        conn
-        |> assign(:actor_id, id)
-        |> assign(:actor_provider, "bypass")
+        assign(conn, :actor, Actor.new(:bypass, id))
 
       _ ->
         unauthorized(conn, "missing x-ebb-actor-id header")
@@ -124,9 +124,7 @@ defmodule EbbServer.Sync.AuthPlug do
 
       case call_auth_url(auth_url, headers) do
         {:ok, actor_id} ->
-          conn
-          |> assign(:actor_id, actor_id)
-          |> assign(:actor_provider, "external")
+          assign(conn, :actor, Actor.new(:external, actor_id))
 
         {:error, reason} ->
           unauthorized(conn, reason)
@@ -140,11 +138,14 @@ defmodule EbbServer.Sync.AuthPlug do
     with :ok <- loopback_peer(conn),
          {:ok, login} <- single_header(conn, "tailscale-user-login"),
          :ok <- verify_tailscale_proxy_secret(conn) do
-      conn
-      |> assign(:actor_id, login)
-      |> assign(:actor_provider, "tailscale")
-      |> assign_optional(:actor_display_name, "tailscale-user-name")
-      |> assign_provider_id()
+      assign(
+        conn,
+        :actor,
+        Actor.new(:tailscale, login,
+          display_name: optional_header(conn, "tailscale-user-name"),
+          provider_id: provider_id(conn)
+        )
+      )
     else
       {:error, details} -> unauthorized(conn, details)
     end
@@ -208,22 +209,22 @@ defmodule EbbServer.Sync.AuthPlug do
 
   # Display metadata is informational, so a malformed value is dropped rather
   # than rejecting an otherwise authenticated request.
-  defp assign_optional(conn, assign_key, header) do
+  defp optional_header(conn, header) do
     case single_header(conn, header) do
-      {:ok, value} -> assign(conn, assign_key, value)
-      {:error, _} -> conn
+      {:ok, value} -> value
+      {:error, _} -> nil
     end
   end
 
   # The gateway supplies Tailscale's numeric user id as text; the endpoint
   # publishes it as a JSON number, and drops it when it is absent or not
   # numeric because nothing authorization-related depends on it.
-  defp assign_provider_id(conn) do
+  defp provider_id(conn) do
     with {:ok, raw} <- single_header(conn, "x-ebb-tailscale-user-id"),
          {id, ""} <- Integer.parse(raw) do
-      assign(conn, :actor_provider_id, id)
+      id
     else
-      _absent_or_not_numeric -> conn
+      _absent_or_not_numeric -> nil
     end
   end
 

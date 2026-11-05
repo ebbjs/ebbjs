@@ -13,7 +13,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
   - Bypass mode: accepts/rejects based on header presence
   - External mode: delegates to auth server, handles success/failure
   - Missing headers: returns 401 appropriately
-  - Proper assigns: actor_id is set in conn.assigns
+  - Proper assigns: an `EbbServer.Actor` is set in conn.assigns.actor
   """
 
   use ExUnit.Case, async: false
@@ -122,7 +122,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
   end
 
   describe "bypass mode" do
-    test "valid header assigns actor_id" do
+    test "valid header assigns the actor" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
       conn =
@@ -130,7 +130,8 @@ defmodule EbbServer.Sync.AuthPlugTest do
         |> Map.put(:req_headers, [{"x-ebb-actor-id", "actor_123"}])
         |> AuthPlug.call([])
 
-      assert conn.assigns.actor_id == "actor_123"
+      assert conn.assigns.actor.id == "actor_123"
+      assert conn.assigns.actor.provider == :bypass
       refute conn.halted
     end
 
@@ -187,7 +188,8 @@ defmodule EbbServer.Sync.AuthPlugTest do
         |> Map.put(:req_headers, [{"authorization", "Bearer token123"}])
         |> AuthPlug.call([])
 
-      assert conn.assigns.actor_id == "ext_actor"
+      assert conn.assigns.actor.id == "ext_actor"
+      assert conn.assigns.actor.provider == :external
       refute conn.halted
     end
 
@@ -314,7 +316,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
         |> AuthPlug.call([])
 
-      assert conn.assigns.actor_id == "captured_actor"
+      assert conn.assigns.actor.id == "captured_actor"
       refute conn.halted
 
       [captured] = HeaderCaptureAgent.all(:capture)
@@ -351,10 +353,10 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
 
       refute conn.halted
-      assert conn.assigns.actor_id == "alice@example.com"
-      assert conn.assigns.actor_provider == "tailscale"
-      assert conn.assigns.actor_display_name == "Alice"
-      assert conn.assigns.actor_provider_id == 42
+      assert conn.assigns.actor.id == "alice@example.com"
+      assert conn.assigns.actor.provider == :tailscale
+      assert conn.assigns.actor.display_name == "Alice"
+      assert conn.assigns.actor.provider_id == 42
     end
 
     test "IPv6 loopback is trusted" do
@@ -365,7 +367,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
         )
 
       refute conn.halted
-      assert conn.assigns.actor_id == "alice@example.com"
+      assert conn.assigns.actor.id == "alice@example.com"
     end
 
     test "a non-loopback peer is rejected even with a valid header" do
@@ -417,14 +419,14 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
 
       refute conn.halted
-      assert conn.assigns.actor_id == "alice@example.com"
+      assert conn.assigns.actor.id == "alice@example.com"
     end
 
     test "an absent display name leaves the assign unset" do
       conn = tailscale_conn([{"tailscale-user-login", "alice@example.com"}])
 
-      refute Map.has_key?(conn.assigns, :actor_display_name)
-      refute Map.has_key?(conn.assigns, :actor_provider_id)
+      assert conn.assigns.actor.display_name == nil
+      assert conn.assigns.actor.provider_id == nil
     end
 
     test "a configured secret must match" do
@@ -437,7 +439,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
 
       refute conn.halted
-      assert conn.assigns.actor_id == "alice@example.com"
+      assert conn.assigns.actor.id == "alice@example.com"
     end
 
     test "a configured secret rejects an absent header" do
@@ -479,7 +481,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
           {"x-ebb-tailscale-user-id", "u42"}
         ])
 
-      refute Map.has_key?(conn.assigns, :actor_provider_id)
+      assert conn.assigns.actor.provider_id == nil
     end
 
     test "a non-string secret configuration fails closed without disclosing it" do
@@ -505,7 +507,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
 
       refute conn.halted
-      assert conn.assigns.actor_id == "alice@example.com"
+      assert conn.assigns.actor.id == "alice@example.com"
     end
 
     test "a service token still short-circuits actor resolution" do
@@ -516,7 +518,7 @@ defmodule EbbServer.Sync.AuthPlugTest do
         ])
 
       refute conn.halted
-      refute Map.has_key?(conn.assigns, :actor_id)
+      refute Map.has_key?(conn.assigns, :actor)
     end
   end
 end

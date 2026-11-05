@@ -6,7 +6,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
   ## Placement
 
   Runs in `EbbServer.Sync.Router`'s pipeline after
-  `EbbServer.Sync.AuthPlug` — it needs `conn.assigns.actor_id` — and before
+  `EbbServer.Sync.AuthPlug` — it needs `conn.assigns.actor` — and before
   `plug(:match)`, so a limited request is rejected before the route touches
   the entity index or the fan-out. It inspects only `POST /sync/presence`;
   every other request passes through untouched. The Action path deliberately
@@ -54,6 +54,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
 
   @behaviour Plug
 
+  alias EbbServer.Actor
   alias EbbServer.Sync.PresenceRateLimit.Buckets
 
   @default_rate {100, 200}
@@ -63,8 +64,8 @@ defmodule EbbServer.Sync.PresenceRateLimit do
 
   @impl true
   def call(%Plug.Conn{method: "POST", path_info: ["sync", "presence"]} = conn, _opts) do
-    case conn.assigns[:actor_id] do
-      actor_id when is_binary(actor_id) -> limit(conn, actor_id)
+    case conn.assigns[:actor] do
+      %Actor{id: actor_id} when is_binary(actor_id) -> limit(conn, actor_id)
       _no_actor -> conn
     end
   end

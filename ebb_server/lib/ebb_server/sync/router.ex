@@ -179,7 +179,7 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp submit_actions(conn, body) do
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     case decode_msgpack(body) do
       {:ok, actions} ->
@@ -206,19 +206,19 @@ defmodule EbbServer.Sync.Router do
   # has already accepted or rejected the request; a service-token request has
   # no actor and is denied here like any other anonymous sync route.
   get "/sync/identity" do
-    case conn.assigns[:actor_id] do
+    case conn.assigns[:actor] do
       nil -> send_json(conn, 401, %{"error" => "unauthorized"})
-      _actor_id -> send_json(conn, 200, identity_payload(conn))
+      actor -> send_json(conn, 200, identity_payload(actor))
     end
   end
 
-  defp identity_payload(conn) do
+  defp identity_payload(actor) do
     %{
-      "actor_id" => conn.assigns.actor_id,
-      "provider" => conn.assigns.actor_provider
+      "actor_id" => actor.id,
+      "provider" => Atom.to_string(actor.provider)
     }
-    |> maybe_put("display_name", Map.get(conn.assigns, :actor_display_name))
-    |> maybe_put("provider_id", Map.get(conn.assigns, :actor_provider_id))
+    |> maybe_put("display_name", actor.display_name)
+    |> maybe_put("provider_id", actor.provider_id)
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -227,12 +227,12 @@ defmodule EbbServer.Sync.Router do
   get "/entities/:id" do
     entity_id = conn.path_params["id"]
 
-    case conn.assigns[:actor_id] do
+    case conn.assigns[:actor] do
       nil ->
         send_json(conn, 401, %{"error" => "unauthorized"})
 
-      actor_id ->
-        case EntityView.for_actor(entity_id, actor_id) do
+      actor ->
+        case EntityView.for_actor(entity_id, actor.id) do
           {:ok, view} ->
             send_json(conn, 200, view)
 
@@ -256,7 +256,7 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp query_entities(conn, body) do
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     case Jason.decode(body) do
       {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
@@ -305,7 +305,7 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp handshake(conn, body) do
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     case Jason.decode(body) do
       {:ok, payload} ->
@@ -352,7 +352,7 @@ defmodule EbbServer.Sync.Router do
   # update `EbbServer.Telemetry.HTTP` (@sse_route) to match.
   get "/sync/live" do
     conn = Plug.Conn.fetch_query_params(conn)
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     groups_param = conn.query_params["groups"] || ""
     cursor_param = conn.query_params["cursor"] || "0"
@@ -399,7 +399,7 @@ defmodule EbbServer.Sync.Router do
   get "/sync/groups/:group_id/entities" do
     conn = Plug.Conn.fetch_query_params(conn)
     group_id = conn.path_params["group_id"]
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     case parse_limit(conn.query_params["limit"]) do
       {:ok, limit} ->
@@ -429,7 +429,7 @@ defmodule EbbServer.Sync.Router do
 
   get "/sync/groups/:group_id" do
     conn = Plug.Conn.fetch_query_params(conn)
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
     offset_str = conn.query_params["offset"] || "0"
 
     case Integer.parse(offset_str) do
@@ -471,7 +471,7 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp broadcast_presence(conn, body) do
-    actor_id = conn.assigns.actor_id
+    actor_id = conn.assigns.actor.id
 
     case Jason.decode(body) do
       {:ok, %{"entity_id" => entity_id, "data" => data}}

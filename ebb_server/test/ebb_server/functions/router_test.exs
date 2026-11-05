@@ -1,7 +1,7 @@
 defmodule EbbServer.Functions.RouterTest do
   use ExUnit.Case, async: false
 
-  import EbbServer.TestHelpers, only: [create_isolated_tables: 0]
+  import EbbServer.TestHelpers, only: [create_isolated_tables: 0, put_actor: 2]
   import Plug.Conn
   import Plug.Test
 
@@ -82,7 +82,7 @@ defmodule EbbServer.Functions.RouterTest do
     conn(:post, "/#{name}", body)
     |> put_req_header("content-type", "application/json")
     |> put_headers(headers)
-    |> assign(:actor_id, actor_id)
+    |> put_actor(actor_id)
     |> Router.call(Router.init(cache: cache, group_members_table: table))
   end
 
@@ -357,7 +357,7 @@ defmodule EbbServer.Functions.RouterTest do
           {"idempotency-key", "one"},
           {"idempotency-key", "two"}
         ])
-        |> assign(:actor_id, @actor)
+        |> put_actor(@actor)
         |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
 
       assert conn.status == 400
@@ -626,7 +626,7 @@ defmodule EbbServer.Functions.RouterTest do
 
       conn =
         conn(:post, "/echoBack", "{}")
-        |> assign(:actor_id, @actor)
+        |> put_actor(@actor)
         |> Router.call(
           Router.init(cache: :functions_cache_that_is_not_running, group_members_table: ctx.table)
         )
@@ -763,7 +763,7 @@ defmodule EbbServer.Functions.RouterTest do
 
       conn =
         conn(:get, "/echoBack")
-        |> assign(:actor_id, @actor)
+        |> put_actor(@actor)
         |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
 
       assert conn.status == 404
