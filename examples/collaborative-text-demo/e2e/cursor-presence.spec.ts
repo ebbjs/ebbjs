@@ -6,10 +6,13 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  *
  * The presence implementation lives in two places:
  *
- * - `packages/client/src/presence/presence.ts` owns the per-entity
- *   map of remote actors' cursors. Outgoing: debounced `POST
- *   /sync/presence` (100ms debounce). Incoming: a dedicated SSE
- *   stream filtered to `presence` events.
+ * - `packages/client/src/presence/` owns the channel API. The demo
+ *   declares a `cursor` channel and calls `presence.set(docId,
+ *   "cursor", ...)`; outgoing sends are debounced per `(entity,
+ *   channel)` and POST `{entity_id, data: {channel, value}}` to
+ *   `/sync/presence`. Incoming `presence` events ride the same live
+ *   SSE stream the subscription already holds, and are read back with
+ *   `presence.forEntity(docId, "cursor")`.
  * - `packages/codemirror/src/presence/cursor-decoration.ts` renders
  *   the map as CM6 decorations: a `.cm-remote-cursor` widget with a
  *   colored left-border + `.cm-remote-cursor-label` carrying the
@@ -20,7 +23,7 @@ import { test, expect, openTwoActorTabs } from "./helpers";
  * end-to-end check that the wire + DOM round-trip holds.
  *
  * Race conditions the spec absorbs:
- * - `setLocalCursor` is debounced 100ms. We wait the debounce window
+ * - `presence.set` is debounced 100ms. We wait the debounce window
  *   plus server round-trip plus SSE delivery plus CM render.
  * - The remote cursor renders as an inline-block widget of width 0
  *   (just the left border + label tag). The label has class

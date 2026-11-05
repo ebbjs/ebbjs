@@ -13,10 +13,11 @@
 
 import { useEffect, useState } from "react";
 import type { Conflict } from "@ebbjs/client";
-import { createClient } from "@ebbjs/client";
+
+import type { DemoClient } from "./bootstrap";
 
 interface Props {
-  client: ReturnType<typeof createClient>;
+  client: DemoClient;
   docId: string;
   groupId: string;
 }
