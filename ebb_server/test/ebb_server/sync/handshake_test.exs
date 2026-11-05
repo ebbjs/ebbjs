@@ -137,6 +137,21 @@ defmodule EbbServer.Sync.HandshakeTest do
       assert response["error"] == "invalid_json"
     end
 
+    test "413 for a body over the cap, not 500" do
+      put_config(:sync_handshake_max_body_bytes, 1_024)
+
+      body = Jason.encode!(%{"pad" => String.duplicate("x", 2_048)})
+
+      conn =
+        conn(:post, "/sync/handshake", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-ebb-actor-id", "a_test")
+        |> Router.call([])
+
+      assert conn.status == 413
+      assert Jason.decode!(conn.resp_body) == %{"error" => "payload_too_large"}
+    end
+
     test "handshake without auth returns 401" do
       conn =
         conn(:post, "/sync/handshake", Jason.encode!(%{}))

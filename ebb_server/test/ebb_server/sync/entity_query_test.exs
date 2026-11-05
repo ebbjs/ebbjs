@@ -199,6 +199,23 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert response["error"] == "invalid_json"
     end
 
+    test "413 for a body over the cap, not 500" do
+      Application.put_env(:ebb_server, :auth_mode, :bypass)
+      put_config(:entities_query_max_body_bytes, 1_024)
+
+      body =
+        Jason.encode!(%{"type" => "todo", "pad" => String.duplicate("x", 2_048)})
+
+      conn =
+        conn(:post, "/entities/query", body)
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-ebb-actor-id", "a_test")
+        |> Router.call([])
+
+      assert conn.status == 413
+      assert Jason.decode!(conn.resp_body) == %{"error" => "payload_too_large"}
+    end
+
     test "query returns empty array when no entities exist" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 

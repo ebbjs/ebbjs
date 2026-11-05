@@ -43,15 +43,27 @@ defmodule EbbServer.Sync.Router do
   ## Status codes
 
   All errors use the appropriate HTTP status code (`400` for malformed
-  body, `401` for auth failures, `403` for permission denied,
-  `404` for unknown entity, `409` for HLC drift, `413` for a presence body
-  over the size cap, `429` with `Retry-After` when Writer admission control
-  rejects a call or a presence sender is over its per-actor rate, `500`/`502`/
-  `503` for server errors and readiness failures). The Action-submission
-  endpoint also returns per-Action rejections in a `rejected` array so the
-  client can roll back optimistic applies. A `503 write_failed` is a failed or
-  abandoned write; a `503` from a Writer call timeout means the outcome is
-  unknown, so the client retries the same Action ids idempotently.
+  body or a body the adapter could not read, `401` for auth failures, `403`
+  for permission denied, `404` for unknown entity, `409` for HLC drift, `413`
+  for a body over its route's limit, `429` with `Retry-After` when Writer
+  admission control rejects a call or a presence sender is over its per-actor
+  rate, `500`/`502`/`503` for server errors and readiness failures). The
+  Action-submission endpoint also returns per-Action rejections in a
+  `rejected` array so the client can roll back optimistic applies. A `503
+  write_failed` is a failed or abandoned write; a `503` from a Writer call
+  timeout means the outcome is unknown, so the client retries the same Action
+  ids idempotently.
+
+  ## Request body limits
+
+  Every body-bearing route reads through `EbbServer.Sync.BodyReader` with a
+  per-route bound from `EbbServer.Sync.BodyLimits`, so an over-limit body is
+  `413 payload_too_large` and an unreadable one is `400 invalid_body`, before
+  the route parses anything. The limits are configurable and documented in
+  `EbbServer.Sync.BodyLimits`. They bound HTTP/1 `Content-Length` and HTTP/2
+  data-frame bodies; Bandit 1.x drains a `Transfer-Encoding: chunked` body in
+  one call, so the chunked case needs a reverse-proxy body limit (see
+  `docs/self-hosting.md`).
 
   ## Presence volume
 
@@ -82,11 +94,6 @@ defmodule EbbServer.Sync.Router do
 
   use Plug.Router
 
-  # Four times the client's 8 KiB presence payload cap: room for the JSON
-  # envelope and escaping, while still bounding what one actor can push into
-  # the per-subscriber fan-out. Config: `:presence_max_body_bytes`.
-  @presence_max_body_bytes 32_768
-
   alias EbbServer.Storage.{
     ActionSubmission,
     CacheTables,
@@ -99,7 +106,7 @@ defmodule EbbServer.Sync.Router do
     WatermarkTracker
   }
 
-  alias EbbServer.Sync.{CatchUp, FanOutRouter, GroupListing, SSEHandler}
+  alias EbbServer.Sync.{BodyLimits, BodyReader, CatchUp, FanOutRouter, GroupListing, SSEHandler}
   alias EbbServer.Sync.Router.OperationSchema
 
   plug(Plug.Logger)
@@ -162,7 +169,13 @@ defmodule EbbServer.Sync.Router do
   defp health_check(conn, _opts), do: conn
 
   post "/sync/actions" do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    case read_request_body(conn, BodyLimits.actions()) do
+      {:ok, body, conn} -> submit_actions(conn, body)
+      {:error, conn} -> conn
+    end
+  end
+
+  defp submit_actions(conn, body) do
     actor_id = conn.assigns.actor_id
 
     case decode_msgpack(body) do
@@ -210,36 +223,18 @@ defmodule EbbServer.Sync.Router do
   end
 
   post "/entities/query" do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    case read_request_body(conn, BodyLimits.query()) do
+      {:ok, body, conn} -> query_entities(conn, body)
+      {:error, conn} -> conn
+    end
+  end
+
+  defp query_entities(conn, body) do
     actor_id = conn.assigns.actor_id
 
     case Jason.decode(body) do
       {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
-        filter = payload["filter"]
-        opts = []
-        opts = if is_nil(payload["limit"]), do: opts, else: [{:limit, payload["limit"]} | opts]
-
-        opts =
-          if is_nil(payload["offset"]), do: opts, else: [{:offset, payload["offset"]} | opts]
-
-        case EntityStore.query(type, filter, actor_id, opts) do
-          {:ok, entities} ->
-            response = Enum.map(entities, &EntityView.json/1)
-
-            send_json(conn, 200, response)
-
-          {:error, :invalid_limit} ->
-            send_json(conn, 422, %{"error" => "invalid_limit"})
-
-          {:error, :invalid_offset} ->
-            send_json(conn, 422, %{"error" => "invalid_offset"})
-
-          {:error, :invalid_filter} ->
-            send_json(conn, 422, %{"error" => "invalid_filter"})
-
-          {:error, reason} ->
-            send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
-        end
+        run_query(conn, actor_id, type, payload)
 
       {:ok, _} ->
         send_json(conn, 422, %{
@@ -252,8 +247,38 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
+  defp run_query(conn, actor_id, type, payload) do
+    case EntityStore.query(type, payload["filter"], actor_id, query_opts(payload)) do
+      {:ok, entities} ->
+        send_json(conn, 200, Enum.map(entities, &EntityView.json/1))
+
+      {:error, :invalid_limit} ->
+        send_json(conn, 422, %{"error" => "invalid_limit"})
+
+      {:error, :invalid_offset} ->
+        send_json(conn, 422, %{"error" => "invalid_offset"})
+
+      {:error, :invalid_filter} ->
+        send_json(conn, 422, %{"error" => "invalid_filter"})
+
+      {:error, reason} ->
+        send_json(conn, 503, %{"error" => "query_failed", "details" => inspect(reason)})
+    end
+  end
+
+  defp query_opts(payload) do
+    opts = if is_nil(payload["limit"]), do: [], else: [limit: payload["limit"]]
+    if is_nil(payload["offset"]), do: opts, else: [{:offset, payload["offset"]} | opts]
+  end
+
   post "/sync/handshake" do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    case read_request_body(conn, BodyLimits.handshake()) do
+      {:ok, body, conn} -> handshake(conn, body)
+      {:error, conn} -> conn
+    end
+  end
+
+  defp handshake(conn, body) do
     actor_id = conn.assigns.actor_id
 
     case Jason.decode(body) do
@@ -400,16 +425,22 @@ defmodule EbbServer.Sync.Router do
   end
 
   post "/sync/presence" do
-    case Plug.Conn.read_body(conn, length: presence_max_body_bytes()) do
+    case read_request_body(conn, BodyLimits.presence()) do
+      {:ok, body, conn} -> broadcast_presence(conn, body)
+      {:error, conn} -> conn
+    end
+  end
+
+  defp read_request_body(conn, max_bytes) do
+    case BodyReader.read(conn, max_bytes) do
       {:ok, body, conn} ->
-        broadcast_presence(conn, body)
+        {:ok, body, conn}
 
-      # A body over the cap is a 413, not a crashed route (500).
-      {:more, _partial, conn} ->
-        send_json(conn, 413, %{"error" => "payload_too_large"})
+      {:error, :payload_too_large, conn} ->
+        {:error, send_json(conn, 413, %{"error" => "payload_too_large"})}
 
-      {:error, _reason} ->
-        send_json(conn, 400, %{"error" => "invalid_body"})
+      {:error, :invalid_body, _reason, conn} ->
+        {:error, send_json(conn, 400, %{"error" => "invalid_body"})}
     end
   end
 
@@ -474,6 +505,15 @@ defmodule EbbServer.Sync.Router do
       },
       responses: %{
         "200" => OperationSchema.actions_response(),
+        "400" =>
+          OperationSchema.error_response(
+            "Request body could not be read by the adapter; error invalid_body"
+          ),
+        "413" =>
+          OperationSchema.error_response(
+            "MessagePack body over `:sync_actions_max_body_bytes` (default 8,000,000); " <>
+              "error payload_too_large"
+          ),
         "422" =>
           OperationSchema.error_response("Invalid MessagePack or missing/invalid structure"),
         "429" =>
@@ -551,6 +591,15 @@ defmodule EbbServer.Sync.Router do
       },
       responses: %{
         "200" => OperationSchema.entities_array_response(),
+        "400" =>
+          OperationSchema.error_response(
+            "Request body could not be read by the adapter; error invalid_body"
+          ),
+        "413" =>
+          OperationSchema.error_response(
+            "JSON body over `:entities_query_max_body_bytes` (default 1,048,576); " <>
+              "error payload_too_large"
+          ),
         "422" =>
           OperationSchema.error_response(
             "Missing or invalid type, invalid JSON, a filter that is not identifier keys " <>
@@ -593,7 +642,16 @@ defmodule EbbServer.Sync.Router do
       },
       responses: %{
         "200" => OperationSchema.handshake_response(),
+        "400" =>
+          OperationSchema.error_response(
+            "Request body could not be read by the adapter; error invalid_body"
+          ),
         "401" => OperationSchema.error_response("Missing actor_id"),
+        "413" =>
+          OperationSchema.error_response(
+            "JSON body over `:sync_handshake_max_body_bytes` (default 1,048,576); " <>
+              "error payload_too_large"
+          ),
         "422" => OperationSchema.error_response("Invalid JSON body")
       }
     }
@@ -742,6 +800,10 @@ defmodule EbbServer.Sync.Router do
         "204" => %OpenApiSpex.Response{
           description: "Presence broadcasted successfully"
         },
+        "400" =>
+          OperationSchema.error_response(
+            "Request body could not be read by the adapter; error invalid_body"
+          ),
         "404" =>
           OperationSchema.error_response(
             "Entity not found, or the actor is not a member of any of its groups"
@@ -811,20 +873,6 @@ defmodule EbbServer.Sync.Router do
 
       {:error, reason} ->
         {:error, :invalid_msgpack, reason}
-    end
-  end
-
-  # Resolved per request so a runtime config change takes effect without a
-  # restart; an invalid value raises rather than silently serving an unbounded
-  # body.
-  defp presence_max_body_bytes do
-    case Application.get_env(:ebb_server, :presence_max_body_bytes, @presence_max_body_bytes) do
-      bytes when is_integer(bytes) and bytes > 0 ->
-        bytes
-
-      other ->
-        raise ArgumentError,
-              ":presence_max_body_bytes must be a positive integer, got: #{inspect(other)}"
     end
   end
 

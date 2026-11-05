@@ -10,6 +10,9 @@ defmodule EbbServer.TestHelpers do
   - `safe_stop/1` - Safely stop a GenServer
   - `tmp_dir/1` - Create isolated temporary directory with cleanup
 
+  **Configuration**
+  - `put_config/2` - Set an `:ebb_server` application-env key for one test and restore it on exit
+
   **Storage Setup** (for unit tests)
   - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache, WatermarkTracker, InFlightActions)
   - `start_rocks/1` - Start isolated RocksDB instance
@@ -71,6 +74,22 @@ defmodule EbbServer.TestHelpers do
     end
 
     :ok
+  end
+
+  @doc """
+  Sets an `:ebb_server` application-env key for the current test and restores
+  its previous value on exit. A key that was unset is deleted again.
+  """
+  def put_config(key, value) do
+    previous = Application.get_env(:ebb_server, key)
+    Application.put_env(:ebb_server, key, value)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:ebb_server, key)
+        previous -> Application.put_env(:ebb_server, key, previous)
+      end
+    end)
   end
 
   @doc """
