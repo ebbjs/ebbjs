@@ -76,21 +76,31 @@ mix openapi.gen.spec
 
 ## Configuration
 
-| Variable                | Default                        | Description                                                                            |
-| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
-| `EBB_PORT`              | `4000`                         | HTTP listen port                                                                       |
-| `EBB_DATA_DIR`          | `/app/data`                    | RocksDB + SQLite data directory (including `functions.db`)                             |
-| `EBB_AUTH_MODE`         | (none — required)              | Auth mode: `bypass`, `external`, or `tailscale`. The node refuses to boot without one. |
-| `EBB_AUTH_URL`          | (none)                         | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.   |
-| `EBB_FUNCTIONS_ENABLED` | compiled `:functions, enabled` | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`).     |
+| Variable                     | Default                                     | Description                                                                            |
+| ---------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `EBB_PORT`                   | `4000`                                      | HTTP listen port                                                                       |
+| `EBB_DATA_DIR`               | `/app/data`                                 | RocksDB + SQLite data directory (including `functions.db`)                             |
+| `EBB_AUTH_MODE`              | (none — required)                           | Auth mode: `bypass`, `external`, or `tailscale`. The node refuses to boot without one. |
+| `EBB_AUTH_URL`               | (none)                                      | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.   |
+| `EBB_FUNCTIONS_ENABLED`      | compiled `:functions, enabled`              | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`).     |
+| `EBB_TAILSCALE_NODE`         | `embedded` in the image / `external` in dev | Who runs the node: the bundled gateway, or the operator's `tailscale serve` / sidecar. |
+| `EBB_TAILSCALE_STATE_DIR`    | `<EBB_DATA_DIR>/tailscale`                  | tsnet state directory; must be on the volume or every restart re-registers.            |
+| `EBB_TAILSCALE_HOSTNAME`     | `ebb`                                       | MagicDNS hostname; the node is `<hostname>.<tailnet>.ts.net`.                          |
+| `EBB_TAILSCALE_AUTHKEY`      | (unset)                                     | Optional auth key for unattended registration; the state directory is the normal path. |
+| `EBB_TAILSCALE_CONTROL_URL`  | (unset)                                     | Self-hosted control server (Headscale). Untested.                                      |
+| `EBB_TAILSCALE_TAGS`         | (empty)                                     | Tags requested at first login, e.g. `tag:ebb`; tagged nodes have key expiry disabled.  |
+| `EBB_TAILSCALE_REQUIRE_TAGS` | `false`                                     | Stop the gateway instead of warning when requested tags were not applied.              |
+| `EBB_TAILSCALE_HTTPS`        | `auto`                                      | Tailnet listener: `auto` (TLS when the tailnet serves certs), `on`, or `off`.          |
+| `EBB_TAILSCALE_QR`           | `true`                                      | Render the login URL as an ASCII QR in the logs.                                       |
+| `EBB_TAILSCALE_PROXY_BIN`    | bundled `ebb_tsnode`                        | Gateway path override for dev and tests.                                               |
 
-Auth is the one setting whose precedence is reversed: `EBB_AUTH_MODE` and
-`EBB_AUTH_URL` win over the compiled `:auth_mode` / `:auth_url` values,
-because the operator's runtime instruction must not be silently
-overridden by a release's baked-in config. There is deliberately no
-default mode — a bare `mix release` boot without auth configuration
-fails before any child starts rather than silently allowing every client
-to forge an actor identity. `:bypass` logs a warning at boot and must
+Auth — and, for the same reason, the `EBB_TAILSCALE_*` settings — has its
+precedence reversed: `EBB_AUTH_MODE` and `EBB_AUTH_URL` win over the compiled
+`:auth_mode` / `:auth_url` values, because the operator's runtime instruction
+must not be silently overridden by a release's baked-in config. There is
+deliberately no default mode — a bare `mix release` boot without auth
+configuration fails before any child starts rather than silently allowing every
+client to forge an actor identity. `:bypass` logs a warning at boot and must
 never be exposed publicly.
 
 `:tailscale` takes its actor from the `tailscale-user-login` header, which a
@@ -102,6 +112,22 @@ matching `x-ebb-tailscale-secret` header; without a secret, any local
 process can claim an identity. `x-ebb-actor-id` is ignored in this mode, and
 `GET /sync/identity` returns the resolved actor so a browser can learn an
 identity it cannot know in advance.
+
+**Embedded gateway.** With `EBB_TAILSCALE_NODE=embedded` (the image default;
+`external` in `config/dev.exs`) boot resolves the `EBB_TAILSCALE_*` settings,
+mints the per-boot `x-ebb-tailscale-secret` before Bandit starts, and starts
+`EbbServer.Tailscale.Node` after Bandit, so the backend exists before the
+gateway accepts tailnet traffic. The gateway is built from `ebb_server/tsnode`
+by `scripts/build-tsnode.sh` and bundled into the release's
+`priv/tsnode/ebb_tsnode`; a gateway that exits is restarted with exponential
+backoff, and the last `running` status is kept for
+`EbbServer.Tailscale.Node.status/1`. The secret is minted at boot unless one
+is already configured (tests or an operator override): `:tailscale_proxy_secret`
+is set from that value for the embedded node and left unset in external mode,
+where the loopback peer is the only credential.
+First-login URL and QR, state directory, tags and key expiry, and the HTTPS
+modes are operator-facing detail in
+[`docs/self-hosting.md`](../docs/self-hosting.md#tailscale-identity).
 
 `EBB_PORT` and `EBB_DATA_DIR` keep the opposite precedence: a compiled
 `:port` / `:data_dir` (what `MIX_ENV=test` uses) wins over the

@@ -242,6 +242,46 @@ jobs:
             test/ebb_server/functions/hardening_bun_test.exs
 
   # ─────────────────────────────────────────────────────────
+  # Go jobs
+  # ─────────────────────────────────────────────────────────
+
+  go-tsnode:
+    name: Test (Go tsnode gateway)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ebb_server/tsnode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Single source of truth for the toolchain; the Dockerfile pins the
+          # matching builder image.
+          go-version-file: ebb_server/tsnode/go.mod
+          cache-dependency-path: ebb_server/tsnode/go.sum
+      - name: Format check
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt reports unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build with the image's flags
+        # The same script the Dockerfile runs, so a flag change cannot land in
+        # the image without passing here first. It writes relative to the
+        # repository root, hence the working-directory override.
+        working-directory: .
+        run: |
+          bash scripts/build-tsnode.sh
+          test -x ebb_server/priv/tsnode/ebb_tsnode
+
+  # ─────────────────────────────────────────────────────────
   # Release builder — runs on every push/PR so typescript-test
   # always has a release available
   # ─────────────────────────────────────────────────────────

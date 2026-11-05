@@ -1,6 +1,8 @@
 defmodule EbbServer.RuntimeConfigTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
+
   setup do
     original_app_port = Application.get_env(:ebb_server, :port)
     original_env = System.get_env("EBB_PORT")
@@ -233,6 +235,104 @@ defmodule EbbServer.RuntimeConfigTest do
     test "ignores the secret outside tailscale mode" do
       assert EbbServer.Application.validate_tailscale_secret!(:bypass, :nope) == :ok
     end
+  end
+
+  describe "resolve_tailscale!/2" do
+    setup do
+      original_node = Application.get_env(:ebb_server, :tailscale_node)
+      original_bin = Application.get_env(:ebb_server, :tailscale_proxy_bin)
+      original_secret = Application.get_env(:ebb_server, :tailscale_proxy_secret)
+      original_env_node = System.get_env("EBB_TAILSCALE_NODE")
+      original_env_bin = System.get_env("EBB_TAILSCALE_PROXY_BIN")
+
+      System.delete_env("EBB_TAILSCALE_NODE")
+      System.delete_env("EBB_TAILSCALE_PROXY_BIN")
+      Application.delete_env(:ebb_server, :tailscale_node)
+      Application.delete_env(:ebb_server, :tailscale_proxy_bin)
+      Application.delete_env(:ebb_server, :tailscale_proxy_secret)
+
+      dir = Path.join(System.tmp_dir!(), "ebb_ts_app_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      bin = Path.join(dir, "ebb_tsnode")
+      File.write!(bin, "#!/bin/sh\nexit 0\n")
+      File.chmod!(bin, 0o755)
+
+      on_exit(fn ->
+        restore_env(:ebb_server, :tailscale_node, original_node)
+        restore_env(:ebb_server, :tailscale_proxy_bin, original_bin)
+        restore_env(:ebb_server, :tailscale_proxy_secret, original_secret)
+        restore_env_var("EBB_TAILSCALE_NODE", original_env_node)
+        restore_env_var("EBB_TAILSCALE_PROXY_BIN", original_env_bin)
+        File.rm_rf(dir)
+      end)
+
+      %{bin: bin, data_dir: dir}
+    end
+
+    test "embedded mode mints a proxy secret and adds the gateway child", %{
+      bin: bin,
+      data_dir: dir
+    } do
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+
+      assert [{EbbServer.Tailscale.Node, opts}] =
+               EbbServer.Application.resolve_tailscale!(dir, 4000)
+
+      secret = Application.get_env(:ebb_server, :tailscale_proxy_secret)
+      assert byte_size(Base.url_decode64!(secret, padding: false)) == 32
+      assert opts[:config].proxy_secret == secret
+      assert opts[:config].backend_addr == "127.0.0.1:4000"
+    end
+
+    test "keeps a secret that is already configured", %{bin: bin, data_dir: dir} do
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, "operator-secret")
+
+      assert [{EbbServer.Tailscale.Node, opts}] =
+               EbbServer.Application.resolve_tailscale!(dir, 4000)
+
+      assert Application.get_env(:ebb_server, :tailscale_proxy_secret) == "operator-secret"
+      assert opts[:config].proxy_secret == "operator-secret"
+    end
+
+    test "fails the boot instead of replacing an invalid secret", %{bin: bin, data_dir: dir} do
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", bin)
+      Application.put_env(:ebb_server, :tailscale_proxy_secret, "")
+
+      capture_io(:stderr, fn ->
+        assert_raise RuntimeError, ~r/tailscale_proxy_secret/, fn ->
+          EbbServer.Application.resolve_tailscale!(dir, 4000)
+        end
+      end)
+    end
+
+    test "writes the boot failure to stderr before raising", %{data_dir: dir} do
+      System.put_env("EBB_TAILSCALE_NODE", "embedded")
+      System.put_env("EBB_TAILSCALE_PROXY_BIN", "/nonexistent/ebb_tsnode")
+
+      stderr =
+        capture_io(:stderr, fn ->
+          assert_raise RuntimeError, ~r/EBB_TAILSCALE_PROXY_BIN/, fn ->
+            EbbServer.Application.resolve_tailscale!(dir, 4000)
+          end
+        end)
+
+      assert stderr =~ "ebb_server boot failed:"
+    end
+
+    test "external mode starts no child and mints no secret", %{data_dir: dir} do
+      System.put_env("EBB_TAILSCALE_NODE", "external")
+
+      assert EbbServer.Application.resolve_tailscale!(dir, 4000) == []
+      assert Application.get_env(:ebb_server, :tailscale_proxy_secret) == nil
+    end
+  end
+
+  test "the suite resolves an external tailscale node so it never spawns the gateway" do
+    assert Application.get_env(:ebb_server, :tailscale_node) == :external
   end
 
   # `Application.put_env/3` rejects nil; `System.put_env/2` treats nil as

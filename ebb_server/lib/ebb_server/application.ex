@@ -5,6 +5,8 @@ defmodule EbbServer.Application do
 
   use Application
 
+  alias EbbServer.Tailscale
+
   @impl true
   def start(_type, _args) do
     data_dir = runtime_data_dir()
@@ -13,6 +15,12 @@ defmodule EbbServer.Application do
 
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
+
+    # Resolved before `validate_tailscale_secret!/1` and before Bandit can serve
+    # a request: the embedded node's secret is minted here.
+    gateway_children =
+      if auth_mode == :tailscale, do: resolve_tailscale!(data_dir, port), else: []
+
     validate_tailscale_secret!(auth_mode)
 
     # Resolved once, before `children/0` reads it and before Bandit can serve
@@ -34,6 +42,8 @@ defmodule EbbServer.Application do
       )
     end
 
+    # After Bandit: the gateway only starts serving once the tailnet node is
+    # running, so the backend listener exists before any proxied request.
     children =
       [
         {EbbServer.Storage.Supervisor, [data_dir: data_dir]}
@@ -46,7 +56,8 @@ defmodule EbbServer.Application do
           # Attached before Bandit so every request Bandit accepts is sampled.
           EbbServer.Telemetry.HTTP,
           {Bandit, bandit_options(port, auth_mode)}
-        ] ++ action_export_children()
+        ] ++
+        gateway_children ++ action_export_children()
 
     opts = [strategy: :one_for_one, name: EbbServer.Supervisor]
     Supervisor.start_link(children, opts)
@@ -60,6 +71,57 @@ defmodule EbbServer.Application do
   @spec bind_ip(atom()) :: :any | :inet.ip_address()
   def bind_ip(:tailscale), do: {127, 0, 0, 1}
   def bind_ip(_mode), do: :any
+
+  # Resolves the node and, for the embedded mode, mints the proxy secret
+  # `AuthPlug` requires. Returns the children to start after Bandit.
+  @doc false
+  @spec resolve_tailscale!(String.t(), integer()) :: [Supervisor.child_spec()]
+  def resolve_tailscale!(data_dir, port) do
+    config = Tailscale.Config.resolve(data_dir, port)
+
+    case config.node do
+      :external ->
+        # `tailscale serve` or a sidecar owns the node. It cannot inject a
+        # per-request secret, so loopback stays the only credential and this
+        # server mints none.
+        Logger.info(
+          "tailscale node mode: external " <>
+            "(no gateway child; another process in front of this server injects identity)"
+        )
+
+        []
+
+      :embedded ->
+        # AuthPlug reads the secret per request, so it has to exist before
+        # Bandit starts. This runs while `start/2` builds the child list, which
+        # is before the supervisor, the listener, and any request.
+        secret = proxy_secret!()
+        Application.put_env(:ebb_server, :tailscale_proxy_secret, secret)
+        Logger.info("tailscale node mode: embedded (gateway child starts after Bandit)")
+
+        [{Tailscale.Node, [config: Map.put(config, :proxy_secret, secret)]}]
+    end
+  rescue
+    # Same reason as `resolve_auth!/0`: a release whose `start/2` raises is
+    # reported as a generic shutdown and loses the actionable message.
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
+  end
+
+  # A secret already in the application env belongs to the operator or to a
+  # test, including a bad one: boot fails rather than minting a replacement
+  # that would silently change what every request has to carry.
+  defp proxy_secret! do
+    case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
+      nil ->
+        :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+
+      secret ->
+        validate_tailscale_secret!(:tailscale, secret)
+        secret
+    end
+  end
 
   # Exposed so a test can boot the same listener the application builds and
   # assert the address it actually binds, not just the pure `bind_ip/1` answer.
