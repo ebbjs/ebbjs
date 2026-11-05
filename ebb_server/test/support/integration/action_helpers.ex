@@ -65,8 +65,8 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   def msgpack_encode!(data), do: data |> Msgpax.pack!() |> IO.iodata_to_binary()
 
-  def bootstrap_group(actor_id, group_id, permissions) do
-    action = bootstrap_group_action(actor_id, group_id, permissions)
+  def bootstrap_group(actor_id, group_id, permissions, apps \\ nil) do
+    action = bootstrap_group_action(actor_id, group_id, permissions, apps)
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
@@ -82,12 +82,22 @@ defmodule EbbServer.Integration.ActionHelpers do
 
   @doc """
   Builds the same-Action group + owner `groupMember` bootstrap that
-  `bootstrap_group/3` posts, without sending it. Callers that need the wire
+  `bootstrap_group/4` posts, without sending it. Callers that need the wire
   body (for example to drive the real Router over HTTP) encode it themselves.
   """
-  def bootstrap_group_action(actor_id, group_id, permissions) do
+  def bootstrap_group_action(actor_id, group_id, permissions, apps \\ nil) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
+    group_update_id = "upd_group_" <> Nanoid.generate()
+
+    fields = %{
+      "name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
+    }
+
+    fields =
+      if apps,
+        do: Map.put(fields, "apps", group_apps_field(apps, hlc, group_update_id)),
+        else: fields
 
     %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -95,16 +105,35 @@ defmodule EbbServer.Integration.ActionHelpers do
       "hlc" => hlc,
       "updates" => [
         %{
-          "id" => "upd_group_" <> Nanoid.generate(),
+          "id" => group_update_id,
           "subject_id" => group_id,
           "subject_type" => "group",
           "method" => "put",
-          "data" => %{
-            "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
-          }
+          "data" => %{"fields" => fields}
         },
         group_member_update(gm_id, actor_id, group_id, permissions, hlc)
       ]
+    }
+  end
+
+  @doc """
+  Builds a `group.apps` map field for the given app ids.
+
+  `apps` maps app id to the boolean scope value; `false` is a removal that
+  keeps the key, matching the wire's per-key merge.
+  """
+  def group_apps_field(apps, hlc, update_id) do
+    %{
+      "map" =>
+        Map.new(apps, fn {app_id, value} ->
+          {app_id,
+           %{
+             "type" => "lww",
+             "value" => value,
+             "hlc" => hlc,
+             "update_id" => update_id
+           }}
+        end)
     }
   end
 

@@ -2,18 +2,25 @@ defmodule EbbServer.Storage.CacheTables do
   @moduledoc """
   Single resolution surface for cache module table names.
 
-  GroupCache, EntityGroupCache, EntityTypeCache and RelationshipCache
-  publish their ETS table names via `:persistent_term` at boot. Callers
-  that need to hand a table name to a downstream module (Writer,
-  EntityIndex, SystemCache, etc.) read it through this module rather
-  than re-implementing the `:persistent_term.get(..., default)` pattern.
+  GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache and
+  GroupAppsCache publish their ETS table names via `:persistent_term` at
+  boot. Callers that need to hand a table name to a downstream module
+  (Writer, EntityIndex, SystemCache, etc.) read it through this module
+  rather than re-implementing the `:persistent_term.get(..., default)`
+  pattern.
 
   Defaults are honored so unit tests can run without standing the
   supervisor up; production callers can rely on the supervisor having
   published by the time they read.
   """
 
-  alias EbbServer.Storage.{EntityGroupCache, EntityTypeCache, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{
+    EntityGroupCache,
+    EntityTypeCache,
+    GroupAppsCache,
+    GroupCache,
+    RelationshipCache
+  }
 
   @default_group_members :ebb_group_members
   @default_group_members_by_id :ebb_group_members_by_id
@@ -22,6 +29,7 @@ defmodule EbbServer.Storage.CacheTables do
   @default_entity_groups_by_id :ebb_entity_groups_by_id
   @default_entity_groups_by_group :ebb_entity_groups_by_group
   @default_entity_types :ebb_entity_types
+  @default_group_apps :ebb_group_apps
   @default_relationships :ebb_relationships
   @default_relationships_by_id :ebb_relationships_by_id
 
@@ -61,6 +69,10 @@ defmodule EbbServer.Storage.CacheTables do
   @spec entity_types() :: atom()
   def entity_types,
     do: :persistent_term.get({EntityTypeCache, :entity_types}, @default_entity_types)
+
+  @spec group_apps() :: atom()
+  def group_apps,
+    do: :persistent_term.get({GroupAppsCache, :group_apps}, @default_group_apps)
 
   @spec relationships() :: atom()
   def relationships,

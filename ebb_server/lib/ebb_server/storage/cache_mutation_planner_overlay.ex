@@ -18,9 +18,10 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
           | :entity_groups_by_id
           | :relationships_by_id
           | :entity_types
+          | :group_apps
 
   @type cache_key :: {cache(), String.t()}
-  @type row :: map() | :deleted | String.t()
+  @type row :: map() | :deleted | String.t() | nil
 
   @type t :: %__MODULE__{
           rows: %{optional(cache_key()) => row()},

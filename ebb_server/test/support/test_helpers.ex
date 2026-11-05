@@ -50,6 +50,7 @@ defmodule EbbServer.TestHelpers do
     DirtyTracker,
     EntityGroupCache,
     EntityTypeCache,
+    GroupAppsCache,
     GroupCache,
     InFlightActions,
     RelationshipCache,
@@ -217,11 +218,13 @@ defmodule EbbServer.TestHelpers do
     eg_by_id_table = :"ebb_eg_by_id_#{unique_id}"
     eg_by_group_table = :"ebb_eg_by_group_#{unique_id}"
     entity_types_table = :"ebb_entity_types_#{unique_id}"
+    group_apps_table = :"ebb_group_apps_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
     rbi_table = :"ebb_rbi_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     egc_name = :"egc_#{unique_id}"
+    gac_name = :"gac_#{unique_id}"
     etc_name = :"etc_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
@@ -239,6 +242,7 @@ defmodule EbbServer.TestHelpers do
     :persistent_term.put({EntityGroupCache, :entity_groups_by_id}, eg_by_id_table)
     :persistent_term.put({EntityGroupCache, :entity_groups_by_group}, eg_by_group_table)
     :persistent_term.put({EntityTypeCache, :entity_types}, entity_types_table)
+    :persistent_term.put({GroupAppsCache, :group_apps}, group_apps_table)
     :persistent_term.put({RelationshipCache, :relationships}, rel_table)
     :persistent_term.put({RelationshipCache, :relationships_by_id}, rbi_table)
 
@@ -260,6 +264,7 @@ defmodule EbbServer.TestHelpers do
         entity_groups_by_group: eg_by_group_table
       )
 
+    {:ok, _pid_gac} = GroupAppsCache.start_link(name: gac_name, group_apps: group_apps_table)
     {:ok, _pid_etc} = EntityTypeCache.start_link(name: etc_name, entity_types: entity_types_table)
 
     {:ok, _pid_rc} =
@@ -274,7 +279,7 @@ defmodule EbbServer.TestHelpers do
     {:ok, _pid_ifa} = InFlightActions.start_link(name: ifa_name, table: ifa_table)
 
     on_exit(fn ->
-      for name <- [dt_name, gc_name, egc_name, etc_name, rc_name, wt_name, ifa_name],
+      for name <- [dt_name, gc_name, egc_name, gac_name, etc_name, rc_name, wt_name, ifa_name],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -287,6 +292,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_id})
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_group})
       :persistent_term.erase({EntityTypeCache, :entity_types})
+      :persistent_term.erase({GroupAppsCache, :group_apps})
       :persistent_term.erase({RelationshipCache, :relationships})
       :persistent_term.erase({ifa_name, :table})
     end)
@@ -301,6 +307,7 @@ defmodule EbbServer.TestHelpers do
       entity_groups_by_id: eg_by_id_table,
       entity_groups_by_group: eg_by_group_table,
       entity_types: entity_types_table,
+      group_apps: group_apps_table,
       relationships: rel_table,
       relationships_by_id: rbi_table,
       watermark_tracker: wt_name,
@@ -400,6 +407,7 @@ defmodule EbbServer.TestHelpers do
         entity_groups_by_id: opts.entity_groups_by_id,
         entity_groups_by_group: opts.entity_groups_by_group,
         entity_types: Map.get(opts, :entity_types) || CacheTables.entity_types(),
+        group_apps: Map.get(opts, :group_apps) || CacheTables.group_apps(),
         relationships: opts.relationships,
         relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
@@ -447,6 +455,7 @@ defmodule EbbServer.TestHelpers do
       entity_groups: ctx.entity_groups,
       entity_groups_by_id: ctx.entity_groups_by_id,
       entity_groups_by_group: ctx.entity_groups_by_group,
+      group_apps: Map.get(ctx, :group_apps) || CacheTables.group_apps(),
       relationships: ctx.relationships,
       relationships_by_id: ctx.relationships_by_id,
       watermark_tracker: ctx.watermark_tracker,

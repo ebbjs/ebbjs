@@ -34,6 +34,33 @@ defmodule EbbServer.Storage.Fields do
     end
   end
 
+  @doc """
+  Reports whether update data carries a field at all.
+
+  Distinct from `get/2`: a present field whose value is `nil` is still
+  present. The planner uses this to tell a patch that omits a field from one
+  that intends to write it.
+
+  ## Examples
+
+      iex> Fields.present?(%{"fields" => %{"apps" => %{"map" => %{}}}}, "apps")
+      true
+
+      iex> Fields.present?(%{"fields" => %{}}, "apps")
+      false
+  """
+  @spec present?(map() | nil, String.t()) :: boolean()
+  def present?(nil, _field), do: false
+
+  def present?(data, field) when is_map(data) do
+    case Map.get(data, "fields") do
+      %{} = fields when is_map(fields) -> Map.has_key?(fields, field)
+      _ -> false
+    end
+  end
+
+  def present?(_data, _field), do: false
+
   defp unwrap_value(%{"value" => value}), do: value
   defp unwrap_value(nil), do: nil
   defp unwrap_value(value), do: value

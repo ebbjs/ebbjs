@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createClient } from "./client";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { e } from "@ebbjs/schema";
-import { makeFetchMock, callApplyAction } from "./test-utils";
+import {
+  makeFetchMock,
+  callApplyAction,
+  emptyCatchUpResponse,
+  emptyListingResponse,
+  jsonResponse,
+  openSseResponse,
+  waitFor,
+} from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineEntity } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
@@ -45,6 +53,7 @@ describe("SyncClient.handshake", () => {
     expect(result.groups).toHaveLength(2);
     expect(result.groups[0]).toEqual({
       id: "grp_1",
+      apps: null,
       permissions: ["read", "write"],
       cursorValid: true,
       reason: null,
@@ -1485,5 +1494,250 @@ describe("SyncClient._applyAction HLC drift (#663)", () => {
     // A rejected merge leaves neither field moved.
     expect(clockOf(client)).toEqual({ l: 0n, c: 0n });
     expect(client.freshHlc()).toBe(makeHlc(now));
+  });
+});
+
+describe("app scope (#732)", () => {
+  const handshakeGroup = (id: string, apps?: string[] | null) => ({
+    id,
+    apps,
+    permissions: [],
+    cursor_valid: true,
+    reason: null,
+    cursor: 0,
+  });
+
+  const mkScopedClient = (appId: string | undefined, groups: unknown[]) => {
+    const { fn, calls } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups }) }]);
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      appId,
+      fetchImpl: fn,
+    });
+    return { client, calls };
+  };
+
+  const actorGroupIds = (client: ReturnType<typeof createClient>): string[] =>
+    (client as unknown as { actorGroups: { id: string }[] }).actorGroups.map((g) => g.id);
+
+  const cachedCursors = (client: ReturnType<typeof createClient>): string[] => [
+    ...(client as unknown as { groupCursors: Map<string, number> }).groupCursors.keys(),
+  ];
+
+  describe("handshake filter", () => {
+    it("keeps unscoped groups and groups whose scope names the client's app", async () => {
+      const { client } = mkScopedClient("notes", [
+        handshakeGroup("g_unscoped"),
+        handshakeGroup("g_notes", ["notes"]),
+        handshakeGroup("g_issues", ["issues"]),
+        handshakeGroup("g_none", []),
+        handshakeGroup("g_null", null),
+      ]);
+
+      const result = await client.handshake();
+
+      expect(result.groups.map((group) => group.id)).toEqual(["g_unscoped", "g_notes", "g_null"]);
+      expect(result.groups[0]!.apps).toBeNull();
+      expect(result.groups[1]!.apps).toEqual(["notes"]);
+      expect(actorGroupIds(client)).toEqual(["g_unscoped", "g_notes", "g_null"]);
+      expect(cachedCursors(client)).toEqual(["g_unscoped", "g_notes", "g_null"]);
+    });
+
+    it("keeps every group when the client declares no app", async () => {
+      const { client } = mkScopedClient(undefined, [
+        handshakeGroup("g_unscoped"),
+        handshakeGroup("g_notes", ["notes"]),
+        handshakeGroup("g_none", []),
+      ]);
+
+      const result = await client.handshake();
+
+      expect(result.groups.map((group) => group.id)).toEqual(["g_unscoped", "g_notes", "g_none"]);
+      expect(result.groups[1]!.apps).toEqual(["notes"]);
+    });
+
+    it("reads a server that does not send apps as unscoped", async () => {
+      const { client } = mkScopedClient("notes", [
+        { id: "g_old_server", permissions: [], cursor_valid: true, reason: null, cursor: 0 },
+      ]);
+
+      const result = await client.handshake();
+
+      expect(result.groups.map((group) => group.id)).toEqual(["g_old_server"]);
+      expect(result.groups[0]!.apps).toBeNull();
+    });
+  });
+
+  describe("seed", () => {
+    const mkSeedClient = (appId: string | undefined) => {
+      const { fn, calls } = makeFetchMock([{ body: JSON.stringify({ rejected: [] }) }]);
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId,
+        fetchImpl: fn,
+      });
+      return { client, calls };
+    };
+
+    const seedAction = async (
+      client: ReturnType<typeof createClient>,
+      calls: { init: RequestInit }[],
+      groups: { id: string; name: string; apps?: Record<string, boolean> }[],
+    ): Promise<Action> => {
+      await client.seed({ groups, groupMembers: [], entities: [] });
+      const body = calls[0]!.init.body as Uint8Array;
+      return decodeSync<{ actions: Action[] }>(body).actions[0]!;
+    };
+
+    const appsField = (action: Action, groupId: string): unknown =>
+      action.updates.find((update) => update.subject_id === groupId)!.data!.fields!["apps"];
+
+    it("scopes an unscoped group to the client's app", async () => {
+      const { client, calls } = mkSeedClient("notes");
+
+      const action = await seedAction(client, calls, [{ id: "g_1", name: "Team" }]);
+
+      expect(appsField(action, "g_1")).toEqual({
+        map: { notes: { value: true, update_id: "seed_update", hlc: expect.any(String) } },
+      });
+    });
+
+    it("keeps an explicit scope, including an empty one", async () => {
+      const { client, calls } = mkSeedClient("notes");
+
+      const action = await seedAction(client, calls, [
+        { id: "g_1", name: "Shared", apps: { notes: true, issues: true } },
+        { id: "g_2", name: "Nobody", apps: {} },
+      ]);
+
+      expect(Object.keys((appsField(action, "g_1") as { map: object }).map)).toEqual([
+        "notes",
+        "issues",
+      ]);
+      expect((appsField(action, "g_2") as { map: object }).map).toEqual({});
+    });
+
+    it("omits apps when the client declares no app", async () => {
+      const { client, calls } = mkSeedClient(undefined);
+
+      const action = await seedAction(client, calls, [{ id: "g_1", name: "Team" }]);
+
+      expect(appsField(action, "g_1")).toBeUndefined();
+    });
+  });
+
+  describe("reconcile", () => {
+    it("drops a subscribed group that left the app's scope and reconnects without it", async () => {
+      const liveUrls: string[] = [];
+      let groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_old", ["notes"])];
+      const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
+        if (url.includes("/sync/live")) {
+          liveUrls.push(url);
+          return openSseResponse();
+        }
+        if (url.includes("/entities")) return emptyListingResponse();
+        if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+        return jsonResponse({});
+      }) as typeof fetch;
+
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId: "notes",
+        reconnectInitialMs: 1,
+        fetchImpl,
+      });
+
+      await client.handshake();
+      const unsubscribe = client.subscribe(["g_notes", "g_old"], () => {});
+      await waitFor(() => liveUrls.length > 0);
+      expect(liveUrls[0]).toContain("g_old");
+
+      groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_old", ["issues"])];
+      await client.handshake();
+
+      const scope = (client as unknown as { replicaScope: Set<string> }).replicaScope;
+      const sub = (client as unknown as { activeSub: { groupIds: string[] } }).activeSub;
+      expect([...scope]).toEqual(["g_notes"]);
+      expect(sub.groupIds).toEqual(["g_notes"]);
+
+      await waitFor(() => liveUrls.length > 1);
+      expect(liveUrls[1]).not.toContain("g_old");
+
+      unsubscribe();
+    });
+
+    it("ends the session when no subscribed group remains in scope", async () => {
+      let groups = [handshakeGroup("g_notes", ["notes"])];
+      const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
+        if (url.includes("/sync/live")) return openSseResponse();
+        if (url.includes("/entities")) return emptyListingResponse();
+        if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+        return jsonResponse({});
+      }) as typeof fetch;
+
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId: "notes",
+        reconnectInitialMs: 1,
+        fetchImpl,
+      });
+
+      await client.handshake();
+      client.subscribe(["g_notes"], () => {});
+      await waitFor(() => client.state === "live");
+
+      groups = [handshakeGroup("g_other", ["issues"])];
+      await client.handshake();
+
+      expect((client as unknown as { activeSub: unknown }).activeSub).toBeNull();
+      expect(client.state).toBe("offline");
+    });
+
+    it("keeps an explicitly over-subscribed out-of-scope group", async () => {
+      const groups = [handshakeGroup("g_notes", ["notes"]), handshakeGroup("g_issues", ["issues"])];
+      const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith("/sync/handshake")) return jsonResponse({ actor_id: "a_test", groups });
+        if (url.includes("/sync/live")) return openSseResponse();
+        if (url.includes("/entities")) return emptyListingResponse();
+        if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+        return jsonResponse({});
+      }) as typeof fetch;
+
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        appId: "notes",
+        reconnectInitialMs: 1,
+        fetchImpl,
+      });
+
+      // Subscribe before the first handshake: with no previous scope
+      // baseline, reconcile has nothing to remove.
+      const unsubscribe = client.subscribe(["g_notes", "g_issues"], () => {});
+      await waitFor(() => client.state === "live");
+
+      const { groups: inScope } = await client.handshake();
+      expect(inScope.map((group) => group.id)).toEqual(["g_notes"]);
+      await client.handshake();
+
+      const scope = (client as unknown as { replicaScope: Set<string> }).replicaScope;
+      const sub = (client as unknown as { activeSub: { groupIds: string[] } }).activeSub;
+      expect([...scope]).toEqual(["g_notes", "g_issues"]);
+      expect(sub.groupIds).toEqual(["g_notes", "g_issues"]);
+
+      unsubscribe();
+    });
   });
 });

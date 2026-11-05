@@ -31,6 +31,13 @@ import { issue, profile, workspace } from "./schema";
 export const SEEDER_ACTOR_ID = "demo-seeder";
 
 /**
+ * App label the demo's groups are scoped to (#732). A client created
+ * with this id syncs only the groups whose scope names it, plus any
+ * unscoped group.
+ */
+export const APP_ID = "issue-tracker";
+
+/**
  * Permissions the seed grants each actor in their own group. Broad enough
  * that the idempotent re-seed passes the permission table on reload: the
  * group, its own membership, and every user entity it files are all
@@ -109,7 +116,7 @@ export function buildActorSeed(actorId: string): SeedData {
   const workspaceName = `${actorId}'s Workspace`;
 
   return {
-    groups: [{ id: ids.groupId, name: workspaceName }],
+    groups: [{ id: ids.groupId, name: workspaceName, apps: { [APP_ID]: true } }],
     groupMembers: [
       {
         id: ids.memberId,
@@ -140,7 +147,7 @@ export function buildActorSeed(actorId: string): SeedData {
 /** The shared workspace fixtures, attributed to `demo-seeder`. */
 export function buildSharedSeed(): SeedData {
   return {
-    groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace" }],
+    groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace", apps: { [APP_ID]: true } }],
     groupMembers: [
       {
         id: SHARED_MEMBER_ID,

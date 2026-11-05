@@ -21,20 +21,24 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
   alias EbbServer.Storage.CacheMutationPlanner
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
+  alias EbbServer.Storage.GroupAppsCache
 
   import EbbServer.TestHelpers
 
   setup do
     group_members_by_id = :ets.new(:planner_group_members_by_id, [:set, :public])
     entity_groups_by_id = :ets.new(:planner_entity_groups_by_id, [:set, :public])
+    group_apps = :ets.new(:planner_group_apps, [:set, :public])
 
     %{
       tables: %{
         group_members_by_id: group_members_by_id,
-        entity_groups_by_id: entity_groups_by_id
+        entity_groups_by_id: entity_groups_by_id,
+        group_apps: group_apps
       },
       group_members_by_id: group_members_by_id,
-      entity_groups_by_id: entity_groups_by_id
+      entity_groups_by_id: entity_groups_by_id,
+      group_apps: group_apps
     }
   end
 
@@ -397,6 +401,147 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
     end
   end
 
+  describe "group apps" do
+    test "a put replaces the apps field with the wire value", %{tables: tables} do
+      field = apps_field(%{"notes" => {true, 10, "u10"}})
+      put = group_apps_update("g_1", :put, field)
+
+      {plan, overlay} = CacheMutationPlanner.plan([put], tables)
+
+      assert plan == [
+               {:entity_type, "g_1", "group"},
+               {:group_apps_put, "g_1", field}
+             ]
+
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, field}
+    end
+
+    test "a put without an apps field makes the group unscoped", %{tables: tables} do
+      put = group_update("g_1", :put, %{"name" => leaf("Group", 10, "u10")})
+
+      {plan, overlay} = CacheMutationPlanner.plan([put], tables)
+
+      assert plan == [
+               {:entity_type, "g_1", "group"},
+               {:group_apps_put, "g_1", nil}
+             ]
+
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, nil}
+    end
+
+    test "a patch merges per app id over the cached field", %{
+      tables: tables,
+      group_apps: group_apps
+    } do
+      existing = apps_field(%{"notes" => {true, 5, "u5"}, "docs" => {true, 5, "u5"}})
+      :ok = GroupAppsCache.put_group_apps("g_1", existing, group_apps: group_apps)
+
+      patch = group_apps_update("g_1", :patch, apps_field(%{"notes" => {false, 10, "u10"}}))
+
+      {plan, overlay} = CacheMutationPlanner.plan([patch], tables)
+
+      merged = apps_field(%{"notes" => {false, 10, "u10"}, "docs" => {true, 5, "u5"}})
+
+      assert plan == [
+               {:entity_type, "g_1", "group"},
+               {:group_apps_put, "g_1", merged}
+             ]
+
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, merged}
+    end
+
+    test "two patches in one plan merge per key, later HLC winning", %{tables: tables} do
+      first = group_apps_update("g_1", :patch, apps_field(%{"notes" => {true, 10, "u10"}}))
+
+      second =
+        group_apps_update(
+          "g_1",
+          :patch,
+          apps_field(%{"docs" => {true, 20, "u20"}, "notes" => {false, 30, "u30"}})
+        )
+
+      {plan, overlay} = CacheMutationPlanner.plan([first, second], tables)
+
+      merged =
+        apps_field(%{
+          "notes" => {false, 30, "u30"},
+          "docs" => {true, 20, "u20"}
+        })
+
+      assert plan == [
+               {:entity_type, "g_1", "group"},
+               {:group_apps_put, "g_1", apps_field(%{"notes" => {true, 10, "u10"}})},
+               {:group_apps_put, "g_1", merged}
+             ]
+
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, merged}
+    end
+
+    test "a stale later patch does not overwrite a newer same-key value", %{tables: tables} do
+      newer = group_apps_update("g_1", :patch, apps_field(%{"notes" => {true, 30, "u30"}}))
+      stale = group_apps_update("g_1", :patch, apps_field(%{"notes" => {false, 10, "u10"}}))
+
+      {plan, overlay} = CacheMutationPlanner.plan([newer, stale], tables)
+
+      merged = apps_field(%{"notes" => {true, 30, "u30"}})
+
+      assert {:group_apps_put, "g_1", ^merged} = List.last(plan)
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, merged}
+    end
+
+    test "a patch that omits apps emits nothing", %{tables: tables} do
+      patch = group_update("g_1", :patch, %{"name" => leaf("Renamed", 10, "u10")})
+
+      {plan, overlay} = CacheMutationPlanner.plan([patch], tables)
+
+      assert plan == [{:entity_type, "g_1", "group"}]
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == :error
+    end
+
+    test "a delete tombstones the group's scope", %{tables: tables} do
+      delete = group_update("g_1", :delete, nil)
+
+      {plan, overlay} = CacheMutationPlanner.plan([delete], tables)
+
+      assert plan == [
+               {:entity_type, "g_1", "group"},
+               {:group_apps_delete, "g_1"}
+             ]
+
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, :deleted}
+    end
+
+    test "group apps do not make a plan group-resolution serializing", %{tables: tables} do
+      put = group_apps_update("g_1", :put, apps_field(%{"notes" => {true, 10, "u10"}}))
+
+      {_plan, overlay} = CacheMutationPlanner.plan([put], tables)
+
+      refute Overlay.group_resolution_affected?(overlay)
+    end
+
+    test "a patch after a delete in the same plan does not resurrect the cached field", %{
+      tables: tables,
+      group_apps: group_apps
+    } do
+      :ok =
+        GroupAppsCache.put_group_apps(
+          "g_1",
+          apps_field(%{"notes" => {true, 5, "u5"}}),
+          group_apps: group_apps
+        )
+
+      delete = group_update("g_1", :delete, nil)
+      patch = group_apps_update("g_1", :patch, apps_field(%{"docs" => {true, 10, "u10"}}))
+
+      {plan, overlay} = CacheMutationPlanner.plan([delete, patch], tables)
+
+      merged = apps_field(%{"docs" => {true, 10, "u10"}})
+
+      assert {:group_apps_put, "g_1", ^merged} = List.last(plan)
+      assert Overlay.fetch(overlay, :group_apps, "g_1") == {:ok, merged}
+    end
+  end
+
   describe "relationships" do
     test "a relationship patch does not merge the row it replaces", %{tables: tables} do
       put =
@@ -426,6 +571,33 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
                 field: "parent"
               }} = Overlay.fetch(overlay_2, :relationships_by_id, "rel_1")
     end
+  end
+
+  defp group_apps_update(group_id, method, field) do
+    group_update(group_id, method, %{"apps" => field})
+  end
+
+  defp group_update(group_id, method, fields) do
+    %{
+      id: "upd_" <> Nanoid.generate(),
+      subject_id: group_id,
+      subject_type: "group",
+      method: method,
+      data: if(is_nil(fields), do: nil, else: %{"fields" => fields})
+    }
+  end
+
+  defp apps_field(entries) do
+    %{
+      "map" =>
+        Map.new(entries, fn {app_id, {value, hlc, update_id}} ->
+          {app_id, leaf(value, hlc, update_id)}
+        end)
+    }
+  end
+
+  defp leaf(value, hlc, update_id) do
+    %{"type" => "lww", "value" => value, "hlc" => hlc, "update_id" => update_id}
   end
 
   defp update(subject_type, subject_id, method, fields \\ %{}) do

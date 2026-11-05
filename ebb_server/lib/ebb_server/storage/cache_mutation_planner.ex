@@ -26,7 +26,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   alias EbbServer.Storage.{
     EntityGroupCache,
+    FieldMerge,
     Fields,
+    GroupAppsCache,
     GroupCache,
     PermissionChecker
   }
@@ -34,11 +36,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
 
   @typedoc """
-  The caches a patch merge reads. Both are ETS tables keyed by entry id.
+  The caches a patch merge reads. Each is an ETS table keyed by entry id.
   """
   @type tables :: %{
           group_members_by_id: :ets.tab(),
-          entity_groups_by_id: :ets.tab()
+          entity_groups_by_id: :ets.tab(),
+          group_apps: :ets.tab()
         }
 
   @typedoc """
@@ -53,6 +56,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           | {:entity_group_delete, String.t()}
           | {:relationship_put, map()}
           | {:relationship_delete, String.t()}
+          | {:group_apps_put, String.t(), map() | nil}
+          | {:group_apps_delete, String.t()}
 
   @type overlay :: Overlay.t()
 
@@ -207,6 +212,38 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
+  # A group put replaces the whole row, so its apps field is exactly the
+  # wire value. A patch merges per app id so concurrent scope edits do not
+  # clobber each other. Neither path affects write authorization: app scope
+  # is a sync filter, so the overlay must not serialize successors.
+  defp plan_system_mutation(%{subject_type: "group"} = update, tables, mutations, overlay) do
+    key = {:group_apps, update.subject_id}
+
+    case update.method do
+      :put ->
+        field = Fields.get(update.data || %{}, "apps")
+
+        {[{:group_apps_put, update.subject_id, field} | mutations],
+         Overlay.put(overlay, key, field)}
+
+      :patch ->
+        data = update.data || %{}
+
+        if Fields.present?(data, "apps") do
+          field = merge_group_apps(update, overlay, data, tables)
+
+          {[{:group_apps_put, update.subject_id, field} | mutations],
+           Overlay.put(overlay, key, field)}
+        else
+          {mutations, overlay}
+        end
+
+      :delete ->
+        {[{:group_apps_delete, update.subject_id} | mutations],
+         Overlay.put(overlay, key, :deleted)}
+    end
+  end
+
   # Relationship rows never merge with the cached row: the wire fields are
   # authoritative, as in the pre-dedup handler.
   defp plan_system_mutation(%{subject_type: "relationship"} = update, _tables, mutations, overlay) do
@@ -253,6 +290,13 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   defp patch_existing(_update, _overlay, _cache, _table, _fetch), do: %{}
 
+  defp merge_group_apps(update, overlay, data, tables) do
+    existing =
+      patch_existing(update, overlay, :group_apps, tables.group_apps, &GroupAppsCache.get_field/2)
+
+    FieldMerge.merge(existing, Fields.get(data, "apps"))
+  end
+
   # A delete's wire form carries only the membership id, so the projection
   # needs the entity the row belonged to. Prefer the chain, then the cache.
   defp entity_group_entity(overlay, membership_id, tables) do
@@ -291,6 +335,14 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     Overlay.put(slice, {:relationships_by_id, id}, :deleted)
   end
 
+  defp slice_mutation(slice, _cumulative, {:group_apps_put, id, field}) do
+    Overlay.put(slice, {:group_apps, id}, field)
+  end
+
+  defp slice_mutation(slice, _cumulative, {:group_apps_delete, id}) do
+    Overlay.put(slice, {:group_apps, id}, :deleted)
+  end
+
   defp mutation_value({:entity_type, _id, type}), do: type
   defp mutation_value({:group_member_put, row}), do: row
   defp mutation_value({:group_member_delete, _id}), do: :deleted
@@ -298,6 +350,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp mutation_value({:entity_group_delete, _id}), do: :deleted
   defp mutation_value({:relationship_put, row}), do: row
   defp mutation_value({:relationship_delete, _id}), do: :deleted
+  defp mutation_value({:group_apps_put, _id, field}), do: field
+  defp mutation_value({:group_apps_delete, _id}), do: :deleted
 
   defp mutation_key({:entity_type, id, _type}), do: {:entity_types, id}
   defp mutation_key({:group_member_put, %{id: id}}), do: {:group_members_by_id, id}
@@ -306,4 +360,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp mutation_key({:entity_group_delete, id}), do: {:entity_groups_by_id, id}
   defp mutation_key({:relationship_put, %{id: id}}), do: {:relationships_by_id, id}
   defp mutation_key({:relationship_delete, id}), do: {:relationships_by_id, id}
+  defp mutation_key({:group_apps_put, id, _field}), do: {:group_apps, id}
+  defp mutation_key({:group_apps_delete, id}), do: {:group_apps, id}
 end

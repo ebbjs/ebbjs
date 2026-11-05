@@ -93,6 +93,32 @@ describe("buildSeedAction", () => {
     expect(entityGroup.data?.fields?.["group_id"]?.value).toBe("grp_1");
   });
 
+  it("writes a group's app scope as a map envelope with one leaf per app id", () => {
+    const action = buildSeedAction("actor_1", {
+      groups: [{ id: "grp_1", name: "Shared", apps: { notes: true, issues: false } }],
+      groupMembers: [],
+      entities: [],
+    });
+
+    const fields = action.updates[0]!.data!.fields!;
+    const apps = fields["apps"] as {
+      map: Record<string, { value: boolean; update_id: string; hlc: string }>;
+    };
+
+    expect(Object.keys(apps.map)).toEqual(["notes", "issues"]);
+    expect(apps.map["notes"]!.value).toBe(true);
+    expect(apps.map["issues"]!.value).toBe(false);
+    expect(apps.map["notes"]!.update_id).toBe("seed_update");
+    expect(typeof apps.map["notes"]!.hlc).toBe("string");
+  });
+
+  it("omits the apps field when the group is left unscoped", () => {
+    const action = buildSeedAction("actor_1", buildRepresentativeSeed());
+    const group = action.updates.find((update) => update.subject_type === "group")!;
+
+    expect(group.data!.fields!["apps"]).toBeUndefined();
+  });
+
   it("stamps every plain value into a seed_update envelope with an HLC", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
 

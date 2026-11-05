@@ -14,7 +14,7 @@
 
 import { createAction } from "../action";
 import { createClock, localEvent } from "../hlc";
-import type { Action } from "../types/action";
+import type { Action, FieldValue } from "../types/action";
 import type { HLCState } from "../hlc/types";
 
 export type { Action };
@@ -22,6 +22,8 @@ export type { Action };
 export interface GroupSeed {
   id: string;
   name: string;
+  /** App scope; omitted leaves the group unscoped (every app sees it). */
+  apps?: Record<string, boolean>;
 }
 
 export interface GroupMemberSeed {
@@ -82,17 +84,29 @@ const stamp = (value: unknown, clock: HLCState) => ({
   hlc: localEvent(clock),
 });
 
+/**
+ * Stamp a plain map into the wire's map envelope. A map's entries are
+ * leaves, so each key merges on its own HLC.
+ */
+const stampMap = (entries: Record<string, unknown>, clock: HLCState) => ({
+  map: Object.fromEntries(
+    Object.entries(entries).map(([key, value]) => [key, stamp(value, clock)]),
+  ),
+});
+
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
 
   const updates = [];
 
   for (const group of data.groups) {
+    const fields: Record<string, FieldValue> = { name: stamp(group.name, clock) };
+    if (group.apps !== undefined) fields["apps"] = stampMap(group.apps, clock);
     updates.push({
       subject_id: group.id,
       subject_type: "group",
       method: "put" as const,
-      data: { fields: { name: stamp(group.name, clock) } },
+      data: { fields },
     });
   }
 

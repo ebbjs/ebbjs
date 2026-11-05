@@ -15,6 +15,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
     EntityGroupCache,
     EntityStore,
     EntityTypeCache,
+    GroupAppsCache,
     RelationshipCache,
     RocksDB,
     SQLite,
@@ -35,6 +36,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_groups_by_id: eg_by_id_table,
       entity_groups_by_group: eg_by_group_table,
       entity_types: entity_types_table,
+      group_apps: group_apps_table,
       relationships: rel_table,
       relationships_by_id: rbi_table
     } = TestHelpers.start_isolated_cache()
@@ -68,6 +70,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       eg_by_id_table: eg_by_id_table,
       eg_by_group_table: eg_by_group_table,
       entity_types_table: entity_types_table,
+      group_apps_table: group_apps_table,
       rel_table: rel_table,
       rbi_table: rbi_table
     }
@@ -83,6 +86,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_groups_by_id: ctx.eg_by_id_table,
       entity_groups_by_group: ctx.eg_by_group_table,
       entity_types: ctx[:entity_types_table],
+      group_apps: ctx[:group_apps_table],
       relationships: ctx.rel_table,
       relationships_by_id: ctx.rbi_table
     ]
@@ -214,6 +218,54 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert RocksDB.get(cf_type, "relationship\0rel_test", name: rocks_name) == {:ok, <<>>}
       assert RocksDB.get(cf_type, "groupMember\0gm_test", name: rocks_name) == {:ok, <<>>}
       assert RocksDB.get(cf_type, "entityGroup\0eg_test", name: rocks_name) == {:ok, <<>>}
+    end
+
+    test "fills GroupAppsCache from the group rows on boot",
+         %{writer_name: writer_name, group_apps_table: group_apps_table} = ctx do
+      hlc = TestHelpers.generate_hlc()
+
+      action = %{
+        id: "act_" <> Nanoid.generate(),
+        actor_id: "demo-seeder",
+        hlc: hlc,
+        updates: [
+          %{
+            id: "upd_" <> Nanoid.generate(),
+            subject_id: "grp_apps",
+            subject_type: "group",
+            method: :put,
+            data: %{
+              "fields" => %{
+                "name" => %{"value" => "Scoped", "update_id" => "u1", "hlc" => hlc},
+                "apps" => %{
+                  "map" => %{
+                    "notes" => %{
+                      "value" => true,
+                      "update_id" => "u1",
+                      "hlc" => hlc
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      GroupAppsCache.reset(group_apps: group_apps_table)
+      assert GroupAppsCache.get_apps("grp_apps", group_apps_table) == :unscoped
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+
+      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert GroupAppsCache.get_apps("grp_apps", group_apps_table) == MapSet.new(["notes"])
+
+      assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
+               TestHelpers.telemetry_events(ref)
+
+      assert measurements.group_apps == 1
     end
 
     test "is a no-op when cf_type_entities is already in sync", %{
@@ -409,6 +461,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert measurements.entity_types == 0
       assert measurements.group_members == 0
       assert measurements.entity_groups == 0
+      assert measurements.group_apps == 0
       assert measurements.relationships == 0
       assert measurements.backfilled == 0
     end

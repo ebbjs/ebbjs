@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EntitySeed, SeedData } from "@ebbjs/core/seed";
 import {
+  APP_ID,
   SAMPLE_ISSUE_ID,
   SEED_PERMISSIONS,
   SEEDER_ACTOR_ID,
@@ -49,7 +50,9 @@ describe("buildActorSeed", () => {
   const seed = buildActorSeed(actorId);
 
   it("creates the actor's group and own membership with the seed permissions", () => {
-    expect(seed.groups).toEqual([{ id: ids.groupId, name: "alice's Workspace" }]);
+    expect(seed.groups).toEqual([
+      { id: ids.groupId, name: "alice's Workspace", apps: { [APP_ID]: true } },
+    ]);
     expect(seed.groupMembers).toEqual([
       {
         id: ids.memberId,
@@ -105,7 +108,9 @@ describe("buildSharedSeed", () => {
   const seed = buildSharedSeed();
 
   it("creates the shared group and the seeder's membership", () => {
-    expect(seed.groups).toEqual([{ id: SHARED_GROUP_ID, name: "Shared Workspace" }]);
+    expect(seed.groups).toEqual([
+      { id: SHARED_GROUP_ID, name: "Shared Workspace", apps: { [APP_ID]: true } },
+    ]);
     expect(seed.groupMembers).toEqual([
       {
         id: SHARED_MEMBER_ID,

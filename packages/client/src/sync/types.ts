@@ -39,6 +39,11 @@ type AnySchema = Schema<
  */
 export const GroupInfoSchema = Type.Object({
   id: Type.String(),
+  /**
+   * App scope as the projected truthy keys. Optional because older
+   * servers do not send it; absent means unscoped (every app).
+   */
+  apps: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   permissions: Type.Array(Type.String()),
   cursor_valid: Type.Boolean(),
   reason: Type.Union([Type.String(), Type.Null()]),
@@ -48,6 +53,8 @@ export const GroupInfoSchema = Type.Object({
 /** Public-facing group descriptor (camelCase). */
 export interface GroupInfo {
   id: string;
+  /** App ids the group is in scope for; `null` means unscoped (every app). */
+  apps: readonly string[] | null;
   permissions: readonly string[];
   /** `false` when the server has already pruned past the client's cursor. */
   cursorValid: boolean;
@@ -191,6 +198,13 @@ export interface SyncClientOptions<
   serverUrl: string;
   /** Actor identity for bypass auth (`x-ebb-actor-id`). */
   actorId: string;
+  /**
+   * Local app label (#732). When set, `handshake()` keeps only groups
+   * whose app scope includes it, and `seed()` / `group.create` write it
+   * as the new group's scope. It is a sync filter, not authority: the
+   * actor's grants remain the only boundary.
+   */
+  appId?: string;
   /** Storage adapter for received actions. Defaults to in-memory adapter. */
   storage?: import("@ebbjs/storage/types").StorageAdapter;
   /** Custom fetch implementation (for tests / non-Node runtimes). */

@@ -20,6 +20,7 @@ import {
   GROUPS_ACCESSOR,
   validatePayload,
   type EntityRegistry,
+  type FieldMarker,
 } from "@ebbjs/schema";
 
 import { projectFieldValue } from "./field-projection";
@@ -210,7 +211,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc) },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
   });
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
 
@@ -303,12 +304,13 @@ export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, inpu
     }
   }
   const updateId = ctx.ids.updateId();
+  const hlc = ctx.ids.hlc();
   const update: Update = {
     id: updateId,
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, ctx.ids.hlc()) },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
   };
   return {
     updates: [update],
@@ -323,6 +325,8 @@ export interface CreateGroupInput {
   readonly memberId: string;
   readonly name: string;
   readonly permissions: readonly string[];
+  /** Local app label; a created group is scoped to it when set. */
+  readonly appId?: string;
   readonly validate?: boolean;
 }
 
@@ -333,10 +337,13 @@ export interface CreateGroupInput {
  * `entityGroup` row is emitted for it.
  */
 export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
+  const fields: Record<string, unknown> = { name: input.name };
+  if (input.appId !== undefined) fields["apps"] = { [input.appId]: true };
+
   const group = createSystemEntity(ctx, {
     entity: "group",
     id: input.groupId,
-    fields: { name: input.name },
+    fields,
     validate: input.validate,
   });
   const member = createSystemEntity(ctx, {
@@ -381,6 +388,7 @@ export const groupBootstrap = (
   registry: EntityRegistry,
   name: string,
   validate?: boolean,
+  appId?: string,
 ): GroupBootstrap => {
   const groupId = generateId("e");
   const memberId = generateId("e");
@@ -393,6 +401,7 @@ export const groupBootstrap = (
       name,
       permissions: fullGroupPermissions(registry),
       validate,
+      appId,
     }),
   };
 };
@@ -434,7 +443,7 @@ export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
         subject_id: input.id,
         subject_type: input.entity,
         method: "patch",
-        data: { fields: wrapFields(input.payload, updateId, hlc) },
+        data: { fields: wrapFields(input.payload, updateId, hlc, def?.fields) },
       },
     ],
     groups: [...input.groups],
@@ -786,17 +795,39 @@ const isEmptyPayload = (payload: unknown): boolean => {
  * Flatten a payload into the wire envelope. `undefined` fields are
  * dropped (the wire envelope is absent, not explicitly undefined);
  * `null` is preserved so nullable fields round-trip cleanly.
+ *
+ * The registry supplies the merge marker per field: a map field's plain
+ * object becomes a `map` envelope so its keys merge independently, and
+ * every other field stays a leaf. Without a registry (a schema-less
+ * client) every field is a leaf, as before.
  */
 export const wrapFields = (
   payload: unknown,
   updateId: string,
   hlc: string,
-): Record<string, { value: unknown; update_id: string; hlc: string }> => {
-  const out: Record<string, { value: unknown; update_id: string; hlc: string }> = {};
+  markers?: { readonly [field: string]: FieldMarker },
+): Record<string, FieldValue> => {
+  const out: Record<string, FieldValue> = {};
   if (payload === null || typeof payload !== "object") return out;
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) continue;
-    out[key] = { value, update_id: updateId, hlc };
+    out[key] =
+      markers?.[key]?.map === true && isPlainObject(value)
+        ? wrapMapValue(value, updateId, hlc)
+        : { value, update_id: updateId, hlc };
   }
   return out;
 };
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const wrapMapValue = (
+  entries: Record<string, unknown>,
+  updateId: string,
+  hlc: string,
+): FieldValue => ({
+  map: Object.fromEntries(
+    Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
+  ),
+});

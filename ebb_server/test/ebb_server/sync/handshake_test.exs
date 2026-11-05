@@ -60,9 +60,30 @@ defmodule EbbServer.Sync.HandshakeTest do
     data |> Msgpax.pack!() |> IO.iodata_to_binary()
   end
 
-  defp bootstrap_group(actor_id, group_id, permissions) do
+  defp bootstrap_group(actor_id, group_id, permissions, apps \\ nil) do
     hlc = generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
+    group_update_id = "upd_group_" <> Nanoid.generate()
+
+    fields = %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
+
+    fields =
+      if apps do
+        Map.put(fields, "apps", %{
+          "map" =>
+            Map.new(apps, fn {app_id, value} ->
+              {app_id,
+               %{
+                 "type" => "lww",
+                 "value" => value,
+                 "hlc" => hlc,
+                 "update_id" => group_update_id
+               }}
+            end)
+        })
+      else
+        fields
+      end
 
     action = %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -70,13 +91,11 @@ defmodule EbbServer.Sync.HandshakeTest do
       "hlc" => hlc,
       "updates" => [
         %{
-          "id" => "upd_group_" <> Nanoid.generate(),
+          "id" => group_update_id,
           "subject_id" => group_id,
           "subject_type" => "group",
           "method" => "put",
-          "data" => %{
-            "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
-          }
+          "data" => %{"fields" => fields}
         },
         %{
           "id" => gm_id,
@@ -123,6 +142,27 @@ defmodule EbbServer.Sync.HandshakeTest do
                "todo.create",
                "todo.update"
              ]
+    end
+
+    test "an unscoped group publishes apps as null" do
+      bootstrap_group("a_unscoped", "g_unscoped", ["read"])
+
+      conn = post_handshake(%{}, "a_unscoped")
+
+      assert conn.status == 200
+      group = conn.resp_body |> Jason.decode!() |> Map.get("groups") |> hd()
+      assert Map.has_key?(group, "apps")
+      assert group["apps"] == nil
+    end
+
+    test "a scoped group publishes its truthy app ids sorted" do
+      bootstrap_group("a_scoped", "g_scoped", ["read"], %{"notes" => true, "issues" => true})
+
+      conn = post_handshake(%{}, "a_scoped")
+
+      assert conn.status == 200
+      group = conn.resp_body |> Jason.decode!() |> Map.get("groups") |> hd()
+      assert group["apps"] == ["issues", "notes"]
     end
 
     test "handshake with invalid JSON returns 422" do

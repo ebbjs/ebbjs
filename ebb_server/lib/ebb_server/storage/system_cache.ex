@@ -21,6 +21,7 @@ defmodule EbbServer.Storage.SystemCache do
     - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
     - `GroupCache`        — per-group member sets; permission checks read this on every write.
     - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
+    - `GroupAppsCache`    — each group's app scope, projected for the handshake.
     - `EntityTypeCache`   — entity id → `subject_type`; the authorizer resolves an existing
                             entity's type from here for membership permissions (#264).
     - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
@@ -36,13 +37,14 @@ defmodule EbbServer.Storage.SystemCache do
 
   ## Lifecycle
 
-  On init, the supervisor populates `GroupCache`, `EntityGroupCache` and
-  `RelationshipCache` from the system entities in RocksDB before returning. The
-  same `cf_type_entities` walk re-marks every indexed row dirty; dirty marks
-  are in-memory and would otherwise be lost on a restart, leaving patch-only
-  rows clean-but-stale and never-materialized rows missing (#564). The eager
-  system-type populators clear their marks by materializing; `group` and user
-  types stay marked until their first read. The outer `Storage.Supervisor`
+  On init, the supervisor populates `GroupCache`, `EntityGroupCache`,
+  `GroupAppsCache` and `RelationshipCache` from the system entities in
+  RocksDB before returning. The same `cf_type_entities` walk re-marks every
+  indexed row dirty; dirty marks are in-memory and would otherwise be lost on
+  a restart, leaving patch-only rows clean-but-stale and never-materialized
+  rows missing (#564). The eager system-type populators clear their marks by
+  materializing; user types stay marked until their first read. The outer
+  `Storage.Supervisor`
   uses `rest_for_one` so RocksDB is up before any cache child starts; the
   supervision tree blocks accepting connections until this returns. If
   population raises, `init/1` tears down the cache children and fails the
@@ -95,6 +97,7 @@ defmodule EbbServer.Storage.SystemCache do
   - `:entity_groups` - defaults to `:ebb_entity_groups`
   - `:entity_groups_by_id` - defaults to `:ebb_entity_groups_by_id`
   - `:entity_groups_by_group` - defaults to `:ebb_entity_groups_by_group`
+  - `:group_apps` - defaults to `:ebb_group_apps`
   - `:entity_types` - defaults to `:ebb_entity_types`
   - `:relationships` - defaults to `:ebb_relationships`
   - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
@@ -116,6 +119,7 @@ defmodule EbbServer.Storage.SystemCache do
     EntityStore,
     EntityTypeCache,
     Fields,
+    GroupAppsCache,
     GroupCache,
     RelationshipCache,
     RocksDB
@@ -142,6 +146,7 @@ defmodule EbbServer.Storage.SystemCache do
     entity_types: 0,
     group_members: 0,
     entity_groups: 0,
+    group_apps: 0,
     relationships: 0,
     backfilled: 0
   }
@@ -156,6 +161,7 @@ defmodule EbbServer.Storage.SystemCache do
     :entity_groups,
     :entity_groups_by_id,
     :entity_groups_by_group,
+    :group_apps,
     :entity_types
   ]
 
@@ -169,7 +175,8 @@ defmodule EbbServer.Storage.SystemCache do
   `init/1` runs. It fills `EntityTypeCache` from `cf_type_entities`,
   runs the one-time `cf_type_entities` backfill if this database has
   never completed it, then materializes every system entity into
-  `GroupCache`, `EntityGroupCache` and `RelationshipCache`.
+  `GroupCache`, `EntityGroupCache`, `GroupAppsCache` and
+  `RelationshipCache`.
 
   Emits `[:ebb, :system_cache, :populated]` with per-cache counts and a
   native `duration`, and metadata `outcome` (`:ok` or `:error`). On a
@@ -233,6 +240,7 @@ defmodule EbbServer.Storage.SystemCache do
         table_opt(opts, :entity_groups_by_id, CacheTables.entity_groups_by_id()),
       entity_groups_by_group:
         table_opt(opts, :entity_groups_by_group, CacheTables.entity_groups_by_group()),
+      group_apps: table_opt(opts, :group_apps, CacheTables.group_apps()),
       entity_types: table_opt(opts, :entity_types, CacheTables.entity_types())
     }
   end
@@ -259,12 +267,14 @@ defmodule EbbServer.Storage.SystemCache do
     entity_group_cache_opts =
       Keyword.take(opts, [:entity_groups, :entity_groups_by_id, :entity_groups_by_group])
 
+    group_apps_cache_opts = Keyword.take(opts, [:group_apps])
     entity_type_cache_opts = Keyword.take(opts, [:entity_types])
 
     children = [
       {DirtyTracker, dirty_set_opts},
       {GroupCache, group_cache_opts},
       {EntityGroupCache, entity_group_cache_opts},
+      {GroupAppsCache, group_apps_cache_opts},
       {EntityTypeCache, entity_type_cache_opts},
       {RelationshipCache, rel_cache_opts}
     ]
@@ -390,11 +400,15 @@ defmodule EbbServer.Storage.SystemCache do
            phase(m3, :entity_groups, fn counter ->
              populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter)
            end),
-         {:ok, _relationships, m5} <-
-           phase(m4, :relationships, fn counter ->
+         {:ok, _group_apps, m5} <-
+           phase(m4, :group_apps, fn counter ->
+             populate_group_apps(rocks_name, tables, dirty_set, sqlite_opts, counter)
+           end),
+         {:ok, _relationships, m6} <-
+           phase(m5, :relationships, fn counter ->
              populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter)
            end) do
-      {:ok, m5}
+      {:ok, m6}
     else
       {:error, _measurements, _kind, _reason, _stacktrace} = error -> error
     end
@@ -491,6 +505,30 @@ defmodule EbbServer.Storage.SystemCache do
       entity_groups: tables.entity_groups,
       entity_groups_by_id: tables.entity_groups_by_id,
       entity_groups_by_group: tables.entity_groups_by_group
+    )
+  end
+
+  # Entity reads otherwise materialize group rows lazily; the handshake
+  # needs every group's app scope at boot, so the same type walk fills the
+  # cache here instead of materializing a row per handshake.
+  defp populate_group_apps(rocks_name, tables, dirty_set, sqlite_opts, counter) do
+    populate_type(
+      "group",
+      rocks_name,
+      dirty_set,
+      &put_group_apps(&1, tables),
+      sqlite_opts,
+      counter
+    )
+  end
+
+  defp put_group_apps(entity_data, tables) do
+    data = entity_data.data || %{}
+
+    GroupAppsCache.put_group_apps(
+      entity_data.id,
+      Fields.get(data, "apps"),
+      group_apps: tables.group_apps
     )
   end
 

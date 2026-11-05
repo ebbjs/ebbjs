@@ -206,6 +206,11 @@ export class SyncClient<
 > implements PermissionQuery {
   readonly serverUrl: string;
   readonly actorId: string;
+  /**
+   * Local app label (#732), or `undefined` when the client is unscoped.
+   * A sync filter only: the actor's grants remain the whole boundary.
+   */
+  readonly appId: string | undefined;
   readonly storage: StorageAdapter;
   /**
    * The engine's materialized read model (#496): a mutable set of rows with
@@ -317,6 +322,13 @@ export class SyncClient<
    */
   private handshakeRan = false;
   /**
+   * The groups the previous handshake reported in this app's scope.
+   * Reconcile removes only groups that actually left scope, so a client
+   * that explicitly over-subscribed to an out-of-scope group keeps it:
+   * app scope is not a boundary and never denies a request.
+   */
+  private inAppScope: Set<string> = new Set();
+  /**
    * Per-client HLC clock. Advanced on every local event by
    * {@link submitRelationshipUpdates}; remote HLCs flow in via
    * `_applyAction`. The clock is per-client so writes stay
@@ -394,6 +406,7 @@ export class SyncClient<
   constructor(opts: SyncClientOptions<R>) {
     this.serverUrl = opts.serverUrl.replace(/\/$/, "");
     this.actorId = opts.actorId;
+    this.appId = opts.appId;
     this.storage = opts.storage ?? createMemoryAdapter();
     this.schema = opts.schema;
     this.schemaHash = opts.schema === undefined ? undefined : computeSchemaHash(opts.schema);
@@ -666,6 +679,8 @@ export class SyncClient<
    *
    * On success, the per-group cursors returned by the server are cached so
    * subsequent `catchUp` / `subscribe` calls can pick up where we left off.
+   * With a local `appId`, groups outside that app's scope are dropped here,
+   * and an active subscription loses any group that left scope (#732).
    */
   async handshake(opts: HandshakeRequest = {}): Promise<HandshakeResult> {
     await this.hydrateReplica();
@@ -694,7 +709,7 @@ export class SyncClient<
     const data = (await response.json()) as HandshakeResponse;
     const result: HandshakeResult = {
       actorId: data.actor_id,
-      groups: data.groups.map(toGroupInfo),
+      groups: data.groups.map(toGroupInfo).filter((group) => isInAppScope(group.apps, this.appId)),
     };
 
     // A rejected cursor means the server's log no longer holds a window the
@@ -716,7 +731,37 @@ export class SyncClient<
     for (const g of result.groups) {
       if (g.cursorValid) this.groupCursors.set(g.id, g.cursor);
     }
+    this.reconcileSubscriptionScope(new Set(result.groups.map((group) => group.id)));
     return result;
+  }
+
+  /**
+   * Drop groups that left this app's scope from the live subscription.
+   * Only the difference from the previous handshake counts: a group the
+   * client over-subscribed to was never in scope, so this never takes it
+   * away. The app owns its subset and newly in-scope groups are not added
+   * here (#734 covers live additions). A removed group's rows are evicted
+   * and the stream reopens without it, so the server stops pushing it.
+   */
+  private reconcileSubscriptionScope(nextInScope: ReadonlySet<string>): void {
+    if (this.appId === undefined) return;
+    const left = new Set([...this.inAppScope].filter((groupId) => !nextInScope.has(groupId)));
+    this.inAppScope = new Set(nextInScope);
+    if (left.size === 0) return;
+    const sub = this.activeSub;
+    if (sub === null) return;
+    const kept = sub.groupIds.filter((groupId) => !left.has(groupId));
+    if (kept.length === sub.groupIds.length) return;
+    this.applyReplicaScope(kept);
+    if (kept.length === 0) {
+      // An empty group list is not a valid live subscription, so end the
+      // session instead of reconnecting into a 400 forever. A later
+      // `subscribe()` reopens it.
+      this.cancelSubscription(sub);
+      return;
+    }
+    sub.groupIds = kept;
+    this.closeStream(sub);
   }
 
   /**
@@ -910,9 +955,13 @@ export class SyncClient<
    *
    * Schema-less: the rows carry their own field envelopes and ids, so a
    * client without a schema can still seed fixture data.
+   *
+   * With a local `appId`, a group seeded without an explicit `apps` map is
+   * scoped to that app; an explicit scope always wins.
    */
   async seed(data: SeedData): Promise<void> {
-    const response = await this.write([buildSeedAction(this.actorId, data)]);
+    const scoped = withDefaultAppScope(data, this.appId);
+    const response = await this.write([buildSeedAction(this.actorId, scoped)]);
     assertSeedAccepted(response.rejected);
   }
 
@@ -2215,11 +2264,34 @@ interface ActiveSubscription {
 
 const toGroupInfo = (raw: HandshakeResponse["groups"][number]): GroupInfo => ({
   id: raw.id,
+  apps: raw.apps ?? null,
   permissions: raw.permissions,
   cursorValid: raw.cursor_valid,
   reason: raw.reason ?? null,
   cursor: raw.cursor,
 });
+
+/**
+ * An unscoped group belongs to every app; a scoped one belongs to the
+ * apps the server projects from its scope map. Without a local app label
+ * nothing is filtered.
+ */
+const isInAppScope = (apps: readonly string[] | null, appId: string | undefined): boolean =>
+  appId === undefined || apps === null || apps.includes(appId);
+
+/**
+ * Give every seeded group without an explicit scope the seeding client's
+ * app, so a group the app created is in its view and nowhere else.
+ */
+const withDefaultAppScope = (data: SeedData, appId: string | undefined): SeedData => {
+  if (appId === undefined) return data;
+  return {
+    ...data,
+    groups: data.groups.map((group) =>
+      group.apps === undefined ? { ...group, apps: { [appId]: true } } : group,
+    ),
+  };
+};
 
 const errorMessage = (err: unknown): string => {
   if (err instanceof Error) return err.message;
@@ -2358,6 +2430,7 @@ export function createClient<
     freshHlc: () => client.freshHlc(),
     generateUpdateId: () => client.generateUpdateId(),
     actorId: client.actorId,
+    appId: client.appId,
     read: {
       // `findPreSyncRow` reads the entity's earliest unresolved conflict's
       // `before` row (the conflicts view owns the detection-HLC ordering).
