@@ -28,7 +28,10 @@ set -euo pipefail
 
 IMAGE="${1:-ebb_server:smoke}"
 PORT="${EBB_SMOKE_PORT:-4000}"
-BUDGET_MB="${EBB_IMAGE_SIZE_BUDGET_MB:-250}"
+# The embedded gateway (#728) adds a ~22 MiB static binary to the runtime
+# layer, which put the measured image at 267 MiB. The ceiling moves with the
+# image it governs, but stays a ceiling: it still catches a builder leak.
+BUDGET_MB="${EBB_IMAGE_SIZE_BUDGET_MB:-300}"
 NAME="ebb-smoke-$$"
 VOLUME="ebb-smoke-data-$$"
 COMPOSE_PROJECT="ebb-smoke-$$"

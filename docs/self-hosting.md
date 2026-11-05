@@ -493,9 +493,9 @@ and prints a fresh URL.
   into the release as `priv/tsnode/ebb_tsnode`. It is a static binary on
   tsnet's userspace network stack: no `/dev/net/tun`, no root, no privileged
   port. The runtime image keeps no Go toolchain and no gateway source.
-- **Size.** The gateway stage adds its static binary to the runtime image, and
-  the smoke test fails if the image grows past 250 MiB; the image job reports
-  the measured size for a release.
+- **Size.** The gateway stage adds its ~22 MiB static binary to the runtime
+  image (267 MiB with it), and the smoke test fails if the image grows past
+  300 MiB; the image job reports the measured size for a release.
 - **Not included.** TLS termination for any ingress other than the embedded
   Tailscale node — put a reverse proxy (Caddy, nginx, Traefik) in front and
   expose the container on a private network. No clustering, multi-node, or
