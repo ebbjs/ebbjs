@@ -675,22 +675,32 @@ not atoms.
 
 All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 
-| Key                          | Description                                                                                                                       | Default          |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `:port`                      | HTTP listen port                                                                                                                  | 4000             |
-| `:data_dir`                  | Directory for RocksDB + SQLite files                                                                                              | `./data`         |
-| `:auth_mode`                 | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                                                 | (none)           |
-| `:auth_url`                  | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                                              | (required)       |
-| `:writer_batch_max_size`     | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                                                 | 1000             |
-| `:writer_batch_timeout_ms`   | Coalescing window (`0` = burst-drain, no timer)                                                                                   | 0                |
-| `:writer_max_in_flight`      | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                                        | 1                |
-| `:writer_prepare_pool_size`  | Prepare workers for payload build and ETF encode                                                                                  | 2                |
-| `:writer_prepare_queue_max`  | In-flight prepare calls before the Writer rejects with `503 write_failed`                                                         | 1024             |
-| `:writer_prepare_timeout_ms` | Upper bound on one prepare job before it fails the call                                                                           | 2000             |
-| `:writer_commit_timeout_ms`  | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset                          | 2000             |
-| `:writer_max_pending_calls`  | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset                    | 256              |
-| `:on_action`                 | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                                            | (unset)          |
-| `:functions`                 | Nested functions key: `enabled`, `bundle_dir`, `admin_token`, `retention`, `transport`, `worker_opts` (see `EbbServer.Functions`) | `enabled: false` |
+| Key                              | Description                                                                                                                       | Default          |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `:port`                          | HTTP listen port                                                                                                                  | 4000             |
+| `:data_dir`                      | Directory for RocksDB + SQLite files                                                                                              | `./data`         |
+| `:sync_actions_max_body_bytes`   | `POST /sync/actions` request-body cap in bytes (`413` over it)                                                                    | 8_000_000        |
+| `:sync_handshake_max_body_bytes` | `POST /sync/handshake` request-body cap in bytes (`413` over it)                                                                  | 1_048_576        |
+| `:entities_query_max_body_bytes` | `POST /entities/query` request-body cap in bytes (`413` over it)                                                                  | 1_048_576        |
+| `:presence_max_body_bytes`       | `POST /sync/presence` request-body cap in bytes (`413` over it)                                                                   | 32_768           |
+| `:auth_mode`                     | Auth mode (`:bypass` / `:external`); `EBB_AUTH_MODE` overrides it                                                                 | (none)           |
+| `:auth_url`                      | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`                                              | (required)       |
+| `:writer_batch_max_size`         | Buffered Actions before an immediate commit (`<= 0` = no trigger)                                                                 | 1000             |
+| `:writer_batch_timeout_ms`       | Coalescing window (`0` = burst-drain, no timer)                                                                                   | 0                |
+| `:writer_max_in_flight`          | Claimed ranges the pipeline may hold at once (1–4); higher overlap needs the overlay chain                                        | 1                |
+| `:writer_prepare_pool_size`      | Prepare workers for payload build and ETF encode                                                                                  | 2                |
+| `:writer_prepare_queue_max`      | In-flight prepare calls before the Writer rejects with `503 write_failed`                                                         | 1024             |
+| `:writer_prepare_timeout_ms`     | Upper bound on one prepare job before it fails the call                                                                           | 2000             |
+| `:writer_commit_timeout_ms`      | A commit older than this is retired by the watchdog; `EBB_WRITER_COMMIT_TIMEOUT_MS` overrides when unset                          | 2000             |
+| `:writer_max_pending_calls`      | Calls admitted before new calls get `429` + `Retry-After`; `EBB_WRITER_MAX_PENDING_CALLS` overrides when unset                    | 256              |
+| `:on_action`                     | Opt-in Action exporter handler (see [Action export](#action-export-the-onaction-hook))                                            | (unset)          |
+| `:functions`                     | Nested functions key: `enabled`, `bundle_dir`, `admin_token`, `retention`, `transport`, `worker_opts` (see `EbbServer.Functions`) | `enabled: false` |
+
+The four `*_max_body_bytes` caps bound HTTP/1 `Content-Length` and HTTP/2
+data-frame bodies on their route. Bandit 1.x drains a `Transfer-Encoding:
+chunked` body in one read and cannot enforce a limit there, so a deployment
+that accepts chunked uploads must also set a body limit at the reverse proxy
+(see `docs/self-hosting.md`).
 
 The periodic metric sampler is configured under its own key,
 `Application.get_env(:ebb_server, EbbServer.Telemetry.Sampler)`:

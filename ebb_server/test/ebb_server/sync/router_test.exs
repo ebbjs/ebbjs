@@ -4,6 +4,7 @@ defmodule EbbServer.Sync.RouterTest do
 
   import Plug.Test
   import Plug.Conn
+  import EbbServer.TestHelpers, only: [put_config: 2]
 
   alias EbbServer.Storage.{
     CacheTables,
@@ -17,6 +18,14 @@ defmodule EbbServer.Sync.RouterTest do
   alias EbbServer.Sync.PresenceRateLimit.Buckets
   alias EbbServer.Sync.Router
   alias Exqlite.Sqlite3
+
+  # Swaps in an adapter whose every body read fails, to drive a route's
+  # `:invalid_body` branch. Everything else delegates to the test adapter so
+  # the response can still be sent.
+  defp put_unreadable_body_adapter(conn) do
+    {_adapter, state} = conn.adapter
+    %{conn | adapter: {EbbServer.Sync.RouterTest.UnreadableBodyAdapter, state}}
+  end
 
   defp post_presence(body, actor_id) do
     post_presence_raw(Jason.encode!(body), actor_id)
@@ -39,18 +48,6 @@ defmodule EbbServer.Sync.RouterTest do
       "entity_id" => entity_id,
       "data" => %{"pad" => String.duplicate("x", padding)}
     })
-  end
-
-  defp put_config(key, value) do
-    previous = Application.get_env(:ebb_server, key)
-    Application.put_env(:ebb_server, key, value)
-
-    on_exit(fn ->
-      case previous do
-        nil -> Application.delete_env(:ebb_server, key)
-        previous -> Application.put_env(:ebb_server, key, previous)
-      end
-    end)
   end
 
   defp setup_entity_group(entity_id, group_id) do
@@ -441,6 +438,31 @@ defmodule EbbServer.Sync.RouterTest do
       assert conn.status == 422
       assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_msgpack"}
     end
+
+    test "413 for a body over the cap, not 500" do
+      put_config(:sync_actions_max_body_bytes, 1_024)
+
+      conn =
+        conn(:post, "/sync/actions", String.duplicate("x", 2_048))
+        |> put_req_header("content-type", "application/msgpack")
+        |> put_req_header("x-ebb-actor-id", "a_member")
+        |> Router.call([])
+
+      assert conn.status == 413
+      assert Jason.decode!(conn.resp_body) == %{"error" => "payload_too_large"}
+    end
+
+    test "400 invalid_body when the adapter cannot read the body" do
+      conn =
+        conn(:post, "/sync/actions", "ignored")
+        |> put_unreadable_body_adapter()
+        |> put_req_header("content-type", "application/msgpack")
+        |> put_req_header("x-ebb-actor-id", "a_member")
+        |> Router.call([])
+
+      assert conn.status == 400
+      assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_body"}
+    end
   end
 
   describe "unknown routes" do
@@ -514,4 +536,25 @@ defmodule EbbServer.Sync.RouterTest do
       assert handshake.status == 401
     end
   end
+end
+
+defmodule EbbServer.Sync.RouterTest.UnreadableBodyAdapter do
+  @moduledoc false
+  # A body adapter that always fails to read, while still answering the
+  # response callbacks the route needs. Used by `RouterTest` to reach the
+  # `:invalid_body` branch through a real route.
+  @adapter Plug.Adapters.Test.Conn
+
+  def read_req_body(_state, _opts), do: {:error, :timeout}
+
+  defdelegate send_resp(state, status, headers, body), to: @adapter
+  defdelegate send_chunked(state, status, headers), to: @adapter
+  defdelegate chunk(state, body), to: @adapter
+  defdelegate inform(state, status, headers), to: @adapter
+  defdelegate upgrade(state, protocol, opts), to: @adapter
+  defdelegate push(state, path, headers), to: @adapter
+  defdelegate get_peer_data(payload), to: @adapter
+  defdelegate get_sock_data(payload), to: @adapter
+  defdelegate get_ssl_data(payload), to: @adapter
+  defdelegate get_http_protocol(payload), to: @adapter
 end

@@ -137,6 +137,43 @@ instruction.
 > `x-ebb-actor-id` header. The server logs a warning at boot when it is active.
 > A public deployment must use `external` with a reachable `EBB_AUTH_URL`.
 
+### Request body limits
+
+The server bounds each body-bearing route with an application-env key, read on
+`POST /sync/actions`, `/sync/handshake`, `/entities/query`, `/sync/presence`.
+These keys are documented in `ebb_server/README.md`; the published image has no
+`EBB_*` overlay for them, so a release that needs a different ceiling sets them
+in its own config, while a container operator's control is the reverse-proxy
+limit below.
+
+| Key                              | Default     | Route                  |
+| -------------------------------- | ----------- | ---------------------- |
+| `:sync_actions_max_body_bytes`   | `8_000_000` | `POST /sync/actions`   |
+| `:sync_handshake_max_body_bytes` | `1_048_576` | `POST /sync/handshake` |
+| `:entities_query_max_body_bytes` | `1_048_576` | `POST /entities/query` |
+| `:presence_max_body_bytes`       | `32_768`    | `POST /sync/presence`  |
+
+A body over the limit is `413 payload_too_large`; a body the adapter cannot
+read is `400 invalid_body`. These bounds apply to HTTP/1 `Content-Length` and
+HTTP/2 data-frame bodies. Bandit 1.x drains a `Transfer-Encoding: chunked`
+body in one call and cannot enforce a limit there, so a deployment that accepts
+chunked uploads must also set a body limit at the reverse proxy:
+
+```caddyfile
+# Caddy: 10MB, comfortably above the 8,000,000-byte default Action ceiling
+example.com {
+  request_body {
+    max_size 10MB
+  }
+  reverse_proxy ebb:4000
+}
+```
+
+```nginx
+# nginx: same 10MB ceiling
+client_max_body_size 10m;
+```
+
 ## 5. Persistence, upgrades, and backups
 
 `/app/data` is a volume and holds everything durable:

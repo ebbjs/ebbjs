@@ -248,6 +248,58 @@
                         },
                       "description": "Matching entities",
                     },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Request body could not be read by the adapter; error invalid_body",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "JSON body over `:entities_query_max_body_bytes` (default 1,048,576); error payload_too_large",
+                    },
                   "422":
                     {
                       "content":
@@ -2893,6 +2945,58 @@
                         },
                       "description": "Actions processed (some may be rejected)",
                     },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Request body could not be read by the adapter; error invalid_body",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "MessagePack body over `:sync_actions_max_body_bytes` (default 8,000,000); error payload_too_large",
+                    },
                   "422":
                     {
                       "content":
@@ -3415,6 +3519,32 @@
                         },
                       "description": "Handshake successful",
                     },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Request body could not be read by the adapter; error invalid_body",
+                    },
                   "401":
                     {
                       "content":
@@ -3440,6 +3570,32 @@
                             },
                         },
                       "description": "Missing actor_id",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "JSON body over `:sync_handshake_max_body_bytes` (default 1,048,576); error payload_too_large",
                     },
                   "422":
                     {
@@ -3602,6 +3758,32 @@
               "responses":
                 {
                   "204": { "description": "Presence broadcasted successfully" },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Request body could not be read by the adapter; error invalid_body",
+                    },
                   "404":
                     {
                       "content":
