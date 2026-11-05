@@ -388,6 +388,26 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       Process.exit(conn, :kill)
     end
+
+    test "the actor index tracks live connections across unsubscribe and DOWN" do
+      actor_id = "actor_index_#{:erlang.unique_integer([:positive])}"
+      conn = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      :ok = FanOutRouter.subscribe(["index_test_group"], conn, actor_id)
+      assert conn in router_actor_connections()[actor_id]
+
+      :ok = FanOutRouter.unsubscribe(conn)
+      refute Map.has_key?(router_actor_connections(), actor_id)
+
+      conn2 = spawn(fn -> receive do: (:stop -> :ok) end)
+      :ok = FanOutRouter.subscribe(["index_test_group"], conn2, actor_id)
+      assert conn2 in router_actor_connections()[actor_id]
+
+      Process.exit(conn2, :kill)
+
+      assert eventually(fn -> not Map.has_key?(router_actor_connections(), actor_id) end),
+             "expected the dead connection to leave the actor index"
+    end
   end
 
   describe "per-Update delivery (#473)" do
@@ -531,6 +551,10 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
   defp router_subscriptions do
     :sys.get_state(FanOutRouter).subscriptions
+  end
+
+  defp router_actor_connections do
+    :sys.get_state(FanOutRouter).actor_connections
   end
 
   defp eventually(fun, attempts \\ 100)

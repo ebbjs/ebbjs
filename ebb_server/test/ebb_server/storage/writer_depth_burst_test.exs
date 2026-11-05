@@ -89,9 +89,9 @@ defmodule EbbServer.Storage.WriterDepthBurstTest do
     assert {:ok, {7, 8}, []} = Task.await(burst_a, 2_000)
     assert {:ok, {9, 9}, []} = Task.await(burst_b, 2_000)
 
-    assert_receive {:batch_committed, 1, 3, _groups, _committed_at, _payloads}, 2_000
-    assert_receive {:batch_committed, 4, 6, _groups, _committed_at, _payloads}, 2_000
-    assert_receive {:batch_committed, 7, 9, _groups, _committed_at, _payloads}, 2_000
+    assert_receive {:batch_committed, 1, 3, _groups, _committed_at, _payloads, _actors}, 2_000
+    assert_receive {:batch_committed, 4, 6, _groups, _committed_at, _payloads, _actors}, 2_000
+    assert_receive {:batch_committed, 7, 9, _groups, _committed_at, _payloads, _actors}, 2_000
 
     # Every claimed GSN is durable exactly once: a discarded claim would
     # show up here as a hole even if the callers had been answered.

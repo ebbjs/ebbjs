@@ -1404,9 +1404,50 @@ defmodule EbbServer.Storage.WriterTest do
 
       after_commit = System.monotonic_time()
 
-      assert_receive {:batch_committed, 1, 1, _groups, committed_at, _payloads}
+      assert_receive {:batch_committed, 1, 1, _groups, committed_at, _payloads, _actors}
       assert is_integer(committed_at)
       assert committed_at >= before and committed_at <= after_commit
+    end
+
+    test "carries the actors whose group view the applied membership changed", ctx do
+      router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
+      true = Process.register(self(), router_name)
+
+      %{name: writer_name} =
+        start_writer(%{
+          rocks_name: ctx.rocks_name,
+          dirty_set: ctx.dirty_set,
+          gsn_counter: ctx.gsn_counter,
+          group_members: ctx.group_members,
+          group_members_by_id: ctx.group_members_by_id,
+          entity_groups: ctx.entity_groups,
+          entity_groups_by_id: ctx.entity_groups_by_id,
+          entity_groups_by_group: ctx.entity_groups_by_group,
+          relationships: ctx.relationships,
+          relationships_by_id: ctx.relationships_by_id,
+          fan_out_router: router_name
+        })
+
+      hlc = generate_hlc()
+
+      member =
+        validated_action(%{
+          id: "act_member_actor",
+          updates: [
+            group_member_update("gm_member_actor", "a_member", "g_member", ["todo.read"], hlc)
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([member], writer_name)
+
+      # A membership row changes its actor's group view; a batch that
+      # touches none reports none.
+      assert_receive {:batch_committed, 1, 1, _groups, _committed_at, _payloads, ["a_member"]}
+
+      assert {:ok, {2, 2}, []} =
+               Writer.write_actions([validated_action(%{id: "act_unrelated"})], writer_name)
+
+      assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads, []}
     end
 
     test "carries the pre-update group set for an entityGroup delete", %{
@@ -1449,7 +1490,9 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put], writer_name)
-      assert_receive {:batch_committed, 1, 1, %{1 => ["g_snapshot"]}, _committed_at, _payloads}
+
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_snapshot"]}, _committed_at, _payloads,
+                      _actors}
 
       delete = %{
         id: "act_snapshot_delete",
@@ -1472,7 +1515,9 @@ defmodule EbbServer.Storage.WriterTest do
       # group set must come from the same pre-update pass that built
       # cf_group_actions — not from a later re-resolution.
       assert EntityGroupCache.entity_groups("todo_snapshot", entity_groups) == []
-      assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}, _committed_at, _payloads}
+
+      assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}, _committed_at, _payloads,
+                      _actors}
     end
 
     test "a put+delete setGroups Action unions the old and new groups", %{
@@ -1517,7 +1562,9 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
-      assert_receive {:batch_committed, 1, 1, %{1 => ["g_old"]}, _committed_at, _payloads}
+
+      assert_receive {:batch_committed, 1, 1, %{1 => ["g_old"]}, _committed_at, _payloads,
+                      _actors}
 
       swap = %{
         id: "act_setgroups_swap",
@@ -1551,7 +1598,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, "act_setgroups_swap"} =
                RocksDB.get(cf, group_gsn_key("g_new", 2), name: rocks_name)
 
-      assert_receive {:batch_committed, 2, 2, %{2 => groups}, _committed_at, _payloads}
+      assert_receive {:batch_committed, 2, 2, %{2 => groups}, _committed_at, _payloads, _actors}
       assert Enum.sort(groups) == ["g_new", "g_old"]
     end
 
@@ -1579,7 +1626,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 2}, []} = Writer.write_actions([first, second], writer_name)
 
-      assert_receive {:batch_committed, 1, 2, _groups, _committed_at, payloads}
+      assert_receive {:batch_committed, 1, 2, _groups, _committed_at, payloads, _actors}
       assert [{first_etf, _first_scopes}, {second_etf, _second_scopes}] = payloads
 
       assert :erlang.binary_to_term(first_etf)["id"] == "act_carried_first"
