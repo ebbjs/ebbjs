@@ -44,19 +44,32 @@ defmodule EbbServer.Sync.Router do
 
   All errors use the appropriate HTTP status code (`400` for malformed
   body, `401` for auth failures, `403` for permission denied,
-  `404` for unknown entity, `409` for HLC drift, `429` with `Retry-After`
-  when Writer admission control rejects a call, `500`/`502`/`503` for
-  server errors and readiness failures). The Action-submission endpoint also
-  returns per-Action rejections in a `rejected` array so the client can roll
-  back optimistic applies. A `503 write_failed` is a failed or abandoned
-  write; a `503` from a Writer call timeout means the outcome is unknown, so
-  the client retries the same Action ids idempotently.
+  `404` for unknown entity, `409` for HLC drift, `413` for a presence body
+  over the size cap, `429` with `Retry-After` when Writer admission control
+  rejects a call or a presence sender is over its per-actor rate, `500`/`502`/
+  `503` for server errors and readiness failures). The Action-submission
+  endpoint also returns per-Action rejections in a `rejected` array so the
+  client can roll back optimistic applies. A `503 write_failed` is a failed or
+  abandoned write; a `503` from a Writer call timeout means the outcome is
+  unknown, so the client retries the same Action ids idempotently.
+
+  ## Presence volume
+
+  Presence has no schema, log, or idempotency, and the server fans it out to
+  every subscriber of every group the entity belongs to, so it is bounded by
+  volume instead: a body over `:presence_max_body_bytes` (default 32 KiB, four
+  times the client's 8 KiB payload cap) is `413 payload_too_large`, and an
+  actor over `:presence_rate_limit` (default `{20, 40}` tokens, see
+  `EbbServer.Sync.PresenceRateLimit`) gets `429 rate_limited` with
+  `Retry-After`. Neither changes the `{entity_id, data}` request shape, and
+  neither applies to the Action path.
 
   ## What this module is not
 
   This is **request plumbing**; the actual business logic lives in:
 
   - `EbbServer.Sync.AuthPlug` — actor identity extraction
+  - `EbbServer.Sync.PresenceRateLimit` — per-actor presence volume cap
   - `EbbServer.Storage.PermissionChecker` — per-update auth
   - `EbbServer.Storage.Writer` — write serialization
   - `EbbServer.Storage.EntityStore` — reads with on-demand materialization
@@ -68,6 +81,11 @@ defmodule EbbServer.Sync.Router do
   """
 
   use Plug.Router
+
+  # Four times the client's 8 KiB presence payload cap: room for the JSON
+  # envelope and escaping, while still bounding what one actor can push into
+  # the per-subscriber fan-out. Config: `:presence_max_body_bytes`.
+  @presence_max_body_bytes 32_768
 
   alias EbbServer.Storage.{
     ActionSubmission,
@@ -91,6 +109,12 @@ defmodule EbbServer.Sync.Router do
   plug(:health_check)
 
   plug(EbbServer.Sync.AuthPlug)
+
+  # After AuthPlug (the bucket is keyed by the assigned actor) and before
+  # `:match`, so a limited presence request never reaches the entity index or
+  # the fan-out. Only `POST /sync/presence` is inspected.
+  plug(EbbServer.Sync.PresenceRateLimit)
+
   plug(:functions)
   plug(:match)
   plug(:dispatch)
@@ -376,7 +400,22 @@ defmodule EbbServer.Sync.Router do
   end
 
   post "/sync/presence" do
-    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    case Plug.Conn.read_body(conn, length: presence_max_body_bytes()) do
+      {:ok, body, conn} ->
+        broadcast_presence(conn, body)
+
+      # `read_body/2` returns `{:more, partial, conn}` when the body exceeds
+      # `:length`; without this clause an over-cap body crashed into a
+      # `CaseClauseError` (a 500) instead of a rejection.
+      {:more, _partial, conn} ->
+        send_json(conn, 413, %{"error" => "payload_too_large"})
+
+      {:error, _reason} ->
+        send_json(conn, 400, %{"error" => "invalid_body"})
+    end
+  end
+
+  defp broadcast_presence(conn, body) do
     actor_id = conn.assigns.actor_id
 
     case Jason.decode(body) do
@@ -709,7 +748,15 @@ defmodule EbbServer.Sync.Router do
           OperationSchema.error_response(
             "Entity not found, or the actor is not a member of any of its groups"
           ),
-        "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)")
+        "413" =>
+          OperationSchema.error_response(
+            "Presence body over the size cap (`:presence_max_body_bytes`); error payload_too_large"
+          ),
+        "422" => OperationSchema.error_response("Validation failed (missing/invalid entity_id)"),
+        "429" =>
+          OperationSchema.error_response(
+            "Actor is over its presence rate limit (`:presence_rate_limit`); honour Retry-After"
+          )
       }
     }
   end
@@ -766,6 +813,20 @@ defmodule EbbServer.Sync.Router do
 
       {:error, reason} ->
         {:error, :invalid_msgpack, reason}
+    end
+  end
+
+  # Resolved per request so a runtime config change takes effect without a
+  # restart; an invalid value raises rather than silently serving an unbounded
+  # body.
+  defp presence_max_body_bytes do
+    case Application.get_env(:ebb_server, :presence_max_body_bytes, @presence_max_body_bytes) do
+      bytes when is_integer(bytes) and bytes > 0 ->
+        bytes
+
+      other ->
+        raise ArgumentError,
+              ":presence_max_body_bytes must be a positive integer, got: #{inspect(other)}"
     end
   end
 

@@ -86,6 +86,16 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
       assert "/functions/:name/activate" in paths
     end
 
+    test "broadcastPresence publishes its volume rejections" do
+      operation = Router.openapi_operation(:broadcast_presence)
+
+      assert %{description: payload_description} = operation.responses["413"]
+      assert payload_description =~ "payload"
+
+      assert %{description: rate_description} = operation.responses["429"]
+      assert rate_description =~ "Retry-After"
+    end
+
     test "write operations publish a request body and reads publish parameters" do
       write = Router.openapi_operation(:write_actions)
       assert is_map(write.requestBody)
