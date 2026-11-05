@@ -55,6 +55,24 @@ _Avoid_: queue, pending writes
 Two Updates to a field that the merge rule cannot order without losing one.
 _Avoid_: collision, clash
 
+### Presence
+
+**Presence**:
+Ephemeral state an actor broadcasts about where it is or what it is doing on an
+entity. Never durable, never in the Action log, and lossy on disconnect — the
+one primitive outside the replication contract.
+_Avoid_: cursor state, awareness, ephemeral data
+
+**Presence channel**:
+A named, declared slice of an entity's presence — `cursor`, `camera`, `tool` —
+with its own value schema, send debounce, receive TTL, and entry cap.
+_Avoid_: topic, room, stream, event type
+
+**Peer**:
+Another actor observed on a presence channel of an entity: the payload that
+actor last sent plus the local time it arrived.
+_Avoid_: remote user, collaborator, participant, viewer
+
 ### Materialization
 
 **Held**:

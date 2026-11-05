@@ -182,7 +182,11 @@ export type RegistryViolationListener = (
 ) => void;
 
 /** Options for `createClient`. */
-export interface SyncClientOptions {
+export interface SyncClientOptions<
+  R extends import("../presence/presence").AnyPresenceRegistry | undefined =
+    | import("../presence/presence").AnyPresenceRegistry
+    | undefined,
+> {
   /** Base URL of the ebb server (no trailing slash). */
   serverUrl: string;
   /** Actor identity for bypass auth (`x-ebb-actor-id`). */
@@ -262,4 +266,10 @@ export interface SyncClientOptions {
    * schema (strict reference equality).
    */
   actions?: Record<string, AnyActionDef>;
+  /**
+   * Declared ephemeral presence channels (`definePresence(...)`). The
+   * registry types `client.presence` and validates outgoing values; without
+   * one, presence channels are dynamic strings and values are unvalidated.
+   */
+  presence?: R;
 }

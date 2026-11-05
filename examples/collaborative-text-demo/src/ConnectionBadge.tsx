@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState } from "react";
-import type { SyncClient } from "@ebbjs/client";
+import type { DemoClient } from "./bootstrap";
 
 const COLOR: Record<string, string> = {
   connecting: "bg-amber-500",
@@ -20,7 +20,7 @@ const LABEL: Record<string, string> = {
   offline: "offline",
 };
 
-export function ConnectionBadge({ client }: { client: SyncClient }) {
+export function ConnectionBadge({ client }: { client: DemoClient }) {
   const [state, setState] = useState(client.state);
 
   useEffect(() => {

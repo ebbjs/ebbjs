@@ -26,6 +26,7 @@
     "@ebbjs/client": "workspace:*",
     "@ebbjs/codemirror": "workspace:*",
     "@ebbjs/core": "workspace:*",
+    "@sinclair/typebox": "^0.34.52",
     "codemirror": "^6.0.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

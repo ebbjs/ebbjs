@@ -147,7 +147,30 @@ export {
   buildEntityNamespaces,
   type ReplicaAccess,
 } from "./sync/namespace";
-export { PresenceManager, type PresenceEntry, type CursorPresence } from "./presence/presence";
+export {
+  definePresence,
+  DEFAULT_PRESENCE_DEBOUNCE_MS,
+  DEFAULT_PRESENCE_MAX_ENTRIES,
+  DEFAULT_PRESENCE_TTL_MS,
+  MAX_PRESENCE_PAYLOAD_BYTES,
+  PresencePayloadTooLargeError,
+  PresenceValidationError,
+  UndeclaredPresenceChannelError,
+  type AnyPresenceRegistry,
+  type CursorPresence,
+  type NormalizedPresenceChannel,
+  type PeerPresence,
+  type PresenceApi,
+  type PresenceChange,
+  type PresenceChannelConfig,
+  type PresenceChannelOptions,
+  type PresenceChannelSpec,
+  type PresenceChannels,
+  type PresenceRegistry,
+  type PresenceValue,
+  type TypedPresenceApi,
+  type UntypedPresenceApi,
+} from "./presence/presence";
 
 export {
   ConnectionStateMachine,

@@ -354,10 +354,11 @@ Three scripts:
   per run and exercises the full client ↔ server round-trip (handshake,
   catchUp, write, presence, permission rejection).
 - `presence.test.ts` — requires a pre-seeded `grp_demo` group with a
-  `demo-seeder` member that this package does not bootstrap. The test
-  probes for that fixture at load time and skips cleanly with a warning
-  when it's missing. Seed the demo fixtures locally if you want to run
-  it end-to-end.
+  `demo-seeder` member and the demo's document (`doc_grp_demo`), none of
+  which this package bootstraps. The test probes for the group at load
+  time and skips cleanly with a warning when it's missing. Seed the demo
+  fixtures locally (run `examples/collaborative-text-demo` once) if you
+  want to run it end-to-end.
 
 The CI integration job (`elixir-integration-tests` in
 `.github/workflows/ci.yml`) boots the cached release and runs

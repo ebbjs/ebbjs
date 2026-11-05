@@ -26,12 +26,15 @@ test("debug presence", async ({ browser }) => {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-ebb-actor-id": "drew" },
       body: JSON.stringify({
-        entity_id: "doc_demo",
+        entity_id: "doc_grp_demo",
         data: {
-          anchorId: "test_run_anchor",
-          anchorOffset: 0,
-          headId: "test_run_anchor",
-          headOffset: 0,
+          channel: "cursor",
+          value: {
+            anchorId: "test_run_anchor",
+            anchorOffset: 0,
+            headId: "test_run_anchor",
+            headOffset: 0,
+          },
         },
       }),
     });

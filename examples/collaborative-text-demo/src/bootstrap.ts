@@ -4,9 +4,34 @@
  * configured `SyncClient` ready for use.
  */
 
-import { createClient, type SyncClient } from "@ebbjs/client";
+import { createClient, definePresence } from "@ebbjs/client";
+import { Type } from "@sinclair/typebox";
 import type { Action } from "@ebbjs/core/seed";
 import { buildAddMemberSeed, buildDemoSeed, DEMO_GROUP_ID, deriveSeedIds } from "./seed";
+
+/**
+ * The demo's presence channels. `cursor` keeps the client's default 30 s TTL
+ * on purpose: a peer that stops moving ages out, which is the expiry path a
+ * real app lives with (#677).
+ */
+const cursorPresenceSchema = Type.Object({
+  anchorId: Type.String(),
+  anchorOffset: Type.Number(),
+  headId: Type.String(),
+  headOffset: Type.Number(),
+});
+
+export const demoPresence = definePresence({ cursor: cursorPresenceSchema });
+
+/**
+ * `createClient` with the demo's presence registry. The returned type carries
+ * the typed `client.presence` surface into every component that takes the
+ * client, so channel names and cursor payloads are checked at the call site.
+ */
+const createDemoClient = (opts: { serverUrl: string; actorId: string }) =>
+  createClient({ ...opts, presence: demoPresence });
+
+export type DemoClient = ReturnType<typeof createDemoClient>;
 
 /**
  * Shape of `window.__EBB_DEMO_TEST_CONFIG__` — opt-in test seams read
@@ -62,7 +87,7 @@ declare global {
        * without relying on the browser tearing the SSE stream down.
        */
       reconnect: () => void;
-      /** Snapshot the presence map for the doc (for diagnostics). */
+      /** Snapshot the doc's `cursor` channel peers (for diagnostics). */
       getPresenceEntries: () => readonly {
         actorId: string;
         anchorId: string;
@@ -73,7 +98,7 @@ declare global {
 }
 
 export interface BootstrapResult {
-  client: SyncClient;
+  client: DemoClient;
   groupIds: readonly string[];
   /**
    * The group id the demo's doc belongs to. Mirrors `groupIds[0]`
@@ -146,10 +171,7 @@ export async function bootstrap(opts: {
   }
 
   // 2. Handshake.
-  const client = createClient({
-    serverUrl,
-    actorId,
-  });
+  const client = createDemoClient({ serverUrl, actorId });
   const { groups } = await client.handshake();
   const groupIds = groups.map((g) => g.id);
 

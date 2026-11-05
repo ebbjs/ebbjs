@@ -2,13 +2,13 @@
  * CodeMirror 6 ViewPlugin that renders remote peers' cursors and
  * selections as decorations.
  *
- * Reads from a `PresenceManager` (transport lives in
- * `@ebbjs/client/src/presence/presence`). Run IDs are stable across
- * edits so we resolve them to current document positions via the
- * bridge's `idMapField` (a StateField that mirrors the causal tree's
- * span index). If a run was deleted or split in a way the receiver
- * can't resolve, the position falls back to undefined and we skip
- * rendering for that peer.
+ * Reads the `cursor` channel's peers from `client.presence` (transport
+ * lives in `@ebbjs/client/src/presence/presence`). The cursor payload
+ * carries run ids, which are stable across edits, so we resolve them to
+ * current document positions via the bridge's `idMapField` (a StateField
+ * that mirrors the causal tree's span index). If a run was deleted or split
+ * in a way the receiver can't resolve, the position falls back to undefined
+ * and we skip rendering for that peer.
  *
  * The plugin rebuilds decorations on every CM update. For a prototype
  * with a handful of peers, this is O(peers × spans) per update and
@@ -26,7 +26,7 @@ import {
 import type { Extension } from "@codemirror/state";
 import type { EditorState } from "@codemirror/state";
 import { getPositionOfRun, getRunAtPosition } from "../bridge";
-import type { PresenceEntry } from "@ebbjs/client";
+import type { CursorPresence, PeerPresence } from "@ebbjs/client";
 
 /**
  * CM6 widget that renders a vertical cursor bar + actor label above.
@@ -84,11 +84,13 @@ class CursorWidget extends WidgetType {
 
 export interface PresenceDecorationConfig {
   /**
-   * Called to get the current presence entries for this entity.
-   * Returns a fresh map each call; the ViewPlugin caches results
-   * between CM updates.
+   * Called to get the current peers on the entity's `cursor` channel, keyed
+   * by actor. Bind it to `client.presence.forEntity(entityId, "cursor")` —
+   * the store only returns that channel, so a peer on another channel never
+   * reaches this map. Returns a fresh map each call; the ViewPlugin caches
+   * results between CM updates.
    */
-  readonly getPresence: () => ReadonlyMap<string, PresenceEntry>;
+  readonly getPresence: () => ReadonlyMap<string, PeerPresence<CursorPresence>>;
   /** Called to look up a run's current document position. */
   readonly getPositionOfRun: (runId: string, offset: number) => number | undefined;
   /** Called to map a document position back to (runId, offset). */
@@ -124,8 +126,8 @@ function buildDecorations(state: EditorState, config: PresenceDecorationConfig):
   const items: { from: number; to: number; dec: import("@codemirror/view").Decoration }[] = [];
 
   for (const entry of entries) {
-    const anchorPos = config.getPositionOfRun(entry.cursor.anchorId, entry.cursor.anchorOffset);
-    const headPos = config.getPositionOfRun(entry.cursor.headId, entry.cursor.headOffset);
+    const anchorPos = config.getPositionOfRun(entry.data.anchorId, entry.data.anchorOffset);
+    const headPos = config.getPositionOfRun(entry.data.headId, entry.data.headOffset);
     if (anchorPos === undefined || headPos === undefined) continue;
 
     const a = Math.min(Math.max(0, anchorPos), docLen);

@@ -3628,6 +3628,32 @@
                         },
                       "description": "Entity not found, or the actor is not a member of any of its groups",
                     },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Presence body over the size cap (`:presence_max_body_bytes`); error payload_too_large",
+                    },
                   "422":
                     {
                       "content":
@@ -3653,6 +3679,32 @@
                             },
                         },
                       "description": "Validation failed (missing/invalid entity_id)",
+                    },
+                  "429":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details":
+                                        {
+                                          "description": "Human-readable error details",
+                                          "nullable": true,
+                                          "type": "string",
+                                        },
+                                      "error":
+                                        { "description": "Error code string", "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Actor is over its presence rate limit (`:presence_rate_limit`); honour Retry-After",
                     },
                 },
               "summary": "Broadcast ephemeral presence data",

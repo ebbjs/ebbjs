@@ -14,14 +14,43 @@ defmodule EbbServer.Sync.RouterTest do
     WatermarkTracker
   }
 
+  alias EbbServer.Sync.PresenceRateLimit.Buckets
   alias EbbServer.Sync.Router
   alias Exqlite.Sqlite3
 
-  defp post_presence(body, actor_id \\ "a_member") do
-    conn(:post, "/sync/presence", Jason.encode!(body))
+  defp post_presence(body, actor_id) do
+    post_presence_raw(Jason.encode!(body), actor_id)
+  end
+
+  defp post_presence_raw(body, actor_id) do
+    conn(:post, "/sync/presence", body)
     |> put_req_header("content-type", "application/json")
     |> put_req_header("x-ebb-actor-id", actor_id)
     |> Router.call([])
+  end
+
+  # A valid presence body padded to exactly `size` bytes. The pad lives inside
+  # `data`, so the shape the route parses stays the same.
+  defp presence_body_of_size(size, entity_id) do
+    base = Jason.encode!(%{"entity_id" => entity_id, "data" => %{"pad" => ""}})
+    padding = size - byte_size(base)
+
+    Jason.encode!(%{
+      "entity_id" => entity_id,
+      "data" => %{"pad" => String.duplicate("x", padding)}
+    })
+  end
+
+  defp put_config(key, value) do
+    previous = Application.get_env(:ebb_server, key)
+    Application.put_env(:ebb_server, key, value)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:ebb_server, key)
+        previous -> Application.put_env(:ebb_server, key, previous)
+      end
+    end)
   end
 
   defp setup_entity_group(entity_id, group_id) do
@@ -205,6 +234,130 @@ defmodule EbbServer.Sync.RouterTest do
         )
 
       assert conn.status == 422
+    end
+
+    test "413 for a body over the size cap, not 500" do
+      # Comfortably over any sane default cap, so the test does not pin the
+      # default itself.
+      body = presence_body_of_size(64 * 1024, unique("todo"))
+
+      conn = post_presence_raw(body, unique("a_padded"))
+
+      assert conn.status == 413
+      assert %{"error" => "payload_too_large"} = Jason.decode!(conn.resp_body)
+    end
+
+    test "accepts a body exactly at the client's 8 KiB payload cap" do
+      entity_id = unique("todo")
+      group_id = unique("g")
+      actor_id = unique("a")
+
+      setup_group_membership(actor_id, group_id)
+      setup_entity_group(entity_id, group_id)
+
+      body = presence_body_of_size(8 * 1024, entity_id)
+      assert byte_size(body) == 8_192
+
+      assert post_presence_raw(body, actor_id).status == 204
+    end
+
+    test "the size cap is configurable" do
+      put_config(:presence_max_body_bytes, 1_024)
+
+      entity_id = unique("todo")
+      group_id = unique("g")
+      actor_id = unique("a")
+
+      setup_group_membership(actor_id, group_id)
+      setup_entity_group(entity_id, group_id)
+
+      assert post_presence_raw(presence_body_of_size(1_024, entity_id), actor_id).status == 204
+
+      over = post_presence_raw(presence_body_of_size(1_025, entity_id), actor_id)
+      assert over.status == 413
+      assert %{"error" => "payload_too_large"} = Jason.decode!(over.resp_body)
+    end
+
+    test "an invalid size cap raises instead of serving an unbounded body" do
+      put_config(:presence_max_body_bytes, 0)
+
+      # Raised inside a route, so `Plug.Router` wraps it.
+      error =
+        assert_raise Plug.Conn.WrapperError, fn ->
+          post_presence_raw("{}", unique("a"))
+        end
+
+      assert %ArgumentError{message: message} = error.reason
+      assert message =~ "presence_max_body_bytes"
+    end
+  end
+
+  describe "POST /sync/presence rate limit" do
+    setup do
+      put_config(:presence_rate_limit, {1, 1})
+    end
+
+    test "an over-limit actor gets 429 with retry-after; a second actor is unaffected" do
+      entity_id = unique("todo")
+      group_id = unique("g")
+      actor_id = unique("a")
+      other_actor_id = unique("a")
+
+      setup_group_membership(actor_id, group_id)
+      setup_group_membership(other_actor_id, group_id)
+      setup_entity_group(entity_id, group_id)
+
+      body = %{"entity_id" => entity_id, "data" => %{"cursor" => %{"line" => 1, "col" => 1}}}
+
+      assert post_presence(body, actor_id).status == 204
+
+      limited = post_presence(body, actor_id)
+      assert limited.status == 429
+      assert %{"error" => "rate_limited"} = Jason.decode!(limited.resp_body)
+      assert [retry_after] = get_resp_header(limited, "retry-after")
+      assert String.to_integer(retry_after) >= 1
+
+      # The limit is per actor, not per route or per node.
+      assert post_presence(body, other_actor_id).status == 204
+    end
+
+    test "two connections from the same actor share one bucket" do
+      entity_id = unique("todo")
+      group_id = unique("g")
+      actor_id = unique("a")
+
+      setup_group_membership(actor_id, group_id)
+      setup_entity_group(entity_id, group_id)
+
+      body = %{"entity_id" => entity_id, "data" => %{"cursor" => %{"line" => 1, "col" => 1}}}
+
+      # Each call is its own conn, as two tabs would be.
+      assert post_presence(body, actor_id).status == 204
+      assert post_presence(body, actor_id).status == 429
+      assert [_one_bucket] = :ets.lookup(Buckets.table(), actor_id)
+    end
+
+    test "does not limit other routes" do
+      actor_id = unique("a")
+
+      assert post_presence(%{"entity_id" => unique("todo"), "data" => %{}}, actor_id).status ==
+               404
+
+      handshake =
+        conn(:post, "/sync/handshake", Jason.encode!(%{"cursors" => %{}, "schema_version" => 1}))
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("x-ebb-actor-id", actor_id)
+        |> Router.call([])
+
+      assert handshake.status == 200
+    end
+
+    test "an invalid rate configuration raises instead of disabling the limit" do
+      put_config(:presence_rate_limit, {0, 1})
+
+      assert_raise ArgumentError, ~r/presence_rate_limit/, fn ->
+        post_presence_raw("{}", unique("a"))
+      end
     end
   end
 

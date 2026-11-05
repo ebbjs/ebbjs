@@ -102,6 +102,9 @@ importers:
       '@ebbjs/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       codemirror:
         specifier: ^6.0.1
         version: 6.0.2

@@ -16,8 +16,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
-import { createClient } from "@ebbjs/client";
 import type { Action } from "@ebbjs/core";
+import type { CursorPresence, PeerPresence } from "@ebbjs/client";
 import {
   createBridgeExtension,
   createIdMapField,
@@ -28,8 +28,10 @@ import {
   setIdMapEffect,
 } from "@ebbjs/codemirror";
 
+import type { DemoClient } from "./bootstrap";
+
 interface Props {
-  client: ReturnType<typeof createClient>;
+  client: DemoClient;
   docId: string;
   actorId: string;
   groupIds: readonly string[];
@@ -90,7 +92,7 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
       const anchor = getRunAtPosition(v.state, sel.anchor, idMapField);
       const head = getRunAtPosition(v.state, sel.head, idMapField);
       if (!anchor || !head) return;
-      client.presence.setLocalCursor(docId, {
+      client.presence.set(docId, "cursor", {
         anchorId: anchor.runId,
         anchorOffset: anchor.offset,
         headId: head.runId,
@@ -111,11 +113,12 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
         syntaxHighlighting(defaultHighlightStyle),
         bracketMatching(),
         extension,
-        // Render remote peers' cursors/selections. Reads from
-        // client.presence and the bridge's idMapField to translate
-        // run-id coordinates to CM positions.
+        // Render remote peers' cursors/selections. Reads the doc's `cursor`
+        // channel from client.presence and the bridge's idMapField to
+        // translate run-id coordinates to CM positions.
         createPresenceExtension({
-          getPresence: () => client.presence.forEntity(docId),
+          getPresence: (): ReadonlyMap<string, PeerPresence<CursorPresence>> =>
+            client.presence.forEntity(docId, "cursor"),
           getPositionOfRun: (runId, offset) => {
             const v = viewRefLocal.current;
             if (!v) return 0;
@@ -159,11 +162,6 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
 
     const bridge = mountEditorBridge(view, doc, idMapField, localEdit);
     bridgeRef.current = bridge;
-
-    // Open the local cursor/selection stream. The SSE stream the
-    // client opens carries presence events back from other actors;
-    // `client.presence` maintains the per-entity map.
-    client.presence.start();
 
     // Test seam: when the Playwright spec opts in via
     // `window.__EBB_DEMO_TEST_CONFIG__.exposeState`, expose a
@@ -211,16 +209,19 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
           anchorId: string;
           anchorOffset: number;
         }[] => {
-          const entries = client.presence.forEntity(docId);
+          const entries = client.presence.forEntity(docId, "cursor");
           return Array.from(entries.values()).map((e) => ({
             actorId: e.actorId,
-            anchorId: e.cursor.anchorId,
-            anchorOffset: e.cursor.anchorOffset,
+            anchorId: e.data.anchorId,
+            anchorOffset: e.data.anchorOffset,
           }));
         },
       };
     }
-    client.presence.onUpdate(() => {
+    const unsubscribePresence = client.presence.onUpdate((change) => {
+      // Only the doc's own cursor channel affects these decorations; a
+      // 20 Hz camera channel on the same entity must not rebuild them.
+      if (change.entityId !== docId || change.channel !== "cursor") return;
       // Force the ViewPlugin to rebuild decorations by dispatching
       // a no-op transaction. CM6 only re-runs ViewPlugin.update() on
       // actual transactions, so we need to nudge it.
@@ -270,6 +271,7 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
 
     return () => {
       window.clearInterval(flushTimer);
+      unsubscribePresence();
       unsubscribe();
       bridge.detach();
       view.destroy();
