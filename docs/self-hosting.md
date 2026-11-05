@@ -164,12 +164,10 @@ secret. In both cases `x-ebb-actor-id` is ignored: there is no fallback to the
 bypass header.
 
 > [!WARNING]
-> The trusted headers are ordinary request headers. They are safe only because
-> the listener is unreachable except from the gateway on loopback. Do not
-> publish the container's port directly, and do not run `tailscale` mode behind a
-> reverse proxy that forwards client-supplied `Tailscale-User-*` headers from a
-> non-loopback address; the server rejects those, but the obvious mistake is a
-> proxy on the same host that copies them through.
+> These headers are ordinary request headers. They are safe only because the
+> gateway strips any client-supplied copy and injects the identity it looked up
+> itself. A reverse proxy that forwards inbound `tailscale-user-*` or
+> `x-ebb-tailscale-*` headers is a spoofing hole, not a gateway.
 
 `GET /sync/identity` returns the resolved actor so a browser client can learn an
 identity it cannot know before asking:

@@ -11,19 +11,25 @@ defmodule EbbServer.TailscaleListenerTest do
 
   setup do
     original_mode = Application.get_env(:ebb_server, :auth_mode)
+    original_secret = Application.get_env(:ebb_server, :tailscale_proxy_secret)
     Application.put_env(:ebb_server, :auth_mode, :tailscale)
+    Application.delete_env(:ebb_server, :tailscale_proxy_secret)
 
     on_exit(fn ->
       if original_mode,
         do: Application.put_env(:ebb_server, :auth_mode, original_mode),
         else: Application.delete_env(:ebb_server, :auth_mode)
+
+      if original_secret,
+        do: Application.put_env(:ebb_server, :tailscale_proxy_secret, original_secret),
+        else: Application.delete_env(:ebb_server, :tailscale_proxy_secret)
     end)
 
     :ok
   end
 
   test "the tailscale listener binds loopback and serves the identity route" do
-    {:ok, server} = Bandit.start_link(EbbServer.Application.bandit_options(0, :tailscale))
+    server = start_supervised!({Bandit, EbbServer.Application.bandit_options(0, :tailscale)})
     {:ok, {address, port}} = ThousandIsland.listener_info(server)
 
     assert address == {127, 0, 0, 1}
