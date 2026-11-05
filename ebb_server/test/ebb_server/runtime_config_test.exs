@@ -158,8 +158,44 @@ defmodule EbbServer.RuntimeConfigTest do
       assert EbbServer.Application.runtime_auth() == {:bypass, nil}
     end
 
+    test "resolves :tailscale without requiring an auth URL" do
+      System.put_env("EBB_AUTH_MODE", "tailscale")
+      System.put_env("EBB_AUTH_URL", "https://ignored.example/auth")
+      Application.put_env(:ebb_server, :auth_url, "https://ignored.example/auth")
+
+      assert EbbServer.Application.runtime_auth() == {:tailscale, nil}
+    end
+
+    test "the unset-mode message names every accepted mode" do
+      System.delete_env("EBB_AUTH_MODE")
+      Application.delete_env(:ebb_server, :auth_mode)
+
+      assert_raise RuntimeError, ~r/bypass, external, tailscale/, fn ->
+        EbbServer.Application.runtime_auth()
+      end
+    end
+
+    test "the invalid-mode message names every accepted mode" do
+      System.put_env("EBB_AUTH_MODE", "tailscalee")
+
+      assert_raise RuntimeError, ~r/bypass, external, tailscale/, fn ->
+        EbbServer.Application.runtime_auth()
+      end
+    end
+
     test "the test suite boots on the explicit :bypass config from config/test.exs" do
       assert Application.get_env(:ebb_server, :auth_mode) == :bypass
+    end
+  end
+
+  describe "bind_ip/1" do
+    test "tailscale mode binds IPv4 loopback" do
+      assert EbbServer.Application.bind_ip(:tailscale) == {127, 0, 0, 1}
+    end
+
+    test "every other mode keeps Bandit's default interface" do
+      assert EbbServer.Application.bind_ip(:bypass) == :any
+      assert EbbServer.Application.bind_ip(:external) == :any
     end
   end
 

@@ -2,14 +2,38 @@ defmodule EbbServer.Sync.AuthPlug do
   @moduledoc """
   Plug-based authentication for EbbServer.
 
-  Supports two modes:
+  Supports three modes:
   - `:bypass` - reads actor_id from `x-ebb-actor-id` request header
   - `:external` - forwards auth headers to a configured auth URL
+  - `:tailscale` - trusts `tailscale-user-login` from a loopback peer
 
   The mode is resolved once at boot by `EbbServer.Application.runtime_auth/0`
   from `EBB_AUTH_MODE` and `EBB_AUTH_URL`, which win over
   `Application.get_env/2`, and written back to the application env. This
   plug reads `:auth_mode` and `:auth_url` from that env unchanged.
+
+  ## Tailscale mode
+
+  A Tailscale gateway (the embedded node, a `tailscale serve`, or a sidecar)
+  sits in front of the server and injects the connecting user's identity. The
+  server trusts those headers only when all of these hold:
+
+    - `conn.remote_ip` is loopback (`127.0.0.1` or `::1`); the application also
+      binds Bandit to `127.0.0.1`, but the check is the enforcement;
+    - exactly one non-empty `tailscale-user-login` header is present;
+    - when `:tailscale_proxy_secret` is configured, exactly one
+      `x-ebb-tailscale-secret` header matches it.
+
+  The login becomes `actor_id` unchanged (design D3). `tailscale-user-name` is
+  kept as a display name only, and `x-ebb-tailscale-user-id` as an optional
+  gateway-supplied provider id; neither affects authorization. `x-ebb-actor-id`
+  is ignored in this mode: there is no fallback, because a fallback would let
+  the browser choose its own identity.
+
+  `tailscale serve` cannot inject a secret, so a deployment without the embedded
+  gateway leaves `:tailscale_proxy_secret` unset and relies on loopback alone.
+  Any local process could then claim an identity, which is why the embedded
+  gateway always configures one.
 
   There is no default mode. A node booted without `EBB_AUTH_MODE` (or a
   compiled `:auth_mode`) refuses to start, and `:external` without a URL
@@ -21,13 +45,15 @@ defmodule EbbServer.Sync.AuthPlug do
   `:bypass` mode is intended for local dev and the demo only, and logs a
   warning at boot. Any actor can claim any identity by sending
   `x-ebb-actor-id: <anything>` — there is no signature, no session, no
-  verification. Production deployments MUST run in `:external` mode and
-  point `:auth_url` at a real identity service.
+  verification. Production deployments MUST run in `:external` or
+  `:tailscale` mode.
   """
 
   @behaviour Plug
 
   import Plug.Conn
+
+  @loopback_addresses [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
 
   @impl true
   def init(opts), do: opts
@@ -47,6 +73,7 @@ defmodule EbbServer.Sync.AuthPlug do
       case auth_mode() do
         :bypass -> bypass_auth(conn)
         :external -> external_auth(conn)
+        :tailscale -> tailscale_auth(conn)
       end
     end
   end
@@ -74,19 +101,12 @@ defmodule EbbServer.Sync.AuthPlug do
 
     case actor_id do
       id when is_binary(id) and id != "" ->
-        assign(conn, :actor_id, id)
+        conn
+        |> assign(:actor_id, id)
+        |> assign(:actor_provider, "bypass")
 
       _ ->
-        conn
-        |> put_resp_content_type("application/json")
-        |> send_resp(
-          401,
-          Jason.encode!(%{
-            "error" => "unauthorized",
-            "details" => "missing x-ebb-actor-id header"
-          })
-        )
-        |> halt()
+        unauthorized(conn, "missing x-ebb-actor-id header")
     end
   end
 
@@ -103,15 +123,109 @@ defmodule EbbServer.Sync.AuthPlug do
 
       case call_auth_url(auth_url, headers) do
         {:ok, actor_id} ->
-          assign(conn, :actor_id, actor_id)
+          conn
+          |> assign(:actor_id, actor_id)
+          |> assign(:actor_provider, "external")
 
         {:error, reason} ->
-          conn
-          |> put_resp_content_type("application/json")
-          |> send_resp(401, Jason.encode!(%{"error" => "unauthorized", "details" => reason}))
-          |> halt()
+          unauthorized(conn, reason)
       end
     end
+  end
+
+  # Order matters only for which error the client sees: a non-loopback peer is
+  # rejected before its headers are inspected.
+  defp tailscale_auth(conn) do
+    with :ok <- loopback_peer(conn),
+         {:ok, login} <- tailscale_login(conn),
+         :ok <- tailscale_proxy_secret(conn) do
+      conn
+      |> assign(:actor_id, login)
+      |> assign(:actor_provider, "tailscale")
+      |> assign_optional_header(:actor_display_name, "tailscale-user-name")
+      |> assign_optional_header(:actor_provider_id, "x-ebb-tailscale-user-id")
+    else
+      {:error, details} -> unauthorized(conn, details)
+    end
+  end
+
+  # A gateway forwards the header once. Two copies, an empty value, or a
+  # missing header are all rejected rather than one being picked, because a
+  # duplicate is how a spoofing attempt reaches a trusting proxy.
+  defp tailscale_login(conn) do
+    case get_req_header(conn, "tailscale-user-login") do
+      [login] when login != "" ->
+        {:ok, login}
+
+      [] ->
+        {:error, "missing tailscale-user-login header"}
+
+      [_empty] ->
+        {:error, "empty tailscale-user-login header"}
+
+      _duplicates ->
+        {:error, "duplicate tailscale-user-login header"}
+    end
+  end
+
+  defp loopback_peer(conn) do
+    if conn.remote_ip in @loopback_addresses do
+      :ok
+    else
+      {:error, "tailscale identity headers are trusted only from loopback"}
+    end
+  end
+
+  # An unset secret is the `tailscale serve` path: loopback is the only
+  # credential. A misconfigured one fails closed instead of silently
+  # degrading to that weaker rule.
+  defp tailscale_proxy_secret(conn) do
+    case Application.get_env(:ebb_server, :tailscale_proxy_secret) do
+      unset when unset in [nil, ""] ->
+        :ok
+
+      secret when is_binary(secret) ->
+        verify_proxy_secret(conn, secret)
+
+      other ->
+        {:error, "tailscale proxy secret is not a string: #{inspect(other)}"}
+    end
+  end
+
+  defp verify_proxy_secret(conn, secret) do
+    case get_req_header(conn, "x-ebb-tailscale-secret") do
+      [supplied] when supplied != "" ->
+        if Plug.Crypto.secure_compare(supplied, secret) do
+          :ok
+        else
+          {:error, "wrong x-ebb-tailscale-secret header"}
+        end
+
+      [] ->
+        {:error, "missing x-ebb-tailscale-secret header"}
+
+      [_empty] ->
+        {:error, "empty x-ebb-tailscale-secret header"}
+
+      _duplicates ->
+        {:error, "duplicate x-ebb-tailscale-secret header"}
+    end
+  end
+
+  # Display metadata is informational, so a malformed value is dropped rather
+  # than rejecting an otherwise authenticated request.
+  defp assign_optional_header(conn, assign_key, header) do
+    case get_req_header(conn, header) do
+      [value] when value != "" -> assign(conn, assign_key, value)
+      _missing_empty_or_duplicated -> conn
+    end
+  end
+
+  defp unauthorized(conn, details) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(401, Jason.encode!(%{"error" => "unauthorized", "details" => details}))
+    |> halt()
   end
 
   defp extract_auth_headers(conn) do

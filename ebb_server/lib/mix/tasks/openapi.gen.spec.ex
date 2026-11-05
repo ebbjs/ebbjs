@@ -113,6 +113,12 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
       },
       %{
         method: :get,
+        path: "/sync/identity",
+        operation_atom: :identity,
+        module: EbbServer.Sync.Router
+      },
+      %{
+        method: :get,
         path: "/sync/live",
         operation_atom: :live_updates,
         module: EbbServer.Sync.Router

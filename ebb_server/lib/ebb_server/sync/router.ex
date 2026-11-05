@@ -13,6 +13,9 @@ defmodule EbbServer.Sync.Router do
       while it is still coming up.
     - `POST /sync/handshake` — returns actor identity, group memberships,
       per-group cursors. Requires `x-ebb-actor-id` header (bypass mode).
+    - `GET /sync/identity` — returns the actor the server resolved from the
+      request (and, in tailscale mode, its display name and provider id). The
+      client's only way to learn an identity it cannot know in advance.
     - `GET /sync/groups/:group_id?offset=N` — paginated catch-up for one group.
     - `GET /sync/groups/:group_id/entities?cursor=&limit=` — cold-bootstrap
       listing of the group's state at a watermark (see
@@ -197,6 +200,29 @@ defmodule EbbServer.Sync.Router do
         send_error(conn, error_type, reason)
     end
   end
+
+  # The client cannot know a server-derived actor before asking, so this is
+  # the one read route whose whole payload is the resolved identity. AuthPlug
+  # has already accepted or rejected the request; a service-token request has
+  # no actor and is denied here like any other anonymous sync route.
+  get "/sync/identity" do
+    case conn.assigns[:actor_id] do
+      nil -> send_json(conn, 401, %{"error" => "unauthorized"})
+      _actor_id -> send_json(conn, 200, identity_payload(conn))
+    end
+  end
+
+  defp identity_payload(conn) do
+    %{
+      "actor_id" => conn.assigns.actor_id,
+      "provider" => conn.assigns.actor_provider
+    }
+    |> maybe_put("display_name", Map.get(conn.assigns, :actor_display_name))
+    |> maybe_put("provider_id", Map.get(conn.assigns, :actor_provider_id))
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   get "/entities/:id" do
     entity_id = conn.path_params["id"]
@@ -657,6 +683,23 @@ defmodule EbbServer.Sync.Router do
     }
   end
 
+  def openapi_operation(:identity) do
+    %{
+      operationId: "identity",
+      summary: "Resolve the authenticated actor",
+      description:
+        "Returns the actor identity the server derived from the request. Clients use it " <>
+          "before constructing a sync client when the actor would otherwise be unknown, " <>
+          "such as a browser behind a Tailscale gateway.",
+      tags: ["Sync"],
+      responses: %{
+        "200" => OperationSchema.identity_response(),
+        "401" =>
+          OperationSchema.error_response("Missing or invalid credential for the active auth mode")
+      }
+    }
+  end
+
   def openapi_operation(:live_updates) do
     %{
       operationId: "liveUpdates",
@@ -1112,6 +1155,41 @@ defmodule EbbServer.Sync.Router.OperationSchema do
               groups: %OpenApiSpex.Schema{
                 type: :array,
                 items: group_info()
+              }
+            }
+          }
+        }
+      }
+    }
+  end
+
+  def identity_response do
+    %OpenApiSpex.Response{
+      description: "The actor the server resolved from the request",
+      content: %{
+        "application/json" => %{
+          schema: %OpenApiSpex.Schema{
+            type: :object,
+            required: ["actor_id", "provider"],
+            properties: %{
+              actor_id: %OpenApiSpex.Schema{type: :string},
+              provider: %OpenApiSpex.Schema{
+                type: :string,
+                enum: ["bypass", "external", "tailscale"],
+                description: "Auth mode that authenticated the request"
+              },
+              display_name: %OpenApiSpex.Schema{
+                type: :string,
+                nullable: true,
+                description:
+                  "Human-readable name from the identity provider, when it supplies one"
+              },
+              provider_id: %OpenApiSpex.Schema{
+                type: :string,
+                nullable: true,
+                description:
+                  "Provider-specific user id, when the identity provider supplies one; " <>
+                    "never used for authorization"
               }
             }
           }
