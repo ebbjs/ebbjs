@@ -13,9 +13,9 @@ import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema
 
 const todo = defineEntity("todo", {
   title: e.string(),
-  done: e.boolean(),
+  done: e.boolean().default(false),
   // The canonical FK set a many-cardinality relationship writes on the source.
-  labels: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
+  labels: Type.Optional(Type.Array(Type.String())),
 });
 const project = defineEntity("project", { name: e.string() });
 const label = defineEntity("label", { name: e.string() });
