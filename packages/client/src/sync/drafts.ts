@@ -43,13 +43,7 @@ import {
   type GroupMemberView,
   type LiveGroupMember,
 } from "@ebbjs/write";
-import type {
-  DerivedInputs,
-  EntityFields,
-  EntityPatch,
-  WireCreateStatic,
-  WireStatic,
-} from "./namespace";
+import type { DerivedInputs, EntityFields, EntityPatch, WireCreateStatic } from "./namespace";
 import {
   ActionRejectedError,
   call,

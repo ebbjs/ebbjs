@@ -17,7 +17,7 @@ import type { TSchema } from "@sinclair/typebox/type";
 import { defineEntity, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { groupSystemEntity, type GroupFields, type GroupMemberFields } from "@ebbjs/schema";
+import { groupSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { ActionRejectedError } from "@ebbjs/write";
