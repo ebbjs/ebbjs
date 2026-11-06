@@ -44,6 +44,7 @@ import {
   buildReplicaQueryBuilder,
   projectEntity,
   projectRow,
+  projectedFieldValue,
   type JoinRecord,
   type JoinedRow,
   type MembershipJoin,
@@ -812,7 +813,9 @@ export function createEntityNamespace<
         isReady: () => replica.hydrated(),
         execute: () => {
           const executor = createReplicaExecutor(replica.replica);
-          return executePlan(planQuery(query), executor)
+          return executePlan(planQuery(query), executor, (entity, field) =>
+            projectedFieldValue(entity, field, shape),
+          )
             .filter((row) => row.type === entityName)
             .map((row) => row.id);
         },

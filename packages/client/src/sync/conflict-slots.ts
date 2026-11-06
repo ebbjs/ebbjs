@@ -140,10 +140,14 @@ export const isConflictableField = (
 /**
  * The `ConflictSide` view of a FieldValue: a leaf carries its LWW triple,
  * a whole-field map has no single leaf and `value` is the projected map.
+ * A leaf tombstone (`value: null`) is absence, so its side value is
+ * `undefined` — the read model has no stored null.
  */
 export const conflictSide = (value: FieldValue): ConflictSide => {
   if (isFieldMap(value)) return { value: projectFieldValue(value) };
-  const side: { value: unknown; update_id?: string; hlc?: string } = { value: value.value };
+  const side: { value: unknown; update_id?: string; hlc?: string } = {
+    value: value.value ?? undefined,
+  };
   if (value.update_id !== undefined) side.update_id = value.update_id;
   if (value.hlc !== undefined) side.hlc = value.hlc;
   return side;

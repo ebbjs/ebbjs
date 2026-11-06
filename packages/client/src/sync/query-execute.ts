@@ -72,6 +72,14 @@ const fieldValue = (entity: Entity, field: string): FieldValue["value"] | undefi
   entity.data?.fields?.[field]?.value;
 
 /**
+ * How an ordered field reads for a row. The builder supplies the
+ * schema-aware resolver (`stored ?? default`), so a sort compares the same
+ * value projection renders. Filtering never uses this: the query path is
+ * schema-blind and a default never matches on a caller's behalf.
+ */
+export type FieldResolver = (entity: Entity, field: string) => unknown;
+
+/**
  * Same comparison semantics as the builder's ordering — `undefined`
  * last, numbers numerically, everything else by locale — so a query
  * reordered here matches one ordered there.
@@ -93,11 +101,17 @@ const compareFieldValues = (av: unknown, bv: unknown, direction: Direction): num
  * entity id), tie-broken by entity id ascending so equal field values
  * cannot reorder between runs.
  */
-const compareRows = (a: Entity, b: Entity, field: string | null, direction: Direction): number => {
+const compareRows = (
+  a: Entity,
+  b: Entity,
+  field: string | null,
+  direction: Direction,
+  resolveField: FieldResolver,
+): number => {
   if (field === null) {
     return direction === "asc" ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
   }
-  const primary = compareFieldValues(fieldValue(a, field), fieldValue(b, field), direction);
+  const primary = compareFieldValues(resolveField(a, field), resolveField(b, field), direction);
   return primary === 0 ? a.id.localeCompare(b.id) : primary;
 };
 
@@ -191,7 +205,11 @@ const selectGroup = (
  * — and select groups are ORed, deduped by id. `order` and `limit` then
  * narrow the result.
  */
-export function executePlan(plan: Plan, executor: PlanExecutor): readonly Entity[] {
+export function executePlan(
+  plan: Plan,
+  executor: PlanExecutor,
+  resolveField: FieldResolver = fieldValue,
+): readonly Entity[] {
   let sourceType = "";
   let scanRows: readonly Entity[] | null = null;
   const scanned = (): readonly Entity[] =>
@@ -219,7 +237,9 @@ export function executePlan(plan: Plan, executor: PlanExecutor): readonly Entity
         }
         break;
       case "order":
-        narrowed = [...current()].sort((a, b) => compareRows(a, b, op.field, op.direction));
+        narrowed = [...current()].sort((a, b) =>
+          compareRows(a, b, op.field, op.direction, resolveField),
+        );
         break;
       case "limit":
         narrowed = current().slice(0, op.limit);

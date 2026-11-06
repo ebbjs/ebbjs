@@ -906,7 +906,7 @@ describe("conflicts through client.conflicts", () => {
       expect(slot.path).toEqual([runId]);
       // local = Bob's extended run, remote = Alice's tombstone.
       expect(slot.local.value).toMatchObject({ text: expect.stringContaining("Magic") });
-      expect(slot.remote.value).toBeNull();
+      expect(slot.remote.value).toBeUndefined();
       // The HLC verdict follows the tombstone; the conflict itself does not.
       expect(slot.remoteWins()).toBe(remoteWins);
       expect(conflicts[0]!.remoteWins()).toBe(remoteWins);

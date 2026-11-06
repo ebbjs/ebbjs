@@ -51,7 +51,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 describe("client.<entity>.query()", () => {
-  it("nullable fields project to null (set) or undefined (absent)", async () => {
+  it("a tombstoned leaf projects as absent, same as a missing one", async () => {
     const todoWithNullable = defineEntity("todo", {
       title: e.string(),
       body: e.string().nullable(),
@@ -78,8 +78,29 @@ describe("client.<entity>.query()", () => {
 
     const rows = await client.todo.query();
     expect(rows.find((r) => r.title === "a")?.body).toBe("note");
-    expect(rows.find((r) => r.title === "b")?.body).toBeNull();
+    expect(rows.find((r) => r.title === "b")?.body).toBeUndefined();
     expect(rows.find((r) => r.title === "c")?.body).toBeUndefined();
+  });
+
+  it("fills a declared default through query() and get()", async () => {
+    const task = defineEntity("task", {
+      title: e.string(),
+      priority: e.string().default("normal"),
+    });
+    const taskSchema = defineSchema({ entities: { task }, version: 1 });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: taskSchema,
+    });
+    await seedQueryRow(storage, client.replica, mkEntity("t1", "task", { title: "a" }));
+
+    const rows = await client.task.query();
+    expect(rows[0]?.priority).toBe("normal");
+    expect((await client.task.get("t1"))?.priority).toBe("normal");
   });
 
   it(".toRaw() returns readonly Entity[] — the untyped wire shape", async () => {
@@ -336,7 +357,7 @@ describe("client.<entity>.get(id)", () => {
     expect(row).toBeNull();
   });
 
-  it("three projection states on a single row (set / nulled / absent)", async () => {
+  it("projects a stored value, and a tombstone the same as absence", async () => {
     const todoWithNullable = defineEntity("todo", {
       title: e.string(),
       body: e.string().nullable(),
@@ -357,7 +378,7 @@ describe("client.<entity>.get(id)", () => {
       schema: schemaWithNullable,
     });
     expect((await client.todo.get("t1"))?.body).toBe("note");
-    expect((await client.todo.get("t2"))?.body).toBeNull();
+    expect((await client.todo.get("t2"))?.body).toBeUndefined();
     expect((await client.todo.get("t3"))?.body).toBeUndefined();
   });
 
