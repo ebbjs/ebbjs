@@ -96,5 +96,11 @@ bash scripts/tsnode-e2e.sh             # real Headscale + real client, Docker
 
 `scripts/tsnode-e2e.sh` is also the `tsnode-e2e` CI job: it runs the real binary
 against a real control plane and asserts that identity reaches the backend
-through `WhoIs`. The `pre-push` hook runs the whole Elixir suite (~4 min); for a
-fast push use `LEFTHOOK_EXCLUDE=elixir-test git push` and let CI own that run.
+through `WhoIs`.
+
+Hooks are fast by design. `pre-commit` runs formatters, `gofmt`, and the
+contract check, scoped to the staged side (seconds). `pre-push` runs
+`mix compile --warnings-as-errors` and `go test`, nothing more. The Elixir
+suite, Credo, the Docker smoke test, and the Headscale harness run in CI, which
+gates every merge; run `pnpm test`, `mix test`, or `mix credo --strict` yourself
+when you want them before pushing.
