@@ -15,6 +15,7 @@
     "./deployment-hash": "./src/deployment-hash.ts",
     "./contract-map": "./src/contract-map.ts",
     "./api": "./src/api.ts",
+    "./apps": "./src/apps.ts",
     "./commands": "./src/commands.ts"
   },
   "scripts": {

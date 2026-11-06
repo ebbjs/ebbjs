@@ -42,19 +42,29 @@ export {
   CliHttpError,
   MissingAdminTokenError,
   activateVersion,
+  addAppOrigin,
+  createApp,
   disable,
+  listApps,
   listFunctions,
   listVersions,
+  removeApp,
+  removeAppOrigin,
   rollback,
   uploadVersion,
   type ApiOptions,
   type ApiOptionsInput,
+  type App,
+  type AppResponse,
   type FunctionSummary,
   type FunctionVersionInfo,
+  type ListAppsResponse,
   type ListFunctionsResponse,
   type ListVersionsResponse,
   type UploadVersionInput,
 } from "./api.ts";
+
+export { isWildcardOrigin, normalizeOrigin } from "./apps.ts";
 
 export { DEPLOYMENT_HASH_VERSION, deploymentHashFor } from "./deployment-hash.ts";
 

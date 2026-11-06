@@ -3,12 +3,19 @@ import { basename, relative, resolve } from "node:path";
 
 import {
   activateVersion,
+  addAppOrigin,
+  createApp,
   disable,
   getHealth,
+  listApps,
   listFunctions,
+  removeApp,
+  removeAppOrigin,
   rollback,
+  type App,
   type FetchLike,
 } from "./api.ts";
+import { isWildcardOrigin, normalizeOrigin } from "./apps.ts";
 import { loadConfig, type LoadConfigOptions, type ResolvedConfig } from "./config.ts";
 import { deployEntries, deployFiles, writeTypes, type DeployResult } from "./deploy.ts";
 import { isEntryFile, messageOf } from "./util.ts";
@@ -47,6 +54,11 @@ Commands:
   ebb functions disable <name> [--url <url>] [--token <token>] [--config <path>]
   ebb functions health [--json] [--url <url>] [--token <token>] [--config <path>]
   ebb functions types [--config <path>]
+  ebb apps list [--json] [--url <url>] [--token <token>] [--config <path>]
+  ebb apps add <name> --origin <url> [--origin <url>]... [--url <url>] [--token <token>] [--config <path>]
+  ebb apps remove <name> [--url <url>] [--token <token>] [--config <path>]
+  ebb apps origin add <name> <url> [--url <url>] [--token <token>] [--config <path>]
+  ebb apps origin remove <name> <url> [--url <url>] [--token <token>] [--config <path>]
   ebb dev [--url <url>] [--token <token>] [--actor <actor>] [--config <path>]
 
 Options:
@@ -57,7 +69,14 @@ Options:
   --no-activate    Upload without moving the active pointer
   --keep           Pin the uploaded version against retention (always uploads)
   --force          Upload and activate even when the deployment is unchanged
-  --help           Show this help`;
+  --help           Show this help
+
+Notes:
+  ebb apps registers browser origins for CORS admission only. It is not
+  authorization, and non-browser clients (CLI, functions) ignore CORS. Removing
+  an origin takes effect when the browser's preflight cache expires (up to 300
+  seconds). EBB_CORS_ALLOW_ANY stays a node environment setting resolved at
+  boot; it is not an app and ebb apps does not toggle it.`;
 
 class UsageError extends Error {
   constructor(message: string) {
@@ -69,6 +88,7 @@ class UsageError extends Error {
 interface ParsedArgs {
   positionals: string[];
   values: Map<string, string>;
+  lists: Map<string, string[]>;
   booleans: Set<string>;
 }
 
@@ -109,6 +129,10 @@ async function dispatch(argv: string[], deps: CommandDeps): Promise<number> {
 
   if (command === "functions") {
     return functionsCommand(argv.slice(1), deps);
+  }
+
+  if (command === "apps") {
+    return appsCommand(argv.slice(1), deps);
   }
 
   if (command === "dev") {
@@ -223,6 +247,200 @@ export async function typesCommand(parsed: ParsedArgs, deps: CommandDeps = {}): 
   const config = await configFrom(flagValues(parsed), deps);
   const path = await writeTypes(config);
   (deps.print ?? console.log)(`wrote ${relative(config.cwd, path) || basename(path)}`);
+}
+
+async function appsCommand(argv: string[], deps: CommandDeps): Promise<number> {
+  const subcommand = argv[0];
+
+  if (subcommand === undefined) {
+    throw new UsageError("an apps subcommand is required");
+  }
+
+  const rest = argv.slice(1);
+  switch (subcommand) {
+    case "list":
+      await appsListCommand(parse(rest, ["url", "token", "config"], ["json"]), deps);
+      return 0;
+    case "add":
+      await appsAddCommand(parse(rest, ["url", "token", "config"], [], ["origin"]), deps);
+      return 0;
+    case "remove":
+      await appsRemoveCommand(parse(rest, ["url", "token", "config"], []), deps);
+      return 0;
+    case "origin":
+      return appsOriginCommand(rest, deps);
+    default:
+      throw new UsageError(`unknown apps command ${JSON.stringify(subcommand)}`);
+  }
+}
+
+async function appsOriginCommand(argv: string[], deps: CommandDeps): Promise<number> {
+  const subcommand = argv[0];
+
+  if (subcommand === undefined) {
+    throw new UsageError("an apps origin subcommand is required");
+  }
+
+  const rest = argv.slice(1);
+  switch (subcommand) {
+    case "add":
+      await appOriginAddCommand(parse(rest, ["url", "token", "config"], []), deps);
+      return 0;
+    case "remove":
+      await appOriginRemoveCommand(parse(rest, ["url", "token", "config"], []), deps);
+      return 0;
+    default:
+      throw new UsageError(`unknown apps origin command ${JSON.stringify(subcommand)}`);
+  }
+}
+
+export async function appsListCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
+  assertNoPositionals(parsed, "apps list");
+  const config = await configFrom(flagValues(parsed), deps);
+  const response = await listApps(config, fetchOptions(deps));
+  const print = deps.print ?? console.log;
+  const apps = [...response.apps].sort(compareApps);
+
+  if (parsed.booleans.has("json")) {
+    const json = apps.map((app) => ({
+      id: app.id,
+      name: app.name,
+      origins: app.origins,
+      created_at: app.created_at,
+    }));
+    print(JSON.stringify({ apps: json }, null, 2));
+    return;
+  }
+
+  for (const app of apps) {
+    print([app.name, app.id, app.origins.join(","), app.created_at].join("\t"));
+  }
+}
+
+/**
+ * Registers an app, or the origins it is missing, without duplicating work.
+ *
+ * The server rejects a duplicate name, so the CLI looks first: an app with the
+ * same exact name is extended with only the origins it does not have, and a
+ * request that changes nothing is a successful no-op. A name that differs only
+ * by case still goes to the server so its `duplicate_name` is what the operator
+ * sees.
+ *
+ * Each missing origin is a separate request, so a conflict part-way leaves the
+ * earlier additions registered; re-running resumes from the first missing one.
+ */
+export async function appsAddCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
+  const [name] = requirePositionals(parsed, 1, "apps add <name> --origin <url>");
+  const requested = parsed.lists.get("origin") ?? [];
+  if (requested.length === 0) {
+    throw new UsageError("apps add requires at least one --origin <url>");
+  }
+
+  const print = deps.print ?? console.log;
+  const printError = deps.printError ?? console.error;
+  const origins = [...new Set(requested.map(normalizeOrThrow))];
+  for (const origin of origins) printWildcardWarning(origin, printError);
+
+  const config = await configFrom(flagValues(parsed), deps);
+  const existing = findApp((await listApps(config, fetchOptions(deps))).apps, name);
+
+  if (existing === undefined || existing.name !== name) {
+    const created = await createApp(config, name, origins, fetchOptions(deps));
+    print(`added ${created.app.name} (${created.app.id})`);
+    return;
+  }
+
+  const missing = origins.filter((origin) => !existing.origins.includes(origin));
+  if (missing.length === 0) {
+    print(`unchanged ${existing.name} (${existing.id})`);
+    return;
+  }
+
+  let app = existing;
+  for (const origin of new Set(missing)) {
+    app = (await addAppOrigin(config, app.id, origin, fetchOptions(deps))).app;
+    print(`added ${origin} to ${app.name} (${app.id})`);
+  }
+}
+
+export async function appsRemoveCommand(parsed: ParsedArgs, deps: CommandDeps = {}): Promise<void> {
+  const [name] = requirePositionals(parsed, 1, "apps remove <name>");
+  const config = await configFrom(flagValues(parsed), deps);
+  const app = await resolveApp(config, name, deps);
+
+  await removeApp(config, app.id, fetchOptions(deps));
+  const print = deps.print ?? console.log;
+  print(`removed ${app.name} (${app.id})`);
+  printRevocationNote(print);
+}
+
+export async function appOriginAddCommand(
+  parsed: ParsedArgs,
+  deps: CommandDeps = {},
+): Promise<void> {
+  const [name, rawOrigin] = requirePositionals(parsed, 2, "apps origin add <name> <url>");
+  const origin = normalizeOrThrow(rawOrigin);
+  printWildcardWarning(origin, deps.printError ?? console.error);
+
+  const config = await configFrom(flagValues(parsed), deps);
+  const app = await resolveApp(config, name, deps);
+  const updated = await addAppOrigin(config, app.id, origin, fetchOptions(deps));
+  (deps.print ?? console.log)(`added ${origin} to ${updated.app.name} (${updated.app.id})`);
+}
+
+export async function appOriginRemoveCommand(
+  parsed: ParsedArgs,
+  deps: CommandDeps = {},
+): Promise<void> {
+  const [name, rawOrigin] = requirePositionals(parsed, 2, "apps origin remove <name> <url>");
+  const origin = normalizeOrThrow(rawOrigin);
+
+  const config = await configFrom(flagValues(parsed), deps);
+  const app = await resolveApp(config, name, deps);
+  const updated = await removeAppOrigin(config, app.id, origin, fetchOptions(deps));
+  const print = deps.print ?? console.log;
+  print(`removed ${origin} from ${updated.app.name} (${updated.app.id})`);
+  printRevocationNote(print);
+}
+
+function findApp(apps: readonly App[], name: string): App | undefined {
+  const key = name.toLowerCase();
+  return apps.find((app) => app.name.toLowerCase() === key);
+}
+
+async function resolveApp(config: ResolvedConfig, name: string, deps: CommandDeps): Promise<App> {
+  const app = findApp((await listApps(config, fetchOptions(deps))).apps, name);
+  if (app === undefined) throw new Error(`no app named ${JSON.stringify(name)}`);
+  return app;
+}
+
+function normalizeOrThrow(raw: string): string {
+  const origin = normalizeOrigin(raw);
+  if (origin === undefined) {
+    throw new UsageError(
+      `invalid origin ${JSON.stringify(raw)}: use an http(s) origin with no path, query, or fragment`,
+    );
+  }
+  return origin;
+}
+
+function printWildcardWarning(origin: string, printError: (line: string) => void): void {
+  if (!isWildcardOrigin(origin)) return;
+  printError(
+    `warning: ${origin} is a wildcard origin and admits every matching subdomain; prefer exact origins`,
+  );
+}
+
+function printRevocationNote(print: (line: string) => void): void {
+  print(
+    "revoked origins stop being admitted when the browser preflight cache expires (up to 300s)",
+  );
+}
+
+function compareApps(left: App, right: App): number {
+  if (left.name !== right.name) return left.name < right.name ? -1 : 1;
+  if (left.id !== right.id) return left.id < right.id ? -1 : 1;
+  return 0;
 }
 
 async function functionsCommand(argv: string[], deps: CommandDeps): Promise<number> {
@@ -384,12 +602,15 @@ function parse(
   argv: readonly string[],
   valueFlags: readonly string[],
   booleanFlags: readonly string[],
+  listFlags: readonly string[] = [],
 ): ParsedArgs {
   const values = new Map<string, string>();
+  const lists = new Map<string, string[]>();
   const booleans = new Set<string>();
   const positionals: string[] = [];
   const valueNames = new Set(valueFlags);
   const booleanNames = new Set(booleanFlags);
+  const listNames = new Set(listFlags);
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -407,12 +628,16 @@ function parse(
     const [flag, inline] = splitFlag(arg);
     const name = flag.slice(2);
 
-    if (valueNames.has(name)) {
+    if (valueNames.has(name) || listNames.has(name)) {
       const value = inline ?? argv[index + 1];
       if (value === undefined || value.startsWith("--")) {
         throw new UsageError(`--${name} requires a value`);
       }
-      values.set(name, value);
+      if (listNames.has(name)) {
+        lists.set(name, [...(lists.get(name) ?? []), value]);
+      } else {
+        values.set(name, value);
+      }
       if (inline === undefined) index += 1;
     } else if (booleanNames.has(name) && inline === undefined) {
       booleans.add(name);
@@ -421,7 +646,7 @@ function parse(
     }
   }
 
-  return { positionals, values, booleans };
+  return { positionals, values, lists, booleans };
 }
 
 function splitFlag(arg: string): [string, string | undefined] {

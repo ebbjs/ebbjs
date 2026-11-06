@@ -413,10 +413,26 @@ The server admits an origin when it appears in either source (outside
 - The app registry — apps and browser origins registered at `/admin/apps` and
   persisted in `<EBB_DATA_DIR>/apps.json`.
 
-Register an app's origins in CI or at deploy time, using `ebb apps`
-([#730](https://github.com/ebbjs/ebbjs/issues/730)) or the admin API below.
-Removing an origin (or a whole app) revokes it once the browser's preflight
-cache expires — about 300 seconds — not on the next request.
+Register an app's origins in CI or at deploy time, using `ebb apps` or the
+admin API below. The CLI reuses `ebb.config.ts` (or `--url` / `--token`) and
+normalizes origins the same way the server does:
+
+```console
+$ ebb apps add issue-tracker --origin https://issues.example.com --origin http://localhost:5173
+$ ebb apps list --json
+$ ebb apps origin add issue-tracker https://preview.example.com
+$ ebb apps origin remove issue-tracker https://preview.example.com
+$ ebb apps remove issue-tracker
+```
+
+`ebb apps add` is idempotent: an existing app gains only the origins it lacks,
+and repeating the same request changes nothing. Registration is operator or CI
+work — a deployed app cannot register itself — and it admits browser origins
+only; non-browser clients ignore CORS. Removing an origin (or a whole app)
+revokes it once the browser's preflight cache expires — about 300 seconds — not
+on the next request. `EBB_CORS_ALLOW_ANY` is the global escape hatch, resolved
+at boot from the node environment; it is not an app and `ebb apps` does not
+toggle it.
 
 #### Mode defaults
 
