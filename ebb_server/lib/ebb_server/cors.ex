@@ -77,15 +77,20 @@ defmodule EbbServer.CORS do
   end
 
   defp apply_decision(conn, {:allow, allowed_origin, app_id}) do
-    conn =
-      conn
-      |> put_allow_headers(allowed_origin)
-      |> put_app_id(app_id)
-
     case preflight(conn) do
-      :none -> conn
-      {:ok, headers} -> send_preflight(conn, headers)
-      :error -> deny_preflight(conn)
+      :none ->
+        conn
+        |> put_allow_headers(allowed_origin)
+        |> put_app_id(app_id)
+
+      {:ok, headers} ->
+        conn
+        |> put_allow_headers(allowed_origin)
+        |> put_app_id(app_id)
+        |> send_preflight(headers)
+
+      :error ->
+        deny_preflight(conn)
     end
   end
 
