@@ -253,6 +253,14 @@ export class EntityRegistry {
       ];
     }
     const violations: ValidationViolation[] = [];
+    if (filter !== null && !Array.isArray(filter)) {
+      return [
+        {
+          entityName: entity.name,
+          message: "Filter must be a list of groups",
+        },
+      ];
+    }
     const groups: readonly unknown[] = filter ?? [];
     for (const [index, group] of groups.entries()) {
       if (group === null || typeof group !== "object" || Array.isArray(group)) {
@@ -283,7 +291,7 @@ export class EntityRegistry {
    * whether to surface it.
    */
   filterWarnings(type: string, filter: Filter | null): ValidationViolation[] {
-    if (this.entities.size === 0 || filter === null) return [];
+    if (this.entities.size === 0 || filter === null || !Array.isArray(filter)) return [];
     const entity = this.entities.get(type);
     if (entity === undefined) return [];
     const compared = new Set<string>();

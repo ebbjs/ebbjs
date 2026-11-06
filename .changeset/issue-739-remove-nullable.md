@@ -1,6 +1,6 @@
 ---
-"@ebbjs/schema": major
-"@ebbjs/client": major
+"@ebbjs/schema": minor
+"@ebbjs/client": minor
 ---
 
 Remove `.nullable()`.

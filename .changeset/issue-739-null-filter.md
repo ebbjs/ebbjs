@@ -1,5 +1,5 @@
 ---
-"@ebbjs/client": major
+"@ebbjs/client": minor
 ---
 
 A `null` filter value now means "no live value".

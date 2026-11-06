@@ -73,7 +73,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
     bootstrap_group(group_id, actor_id, writer_name)
 
     for row <- vectors["rows"] do
-      write_row(row["id"], group_id, actor_id, writer_name, row["fields"])
+      write_row(row["id"], group_id, actor_id, writer_name, row["fields"], row["maps"] || %{})
     end
 
     opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
@@ -94,13 +94,26 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
     |> Jason.decode!()
   end
 
-  defp write_row(row_id, group_id, actor_id, writer_name, fields) do
+  defp write_row(row_id, group_id, actor_id, writer_name, fields, maps) do
     hlc = generate_hlc()
 
     envelopes =
       Map.new(fields, fn {field, value} ->
         {field, %{"type" => "lww", "value" => value, "hlc" => hlc}}
       end)
+
+    map_envelopes =
+      Map.new(maps, fn {field, entries} ->
+        {field,
+         %{
+           "map" =>
+             Map.new(entries, fn {key, value} ->
+               {key, %{"type" => "lww", "value" => value, "hlc" => hlc}}
+             end)
+         }}
+      end)
+
+    envelopes = Map.merge(envelopes, map_envelopes)
 
     action = %{
       id: "act_" <> Nanoid.generate(),

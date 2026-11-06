@@ -25,6 +25,7 @@ import {
   derivedBodyIds,
   EntityValidationError,
   GROUPS_ACCESSOR,
+  SYSTEM_ENTITY_NAMES,
   validatePayload,
   type EntityRegistry,
   type FieldMarker,
@@ -205,7 +206,16 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
 
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.createShape, input.fields, input.entity, false);
+    // A system row is internal and may legitimately omit a field without a
+    // default (`group.apps` on an unscoped group), so its create validates
+    // per field. A user entity keeps the strict create rule.
+    const partial = SYSTEM_ENTITY_NAMES.has(input.entity);
+    const violations = validatePayload(
+      partial ? def.shape : def.createShape,
+      input.fields,
+      input.entity,
+      partial,
+    );
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }

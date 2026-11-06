@@ -19,6 +19,18 @@ import { Type } from "@sinclair/typebox";
 import { buildEntityDef, e, type EntityDef } from "./entity";
 
 /**
+ * Names of the wire-level entities the SDK owns. They are internal rows
+ * (an edge, a group, a membership), so their creates validate per field:
+ * absence is normal and `group.apps` deliberately has no default.
+ */
+export const SYSTEM_ENTITY_NAMES: ReadonlySet<string> = new Set([
+  "relationship",
+  "group",
+  "groupMember",
+  "entityGroup",
+]);
+
+/**
  * Wire shape of a `Relationship` record. The server stores
  * relationship edges as `Relationship` entities carrying
  * `{source_id, target_id, type, field}` as field values. A cleared edge

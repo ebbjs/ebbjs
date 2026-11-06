@@ -700,14 +700,21 @@ defmodule EbbServer.Storage.SQLite do
 
   defp group_clauses(group, params) do
     {clauses, params} = Enum.reduce(group, {[], params}, &filter_clause/2)
-    {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
+    {"(" <> Enum.join(Enum.reverse(clauses), " AND ") <> ")", params}
   end
 
   # `json_extract` returns SQL NULL for a missing path and for a JSON null
   # alike, which is exactly "absent or tombstoned". Binding NULL into `= ?`
-  # would compare as never true.
+  # would compare as never true. A map field is a live value even when its
+  # keys are tombstoned (clearing the whole field writes a leaf tombstone),
+  # so the map envelope must not satisfy "no live value".
   defp filter_clause({field, nil}, {clauses, params}) do
-    {["#{field_path(field)} IS NULL" | clauses], params}
+    clause =
+      "(" <>
+        field_path(field) <>
+        " IS NULL AND json_type(e.data, '$.fields." <> field <> ".map') IS NOT 'object')"
+
+    {[clause | clauses], params}
   end
 
   defp filter_clause({field, value}, {clauses, params}) do

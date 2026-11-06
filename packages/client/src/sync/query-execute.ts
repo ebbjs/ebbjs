@@ -10,7 +10,7 @@
  * nothing about the schema, the registry, or the builder.
  */
 
-import type { Entity, FieldValue } from "@ebbjs/core";
+import { isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
 import type { MembershipQuery, Replica, RelationshipQuery } from "@ebbjs/storage/replica";
 
 import type { Plan, PlanPredicate } from "./query-plan";
@@ -71,6 +71,10 @@ const isFilterPredicate = (predicate: PlanPredicate): predicate is FilterPredica
 const fieldValue = (entity: Entity, field: string): FieldValue["value"] | undefined =>
   entity.data?.fields?.[field]?.value;
 
+/** The whole field envelope, so a map is distinguishable from a leaf. */
+const fieldEntry = (entity: Entity, field: string): FieldValue | undefined =>
+  entity.data?.fields?.[field];
+
 /**
  * How an ordered field reads for a row. The builder supplies the
  * schema-aware resolver (`stored ?? default`), so a sort compares the same
@@ -81,11 +85,16 @@ export type FieldResolver = (entity: Entity, field: string) => unknown;
 
 /**
  * A `null` predicate asks for "no live value": an absent leaf and a
- * tombstoned one both answer yes. Any other value matches only an equal
- * stored value, so a schema default never widens a filter.
+ * tombstoned one both answer yes. A map envelope is a live value even when
+ * its keys are tombstoned (clearing the whole field writes a leaf
+ * tombstone), so it never matches. Any non-null value matches only an equal
+ * stored leaf, so a schema default never widens a filter.
  */
-const matchesFieldValue = (stored: FieldValue["value"] | undefined, expected: unknown): boolean =>
-  expected === null ? stored === undefined || stored === null : stored === expected;
+const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
+  if (field === undefined) return expected === null;
+  if (isFieldMap(field)) return false;
+  return expected === null ? field.value === null : field.value === expected;
+};
 
 /**
  * Same comparison semantics as the builder's ordering — `undefined`
@@ -202,7 +211,7 @@ const selectGroup = (
     .filter(isFilterPredicate)
     .reduce<readonly Entity[]>(
       (rows, predicate) =>
-        rows.filter((row) => matchesFieldValue(fieldValue(row, predicate.field), predicate.value)),
+        rows.filter((row) => matchesFieldValue(fieldEntry(row, predicate.field), predicate.value)),
       seed,
     );
 };

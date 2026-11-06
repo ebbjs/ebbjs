@@ -813,7 +813,7 @@ export function createEntityNamespace<
         TJoins,
         NoJoins,
         QueryRow<WireFields<TFields>>
-      >;
+      >; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       // The accessors read the replica's adjacency, so bring it up to

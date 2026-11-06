@@ -227,6 +227,20 @@ describe("declarative field defaults", () => {
     expect(validatePayload(todo.createShape, { priority: 1 }, "todo", false)).not.toEqual([]);
   });
 
+  it("clones and freezes a default so rows and the schema hash share no object", () => {
+    const fallback = { a: "x" };
+    const field = e.map(e.string()).default(fallback);
+    fallback.a = "mutated";
+    const stored = readDefault(field) as { a: string };
+    expect(stored.a).toBe("x");
+    expect(Object.isFrozen(stored)).toBe(true);
+  });
+
+  it("readDefault tolerates an unknown property schema", () => {
+    expect(readDefault(undefined)).toBeUndefined();
+    expect(hasDefault(undefined)).toBe(false);
+  });
+
   it("rejects a default on a derived collaborative-text field", () => {
     expect(() => defineEntity("doc", { body: e.collaborativeText().default("seed") })).toThrow(
       DerivedFieldDefaultError,
@@ -273,6 +287,11 @@ describe("field schemas may not admit null", () => {
 
   it("rejects a bare null-typed field", () => {
     expect(() => defineEntity("todo", { gone: Type.Null() })).toThrow(NullFieldError);
+  });
+
+  it("rejects Any/Unknown, which admit null without naming it", () => {
+    expect(() => defineEntity("todo", { anything: Type.Any() })).toThrow(NullFieldError);
+    expect(() => defineEntity("todo", { anything: Type.Unknown() })).toThrow(NullFieldError);
   });
 
   it("rejects a schema whose type array includes null", () => {

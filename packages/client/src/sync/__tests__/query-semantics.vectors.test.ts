@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Entity } from "@ebbjs/core";
-import type { Filter } from "@ebbjs/schema";
+import { EntityValidationError, type Filter } from "@ebbjs/schema";
 
 import { emptyQuery, filterToGroups } from "../query";
 import { createRowsExecutor, executePlan } from "../query-execute";
@@ -21,6 +21,8 @@ import { planQuery } from "../query-plan";
 interface VectorRow {
   readonly id: string;
   readonly fields: Record<string, unknown>;
+  /** A live map envelope: each entry becomes a leaf inside `{ map }`. */
+  readonly maps?: Record<string, Record<string, unknown>>;
 }
 
 interface VectorCase {
@@ -39,17 +41,38 @@ const toEntity = (row: VectorRow): Entity => ({
   id: row.id,
   type: "todo",
   data: {
-    fields: Object.fromEntries(
-      Object.entries(row.fields).map(([field, value]) => [
-        field,
-        { value, update_id: `u_${row.id}`, hlc: makeHlc(1) },
-      ]),
-    ),
+    fields: {
+      ...Object.fromEntries(
+        Object.entries(row.fields).map(([field, value]) => [
+          field,
+          { value, update_id: `u_${row.id}`, hlc: makeHlc(1) },
+        ]),
+      ),
+      ...Object.fromEntries(
+        Object.entries(row.maps ?? {}).map(([field, entries]) => [
+          field,
+          {
+            map: Object.fromEntries(
+              Object.entries(entries).map(([key, value]) => [
+                key,
+                { value, update_id: `u_${row.id}`, hlc: makeHlc(1) },
+              ]),
+            ),
+          },
+        ]),
+      ),
+    },
   },
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,
   last_gsn: 1,
+});
+
+describe("filter lowering", () => {
+  it("rejects a null group entry with the same error shape as validation", () => {
+    expect(() => filterToGroups([null] as unknown as Filter)).toThrow(EntityValidationError);
+  });
 });
 
 describe("query semantics shared vectors", () => {

@@ -1,6 +1,6 @@
 ---
-"@ebbjs/client": major
-"@ebbjs/schema": major
+"@ebbjs/client": minor
+"@ebbjs/schema": minor
 ---
 
 A filter is now a disjunction of groups.

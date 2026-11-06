@@ -1,9 +1,9 @@
 ---
-"@ebbjs/core": major
-"@ebbjs/schema": major
-"@ebbjs/write": major
-"@ebbjs/client": major
-"@ebbjs/react": major
+"@ebbjs/core": minor
+"@ebbjs/schema": minor
+"@ebbjs/write": minor
+"@ebbjs/client": minor
+"@ebbjs/react": minor
 ---
 
 Absence, defaults, and null filters (breaking summary).

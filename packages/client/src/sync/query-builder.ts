@@ -126,27 +126,35 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
 ): Static<TObject<ShapeFields<TFields>>> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
-    const field = entity.data?.fields?.[key];
-    const stored = field === undefined ? undefined : projectFieldValue(field);
-    out[key] = stored ?? readDefault(shape.properties[key]);
+    out[key] = resolveFieldValue(entity, key, shape.properties[key]);
   }
   return out as Static<TObject<ShapeFields<TFields>>>;
 }
 
 /**
- * Ordered comparison value for one field: the same `stored ?? default`
- * resolution projection applies, so a sort never disagrees with the value
- * a row renders as.
+ * One field's read value: the stored projection, or the property schema's
+ * declared default when the leaf is absent or tombstoned. Projection and
+ * ordering both go through here so the two cannot drift.
+ */
+const resolveFieldValue = (
+  entity: Entity,
+  field: string,
+  property: TSchema | undefined,
+): unknown => {
+  const raw = entity.data?.fields?.[field];
+  const stored = raw === undefined ? undefined : projectFieldValue(raw);
+  return stored ?? readDefault(property);
+};
+
+/**
+ * Ordered comparison value for one field: the same resolution projection
+ * applies, so a sort never disagrees with the value a row renders as.
  */
 export const projectedFieldValue = (
   entity: Entity,
   field: string,
   shape: TObject<Record<string, TSchema>>,
-): unknown => {
-  const raw = entity.data?.fields?.[field];
-  const stored = raw === undefined ? undefined : projectFieldValue(raw);
-  return stored ?? readDefault(shape.properties[field]);
-};
+): unknown => resolveFieldValue(entity, field, shape.properties[field]);
 
 /**
  * A materialized entity projected to the schema's shape, plus the

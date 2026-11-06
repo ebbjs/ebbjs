@@ -12,7 +12,7 @@
  * it matches nothing — an explicit "no live pointer", never "no filter".
  */
 
-import type { Filter } from "@ebbjs/schema";
+import { EntityValidationError, type Filter } from "@ebbjs/schema";
 
 /** One query predicate, resolved against the schema by the builder. */
 export type Predicate =
@@ -99,6 +99,16 @@ export const emptyQuery = (source: string): Query => ({
  */
 export const filterToGroups = (filter: Filter | null): readonly (readonly Predicate[])[] => {
   const groups = filter ?? [];
+  for (const [index, group] of groups.entries()) {
+    if (group === null || typeof group !== "object" || Array.isArray(group)) {
+      // A valid `Filter` cannot carry one; a caller that skipped
+      // `client.queryEntities`' validation gets a clear error, matching
+      // the server's `invalid_filter`.
+      throw new EntityValidationError([
+        { entityName: "(unknown)", message: `filter group ${index} must be an object` },
+      ]);
+    }
+  }
   if (groups.some((group) => Object.keys(group).length === 0)) return [];
   return groups.map((group) =>
     Object.entries(group).map(([field, value]) => ({ kind: "field" as const, field, value })),

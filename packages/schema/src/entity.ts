@@ -15,6 +15,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type {
   TSchema,
   TOptional,
@@ -108,8 +109,12 @@ export interface MapField<V extends TSchema> extends MapSchema<V> {
  * (the collaborative-text marker) that a spread would drop.
  */
 const stampDefault = <T extends TSchema, V>(schema: T, value: V): DefaultedSchema<T, V> => {
+  // A default is shared by every row that resolves it, and it is part of the
+  // schema hash, so it is cloned once and frozen: a caller mutating a
+  // projected default must not rewrite the annotation or another row.
+  const stored = deepFreeze(structuredClone(value));
   Object.defineProperty(schema, "default", {
-    value,
+    value: stored,
     enumerable: true,
     configurable: true,
     writable: true,
@@ -117,12 +122,21 @@ const stampDefault = <T extends TSchema, V>(schema: T, value: V): DefaultedSchem
   return schema as DefaultedSchema<T, V>;
 };
 
+/** Freeze a JSON default at every level. Defaults are acyclic JSON values. */
+const deepFreeze = <V>(value: V): V => {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const entry of Object.values(value as Record<string, unknown>)) deepFreeze(entry);
+    Object.freeze(value);
+  }
+  return value;
+};
+
 /**
  * True when `schema` carries a declared default. The builder's
  * non-enumerable `.default()` method is a function and does not count.
  */
-export const hasDefault = (schema: TSchema): boolean => {
-  const value = (schema as { default?: unknown }).default;
+export const hasDefault = (schema: TSchema | undefined): boolean => {
+  const value = (schema as { default?: unknown } | undefined)?.default;
   return value !== undefined && typeof value !== "function";
 };
 
@@ -131,7 +145,7 @@ export const hasDefault = (schema: TSchema): boolean => {
  * declared `undefined` default is indistinguishable from no default,
  * which is fine: absence has no value to resolve.
  */
-export const readDefault = (schema: TSchema): unknown =>
+export const readDefault = (schema: TSchema | undefined): unknown =>
   hasDefault(schema) ? (schema as { default?: unknown }).default : undefined;
 
 const withFieldChain = <T extends TSchema>(schema: T): T => {
@@ -425,7 +439,18 @@ export const admitsNull = (schema: TSchema): boolean => {
   for (const branches of [candidate.anyOf, candidate.oneOf]) {
     if (Array.isArray(branches) && branches.some(admitsNull)) return true;
   }
-  return false;
+  // Deliberately not recursive: a map entry's null is a run tombstone in the
+  // collaborative-text document schema, and this rule is about the field's
+  // own value, not the entries inside it.
+  try {
+    // Covers `Type.Any()` / `Type.Unknown()` / an empty schema, which accept
+    // `null` without naming it structurally.
+    return Value.Check(schema, null);
+  } catch {
+    // TypeBox cannot check an exotic schema; the structural checks above are
+    // the whole answer.
+    return false;
+  }
 };
 
 /** Raised when a derived (collaborative-text) field declares a default. */
