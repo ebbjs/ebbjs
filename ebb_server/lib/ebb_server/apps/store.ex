@@ -9,9 +9,10 @@ defmodule EbbServer.Apps.Store do
                  "origins": ["https://app.example.com"],
                  "created_at": "2026-01-01T00:00:00Z"}]}
 
-  Writes go to a uniquely named temp file in the same directory and are moved
-  into place with `File.rename/2`, so a reader (or a crash) never observes a
-  half-written document. A failed rename removes the temp file.
+  Writes go to a uniquely named temp file in the same directory, are fsynced,
+  and are moved into place with `File.rename/2`, so a reader (or a process
+  crash) never observes a half-written document. A failed write or rename
+  removes the temp file.
 
   `load/1` validates the whole document — version, shape, name and origin
   rules, and the registry's uniqueness invariants — because this file is
@@ -139,13 +140,29 @@ defmodule EbbServer.Apps.Store do
   defp write_atomic(path, content) do
     temp_path = temp_path(path)
 
-    with :ok <- File.write(temp_path, content, [:binary]),
+    with :ok <- write_and_sync(temp_path, content),
          :ok <- File.rename(temp_path, path) do
       :ok
     else
       {:error, reason} ->
         _ = File.rm(temp_path)
         {:error, reason}
+    end
+  end
+
+  # The rename publishes the document; syncing before it means an
+  # acknowledged registration is on disk, not only in the page cache.
+  defp write_and_sync(temp_path, content) do
+    case File.open(temp_path, [:write, :binary]) do
+      {:ok, io} ->
+        try do
+          with :ok <- IO.binwrite(io, content), do: :file.sync(io)
+        after
+          File.close(io)
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

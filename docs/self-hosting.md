@@ -495,8 +495,9 @@ $ curl -s -X DELETE \
 
 #### Storage and backups
 
-`apps.json` sits on the data volume beside RocksDB and SQLite. Writes are
-atomic, so a crash cannot leave a half-written registry. A corrupt file fails
+`apps.json` sits on the data volume beside RocksDB and SQLite. A write goes to
+a temporary file, is fsynced, and is renamed into place, so a reader (or a
+process crash) never observes a half-written registry. A corrupt file fails
 closed at boot — no origin is admitted until it is repaired or restored, and
 the error is logged. Back it up and restore it with the rest of the volume (see
 [Persistence, upgrades, and backups](#5-persistence-upgrades-and-backups)).

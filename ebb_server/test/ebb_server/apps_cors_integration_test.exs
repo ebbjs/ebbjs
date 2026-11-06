@@ -14,6 +14,7 @@ defmodule EbbServer.AppsCORSIntegrationTest do
   import EbbServer.TestHelpers, only: [put_config: 2, safe_stop: 1, tmp_dir: 1]
 
   alias EbbServer.Apps
+  alias EbbServer.Storage.{CacheTables, GroupCache, WatermarkTracker}
   alias EbbServer.Sync.Router
 
   @token "integration-admin"
@@ -83,6 +84,51 @@ defmodule EbbServer.AppsCORSIntegrationTest do
     # The app still exists after the two preflights; they mutate nothing.
     assert [%{"id" => id}] = list_apps(apps)
     assert id == app["id"]
+  end
+
+  test "a registered origin can write", %{apps: apps} do
+    register(apps, @origin)
+
+    response =
+      conn(:post, "/sync/actions", Msgpax.pack!(%{"actions" => []}) |> IO.iodata_to_binary())
+      |> put_req_header("content-type", "application/msgpack")
+      |> put_req_header("x-ebb-actor-id", "actor_1")
+      |> put_req_header("origin", @origin)
+      |> Router.call([])
+
+    assert response.status == 200
+    assert Jason.decode!(response.resp_body) == %{"rejected" => []}
+    assert header(response, "access-control-allow-origin") == @origin
+  end
+
+  test "an admitted SSE response carries the CORS headers", %{apps: apps} do
+    register(apps, @origin)
+    group_id = "g_cors_#{System.unique_integer([:positive])}"
+
+    :ok =
+      GroupCache.put_group_member(
+        %{
+          id: "gm_#{System.unique_integer([:positive])}",
+          actor_id: "actor_1",
+          group_id: group_id,
+          permissions: ["read"]
+        },
+        group_members: CacheTables.group_members(),
+        group_members_by_id: CacheTables.group_members_by_id(),
+        group_members_by_group: CacheTables.group_members_by_group()
+      )
+
+    cursor = WatermarkTracker.committed_watermark() + 1
+
+    response =
+      conn(:get, "/sync/live?groups=#{group_id}&cursor=#{cursor}")
+      |> put_req_header("x-ebb-actor-id", "actor_1")
+      |> put_req_header("origin", @origin)
+      |> Router.call([])
+
+    assert response.status == 200
+    assert header(response, "content-type") =~ "text/event-stream"
+    assert header(response, "access-control-allow-origin") == @origin
   end
 
   test "a 401 carries the CORS headers", %{apps: apps} do

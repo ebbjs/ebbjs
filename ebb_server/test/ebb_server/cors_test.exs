@@ -54,6 +54,32 @@ defmodule EbbServer.CORSTest do
     refute header(conn, "access-control-allow-origin")
   end
 
+  test "a wildcard match never carries credentials" do
+    policy = %{allow_any: false, origins: ["https://*.example.com"]}
+    conn = CORS.call(get("https://a.example.com"), policy: policy)
+
+    assert header(conn, "access-control-allow-origin") == "https://a.example.com"
+    refute header(conn, "access-control-allow-credentials")
+  end
+
+  test "a registered wildcard match never carries credentials" do
+    lookup = fn "https://a.example.com" -> {:ok, "app_notes", false} end
+    conn = CORS.call(get("https://a.example.com"), policy: deny_all(), lookup: lookup)
+
+    assert header(conn, "access-control-allow-origin") == "https://a.example.com"
+    refute header(conn, "access-control-allow-credentials")
+  end
+
+  test "Vary is appended to, not replaced" do
+    conn =
+      conn(:get, "/sync/handshake")
+      |> put_req_header("origin", "https://app.example.com")
+      |> put_resp_header("vary", "Accept-Encoding")
+
+    conn = CORS.call(conn, policy: @exact)
+    assert header(conn, "vary") == "Accept-Encoding, Origin"
+  end
+
   test "a registered app admits its origin and assigns the app id" do
     lookup = fn "https://notes.example.com" -> {:ok, "app_notes"} end
     conn = CORS.call(get("https://notes.example.com"), policy: deny_all(), lookup: lookup)
@@ -83,6 +109,19 @@ defmodule EbbServer.CORSTest do
     refute header(conn, "access-control-allow-credentials")
   end
 
+  test "allow_any still assigns the app id when the origin is registered" do
+    lookup = fn "https://a.example.com" -> {:ok, "app_notes"} end
+
+    conn =
+      CORS.call(get("https://a.example.com"),
+        policy: %{allow_any: true, origins: []},
+        lookup: lookup
+      )
+
+    assert header(conn, "access-control-allow-origin") == "*"
+    assert conn.assigns.app_id == "app_notes"
+  end
+
   test "duplicate Origin headers and null are refused" do
     duplicated =
       conn(:get, "/sync/handshake")
@@ -106,7 +145,10 @@ defmodule EbbServer.CORSTest do
       assert header(conn, "access-control-allow-methods") == "GET, POST, DELETE, OPTIONS"
       assert header(conn, "access-control-allow-headers") == "content-type, x-ebb-actor-id"
       assert header(conn, "access-control-max-age") == "300"
-      assert header(conn, "vary") =~ "Access-Control-Request-Method"
+
+      assert header(conn, "vary") ==
+               "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+
       assert conn.halted
     end
 

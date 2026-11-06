@@ -128,11 +128,11 @@ The unit of permission and delivery; every entity belongs to at least one.
 _Avoid_: workspace, tenant, room
 
 **App**:
-A deployed client of the shared store — `notes`, `issues` — named by the
-`appId` passed to `createClient`. Its browser origins are registered
-server-side in the app registry (`/admin/apps`, `<data_dir>/apps.json`), and
-registration admits those origins to CORS only. Not a tenant, not a credential,
-and not an actor for non-browser callers; Groups remain the unit of permission.
+A deployed client of the shared store — `notes`, `issues` — with an entry in
+the server's app registry (`/admin/apps`, `<data_dir>/apps.json`): an
+operator-facing `name`, a server-minted `id`, and the browser origins it admits
+to CORS. Registration admits origins only. Not a tenant, not a credential, and
+not an actor for non-browser callers; Groups remain the unit of permission.
 _Avoid_: tenant, client identity, origin, service
 
 **App scope**:

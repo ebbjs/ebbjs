@@ -35,6 +35,13 @@ defmodule EbbServer.CORS.PolicyTest do
       refute Policy.resolve!(:tailscale).allow_any
     end
 
+    test "tailscale denies * but keeps configured origins" do
+      System.put_env(@origins_env, "https://notes.example.com")
+
+      assert %{allow_any: false, origins: ["https://notes.example.com"]} =
+               Policy.resolve!(:tailscale)
+    end
+
     test "EBB_CORS_ALLOW_ANY overrides the mode in both directions" do
       System.put_env(@allow_any_env, "1")
       assert Policy.resolve!(:tailscale).allow_any
