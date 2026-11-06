@@ -70,6 +70,7 @@ defmodule EbbServer.Functions do
   actor could not do itself.
   """
 
+  alias EbbServer.Admin.Token
   alias EbbServer.Functions.Bundle.{DirLoader, StoreLoader}
   alias EbbServer.Functions.BundleCache
   alias EbbServer.Functions.Store
@@ -543,7 +544,7 @@ defmodule EbbServer.Functions do
     # One resolution shared with the registry's admin routes:
     # `EBB_ADMIN_TOKEN` / the server-level key first, then the functions
     # environment variable and nested key this deployment may already use.
-    EbbServer.Admin.Token.resolve_value()
+    Token.resolve_value()
   end
 
   defp resolve_secrets(config) do

@@ -63,39 +63,33 @@ defmodule EbbServer.CORS do
     policy = Keyword.get(opts, :policy) || Policy.current()
     lookup = Keyword.get(opts, :lookup, &default_lookup/1)
 
-    conn = put_vary(conn)
+    conn
+    |> put_vary()
+    |> apply_origin(policy, lookup)
+  end
 
+  defp apply_origin(conn, policy, lookup) do
     case request_origin(conn) do
-      :none ->
-        conn
-
-      :invalid ->
-        deny(conn)
-
-      origin ->
-        case decide(origin, policy, lookup) do
-          {:allow, allowed_origin, app_id} ->
-            case preflight(conn) do
-              :none ->
-                conn
-                |> put_allow_headers(allowed_origin)
-                |> put_app_id(app_id)
-
-              {:ok, headers} ->
-                conn
-                |> put_allow_headers(allowed_origin)
-                |> put_app_id(app_id)
-                |> send_preflight(headers)
-
-              :error ->
-                deny_preflight(conn)
-            end
-
-          :deny ->
-            deny(conn)
-        end
+      :none -> conn
+      :invalid -> deny(conn)
+      origin -> apply_decision(conn, decide(origin, policy, lookup))
     end
   end
+
+  defp apply_decision(conn, {:allow, allowed_origin, app_id}) do
+    conn =
+      conn
+      |> put_allow_headers(allowed_origin)
+      |> put_app_id(app_id)
+
+    case preflight(conn) do
+      :none -> conn
+      {:ok, headers} -> send_preflight(conn, headers)
+      :error -> deny_preflight(conn)
+    end
+  end
+
+  defp apply_decision(conn, :deny), do: deny(conn)
 
   # The registry is read from `:persistent_term`, so this adds no mailbox
   # traffic to the request path.

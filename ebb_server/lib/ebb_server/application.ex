@@ -5,6 +5,8 @@ defmodule EbbServer.Application do
 
   use Application
 
+  alias EbbServer.Admin.Token
+  alias EbbServer.CORS.Policy
   alias EbbServer.Tailscale
 
   @impl true
@@ -236,7 +238,7 @@ defmodule EbbServer.Application do
   end
 
   defp resolve_admin! do
-    EbbServer.Admin.Token.resolve!()
+    Token.resolve!()
   rescue
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
@@ -244,7 +246,7 @@ defmodule EbbServer.Application do
   end
 
   defp resolve_cors!(auth_mode) do
-    EbbServer.CORS.Policy.resolve!(auth_mode)
+    Policy.resolve!(auth_mode)
   rescue
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
