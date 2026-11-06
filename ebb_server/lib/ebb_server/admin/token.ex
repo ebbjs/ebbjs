@@ -110,7 +110,7 @@ defmodule EbbServer.Admin.Token do
   def authorize(conn, opts \\ []) do
     token =
       case Keyword.fetch(opts, :token) do
-        {:ok, value} -> value
+        {:ok, configured} -> configured
         :error -> value()
       end
 

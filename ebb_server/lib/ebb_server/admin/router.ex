@@ -34,6 +34,7 @@ defmodule EbbServer.Admin.Router do
   alias EbbServer.Admin.Router.OperationSchema
   alias EbbServer.Admin.Token
   alias EbbServer.Apps
+  alias EbbServer.Apps.Store
 
   plug(:authorize)
   plug(:match)
@@ -44,23 +45,16 @@ defmodule EbbServer.Admin.Router do
   # admin surface more discoverable; the catch-all answers it like any unknown
   # path.
   get "/apps" do
-    send_json(conn, 200, %{"apps" => Enum.map(Apps.list(apps_opts(conn)), &app_json/1)})
+    send_json(conn, 200, %{"apps" => Enum.map(Apps.list(apps_opts(conn)), &Store.to_json/1)})
   end
 
   post "/apps" do
-    with {:ok, payload, conn} <- read_json(conn),
-         {:ok, name, origins} <- app_fields(payload, conn) do
+    with_payload(conn, &app_fields/1, "name and origins are required", fn {name, origins}, conn ->
       case Apps.add(name, origins, apps_opts(conn)) do
-        {:ok, app} -> send_json(conn, 201, %{"app" => app_json(app)})
+        {:ok, app} -> send_json(conn, 201, %{"app" => Store.to_json(app)})
         {:error, reason} -> send_app_error(conn, reason)
       end
-    else
-      {:error, conn} ->
-        conn
-
-      {:error, :invalid_request, conn} ->
-        send_json(conn, 422, validation("name and origins are required"))
-    end
+    end)
   end
 
   delete "/apps/:id" do
@@ -75,16 +69,12 @@ defmodule EbbServer.Admin.Router do
   post "/apps/:id/origins" do
     id = conn.path_params["id"]
 
-    with {:ok, payload, conn} <- read_json(conn),
-         {:ok, origin} <- origin_field(payload, conn) do
+    with_payload(conn, &origin_field/1, "origin is required", fn origin, conn ->
       case Apps.add_origin(id, origin, apps_opts(conn)) do
-        {:ok, app} -> send_json(conn, 200, %{"app" => app_json(app)})
+        {:ok, app} -> send_json(conn, 200, %{"app" => Store.to_json(app)})
         {:error, reason} -> send_app_error(conn, reason)
       end
-    else
-      {:error, conn} -> conn
-      {:error, :invalid_request, conn} -> send_json(conn, 422, validation("origin is required"))
-    end
+    end)
   end
 
   delete "/apps/:id/origins/:origin" do
@@ -92,7 +82,7 @@ defmodule EbbServer.Admin.Router do
     origin = conn.path_params["origin"] |> URI.decode()
 
     case Apps.remove_origin(id, origin, apps_opts(conn)) do
-      {:ok, app} -> send_json(conn, 200, %{"app" => app_json(app)})
+      {:ok, app} -> send_json(conn, 200, %{"app" => Store.to_json(app)})
       {:error, reason} -> send_app_error(conn, reason)
     end
   end
@@ -140,19 +130,30 @@ defmodule EbbServer.Admin.Router do
   # Request plumbing
   # ---------------------------------------------------------------------------
 
-  defp app_fields(%{"name" => name, "origins" => origins}, conn)
+  defp app_fields(%{"name" => name, "origins" => origins})
        when is_binary(name) and is_list(origins) do
-    if Enum.all?(origins, &is_binary/1) do
-      {:ok, name, origins}
-    else
-      {:error, :invalid_request, conn}
-    end
+    if Enum.all?(origins, &is_binary/1),
+      do: {:ok, {name, origins}},
+      else: {:error, :invalid_request}
   end
 
-  defp app_fields(_payload, conn), do: {:error, :invalid_request, conn}
+  defp app_fields(_payload), do: {:error, :invalid_request}
 
-  defp origin_field(%{"origin" => origin}, _conn) when is_binary(origin), do: {:ok, origin}
-  defp origin_field(_payload, conn), do: {:error, :invalid_request, conn}
+  defp origin_field(%{"origin" => origin}) when is_binary(origin), do: {:ok, origin}
+  defp origin_field(_payload), do: {:error, :invalid_request}
+
+  # One decode-and-extract shape for the two body-bearing routes. The adapter
+  # read already sent its own error, so only an extraction failure is answered
+  # here.
+  defp with_payload(conn, extract, details, fun) do
+    with {:ok, payload, conn} <- read_json(conn),
+         {:ok, value} <- extract.(payload) do
+      fun.(value, conn)
+    else
+      {:error, :invalid_request} -> send_json(conn, 422, validation(details))
+      {:error, conn} -> conn
+    end
+  end
 
   defp read_json(conn) do
     case Plug.Conn.read_body(conn, length: 64_000) do
@@ -209,15 +210,6 @@ defmodule EbbServer.Admin.Router do
   end
 
   defp validation(details), do: %{"error" => "validation_failed", "details" => details}
-
-  defp app_json(app) do
-    %{
-      "id" => app.id,
-      "name" => app.name,
-      "origins" => app.origins,
-      "created_at" => app.created_at
-    }
-  end
 
   defp send_json(conn, status, body) do
     case Jason.encode(body) do

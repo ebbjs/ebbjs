@@ -13,7 +13,7 @@ defmodule EbbServer.Application do
   def start(_type, _args) do
     data_dir = runtime_data_dir()
     port = runtime_port()
-    {auth_mode, auth_url} = resolve_auth!()
+    {auth_mode, auth_url} = boot_resolve!(fn -> runtime_auth() end)
 
     Application.put_env(:ebb_server, :auth_mode, auth_mode)
     Application.put_env(:ebb_server, :auth_url, auth_url)
@@ -27,15 +27,15 @@ defmodule EbbServer.Application do
 
     # The promoted admin credential is resolved before functions, which use it
     # for their deploy routes, and before any listener accepts a request.
-    resolve_admin!()
+    boot_resolve!(fn -> Token.resolve!() end)
 
     # Resolved once, before `children/0` reads it and before Bandit can serve
     # the route: `enabled?/0` must not consult the environment per request.
-    resolve_functions!()
+    boot_resolve!(fn -> EbbServer.Functions.resolve!() end)
 
     # Browser admission is read per request from the resolved policy, so a
     # release cannot widen it without a restart. Invalid env fails boot here.
-    resolve_cors!(auth_mode)
+    boot_resolve!(fn -> Policy.resolve!(auth_mode) end)
 
     if auth_mode == :bypass do
       Logger.warning(
@@ -229,30 +229,6 @@ defmodule EbbServer.Application do
   # resolved once, so the functions database always sits beside the others.
   defp functions_children(data_dir), do: EbbServer.Functions.children(data_dir: data_dir)
 
-  defp resolve_functions! do
-    EbbServer.Functions.resolve!()
-  rescue
-    error in RuntimeError ->
-      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
-      reraise error, __STACKTRACE__
-  end
-
-  defp resolve_admin! do
-    Token.resolve!()
-  rescue
-    error in RuntimeError ->
-      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
-      reraise error, __STACKTRACE__
-  end
-
-  defp resolve_cors!(auth_mode) do
-    Policy.resolve!(auth_mode)
-  rescue
-    error in RuntimeError ->
-      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
-      reraise error, __STACKTRACE__
-  end
-
   # The suite points the registry at a per-run directory so `apps.json` never
   # leaks between runs; every other environment keeps it beside RocksDB.
   defp apps_data_dir(data_dir) do
@@ -289,8 +265,8 @@ defmodule EbbServer.Application do
   # terminating during boot" message and loses the exception text. Write
   # the reason to stderr synchronously before re-raising so a container
   # operator sees which variable is missing and which values it accepts.
-  defp resolve_auth! do
-    runtime_auth()
+  defp boot_resolve!(fun) do
+    fun.()
   rescue
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")

@@ -74,6 +74,40 @@ defmodule EbbServer.Apps.Store do
   end
 
   @doc """
+  Whether `name` is already registered, compared case-insensitively.
+
+  The write path and `load/1` share this rule so a registry accepted at boot is
+  one the admin API would also accept.
+  """
+  @spec duplicate_name?([app()], String.t()) :: boolean()
+  def duplicate_name?(apps, name) do
+    key = String.downcase(name)
+    Enum.any?(apps, fn app -> String.downcase(app.name) == key end)
+  end
+
+  @doc """
+  Whether any of `origins` is already registered to any of `apps`.
+  """
+  @spec duplicate_origins?([app()], [String.t()]) :: boolean()
+  def duplicate_origins?(apps, origins) do
+    registered = apps |> Enum.flat_map(& &1.origins) |> MapSet.new()
+    Enum.any?(origins, &MapSet.member?(registered, &1))
+  end
+
+  @doc """
+  The wire shape of one app.
+  """
+  @spec to_json(app()) :: map()
+  def to_json(app) do
+    %{
+      "id" => app.id,
+      "name" => app.name,
+      "origins" => app.origins,
+      "created_at" => app.created_at
+    }
+  end
+
+  @doc """
   Trims and validates a display name.
 
   Names are for humans, so the comparison the registry enforces is
@@ -96,19 +130,10 @@ defmodule EbbServer.Apps.Store do
   defp encode(apps) do
     document = %{
       "version" => @version,
-      "apps" => Enum.map(apps, &encode_app/1)
+      "apps" => Enum.map(apps, &to_json/1)
     }
 
     Jason.encode(document)
-  end
-
-  defp encode_app(app) do
-    %{
-      "id" => app.id,
-      "name" => app.name,
-      "origins" => app.origins,
-      "created_at" => app.created_at
-    }
   end
 
   defp write_atomic(path, content) do
@@ -124,8 +149,8 @@ defmodule EbbServer.Apps.Store do
     end
   end
 
-  # A visible `*.tmp` name so a stray file is obvious in a directory listing
-  # and a test can assert the write cleaned up after itself.
+  # A visible `*.tmp` name keeps a failed write obvious in a directory
+  # listing instead of looking like registry state.
   defp temp_path(path) do
     unique = System.unique_integer([:positive, :monotonic])
     Path.join(Path.dirname(path), "#{Path.basename(path)}.#{unique}.tmp")
@@ -158,9 +183,7 @@ defmodule EbbServer.Apps.Store do
 
   defp validate_document(_document), do: {:error, :corrupt}
 
-  defp initial_validation do
-    %{apps: [], ids: MapSet.new(), names: MapSet.new(), origins: MapSet.new()}
-  end
+  defp initial_validation, do: %{apps: [], ids: MapSet.new()}
 
   defp validate_app(%{
          "id" => id,
@@ -191,20 +214,11 @@ defmodule EbbServer.Apps.Store do
   end
 
   defp admit(app, acc) do
-    name_key = String.downcase(app.name)
-
-    if MapSet.member?(acc.ids, app.id) or
-         MapSet.member?(acc.names, name_key) or
-         Enum.any?(app.origins, &MapSet.member?(acc.origins, &1)) do
+    if MapSet.member?(acc.ids, app.id) or duplicate_name?(acc.apps, app.name) or
+         duplicate_origins?(acc.apps, app.origins) do
       :error
     else
-      {:ok,
-       %{
-         apps: [app | acc.apps],
-         ids: MapSet.put(acc.ids, app.id),
-         names: MapSet.put(acc.names, name_key),
-         origins: Enum.into(app.origins, acc.origins)
-       }}
+      {:ok, %{apps: [app | acc.apps], ids: MapSet.put(acc.ids, app.id)}}
     end
   end
 end

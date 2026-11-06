@@ -71,7 +71,7 @@ defmodule EbbServer.CORS do
   defp apply_origin(conn, policy, lookup) do
     case request_origin(conn) do
       :none -> conn
-      :invalid -> deny(conn)
+      :invalid -> deny_unmatched(conn)
       origin -> apply_decision(conn, decide(origin, policy, lookup))
     end
   end
@@ -79,14 +79,11 @@ defmodule EbbServer.CORS do
   defp apply_decision(conn, {:allow, allowed_origin, app_id}) do
     case preflight(conn) do
       :none ->
-        conn
-        |> put_allow_headers(allowed_origin)
-        |> put_app_id(app_id)
+        admit_origin(conn, allowed_origin, app_id)
 
       {:ok, headers} ->
         conn
-        |> put_allow_headers(allowed_origin)
-        |> put_app_id(app_id)
+        |> admit_origin(allowed_origin, app_id)
         |> send_preflight(headers)
 
       :error ->
@@ -94,7 +91,7 @@ defmodule EbbServer.CORS do
     end
   end
 
-  defp apply_decision(conn, :deny), do: deny(conn)
+  defp apply_decision(conn, :deny), do: deny_unmatched(conn)
 
   # The registry is read from `:persistent_term`, so this adds no mailbox
   # traffic to the request path.
@@ -138,6 +135,12 @@ defmodule EbbServer.CORS do
     conn
     |> put_resp_header("access-control-allow-origin", origin)
     |> put_resp_header("access-control-allow-credentials", "true")
+  end
+
+  defp admit_origin(conn, origin, app_id) do
+    conn
+    |> put_allow_headers(origin)
+    |> put_app_id(app_id)
   end
 
   defp put_app_id(conn, nil), do: conn
@@ -211,7 +214,9 @@ defmodule EbbServer.CORS do
     put_resp_header(conn, "access-control-allow-headers", Enum.join(headers, ", "))
   end
 
-  defp deny(conn) do
+  # An unmatched ordinary request continues so the normal auth/route response
+  # (and its status) is unchanged; only a preflight is answered here.
+  defp deny_unmatched(conn) do
     if access_control_request_method(conn), do: deny_preflight(conn), else: conn
   end
 

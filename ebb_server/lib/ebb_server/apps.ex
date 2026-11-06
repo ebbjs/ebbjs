@@ -71,9 +71,7 @@ defmodule EbbServer.Apps do
   """
   @spec list(keyword()) :: [Store.app()]
   def list(opts \\ []) do
-    opts
-    |> snapshot()
-    |> Enum.sort_by(fn app -> {app.name, app.id} end)
+    opts |> snapshot() |> sorted()
   end
 
   @doc """
@@ -294,7 +292,7 @@ defmodule EbbServer.Apps do
   end
 
   defp match_canonical(apps, canonical) do
-    apps = Enum.sort_by(apps, fn app -> {app.name, app.id} end)
+    apps = sorted(apps)
 
     exact = Enum.find(apps, fn app -> canonical in app.origins end)
 
@@ -308,24 +306,14 @@ defmodule EbbServer.Apps do
   end
 
   defp ensure_new_name(apps, name) do
-    name_key = String.downcase(name)
-
-    if Enum.any?(apps, fn app -> String.downcase(app.name) == name_key end) do
-      {:error, :duplicate_name}
-    else
-      :ok
-    end
+    if Store.duplicate_name?(apps, name), do: {:error, :duplicate_name}, else: :ok
   end
 
   defp ensure_unregistered_origins(apps, origins) do
-    registered = apps |> Enum.flat_map(& &1.origins) |> MapSet.new()
-
-    if Enum.any?(origins, &MapSet.member?(registered, &1)) do
-      {:error, :duplicate_origin}
-    else
-      :ok
-    end
+    if Store.duplicate_origins?(apps, origins), do: {:error, :duplicate_origin}, else: :ok
   end
+
+  defp sorted(apps), do: Enum.sort_by(apps, fn app -> {app.name, app.id} end)
 
   defp ensure_registered_origin(app, origin) do
     if origin in app.origins, do: :ok, else: {:error, :origin_not_found}

@@ -66,14 +66,6 @@ defmodule EbbServer.CORS.Policy do
     end
   end
 
-  @doc "The static origins from the resolved policy."
-  @spec origins() :: [String.t()]
-  def origins, do: current().origins
-
-  @doc "Whether the resolved policy admits `*`."
-  @spec allow_any?() :: boolean()
-  def allow_any?, do: current().allow_any
-
   # `bypass` is a dev mode with no credential in the browser, so `*` is its
   # default; every authenticated mode defaults to deny and needs registration.
   defp allow_any!(auth_mode) do
