@@ -148,7 +148,11 @@ defmodule EbbServer.Apps do
   end
 
   @doc """
-  Clears the registry in memory and on disk. For tests and operator recovery.
+  Clears the registry in memory and on disk.
+
+  There is no HTTP route for this: operators revoke apps one at a time through
+  `DELETE /admin/apps/:id`. It exists for tests and for a local repair of a
+  registry whose file has already been restored by hand.
   """
   @spec reset(keyword()) :: :ok | {:error, :storage_error}
   def reset(opts \\ []) do
