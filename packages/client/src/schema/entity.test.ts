@@ -202,6 +202,8 @@ describe("declarative field defaults", () => {
     expect((e.boolean().default(true) as { default?: unknown }).default).toBe(true);
     const map = e.map(e.string()).default({ a: "x" }) as { default?: unknown };
     expect(map.default).toEqual({ a: "x" });
+    const list = e.array(e.string()).default(["a"]) as { default?: unknown };
+    expect(list.default).toEqual(["a"]);
   });
 
   it("hasDefault/readDefault read the annotation back", () => {

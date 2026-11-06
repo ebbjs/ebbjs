@@ -20,6 +20,7 @@ import type {
   TSchema,
   TOptional,
   TNever,
+  TArray,
   TRecord,
   TString,
   TNumber,
@@ -91,6 +92,11 @@ export interface IntegerField extends TInteger {
 
 export interface BooleanField extends TBoolean {
   default(value: Static<TBoolean>): DefaultedSchema<TBoolean, Static<TBoolean>>;
+}
+
+/** An array field builder: `.default()` takes the array's value. */
+export interface ArrayField<V extends TSchema> extends TArray<V> {
+  default(value: Static<TArray<V>>): DefaultedSchema<TArray<V>, Static<TArray<V>>>;
 }
 
 /** A map field builder: `.default()` takes the map's projected value. */
@@ -211,12 +217,15 @@ const readCollaborativeTextMarker = (schema: TSchema): CollaborativeTextMarker |
     | CollaborativeTextMarker
     | undefined;
 
-/** Last-writer-wins typed-field helpers. Each returns a TypeBox primitive. */
+/** Last-writer-wins typed-field helpers. Each carries the `.default()` chain. */
 export const e = {
   string: (): StringField => withFieldChain(Type.String()) as StringField,
   number: (): NumberField => withFieldChain(Type.Number()) as NumberField,
   integer: (): IntegerField => withFieldChain(Type.Integer()) as IntegerField,
   boolean: (): BooleanField => withFieldChain(Type.Boolean()) as BooleanField,
+  /** A list field: an array of `value`. On the wire it is an ordinary leaf. */
+  array: <V extends TSchema>(value: V): ArrayField<V> =>
+    withFieldChain(Type.Array(value)) as ArrayField<V>,
   /**
    * A map field: a string-keyed object whose entries merge key by key
    * under the wire's recursive merge rule rather than replacing the

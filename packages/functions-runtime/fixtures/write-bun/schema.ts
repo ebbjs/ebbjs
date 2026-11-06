@@ -7,15 +7,13 @@
  * acceptance tests seed and assert on.
  */
 
-import { Type } from "@sinclair/typebox";
-
 import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
 const todo = defineEntity("todo", {
   title: e.string(),
   done: e.boolean().default(false),
   // The canonical FK set a many-cardinality relationship writes on the source.
-  labels: Type.Optional(Type.Array(Type.String())),
+  labels: e.array(e.string()).default([]),
 });
 const project = defineEntity("project", { name: e.string() });
 const label = defineEntity("label", { name: e.string() });
