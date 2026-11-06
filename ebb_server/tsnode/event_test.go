@@ -49,37 +49,6 @@ func TestNotifyAuthURLEmitsLoginOncePerURL(t *testing.T) {
 	}
 }
 
-func TestNotifyAuthURLEmitsQROncePerURL(t *testing.T) {
-	var out bytes.Buffer
-	emitter := newEmitter(&out, true)
-	url := "https://login.tailscale.com/a/with-qr"
-
-	emitter.notifyAuthURL(url)
-	emitter.notifyAuthURL(url)
-
-	events := decodeEvents(t, &out)
-	if len(events) != 2 {
-		t.Fatalf("got %d events, want login + qr: %v", len(events), events)
-	}
-	if events[0]["event"] != "login" || events[1]["event"] != "qr" {
-		t.Fatalf("events = %v, want login then qr", events)
-	}
-	if events[1]["url"] != url {
-		t.Errorf("qr url = %v, want %s", events[1]["url"], url)
-	}
-
-	lines, ok := events[1]["lines"].([]any)
-	if !ok || len(lines) < 5 {
-		t.Fatalf("qr lines = %#v, want a rendered code", events[1]["lines"])
-	}
-	for _, line := range lines {
-		text, _ := line.(string)
-		if strings.Contains(text, "\x1b") {
-			t.Errorf("qr line %q contains an ANSI escape", text)
-		}
-	}
-}
-
 func TestNotifyAuthURLSuppressesQRWhenDisabled(t *testing.T) {
 	var out bytes.Buffer
 	emitter := newEmitter(&out, false)

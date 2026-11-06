@@ -435,14 +435,6 @@ defmodule EbbServer.Tailscale.NodeTest do
       assert GenServer.stop(pid) == :ok
     end
 
-    test "lets the gateway drain after stdin closes", %{dir: dir} do
-      pid = start_node!(dir, [event(running(tags: ["tag:ebb"]))], tags: ["tag:ebb"])
-      wait_for_status(pid)
-
-      assert GenServer.stop(pid) == :ok
-      assert File.read!(drained_path(dir)) == "drained"
-    end
-
     test "drains the gateway when a supervisor shuts it down", %{dir: dir} do
       bin = write_fixture!(dir, [event(running(tags: ["tag:ebb"]))], nil, false)
 
@@ -456,9 +448,11 @@ defmodule EbbServer.Tailscale.NodeTest do
       on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
       [{:drain, pid, _, _}] = Supervisor.which_children(sup)
       wait_for_status(pid)
+      [os_pid | _rest] = read_pids(dir)
 
       assert Supervisor.stop(sup) == :ok
       assert File.read!(drained_path(dir)) == "drained"
+      refute os_process_alive?(os_pid)
     end
 
     test "kills a gateway that ignores the closed stdin", %{dir: dir} do
@@ -474,17 +468,6 @@ defmodule EbbServer.Tailscale.NodeTest do
       wait_for_status(pid)
       [os_pid | _rest] = read_pids(dir)
 
-      GenServer.stop(pid)
-
-      wait_until(fn -> not os_process_alive?(os_pid) end)
-      refute os_process_alive?(os_pid)
-    end
-
-    test "terminate kills the gateway process", %{dir: dir} do
-      pid = start_node!(dir, [event(running(tags: ["tag:ebb"]))], tags: ["tag:ebb"])
-      wait_for_status(pid)
-
-      [os_pid | _rest] = read_pids(dir)
       GenServer.stop(pid)
 
       wait_until(fn -> not os_process_alive?(os_pid) end)

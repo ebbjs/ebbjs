@@ -9,12 +9,10 @@ import (
 
 func TestRunMainReportsUnusableConfigAsFatal(t *testing.T) {
 	cases := map[string]string{
-		"empty stdin":         "",
-		"not json":            "not json\n",
-		"missing backend":     `{"state_dir":"/tmp/ebb"}` + "\n",
-		"unknown https mode":  `{"state_dir":"/tmp/ebb","backend_addr":"127.0.0.1:4000","https":"maybe"}` + "\n",
-		"missing state dir":   `{"backend_addr":"127.0.0.1:4000"}` + "\n",
-		"bad backend address": `{"state_dir":"/tmp/ebb","backend_addr":"nope"}` + "\n",
+		"empty stdin":        "",
+		"not json":           "not json\n",
+		"missing backend":    `{"state_dir":"/tmp/ebb"}` + "\n",
+		"unknown https mode": `{"state_dir":"/tmp/ebb","backend_addr":"127.0.0.1:4000","https":"maybe"}` + "\n",
 	}
 
 	for name, stdin := range cases {

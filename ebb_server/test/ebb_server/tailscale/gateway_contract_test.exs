@@ -1,8 +1,8 @@
 defmodule EbbServer.Tailscale.GatewayContractTest do
   @moduledoc """
-  Pins the gateway contract in `ebb_server/tsnode/contract.json`: the identity
-  header names, the ones the gateway strips, and the exit status that means
-  "do not restart".
+  Pins the BEAM half of the gateway contract in `ebb_server/tsnode/contract.json`:
+  the identity header names `AuthPlug` reads, and the exit status the node stops
+  on. The Go suite reads the same file for the names it injects and strips.
 
   The two halves only meet on the wire, and no automated test can authenticate
   through the gateway without a tailnet. Without this check, renaming a header
@@ -28,22 +28,6 @@ defmodule EbbServer.Tailscale.GatewayContractTest do
       assert String.downcase(names[field]) == String.downcase(headers[field]),
              "header #{inspect(field)} differs between tsnode/contract.json " <>
                "(#{inspect(headers[field])}) and AuthPlug (#{inspect(names[field])})"
-    end
-  end
-
-  test "the gateway strips every header it injects" do
-    headers = headers!()
-    names = AuthPlug.tailscale_header_names()
-
-    for field <- @fields do
-      header = String.downcase(names[field])
-
-      stripped =
-        Enum.any?(headers["stripped_prefixes"], &String.starts_with?(header, &1)) or
-          header in headers["stripped_headers"]
-
-      assert stripped,
-             "gateway injects #{inspect(header)} but does not strip a peer-supplied copy"
     end
   end
 

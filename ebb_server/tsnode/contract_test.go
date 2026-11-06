@@ -56,8 +56,7 @@ func TestHeaderContractMatchesInjectedNames(t *testing.T) {
 func TestStripGatewayHeadersRemovesEveryContractName(t *testing.T) {
 	contract := readGatewayContract(t)
 
-	header := http.Header{}
-	for _, name := range []string{
+	names := []string{
 		contract.Headers.Login,
 		contract.Headers.Name,
 		contract.Headers.UserID,
@@ -65,10 +64,14 @@ func TestStripGatewayHeadersRemovesEveryContractName(t *testing.T) {
 		"X-Ebb-Actor-Id",
 		"Tailscale-Node-Name",
 		"X-Ebb-Tailscale-Other",
-		"X-Keep",
-	} {
+	}
+	names = append(names, contract.Headers.StrippedHeaders...)
+
+	header := http.Header{}
+	for _, name := range names {
 		header.Set(name, "spoofed")
 	}
+	header.Set("X-Keep", "spoofed")
 
 	stripGatewayHeaders(header)
 
@@ -83,14 +86,6 @@ func TestStripPrefixesCoverTheContract(t *testing.T) {
 	for _, prefix := range contract.Headers.StrippedPrefixes {
 		if !hasAnyPrefix(prefix+"anything", strippedPrefixes) {
 			t.Errorf("stripped_prefixes entry %q is not stripped by the gateway", prefix)
-		}
-	}
-	for _, name := range contract.Headers.StrippedHeaders {
-		header := http.Header{}
-		header.Set(name, "spoofed")
-		stripGatewayHeaders(header)
-		if len(header) != 0 {
-			t.Errorf("stripped_headers entry %q survived stripGatewayHeaders", name)
 		}
 	}
 }
