@@ -14,8 +14,6 @@
  * system names.
  */
 
-import { Type } from "@sinclair/typebox";
-
 import { buildEntityDef, e, type EntityDef } from "./entity";
 
 /**
@@ -60,7 +58,7 @@ export const groupSystemEntity = buildEntityDef("group", {
 export const groupMemberSystemEntity = buildEntityDef("groupMember", {
   group_id: e.string(),
   actor_id: e.string(),
-  permissions: Type.Array(Type.String()),
+  permissions: e.array(e.string()),
 });
 
 /**

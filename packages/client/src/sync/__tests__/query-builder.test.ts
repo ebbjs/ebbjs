@@ -597,7 +597,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   it("still accepts an array value for an array-typed field", async () => {
     const tagged = defineEntity("tagged", {
       title: e.string(),
-      tags: Type.Array(Type.String()),
+      tags: e.array(e.string()),
     });
     // Field equality is strict (see `eqField`), so the row and the
     // predicate must share the array reference; the point is that a
@@ -617,13 +617,14 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   });
 });
 
-describe("buildQueryBuilder — Type.Optional field", () => {
+describe("buildQueryBuilder — field without a default", () => {
   const defWithOptional = defineEntity("todo", {
     title: e.string(),
-    note: Type.Optional(e.string()),
+    // No default: absence is the truth, so the read type is `string | undefined`.
+    note: e.string(),
   });
 
-  it("projects optional fields the same as nullable+absent (undefined)", async () => {
+  it("projects an absent field as undefined", async () => {
     const present = mkEntity("1", { title: "a", note: "x" });
     const absent = mkEntity("2", { title: "b" });
     const out = await buildQueryBuilder([present, absent], defWithOptional.shape);
