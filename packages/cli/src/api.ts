@@ -77,6 +77,22 @@ export interface HealthResponse {
   pool: Record<string, number>;
 }
 
+/** One operator-registered app and the browser origins it admits. */
+export interface App {
+  id: string;
+  name: string;
+  origins: string[];
+  created_at: string;
+}
+
+export interface ListAppsResponse {
+  apps: App[];
+}
+
+export interface AppResponse {
+  app: App;
+}
+
 /**
  * A request the server refused, or a response the CLI could not read.
  *
@@ -214,8 +230,71 @@ export async function getHealth(
   return request<HealthResponse>(config, "admin", "GET", "/functions/health", undefined, options);
 }
 
+export async function listApps(
+  config: ResolvedConfig,
+  options: ApiOptionsInput = {},
+): Promise<ListAppsResponse> {
+  return request<ListAppsResponse>(config, "admin", "GET", "/admin/apps", undefined, options);
+}
+
+export async function createApp(
+  config: ResolvedConfig,
+  name: string,
+  origins: readonly string[],
+  options: ApiOptionsInput = {},
+): Promise<AppResponse> {
+  return request<AppResponse>(config, "admin", "POST", "/admin/apps", { name, origins }, options);
+}
+
+export async function removeApp(
+  config: ResolvedConfig,
+  id: string,
+  options: ApiOptionsInput = {},
+): Promise<void> {
+  await request<undefined>(
+    config,
+    "admin",
+    "DELETE",
+    `/admin/apps/${encodeURIComponent(id)}`,
+    undefined,
+    options,
+  );
+}
+
+export async function addAppOrigin(
+  config: ResolvedConfig,
+  id: string,
+  origin: string,
+  options: ApiOptionsInput = {},
+): Promise<AppResponse> {
+  return request<AppResponse>(
+    config,
+    "admin",
+    "POST",
+    `/admin/apps/${encodeURIComponent(id)}/origins`,
+    { origin },
+    options,
+  );
+}
+
+export async function removeAppOrigin(
+  config: ResolvedConfig,
+  id: string,
+  origin: string,
+  options: ApiOptionsInput = {},
+): Promise<AppResponse> {
+  return request<AppResponse>(
+    config,
+    "admin",
+    "DELETE",
+    `/admin/apps/${encodeURIComponent(id)}/origins/${encodeURIComponent(origin)}`,
+    undefined,
+    options,
+  );
+}
+
 type RequestKind = "admin" | "actor";
-type Method = "GET" | "POST";
+type Method = "GET" | "POST" | "DELETE";
 
 async function request<T>(
   config: ResolvedConfig,
