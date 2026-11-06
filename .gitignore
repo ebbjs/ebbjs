@@ -22,3 +22,6 @@ ebb_server/bench/results/*.md
 
 # Copied into package directories at pack time (scripts/copy-license.mjs)
 packages/*/LICENSE.txt
+
+# Static Go gateway built by scripts/build-tsnode.sh
+ebb_server/priv/tsnode/ebb_tsnode

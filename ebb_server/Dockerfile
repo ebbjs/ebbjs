@@ -6,6 +6,31 @@
 # builder's glibc and OpenSSL, so a release built on a newer host libc fails to
 # load on the runtime base below.
 #
+# The Tailscale gateway (`ebb_server/tsnode`) is a static Go binary that the
+# release has to carry, so its stage precedes the Elixir builder. Nothing from
+# this stage reaches the runtime image except the binary itself: the runtime
+# has no Go toolchain and no gateway source.
+#
+# Tag + digest pin: `golang:1.27.3-bookworm` is the Go release that
+# `ebb_server/tsnode/go.mod` requires, and bookworm keeps the Go toolchain on
+# the same libc family as the Elixir base; refresh the digest deliberately when
+# bumping Go.
+FROM golang:1.27.3-bookworm@sha256:b08bc99468058b6d8a0ada17fa54996b910d5e82a7e95bee0372e3bd98415258 AS tsnode
+
+WORKDIR /src
+
+# `scripts/build-tsnode.sh` derives its output path from the repository root,
+# so this stage mirrors the repository layout instead of passing a path the
+# script and CI would then have to agree on separately.
+COPY ebb_server/tsnode/go.mod ebb_server/tsnode/go.sum ./ebb_server/tsnode/
+RUN cd ebb_server/tsnode && go mod download
+
+COPY ebb_server/tsnode ./ebb_server/tsnode
+COPY scripts/build-tsnode.sh ./scripts/build-tsnode.sh
+RUN mkdir -p ebb_server/priv/tsnode && \
+    bash scripts/build-tsnode.sh && \
+    test -x ebb_server/priv/tsnode/ebb_tsnode
+
 # Tag + digest pin: `elixir:1.17.3-otp-27` is the Elixir 1.17 / OTP 27 pair that
 # `ebb_server/mix.exs` and `.tool-versions` target; refresh the digest
 # deliberately (and the runtime digest with it) when bumping either.
@@ -42,14 +67,21 @@ COPY ebb_server/lib ./lib
 # lives here, and the boot check refuses to start without it.
 COPY ebb_server/priv ./priv
 
+# `EbbServer.Tailscale.Node` resolves the gateway through
+# `Application.app_dir(:ebb_server, "priv/tsnode/ebb_tsnode")`, so it has to be
+# in the app priv before `mix release` snapshots it.
+COPY --from=tsnode --chmod=0755 /src/ebb_server/priv/tsnode/ebb_tsnode ./priv/tsnode/ebb_tsnode
+
 # `elixirc_paths(:prod)` is `["lib"]`, so `test/` and `bench/` never reach the
 # compiler and are not part of the build context.
 RUN mix compile
 
 # `include_erts` defaults to true, so the release carries its own runtime and
-# the image needs no Erlang or Elixir install.
+# the image needs no Erlang or Elixir install. Both assertions are pre-release
+# content the release would otherwise drop silently.
 RUN mix release && \
-    test -f _build/prod/rel/ebb_server/lib/ebb_server-*/priv/runner/main.js
+    test -f _build/prod/rel/ebb_server/lib/ebb_server-*/priv/runner/main.js && \
+    test -x _build/prod/rel/ebb_server/lib/ebb_server-*/priv/tsnode/ebb_tsnode
 
 # Same Debian release as the builder: the bundled ERTS and the NIFs inside the
 # release are linked against bookworm's glibc 2.36 and OpenSSL 3.
@@ -111,6 +143,11 @@ LABEL org.opencontainers.image.title="ebb_server" \
 ENV LANG=C.UTF-8
 ENV EBB_PORT=4000
 ENV EBB_DATA_DIR=/app/data
+
+# The image ships the gateway, so an embedded node is what an image user gets
+# without extra flags. `external` is the `tailscale serve` / sidecar path,
+# where the operator's own node fronts the published port instead.
+ENV EBB_TAILSCALE_NODE=embedded
 
 WORKDIR /app
 USER ebb

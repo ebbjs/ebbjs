@@ -28,3 +28,6 @@ config :ebb_server, :fanout_conn_sample_rate, 1
 config :ebb_server, EbbServer.Telemetry.Sampler, enabled: false
 
 config :logger, level: :warning
+# The suite must never spawn a real gateway: tests that exercise tailscale mode
+# resolve the node themselves. The release image defaults to `:embedded`.
+config :ebb_server, tailscale_node: :external

@@ -8,6 +8,7 @@
 #
 #   EBB_AUTH_URL=https://identity.example.com docker compose up -d
 #   docker compose --profile dev up ebb-dev
+#   docker compose --profile tailscale up ebb-tailscale
 #   EBB_HOST_PORT=8080 docker compose up -d      # publish on another host port
 #
 # `--profile dev` on its own would start `ebb` too — profiles are additive —
@@ -16,7 +17,8 @@
 
 name: ebb
 
-# Shared by both profiles; only `environment` (and the demo profile) differ.
+# Shared by the `ebb` and `ebb-dev` services; `ebb-tailscale` sets its own,
+# narrower environment because the tailnet is its only ingress.
 x-ebb-service: &ebb-service
   image: ${EBB_IMAGE:-ghcr.io/ebbjs/ebb_server:latest}
   build:
@@ -64,6 +66,51 @@ services:
     profiles: ["dev"]
     environment:
       EBB_AUTH_MODE: bypass
+
+  # Embedded Tailscale node: the gateway is the ingress, so this service
+  # publishes no port and the tailnet reaches Bandit over loopback inside the
+  # container. Spelled out instead of merged from `x-ebb-service` because a
+  # YAML merge key cannot drop the anchor's `ports` mapping.
+  #
+  # `embedded` is the image default: boot, read the login URL (and QR) from
+  # `docker compose logs ebb-tailscale`, authorize the node once. `external`
+  # is the `tailscale serve` path: run `serve` on the host or in a sidecar in
+  # this container's network namespace, and front the service with it.
+  ebb-tailscale:
+    image: ${EBB_IMAGE:-ghcr.io/ebbjs/ebb_server:latest}
+    build:
+      context: .
+      dockerfile: ebb_server/Dockerfile
+    profiles: ["tailscale"]
+    environment:
+      EBB_AUTH_MODE: tailscale
+      EBB_TAILSCALE_NODE: ${EBB_TAILSCALE_NODE:-embedded}
+      EBB_TAILSCALE_HOSTNAME: ${EBB_TAILSCALE_HOSTNAME:-ebb}
+      # Node state is the registration: on a container-local path, every
+      # restart burns a new node and a new login prompt.
+      EBB_TAILSCALE_STATE_DIR: /app/data/tailscale
+      EBB_TAILSCALE_AUTHKEY: ${EBB_TAILSCALE_AUTHKEY:-}
+      EBB_TAILSCALE_CONTROL_URL: ${EBB_TAILSCALE_CONTROL_URL:-}
+      EBB_TAILSCALE_TAGS: ${EBB_TAILSCALE_TAGS:-}
+      EBB_TAILSCALE_HTTPS: ${EBB_TAILSCALE_HTTPS:-auto}
+    volumes:
+      - ebb-data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - --max-time
+        - "2"
+        - http://127.0.0.1:4000/healthz
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
 
 volumes:
   ebb-data:

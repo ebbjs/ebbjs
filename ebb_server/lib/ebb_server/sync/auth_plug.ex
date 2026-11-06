@@ -58,6 +58,14 @@ defmodule EbbServer.Sync.AuthPlug do
 
   @loopback_addresses [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}]
 
+  # The embedded gateway writes these names in `ebb_server/tsnode/proxy.go`.
+  # `ebb_server/tsnode/headers.json` is the contract both suites assert against,
+  # so a rename on one side fails a test instead of a 401 on every request.
+  @login_header "tailscale-user-login"
+  @name_header "tailscale-user-name"
+  @user_id_header "x-ebb-tailscale-user-id"
+  @secret_header "x-ebb-tailscale-secret"
+
   @impl true
   def init(opts), do: opts
 
@@ -136,13 +144,13 @@ defmodule EbbServer.Sync.AuthPlug do
   # rejected before its headers are inspected.
   defp tailscale_auth(conn) do
     with :ok <- loopback_peer(conn),
-         {:ok, login} <- single_header(conn, "tailscale-user-login"),
+         {:ok, login} <- single_header(conn, @login_header),
          :ok <- verify_tailscale_proxy_secret(conn) do
       assign(
         conn,
         :actor,
         Actor.new(:tailscale, login,
-          display_name: optional_header(conn, "tailscale-user-name"),
+          display_name: optional_header(conn, @name_header),
           provider_id: provider_id(conn)
         )
       )
@@ -195,7 +203,7 @@ defmodule EbbServer.Sync.AuthPlug do
   end
 
   defp compare_proxy_secret(conn, secret) do
-    case single_header(conn, "x-ebb-tailscale-secret") do
+    case single_header(conn, @secret_header) do
       {:ok, supplied} -> proxy_secret_matches?(supplied, secret)
       {:error, _} = error -> error
     end
@@ -220,12 +228,24 @@ defmodule EbbServer.Sync.AuthPlug do
   # publishes it as a JSON number, and drops it when it is absent or not
   # numeric because nothing authorization-related depends on it.
   defp provider_id(conn) do
-    with {:ok, raw} <- single_header(conn, "x-ebb-tailscale-user-id"),
+    with {:ok, raw} <- single_header(conn, @user_id_header),
          {id, ""} <- Integer.parse(raw) do
       id
     else
       _absent_or_not_numeric -> nil
     end
+  end
+
+  @doc false
+  # Exposed so the suite can pin these names against `tsnode/headers.json`
+  # without restating them, which is what let a rename drift before.
+  def tailscale_header_names do
+    %{
+      "login" => @login_header,
+      "name" => @name_header,
+      "user_id" => @user_id_header,
+      "secret" => @secret_header
+    }
   end
 
   defp unauthorized(conn, details) do

@@ -4,3 +4,6 @@
 *.ez
 erl_crash.dump
 .elixir_ls/
+
+# Built by scripts/build-tsnode.sh; the image compiles its own copy.
+/priv/tsnode/

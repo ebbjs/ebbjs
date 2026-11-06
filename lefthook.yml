@@ -29,13 +29,23 @@ pre-commit:
         - "ebb_server/.formatter.exs"
         - "ebb_server/config/*.exs"
       run: mix format --check-formatted
-    elixir-credo:
-      root: ebb_server
+    go-fmt:
+      # `**/*.go` rather than `ebb_server/tsnode/**/*.go`: lefthook's glob needs
+      # a path segment for `**/` and the gateway's files sit at the module root.
+      glob: "**/*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    tsnode-contract:
+      # The Go gateway and the BEAM agree on header names, event shapes and the
+      # fatal exit status through `ebb_server/tsnode/contract.json` and
+      # `testdata/events.ndjson`. Checked here in seconds rather than in the
+      # four-minute suite.
       glob:
-        - "ebb_server/lib/**"
-        - "ebb_server/test/**"
-      # `--files-excluded "test/**"` matches CI; see .github/workflows/ci.yml.
-      run: mix credo --strict --files-excluded "test/**"
+        - "ebb_server/tsnode/**"
+        - "ebb_server/lib/ebb_server/tailscale/**"
+        - "ebb_server/lib/ebb_server/sync/auth_plug.ex"
+        - "ebb_server/test/ebb_server/tailscale/**"
+      run: bash scripts/check-tsnode-contract.sh {staged_files}
 
 pre-push:
   runner: bash
@@ -44,12 +54,22 @@ pre-push:
       # Soft warning when current branch doesn't match CONTRIBUTING.md.
       # Always exits 0; see scripts/check-branch-name.sh.
       run: bash scripts/check-branch-name.sh
-    elixir-test:
-      # Run on push (not commit) because the Elixir suite is slow. --cover
-      # matches the CI Test job; below the threshold it exits 3.
+    elixir-compile:
+      # The Elixir suite belongs to CI: a four-minute pre-push hook gets skipped,
+      # and a skipped hook catches nothing. Compile with warnings as errors is
+      # the fast gate worth waiting for; run `mix test` yourself when you want
+      # the suite before pushing.
       root: ebb_server
       glob:
         - "ebb_server/lib/**"
         - "ebb_server/test/**"
         - "ebb_server/mix.exs"
-      run: mix test --cover
+      run: mix compile --warnings-as-errors
+    go-test:
+      # Fast enough to be worth it, and it covers the Go tests the commit-time
+      # contract check filters down to.
+      root: ebb_server/tsnode
+      glob: "ebb_server/tsnode/**"
+      run: |
+        command -v go >/dev/null 2>&1 || { echo "skip: go not on PATH"; exit 0; }
+        go test ./...

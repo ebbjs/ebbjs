@@ -18,6 +18,9 @@ ebb_server/test
 ebb_server/bench
 ebb_server/data
 ebb_server/erl_crash.dump
+# Compiled inside the `tsnode` builder stage; a host build (wrong
+# architecture after macOS dev) must never be a fallback for it.
+ebb_server/priv/tsnode
 ebb_server/*.md
 ebb_server/openapi.yaml
 ebb_server/.tool-versions
@@ -25,3 +28,4 @@ ebb_server/.tool-versions
 # The other scripts are developer tooling, not build inputs.
 scripts/*
 !scripts/setup-ebb-server.sh
+!scripts/build-tsnode.sh
