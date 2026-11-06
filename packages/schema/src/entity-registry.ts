@@ -6,11 +6,12 @@
  * done here because the wire envelope doesn't carry `type` tags.
  */
 
-import type { Action } from "@ebbjs/core";
+import { isUnset, type Action } from "@ebbjs/core";
+import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { ConflictScope, EntityDef, FieldMarker } from "./entity";
+import { hasDefault, type ConflictScope, type EntityDef, type FieldMarker } from "./entity";
 import type { RelationshipDef, RelationshipKind, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
@@ -44,6 +45,21 @@ const formatViolations = (vs: readonly ValidationViolation[]): string => {
   const lines = vs.map((v) => `  - ${v.message}`);
   return `EntityValidationError: ${vs.length} violation(s)\n${lines.join("\n")}`;
 };
+
+/**
+ * One conjunction of field predicates: keys within a group are ANDed.
+ *
+ * A `null` value is the predicate "no live value" — the field is absent or
+ * tombstoned — and never a schema default.
+ */
+export type FilterGroup = Record<string, string | number | boolean | null>;
+
+/**
+ * A query filter is a disjunction of groups: groups are ORed, keys within a
+ * group ANDed. `null`, `[]`, and a list holding an empty group are unfiltered
+ * (an empty conjunction is TRUE).
+ */
+export type Filter = readonly FilterGroup[];
 
 /** Placeholder `entityName` when the offending subject_type wasn't registered. */
 const UNKNOWN_ENTITY = "(unknown)";
@@ -221,9 +237,11 @@ export class EntityRegistry {
 
   /**
    * Validate a filter against the registry for the given entity type.
-   * Never throws. Returns `[]` when no entities are registered.
+   * Never throws. Returns `[]` when no entities are registered. `null` is
+   * unfiltered. Every group is checked independently, and a `null` entry
+   * where a group is expected is reported as malformed.
    */
-  validateFilter(type: string, filter: Record<string, unknown>): ValidationViolation[] {
+  validateFilter(type: string, filter: Filter | null): ValidationViolation[] {
     if (this.entities.size === 0) return [];
     const entity = this.entities.get(type);
     if (entity === undefined) {
@@ -235,16 +253,70 @@ export class EntityRegistry {
       ];
     }
     const violations: ValidationViolation[] = [];
-    for (const fieldName of Object.keys(filter)) {
-      if (!(fieldName in entity.fields)) {
+    if (filter !== null && !Array.isArray(filter)) {
+      return [
+        {
+          entityName: entity.name,
+          message: "Filter must be a list of groups",
+        },
+      ];
+    }
+    const groups: readonly unknown[] = filter ?? [];
+    for (const [index, group] of groups.entries()) {
+      if (group === null || typeof group !== "object" || Array.isArray(group)) {
         violations.push({
           entityName: entity.name,
-          field: fieldName,
-          message: `Filter field "${fieldName}" is not declared on entity "${entity.name}"`,
+          message: `Filter group ${index} must be an object`,
         });
+        continue;
+      }
+      for (const fieldName of Object.keys(group as FilterGroup)) {
+        if (!(fieldName in entity.fields)) {
+          violations.push({
+            entityName: entity.name,
+            field: fieldName,
+            message: `Filter field "${fieldName}" in group ${index} is not declared on entity "${entity.name}"`,
+          });
+        }
       }
     }
     return violations;
+  }
+
+  /**
+   * Warnings for a filter that names a defaulted field's value without a
+   * `null` term for it in any group. A filter never applies a default, so
+   * `{ priority: "normal" }` silently excludes rows nobody set; the hint
+   * points at `{ priority: null }`. Never fatal — the caller decides
+   * whether to surface it.
+   */
+  filterWarnings(type: string, filter: Filter | null): ValidationViolation[] {
+    if (this.entities.size === 0 || filter === null || !Array.isArray(filter)) return [];
+    const entity = this.entities.get(type);
+    if (entity === undefined) return [];
+    const compared = new Set<string>();
+    const hasNullTerm = new Set<string>();
+    for (const group of filter) {
+      if (group === null || typeof group !== "object" || Array.isArray(group)) continue;
+      for (const [field, value] of Object.entries(group)) {
+        if (value === null) hasNullTerm.add(field);
+        else compared.add(field);
+      }
+    }
+    const warnings: ValidationViolation[] = [];
+    for (const field of compared) {
+      if (hasNullTerm.has(field)) continue;
+      const property = entity.shape.properties[field] as TSchema | undefined;
+      if (property === undefined || !hasDefault(property)) continue;
+      warnings.push({
+        entityName: entity.name,
+        field,
+        message:
+          `Filter on "${field}" compares a defaulted field's value but never its absence; ` +
+          `add { ${field}: null } to also match rows nobody set`,
+      });
+    }
+    return warnings;
   }
 }
 
@@ -293,15 +365,88 @@ export const validatePayload = <T extends TSchema>(
 
   if (partial && properties !== undefined) {
     for (const [key, value] of Object.entries(obj)) {
-      if (value === undefined) continue;
+      if (value === undefined || isUnset(value)) continue;
+      if (value === null) {
+        violations.push(nullIsNotUnset(entityName, key));
+        continue;
+      }
       const fieldSchema = properties[key];
       if (fieldSchema === undefined) continue;
-      collectFieldTypeErrors(violations, fieldSchema, value, entityName, key);
+      const checked = stripUnsetEntries(value, entityName, key, violations);
+      collectFieldTypeErrors(violations, fieldSchema, checked, entityName, key);
     }
   } else {
-    collectShapeErrors(violations, shape, payload, entityName);
+    // `unset` is not a value: drop it from the payload, and treat the key as
+    // satisfied so a create can assert absence for a required field. A
+    // literal `null` is a payload that never learned the vocabulary; its own
+    // violation replaces the required-field error it would otherwise add.
+    const skippedKeys: string[] = [];
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (isUnset(value)) {
+        skippedKeys.push(key);
+        continue;
+      }
+      if (value === null) {
+        skippedKeys.push(key);
+        violations.push(nullIsNotUnset(entityName, key));
+        continue;
+      }
+      cleaned[key] = stripUnsetEntries(value, entityName, key, violations);
+    }
+    const shapeForCheck =
+      skippedKeys.length > 0 && properties !== undefined
+        ? withOptionalKeys(properties, skippedKeys)
+        : shape;
+    collectShapeErrors(violations, shapeForCheck, cleaned, entityName);
   }
   return violations;
+};
+
+/**
+ * A map field's payload carries one marker per key. `unset` entries are not
+ * values, so drop them before `Value.Check`; a literal null entry is the same
+ * mistake as a null leaf and is rejected here.
+ */
+const stripUnsetEntries = (
+  value: unknown,
+  entityName: string,
+  field: string,
+  violations: ValidationViolation[],
+): unknown => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (isUnset(entry)) continue;
+    if (entry === null) {
+      violations.push(nullIsNotUnset(entityName, `${field}.${key}`));
+      continue;
+    }
+    out[key] = entry;
+  }
+  return out;
+};
+
+/** One violation for a payload that used `null` where only `unset` asserts absence. */
+const nullIsNotUnset = (entityName: string, field: string): ValidationViolation => ({
+  entityName,
+  field,
+  message: `${field}: null is not a value; use \`unset\` to clear a field`,
+});
+
+/** A copy of a field map with the named properties optional, so an `unset` key is satisfied. */
+const withOptionalKeys = (
+  properties: Record<string, TSchema>,
+  keys: readonly string[],
+): TSchema => {
+  const next: Record<string, TSchema> = { ...properties };
+  for (const key of keys) {
+    const fieldSchema = properties[key];
+    if (fieldSchema !== undefined) {
+      next[key] = Type.Optional(fieldSchema as Parameters<typeof Type.Optional>[0]);
+    }
+  }
+  return Type.Object(next);
 };
 
 /** Extract a `TObject` shape's `properties` map. Returns `undefined` for non-object shapes. */

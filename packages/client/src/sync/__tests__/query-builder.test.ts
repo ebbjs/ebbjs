@@ -1,8 +1,9 @@
 /**
  * Tests for the typed thenable QueryBuilder.
  *
- * The three-state projection (set / nulled / absent) is the heart
- * of the chain's typing surface — those cases are pinned here.
+ * The projection states (stored / absent / tombstoned) are the heart of
+ * the chain's typing surface — those cases are pinned here. A tombstone
+ * reads as absence, or as the field's declared default.
  */
 
 import { describe, it, expect } from "vitest";
@@ -25,7 +26,7 @@ import {
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
-  body: e.string().nullable(),
+  body: e.string(),
 });
 
 type Todo = Static<typeof todo.shape>;
@@ -51,10 +52,10 @@ describe("projectEntity", () => {
     expect(row).toEqual({ title: "Ship", completed: false, body: undefined });
   });
 
-  it("projects nulled fields to null", () => {
+  it("projects a tombstoned leaf to undefined when it has no default", () => {
     const entity = mkEntity("1", { title: "Ship", completed: false, body: null });
     const row = projectEntity(entity, todo.shape);
-    expect(row.body).toBeNull();
+    expect(row.body).toBeUndefined();
   });
 
   it("projects absent fields to undefined", () => {
@@ -99,10 +100,10 @@ describe("projectEntity — map fields", () => {
     expect(projectEntity(entity, doc)).toEqual({ content: { kept: "keep" } });
   });
 
-  it("keeps a null leaf at the top level", () => {
+  it("projects a top-level tombstone as absent (no default)", () => {
     const entity = mkDoc({ value: null, update_id: "u" });
 
-    expect(projectEntity(entity, doc)).toEqual({ content: null });
+    expect(projectEntity(entity, doc)).toEqual({ content: undefined });
   });
 });
 
@@ -358,7 +359,7 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
     expect(await qb.count()).toBe(3);
     expect(await qb.exists()).toBe(true);
     const titles: string[] = [];
-    for await (const row of qb) titles.push(row.title);
+    for await (const row of qb) titles.push(row.title ?? "");
     expect(titles).toEqual(["banana", "apple", "cherry"]);
     expect((await qb.toRaw()).map((e) => e.id)).toEqual(["1", "2", "3"]);
   });
@@ -439,7 +440,7 @@ describe("buildQueryBuilder — thenable projection", () => {
     const out: readonly Todo[] = await buildQueryBuilder(rows, todo.shape);
     expect(out[0]?.title).toBe("a");
     expect(out[0]?.completed).toBe(false);
-    expect(out[0]?.body).toBeNull();
+    expect(out[0]?.body).toBeUndefined();
   });
 
   it("projection honors all three field states", async () => {
@@ -451,7 +452,7 @@ describe("buildQueryBuilder — thenable projection", () => {
       todo.shape,
     );
     expect(out[0]?.body).toBe("note");
-    expect(out[1]?.body).toBeNull();
+    expect(out[1]?.body).toBeUndefined();
     expect(out[2]?.body).toBeUndefined();
   });
 
@@ -529,7 +530,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
     // Title is e.string() → value is string.
     builder.where("title", "hello");
     builder.where("title", "world");
-    // Body is e.string().nullable() → value is string | null.
+    // Body is e.string() → value is string | undefined.
     builder.where("body", null);
     builder.where("body", "note");
     // Completed is e.boolean() → value is boolean.
@@ -596,7 +597,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   it("still accepts an array value for an array-typed field", async () => {
     const tagged = defineEntity("tagged", {
       title: e.string(),
-      tags: Type.Array(Type.String()),
+      tags: e.array(e.string()),
     });
     // Field equality is strict (see `eqField`), so the row and the
     // predicate must share the array reference; the point is that a
@@ -616,13 +617,14 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   });
 });
 
-describe("buildQueryBuilder — Type.Optional field", () => {
+describe("buildQueryBuilder — field without a default", () => {
   const defWithOptional = defineEntity("todo", {
     title: e.string(),
-    note: Type.Optional(e.string()),
+    // No default: absence is the truth, so the read type is `string | undefined`.
+    note: e.string(),
   });
 
-  it("projects optional fields the same as nullable+absent (undefined)", async () => {
+  it("projects an absent field as undefined", async () => {
     const present = mkEntity("1", { title: "a", note: "x" });
     const absent = mkEntity("2", { title: "b" });
     const out = await buildQueryBuilder([present, absent], defWithOptional.shape);
@@ -656,7 +658,7 @@ describe("buildQueryBuilder — .first()", () => {
   it("projects the row through the schema shape", async () => {
     const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
     const first = await buildQueryBuilder(rows, todo.shape).first();
-    expect(first?.body).toBeNull();
+    expect(first?.body).toBeUndefined();
   });
 
   it("honors orderBy before picking the first", async () => {
@@ -740,7 +742,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["a", "c"]);
   });
@@ -769,7 +771,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).orderBy("title", "asc")) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["apple", "banana"]);
   });
@@ -782,7 +784,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).limit(2)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["a", "b"]);
   });
@@ -795,7 +797,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
       if (titles.length === 2) break;
     }
     expect(titles).toEqual(["a", "b"]);
@@ -864,5 +866,76 @@ describe("projectFieldValue caching", () => {
 
     expect(projectFieldValue(second)).toEqual({ a: "y" });
     expect(projectFieldValue(first)).toEqual({ a: "x" });
+  });
+});
+
+describe("projectEntity — declarative defaults", () => {
+  const task = defineEntity("task", {
+    priority: e.string().default("normal"),
+    title: e.string(),
+    tags: e.map(e.string()).default({}),
+  });
+
+  it("fills an absent leaf with the declared default", () => {
+    const entity = mkEntity("1", { title: "Ship" });
+    const row = projectEntity(entity, task.shape);
+    expect(row.priority).toBe("normal");
+    expect(row.tags).toEqual({});
+  });
+
+  it("fills a tombstoned leaf with the declared default", () => {
+    const entity = mkEntity("1", { title: "Ship", priority: null, tags: null });
+    const row = projectEntity(entity, task.shape);
+    expect(row.priority).toBe("normal");
+    expect(row.tags).toEqual({});
+  });
+
+  it("keeps a stored value over the default", () => {
+    const entity = mkEntity("1", { title: "Ship", priority: "urgent", tags: { a: "x" } });
+    const row = projectEntity(entity, task.shape);
+    expect(row.priority).toBe("urgent");
+    expect(row.tags).toEqual({ a: "x" });
+  });
+
+  it("leaves a non-defaulted field absent, whether missing or tombstoned", () => {
+    const missing = projectEntity(mkEntity("1", {}), task.shape);
+    const cleared = projectEntity(mkEntity("1", { title: null }), task.shape);
+    expect(missing.title).toBeUndefined();
+    expect(cleared.title).toBeUndefined();
+  });
+
+  it("fills the default through projectRow and projectQueryRow", () => {
+    const entity = mkEntity("1", { title: "Ship" });
+    expect(projectRow(entity, task.shape)).toMatchObject({ priority: "normal" });
+    expect(projectQueryRow(entity, task.shape, ["g1"])).toMatchObject({ priority: "normal" });
+  });
+});
+
+describe("ordering — declarative defaults", () => {
+  const task = defineEntity("task", {
+    priority: e.string().default("normal"),
+    title: e.string(),
+  });
+
+  const rows = [
+    mkEntity("a", { priority: "zzz", title: "b" }),
+    mkEntity("b", {}),
+    mkEntity("c", { priority: "aaa", title: "a" }),
+  ];
+
+  it("compares a defaulted field as it reads", async () => {
+    const ascending = await buildQueryBuilder(rows, task.shape).orderBy("priority", "asc");
+    const descending = await buildQueryBuilder(rows, task.shape).orderBy("priority", "desc");
+    // b has no stored priority, so it reads as "normal" and sorts between
+    // the two stored values.
+    expect(ascending.map((row) => row.id)).toEqual(["c", "b", "a"]);
+    expect(descending.map((row) => row.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("sorts an undefaulted absent field last in both directions", async () => {
+    const ascending = await buildQueryBuilder(rows, task.shape).orderBy("title", "asc");
+    const descending = await buildQueryBuilder(rows, task.shape).orderBy("title", "desc");
+    expect(ascending.map((row) => row.id)).toEqual(["c", "a", "b"]);
+    expect(descending.map((row) => row.id)).toEqual(["a", "c", "b"]);
   });
 });

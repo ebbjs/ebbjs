@@ -25,13 +25,13 @@ export const PRIORITY_OPTIONS: readonly SelectOption[] = ISSUE_PRIORITIES.map((v
 }));
 
 /** How a profile is named in every assignee control. */
-export function profileLabel(profile: { display_name: string; actor_id: string }): string {
-  return `${profile.display_name} (${profile.actor_id})`;
+export function profileLabel(profile: { display_name: string; actor_id?: string }): string {
+  return `${profile.display_name} (${profile.actor_id ?? "unknown"})`;
 }
 
 /** Assignee options: the profiles visible in the issue's workspace. */
 export function assigneeOptions(
-  profiles: readonly { id: string; display_name: string; actor_id: string }[],
+  profiles: readonly { id: string; display_name: string; actor_id?: string }[],
 ): readonly SelectOption[] {
   return [
     { value: "", label: "unassigned" },
@@ -49,7 +49,7 @@ export const PRIORITY_FILTER_OPTIONS = withAny("any priority", PRIORITY_OPTIONS)
 
 /** Assignee filter options: the profiles the actor can see. */
 export function assigneeFilterOptions(
-  profiles: readonly { id: string; display_name: string; actor_id: string }[],
+  profiles: readonly { id: string; display_name: string; actor_id?: string }[],
 ): readonly SelectOption[] {
   return withAny(
     "anyone",

@@ -15,14 +15,18 @@
  */
 
 import { Type } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type {
   TSchema,
   TOptional,
-  TUnion,
-  TNull,
   TNever,
+  TArray,
   TRecord,
   TString,
+  TNumber,
+  TInteger,
+  TBoolean,
+  Static,
 } from "@sinclair/typebox/type";
 
 import type { TextDocument } from "./collaborative-text/text-document";
@@ -53,28 +57,110 @@ export type ConflictScope = "field" | "entity";
  */
 export type Materialization = "held" | "on-demand";
 
-/** Schema with a `.nullable()` chain producing `T | null`. */
-export type NullableSchema<T extends TSchema> = T & {
-  readonly nullable: () => ReturnType<typeof Type.Union<[T, ReturnType<typeof Type.Null>]>>;
+/**
+ * Type-level stamp identifying a field schema that went through
+ * `.default(value)`. A symbol brand is needed because every TypeBox
+ * schema accepts a `default` annotation in its option bag, so a plain
+ * `default` key on the type cannot distinguish a declared default from
+ * the builder's non-enumerable `.default()` method.
+ */
+declare const DEFAULT_BRAND: unique symbol;
+
+/** A field schema carrying a declared default of `V`. */
+export type DefaultedSchema<T extends TSchema, V = unknown> = T & {
+  readonly [DEFAULT_BRAND]: V;
 };
 
 /**
- * Marker stamped onto the union returned by `.nullable()` so
- * `defineEntity` can recognize the field came through the chain
- * even though the union itself doesn't carry the `.nullable`
- * method.
+ * Field builders are declared as interfaces extending their TypeBox
+ * schema rather than as intersections: `SchemaOptions` declares
+ * `default?: any` for the JSON Schema annotation, and an intersection
+ * would leave `.default()` typed `any`. An interface member overrides
+ * the inherited annotation slot, so the chain stays typed.
  */
-const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
+export interface StringField extends TString {
+  default(value: Static<TString>): DefaultedSchema<TString, Static<TString>>;
+}
 
-const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
-  const self = schema as NullableSchema<T>;
-  Object.defineProperty(self, "nullable", {
-    value: () => {
-      const union = Type.Union([schema, Type.Null()]);
-      Object.defineProperty(union, NULLABLE_MARKER, { value: true, enumerable: false });
-      return union;
-    },
+export interface NumberField extends TNumber {
+  default(value: Static<TNumber>): DefaultedSchema<TNumber, Static<TNumber>>;
+}
+
+export interface IntegerField extends TInteger {
+  default(value: Static<TInteger>): DefaultedSchema<TInteger, Static<TInteger>>;
+}
+
+export interface BooleanField extends TBoolean {
+  default(value: Static<TBoolean>): DefaultedSchema<TBoolean, Static<TBoolean>>;
+}
+
+/** An array field builder: `.default()` takes the array's value. */
+export interface ArrayField<V extends TSchema> extends TArray<V> {
+  default(value: Static<TArray<V>>): DefaultedSchema<TArray<V>, Static<TArray<V>>>;
+}
+
+/** A map field builder: `.default()` takes the map's projected value. */
+export interface MapField<V extends TSchema> extends MapSchema<V> {
+  default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
+}
+
+/**
+ * Stamp a plain JSON Schema `default` annotation onto a field schema.
+ * The annotation is enumerable so `stableStringify` includes it in the
+ * schema hash, and it is not a `Symbol` or closure so `Value.Check`
+ * ignores it and `Type.Object` carries it through.
+ *
+ * Mutates and returns the schema: each `e.*()` builder allocates a
+ * fresh schema, and mutating in place preserves non-enumerable markers
+ * (the collaborative-text marker) that a spread would drop.
+ */
+const stampDefault = <T extends TSchema, V>(schema: T, value: V): DefaultedSchema<T, V> => {
+  // A default is shared by every row that resolves it, and it is part of the
+  // schema hash, so it is cloned once and frozen: a caller mutating a
+  // projected default must not rewrite the annotation or another row.
+  const stored = deepFreeze(structuredClone(value));
+  Object.defineProperty(schema, "default", {
+    value: stored,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  return schema as DefaultedSchema<T, V>;
+};
+
+/** Freeze a JSON default at every level. Defaults are acyclic JSON values. */
+const deepFreeze = <V>(value: V): V => {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const entry of Object.values(value as Record<string, unknown>)) deepFreeze(entry);
+    Object.freeze(value);
+  }
+  return value;
+};
+
+/**
+ * True when `schema` carries a declared default. The builder's
+ * non-enumerable `.default()` method is a function and does not count.
+ */
+export const hasDefault = (schema: TSchema | undefined): boolean => {
+  const value = (schema as { default?: unknown } | undefined)?.default;
+  return value !== undefined && typeof value !== "function";
+};
+
+/**
+ * The field's declared default, or `undefined` when it has none. A
+ * declared `undefined` default is indistinguishable from no default,
+ * which is fine: absence has no value to resolve.
+ */
+export const readDefault = (schema: TSchema | undefined): unknown =>
+  hasDefault(schema) ? (schema as { default?: unknown }).default : undefined;
+
+const withFieldChain = <T extends TSchema>(schema: T): T => {
+  const self = schema as T & { default: unknown };
+  Object.defineProperty(self, "default", {
+    value: (value: Static<T>) => stampDefault(schema, value),
     enumerable: false,
+    configurable: true,
+    writable: true,
   });
   return self;
 };
@@ -111,6 +197,11 @@ declare const COLLABORATIVE_TEXT_BRAND: unique symbol;
  */
 export type CollaborativeTextSchema<E extends string | undefined = string | undefined> = TNever & {
   readonly [COLLABORATIVE_TEXT_BRAND]: E;
+  /**
+   * Available so registration can reject it with a clear message: a
+   * derived body has a seed policy, not a field default.
+   */
+  default(value: unknown): CollaborativeTextSchema<E>;
 };
 
 const COLLABORATIVE_TEXT_MARKER = Symbol.for("@ebbjs/collaborative-text");
@@ -126,19 +217,22 @@ const readCollaborativeTextMarker = (schema: TSchema): CollaborativeTextMarker |
     | CollaborativeTextMarker
     | undefined;
 
-/** Last-writer-wins typed-field helpers. Each returns a TypeBox primitive. */
+/** Last-writer-wins typed-field helpers. Each carries the `.default()` chain. */
 export const e = {
-  string: (): NullableSchema<ReturnType<typeof Type.String>> => withNullable(Type.String()),
-  number: (): NullableSchema<ReturnType<typeof Type.Number>> => withNullable(Type.Number()),
-  integer: (): NullableSchema<ReturnType<typeof Type.Integer>> => withNullable(Type.Integer()),
-  boolean: (): NullableSchema<ReturnType<typeof Type.Boolean>> => withNullable(Type.Boolean()),
+  string: (): StringField => withFieldChain(Type.String()) as StringField,
+  number: (): NumberField => withFieldChain(Type.Number()) as NumberField,
+  integer: (): IntegerField => withFieldChain(Type.Integer()) as IntegerField,
+  boolean: (): BooleanField => withFieldChain(Type.Boolean()) as BooleanField,
+  /** A list field: an array of `value`. On the wire it is an ordinary leaf. */
+  array: <V extends TSchema>(value: V): ArrayField<V> =>
+    withFieldChain(Type.Array(value)) as ArrayField<V>,
   /**
    * A map field: a string-keyed object whose entries merge key by key
    * under the wire's recursive merge rule rather than replacing the
    * whole field.
    */
-  map: <V extends TSchema>(value: V): NullableSchema<MapSchema<V>> =>
-    withNullable(Type.Record(Type.String(), value) as MapSchema<V>),
+  map: <V extends TSchema>(value: V): MapField<V> =>
+    withFieldChain(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
   /**
    * Declare a collaborative-text body. The field is derived: it stays
    * out of the parent's wire shape. `defineSchema` expands it into a
@@ -156,64 +250,73 @@ export const e = {
       } satisfies CollaborativeTextMarker,
       enumerable: false,
     });
+    Object.defineProperty(schema, "default", {
+      value: (value: unknown) => stampDefault(schema, value),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
     return schema as unknown as CollaborativeTextSchema<E>;
   },
 } as const;
 
-const isMapSchema = (schema: TSchema): boolean => {
-  if ("patternProperties" in schema) return true;
-  const anyOf = (schema as { anyOf?: readonly TSchema[] }).anyOf;
-  return Array.isArray(anyOf) && anyOf.some(isMapSchema);
-};
+const isMapSchema = (schema: TSchema): boolean => "patternProperties" in schema;
 
 const deriveMarker = (schema: TSchema): FieldMarker =>
   isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
 
 /**
- * True at the type level when `T` is the union shape produced by
- * `.nullable()`: `Type.Union<[T, TNull]>`. The chain helper drops
- * its `.nullable` method when called, so the resulting `TUnion` is
- * the user-facing marker that a field is nullable.
+ * True at the type level when a field declares a default. Keyed on the
+ * `.default()` brand, not the annotation key: TypeBox's option bag
+ * accepts `default?: any` on every schema.
  */
-type IsNullableUnion<T> =
-  T extends TUnion<infer Members>
-    ? Members extends readonly [unknown, infer Second]
-      ? Second extends TNull
-        ? true
-        : false
-      : false
-    : false;
+export type HasDefault<T extends TSchema> = [T] extends [{ readonly [DEFAULT_BRAND]: unknown }]
+  ? true
+  : false;
 
 /**
- * Type-level mirror of {@link withImplicitOptional}: nullable fields
- * become `TOptional<T>` in the static type so `Static<TObject<...>>`
- * agrees with the runtime shape (`Type.Optional(...)` wrap that
- * `Value.Check` accepts). Non-nullable fields pass through untouched.
+ * The read shape of a field map: a defaulted field reads as `T`, a field
+ * without one reads as `T | undefined`. `TOptional<T>` is TypeBox's
+ * spelling of an optional property, so `Static<TObject<ShapeFields<...>>>`
+ * yields exactly those read types.
  *
- * Detection keys on the union shape produced by `.nullable()`
- * rather than the `.nullable` chain method (which every `e.*()` builder
- * carries by default and would over-eagerly mark every field
- * optional).
+ * Absence is the truth for a non-defaulted field: any row can predate the
+ * field's declaration. Declaring a default is the statement that absence
+ * has a value.
  */
-type WithImplicitOptional<T extends TSchema> = IsNullableUnion<T> extends true ? TOptional<T> : T;
-
 export type ShapeFields<TFields extends Record<string, TSchema>> = {
-  [K in keyof TFields]: WithImplicitOptional<TFields[K]>;
+  [K in keyof TFields]: HasDefault<TFields[K]> extends true
+    ? StripOptional<TFields[K]>
+    : TOptional<StripOptional<TFields[K]>>;
+};
+
+/** The read shape is already optional-wrapped; re-applying it must not nest. */
+type StripOptional<T extends TSchema> = T extends TOptional<infer S> ? S : T;
+
+/**
+ * The create-validation shape of a field map. `Value.Check` treats an
+ * unwrapped property as required, so `create()` may omit a field exactly
+ * when it has a default: the validation wrap is optional iff defaulted.
+ *
+ * This is the inverse of {@link ShapeFields}, which is why the two are
+ * separate shapes rather than one type doing double duty.
+ */
+export type CreateShapeFields<TFields extends Record<string, TSchema>> = {
+  [K in keyof TFields]: HasDefault<TFields[K]> extends true ? TOptional<TFields[K]> : TFields[K];
 };
 
 /**
- * The TypeBox object schema wrapping a field map. Returned by
- * `defineEntity` as `EntityDef.shape`. Field-value types flow through
- * `Static<TObject<TFields>>` (TypeBox's static resolver); callers can
- * reach them with `Static<typeof def["shape"]>` if they want explicit
- * value-type extraction.
- *
- * Nullable fields are represented as `TOptional<T>` in the static type
- * to match the runtime `Type.Optional(...)` wrap applied by
- * `withImplicitOptional` — see `ShapeFields`.
+ * The TypeBox object schema wrapping a field map. `EntityDef.shape` is the
+ * read shape; field-value types flow through `Static<TObject<...>>`, or
+ * `Static<typeof def["shape"]>` for explicit extraction.
  */
 export type EntityShape<TFields extends Record<string, TSchema>> = ReturnType<
   typeof Type.Object<ShapeFields<TFields>>
+>;
+
+/** The create-validation counterpart of {@link EntityShape}. */
+export type EntityCreateShape<TFields extends Record<string, TSchema>> = ReturnType<
+  typeof Type.Object<CreateShapeFields<TFields>>
 >;
 
 /**
@@ -272,10 +375,17 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
    */
   readonly materialization: Materialization;
   /**
-   * TypeBox schema — drives value-shape typing. Implicit `Type.Object`
-   * wrapper over the *wire* fields; derived fields are hoisted out.
+   * Read shape — drives value-shape typing and projection. Implicit
+   * `Type.Object` wrapper over the *wire* fields; derived fields are
+   * hoisted out. A non-defaulted field is optional here.
    */
   readonly shape: EntityShape<WireFields<TFields>>;
+  /**
+   * Create-validation shape: a defaulted field is optional (the default
+   * fills it), a field without one is required. Only `Value.Check` for a
+   * full `create()` payload reads this.
+   */
+  readonly createShape: EntityCreateShape<WireFields<TFields>>;
   /** Merge-semantics markers for the wire fields — derived fields are absent. */
   readonly fields: { [K in keyof WireFields<TFields>]: FieldMarker };
   /** Fields declared with `e.collaborativeText()`, awaiting expansion. */
@@ -306,6 +416,63 @@ export function defineEntity<TFields extends Record<string, TSchema>, TName exte
   return buildEntityDef(name, fields, options);
 }
 
+/** Raised when a field schema admits `null`. */
+export class NullFieldError extends Error {
+  constructor(entityName: string, field: string) {
+    super(
+      `Field "${field}" on entity "${entityName}" admits Null. Absence is the only ` +
+        `spelling: declare a default for a read-time value, or clear with \`unset\`.`,
+    );
+    this.name = "NullFieldError";
+  }
+}
+
+/**
+ * True when a field schema admits `null` anywhere in its type: a `null`
+ * type, a union branch, a `const`, or an enum entry. The wire's
+ * `{ value: null }` is a tombstone, not a stored null, so no field
+ * schema may admit one.
+ */
+export const admitsNull = (schema: TSchema): boolean => {
+  const candidate = schema as {
+    type?: unknown;
+    anyOf?: readonly TSchema[];
+    oneOf?: readonly TSchema[];
+    const?: unknown;
+    enum?: readonly unknown[];
+  };
+  if (candidate.type === "null") return true;
+  if (Array.isArray(candidate.type) && candidate.type.includes("null")) return true;
+  if (candidate.const === null) return true;
+  if (Array.isArray(candidate.enum) && candidate.enum.includes(null)) return true;
+  for (const branches of [candidate.anyOf, candidate.oneOf]) {
+    if (Array.isArray(branches) && branches.some(admitsNull)) return true;
+  }
+  // Deliberately not recursive: a map entry's null is a run tombstone in the
+  // collaborative-text document schema, and this rule is about the field's
+  // own value, not the entries inside it.
+  try {
+    // Covers `Type.Any()` / `Type.Unknown()` / an empty schema, which accept
+    // `null` without naming it structurally.
+    return Value.Check(schema, null);
+  } catch {
+    // TypeBox cannot check an exotic schema; the structural checks above are
+    // the whole answer.
+    return false;
+  }
+};
+
+/** Raised when a derived (collaborative-text) field declares a default. */
+export class DerivedFieldDefaultError extends Error {
+  constructor(entityName: string, field: string) {
+    super(
+      `Field "${field}" on entity "${entityName}" is derived (e.collaborativeText()) ` +
+        `and cannot declare a default; a derived body has a seed policy.`,
+    );
+    this.name = "DerivedFieldDefaultError";
+  }
+}
+
 /**
  * Unchecked entity factory. `defineEntity` validates reserved names
  * first; the SDK's own system entities (`group`, `groupMember`,
@@ -324,6 +491,9 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   for (const [key, schema] of Object.entries(fields)) {
     const marker = readCollaborativeTextMarker(schema as TSchema);
     if (marker !== undefined) {
+      if (hasDefault(schema as TSchema)) {
+        throw new DerivedFieldDefaultError(name, key);
+      }
       derived[key] = {
         kind: "collaborative-text",
         entity: marker.entity,
@@ -331,10 +501,14 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
       };
       continue;
     }
+    if (admitsNull(schema as TSchema)) {
+      throw new NullFieldError(name, key);
+    }
     wireFields[key] = schema as TSchema;
   }
 
-  const shapeFields = withImplicitOptional(wireFields);
+  const shapeFields = withReadOptional(wireFields);
+  const createShapeFields = withCreateOptional(wireFields);
 
   const derivedFields = Object.fromEntries(
     Object.keys(wireFields).map((k) => [k, deriveMarker(wireFields[k] as TSchema)]),
@@ -345,35 +519,43 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
     conflictScope: entityScope,
     materialization: options.materialization ?? "held",
     shape: Type.Object(shapeFields) as EntityShape<WireFields<TFields>>,
+    createShape: Type.Object(createShapeFields) as EntityCreateShape<WireFields<TFields>>,
     fields: derivedFields,
     derived: derivedMarkers,
   });
 }
 
 /**
- * Wrap every nullable field in `Type.Optional` so `Value.Check`
- * treats absent values as valid (matching the wire envelope's
- * set / nulled / absent projection). The static type mirrors this
- * wrap via `ShapeFields` so `Static<TObject<...>>` agrees — nullable
- * fields are optional at both runtime and compile time.
+ * The read wrap: a field without a default is optional, so an absent value
+ * reads as `T | undefined`. A defaulted field stays required — its value
+ * always resolves.
  */
-const withImplicitOptional = <TFields extends Record<string, TSchema>>(
+const withReadOptional = <TFields extends Record<string, TSchema>>(
   fields: TFields,
 ): Record<string, TSchema> => {
   const out: Record<string, TSchema> = {};
   for (const [key, schema] of Object.entries(fields)) {
-    out[key] = isNullableSchema(schema)
-      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
-      : schema;
+    out[key] = hasDefault(schema)
+      ? schema
+      : Type.Optional(schema as Parameters<typeof Type.Optional>[0]);
   }
   return out;
 };
 
-/** True for fields that came through `.nullable()` — either the chain method or the marker. */
-const isNullableSchema = (schema: TSchema): boolean => {
-  if ("nullable" in schema && typeof schema.nullable === "function") return true;
-
-  return Object.getOwnPropertyDescriptor(schema, NULLABLE_MARKER)?.value === true;
+/**
+ * The create-validation wrap: a defaulted field is optional because the
+ * default fills it, while a field without one is required.
+ */
+const withCreateOptional = <TFields extends Record<string, TSchema>>(
+  fields: TFields,
+): Record<string, TSchema> => {
+  const out: Record<string, TSchema> = {};
+  for (const [key, schema] of Object.entries(fields)) {
+    out[key] = hasDefault(schema)
+      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
+      : schema;
+  }
+  return out;
 };
 
 export type { TSchema };

@@ -606,13 +606,22 @@ defmodule EbbServer.Sync.Router do
               properties: %{
                 type: %OpenApiSpex.Schema{type: :string, description: "Entity type to query"},
                 filter: %OpenApiSpex.Schema{
-                  type: :object,
+                  type: :array,
                   nullable: true,
-                  maxProperties: QueryFilter.max_keys(),
+                  items: %OpenApiSpex.Schema{
+                    type: :object,
+                    maxProperties: QueryFilter.max_keys(),
+                    additionalProperties: true,
+                    description:
+                      "One AND-group of field predicates: identifier-shaped keys mapped " <>
+                        "to JSON scalars (string, number, boolean or null), at most " <>
+                        "#{QueryFilter.max_keys()} keys. A null value matches a field " <>
+                        "with no live value (absent or tombstoned)."
+                  },
                   description:
-                    "Field-value filter: identifier-shaped keys mapped to JSON scalars " <>
-                      "(string, number, boolean or null), at most " <>
-                      "#{QueryFilter.max_keys()} keys"
+                    "Disjunction of filter groups: groups are ORed, keys within a group " <>
+                      "are ANDed. An empty list, a list holding an empty group, null, or " <>
+                      "an omitted filter is unfiltered; a null entry is rejected."
                 },
                 limit: %OpenApiSpex.Schema{
                   type: :integer,
@@ -642,8 +651,8 @@ defmodule EbbServer.Sync.Router do
           ),
         "422" =>
           OperationSchema.error_response(
-            "Missing or invalid type, invalid JSON, a filter that is not identifier keys " <>
-              "mapped to JSON scalars, or a limit/offset out of range"
+            "Missing or invalid type, invalid JSON, a filter that is not a list of " <>
+              "identifier-keyed scalar groups, or a limit/offset out of range"
           ),
         "503" => OperationSchema.error_response("Query failed")
       }

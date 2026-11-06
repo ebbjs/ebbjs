@@ -589,13 +589,15 @@ defmodule EbbServer.TestHelpers do
           do: {"field_#{i}", i}
 
     [
-      %{"a b" => "x"},
+      [%{"a b" => "x"}],
+      [nil],
       [1, 2],
       "zzz",
-      %{"title" => %{"n" => 1}},
-      %{"title" => [1, 2]},
-      %{"count" => 9_223_372_036_854_775_808},
-      too_many_keys
+      %{"title" => "x"},
+      [%{"title" => %{"n" => 1}}],
+      [%{"title" => [1, 2]}],
+      [%{"count" => 9_223_372_036_854_775_808}],
+      [too_many_keys]
     ]
   end
 

@@ -15,7 +15,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { Type, type TSchema } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox";
 
 import type { Update } from "@ebbjs/core";
 import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
@@ -65,7 +65,7 @@ const field = (spec: string): TSchema => {
     case "number":
       return e.number();
     case "string[]":
-      return Type.Union([Type.Array(Type.String()), Type.Null()]);
+      return e.array(e.string());
     default:
       throw new Error(`planner fixture: unknown field spec "${spec}"`);
   }

@@ -345,9 +345,10 @@ const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
 const rowFields = (entity: Entity | null): Record<string, FieldValue> => entity?.data.fields ?? {};
 
 /**
- * Canonical string for a projected value, distinguishing an absent side
- * (`undefined`) from a tombstone (`null`). Mirrors `stableStringify` in
- * `client.ts`: object keys sorted at every level, arrays in order.
+ * Canonical string for a projected value. A tombstone already projects as
+ * absent (`undefined`), so only absence needs its own spelling. Mirrors
+ * `stableStringify` in `client.ts`: object keys sorted at every level,
+ * arrays in order.
  */
 const stableValueString = (value: unknown): string => {
   if (value === undefined) return "undefined";
@@ -399,8 +400,9 @@ const diffFieldValue = (
     }
     return;
   }
-  const beforeValue = before === undefined ? undefined : projectFieldValue(before);
-  const afterValue = after === undefined ? undefined : projectFieldValue(after);
+  // A leaf tombstone is absence in the read model, not a stored null.
+  const beforeValue = before === undefined ? undefined : (projectFieldValue(before) ?? undefined);
+  const afterValue = after === undefined ? undefined : (projectFieldValue(after) ?? undefined);
   if (projectedEqual(beforeValue, afterValue)) return;
   out.push({
     field,

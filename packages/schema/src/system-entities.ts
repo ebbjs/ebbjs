@@ -14,20 +14,30 @@
  * system names.
  */
 
-import { Type } from "@sinclair/typebox";
-
 import { buildEntityDef, e, type EntityDef } from "./entity";
+
+/**
+ * Names of the wire-level entities the SDK owns. They are internal rows
+ * (an edge, a group, a membership), so their creates validate per field:
+ * absence is normal and `group.apps` deliberately has no default.
+ */
+export const SYSTEM_ENTITY_NAMES: ReadonlySet<string> = new Set([
+  "relationship",
+  "group",
+  "groupMember",
+  "entityGroup",
+]);
 
 /**
  * Wire shape of a `Relationship` record. The server stores
  * relationship edges as `Relationship` entities carrying
- * `{source_id, target_id, type, field}` as field values; `target_id`
- * is nullable because the `delete` method uses `data: null` (no
- * fields) and a one-cardinality delete leaves the FK cleared.
+ * `{source_id, target_id, type, field}` as field values. A cleared edge
+ * is deleted (`method: "delete"` with no fields), so `target_id` is
+ * absent rather than null on a cleared edge.
  */
 export const relationshipSystemEntity = buildEntityDef("relationship", {
   source_id: e.string(),
-  target_id: e.string().nullable(),
+  target_id: e.string(),
   type: e.string(),
   field: e.string(),
 });
@@ -37,18 +47,18 @@ export const groupSystemEntity = buildEntityDef("group", {
   name: e.string(),
   /**
    * App scope: a group is in scope for an app iff its entry is `true`.
-   * The field is a map so separate app ids merge per key. Absent (or
-   * `null`) means unscoped, which is every app (see #732); nullable so
-   * a group create may omit it.
+   * The field is a map so separate app ids merge per key. Absent means
+   * unscoped, which is every app (see #732); an empty map means no app,
+   * so absence must not collapse to `{}`.
    */
-  apps: e.map(e.boolean()).nullable(),
+  apps: e.map(e.boolean()),
 });
 
 /** Wire shape of a `GroupMember` record, mirroring `@ebbjs/core`'s `GroupMemberSchema`. */
 export const groupMemberSystemEntity = buildEntityDef("groupMember", {
   group_id: e.string(),
   actor_id: e.string(),
-  permissions: Type.Array(Type.String()),
+  permissions: e.array(e.string()),
 });
 
 /**

@@ -1,0 +1,236 @@
+{
+  "description": "Shared query-semantics vectors. Both packages/client's plan executor and ebb_server's SQLite query path must reproduce every `expected` id list. A `null` field value is a tombstone; an omitted field is absent. `filter` is a disjunction of AND-groups, and `null`, `[]`, or a list holding an empty group is unfiltered. A `maps` entry on a row is a live map envelope (never equal to a scalar, never \"no live value\").",
+  "rows": [
+    {
+      "id": "todo_absent",
+      "fields": {
+        "title": "absent priority"
+      }
+    },
+    {
+      "id": "todo_tombstoned",
+      "fields": {
+        "title": "cleared priority",
+        "priority": null
+      }
+    },
+    {
+      "id": "todo_normal",
+      "fields": {
+        "title": "normal",
+        "priority": "normal",
+        "completed": true
+      }
+    },
+    {
+      "id": "todo_urgent",
+      "fields": {
+        "title": "urgent",
+        "priority": "urgent",
+        "completed": false
+      }
+    },
+    {
+      "id": "todo_done",
+      "fields": {
+        "title": "done",
+        "priority": "normal",
+        "completed": true
+      }
+    },
+    {
+      "id": "todo_map_live",
+      "fields": {
+        "title": "live tags",
+        "priority": "map_only"
+      },
+      "maps": {
+        "tags": {
+          "a": "x"
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "a stored value matches only itself, excluding absent and tombstoned leaves",
+      "filter": [
+        {
+          "priority": "urgent"
+        }
+      ],
+      "expected": ["todo_urgent"]
+    },
+    {
+      "name": "null matches an absent leaf and a tombstoned leaf",
+      "filter": [
+        {
+          "priority": null
+        }
+      ],
+      "expected": ["todo_absent", "todo_tombstoned"]
+    },
+    {
+      "name": "a null value never matches a stored non-null value",
+      "filter": [
+        {
+          "priority": "normal"
+        }
+      ],
+      "expected": ["todo_done", "todo_normal"]
+    },
+    {
+      "name": "keys within a group are ANDed",
+      "filter": [
+        {
+          "priority": "normal",
+          "completed": true
+        }
+      ],
+      "expected": ["todo_done", "todo_normal"]
+    },
+    {
+      "name": "an AND-group with no survivors matches nothing",
+      "filter": [
+        {
+          "priority": "normal",
+          "completed": false
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "groups are ORed",
+      "filter": [
+        {
+          "priority": "urgent"
+        },
+        {
+          "completed": true
+        }
+      ],
+      "expected": ["todo_done", "todo_normal", "todo_urgent"]
+    },
+    {
+      "name": "a null group widens to no live value",
+      "filter": [
+        {
+          "priority": "normal"
+        },
+        {
+          "priority": null
+        }
+      ],
+      "expected": ["todo_absent", "todo_done", "todo_normal", "todo_tombstoned"]
+    },
+    {
+      "name": "an empty group is an empty conjunction, so it is unfiltered",
+      "filter": [{}],
+      "expected": [
+        "todo_absent",
+        "todo_tombstoned",
+        "todo_normal",
+        "todo_urgent",
+        "todo_done",
+        "todo_map_live"
+      ]
+    },
+    {
+      "name": "an empty group anywhere in the filter makes it unfiltered",
+      "filter": [
+        {
+          "priority": "urgent"
+        },
+        {}
+      ],
+      "expected": [
+        "todo_absent",
+        "todo_tombstoned",
+        "todo_normal",
+        "todo_urgent",
+        "todo_done",
+        "todo_map_live"
+      ]
+    },
+    {
+      "name": "an empty list is unfiltered",
+      "filter": [],
+      "expected": [
+        "todo_absent",
+        "todo_tombstoned",
+        "todo_normal",
+        "todo_urgent",
+        "todo_done",
+        "todo_map_live"
+      ]
+    },
+    {
+      "name": "a null filter is unfiltered",
+      "filter": null,
+      "expected": [
+        "todo_absent",
+        "todo_tombstoned",
+        "todo_normal",
+        "todo_urgent",
+        "todo_done",
+        "todo_map_live"
+      ]
+    },
+    {
+      "name": "a boolean true is 1 after SQLite conversion and matches a stored true",
+      "filter": [
+        {
+          "completed": true
+        }
+      ],
+      "expected": ["todo_done", "todo_normal"]
+    },
+    {
+      "name": "a boolean false is 0 after SQLite conversion and matches a stored false",
+      "filter": [
+        {
+          "completed": false
+        }
+      ],
+      "expected": ["todo_urgent"]
+    },
+    {
+      "name": "an unknown value matches nothing",
+      "filter": [
+        {
+          "priority": "missing"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "a live map field is not 'no live value'",
+      "filter": [
+        {
+          "title": "live tags",
+          "tags": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "a map field is never equal to a scalar",
+      "filter": [
+        {
+          "title": "live tags",
+          "tags": "x"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "the live-map row is still visible by its scalar field",
+      "filter": [
+        {
+          "title": "live tags"
+        }
+      ],
+      "expected": ["todo_map_live"]
+    }
+  ]
+}

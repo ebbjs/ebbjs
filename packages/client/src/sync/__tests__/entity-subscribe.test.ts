@@ -70,8 +70,8 @@ type TestClient = ReturnType<typeof mkClient>;
 
 /** The `EntitySnapshot<todo fields>` shape the callback receives. */
 type TodoSnapshot = {
-  title: string;
-  completed: boolean;
+  title?: string;
+  completed?: boolean;
   id: string;
   entity: { id: string; type: string; deleted_hlc: unknown };
 };
@@ -112,7 +112,7 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
 
     const seen: { title: string; completed: boolean }[] = [];
     const unsub = row.subscribe((snapshot) => {
-      seen.push({ title: snapshot.title, completed: snapshot.completed });
+      seen.push({ title: snapshot.title ?? "", completed: snapshot.completed ?? false });
     });
 
     await callApplyAction(client, mkAction(2, "todo_1", "T2", true), "grp_1");
@@ -218,7 +218,7 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
 
     const seen: string[] = [];
     const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot.title);
+      seen.push(snapshot.title ?? "");
     });
 
     await callApplyAction(client, mkAction(2, "todo_1", "T2", false), "grp_1");
@@ -283,7 +283,7 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     // doesn't trip when the file loads.
     const check: () => void = () => {
       const _onSnapshot: (snapshot: TodoSnapshot) => void = (snapshot) => {
-        void snapshot.title.toUpperCase();
+        void snapshot.title?.toUpperCase();
         void !snapshot.completed;
         // @ts-expect-error — `bogus` is not in the field map.
         void snapshot.bogus;

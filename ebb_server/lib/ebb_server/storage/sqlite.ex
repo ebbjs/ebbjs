@@ -686,15 +686,42 @@ defmodule EbbServer.Storage.SQLite do
 
   defp build_filter_clauses(filter) do
     with {:ok, normalized} <- QueryFilter.normalize(filter) do
-      {clauses, params} =
-        Enum.reduce(normalized || %{}, {[], []}, fn {field, value}, {clauses, params} ->
-          clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
-          {[clause | clauses], [convert_filter_value(value) | params]}
-        end)
+      case normalized do
+        nil ->
+          {:ok, "", []}
 
-      {:ok, Enum.join(Enum.reverse(clauses)), Enum.reverse(params)}
+        groups ->
+          {group_sql, params} = Enum.map_reduce(groups, [], &group_clauses/2)
+
+          {:ok, " AND (" <> Enum.join(group_sql, " OR ") <> ")", Enum.reverse(params)}
+      end
     end
   end
+
+  defp group_clauses(group, params) do
+    {clauses, params} = Enum.reduce(group, {[], params}, &filter_clause/2)
+    {"(" <> Enum.join(Enum.reverse(clauses), " AND ") <> ")", params}
+  end
+
+  # `json_extract` returns SQL NULL for a missing path and for a JSON null
+  # alike, which is exactly "absent or tombstoned". Binding NULL into `= ?`
+  # would compare as never true. A map field is a live value even when its
+  # keys are tombstoned (clearing the whole field writes a leaf tombstone),
+  # so the map envelope must not satisfy "no live value".
+  defp filter_clause({field, nil}, {clauses, params}) do
+    clause =
+      "(" <>
+        field_path(field) <>
+        " IS NULL AND json_type(e.data, '$.fields." <> field <> ".map') IS NOT 'object')"
+
+    {[clause | clauses], params}
+  end
+
+  defp filter_clause({field, value}, {clauses, params}) do
+    {["#{field_path(field)} = ?" | clauses], [convert_filter_value(value) | params]}
+  end
+
+  defp field_path(field), do: "json_extract(e.data, '$.fields.#{field}.value')"
 
   defp convert_filter_value(true), do: 1
   defp convert_filter_value(false), do: 0

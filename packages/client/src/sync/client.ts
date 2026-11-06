@@ -77,6 +77,7 @@ import {
   TextDocumentRegistry,
   seedRegistry,
   type EntityDef,
+  type Filter,
   type RelationshipDef,
   type Schema,
   type ValidationViolation,
@@ -1170,13 +1171,24 @@ export class SyncClient<
     return (await response.json()) as EntityResponse;
   }
 
-  /** `POST /entities/query` — query entities by type. */
+  /**
+   * `POST /entities/query` — query entities by type.
+   *
+   * A filter that compares a defaulted field's value but never its absence
+   * produces a non-fatal warning on the `onRegistryViolation` channel (the
+   * query still runs; a filter never applies a default on the caller's
+   * behalf). Fatal violations keep throwing before any network call.
+   */
   async queryEntities(type: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
     if (opts.filter !== undefined) {
       const violations = this.registry.validateFilter(type, opts.filter);
       if (violations.length > 0) {
         this.emitRegistryViolations(violations, { direction: "outbound" });
         throw new EntityValidationError(violations);
+      }
+      const warnings = this.registry.filterWarnings(type, opts.filter);
+      if (warnings.length > 0) {
+        this.emitRegistryViolations(warnings, { direction: "outbound" });
       }
     }
     const response = await this.fetchImpl(`${this.serverUrl}/entities/query`, {
@@ -2254,11 +2266,10 @@ const residencyFromRegistry = (registry: EntityRegistry): MaterializationPolicy 
  * level) is enough for the server-side drift check; the hash is not
  * a security primitive.
  *
- * Entity and relationship records are walked by value — the schema
- * itself is frozen, but TypeBox shapes carry non-enumerable
- * `nullable` chains and other helpers that `JSON.stringify` ignores
- * by default, so two schemas that differ only in those helpers hash
- * the same.
+ * Entity and relationship records are walked by value. The builder's
+ * `.default()` chain method is non-enumerable, so `stableStringify` sees
+ * only a declared default annotation (which is part of the hash), not
+ * the chain helper itself.
  */
 const computeSchemaHash = (schema: AnySchema): string => fnv1a64(stableStringify(schema));
 
@@ -2398,7 +2409,12 @@ export interface HandshakeResult {
 
 /** Options for {@link SyncClient.queryEntities}. */
 export interface QueryOptions {
-  filter?: Record<string, unknown>;
+  /**
+   * A disjunction of filter groups: groups are ORed, keys within a group
+   * ANDed. A `null` value matches a field with no live value. `null`, `[]`,
+   * or an omitted filter is unfiltered.
+   */
+  filter?: Filter | null;
   limit?: number;
   offset?: number;
 }

@@ -1,6 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { Type } from "@sinclair/typebox";
-import { defineEntity, e, type EntityDef, type NullableSchema } from "@ebbjs/schema";
+import { describe, it, expect, expectTypeOf } from "vitest";
+import { Type, type Static } from "@sinclair/typebox";
+import {
+  defineEntity,
+  e,
+  hasDefault,
+  readDefault,
+  validatePayload,
+  DerivedFieldDefaultError,
+  type EntityDef,
+  NullFieldError,
+} from "@ebbjs/schema";
 import { ReservedNameError, RESERVED_ENTITY_NAMES } from "@ebbjs/schema";
 
 describe("defineEntity", () => {
@@ -160,26 +169,6 @@ describe("e.* primitives", () => {
     const b = e.boolean();
     expect(b.type).toBe("boolean");
   });
-
-  it("e.string().nullable() returns Type.Union([Type.String(), Type.Null()])", () => {
-    const n = e.string().nullable();
-    expect(Type.Union).toBeDefined();
-    expect(n.anyOf).toHaveLength(2);
-    expect(n.anyOf[0]).toMatchObject({ type: "string" });
-    expect(n.anyOf[1]).toMatchObject({ type: "null" });
-  });
-
-  it("e.boolean().nullable() also produces a union with Type.Null", () => {
-    const n = e.boolean().nullable();
-    expect(n.anyOf).toHaveLength(2);
-    expect(n.anyOf[1]).toMatchObject({ type: "null" });
-  });
-
-  it("NullableSchema carries the .nullable() chain as a non-enumerable property", () => {
-    const s: NullableSchema<ReturnType<typeof Type.String>> = e.string();
-    expect(typeof s.nullable).toBe("function");
-    expect(Object.keys(s)).not.toContain("nullable");
-  });
 });
 
 describe("bare-field-map authoring", () => {
@@ -187,9 +176,129 @@ describe("bare-field-map authoring", () => {
     const todo = defineEntity("todo", {
       title: e.string(),
       completed: e.boolean(),
-      body: e.string().nullable(),
+      body: e.string(),
     });
     expect(todo.name).toBe("todo");
     expect(todo.shape.type).toBe("object");
+  });
+});
+
+describe("declarative field defaults", () => {
+  it("e.string().default(v) stamps a plain default annotation on the property schema", () => {
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      priority: e.string().default("normal"),
+    });
+    const priority = todo.shape.properties.priority as { default?: unknown };
+    expect(priority.default).toBe("normal");
+    // Enumerable, so a JSON-schema/hash walk sees it.
+    expect(Object.keys(priority)).toContain("default");
+    expect(JSON.stringify(priority)).toContain('"default":"normal"');
+  });
+
+  it("carries defaults for every field builder", () => {
+    expect((e.number().default(3) as { default?: unknown }).default).toBe(3);
+    expect((e.integer().default(3) as { default?: unknown }).default).toBe(3);
+    expect((e.boolean().default(true) as { default?: unknown }).default).toBe(true);
+    const map = e.map(e.string()).default({ a: "x" }) as { default?: unknown };
+    expect(map.default).toEqual({ a: "x" });
+    const list = e.array(e.string()).default(["a"]) as { default?: unknown };
+    expect(list.default).toEqual(["a"]);
+  });
+
+  it("hasDefault/readDefault read the annotation back", () => {
+    const d = e.string().default("normal");
+    const plain = e.string();
+    expect(hasDefault(d)).toBe(true);
+    expect(readDefault(d)).toBe("normal");
+    expect(hasDefault(plain)).toBe(false);
+    expect(readDefault(plain)).toBeUndefined();
+  });
+
+  it("a falsy default still counts as a default", () => {
+    expect(hasDefault(e.boolean().default(false))).toBe(true);
+    expect(hasDefault(e.integer().default(0))).toBe(true);
+    expect(readDefault(e.boolean().default(false))).toBe(false);
+    expect(readDefault(e.integer().default(0))).toBe(0);
+  });
+
+  it("Value.Check ignores the annotation", () => {
+    const todo = defineEntity("todo", { priority: e.string().default("normal") });
+    // The default does not relax the declared type.
+    expect(validatePayload(todo.createShape, { priority: "normal" }, "todo", false)).toEqual([]);
+    expect(validatePayload(todo.createShape, { priority: 1 }, "todo", false)).not.toEqual([]);
+  });
+
+  it("clones and freezes a default so rows and the schema hash share no object", () => {
+    const fallback = { a: "x" };
+    const field = e.map(e.string()).default(fallback);
+    fallback.a = "mutated";
+    const stored = readDefault(field) as { a: string };
+    expect(stored.a).toBe("x");
+    expect(Object.isFrozen(stored)).toBe(true);
+  });
+
+  it("readDefault tolerates an unknown property schema", () => {
+    expect(readDefault(undefined)).toBeUndefined();
+    expect(hasDefault(undefined)).toBe(false);
+  });
+
+  it("rejects a default on a derived collaborative-text field", () => {
+    expect(() => defineEntity("doc", { body: e.collaborativeText().default("seed") })).toThrow(
+      DerivedFieldDefaultError,
+    );
+  });
+});
+
+describe("read types state absence", () => {
+  const task = defineEntity("task", {
+    title: e.string(),
+    priority: e.string().default("normal"),
+  });
+
+  it("a defaulted field reads as T; an undefaulted one as T | undefined", () => {
+    type Task = Static<typeof task.shape>;
+    expectTypeOf<Task["priority"]>().toEqualTypeOf<string>();
+    expectTypeOf<Task["title"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  it("create may omit a defaulted field and must provide an undefaulted one", () => {
+    type Create = Static<typeof task.createShape>;
+    expectTypeOf<Create["priority"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<Create["title"]>().toEqualTypeOf<string>();
+  });
+
+  it("the runtime read shape marks an undefaulted property optional", () => {
+    const shape = task.shape as unknown as {
+      properties: Record<string, { [key: symbol]: unknown }>;
+    };
+    const properties = shape.properties as Record<string, Record<string, unknown>>;
+    expect(properties.priority).toBeDefined();
+    expect(properties.title).toBeDefined();
+    // Type.Optional stamps OptionalKind on the property schema.
+    expect(Object.getOwnPropertySymbols(properties.title!).length).toBeGreaterThan(0);
+  });
+});
+
+describe("field schemas may not admit null", () => {
+  it("rejects a union that includes Type.Null, naming the field", () => {
+    expect(() => defineEntity("todo", { body: Type.Union([Type.String(), Type.Null()]) })).toThrow(
+      NullFieldError,
+    );
+  });
+
+  it("rejects a bare null-typed field", () => {
+    expect(() => defineEntity("todo", { gone: Type.Null() })).toThrow(NullFieldError);
+  });
+
+  it("rejects Any/Unknown, which admit null without naming it", () => {
+    expect(() => defineEntity("todo", { anything: Type.Any() })).toThrow(NullFieldError);
+    expect(() => defineEntity("todo", { anything: Type.Unknown() })).toThrow(NullFieldError);
+  });
+
+  it("rejects a schema whose type array includes null", () => {
+    expect(() => defineEntity("todo", { value: { type: ["string", "null"] } as never })).toThrow(
+      NullFieldError,
+    );
   });
 });

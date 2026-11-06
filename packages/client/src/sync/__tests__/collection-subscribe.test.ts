@@ -79,7 +79,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
       seen.push({
         count: snapshot.count,
-        titles: snapshot.entities.map((e) => e.title).sort(),
+        titles: snapshot.entities.map((e) => e.title ?? "").sort(),
       });
     });
 
@@ -133,7 +133,10 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
 
     const seen: { count: number; titles: string[] }[] = [];
     const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
-      seen.push({ count: snapshot.count, titles: snapshot.entities.map((e) => e.title).sort() });
+      seen.push({
+        count: snapshot.count,
+        titles: snapshot.entities.map((e) => e.title ?? "").sort(),
+      });
     });
     await flush();
 

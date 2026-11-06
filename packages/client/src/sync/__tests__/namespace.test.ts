@@ -51,13 +51,13 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 describe("client.<entity>.query()", () => {
-  it("nullable fields project to null (set) or undefined (absent)", async () => {
-    const todoWithNullable = defineEntity("todo", {
+  it("a tombstoned leaf projects as absent, same as a missing one", async () => {
+    const todoWithBody = defineEntity("todo", {
       title: e.string(),
-      body: e.string().nullable(),
+      body: e.string(),
     });
-    const schemaWithNullable = defineSchema({
-      entities: { todo: todoWithNullable },
+    const schemaWithBody = defineSchema({
+      entities: { todo: todoWithBody },
       version: 1,
     });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -66,7 +66,7 @@ describe("client.<entity>.query()", () => {
       serverUrl: "http://x",
       actorId: "a",
       storage,
-      schema: schemaWithNullable,
+      schema: schemaWithBody,
     });
     await seedQueryRow(
       storage,
@@ -78,8 +78,29 @@ describe("client.<entity>.query()", () => {
 
     const rows = await client.todo.query();
     expect(rows.find((r) => r.title === "a")?.body).toBe("note");
-    expect(rows.find((r) => r.title === "b")?.body).toBeNull();
+    expect(rows.find((r) => r.title === "b")?.body).toBeUndefined();
     expect(rows.find((r) => r.title === "c")?.body).toBeUndefined();
+  });
+
+  it("fills a declared default through query() and get()", async () => {
+    const task = defineEntity("task", {
+      title: e.string(),
+      priority: e.string().default("normal"),
+    });
+    const taskSchema = defineSchema({ entities: { task }, version: 1 });
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: taskSchema,
+    });
+    await seedQueryRow(storage, client.replica, mkEntity("t1", "task", { title: "a" }));
+
+    const rows = await client.task.query();
+    expect(rows[0]?.priority).toBe("normal");
+    expect((await client.task.get("t1"))?.priority).toBe("normal");
   });
 
   it(".toRaw() returns readonly Entity[] — the untyped wire shape", async () => {
@@ -336,13 +357,13 @@ describe("client.<entity>.get(id)", () => {
     expect(row).toBeNull();
   });
 
-  it("three projection states on a single row (set / nulled / absent)", async () => {
-    const todoWithNullable = defineEntity("todo", {
+  it("projects a stored value, and a tombstone the same as absence", async () => {
+    const todoWithBody = defineEntity("todo", {
       title: e.string(),
-      body: e.string().nullable(),
+      body: e.string(),
     });
-    const schemaWithNullable = defineSchema({
-      entities: { todo: todoWithNullable },
+    const schemaWithBody = defineSchema({
+      entities: { todo: todoWithBody },
       version: 1,
     });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -354,10 +375,10 @@ describe("client.<entity>.get(id)", () => {
       serverUrl: "http://x",
       actorId: "a",
       storage,
-      schema: schemaWithNullable,
+      schema: schemaWithBody,
     });
     expect((await client.todo.get("t1"))?.body).toBe("note");
-    expect((await client.todo.get("t2"))?.body).toBeNull();
+    expect((await client.todo.get("t2"))?.body).toBeUndefined();
     expect((await client.todo.get("t3"))?.body).toBeUndefined();
   });
 
@@ -543,7 +564,7 @@ const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise
 const whereTodo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
-  owner: e.string().nullable(),
+  owner: e.string(),
 });
 const whereDocument = defineEntity("document", { title: e.string() });
 
@@ -966,8 +987,8 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row: Todo | null = await client.todo.get("t1");
     expect(row).not.toBeNull();
     if (row === null) throw new Error("unreachable");
-    const _title: string = row.title;
-    const _completed: boolean = row.completed;
+    const _title: string | undefined = row.title;
+    const _completed: boolean | undefined = row.completed;
     void _title;
     void _completed;
   });
@@ -992,7 +1013,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const tags: QueryBuilder<EntityFields<typeof labelEntity>> = row.tags;
-    const resolved: readonly { name: string }[] = await tags;
+    const resolved: readonly { name?: string }[] = await tags;
     expect(resolved.map((t) => t.name).sort()).toEqual(["a", "b", "c"]);
   });
 
@@ -1175,7 +1196,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     if (row === null) throw new Error("expected row");
     // The accessor type (a QueryBuilder), not the `string[]` field type.
     const tags: QueryBuilder<EntityFields<typeof tag>> = row.tags;
-    const resolved: readonly { name: string }[] = await tags;
+    const resolved: readonly { name?: string }[] = await tags;
     expect(resolved.map((t) => t.name)).toEqual(["a"]);
   });
 
@@ -1322,7 +1343,7 @@ describe("doc.groups — built-in membership accessor", () => {
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
-    const resolved: readonly { name: string }[] = await groups;
+    const resolved: readonly { name?: string }[] = await groups;
     expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
   });
 
@@ -1851,31 +1872,12 @@ describe("draft create / update — runtime validation", () => {
   const todoForCreate = defineEntity("todo", {
     title: e.string(),
     completed: e.boolean(),
-  });
-
-  /**
-   * Nullable variant of the same `todo` schema, used by the
-   * "nullable accepts null / non-nullable rejects null" tests and
-   * the type-asymmetry tests below (#212). `defineEntity` wraps
-   * nullable fields in `Type.Optional` at runtime, so `Value.Check`
-   * accepts both `{ body: null }` and the no-body variant. The
-   * static type mirrors that wrap via `ShapeFields` so callers can
-   * write `{ title, completed }` (omitting `body`) and have it
-   * both typecheck and run.
-   */
-  const todoWithNullable = defineEntity("todo", {
-    title: e.string(),
-    completed: e.boolean(),
-    body: e.string().nullable(),
+    // A declared default is what lets `create()` omit a field.
+    priority: e.string().default("normal"),
   });
 
   const schemaForCreate = defineSchema({
     entities: { todo: todoForCreate, user, list: defineEntity("list", { name: e.string() }) },
-    version: 1,
-  });
-
-  const schemaWithNullableBody = defineSchema({
-    entities: { todo: todoWithNullable, user, list: defineEntity("list", { name: e.string() }) },
     version: 1,
   });
 
@@ -1939,20 +1941,6 @@ describe("draft create / update — runtime validation", () => {
     },
   );
 
-  /** Nullable-schema variants — same bodies, but `body` is `.nullable()`. */
-  const createNullableTodo = defineAction(
-    schemaWithNullableBody,
-    ({ todo: todos }, params: CreateParams) =>
-      todos.create(params.input as never, { groups: params.groups, validate: params.validate }),
-  );
-
-  const updateNullableTodo = defineAction(
-    schemaWithNullableBody,
-    ({ todo: todos }, params: UpdateParams): void => {
-      todos.update(params.id, params.patch, { validate: params.validate });
-    },
-  );
-
   const mkClient = async (seen: string[]) => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -1962,21 +1950,6 @@ describe("draft create / update — runtime validation", () => {
       storage,
       schema: schemaForCreate,
       actions: { createTodo, updateTodo },
-      fetchImpl: mkRecordingStubFetch(seen),
-    });
-    await client.handshake();
-    return { client, storage };
-  };
-
-  const mkClientWithNullable = async (seen: string[]) => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage,
-      schema: schemaWithNullableBody,
-      actions: { createNullableTodo, updateNullableTodo },
       fetchImpl: mkRecordingStubFetch(seen),
     });
     await client.handshake();
@@ -1999,31 +1972,25 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
   });
 
-  it("create() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+  it("create() rejects a literal null and names unset instead", async () => {
     const seen: string[] = [];
-    const { client } = await mkClientWithNullable(seen);
+    const { client } = await mkClient(seen);
     const seenBefore = seen.length;
 
-    await expect(
-      client.actions.createNullableTodo({
-        input: { title: "Ship", completed: false, body: null },
+    try {
+      await client.actions.createTodo({
+        input: { title: null, completed: false },
         ...createOpts,
-      }),
-    ).resolves.toBeDefined();
+      });
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      expect(violations[0]?.message).toContain("unset");
+    }
 
-    await expect(
-      client.actions.createNullableTodo({
-        input: { title: null, completed: false, body: null },
-        ...createOpts,
-      }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-
-    // The validation failure must not have reached the wire — only
-    // the first successful create made a /sync/actions call. The
-    // count is the network-rejection assertion.
-    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
-    expect(actionsCalls).toBe(1);
-    expect(seen.length).toBe(seenBefore + 1);
+    // The validation failure must not have reached the wire.
+    expect(seen.length).toBe(seenBefore);
   });
 
   it("create() throws EntityValidationError with the bad field name when value type is wrong", async () => {
@@ -2162,20 +2129,15 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
   });
 
-  it("update() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+  it("update() rejects a literal null and names unset instead", async () => {
     const seen: string[] = [];
-    const { client } = await mkClientWithNullable(seen);
+    const { client } = await mkClient(seen);
 
     await expect(
-      client.actions.updateNullableTodo({ id: "todo_1", patch: { body: null } }),
-    ).resolves.toBeUndefined();
+      client.actions.updateTodo({ id: "todo_1", patch: { title: null } }),
+    ).rejects.toMatchObject({ violations: [{ message: expect.stringContaining("unset") }] });
 
-    await expect(
-      client.actions.updateNullableTodo({ id: "todo_1", patch: { title: null } }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-
-    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
-    expect(actionsCalls).toBe(1);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
   });
 
   it("update({ validate: false }) skips local validation and submits", async () => {
@@ -2211,53 +2173,29 @@ describe("draft create / update — runtime validation", () => {
     expect(true).toBe(true);
   });
 
-  it("create() with a nullable schema: omitting the nullable field typechecks and runs (#212)", async () => {
-    // The static type for nullable fields must be `T | null | undefined`,
-    // not `T | null`. The runtime accepts omission (Type.Optional wrap
-    // in withImplicitOptional), and the type system should agree so
-    // callers don't have to pass `null` for fields they want to leave
-    // unset.
+  it("create() omits a defaulted field and fills it", async () => {
     const seen: string[] = [];
-    const { client } = await mkClientWithNullable(seen);
+    const { client, storage } = await mkClient(seen);
     await expect(
-      client.actions.createNullableTodo({
+      client.actions.createTodo({
         input: { title: "Ship", completed: false },
         ...createOpts,
       }),
     ).resolves.toBeDefined();
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+    const rows = await storage.entities.query("todo");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.data?.fields).not.toHaveProperty("priority");
   });
 
-  it("create() with a nullable schema: static type still rejects wrong inner type (#212)", () => {
-    // Static type must NOT accept `body: 42` — `body` is `string | null`,
-    // and `42` isn't either. The optional wrapping only changes whether
-    // the field can be omitted, not the inner type's coercion.
-    const typecheck: () => void = () => {
-      const _input: { title: string; completed: boolean; body?: string | null } = {
-        title: "",
-        completed: false,
-        body: null,
-      };
-      void _input.body?.length;
-      // @ts-expect-error — body is string | null, not number.
-      void ({ ..._input, body: 42 } as typeof _input);
-    };
-    void typecheck;
-    expect(true).toBe(true);
-  });
-
-  it("create() with a nullable schema: omitting the field at runtime does not throw EntityValidationError (#212)", async () => {
-    // Round-trip: omitting body passes both the static type check and
-    // Value.Check. Catches any drift between the runtime shape
-    // (Type.Optional wrap) and the static type after the fix.
+  it("create() requires a field with no default", async () => {
     const seen: string[] = [];
-    const { client } = await mkClientWithNullable(seen);
+    const { client } = await mkClient(seen);
     await expect(
-      client.actions.createNullableTodo({
-        input: { title: "Ship", completed: false },
-        groups: ["g_1"],
+      client.actions.createTodo({
+        input: { title: "Ship" },
+        ...createOpts,
       }),
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(EntityValidationError);
   });
 });
 

@@ -251,6 +251,29 @@ describe("SyncClient schema option", () => {
     expect(body.schema_hash).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  it("changes schema_hash when a declared default changes", async () => {
+    const hashOf = async (defaultValue: string): Promise<string> => {
+      const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        fetchImpl: fn,
+        schema: defineSchema({
+          entities: {
+            todo: defineEntity("todo", {
+              priority: e.string().default(defaultValue),
+            }),
+          },
+          version: 1,
+        }),
+      });
+      await client.handshake();
+      const body = JSON.parse((fn.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+      return body.schema_hash as string;
+    };
+    expect(await hashOf("normal")).not.toBe(await hashOf("urgent"));
+  });
+
   it("produces the same schema_hash for equivalent schemas on independent clients", async () => {
     const schemaA = defineSchema({
       entities: {
@@ -976,9 +999,51 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
       fetchImpl: fn,
       registry: todoEntity(),
     });
-    const list = await client.queryEntities("todo", { filter: { title: "x" } });
+    const list = await client.queryEntities("todo", { filter: [{ title: "x" }] });
     expect(list).toHaveLength(1);
     expect(fn.mock.calls).toHaveLength(1);
+  });
+
+  it("emits a non-fatal warning when a filter skips a defaulted field's absence", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
+    const registry = new EntityRegistry();
+    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const warnings: { violations: readonly { field?: string }[]; direction: string }[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      registry,
+      onRegistryViolation: (violations, context) => {
+        warnings.push({ violations, direction: context.direction });
+      },
+    });
+
+    await expect(
+      client.queryEntities("task", { filter: [{ priority: "normal" }] }),
+    ).resolves.toEqual([]);
+    // Non-fatal: the query reached the wire.
+    expect(fn.mock.calls).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.violations[0]?.field).toBe("priority");
+    expect(warnings[0]?.direction).toBe("outbound");
+  });
+
+  it("stays silent when the filter names the defaulted field's absence", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
+    const registry = new EntityRegistry();
+    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const warnings: unknown[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      registry,
+      onRegistryViolation: (violations) => warnings.push(violations),
+    });
+
+    await client.queryEntities("task", { filter: [{ priority: "normal" }, { priority: null }] });
+    expect(warnings).toEqual([]);
   });
 
   it("throws EntityValidationError before any fetch on unknown filter field", async () => {
@@ -989,7 +1054,7 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
       fetchImpl: fn,
       registry: todoEntity(),
     });
-    await expect(client.queryEntities("todo", { filter: { typo: "x" } })).rejects.toBeInstanceOf(
+    await expect(client.queryEntities("todo", { filter: [{ typo: "x" }] })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
     expect(fn.mock.calls).toHaveLength(0);

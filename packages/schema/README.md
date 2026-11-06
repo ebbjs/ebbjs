@@ -37,6 +37,12 @@ const schema = defineSchema({
 schema._registry.get("issue");
 ```
 
+A field declares a read-time default with `.default(v)`; `create()` may then
+omit it, and it reads as `T`. A field without one reads as `T | undefined`,
+because any row can predate the declaration. A `null` filter value means "no
+live value" (absent or cleared) — see the
+[absence and defaults](https://ebbjs.com/docs/absence-and-defaults) page.
+
 ## Module map
 
 | Module                    | What it ships                                                          |

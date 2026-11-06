@@ -72,7 +72,7 @@ export function IssueDetail({
     );
   }
 
-  const title = titleDraft ?? issue.title;
+  const title = titleDraft ?? issue.title ?? "";
 
   const commitTitle = (): void => {
     const next = title.trim();

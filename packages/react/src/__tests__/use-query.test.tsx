@@ -266,9 +266,9 @@ describe("useQuery", () => {
 
     type JoinedIssue = {
       readonly id: string;
-      readonly title: string;
-      readonly completed: boolean;
-      readonly assignee: { readonly id: string; readonly name: string } | null;
+      readonly title?: string;
+      readonly completed?: boolean;
+      readonly assignee: { readonly id: string; readonly name?: string } | null;
     };
 
     const rendered: (readonly JoinedIssue[] | undefined)[] = [];

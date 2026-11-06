@@ -271,13 +271,13 @@ describe("with(...) — typing", () => {
   it("exposes the same row type through QueryRowOf", () => {
     const base = {} as QueryRowOf<typeof schema, "issue">;
     expectTypeOf(base.groupIds).toEqualTypeOf<readonly string[]>();
-    expectTypeOf(base.title).toEqualTypeOf<string>();
+    expectTypeOf(base.title).toEqualTypeOf<string | undefined>();
 
     const row = {} as QueryRowOf<typeof schema, "issue", "assignee" | "groups">;
     expectTypeOf(row.assignee).toEqualTypeOf<UserRow | null>();
     expectTypeOf(row.groups).toEqualTypeOf<readonly GroupRow[]>();
     expectTypeOf(row.groupIds).toEqualTypeOf<readonly string[]>();
-    expectTypeOf(row.title).toEqualTypeOf<string>();
+    expectTypeOf(row.title).toEqualTypeOf<string | undefined>();
     // @ts-expect-error tags was not selected
     void row.tags;
 

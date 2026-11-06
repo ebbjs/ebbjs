@@ -17,12 +17,12 @@ import type { TSchema } from "@sinclair/typebox/type";
 import { defineEntity, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { groupSystemEntity, type GroupFields, type GroupMemberFields } from "@ebbjs/schema";
+import { groupSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { ActionRejectedError } from "@ebbjs/write";
 import type { ActionDrafts } from "../drafts";
-import type { WireStatic } from "../namespace";
+import type { WireCreateStatic, WireStatic } from "../namespace";
 import { createClient } from "../client";
 import { seedReplicaRow } from "../test-utils";
 
@@ -79,13 +79,14 @@ const schema = defineSchema({
 });
 
 /** The system drafts under test, each declared so the call site stays typed. */
-const createGroup = defineAction(schema, ({ group }, params: WireStatic<GroupFields>) =>
-  group.create(params),
+const createGroup = defineAction(
+  schema,
+  ({ group }, params: { name: string; apps?: Record<string, boolean> }) => group.create(params),
 );
 
 const createMembership = defineAction(
   schema,
-  ({ membership }, params: WireStatic<GroupMemberFields>) => membership.create(params),
+  ({ membership }, params: WireCreateStatic<GroupMemberFields>) => membership.create(params),
 );
 
 const updateMembership = defineAction(

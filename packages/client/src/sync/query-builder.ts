@@ -59,7 +59,7 @@ import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields, WireFields } from "@ebbjs/schema";
-import { EntityValidationError, type EntityRegistry } from "@ebbjs/schema";
+import { EntityValidationError, readDefault, type EntityRegistry } from "@ebbjs/schema";
 import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
 import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
 import type {
@@ -76,6 +76,7 @@ import {
   createReplicaExecutor,
   createRowsExecutor,
   executePlan,
+  type FieldResolver,
   type PlanExecutor,
 } from "./query-execute";
 import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
@@ -108,11 +109,16 @@ export { projectFieldValue } from "@ebbjs/write";
  * as read-only.
  *
  * Projection states per field:
- * - `data.fields[K]` absent              → `undefined`
+ * - `data.fields[K]` absent              → the field's default, else `undefined`
  * - leaf `data.fields[K].value = V`      → `V`
- * - leaf `data.fields[K].value = null`   → `null`
+ * - leaf `data.fields[K].value = null`   → the field's default, else `undefined`
  * - map `data.fields[K].map`             → each entry projected,
  *   tombstoned entries omitted
+ *
+ * A default is read off the property schema, so this takes the shape and
+ * never the entity definition. A tombstone is absence with an HLC, not a
+ * stored null: it reads exactly like an absent leaf. `projectFieldValue`
+ * stays structural and knows nothing about defaults.
  */
 export function projectEntity<TFields extends Record<string, TSchema>>(
   entity: Entity,
@@ -120,11 +126,35 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
 ): Static<TObject<ShapeFields<TFields>>> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
-    const field = entity.data?.fields?.[key];
-    out[key] = field === undefined ? undefined : projectFieldValue(field);
+    out[key] = resolveFieldValue(entity, key, shape.properties[key]);
   }
   return out as Static<TObject<ShapeFields<TFields>>>;
 }
+
+/**
+ * One field's read value: the stored projection, or the property schema's
+ * declared default when the leaf is absent or tombstoned. Projection and
+ * ordering both go through here so the two cannot drift.
+ */
+const resolveFieldValue = (
+  entity: Entity,
+  field: string,
+  property: TSchema | undefined,
+): unknown => {
+  const raw = entity.data?.fields?.[field];
+  const stored = raw === undefined ? undefined : projectFieldValue(raw);
+  return stored ?? readDefault(property);
+};
+
+/**
+ * Ordered comparison value for one field: the same resolution projection
+ * applies, so a sort never disagrees with the value a row renders as.
+ */
+export const projectedFieldValue = (
+  entity: Entity,
+  field: string,
+  shape: TObject<Record<string, TSchema>>,
+): unknown => resolveFieldValue(entity, field, shape.properties[field]);
 
 /**
  * A materialized entity projected to the schema's shape, plus the
@@ -341,7 +371,7 @@ export interface QueryBuilder<
    */
   where<K extends keyof TFields & string>(
     key: K,
-    value: Static<TFields[K]>,
+    value: Static<TFields[K]> | null,
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Relationship-target overload. It stays open over every key because
@@ -361,7 +391,7 @@ export interface QueryBuilder<
    */
   or<K extends keyof TFields & string>(
     key: K,
-    value: Static<TFields[K]>,
+    value: Static<TFields[K]> | null,
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Open pointer overload for {@link or}, mirroring {@link where}'s. */
   or(
@@ -475,7 +505,9 @@ export function buildReplicaQueryBuilder<
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = createReplicaExecutor(context.replica);
     return projectResultRows(
-      executePlan(planQuery(query), executor),
+      executePlan(planQuery(query), executor, (entity, field) =>
+        projectedFieldValue(entity, field, shape),
+      ),
       query,
       executor,
       context,
@@ -483,7 +515,9 @@ export function buildReplicaQueryBuilder<
     );
   };
   const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
-    const run = await runProjectingPlan(query, replicaExecutor(context), context);
+    const run = await runProjectingPlan(query, replicaExecutor(context), context, (entity, field) =>
+      projectedFieldValue(entity, field, shape),
+    );
     return projectResultRows(run.rows, query, run.executor, context, projectBase);
   };
   return buildChain<TFields, TJoins, NoJoins, QueryRow<TFields>>(
@@ -515,15 +549,17 @@ interface QueryRun {
 const runPlan = async (
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
+  resolveField: FieldResolver,
 ): Promise<QueryRun> => {
   const executor = await loadExecutor();
-  return { rows: executePlan(planQuery(query), executor), executor };
+  return { rows: executePlan(planQuery(query), executor, resolveField), executor };
 };
 
 const executeQuery = async (
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
-): Promise<readonly Entity[]> => (await runPlan(query, loadExecutor)).rows;
+  resolveField: FieldResolver,
+): Promise<readonly Entity[]> => (await runPlan(query, loadExecutor, resolveField)).rows;
 
 /** Fail loudly rather than projecting through an unregistered shape. */
 const shapeForJoin = (
@@ -585,8 +621,9 @@ const runProjectingPlan = async (
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
   context: QueryContext | undefined,
+  resolveField: FieldResolver,
 ): Promise<QueryRun> => {
-  const run = await runPlan(query, loadExecutor);
+  const run = await runPlan(query, loadExecutor, resolveField);
   await openJoinedRows(run.rows, query, run.executor, context);
   return run;
 };
@@ -738,10 +775,14 @@ function buildChain<
   syncRun?: (query: Query) => readonly unknown[],
   asyncRun?: (query: Query) => Promise<readonly unknown[]>,
 ): QueryBuilder<TFields, TJoins, TJoined, TRow> {
+  // Ordering reads the field as projection does, so a defaulted field sorts
+  // by its default instead of sorting unset rows elsewhere.
+  const resolveOrderField: FieldResolver = (entity, field) =>
+    projectedFieldValue(entity, field, shape);
   const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     if (context === undefined || syncRun === undefined) {
       return createLocalQueryStore(async () => {
-        const run = await runProjectingPlan(query, loadExecutor, context);
+        const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
         // SAFETY: the candidate chain's own shape and joins produced these rows.
         return projectResultRows(
           run.rows,
@@ -796,19 +837,19 @@ function buildChain<
     },
     toQuery: () => query,
     async first() {
-      const run = await runProjectingPlan(query, loadExecutor, context);
+      const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
       const head = projectResultRows(run.rows, query, run.executor, context, projectBase)[0];
       return head as unknown as JoinedRow<TFields, TJoined, TRow> | undefined;
     },
     async count() {
-      return (await executeQuery(query, loadExecutor)).length;
+      return (await executeQuery(query, loadExecutor, resolveOrderField)).length;
     },
     async exists() {
-      return (await executeQuery(query, loadExecutor)).length > 0;
+      return (await executeQuery(query, loadExecutor, resolveOrderField)).length > 0;
     },
     [Symbol.asyncIterator]() {
       const iter = async function* () {
-        const run = await runProjectingPlan(query, loadExecutor, context);
+        const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
         for (const row of projectResultRows(run.rows, query, run.executor, context, projectBase)) {
           yield row as unknown as JoinedRow<TFields, TJoined, TRow>;
         }
@@ -816,7 +857,7 @@ function buildChain<
       return iter();
     },
     async toRaw() {
-      return executeQuery(query, loadExecutor);
+      return executeQuery(query, loadExecutor, resolveOrderField);
     },
     subscribe(listener) {
       if (context === undefined || syncRun === undefined) return () => {};
@@ -833,7 +874,7 @@ function buildChain<
       // projection step: a rejecting candidate loader or a failed
       // hydration must settle the awaited builder as a rejection rather
       // than leaving it pending.
-      return runProjectingPlan(query, loadExecutor, context)
+      return runProjectingPlan(query, loadExecutor, context, resolveOrderField)
         .then((run) => projectResultRows(run.rows, query, run.executor, context, projectBase))
         .then((rows) => rows as readonly JoinedRow<TFields, TJoined, TRow>[])
         .then(onfulfilled, onrejected);

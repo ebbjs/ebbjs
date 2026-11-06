@@ -18,6 +18,7 @@
  */
 
 import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/client";
+import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "./issue-options";
 
 export const workspace = defineEntity("workspace", {
   name: e.string(),
@@ -27,14 +28,18 @@ export const workspace = defineEntity("workspace", {
 
 export const profile = defineEntity("profile", {
   actor_id: e.string(),
-  display_name: e.string(),
-  avatar_url: e.string(),
+  // A profile is always rendered; empty is the honest absence for the two
+  // presentation fields.
+  display_name: e.string().default(""),
+  avatar_url: e.string().default(""),
 });
 
 export const issue = defineEntity("issue", {
   title: e.string(),
-  status: e.string(),
-  priority: e.string(),
+  // The board groups on status and every card prints a priority, so absence
+  // would scatter a row: both declare the value the UI shows when unset.
+  status: e.string().default(ISSUE_STATUSES[0]),
+  priority: e.string().default(ISSUE_PRIORITIES[1]),
 });
 
 /**

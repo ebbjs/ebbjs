@@ -100,6 +100,7 @@ export {
   type Join,
   type JoinDirection,
   type JoinCardinality,
+  filterToGroups,
 } from "./sync/query";
 
 export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
@@ -118,6 +119,7 @@ export {
 
 export type { ReplicaSignal } from "./sync/replica-signal";
 export type { ManyPointerValue } from "@ebbjs/write";
+export { isUnset, unset, type Unset } from "@ebbjs/core";
 export type { ReplicaStats } from "@ebbjs/storage/replica";
 
 export {
@@ -133,6 +135,7 @@ export {
   type EntityNamespace,
   type EntityFields,
   type EntityValues,
+  type EntityPatch,
   type EntityNamespaces,
   type EntityRow,
   type EntitySnapshot,
@@ -306,7 +309,6 @@ export {
   type FieldMarker,
   type ConflictScope,
   type Materialization,
-  type NullableSchema,
   type MapSchema,
   type CollaborativeTextSchema,
   type CollaborativeTextOptions,
@@ -325,7 +327,13 @@ export {
   type DefineRelationshipInput,
 } from "@ebbjs/schema";
 
-export { EntityRegistry, EntityValidationError, type ValidationViolation } from "@ebbjs/schema";
+export {
+  EntityRegistry,
+  EntityValidationError,
+  type Filter,
+  type FilterGroup,
+  type ValidationViolation,
+} from "@ebbjs/schema";
 
 export {
   defineSchema,

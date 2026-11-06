@@ -74,8 +74,8 @@ not yet enforceable (see below): 11 of its 15 findings were redundant casts
 that are now gone, including the IndexedDB entity store's four
 `as unknown as Entity` casts (`IDBPDatabase<EbbDBSchema>` is already typed),
 `toPublicAction`'s `rest as unknown as Action`, and two `as unknown as` probes
-in `isNullableSchema`, which now uses an `in` check and
-`Object.getOwnPropertyDescriptor`.
+in the (since removed) nullable-field detection, which had used an `in`
+check and `Object.getOwnPropertyDescriptor`.
 
 ## Deferred: chained assertions and `unknown` returns
 

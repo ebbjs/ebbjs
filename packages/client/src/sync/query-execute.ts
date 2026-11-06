@@ -10,7 +10,7 @@
  * nothing about the schema, the registry, or the builder.
  */
 
-import type { Entity, FieldValue } from "@ebbjs/core";
+import { isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
 import type { MembershipQuery, Replica, RelationshipQuery } from "@ebbjs/storage/replica";
 
 import type { Plan, PlanPredicate } from "./query-plan";
@@ -71,6 +71,31 @@ const isFilterPredicate = (predicate: PlanPredicate): predicate is FilterPredica
 const fieldValue = (entity: Entity, field: string): FieldValue["value"] | undefined =>
   entity.data?.fields?.[field]?.value;
 
+/** The whole field envelope, so a map is distinguishable from a leaf. */
+const fieldEntry = (entity: Entity, field: string): FieldValue | undefined =>
+  entity.data?.fields?.[field];
+
+/**
+ * How an ordered field reads for a row. The builder supplies the
+ * schema-aware resolver (`stored ?? default`), so a sort compares the same
+ * value projection renders. Filtering never uses this: the query path is
+ * schema-blind and a default never matches on a caller's behalf.
+ */
+export type FieldResolver = (entity: Entity, field: string) => unknown;
+
+/**
+ * A `null` predicate asks for "no live value": an absent leaf and a
+ * tombstoned one both answer yes. A map envelope is a live value even when
+ * its keys are tombstoned (clearing the whole field writes a leaf
+ * tombstone), so it never matches. Any non-null value matches only an equal
+ * stored leaf, so a schema default never widens a filter.
+ */
+const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
+  if (field === undefined) return expected === null;
+  if (isFieldMap(field)) return false;
+  return expected === null ? field.value === null : field.value === expected;
+};
+
 /**
  * Same comparison semantics as the builder's ordering — `undefined`
  * last, numbers numerically, everything else by locale — so a query
@@ -93,11 +118,17 @@ const compareFieldValues = (av: unknown, bv: unknown, direction: Direction): num
  * entity id), tie-broken by entity id ascending so equal field values
  * cannot reorder between runs.
  */
-const compareRows = (a: Entity, b: Entity, field: string | null, direction: Direction): number => {
+const compareRows = (
+  a: Entity,
+  b: Entity,
+  field: string | null,
+  direction: Direction,
+  resolveField: FieldResolver,
+): number => {
   if (field === null) {
     return direction === "asc" ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
   }
-  const primary = compareFieldValues(fieldValue(a, field), fieldValue(b, field), direction);
+  const primary = compareFieldValues(resolveField(a, field), resolveField(b, field), direction);
   return primary === 0 ? a.id.localeCompare(b.id) : primary;
 };
 
@@ -180,7 +211,7 @@ const selectGroup = (
     .filter(isFilterPredicate)
     .reduce<readonly Entity[]>(
       (rows, predicate) =>
-        rows.filter((row) => fieldValue(row, predicate.field) === predicate.value),
+        rows.filter((row) => matchesFieldValue(fieldEntry(row, predicate.field), predicate.value)),
       seed,
     );
 };
@@ -191,7 +222,11 @@ const selectGroup = (
  * — and select groups are ORed, deduped by id. `order` and `limit` then
  * narrow the result.
  */
-export function executePlan(plan: Plan, executor: PlanExecutor): readonly Entity[] {
+export function executePlan(
+  plan: Plan,
+  executor: PlanExecutor,
+  resolveField: FieldResolver = fieldValue,
+): readonly Entity[] {
   let sourceType = "";
   let scanRows: readonly Entity[] | null = null;
   const scanned = (): readonly Entity[] =>
@@ -219,7 +254,9 @@ export function executePlan(plan: Plan, executor: PlanExecutor): readonly Entity
         }
         break;
       case "order":
-        narrowed = [...current()].sort((a, b) => compareRows(a, b, op.field, op.direction));
+        narrowed = [...current()].sort((a, b) =>
+          compareRows(a, b, op.field, op.direction, resolveField),
+        );
         break;
       case "limit":
         narrowed = current().slice(0, op.limit);

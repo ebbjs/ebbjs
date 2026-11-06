@@ -20,7 +20,7 @@ the actor can reach. App scope is the default view, not a fence.
 ```ts
 groupSystemEntity = buildEntityDef("group", {
   name: e.string(),
-  apps: e.map(e.boolean()).nullable(),
+  apps: e.map(e.boolean()),
 });
 ```
 

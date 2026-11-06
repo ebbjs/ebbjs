@@ -11,13 +11,21 @@
  * single Action.
  */
 
-import { generateId, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  generateId,
+  isFieldMap,
+  isUnset,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import {
   buildInitialContentField,
   DOC_CONTENT_FIELD,
   derivedBodyIds,
   EntityValidationError,
   GROUPS_ACCESSOR,
+  SYSTEM_ENTITY_NAMES,
   validatePayload,
   type EntityRegistry,
   type FieldMarker,
@@ -198,7 +206,16 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
 
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    // A system row is internal and may legitimately omit a field without a
+    // default (`group.apps` on an unscoped group), so its create validates
+    // per field. A user entity keeps the strict create rule.
+    const partial = SYSTEM_ENTITY_NAMES.has(input.entity);
+    const violations = validatePayload(
+      partial ? def.shape : def.createShape,
+      input.fields,
+      input.entity,
+      partial,
+    );
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -293,12 +310,13 @@ export interface CreateSystemEntityInput {
  * Put one system entity row. The row's fan-out scope comes from the
  * wire itself (`group` is its own group; `groupMember` names its
  * `group_id`), so no cached membership view is consulted. Validation
- * runs against the registered definition like {@link createEntity}.
+ * is per-field like an update: a system row may legitimately be absent
+ * for a field without a default (`group.apps` on an unscoped group).
  */
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    const violations = validatePayload(def.shape, input.fields, input.entity, true);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -496,7 +514,9 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   const fields = input.source.data?.fields ?? {};
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, projectFieldValues(fields), input.entity, false);
+    // A copy validates the live values it carries; absence in the source
+    // row is normal, so this is a partial check like an update.
+    const violations = validatePayload(def.shape, projectFieldValues(fields), input.entity, true);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -517,11 +537,16 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   };
 };
 
-/** Project a wire field map to the plain values the schema validator checks. */
+/**
+ * Project a wire field map to the plain values the schema validator checks.
+ * Tombstoned and absent leaves are omitted: a copy carries absence forward
+ * rather than asserting a null.
+ */
 const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(fields)) {
-    out[key] = projectFieldValue(field);
+    const value = projectFieldValue(field);
+    if (value !== null && value !== undefined) out[key] = value;
   }
   return out;
 };
@@ -794,7 +819,14 @@ const isEmptyPayload = (payload: unknown): boolean => {
 /**
  * Flatten a payload into the wire envelope. `undefined` fields are
  * dropped (the wire envelope is absent, not explicitly undefined);
- * `null` is preserved so nullable fields round-trip cleanly.
+ * `unset` compiles to a tombstone leaf, the same `{ value: null }` a
+ * clear has always used, so the merge rule and the Elixir side are
+ * unchanged.
+ *
+ * A literal `null` is still passed through here: tombstones arrive from
+ * other producers (listing seeds, the synthetic snapshot put, a peer's
+ * patch), so the envelope layer must not refuse one. Rejecting `null` is
+ * validation's job, where the intent is knowable.
  *
  * The registry supplies the merge marker per field: a map field's plain
  * object becomes a `map` envelope so its keys merge independently, and
@@ -811,6 +843,10 @@ export const wrapFields = (
   if (payload === null || typeof payload !== "object") return out;
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) continue;
+    if (isUnset(value)) {
+      out[key] = { value: null, update_id: updateId, hlc };
+      continue;
+    }
     out[key] =
       markers?.[key]?.map === true && isPlainObject(value)
         ? wrapMapValue(value, updateId, hlc)
@@ -828,6 +864,11 @@ const wrapMapValue = (
   hlc: string,
 ): FieldValue => ({
   map: Object.fromEntries(
-    Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
+    Object.entries(entries).map(([key, value]) => [
+      key,
+      isUnset(value)
+        ? { value: null, update_id: updateId, hlc }
+        : { value, update_id: updateId, hlc },
+    ]),
   ),
 });
