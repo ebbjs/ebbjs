@@ -80,6 +80,14 @@ const fieldValue = (entity: Entity, field: string): FieldValue["value"] | undefi
 export type FieldResolver = (entity: Entity, field: string) => unknown;
 
 /**
+ * A `null` predicate asks for "no live value": an absent leaf and a
+ * tombstoned one both answer yes. Any other value matches only an equal
+ * stored value, so a schema default never widens a filter.
+ */
+const matchesFieldValue = (stored: FieldValue["value"] | undefined, expected: unknown): boolean =>
+  expected === null ? stored === undefined || stored === null : stored === expected;
+
+/**
  * Same comparison semantics as the builder's ordering — `undefined`
  * last, numbers numerically, everything else by locale — so a query
  * reordered here matches one ordered there.
@@ -194,7 +202,7 @@ const selectGroup = (
     .filter(isFilterPredicate)
     .reduce<readonly Entity[]>(
       (rows, predicate) =>
-        rows.filter((row) => fieldValue(row, predicate.field) === predicate.value),
+        rows.filter((row) => matchesFieldValue(fieldValue(row, predicate.field), predicate.value)),
       seed,
     );
 };

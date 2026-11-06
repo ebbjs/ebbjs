@@ -470,3 +470,34 @@ describe("executePlan", () => {
     ).toThrow(/candidate-only/);
   });
 });
+
+describe("executePlan null predicate", () => {
+  const rows: readonly Entity[] = [
+    row("todo_absent", { title: "Never set" }),
+    row("todo_tombstoned", { title: "Cleared", priority: null }),
+    row("todo_live", { title: "Set", priority: "high" }),
+  ];
+
+  const run = (value: unknown): readonly string[] =>
+    executePlan(
+      planQuery(query({ groups: [[{ kind: "field", field: "priority", value }]] })),
+      createRowsExecutor(rows),
+    ).map((entity) => entity.id);
+
+  it("matches a leaf the row never set", () => {
+    expect(run(null)).toContain("todo_absent");
+  });
+
+  it("matches a tombstoned leaf", () => {
+    expect(run(null)).toContain("todo_tombstoned");
+  });
+
+  it("does not match a stored value", () => {
+    expect(run(null)).not.toContain("todo_live");
+  });
+
+  it("does not match a stored non-null value with a null predicate", () => {
+    expect(run("high")).toEqual(["todo_live"]);
+    expect([...run(null)].sort()).toEqual(["todo_absent", "todo_tombstoned"]);
+  });
+});

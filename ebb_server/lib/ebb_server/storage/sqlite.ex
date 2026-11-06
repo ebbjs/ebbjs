@@ -687,14 +687,24 @@ defmodule EbbServer.Storage.SQLite do
   defp build_filter_clauses(filter) do
     with {:ok, normalized} <- QueryFilter.normalize(filter) do
       {clauses, params} =
-        Enum.reduce(normalized || %{}, {[], []}, fn {field, value}, {clauses, params} ->
-          clause = " AND json_extract(e.data, '$.fields.#{field}.value') = ?"
-          {[clause | clauses], [convert_filter_value(value) | params]}
-        end)
+        Enum.reduce(normalized || %{}, {[], []}, &filter_clause/2)
 
       {:ok, Enum.join(Enum.reverse(clauses)), Enum.reverse(params)}
     end
   end
+
+  # `json_extract` returns SQL NULL for a missing path and for a JSON null
+  # alike, which is exactly "absent or tombstoned". Binding NULL into `= ?`
+  # would compare as never true.
+  defp filter_clause({field, nil}, {clauses, params}) do
+    {[" AND #{field_path(field)} IS NULL" | clauses], params}
+  end
+
+  defp filter_clause({field, value}, {clauses, params}) do
+    {[" AND #{field_path(field)} = ?" | clauses], [convert_filter_value(value) | params]}
+  end
+
+  defp field_path(field), do: "json_extract(e.data, '$.fields.#{field}.value')"
 
   defp convert_filter_value(true), do: 1
   defp convert_filter_value(false), do: 0
