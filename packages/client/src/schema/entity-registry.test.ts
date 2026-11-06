@@ -216,6 +216,51 @@ describe("EntityRegistry.validateFilter", () => {
   });
 });
 
+describe("EntityRegistry.filterWarnings", () => {
+  const defaulted = (): EntityRegistry => {
+    const r = new EntityRegistry();
+    r.register(
+      defineEntity("task", {
+        title: e.string(),
+        priority: e.string().default("normal"),
+      }),
+    );
+    return r;
+  };
+
+  it("warns once when a filter compares a defaulted field but never its absence", () => {
+    const r = defaulted();
+    const warnings = r.filterWarnings("task", [{ priority: "normal" }]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.field).toBe("priority");
+    expect(warnings[0]?.message).toContain("null");
+  });
+
+  it("warns across groups when no group carries the null term", () => {
+    const r = defaulted();
+    expect(r.filterWarnings("task", [{ priority: "normal" }, { title: "x" }])).toHaveLength(1);
+  });
+
+  it("is silent when any group carries the null term", () => {
+    const r = defaulted();
+    expect(r.filterWarnings("task", [{ priority: "normal" }, { priority: null }])).toEqual([]);
+    expect(r.filterWarnings("task", [{ priority: null }])).toEqual([]);
+  });
+
+  it("is silent for a field without a default", () => {
+    const r = defaulted();
+    expect(r.filterWarnings("task", [{ title: "x" }])).toEqual([]);
+  });
+
+  it("is silent for an unfiltered query or an unknown entity", () => {
+    const r = defaulted();
+    expect(r.filterWarnings("task", null)).toEqual([]);
+    expect(r.filterWarnings("task", [])).toEqual([]);
+    expect(r.filterWarnings("task", [{}])).toEqual([]);
+    expect(r.filterWarnings("nope", [{ priority: "normal" }])).toEqual([]);
+  });
+});
+
 describe("EntityValidationError", () => {
   it("aggregates violations into one error", () => {
     const violations = [

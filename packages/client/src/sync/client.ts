@@ -1171,13 +1171,24 @@ export class SyncClient<
     return (await response.json()) as EntityResponse;
   }
 
-  /** `POST /entities/query` — query entities by type. */
+  /**
+   * `POST /entities/query` — query entities by type.
+   *
+   * A filter that compares a defaulted field's value but never its absence
+   * produces a non-fatal warning on the `onRegistryViolation` channel (the
+   * query still runs; a filter never applies a default on the caller's
+   * behalf). Fatal violations keep throwing before any network call.
+   */
   async queryEntities(type: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
     if (opts.filter !== undefined) {
       const violations = this.registry.validateFilter(type, opts.filter);
       if (violations.length > 0) {
         this.emitRegistryViolations(violations, { direction: "outbound" });
         throw new EntityValidationError(violations);
+      }
+      const warnings = this.registry.filterWarnings(type, opts.filter);
+      if (warnings.length > 0) {
+        this.emitRegistryViolations(warnings, { direction: "outbound" });
       }
     }
     const response = await this.fetchImpl(`${this.serverUrl}/entities/query`, {

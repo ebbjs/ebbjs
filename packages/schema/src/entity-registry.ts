@@ -11,7 +11,7 @@ import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { ConflictScope, EntityDef, FieldMarker } from "./entity";
+import { hasDefault, type ConflictScope, type EntityDef, type FieldMarker } from "./entity";
 import type { RelationshipDef, RelationshipKind, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
@@ -273,6 +273,42 @@ export class EntityRegistry {
       }
     }
     return violations;
+  }
+
+  /**
+   * Warnings for a filter that names a defaulted field's value without a
+   * `null` term for it in any group. A filter never applies a default, so
+   * `{ priority: "normal" }` silently excludes rows nobody set; the hint
+   * points at `{ priority: null }`. Never fatal — the caller decides
+   * whether to surface it.
+   */
+  filterWarnings(type: string, filter: Filter | null): ValidationViolation[] {
+    if (this.entities.size === 0 || filter === null) return [];
+    const entity = this.entities.get(type);
+    if (entity === undefined) return [];
+    const compared = new Set<string>();
+    const hasNullTerm = new Set<string>();
+    for (const group of filter) {
+      if (group === null || typeof group !== "object" || Array.isArray(group)) continue;
+      for (const [field, value] of Object.entries(group)) {
+        if (value === null) hasNullTerm.add(field);
+        else compared.add(field);
+      }
+    }
+    const warnings: ValidationViolation[] = [];
+    for (const field of compared) {
+      if (hasNullTerm.has(field)) continue;
+      const property = entity.shape.properties[field] as TSchema | undefined;
+      if (property === undefined || !hasDefault(property)) continue;
+      warnings.push({
+        entityName: entity.name,
+        field,
+        message:
+          `Filter on "${field}" compares a defaulted field's value but never its absence; ` +
+          `add { ${field}: null } to also match rows nobody set`,
+      });
+    }
+    return warnings;
   }
 }
 

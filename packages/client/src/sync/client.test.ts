@@ -1004,6 +1004,48 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
     expect(fn.mock.calls).toHaveLength(1);
   });
 
+  it("emits a non-fatal warning when a filter skips a defaulted field's absence", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
+    const registry = new EntityRegistry();
+    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const warnings: { violations: readonly { field?: string }[]; direction: string }[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      registry,
+      onRegistryViolation: (violations, context) => {
+        warnings.push({ violations, direction: context.direction });
+      },
+    });
+
+    await expect(
+      client.queryEntities("task", { filter: [{ priority: "normal" }] }),
+    ).resolves.toEqual([]);
+    // Non-fatal: the query reached the wire.
+    expect(fn.mock.calls).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.violations[0]?.field).toBe("priority");
+    expect(warnings[0]?.direction).toBe("outbound");
+  });
+
+  it("stays silent when the filter names the defaulted field's absence", async () => {
+    const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
+    const registry = new EntityRegistry();
+    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const warnings: unknown[] = [];
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_test",
+      fetchImpl: fn,
+      registry,
+      onRegistryViolation: (violations) => warnings.push(violations),
+    });
+
+    await client.queryEntities("task", { filter: [{ priority: "normal" }, { priority: null }] });
+    expect(warnings).toEqual([]);
+  });
+
   it("throws EntityValidationError before any fetch on unknown filter field", async () => {
     const { fn } = makeFetchMock([]);
     const client = createClient({
