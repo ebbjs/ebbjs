@@ -182,6 +182,36 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
         path: "/functions/:name/disable",
         operation_atom: :disable_function,
         module: EbbServer.Functions.Router
+      },
+      %{
+        method: :get,
+        path: "/admin/apps",
+        operation_atom: :list_apps,
+        module: EbbServer.Admin.Router
+      },
+      %{
+        method: :post,
+        path: "/admin/apps",
+        operation_atom: :create_app,
+        module: EbbServer.Admin.Router
+      },
+      %{
+        method: :delete,
+        path: "/admin/apps/:id",
+        operation_atom: :delete_app,
+        module: EbbServer.Admin.Router
+      },
+      %{
+        method: :post,
+        path: "/admin/apps/:id/origins",
+        operation_atom: :add_app_origin,
+        module: EbbServer.Admin.Router
+      },
+      %{
+        method: :delete,
+        path: "/admin/apps/:id/origins/:origin",
+        operation_atom: :remove_app_origin,
+        module: EbbServer.Admin.Router
       }
     ]
   end

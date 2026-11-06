@@ -45,7 +45,11 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
     test "every route names the module that owns its operation" do
       modules = Mix.Tasks.Openapi.Gen.Spec.routes() |> Enum.map(& &1.module) |> Enum.uniq()
 
-      assert Enum.sort(modules) == [EbbServer.Functions.Router, EbbServer.Sync.Router]
+      assert Enum.sort(modules) == [
+               EbbServer.Admin.Router,
+               EbbServer.Functions.Router,
+               EbbServer.Sync.Router
+             ]
     end
 
     test "the functions routes publish their wire shapes" do

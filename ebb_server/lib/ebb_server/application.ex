@@ -31,6 +31,10 @@ defmodule EbbServer.Application do
     # the route: `enabled?/0` must not consult the environment per request.
     resolve_functions!()
 
+    # Browser admission is read per request from the resolved policy, so a
+    # release cannot widen it without a restart. Invalid env fails boot here.
+    resolve_cors!(auth_mode)
+
     if auth_mode == :bypass do
       Logger.warning(
         "auth mode :bypass is active: any client can claim any actor identity via the " <>
@@ -50,7 +54,8 @@ defmodule EbbServer.Application do
     # running, so the backend listener exists before any proxied request.
     children =
       [
-        {EbbServer.Storage.Supervisor, [data_dir: data_dir]}
+        {EbbServer.Storage.Supervisor, [data_dir: data_dir]},
+        {EbbServer.Apps, [data_dir: apps_data_dir(data_dir)]}
       ] ++
         functions_children(data_dir) ++
         [
@@ -236,6 +241,20 @@ defmodule EbbServer.Application do
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
       reraise error, __STACKTRACE__
+  end
+
+  defp resolve_cors!(auth_mode) do
+    EbbServer.CORS.Policy.resolve!(auth_mode)
+  rescue
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
+  end
+
+  # The suite points the registry at a per-run directory so `apps.json` never
+  # leaks between runs; every other environment keeps it beside RocksDB.
+  defp apps_data_dir(data_dir) do
+    Application.get_env(:ebb_server, :apps_data_dir, data_dir)
   end
 
   # Resolution order for the storage data directory:

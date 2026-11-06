@@ -184,6 +184,7 @@ defmodule EbbServer.Apps do
          {:ok, origins} <- Origin.normalize_all(raw_origins),
          :ok <- ensure_new_name(state.apps, name),
          :ok <- ensure_unregistered_origins(state.apps, origins) do
+      warn_wildcards(name, origins)
       app = new_app(name, origins)
       commit(state, state.apps ++ [app], {:ok, app})
     else
@@ -195,6 +196,7 @@ defmodule EbbServer.Apps do
     with {:ok, app} <- fetch(state.apps, id),
          {:ok, origin} <- Origin.normalize(raw_origin),
          :ok <- ensure_unregistered_origins(state.apps, [origin]) do
+      warn_wildcards(app.name, [origin])
       updated = %{app | origins: app.origins ++ [origin]}
       commit(state, replace(state.apps, updated), {:ok, updated})
     else
@@ -236,6 +238,17 @@ defmodule EbbServer.Apps do
         )
 
         []
+    end
+  end
+
+  # A wildcard admits every subdomain, which is a broader grant than an
+  # operator usually means. It is supported, but never silent.
+  defp warn_wildcards(name, origins) do
+    for origin <- origins, Origin.wildcard?(origin) do
+      Logger.warning(
+        "app #{inspect(name)} registered a wildcard browser origin #{origin}; " <>
+          "prefer exact origins"
+      )
     end
   end
 

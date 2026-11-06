@@ -351,6 +351,9 @@ concurrently.
 | `EbbServer.Functions.Invocation`                                                 | One worker through the host-call/result frame loop and deadline                         |
 | `EbbServer.Functions.Worker.Bun`                                                 | One Bun runner process per invocation: socket, process group, temp dir                  |
 | `EbbServer.Apps`                                                                 | App registry: names, browser origins, and atomic `apps.json` writes                     |
+| `EbbServer.CORS`                                                                 | Browser-origin admission, preflight, and `Vary: Origin`                                 |
+| `EbbServer.Admin.Router`                                                         | `/admin/apps`: register, list, and revoke apps and origins                              |
+| `EbbServer.Admin.Token`                                                          | The node-level admin credential and its constant-time comparison                        |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass, external, tailscale modes)                           |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |

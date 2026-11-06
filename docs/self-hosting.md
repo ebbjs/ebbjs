@@ -437,7 +437,7 @@ configure their origins.
 
 A preflight (`OPTIONS`) is answered with `GET, POST, DELETE, OPTIONS` and the
 headers the client sends — `content-type`, `x-ebb-actor-id`, `accept`,
-`cache-control`, `last-event-id` — plus `Access-Control-Max-Age: 300` and
+`cache-control`, `last-event-id`, `authorization` — plus `Access-Control-Max-Age: 300` and
 `Vary: Origin`. The response reflects the matched origin, never a wildcard
 pattern, and allows credentials only for an exact-origin match (never with
 `*`). CORS headers also accompany auth and error responses, so a browser sees
@@ -481,7 +481,7 @@ $ curl -s http://localhost:4000/admin/apps \
 
 # list apps and take the id you need
 $ curl -s http://localhost:4000/admin/apps \
-    -H "Authorization: Bearer $EBB_ADMIN_TOKEN" | jq -r '.[].id'
+    -H "Authorization: Bearer $EBB_ADMIN_TOKEN" | jq -r '.apps[].id'
 
 # remove the app; its origins stop being admitted after the preflight cache
 $ curl -s -X DELETE http://localhost:4000/admin/apps/<id> \

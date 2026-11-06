@@ -8,6 +8,12 @@ import Config
 config :ebb_server, port: 4001
 config :ebb_server, data_dir: Path.join(System.tmp_dir!(), "ebb_server_test_app_storage")
 config :ebb_server, auth_mode: :bypass
+# The app registry writes `apps.json`; a per-run directory keeps registrations
+# (and deliberately corrupt-file tests) from leaking between suite runs.
+config :ebb_server,
+  apps_data_dir:
+    Path.join(System.tmp_dir!(), "ebb_server_test_apps_#{System.unique_integer([:positive])}")
+
 # Functions are on in production; the suite configures its own cache, store,
 # and transport per test, so the application never starts a pool or opens a
 # production database here.
