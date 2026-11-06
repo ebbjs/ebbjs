@@ -2019,31 +2019,25 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
   });
 
-  it("create() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+  it("create() rejects a literal null and names unset instead", async () => {
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
     const seenBefore = seen.length;
 
-    await expect(
-      client.actions.createNullableTodo({
+    try {
+      await client.actions.createNullableTodo({
         input: { title: "Ship", completed: false, body: null },
         ...createOpts,
-      }),
-    ).resolves.toBeDefined();
+      });
+      expect.fail("expected EntityValidationError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EntityValidationError);
+      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
+      expect(violations[0]?.message).toContain("unset");
+    }
 
-    await expect(
-      client.actions.createNullableTodo({
-        input: { title: null, completed: false, body: null },
-        ...createOpts,
-      }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-
-    // The validation failure must not have reached the wire — only
-    // the first successful create made a /sync/actions call. The
-    // count is the network-rejection assertion.
-    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
-    expect(actionsCalls).toBe(1);
-    expect(seen.length).toBe(seenBefore + 1);
+    // The validation failure must not have reached the wire.
+    expect(seen.length).toBe(seenBefore);
   });
 
   it("create() throws EntityValidationError with the bad field name when value type is wrong", async () => {
@@ -2182,20 +2176,15 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
   });
 
-  it("update() accepts null for a nullable field and rejects it for a non-nullable one", async () => {
+  it("update() rejects a literal null and names unset instead", async () => {
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
 
     await expect(
       client.actions.updateNullableTodo({ id: "todo_1", patch: { body: null } }),
-    ).resolves.toBeUndefined();
+    ).rejects.toMatchObject({ violations: [{ message: expect.stringContaining("unset") }] });
 
-    await expect(
-      client.actions.updateNullableTodo({ id: "todo_1", patch: { title: null } }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-
-    const actionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
-    expect(actionsCalls).toBe(1);
+    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
   });
 
   it("update({ validate: false }) skips local validation and submits", async () => {

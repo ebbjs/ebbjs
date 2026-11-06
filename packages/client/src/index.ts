@@ -119,6 +119,7 @@ export {
 
 export type { ReplicaSignal } from "./sync/replica-signal";
 export type { ManyPointerValue } from "@ebbjs/write";
+export { isUnset, unset, type Unset } from "@ebbjs/core";
 export type { ReplicaStats } from "@ebbjs/storage/replica";
 
 export {
@@ -134,6 +135,7 @@ export {
   type EntityNamespace,
   type EntityFields,
   type EntityValues,
+  type EntityPatch,
   type EntityNamespaces,
   type EntityRow,
   type EntitySnapshot,

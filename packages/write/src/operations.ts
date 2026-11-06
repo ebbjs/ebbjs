@@ -11,7 +11,14 @@
  * single Action.
  */
 
-import { generateId, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  generateId,
+  isFieldMap,
+  isUnset,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import {
   buildInitialContentField,
   DOC_CONTENT_FIELD,
@@ -802,7 +809,14 @@ const isEmptyPayload = (payload: unknown): boolean => {
 /**
  * Flatten a payload into the wire envelope. `undefined` fields are
  * dropped (the wire envelope is absent, not explicitly undefined);
- * `null` is preserved so nullable fields round-trip cleanly.
+ * `unset` compiles to a tombstone leaf, the same `{ value: null }` a
+ * clear has always used, so the merge rule and the Elixir side are
+ * unchanged.
+ *
+ * A literal `null` is still passed through here: tombstones arrive from
+ * other producers (listing seeds, the synthetic snapshot put, a peer's
+ * patch), so the envelope layer must not refuse one. Rejecting `null` is
+ * validation's job, where the intent is knowable.
  *
  * The registry supplies the merge marker per field: a map field's plain
  * object becomes a `map` envelope so its keys merge independently, and
@@ -819,6 +833,10 @@ export const wrapFields = (
   if (payload === null || typeof payload !== "object") return out;
   for (const [key, value] of Object.entries(payload)) {
     if (value === undefined) continue;
+    if (isUnset(value)) {
+      out[key] = { value: null, update_id: updateId, hlc };
+      continue;
+    }
     out[key] =
       markers?.[key]?.map === true && isPlainObject(value)
         ? wrapMapValue(value, updateId, hlc)
@@ -836,6 +854,11 @@ const wrapMapValue = (
   hlc: string,
 ): FieldValue => ({
   map: Object.fromEntries(
-    Object.entries(entries).map(([key, value]) => [key, { value, update_id: updateId, hlc }]),
+    Object.entries(entries).map(([key, value]) => [
+      key,
+      isUnset(value)
+        ? { value: null, update_id: updateId, hlc }
+        : { value, update_id: updateId, hlc },
+    ]),
   ),
 });

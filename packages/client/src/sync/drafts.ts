@@ -43,7 +43,13 @@ import {
   type GroupMemberView,
   type LiveGroupMember,
 } from "@ebbjs/write";
-import type { DerivedInputs, EntityFields, WireCreateStatic, WireStatic } from "./namespace";
+import type {
+  DerivedInputs,
+  EntityFields,
+  EntityPatch,
+  WireCreateStatic,
+  WireStatic,
+} from "./namespace";
 import {
   ActionRejectedError,
   call,
@@ -396,7 +402,7 @@ export interface DraftNamespace<
    * Patch an existing entity in the same Action, validated the same way
    * as `create`'s input (during the commit, not at draft time).
    */
-  update(id: string, patch: Partial<WireStatic<TFields>>, opts?: EntityWriteOptions): void;
+  update(id: string, patch: EntityPatch<TFields>, opts?: EntityWriteOptions): void;
   /** Soft-delete an existing entity: one `delete` Update whose `data` is `null`. */
   delete(id: string): void;
   /**

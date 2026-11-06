@@ -8,6 +8,7 @@
  * storage reads and no client dependency.
  */
 
+export { isUnset, unset, type Unset } from "@ebbjs/core";
 export * from "./committer";
 export * from "./field-projection";
 export * from "./generated-parts";

@@ -14,9 +14,9 @@
  * primitives in ./relationship.
  */
 
-import type { Entity } from "@ebbjs/core";
+import type { Entity, Unset } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
-import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
+import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
 import type {
   DerivedAccessors,
@@ -184,6 +184,25 @@ export type DerivedInputs<TFields extends Record<string, TSchema>> = {
  * ```
  */
 export type EntityValues<TEntityDef> = WireStatic<EntityFields<TEntityDef>>;
+
+/**
+ * What an update patch accepts: each wire field's value, or `unset` to
+ * assert it absent. `unset` is a value-shaped marker, not row data; it
+ * compiles to the tombstone the merge rule already understands.
+ */
+export type EntityPatch<TFields extends Record<string, TSchema>> = Partial<{
+  [K in keyof WireFields<TFields>]: PatchValue<WireFields<TFields>[K]>;
+}>;
+
+/**
+ * One field's patch value: the declared value or `unset`, and for a map
+ * field each entry may be `unset` on its own so one key can be cleared
+ * without touching its siblings.
+ */
+export type PatchValue<T extends TSchema> =
+  T extends TRecord<TString, infer V>
+    ? Record<string, Static<V> | Unset> | Unset
+    : Static<T> | Unset;
 
 /**
  * Row with attached relationship accessors. The projected TypeBox

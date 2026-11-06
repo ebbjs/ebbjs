@@ -6,7 +6,8 @@
  * done here because the wire envelope doesn't carry `type` tags.
  */
 
-import type { Action } from "@ebbjs/core";
+import { isUnset, type Action } from "@ebbjs/core";
+import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -320,15 +321,88 @@ export const validatePayload = <T extends TSchema>(
 
   if (partial && properties !== undefined) {
     for (const [key, value] of Object.entries(obj)) {
-      if (value === undefined) continue;
+      if (value === undefined || isUnset(value)) continue;
+      if (value === null) {
+        violations.push(nullIsNotUnset(entityName, key));
+        continue;
+      }
       const fieldSchema = properties[key];
       if (fieldSchema === undefined) continue;
-      collectFieldTypeErrors(violations, fieldSchema, value, entityName, key);
+      const checked = stripUnsetEntries(value, entityName, key, violations);
+      collectFieldTypeErrors(violations, fieldSchema, checked, entityName, key);
     }
   } else {
-    collectShapeErrors(violations, shape, payload, entityName);
+    // `unset` is not a value: drop it from the payload, and treat the key as
+    // satisfied so a create can assert absence for a required field. A
+    // literal `null` is a payload that never learned the vocabulary; its own
+    // violation replaces the required-field error it would otherwise add.
+    const skippedKeys: string[] = [];
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (isUnset(value)) {
+        skippedKeys.push(key);
+        continue;
+      }
+      if (value === null) {
+        skippedKeys.push(key);
+        violations.push(nullIsNotUnset(entityName, key));
+        continue;
+      }
+      cleaned[key] = stripUnsetEntries(value, entityName, key, violations);
+    }
+    const shapeForCheck =
+      skippedKeys.length > 0 && properties !== undefined
+        ? withOptionalKeys(properties, skippedKeys)
+        : shape;
+    collectShapeErrors(violations, shapeForCheck, cleaned, entityName);
   }
   return violations;
+};
+
+/**
+ * A map field's payload carries one marker per key. `unset` entries are not
+ * values, so drop them before `Value.Check`; a literal null entry is the same
+ * mistake as a null leaf and is rejected here.
+ */
+const stripUnsetEntries = (
+  value: unknown,
+  entityName: string,
+  field: string,
+  violations: ValidationViolation[],
+): unknown => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (isUnset(entry)) continue;
+    if (entry === null) {
+      violations.push(nullIsNotUnset(entityName, `${field}.${key}`));
+      continue;
+    }
+    out[key] = entry;
+  }
+  return out;
+};
+
+/** One violation for a payload that used `null` where only `unset` asserts absence. */
+const nullIsNotUnset = (entityName: string, field: string): ValidationViolation => ({
+  entityName,
+  field,
+  message: `${field}: null is not a value; use \`unset\` to clear a field`,
+});
+
+/** A copy of a field map with the named properties optional, so an `unset` key is satisfied. */
+const withOptionalKeys = (
+  properties: Record<string, TSchema>,
+  keys: readonly string[],
+): TSchema => {
+  const next: Record<string, TSchema> = { ...properties };
+  for (const key of keys) {
+    const fieldSchema = properties[key];
+    if (fieldSchema !== undefined) {
+      next[key] = Type.Optional(fieldSchema as Parameters<typeof Type.Optional>[0]);
+    }
+  }
+  return Type.Object(next);
 };
 
 /** Extract a `TObject` shape's `properties` map. Returns `undefined` for non-object shapes. */
