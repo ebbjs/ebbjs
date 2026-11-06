@@ -162,6 +162,844 @@
   "openapi": "3.1.0",
   "paths":
     {
+      "/admin/apps":
+        {
+          "get":
+            {
+              "description": "Returns every app the operator registered and the browser origins each one admits. Requires the admin credential in `Authorization: Bearer <token>`.",
+              "operationId": "listApps",
+              "parameters":
+                [
+                  {
+                    "description": "`Bearer <admin token>`",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "apps":
+                                        {
+                                          "items":
+                                            {
+                                              "properties":
+                                                {
+                                                  "created_at":
+                                                    { "format": "date-time", "type": "string" },
+                                                  "id": { "type": "string" },
+                                                  "name": { "type": "string" },
+                                                  "origins":
+                                                    {
+                                                      "items": { "type": "string" },
+                                                      "type": "array",
+                                                    },
+                                                },
+                                              "required": ["id", "name", "origins", "created_at"],
+                                              "type": "object",
+                                            },
+                                          "type": "array",
+                                        },
+                                    },
+                                  "required": ["apps"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Registered apps",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This node has no admin credential configured",
+                    },
+                },
+              "summary": "List registered apps",
+              "tags": ["Admin"],
+            },
+          "post":
+            {
+              "description": "Registers one app with at least one browser origin. The name is unique case-insensitively; every origin is unique across apps and normalized before storage. Registration admits browser origins to CORS; it is not authorization.",
+              "operationId": "createApp",
+              "parameters":
+                [
+                  {
+                    "description": "`Bearer <admin token>`",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "requestBody":
+                {
+                  "content":
+                    {
+                      "application/json":
+                        {
+                          "schema":
+                            {
+                              "properties":
+                                {
+                                  "name":
+                                    { "description": "Operator-facing app name", "type": "string" },
+                                  "origins":
+                                    {
+                                      "description": "Browser origins, e.g. https://app.example.com",
+                                      "items": { "type": "string" },
+                                      "type": "array",
+                                    },
+                                },
+                              "required": ["name", "origins"],
+                              "type": "object",
+                            },
+                        },
+                    },
+                  "required": true,
+                },
+              "responses":
+                {
+                  "201":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "app":
+                                        {
+                                          "properties":
+                                            {
+                                              "created_at":
+                                                { "format": "date-time", "type": "string" },
+                                              "id": { "type": "string" },
+                                              "name": { "type": "string" },
+                                              "origins":
+                                                { "items": { "type": "string" }, "type": "array" },
+                                            },
+                                          "required": ["id", "name", "origins", "created_at"],
+                                          "type": "object",
+                                        },
+                                    },
+                                  "required": ["app"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The app was registered",
+                    },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Malformed JSON",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This node has no admin credential configured",
+                    },
+                  "409":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Duplicate app name or origin",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Body over 64 KiB",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Invalid name or origin",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The registry could not be written",
+                    },
+                },
+              "summary": "Register an app and its origins",
+              "tags": ["Admin"],
+            },
+        },
+      "/admin/apps/{id}":
+        {
+          "delete":
+            {
+              "description": "Removes the app and every origin it admits. Revocation reaches browsers after the preflight cache (`Access-Control-Max-Age`, about 300 seconds).",
+              "operationId": "deleteApp",
+              "parameters":
+                [
+                  {
+                    "description": "The app id",
+                    "in": "path",
+                    "name": "id",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>`",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "204": { "description": "The app was removed" },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This node has no admin credential configured",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unknown app id",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The registry could not be written",
+                    },
+                },
+              "summary": "Remove an app and its origins",
+              "tags": ["Admin"],
+            },
+        },
+      "/admin/apps/{id}/origins":
+        {
+          "post":
+            {
+              "description": "Adds and normalizes one browser origin. A wildcard is accepted only as the whole first host label (`https://*.example.com`); the same origin may not be registered to two apps.",
+              "operationId": "addAppOrigin",
+              "parameters":
+                [
+                  {
+                    "description": "The app id",
+                    "in": "path",
+                    "name": "id",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>`",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "requestBody":
+                {
+                  "content":
+                    {
+                      "application/json":
+                        {
+                          "schema":
+                            {
+                              "properties": { "origin": { "type": "string" } },
+                              "required": ["origin"],
+                              "type": "object",
+                            },
+                        },
+                    },
+                  "required": true,
+                },
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "app":
+                                        {
+                                          "properties":
+                                            {
+                                              "created_at":
+                                                { "format": "date-time", "type": "string" },
+                                              "id": { "type": "string" },
+                                              "name": { "type": "string" },
+                                              "origins":
+                                                { "items": { "type": "string" }, "type": "array" },
+                                            },
+                                          "required": ["id", "name", "origins", "created_at"],
+                                          "type": "object",
+                                        },
+                                    },
+                                  "required": ["app"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The origin was added",
+                    },
+                  "400":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Malformed JSON",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This node has no admin credential configured",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unknown app id",
+                    },
+                  "409":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "That origin is already registered",
+                    },
+                  "413":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Body over 64 KiB",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Invalid origin",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The registry could not be written",
+                    },
+                },
+              "summary": "Add one origin to an app",
+              "tags": ["Admin"],
+            },
+        },
+      "/admin/apps/{id}/origins/{origin}":
+        {
+          "delete":
+            {
+              "description": "Removes one origin, given URL-encoded in the path. The app keeps its other origins. Revocation reaches browsers after the preflight cache.",
+              "operationId": "removeAppOrigin",
+              "parameters":
+                [
+                  {
+                    "description": "The app id",
+                    "in": "path",
+                    "name": "id",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "URL-encoded origin",
+                    "in": "path",
+                    "name": "origin",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                  {
+                    "description": "`Bearer <admin token>`",
+                    "in": "header",
+                    "name": "Authorization",
+                    "required": true,
+                    "schema": { "type": "string" },
+                  },
+                ],
+              "responses":
+                {
+                  "200":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "app":
+                                        {
+                                          "properties":
+                                            {
+                                              "created_at":
+                                                { "format": "date-time", "type": "string" },
+                                              "id": { "type": "string" },
+                                              "name": { "type": "string" },
+                                              "origins":
+                                                { "items": { "type": "string" }, "type": "array" },
+                                            },
+                                          "required": ["id", "name", "origins", "created_at"],
+                                          "type": "object",
+                                        },
+                                    },
+                                  "required": ["app"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The origin was removed",
+                    },
+                  "401":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Missing or wrong admin credential",
+                    },
+                  "403":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "This node has no admin credential configured",
+                    },
+                  "404":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Unknown app id or origin",
+                    },
+                  "422":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "Invalid origin",
+                    },
+                  "500":
+                    {
+                      "content":
+                        {
+                          "application/json":
+                            {
+                              "schema":
+                                {
+                                  "properties":
+                                    {
+                                      "details": { "nullable": true, "type": "string" },
+                                      "error": { "type": "string" },
+                                    },
+                                  "required": ["error"],
+                                  "type": "object",
+                                },
+                            },
+                        },
+                      "description": "The registry could not be written",
+                    },
+                },
+              "summary": "Remove one origin from an app",
+              "tags": ["Admin"],
+            },
+        },
       "/entities/query":
         {
           "post":

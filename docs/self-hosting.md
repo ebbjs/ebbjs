@@ -125,13 +125,16 @@ ingress. It is covered in [Embedded node](#embedded-node).
 
 ## 4. Configuration
 
-| Variable        | Default     | Description                                                                                      |
-| --------------- | ----------- | ------------------------------------------------------------------------------------------------ |
-| `EBB_PORT`      | `4000`      | HTTP listen port inside the container. The image also uses it for the healthcheck.               |
-| `EBB_HOST_PORT` | `4000`      | Compose only: the host port published for `EBB_PORT`.                                            |
-| `EBB_DATA_DIR`  | `/app/data` | RocksDB + SQLite data directory. Point it at the volume, not at a layer path.                    |
-| `EBB_AUTH_MODE` | (none)      | `bypass`, `external`, or `tailscale`. **No default** — the container refuses to boot without it. |
-| `EBB_AUTH_URL`  | (none)      | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.             |
+| Variable             | Default     | Description                                                                                                 |
+| -------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `EBB_PORT`           | `4000`      | HTTP listen port inside the container. The image also uses it for the healthcheck.                          |
+| `EBB_HOST_PORT`      | `4000`      | Compose only: the host port published for `EBB_PORT`.                                                       |
+| `EBB_DATA_DIR`       | `/app/data` | RocksDB + SQLite data directory. Point it at the volume, not at a layer path.                               |
+| `EBB_AUTH_MODE`      | (none)      | `bypass`, `external`, or `tailscale`. **No default** — the container refuses to boot without it.            |
+| `EBB_AUTH_URL`       | (none)      | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.                        |
+| `EBB_ADMIN_TOKEN`    | (unset)     | Admin `Authorization: Bearer` credential for `/admin/apps` and function deploys; unset denies admin routes. |
+| `EBB_CORS_ORIGINS`   | (empty)     | Comma-separated browser origins always admitted, unioned with the app registry.                             |
+| `EBB_CORS_ALLOW_ANY` | (unset)     | `1` admits every browser origin, overriding the mode default; logged at boot.                               |
 
 Auth is the one setting where the environment wins over the release's compiled
 config, so a baked-in value can never silently override the operator's
@@ -393,6 +396,113 @@ example.com {
 client_max_body_size 10m;
 ```
 
+### Browser origins and CORS
+
+Ebb is one store reused by many apps, so cross-origin browser requests are
+normal. CORS here is **browser-origin admission, not authorization**: it decides
+which browser origins may read a response, while an actor's group grants remain
+the only permission boundary. Non-browser clients — the CLI, functions,
+server-to-server calls, `curl` — are unaffected by the registry and ignore CORS
+entirely; they authenticate exactly as before.
+
+The server admits an origin when it appears in either source (outside
+`:bypass`, which admits every origin):
+
+- `EBB_CORS_ORIGINS` — a comma-separated list of exact origins baked into the
+  deployment's config or IaC.
+- The app registry — apps and browser origins registered at `/admin/apps` and
+  persisted in `<EBB_DATA_DIR>/apps.json`.
+
+Register an app's origins in CI or at deploy time, using `ebb apps`
+([#730](https://github.com/ebbjs/ebbjs/issues/730)) or the admin API below.
+Removing an origin (or a whole app) revokes it once the browser's preflight
+cache expires — about 300 seconds — not on the next request.
+
+#### Mode defaults
+
+| Auth mode   | Default until an origin is registered   |
+| ----------- | --------------------------------------- |
+| `bypass`    | `*` (every origin), with a boot warning |
+| `external`  | deny all origins                        |
+| `tailscale` | deny all origins                        |
+
+`bypass` is dev-only. `external` and `tailscale` admit nothing until an origin
+is registered or listed, because the browser's device or cookie can carry
+ambient authority. `EBB_CORS_ALLOW_ANY=1` overrides either deny-all default,
+admits every origin, and is logged at boot. There is no flag that guesses
+whether an external app uses a bearer token or a cookie: external deployments
+configure their origins.
+
+#### Preflight
+
+A preflight (`OPTIONS`) is answered with `GET, POST, DELETE, OPTIONS` and the
+headers the client sends — `content-type`, `x-ebb-actor-id`, `accept`,
+`cache-control`, `last-event-id`, `authorization` — plus `Access-Control-Max-Age: 300` and
+`Vary: Origin`. The response reflects the matched origin, never a wildcard
+pattern, and allows credentials only for an exact-origin match (never with
+`*`). CORS headers also accompany auth and error responses, so a browser sees
+the `401` instead of an opaque CORS failure.
+
+#### Wildcard origins
+
+An origin such as `https://*.example.com` is accepted but logs a warning;
+prefer exact origins. The bare `*` is never an app origin: only
+`EBB_CORS_ALLOW_ANY=1` admits every origin.
+
+#### Admin API
+
+`EBB_ADMIN_TOKEN` is the Bearer credential for `/admin/apps` (compiled:
+`:ebb_server, :admin_token`). `EBB_FUNCTIONS_ADMIN_TOKEN` and the nested
+`:ebb_server, :functions, :admin_token` remain a fallback, so an existing
+function deployment keeps working. With no token configured there is no admin
+credential and the admin routes fail closed; they are never open.
+
+| Method   | Path                              | Body                 | Purpose                                       |
+| -------- | --------------------------------- | -------------------- | --------------------------------------------- |
+| `GET`    | `/admin/apps`                     | —                    | List registered apps and their origins        |
+| `POST`   | `/admin/apps`                     | `{"name","origins"}` | Register an app; names and origins are unique |
+| `DELETE` | `/admin/apps/:id`                 | —                    | Remove an app and its origins                 |
+| `POST`   | `/admin/apps/:id/origins`         | `{"origin"}`         | Add one origin to an app                      |
+| `DELETE` | `/admin/apps/:id/origins/:origin` | —                    | Remove one origin; URL-encode the origin      |
+
+Every route requires `Authorization: Bearer`. Errors are
+`{"error": "...", "details": ...}`, with `details` present only when there is
+more to say. Origins are normalized (lowercase scheme and host, default port
+stripped, no path/query/fragment; `null` is rejected), so
+`https://notes.example.com:443/` and `https://notes.example.com` are the same
+origin.
+
+```console
+# register an app and its production origin
+$ curl -s http://localhost:4000/admin/apps \
+    -H "Authorization: Bearer $EBB_ADMIN_TOKEN" \
+    -H 'content-type: application/json' \
+    -d '{"name":"notes","origins":["https://notes.example.com"]}'
+
+# list apps and take the id you need
+$ curl -s http://localhost:4000/admin/apps \
+    -H "Authorization: Bearer $EBB_ADMIN_TOKEN" | jq -r '.apps[].id'
+
+# remove the app; its origins stop being admitted after the preflight cache
+$ curl -s -X DELETE http://localhost:4000/admin/apps/<id> \
+    -H "Authorization: Bearer $EBB_ADMIN_TOKEN"
+
+# remove one origin instead (the origin is URL-encoded)
+$ curl -s -X DELETE \
+    'http://localhost:4000/admin/apps/<id>/origins/https%3A%2F%2Fnotes.example.com' \
+    -H "Authorization: Bearer $EBB_ADMIN_TOKEN"
+```
+
+#### Storage and backups
+
+`apps.json` sits on the data volume beside RocksDB and SQLite. A write goes to
+a temporary file, is fsynced, and is renamed into place, so a reader (or a
+process crash) never observes a half-written registry. A corrupt file fails
+closed at boot — no origin is admitted until it is repaired or restored, and
+the error is logged. Back it up and restore it with the rest of the volume (see
+[Persistence, upgrades, and backups](#5-persistence-upgrades-and-backups)).
+There is no file watcher; change the registry through the admin API.
+
 ## 5. Persistence, upgrades, and backups
 
 `/app/data` is a volume and holds everything durable:
@@ -401,6 +511,9 @@ client_max_body_size 10m;
   history.
 - `ebb.db` (plus `ebb.db-wal` / `ebb.db-shm`) — the SQLite entity cache. It is
   rebuilt from the action log, so it can be regenerated; the action log cannot.
+- `apps.json` — the app registry (see [Browser origins and
+  CORS](#browser-origins-and-cors)). Losing it admits no registered origin
+  until the apps are registered again.
 - `tailscale/` — the embedded node's registration state (see [Node state and
   persistence](#node-state-and-persistence)). It is not part of the sync data,
   but losing it re-registers the node and prints a new login URL.

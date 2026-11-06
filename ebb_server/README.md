@@ -82,6 +82,9 @@ mix openapi.gen.spec
 | `EBB_DATA_DIR`               | `/app/data`                                 | RocksDB + SQLite data directory (including `functions.db`)                             |
 | `EBB_AUTH_MODE`              | (none — required)                           | Auth mode: `bypass`, `external`, or `tailscale`. The node refuses to boot without one. |
 | `EBB_AUTH_URL`               | (none)                                      | Identity service URL. Required when `EBB_AUTH_MODE=external`; unused by `tailscale`.   |
+| `EBB_ADMIN_TOKEN`            | (unset)                                     | Admin `Authorization: Bearer` credential for `/admin/apps` and function deploys.       |
+| `EBB_CORS_ORIGINS`           | (empty)                                     | Comma-separated browser origins always admitted; unioned with the app registry.        |
+| `EBB_CORS_ALLOW_ANY`         | (unset)                                     | `1` admits every browser origin; overrides the mode default and logs at boot.          |
 | `EBB_FUNCTIONS_ENABLED`      | compiled `:functions, enabled`              | Enable the `/functions` routes, store, and bundle cache (`true`/`false`, `1`/`0`).     |
 | `EBB_TAILSCALE_NODE`         | `embedded` in the image / `external` in dev | Who runs the node: the bundled gateway, or the operator's `tailscale serve` / sidecar. |
 | `EBB_TAILSCALE_STATE_DIR`    | `<EBB_DATA_DIR>/tailscale`                  | tsnet state directory; must be on the volume or every restart re-registers.            |
@@ -101,7 +104,13 @@ must not be silently overridden by a release's baked-in config. There is
 deliberately no default mode — a bare `mix release` boot without auth
 configuration fails before any child starts rather than silently allowing every
 client to forge an actor identity. `:bypass` logs a warning at boot and must
-never be exposed publicly.
+never be exposed publicly. Browser origins follow the same mode: `:bypass`
+admits every origin (`*`) with a boot warning and is dev-only; `:external` and
+`:tailscale` admit no origin until it is registered through `/admin/apps` or
+listed in `EBB_CORS_ORIGINS`. `EBB_CORS_ALLOW_ANY=1` is the explicit escape
+hatch and is logged at boot. CORS governs browser origins only; it is not
+authorization, and non-browser clients ignore it. See
+[`docs/self-hosting.md`](../docs/self-hosting.md#browser-origins-and-cors).
 
 `:tailscale` takes its actor from the `tailscale-user-login` header, which a
 Tailscale gateway (`tailscale serve`, a sidecar, or the embedded node from
@@ -141,9 +150,11 @@ the winner is resolved **once at boot** and written back into
 variable, so the flag cannot half-apply: the route and the bundle cache either
 both exist or neither does. With functions disabled — the default — the route
 is absent (`404`), not a `503`. Versions live in `<data_dir>/functions.db`;
-`:bundle_dir` selects the directory loader instead (tests and dev), and
-`:admin_token` is the separate deploy credential. All three are under the one
-nested `:functions` key; see `EbbServer.Functions` and
+`:bundle_dir` selects the directory loader instead (tests and dev). Both are
+under the nested `:functions` key. `EBB_ADMIN_TOKEN` (compiled:
+`:ebb_server, :admin_token`) is the deploy credential;
+`EBB_FUNCTIONS_ADMIN_TOKEN` and the nested `:functions, :admin_token` remain a
+fallback for existing deployments. See `EbbServer.Functions` and
 `EbbServer.Functions.Admin`.
 
 ## Functions
@@ -339,6 +350,10 @@ concurrently.
 | `EbbServer.Functions.BundleCache`                                                | Verifies digest + envelope and serves the active bundle per name                        |
 | `EbbServer.Functions.Invocation`                                                 | One worker through the host-call/result frame loop and deadline                         |
 | `EbbServer.Functions.Worker.Bun`                                                 | One Bun runner process per invocation: socket, process group, temp dir                  |
+| `EbbServer.Apps`                                                                 | App registry: names, browser origins, and atomic `apps.json` writes                     |
+| `EbbServer.CORS`                                                                 | Browser-origin admission, preflight, and `Vary: Origin`                                 |
+| `EbbServer.Admin.Router`                                                         | `/admin/apps`: register, list, and revoke apps and origins                              |
+| `EbbServer.Admin.Token`                                                          | The node-level admin credential and its constant-time comparison                        |
 | `EbbServer.Sync.AuthPlug`                                                        | Actor identity extraction (bypass, external, tailscale modes)                           |
 | `EbbServer.Sync.Router`                                                          | HTTP plug router                                                                        |
 | `EbbServer.Sync.CatchUp`                                                         | Paginated catch-up                                                                      |
@@ -354,25 +369,30 @@ hot-path behavior. Read those before making non-trivial changes.
 
 ### HTTP endpoint table
 
-| Method | Path                                             | Purpose                                                                                |
-| ------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `GET`  | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required                      |
-| `POST` | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)                   |
-| `GET`  | `/sync/identity`                                 | Actor the server resolved from the request (`actor_id`, `provider`, optional display)  |
-| `GET`  | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)                 |
-| `GET`  | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                                         |
-| `GET`  | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                              |
-| `POST` | `/sync/actions`                                  | Write actions (MessagePack body)                                                       |
-| `POST` | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                                         |
-| `GET`  | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)                        |
-| `POST` | `/entities/query`                                | Query entities by type with optional filter/limit/offset                               |
-| `GET`  | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code)             |
-| `POST` | `/functions/:name`                               | Invoke a deployed function (JSON params)                                               |
-| `POST` | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                              |
-| `GET`  | `/functions/:name/versions`                      | Version history: status, timestamps, pin, creator, deployment hash (admin; never code) |
-| `POST` | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)                           |
-| `POST` | `/functions/:name/rollback`                      | Activate the previous version (admin `Authorization: Bearer`)                          |
-| `POST` | `/functions/:name/disable`                       | Per-function kill switch (admin `Authorization: Bearer`)                               |
+| Method   | Path                                             | Purpose                                                                                |
+| -------- | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `GET`    | `/healthz`                                       | Readiness probe (`200` ready / `503` not ready), no auth required                      |
+| `POST`   | `/sync/handshake`                                | Actor identity + group membership (requires `x-ebb-actor-id` header)                   |
+| `GET`    | `/sync/identity`                                 | Actor the server resolved from the request (`actor_id`, `provider`, optional display)  |
+| `GET`    | `/sync/groups/:group_id?offset=N`                | Paginated catch-up (`stream-next-offset`, `stream-up-to-date` headers)                 |
+| `GET`    | `/sync/groups/:group_id/entities?cursor=&limit=` | Group state at a watermark, for cold bootstrap                                         |
+| `GET`    | `/sync/live?groups=...&cursor=N`                 | SSE stream of new actions                                                              |
+| `POST`   | `/sync/actions`                                  | Write actions (MessagePack body)                                                       |
+| `POST`   | `/sync/presence`                                 | Broadcast ephemeral presence data on an entity                                         |
+| `GET`    | `/entities/:id`                                  | Materialized entity (requires `actor_id` query param or header)                        |
+| `POST`   | `/entities/query`                                | Query entities by type with optional filter/limit/offset                               |
+| `GET`    | `/functions`                                     | Deployed functions: name, active version, access, RPC schemas (never code)             |
+| `POST`   | `/functions/:name`                               | Invoke a deployed function (JSON params)                                               |
+| `POST`   | `/functions/:name/versions`                      | Upload a function version (admin `Authorization: Bearer`)                              |
+| `GET`    | `/functions/:name/versions`                      | Version history: status, timestamps, pin, creator, deployment hash (admin; never code) |
+| `POST`   | `/functions/:name/activate`                      | Activate an uploaded version (admin `Authorization: Bearer`)                           |
+| `POST`   | `/functions/:name/rollback`                      | Activate the previous version (admin `Authorization: Bearer`)                          |
+| `POST`   | `/functions/:name/disable`                       | Per-function kill switch (admin `Authorization: Bearer`)                               |
+| `GET`    | `/admin/apps`                                    | Registered apps and browser origins (admin `Authorization: Bearer`)                    |
+| `POST`   | `/admin/apps`                                    | Register an app with `{"name","origins"}` (admin `Authorization: Bearer`)              |
+| `DELETE` | `/admin/apps/:id`                                | Remove an app and its origins (admin `Authorization: Bearer`)                          |
+| `POST`   | `/admin/apps/:id/origins`                        | Add an origin with `{"origin"}` (admin `Authorization: Bearer`)                        |
+| `DELETE` | `/admin/apps/:id/origins/:origin`                | Remove one origin, URL-encoded (admin `Authorization: Bearer`)                         |
 
 Every `/functions` route is absent (`404`) while functions are disabled.
 

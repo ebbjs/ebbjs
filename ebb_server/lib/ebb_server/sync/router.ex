@@ -42,6 +42,9 @@ defmodule EbbServer.Sync.Router do
       credential).
     - `POST /functions/:name/disable` — the per-function kill switch (admin
       credential).
+    - `/admin/apps` — the app registry: list, register, and revoke the browser
+      origins an app admits to CORS. Authenticated by the admin credential
+      alone, before `AuthPlug`; see `EbbServer.Admin.Router`.
 
   ## Status codes
 
@@ -83,6 +86,7 @@ defmodule EbbServer.Sync.Router do
 
   This is **request plumbing**; the actual business logic lives in:
 
+  - `EbbServer.CORS` — browser-origin admission (not authorization)
   - `EbbServer.Sync.AuthPlug` — actor identity extraction
   - `EbbServer.Sync.PresenceRateLimit` — per-actor presence volume cap
   - `EbbServer.Storage.PermissionChecker` — per-update auth
@@ -118,6 +122,14 @@ defmodule EbbServer.Sync.Router do
   # Before AuthPlug: a readiness probe must not depend on the auth
   # configuration or on a caller-supplied actor identity.
   plug(:health_check)
+
+  # Before AuthPlug, so a preflight is answered without a credential and a
+  # 401/4xx still carries the headers a browser needs to read it.
+  plug(EbbServer.CORS)
+
+  # Admin routes authenticate with the node-level admin credential, not an
+  # actor, so they must be reached before AuthPlug resolves one.
+  plug(:admin)
 
   plug(EbbServer.Sync.AuthPlug)
 
@@ -171,6 +183,16 @@ defmodule EbbServer.Sync.Router do
   end
 
   defp health_check(conn, _opts), do: conn
+
+  # Delegated like `/functions`: the subtree is forwarded from a plug so the
+  # parent's route table never sees these paths and `Admin.Router` owns its
+  # own 404. `Plug.forward/4` strips the prefix, so the child sees `/apps`,
+  # `/apps/:id`, and so on.
+  defp admin(%Plug.Conn{path_info: ["admin" | rest]} = conn, _opts) do
+    Plug.forward(conn, rest, EbbServer.Admin.Router, EbbServer.Admin.Router.init([]))
+  end
+
+  defp admin(conn, _opts), do: conn
 
   post "/sync/actions" do
     case read_request_body(conn, BodyLimits.actions()) do
