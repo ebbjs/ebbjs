@@ -179,27 +179,38 @@ describe("EntityRegistry.validateAction", () => {
 });
 
 describe("EntityRegistry.validateFilter", () => {
-  it("returns empty for an empty filter", () => {
+  it("returns empty for an unfiltered query", () => {
     const r = buildRegistry();
-    expect(r.validateFilter("todo", {})).toEqual([]);
+    expect(r.validateFilter("todo", null)).toEqual([]);
+    expect(r.validateFilter("todo", [])).toEqual([]);
+    expect(r.validateFilter("todo", [{}])).toEqual([]);
   });
 
   it("returns empty for a filter with only declared fields", () => {
     const r = buildRegistry();
-    expect(r.validateFilter("todo", { title: "x", completed: false })).toEqual([]);
+    expect(r.validateFilter("todo", [{ title: "x", completed: false }])).toEqual([]);
+    expect(r.validateFilter("todo", [{ title: "x" }, { completed: null }])).toEqual([]);
   });
 
-  it("reports unknown filter field names", () => {
+  it("reports unknown filter field names, naming the group", () => {
     const r = buildRegistry();
-    const v = r.validateFilter("todo", { typo: "x" });
+    const v = r.validateFilter("todo", [{ title: "x" }, { typo: "x" }]);
     expect(v).toHaveLength(1);
     expect(v[0]?.field).toBe("typo");
     expect(v[0]?.entityName).toBe("todo");
+    expect(v[0]?.message).toContain("group 1");
+  });
+
+  it("rejects a null entry where a group is expected", () => {
+    const r = buildRegistry();
+    const v = r.validateFilter("todo", [null] as unknown as readonly Record<string, never>[]);
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toContain("group 0");
   });
 
   it("reports unknown entity type", () => {
     const r = buildRegistry();
-    const v = r.validateFilter("list", { x: 1 });
+    const v = r.validateFilter("list", [{ x: 1 }]);
     expect(v).toHaveLength(1);
     expect(v[0]?.entityName).toBe("(unknown)");
   });

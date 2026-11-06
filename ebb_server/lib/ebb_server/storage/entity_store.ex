@@ -687,7 +687,9 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   @doc """
-  Queries entities of a given type with permission filtering and optional field filters.
+  Queries entities of a given type with permission filtering and optional field
+  filters, given as a disjunction of filter groups (see
+  `EbbServer.Storage.QueryFilter`).
 
   First materializes any dirty entities of the requested type, then delegates to
   SQLite for the permission-checked query.
@@ -705,7 +707,7 @@ defmodule EbbServer.Storage.EntityStore do
   `{:error, :invalid_offset}`, `{:error, :invalid_filter}` or
   `{:error, term()}`.
   """
-  @spec query(String.t(), map() | nil, String.t(), keyword()) ::
+  @spec query(String.t(), [map()] | nil, String.t(), keyword()) ::
           {:ok, [map()]}
           | {:error, :invalid_limit | :invalid_offset | :invalid_filter | term()}
   def query(type, filter, actor_id, opts \\ []) do

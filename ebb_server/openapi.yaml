@@ -180,10 +180,16 @@
                                 {
                                   "filter":
                                     {
-                                      "description": "Field-value filter: identifier-shaped keys mapped to JSON scalars (string, number, boolean or null), at most 64 keys",
-                                      "maxProperties": 64,
+                                      "description": "Disjunction of filter groups: groups are ORed, keys within a group are ANDed. An empty list, a list holding an empty group, null, or an omitted filter is unfiltered; a null entry is rejected.",
+                                      "items":
+                                        {
+                                          "additionalProperties": true,
+                                          "description": "One AND-group of field predicates: identifier-shaped keys mapped to JSON scalars (string, number, boolean or null), at most 64 keys. A null value matches a field with no live value (absent or tombstoned).",
+                                          "maxProperties": 64,
+                                          "type": "object",
+                                        },
                                       "nullable": true,
-                                      "type": "object",
+                                      "type": "array",
                                     },
                                   "limit":
                                     {
@@ -331,7 +337,7 @@
                                 },
                             },
                         },
-                      "description": "Missing or invalid type, invalid JSON, a filter that is not identifier keys mapped to JSON scalars, or a limit/offset out of range",
+                      "description": "Missing or invalid type, invalid JSON, a filter that is not a list of identifier-keyed scalar groups, or a limit/offset out of range",
                     },
                   "503":
                     {

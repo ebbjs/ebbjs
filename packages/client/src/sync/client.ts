@@ -77,6 +77,7 @@ import {
   TextDocumentRegistry,
   seedRegistry,
   type EntityDef,
+  type Filter,
   type RelationshipDef,
   type Schema,
   type ValidationViolation,
@@ -2398,7 +2399,12 @@ export interface HandshakeResult {
 
 /** Options for {@link SyncClient.queryEntities}. */
 export interface QueryOptions {
-  filter?: Record<string, unknown>;
+  /**
+   * A disjunction of filter groups: groups are ORed, keys within a group
+   * ANDed. A `null` value matches a field with no live value. `null`, `[]`,
+   * or an omitted filter is unfiltered.
+   */
+  filter?: Filter | null;
   limit?: number;
   offset?: number;
 }

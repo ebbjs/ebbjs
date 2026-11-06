@@ -292,7 +292,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       write_todo("todo_filter_1", "g_filter_1", "a_filter", completed: true, title: "Done task")
       write_todo("todo_filter_2", "g_filter_1", "a_filter", completed: false, title: "Not done")
 
-      conn = post_query(%{"type" => "todo", "filter" => %{"completed" => true}}, "a_filter")
+      conn = post_query(%{"type" => "todo", "filter" => [%{"completed" => true}]}, "a_filter")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -324,7 +324,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert is_pid(sqlite_pid)
 
       for _ <- 1..4 do
-        conn = post_query(%{"type" => "todo", "filter" => %{"a b" => "x"}})
+        conn = post_query(%{"type" => "todo", "filter" => [%{"a b" => "x"}]})
         assert conn.status == 422
       end
 
@@ -339,12 +339,14 @@ defmodule EbbServer.Sync.EntityQueryTest do
       write_todo("todo_open", "g_scalar", "a_scalar", completed: false, title: "Not done")
 
       cases = [
-        {%{"completed" => true}, ["todo_done"]},
-        {%{"completed" => false}, ["todo_open"]},
-        {%{"completed" => 1}, ["todo_done"]},
-        {%{"title" => "Done task"}, ["todo_done"]},
-        {%{"title" => nil}, []},
-        {%{}, ["todo_done", "todo_open"]}
+        {[%{"completed" => true}], ["todo_done"]},
+        {[%{"completed" => false}], ["todo_open"]},
+        {[%{"completed" => 1}], ["todo_done"]},
+        {[%{"title" => "Done task"}], ["todo_done"]},
+        {[%{"title" => nil}], []},
+        {[%{}], ["todo_done", "todo_open"]},
+        {[], ["todo_done", "todo_open"]},
+        {[%{"completed" => true}, %{"completed" => false}], ["todo_done", "todo_open"]}
       ]
 
       for {filter, expected_ids} <- cases do

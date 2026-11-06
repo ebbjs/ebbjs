@@ -999,7 +999,7 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
       fetchImpl: fn,
       registry: todoEntity(),
     });
-    const list = await client.queryEntities("todo", { filter: { title: "x" } });
+    const list = await client.queryEntities("todo", { filter: [{ title: "x" }] });
     expect(list).toHaveLength(1);
     expect(fn.mock.calls).toHaveLength(1);
   });
@@ -1012,7 +1012,7 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
       fetchImpl: fn,
       registry: todoEntity(),
     });
-    await expect(client.queryEntities("todo", { filter: { typo: "x" } })).rejects.toBeInstanceOf(
+    await expect(client.queryEntities("todo", { filter: [{ typo: "x" }] })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
     expect(fn.mock.calls).toHaveLength(0);

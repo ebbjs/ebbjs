@@ -373,7 +373,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       write_todo("todo_incomplete", group_id, actor_id, writer_name, completed: false)
 
       {:ok, completed} =
-        EntityStore.query("todo", %{"completed" => true}, actor_id,
+        EntityStore.query("todo", [%{"completed" => true}], actor_id,
           rocks_name: rocks_name,
           sqlite_name: sqlite_name,
           dirty_set: dirty_set
@@ -385,7 +385,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert actual_value == true
 
       {:ok, incomplete} =
-        EntityStore.query("todo", %{"completed" => false}, actor_id,
+        EntityStore.query("todo", [%{"completed" => false}], actor_id,
           rocks_name: rocks_name,
           sqlite_name: sqlite_name,
           dirty_set: dirty_set
@@ -395,6 +395,91 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       incomplete_entity = hd(incomplete)
       actual_incomplete_value = get_in(incomplete_entity.data, ["fields", "completed", "value"])
       assert actual_incomplete_value == false
+    end
+
+    test "query ANDs keys within a group", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_and_#{System.unique_integer([:positive])}"
+      actor_id = "a_and_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+
+      write_todo("todo_done", group_id, actor_id, writer_name,
+        completed: true,
+        title: "Done task"
+      )
+
+      write_todo("todo_open", group_id, actor_id, writer_name,
+        completed: false,
+        title: "Done task"
+      )
+
+      {:ok, rows} =
+        EntityStore.query("todo", [%{"completed" => true, "title" => "Done task"}], actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.map(rows, & &1.id) == ["todo_done"]
+    end
+
+    test "query ORs groups", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_or_#{System.unique_integer([:positive])}"
+      actor_id = "a_or_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+
+      write_todo("todo_done", group_id, actor_id, writer_name,
+        fields: %{"title" => "done", "priority" => "normal"}
+      )
+
+      write_todo("todo_urgent", group_id, actor_id, writer_name,
+        fields: %{"title" => "urgent", "priority" => "urgent"}
+      )
+
+      write_todo("todo_absent", group_id, actor_id, writer_name, fields: %{"title" => "absent"})
+
+      {:ok, rows} =
+        EntityStore.query("todo", [%{"priority" => "urgent"}, %{"priority" => nil}], actor_id,
+          rocks_name: rocks_name,
+          sqlite_name: sqlite_name,
+          dirty_set: dirty_set
+        )
+
+      assert Enum.sort(Enum.map(rows, & &1.id)) == ["todo_absent", "todo_urgent"]
+    end
+
+    test "an empty group is unfiltered", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_empty_group_#{System.unique_integer([:positive])}"
+      actor_id = "a_empty_group_#{System.unique_integer([:positive])}"
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo("todo_empty_1", group_id, actor_id, writer_name)
+      write_todo("todo_empty_2", group_id, actor_id, writer_name)
+
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      for filter <- [[], [%{}], [%{"title" => "Test todo"}, %{}]] do
+        {:ok, rows} = EntityStore.query("todo", filter, actor_id, opts)
+
+        assert Enum.sort(Enum.map(rows, & &1.id)) == ["todo_empty_1", "todo_empty_2"],
+               "expected #{inspect(filter)} to be unfiltered"
+      end
     end
 
     test "query with a null filter matches absent and tombstoned leaves", %{
@@ -420,11 +505,11 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
 
-      {:ok, null_rows} = EntityStore.query("todo", %{"priority" => nil}, actor_id, opts)
+      {:ok, null_rows} = EntityStore.query("todo", [%{"priority" => nil}], actor_id, opts)
 
       assert Enum.sort(Enum.map(null_rows, & &1.id)) == ["todo_absent", "todo_tombstoned"]
 
-      {:ok, live_rows} = EntityStore.query("todo", %{"priority" => "high"}, actor_id, opts)
+      {:ok, live_rows} = EntityStore.query("todo", [%{"priority" => "high"}], actor_id, opts)
 
       assert Enum.map(live_rows, & &1.id) == ["todo_live"]
     end

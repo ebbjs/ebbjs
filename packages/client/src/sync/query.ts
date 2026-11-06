@@ -12,6 +12,8 @@
  * it matches nothing — an explicit "no live pointer", never "no filter".
  */
 
+import type { Filter } from "@ebbjs/schema";
+
 /** One query predicate, resolved against the schema by the builder. */
 export type Predicate =
   | { readonly kind: "field"; readonly field: string; readonly value: unknown }
@@ -85,6 +87,23 @@ export const emptyQuery = (source: string): Query => ({
   limit: null,
   joins: [],
 });
+
+/**
+ * Lower a wire {@link Filter} to the builder's predicate language: one
+ * conjunction of field predicates per group, ORed by the planner.
+ *
+ * A `null` value stays a `null` predicate value — "no live value" — so the
+ * executor applies the same rule as an index-backed group. An empty group is
+ * an empty conjunction, which is TRUE, and a disjunction with a TRUE term is
+ * unfiltered; `null` and `[]` are unfiltered too.
+ */
+export const filterToGroups = (filter: Filter | null): readonly (readonly Predicate[])[] => {
+  const groups = filter ?? [];
+  if (groups.some((group) => Object.keys(group).length === 0)) return [];
+  return groups.map((group) =>
+    Object.entries(group).map(([field, value]) => ({ kind: "field" as const, field, value })),
+  );
+};
 
 /**
  * Whether any group holds a predicate of `kind`. One helper for the

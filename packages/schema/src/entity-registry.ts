@@ -45,6 +45,21 @@ const formatViolations = (vs: readonly ValidationViolation[]): string => {
   return `EntityValidationError: ${vs.length} violation(s)\n${lines.join("\n")}`;
 };
 
+/**
+ * One conjunction of field predicates: keys within a group are ANDed.
+ *
+ * A `null` value is the predicate "no live value" — the field is absent or
+ * tombstoned — and never a schema default.
+ */
+export type FilterGroup = Record<string, string | number | boolean | null>;
+
+/**
+ * A query filter is a disjunction of groups: groups are ORed, keys within a
+ * group ANDed. `null`, `[]`, and a list holding an empty group are unfiltered
+ * (an empty conjunction is TRUE).
+ */
+export type Filter = readonly FilterGroup[];
+
 /** Placeholder `entityName` when the offending subject_type wasn't registered. */
 const UNKNOWN_ENTITY = "(unknown)";
 
@@ -221,9 +236,11 @@ export class EntityRegistry {
 
   /**
    * Validate a filter against the registry for the given entity type.
-   * Never throws. Returns `[]` when no entities are registered.
+   * Never throws. Returns `[]` when no entities are registered. `null` is
+   * unfiltered. Every group is checked independently, and a `null` entry
+   * where a group is expected is reported as malformed.
    */
-  validateFilter(type: string, filter: Record<string, unknown>): ValidationViolation[] {
+  validateFilter(type: string, filter: Filter | null): ValidationViolation[] {
     if (this.entities.size === 0) return [];
     const entity = this.entities.get(type);
     if (entity === undefined) {
@@ -235,13 +252,23 @@ export class EntityRegistry {
       ];
     }
     const violations: ValidationViolation[] = [];
-    for (const fieldName of Object.keys(filter)) {
-      if (!(fieldName in entity.fields)) {
+    const groups: readonly unknown[] = filter ?? [];
+    for (const [index, group] of groups.entries()) {
+      if (group === null || typeof group !== "object" || Array.isArray(group)) {
         violations.push({
           entityName: entity.name,
-          field: fieldName,
-          message: `Filter field "${fieldName}" is not declared on entity "${entity.name}"`,
+          message: `Filter group ${index} must be an object`,
         });
+        continue;
+      }
+      for (const fieldName of Object.keys(group as FilterGroup)) {
+        if (!(fieldName in entity.fields)) {
+          violations.push({
+            entityName: entity.name,
+            field: fieldName,
+            message: `Filter field "${fieldName}" in group ${index} is not declared on entity "${entity.name}"`,
+          });
+        }
       }
     }
     return violations;

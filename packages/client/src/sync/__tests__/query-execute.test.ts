@@ -13,7 +13,9 @@ import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import { emptyQuery, type Predicate, type Query } from "../query";
+import type { Filter } from "@ebbjs/schema";
+
+import { emptyQuery, filterToGroups, type Predicate, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { createReplicaExecutor, createRowsExecutor, executePlan } from "../query-execute";
 
@@ -499,5 +501,40 @@ describe("executePlan null predicate", () => {
   it("does not match a stored non-null value with a null predicate", () => {
     expect(run("high")).toEqual(["todo_live"]);
     expect([...run(null)].sort()).toEqual(["todo_absent", "todo_tombstoned"]);
+  });
+});
+
+describe("executePlan over a wire filter", () => {
+  const rows: readonly Entity[] = [
+    row("todo_normal", { priority: "normal", completed: true }),
+    row("todo_urgent", { priority: "urgent", completed: false }),
+    row("todo_absent", { completed: false }),
+  ];
+
+  const run = (filter: Filter | null): readonly string[] =>
+    executePlan(
+      planQuery({ ...emptyQuery("todo"), groups: filterToGroups(filter) }),
+      createRowsExecutor(rows),
+    ).map((entity) => entity.id);
+
+  it("ANDs keys within a group", () => {
+    expect(run([{ priority: "normal", completed: true }])).toEqual(["todo_normal"]);
+  });
+
+  it("ORs groups", () => {
+    expect(run([{ priority: "urgent" }, { completed: true }])).toEqual([
+      "todo_normal",
+      "todo_urgent",
+    ]);
+  });
+
+  it("treats null, [], and [{}] as unfiltered", () => {
+    for (const filter of [null, [], [{}], [{ completed: true }, {}]] as const) {
+      expect(run(filter as Filter | null)).toEqual(["todo_absent", "todo_normal", "todo_urgent"]);
+    }
+  });
+
+  it("lowers a null value to a no-live-value predicate", () => {
+    expect(run([{ priority: null }])).toEqual(["todo_absent"]);
   });
 });

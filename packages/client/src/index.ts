@@ -100,6 +100,7 @@ export {
   type Join,
   type JoinDirection,
   type JoinCardinality,
+  filterToGroups,
 } from "./sync/query";
 
 export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
@@ -325,7 +326,13 @@ export {
   type DefineRelationshipInput,
 } from "@ebbjs/schema";
 
-export { EntityRegistry, EntityValidationError, type ValidationViolation } from "@ebbjs/schema";
+export {
+  EntityRegistry,
+  EntityValidationError,
+  type Filter,
+  type FilterGroup,
+  type ValidationViolation,
+} from "@ebbjs/schema";
 
 export {
   defineSchema,
