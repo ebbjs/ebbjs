@@ -69,12 +69,15 @@ export default defineConfig({
 | `functions.dir`      | Directory scanned for one exported definition per file. Defaults to `functions`. |
 | `functions.typesOut` | Generated contract-map path. Defaults to `src/ebb-functions.generated.ts`.       |
 
-The deploy token is configured on the server as `:functions, :admin_token` or
-`EBB_FUNCTIONS_ADMIN_TOKEN` (the environment wins at boot, and a blank value
-counts as unset); an unset token means there is no admin credential, not an open
-route. Rotating it is a restart: start the node with the new value and stop the
-old one. There is deliberately no two-token overlap, because a token that kept
-working on the old node would not be a rotation.
+The deploy token is configured on the server as `EBB_ADMIN_TOKEN` (compiled:
+`:ebb_server, :admin_token`). `EBB_FUNCTIONS_ADMIN_TOKEN` and the nested
+`:ebb_server, :functions, :admin_token` still work as a fallback, so an existing
+function deployment keeps booting without a config change. The environment wins
+at boot, and a blank value counts as unset; an unset token means there is no
+admin credential, not an open route. Rotating it is a restart: start the node
+with the new value and stop the old one. There is deliberately no two-token
+overlap, because a token that kept working on the old node would not be a
+rotation.
 
 ## Authoring
 
