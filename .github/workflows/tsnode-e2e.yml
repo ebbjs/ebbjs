@@ -1,0 +1,54 @@
+name: tsnode e2e
+
+# Headscale-backed end-to-end check for the embedded Tailscale gateway: the
+# real binary, a real control plane, and a real second tailnet node.
+#
+# Advisory, not a required check. Headscale is a test harness, not a supported
+# control plane (#728 scopes it out), so a Headscale or Tailscale-client
+# regression must not block unrelated work. It runs where it can matter — the
+# gateway, the BEAM wiring, or the harness itself — and nightly, where a silent
+# bit-rot shows up before a release.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
+  pull_request:
+    paths:
+      - "ebb_server/tsnode/**"
+      - "ebb_server/lib/ebb_server/tailscale/**"
+      - "ebb_server/lib/ebb_server/sync/auth_plug.ex"
+      - "scripts/tsnode-e2e.sh"
+      - "scripts/build-tsnode.sh"
+      - ".github/workflows/tsnode-e2e.yml"
+
+concurrency:
+  group: tsnode-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  headscale:
+    name: Identity over a real tailnet (Headscale)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ebb_server/tsnode/go.mod
+          cache-dependency-path: ebb_server/tsnode/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run the harness
+        env:
+          # Keep logs on failure for the artifact step; containers are discarded
+          # with the runner either way.
+          EBB_E2E_ARTIFACT_DIR: ${{ runner.temp }}/tsnode-e2e
+        run: bash scripts/tsnode-e2e.sh
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsnode-e2e-logs
+          path: ${{ runner.temp }}/tsnode-e2e
+          if-no-files-found: ignore

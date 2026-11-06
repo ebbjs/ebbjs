@@ -255,6 +255,34 @@ defmodule EbbServer.Tailscale.NodeTest do
     end
   end
 
+  describe "the gateway transcript" do
+    @tag :gateway_contract
+    test "parses every event shape on the wire", %{dir: dir} do
+      lines = transcript()
+      assert Enum.map(lines, &Jason.decode!(&1)["event"]) == ~w(login qr running error)
+
+      log =
+        capture_log(fn ->
+          output =
+            capture_io(fn ->
+              pid = start_node!(dir, lines, tags: ["tag:ebb"])
+              status = wait_for_status(pid)
+
+              assert status["dns_name"] == "ebb.example.ts.net"
+              assert status["ips"] == ["100.64.0.1", "fd7a:115c:a1e0::1"]
+              assert status["tags"] == ["tag:ebb"]
+              assert status["key_expiry"] == "2027-01-02T03:04:05Z"
+              assert Node.last_login_url(pid) == "https://login.tailscale.com/a/abc123"
+            end)
+
+          assert output == "██▀▀▀\n██▄▄▄\n"
+        end)
+
+      assert log =~ "tailscale node is serving https://ebb.example.ts.net"
+      assert log =~ "ebb_tsnode: control server unreachable"
+    end
+  end
+
   describe "gateway output" do
     test "logs an error event", %{dir: dir} do
       lines = [
@@ -462,6 +490,15 @@ defmodule EbbServer.Tailscale.NodeTest do
       wait_until(fn -> not os_process_alive?(os_pid) end)
       refute os_process_alive?(os_pid)
     end
+  end
+
+  # The same file the Go suite asserts its emitter against, so the fixture stops
+  # being our own idea of the protocol.
+  defp transcript do
+    "../../../tsnode/testdata/events.ndjson"
+    |> Path.expand(__DIR__)
+    |> File.read!()
+    |> String.split("\n", trim: true)
   end
 
   defp config_for(dir, bin, opts) do

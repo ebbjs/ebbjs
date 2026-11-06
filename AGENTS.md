@@ -16,3 +16,8 @@
 - That makes `ebb_server/deps` a symlink into another worktree. Never run
   `mix deps.clean`, `mix deps.update`, or a lockfile-following `mix deps.get`
   there; they write through the link into the shared tree.
+- `ebb_server/tsnode` is Go; the version is pinned in `ebb_server/.tool-versions`.
+  `bash scripts/dev-tsnode.sh` runs the gateway with no tailnet,
+  `bash scripts/tsnode-e2e.sh` runs it against Headscale in Docker, and
+  `bash scripts/check-tsnode-contract.sh` is the seconds-long Go↔BEAM contract
+  check that `pre-commit` runs.

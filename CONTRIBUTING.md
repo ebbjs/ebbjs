@@ -82,3 +82,19 @@ Tests import sibling workspaces through their built `dist/` entry points, so
 for missing build output and points back here if you skipped it.
 
 See `ebb_server/README.md` for the Elixir server's own setup notes.
+
+### Tailscale gateway (`ebb_server/tsnode`)
+
+The embedded gateway is Go; the version is pinned in `ebb_server/.tool-versions`
+(`asdf plugin add golang && asdf install`). Three loops, cheapest first:
+
+```bash
+bash scripts/check-tsnode-contract.sh  # Go↔BEAM contract, seconds (pre-commit)
+bash scripts/dev-tsnode.sh             # gateway + stub backend, no tailnet
+bash scripts/tsnode-e2e.sh             # real Headscale + real client, Docker
+```
+
+`scripts/tsnode-e2e.sh` is also the `tsnode-e2e` CI job: it runs the real binary
+against a real control plane and asserts that identity reaches the backend
+through `WhoIs`. The `pre-push` hook runs the whole Elixir suite (~4 min); for a
+fast push use `LEFTHOOK_EXCLUDE=elixir-test git push` and let CI own that run.

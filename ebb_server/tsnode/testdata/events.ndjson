@@ -1,0 +1,4 @@
+{"event":"login","url":"https://login.tailscale.com/a/abc123"}
+{"event":"qr","url":"https://login.tailscale.com/a/abc123","lines":["██▀▀▀","██▄▄▄"]}
+{"event":"running","url":"https://ebb.example.ts.net","dns_name":"ebb.example.ts.net","ips":["100.64.0.1","fd7a:115c:a1e0::1"],"tls":true,"tags":["tag:ebb"],"key_expiry":"2027-01-02T03:04:05Z"}
+{"event":"error","message":"control server unreachable"}

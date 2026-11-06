@@ -532,6 +532,17 @@ contract fails CI instead of shipping. Tagged releases publish
 `.github/workflows/release-image.yml`, which then pulls the pushed digest back
 and runs the same script against it.
 
+### Automated tailnet harness
+
+`scripts/tsnode-e2e.sh` (CI job `tsnode-e2e`) runs the real gateway binary
+against a real Headscale control plane and a second real tailnet node, then
+asserts that the backend receives the connecting user's identity, that a
+peer-supplied identity or `X-Forwarded-For` is stripped, and that an SSE stream
+is not buffered. It needs Docker, Go, Node, and curl.
+
+Headscale keeps a user identity on tagged nodes, unlike Tailscale, so the
+tagged-peer rejection and TLS below still need the manual run.
+
 ### Manual acceptance on a real tailnet
 
 CI cannot join a tailnet, so the identity, TLS, and state behaviour are checked

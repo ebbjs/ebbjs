@@ -29,6 +29,16 @@ pre-commit:
         - "ebb_server/.formatter.exs"
         - "ebb_server/config/*.exs"
       run: mix format --check-formatted
+    tsnode-contract:
+      # The Go gateway and the BEAM agree on header names, event shapes and the
+      # fatal exit status through `ebb_server/tsnode/contract.json` and
+      # `testdata/events.ndjson`. Checked here in seconds rather than in the
+      # four-minute suite.
+      glob:
+        - "ebb_server/tsnode/**"
+        - "ebb_server/lib/ebb_server/tailscale/**"
+        - "ebb_server/lib/ebb_server/sync/auth_plug.ex"
+      run: bash scripts/check-tsnode-contract.sh
     elixir-credo:
       root: ebb_server
       glob:
@@ -47,9 +57,13 @@ pre-push:
     elixir-test:
       # Run on push (not commit) because the Elixir suite is slow. --cover
       # matches the CI Test job; below the threshold it exits 3.
+      # `LEFTHOOK_EXCLUDE=elixir-test git push` skips it when CI will own the
+      # run; without the line below a slow push looks like a hung one.
       root: ebb_server
       glob:
         - "ebb_server/lib/**"
         - "ebb_server/test/**"
         - "ebb_server/mix.exs"
-      run: mix test --cover
+      run: |
+        echo "running mix test --cover (~4 min; LEFTHOOK_EXCLUDE=elixir-test skips it)"
+        mix test --cover

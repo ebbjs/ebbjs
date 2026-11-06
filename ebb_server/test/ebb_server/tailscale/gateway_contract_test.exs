@@ -12,6 +12,8 @@ defmodule EbbServer.Tailscale.GatewayContractTest do
 
   use ExUnit.Case, async: true
 
+  @moduletag :gateway_contract
+
   alias EbbServer.Sync.AuthPlug
   alias EbbServer.Tailscale.Node
 
