@@ -149,6 +149,42 @@ defmodule EbbServer.Storage.SQLite do
   ORDER BY id LIMIT ?
   """
 
+  # Per-page relationship ids (#744). A relationship is scoped by its source
+  # and never gets an `entityGroup` row of its own, so the membership keyset
+  # above cannot name it; the page finds its edges by joining its own window
+  # to `source_id`.
+  #
+  # The fence and the index hint are both load-bearing, and nothing in this
+  # application runs `ANALYZE`. `AS MATERIALIZED` keeps `LIMIT` on the
+  # membership window: left to flatten the subquery, SQLite applies the limit
+  # to the joined rows, so one source with a large outgoing degree would fill
+  # the page and drop every later source in the window. `INDEXED BY` makes the
+  # plan a seek per window row; without it the shape is a scan of the whole
+  # live relationship set on a database that has no statistics.
+  @list_page_relationship_ids_sql """
+  WITH page AS MATERIALIZED (
+    SELECT entity_id FROM entities
+    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+    ORDER BY id LIMIT ?
+  )
+  SELECT r.id
+  FROM page m
+  JOIN entities r INDEXED BY idx_entities_source_id
+    ON r.source_id = m.entity_id AND r.type = 'relationship' AND r.deleted_hlc IS NULL
+  """
+
+  @list_page_relationship_ids_after_sql """
+  WITH page AS MATERIALIZED (
+    SELECT entity_id FROM entities
+    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id > ?
+    ORDER BY id LIMIT ?
+  )
+  SELECT r.id
+  FROM page m
+  JOIN entities r INDEXED BY idx_entities_source_id
+    ON r.source_id = m.entity_id AND r.type = 'relationship' AND r.deleted_hlc IS NULL
+  """
+
   # Generic durable consumer cursor. #367's Action export owns the
   # `"action_export"` row; peer replication (#113) will add its own.
   @create_cursors_table """
@@ -275,6 +311,42 @@ defmodule EbbServer.Storage.SQLite do
         ) :: [{String.t(), String.t()}]
   def list_entity_group_memberships(group_id, after_key, limit, server \\ __MODULE__) do
     GenServer.call(server, {:list_entity_group_memberships, group_id, after_key, limit})
+  end
+
+  @doc """
+  Lists the live `relationship` row ids whose source an `entityGroup` row in
+  the group's window names.
+
+  The window is `[after_key, after_key + limit)` over the membership keyset
+  `list_entity_group_memberships/4` pages, so a page's edges are found from
+  its own membership keys rather than from the group's whole edge set. Two
+  membership rows can name one source, so an id can repeat; the caller
+  dedupes. Rows are ids only: every row the listing ships is materialized and
+  read through `get_entities/2`, and reading `data` twice would double that.
+  """
+  @spec list_page_relationship_ids(
+          String.t(),
+          String.t() | nil,
+          non_neg_integer(),
+          GenServer.server()
+        ) :: [String.t()]
+  def list_page_relationship_ids(group_id, after_key, limit, server \\ __MODULE__) do
+    GenServer.call(server, {:list_page_relationship_ids, group_id, after_key, limit})
+  end
+
+  @doc """
+  Returns SQLite's `EXPLAIN QUERY PLAN` details for the per-page relationship
+  statement, for the `after_key` variant a page would run.
+
+  The statement names `idx_entities_source_id` on purpose, so a renamed or
+  dropped index fails at prepare instead of quietly becoming a scan on a
+  database that has never been `ANALYZE`d. This seam lets a test assert the
+  plan itself rather than the SQL text.
+  """
+  @spec explain_page_relationship_ids(String.t() | nil, GenServer.server()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def explain_page_relationship_ids(after_key, server \\ __MODULE__) do
+    GenServer.call(server, {:explain_page_relationship_ids, after_key})
   end
 
   @doc """
@@ -532,6 +604,38 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
+  def handle_call({:list_page_relationship_ids, group_id, after_key, limit}, _from, state) do
+    {sql, params} = page_relationship_statement(group_id, after_key, limit)
+
+    {:reply, collect_ids(state, sql, params), state}
+  end
+
+  @impl true
+  def handle_call({:explain_page_relationship_ids, after_key}, _from, state) do
+    %{db: db} = state
+    {sql, params} = page_relationship_statement("", after_key, 0)
+
+    result =
+      case Sqlite3.prepare(db, "EXPLAIN QUERY PLAN " <> sql) do
+        {:ok, stmt} ->
+          try do
+            with :ok <- Sqlite3.bind(stmt, params) do
+              collect_plan_details(db, stmt, [])
+            end
+          rescue
+            error -> {:error, error}
+          after
+            Sqlite3.release(db, stmt)
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
   def handle_call({:get_entities, ids}, _from, state) do
     %{db: db} = state
 
@@ -734,6 +838,14 @@ defmodule EbbServer.Storage.SQLite do
     end
   end
 
+  defp page_relationship_statement(group_id, nil, limit) do
+    {@list_page_relationship_ids_sql, [group_id, limit]}
+  end
+
+  defp page_relationship_statement(group_id, after_key, limit) do
+    {@list_page_relationship_ids_after_sql, [group_id, after_key, limit]}
+  end
+
   defp collect_pairs(state, sql, params) do
     %{db: db} = state
 
@@ -744,6 +856,34 @@ defmodule EbbServer.Storage.SQLite do
     Sqlite3.release(db, stmt)
 
     pairs
+  end
+
+  defp collect_ids(state, sql, params) do
+    %{db: db} = state
+
+    {:ok, stmt} = Sqlite3.prepare(db, sql)
+    :ok = Sqlite3.bind(stmt, params)
+
+    ids = collect_id_rows(db, stmt, [])
+    Sqlite3.release(db, stmt)
+
+    ids
+  end
+
+  defp collect_id_rows(db, stmt, acc) do
+    case Sqlite3.step(db, stmt) do
+      {:row, [id]} -> collect_id_rows(db, stmt, [id | acc])
+      :done -> Enum.reverse(acc)
+    end
+  end
+
+  defp collect_plan_details(db, stmt, acc) do
+    case Sqlite3.step(db, stmt) do
+      {:row, [_id, _parent, _unused, detail]} -> collect_plan_details(db, stmt, [detail | acc])
+      :done -> {:ok, Enum.reverse(acc)}
+      :busy -> {:error, :busy}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp collect_pair_rows(db, stmt, acc) do

@@ -12,8 +12,18 @@ defmodule EbbServer.Sync.GroupListing do
 
   The row set is the group's state, not just its contents: the `group` row,
   its live `groupMember` rows, every live `entityGroup` row in the group,
-  and the live entities those rows name. `group` and `groupMember` carry no
+  the live entities those rows name, and the live `relationship` rows whose
+  source one of those entities is. `group` and `groupMember` carry no
   `entityGroup` row, so a membership join alone would miss them.
+
+  A relationship row is scoped by its source and never gets an `entityGroup`
+  row of its own, so enumerating memberships alone never named one. Nothing
+  else on the cold path fetches them either, which left a replica seeded from
+  this listing with no edge created before its watermark — derived edges and
+  domain edges alike — and every accessor that traverses an edge reporting a
+  live link as absent. An edge rides the page its source appears on, scoped
+  by that source: it is shipped only when its source is one of the page's
+  live membership rows.
 
   ## Materialization
 
@@ -32,11 +42,12 @@ defmodule EbbServer.Sync.GroupListing do
   then its `groupMember` rows keyed on `(actor_id, id)` through
   `idx_entities_group_member`. Phase 1 pages the group's `entityGroup` rows
   by row id through `idx_entities_entity_group_page`, fetching the named
-  entities for the page in one `id IN (...)` lookup.
+  entities and the edge-window rows for the page.
 
   An `entityGroup` row may name an entity that is also named by another
   membership row; a repeat is idempotent for the client, whose store is
-  keyed by entity id. Rows are deduplicated within a page only.
+  keyed by entity id. Rows are deduplicated within a page only, and so are
+  the edges two membership rows naming one source would otherwise repeat.
 
   The cursor is opaque: base64url of `{v, group_id, w, key}`. The `w` is
   echoed on every page so a client can assert it did not move, and a cursor
@@ -89,8 +100,9 @@ defmodule EbbServer.Sync.GroupListing do
     - `:cursor` - opaque token from a previous page (`nil` starts at page 1,
       which is also the only page that reads the frontier)
     - `:limit` - maximum membership keys in the page, 200 by default, 1000
-      at most; a membership key may ship its entity too, so a page can carry
-      up to twice that many entity objects
+      at most; a membership key also ships its entity and its live
+      relationship rows, so a page's row count is that of its keys' rows
+      rather than of the keys
     - `:sqlite_name`, `:rocks_name`, `:dirty_set` - isolated storage
       instances (tests)
     - `:watermark_tracker` - the tracker process name (tests)
@@ -272,9 +284,45 @@ defmodule EbbServer.Sync.GroupListing do
 
     {taken, rest} = Enum.split(entries, limit)
 
-    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts) do
-      {:ok, prefix ++ membership_rows(taken, by_id), next_membership_key(rest, List.last(taken)),
-       rest != []}
+    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts),
+         {:ok, edges} <- page_edges(group_id, after_id, taken, by_id, opts) do
+      {:ok, prefix ++ membership_rows(taken, by_id) ++ edges,
+       next_membership_key(rest, List.last(taken)), rest != []}
+    end
+  end
+
+  # A page's edges come from its own membership window, not from a wider
+  # scan: `length(taken)`, not `limit + 1`, because the extra row only probes
+  # for a next page and its edges belong to that page. An edge on a source the
+  # page does not ship is dropped — `load_live_rows/2` omits a tombstoned
+  # source, and an edge must not outlive the visibility of the entity it
+  # hangs off.
+  defp page_edges(group_id, after_id, taken, by_id, opts) do
+    ids =
+      group_id
+      |> SQLite.list_page_relationship_ids(after_id, length(taken), sqlite_name(opts))
+      |> Enum.uniq()
+
+    with {:ok, rows_by_id} <- load_live_rows(ids, opts) do
+      live_sources =
+        taken
+        |> Enum.map(fn {_membership_id, entity_id} -> entity_id end)
+        |> Enum.filter(&Map.has_key?(by_id, &1))
+        |> MapSet.new()
+
+      edges =
+        ids
+        |> Enum.flat_map(&relationship_row(rows_by_id, &1))
+        |> Enum.filter(&MapSet.member?(live_sources, source_of(&1)))
+
+      {:ok, edges}
+    end
+  end
+
+  defp relationship_row(by_id, id) do
+    case Map.fetch(by_id, id) do
+      {:ok, %{type: "relationship"} = row} -> [row]
+      _ -> []
     end
   end
 
@@ -391,6 +439,11 @@ defmodule EbbServer.Sync.GroupListing do
 
   defp group_field(%{data: %{"fields" => %{"group_id" => %{"value" => group_id}}}}), do: group_id
   defp group_field(_row), do: nil
+
+  defp source_of(%{data: %{"fields" => %{"source_id" => %{"value" => source_id}}}}),
+    do: source_id
+
+  defp source_of(_row), do: nil
 
   defp decode_row(%{data: data} = row) when is_binary(data),
     do: %{row | data: Jason.decode!(data)}

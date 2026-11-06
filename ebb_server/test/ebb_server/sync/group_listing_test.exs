@@ -273,6 +273,246 @@ defmodule EbbServer.Sync.GroupListingTest do
     end
   end
 
+  describe "GET /sync/groups/:group_id/entities — relationship rows" do
+    test "ships a pre-watermark derived edge and a pre-watermark domain edge", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      [{todo_id, _eg_id, _}] = write_todos(actor_id, group_id, 1)
+
+      derived_id = unique("rel")
+      domain_id = unique("rel")
+
+      write_action(actor_id, [
+        relationship_update(derived_id, todo_id, unique("doc"), "body"),
+        relationship_update(domain_id, todo_id, unique("todo"), "assignee")
+      ])
+
+      {:ok, page} = GroupListing.list(group_id, actor_id)
+
+      edges = Enum.filter(page.entities, &(&1.type == "relationship"))
+      assert Enum.sort(Enum.map(edges, & &1.id)) == Enum.sort([derived_id, domain_id])
+
+      for edge <- edges do
+        assert get_in(edge.data, ["fields", "source_id", "value"]) == todo_id
+        # Both edges existed before the frontier the listing was seeded at.
+        assert edge.last_gsn <= page.watermark
+      end
+    end
+
+    test "ships each edge exactly once at any limit, and the union is the unpaged listing", %{
+      tmp_dir: _
+    } do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      todos = write_todos(actor_id, group_id, 4)
+
+      edge_ids =
+        Enum.flat_map(todos, fn {todo_id, _eg_id, _} ->
+          Enum.map(1..2, fn i ->
+            edge_id = unique("rel")
+            write_action(actor_id, [relationship_update(edge_id, todo_id, unique("t"), "f#{i}")])
+            edge_id
+          end)
+        end)
+
+      {:ok, unpaged} = GroupListing.list(group_id, actor_id)
+      unpaged_ids = Enum.map(unpaged.entities, & &1.id)
+
+      assert Enum.sort(Enum.filter(unpaged_ids, &(&1 in edge_ids))) == Enum.sort(edge_ids)
+
+      for limit <- [1, 2, 3, 5] do
+        listed = walk_pages(group_id, actor_id, limit) |> Enum.flat_map(& &1.entities)
+        ids = Enum.map(listed, & &1.id)
+
+        assert length(ids) == length(Enum.uniq(ids)), "limit #{limit} repeated a row"
+        assert Enum.sort(ids) == Enum.sort(unpaged_ids), "limit #{limit} diverged"
+      end
+    end
+
+    test "does not ship a deleted source's edges", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      [{kept_id, _kept_eg, _}, {deleted_id, _deleted_eg, _}] =
+        write_todos(actor_id, group_id, 2)
+
+      kept_edge = unique("rel")
+      deleted_edge = unique("rel")
+
+      write_action(actor_id, [
+        relationship_update(kept_edge, kept_id, unique("t"), "assignee"),
+        relationship_update(deleted_edge, deleted_id, unique("t"), "assignee")
+      ])
+
+      assert write_delete(actor_id, deleted_id).status == 200
+
+      {:ok, page} = GroupListing.list(group_id, actor_id)
+      ids = Enum.map(page.entities, & &1.id)
+
+      assert kept_edge in ids
+      refute deleted_edge in ids
+    end
+
+    test "ships a never-read edge committed just before the listing is seeded", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      [{todo_id, _eg_id, _}] = write_todos(actor_id, group_id, 1)
+
+      edge_id = unique("rel")
+      write_action(actor_id, [relationship_update(edge_id, todo_id, unique("doc"), "body")])
+
+      # Nothing has read the edge, so the cache has no row for it yet.
+      assert SQLite.get_entity(edge_id, SQLite) == :not_found
+
+      {:ok, page} = GroupListing.list(group_id, actor_id)
+
+      assert edge_id in Enum.map(page.entities, & &1.id)
+      assert {:ok, _row} = SQLite.get_entity(edge_id, SQLite)
+    end
+
+    test "a window source with 500 edges ships them all and none outside the window", %{
+      tmp_dir: _
+    } do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      # Membership rows are keyed by row id, so fixed low-prefix ids put the
+      # heavy source first in the window and the third source outside it.
+      heavy_todo = unique("todo")
+      heavy_eg = "eg_000_heavy"
+      light_todo = unique("todo")
+      light_eg = "eg_001_light"
+      outside_todo = unique("todo")
+      outside_eg = "eg_002_outside"
+
+      hlc = generate_hlc()
+
+      write_action(
+        actor_id,
+        [
+          todo_update(heavy_todo, "heavy"),
+          entity_group_update(heavy_todo, group_id, hlc, heavy_eg),
+          todo_update(light_todo, "light"),
+          entity_group_update(light_todo, group_id, hlc, light_eg),
+          todo_update(outside_todo, "outside"),
+          entity_group_update(outside_todo, group_id, hlc, outside_eg)
+        ]
+      )
+
+      heavy_edges = Enum.map(1..500, fn _i -> unique("rel") end)
+
+      light_edge = unique("rel")
+      outside_edge = unique("rel")
+
+      write_action(
+        actor_id,
+        Enum.map(heavy_edges, &relationship_update(&1, heavy_todo, unique("t"), "many")) ++
+          [
+            relationship_update(light_edge, light_todo, unique("t"), "link"),
+            relationship_update(outside_edge, outside_todo, unique("t"), "link")
+          ]
+      )
+
+      {:ok, page1} = GroupListing.list(group_id, actor_id, limit: 2)
+      assert page1.has_more
+
+      [member] = Enum.filter(page1.entities, &(&1.type == "groupMember"))
+
+      assert cursor_key(page1.cursor) == [
+               0,
+               get_in(member.data, ["fields", "actor_id", "value"]),
+               member.id
+             ]
+
+      {:ok, page2} = GroupListing.list(group_id, actor_id, limit: 2, cursor: page1.cursor)
+      assert page2.has_more
+
+      ids = Enum.map(page2.entities, & &1.id)
+      shipped = Enum.filter(ids, &(&1 in heavy_edges))
+
+      assert length(shipped) == 500
+      assert Enum.sort(shipped) == Enum.sort(heavy_edges)
+      assert light_edge in ids
+      refute outside_edge in ids
+      refute outside_eg in ids
+
+      # The token is the window's last membership row, not the last row the
+      # page shipped: a page's edges never move the keyset.
+      assert page2.cursor |> cursor_key() == [1, light_eg]
+
+      {:ok, page3} = GroupListing.list(group_id, actor_id, limit: 2, cursor: page2.cursor)
+      assert outside_edge in Enum.map(page3.entities, & &1.id)
+    end
+
+    test "ships a source's edges once when two membership rows name it", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      [{todo_id, eg_id, _}] = write_todos(actor_id, group_id, 1)
+
+      # A second membership row for a pair the write path now refuses to
+      # duplicate (#623) can still exist in a data dir seeded before that
+      # check, so the page must stay correct when both rows name one source.
+      duplicate_eg = unique("eg")
+
+      :ok =
+        SQLite.upsert_entity(
+          %{
+            id: duplicate_eg,
+            type: "entityGroup",
+            data:
+              Jason.encode!(%{
+                "fields" => %{
+                  "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => 1},
+                  "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => 1}
+                }
+              }),
+            created_hlc: 1,
+            updated_hlc: 1,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 0
+          },
+          SQLite
+        )
+
+      edge_id = unique("rel")
+      write_action(actor_id, [relationship_update(edge_id, todo_id, unique("t"), "link")])
+
+      {:ok, page} = GroupListing.list(group_id, actor_id)
+      ids = Enum.map(page.entities, & &1.id)
+
+      assert Enum.count(ids, &(&1 in [eg_id, duplicate_eg])) == 2
+      assert Enum.count(ids, &(&1 == edge_id)) == 1
+    end
+
+    test "the edge statement seeks idx_entities_source_id inside the fenced window", %{
+      tmp_dir: _
+    } do
+      for after_key <- [nil, "eg_1"] do
+        assert {:ok, plan} = SQLite.explain_page_relationship_ids(after_key, SQLite)
+
+        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_source_id")),
+               "plan did not seek the source index: #{inspect(plan)}"
+
+        assert Enum.any?(plan, &(&1 =~ "MATERIALIZE")),
+               "plan did not fence the membership window: #{inspect(plan)}"
+
+        refute Enum.any?(plan, &(&1 =~ ~r/SCAN entities\b/)),
+               "plan scanned the entities table: #{inspect(plan)}"
+      end
+    end
+  end
+
   describe "GET /sync/groups/:group_id/entities — rows the cache cannot serve" do
     test "keeps the page when the group row is gone", %{tmp_dir: _} do
       actor_id = unique("a")
@@ -583,6 +823,46 @@ defmodule EbbServer.Sync.GroupListingTest do
     if page.has_more,
       do: collect_pages(group_id, actor_id, limit, page.cursor, acc),
       else: acc
+  end
+
+  defp write_action(actor_id, updates) do
+    action = %{
+      "id" => unique("act"),
+      "actor_id" => actor_id,
+      "hlc" => generate_hlc(),
+      "updates" => updates
+    }
+
+    conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+    assert conn.status == 200
+    assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
+  end
+
+  defp todo_update(entity_id, title) do
+    %{
+      "id" => unique("upd"),
+      "subject_id" => entity_id,
+      "subject_type" => "todo",
+      "method" => "put",
+      "data" => %{"fields" => %{"title" => lww(title)}}
+    }
+  end
+
+  defp relationship_update(edge_id, source_id, target_id, field) do
+    %{
+      "id" => unique("upd"),
+      "subject_id" => edge_id,
+      "subject_type" => "relationship",
+      "method" => "put",
+      "data" => %{
+        "fields" => %{
+          "source_id" => lww(source_id),
+          "target_id" => lww(target_id),
+          "type" => lww("todo"),
+          "field" => lww(field)
+        }
+      }
+    }
   end
 
   defp write_delete(actor_id, entity_id, subject_type \\ "todo") do
