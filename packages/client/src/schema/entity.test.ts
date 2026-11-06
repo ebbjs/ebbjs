@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { defineEntity, e, type EntityDef, type NullableSchema } from "@ebbjs/schema";
+import {
+  defineEntity,
+  e,
+  hasDefault,
+  readDefault,
+  validatePayload,
+  DerivedFieldDefaultError,
+  type EntityDef,
+  type NullableSchema,
+} from "@ebbjs/schema";
 import { ReservedNameError, RESERVED_ENTITY_NAMES } from "@ebbjs/schema";
 
 describe("defineEntity", () => {
@@ -191,5 +200,56 @@ describe("bare-field-map authoring", () => {
     });
     expect(todo.name).toBe("todo");
     expect(todo.shape.type).toBe("object");
+  });
+});
+
+describe("declarative field defaults", () => {
+  it("e.string().default(v) stamps a plain default annotation on the property schema", () => {
+    const todo = defineEntity("todo", {
+      title: e.string(),
+      priority: e.string().default("normal"),
+    });
+    const priority = todo.shape.properties.priority as { default?: unknown };
+    expect(priority.default).toBe("normal");
+    // Enumerable, so a JSON-schema/hash walk sees it.
+    expect(Object.keys(priority)).toContain("default");
+    expect(JSON.stringify(priority)).toContain('"default":"normal"');
+  });
+
+  it("carries defaults for every field builder", () => {
+    expect((e.number().default(3) as { default?: unknown }).default).toBe(3);
+    expect((e.integer().default(3) as { default?: unknown }).default).toBe(3);
+    expect((e.boolean().default(true) as { default?: unknown }).default).toBe(true);
+    const map = e.map(e.string()).default({ a: "x" }) as { default?: unknown };
+    expect(map.default).toEqual({ a: "x" });
+  });
+
+  it("hasDefault/readDefault read the annotation back", () => {
+    const d = e.string().default("normal");
+    const plain = e.string();
+    expect(hasDefault(d)).toBe(true);
+    expect(readDefault(d)).toBe("normal");
+    expect(hasDefault(plain)).toBe(false);
+    expect(readDefault(plain)).toBeUndefined();
+  });
+
+  it("a falsy default still counts as a default", () => {
+    expect(hasDefault(e.boolean().default(false))).toBe(true);
+    expect(hasDefault(e.integer().default(0))).toBe(true);
+    expect(readDefault(e.boolean().default(false))).toBe(false);
+    expect(readDefault(e.integer().default(0))).toBe(0);
+  });
+
+  it("Value.Check ignores the annotation", () => {
+    const todo = defineEntity("todo", { priority: e.string().default("normal") });
+    // The default does not relax the declared type.
+    expect(validatePayload(todo.shape, { priority: "normal" }, "todo", false)).toEqual([]);
+    expect(validatePayload(todo.shape, { priority: 1 }, "todo", false)).not.toEqual([]);
+  });
+
+  it("rejects a default on a derived collaborative-text field", () => {
+    expect(() => defineEntity("doc", { body: e.collaborativeText().default("seed") })).toThrow(
+      DerivedFieldDefaultError,
+    );
   });
 });

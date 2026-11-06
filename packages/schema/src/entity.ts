@@ -23,6 +23,10 @@ import type {
   TNever,
   TRecord,
   TString,
+  TNumber,
+  TInteger,
+  TBoolean,
+  Static,
 } from "@sinclair/typebox/type";
 
 import type { TextDocument } from "./collaborative-text/text-document";
@@ -59,6 +63,90 @@ export type NullableSchema<T extends TSchema> = T & {
 };
 
 /**
+ * Type-level stamp identifying a field schema that went through
+ * `.default(value)`. A symbol brand is needed because every TypeBox
+ * schema accepts a `default` annotation in its option bag, so a plain
+ * `default` key on the type cannot distinguish a declared default from
+ * the builder's non-enumerable `.default()` method.
+ */
+declare const DEFAULT_BRAND: unique symbol;
+
+/** A field schema carrying a declared default of `V`. */
+export type DefaultedSchema<T extends TSchema, V = unknown> = T & {
+  readonly [DEFAULT_BRAND]: V;
+};
+
+/**
+ * Field builders are declared as interfaces extending their TypeBox
+ * schema rather than as intersections: `SchemaOptions` declares
+ * `default?: any` for the JSON Schema annotation, and an intersection
+ * would leave `.default()` typed `any`. An interface member overrides
+ * the inherited annotation slot, so the chain stays typed.
+ */
+export interface StringField extends TString {
+  nullable(): TUnion<[TString, TNull]>;
+  default(value: Static<TString>): DefaultedSchema<TString, Static<TString>>;
+}
+
+export interface NumberField extends TNumber {
+  nullable(): TUnion<[TNumber, TNull]>;
+  default(value: Static<TNumber>): DefaultedSchema<TNumber, Static<TNumber>>;
+}
+
+export interface IntegerField extends TInteger {
+  nullable(): TUnion<[TInteger, TNull]>;
+  default(value: Static<TInteger>): DefaultedSchema<TInteger, Static<TInteger>>;
+}
+
+export interface BooleanField extends TBoolean {
+  nullable(): TUnion<[TBoolean, TNull]>;
+  default(value: Static<TBoolean>): DefaultedSchema<TBoolean, Static<TBoolean>>;
+}
+
+/** A map field builder: `.default()` takes the map's projected value. */
+export interface MapField<V extends TSchema> extends MapSchema<V> {
+  nullable(): TUnion<[MapSchema<V>, TNull]>;
+  default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
+}
+
+/**
+ * Stamp a plain JSON Schema `default` annotation onto a field schema.
+ * The annotation is enumerable so `stableStringify` includes it in the
+ * schema hash, and it is not a `Symbol` or closure so `Value.Check`
+ * ignores it and `Type.Object` carries it through.
+ *
+ * Mutates and returns the schema: each `e.*()` builder allocates a
+ * fresh schema, and mutating in place preserves non-enumerable markers
+ * (the collaborative-text marker) that a spread would drop.
+ */
+const stampDefault = <T extends TSchema, V>(schema: T, value: V): DefaultedSchema<T, V> => {
+  Object.defineProperty(schema, "default", {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  return schema as DefaultedSchema<T, V>;
+};
+
+/**
+ * True when `schema` carries a declared default. The builder's
+ * non-enumerable `.default()` method is a function and does not count.
+ */
+export const hasDefault = (schema: TSchema): boolean => {
+  const value = (schema as { default?: unknown }).default;
+  return value !== undefined && typeof value !== "function";
+};
+
+/**
+ * The field's declared default, or `undefined` when it has none. A
+ * declared `undefined` default is indistinguishable from no default,
+ * which is fine: absence has no value to resolve.
+ */
+export const readDefault = (schema: TSchema): unknown =>
+  hasDefault(schema) ? (schema as { default?: unknown }).default : undefined;
+
+/**
  * Marker stamped onto the union returned by `.nullable()` so
  * `defineEntity` can recognize the field came through the chain
  * even though the union itself doesn't carry the `.nullable`
@@ -66,8 +154,8 @@ export type NullableSchema<T extends TSchema> = T & {
  */
 const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
 
-const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
-  const self = schema as NullableSchema<T>;
+const withNullable = <T extends TSchema>(schema: T): T => {
+  const self = schema as T & { nullable: unknown; default: unknown };
   Object.defineProperty(self, "nullable", {
     value: () => {
       const union = Type.Union([schema, Type.Null()]);
@@ -75,6 +163,12 @@ const withNullable = <T extends TSchema>(schema: T): NullableSchema<T> => {
       return union;
     },
     enumerable: false,
+  });
+  Object.defineProperty(self, "default", {
+    value: (value: Static<T>) => stampDefault(schema, value),
+    enumerable: false,
+    configurable: true,
+    writable: true,
   });
   return self;
 };
@@ -111,6 +205,11 @@ declare const COLLABORATIVE_TEXT_BRAND: unique symbol;
  */
 export type CollaborativeTextSchema<E extends string | undefined = string | undefined> = TNever & {
   readonly [COLLABORATIVE_TEXT_BRAND]: E;
+  /**
+   * Available so registration can reject it with a clear message: a
+   * derived body has a seed policy, not a field default.
+   */
+  default(value: unknown): CollaborativeTextSchema<E>;
 };
 
 const COLLABORATIVE_TEXT_MARKER = Symbol.for("@ebbjs/collaborative-text");
@@ -128,17 +227,17 @@ const readCollaborativeTextMarker = (schema: TSchema): CollaborativeTextMarker |
 
 /** Last-writer-wins typed-field helpers. Each returns a TypeBox primitive. */
 export const e = {
-  string: (): NullableSchema<ReturnType<typeof Type.String>> => withNullable(Type.String()),
-  number: (): NullableSchema<ReturnType<typeof Type.Number>> => withNullable(Type.Number()),
-  integer: (): NullableSchema<ReturnType<typeof Type.Integer>> => withNullable(Type.Integer()),
-  boolean: (): NullableSchema<ReturnType<typeof Type.Boolean>> => withNullable(Type.Boolean()),
+  string: (): StringField => withNullable(Type.String()) as StringField,
+  number: (): NumberField => withNullable(Type.Number()) as NumberField,
+  integer: (): IntegerField => withNullable(Type.Integer()) as IntegerField,
+  boolean: (): BooleanField => withNullable(Type.Boolean()) as BooleanField,
   /**
    * A map field: a string-keyed object whose entries merge key by key
    * under the wire's recursive merge rule rather than replacing the
    * whole field.
    */
-  map: <V extends TSchema>(value: V): NullableSchema<MapSchema<V>> =>
-    withNullable(Type.Record(Type.String(), value) as MapSchema<V>),
+  map: <V extends TSchema>(value: V): MapField<V> =>
+    withNullable(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
   /**
    * Declare a collaborative-text body. The field is derived: it stays
    * out of the parent's wire shape. `defineSchema` expands it into a
@@ -155,6 +254,12 @@ export const e = {
         conflictScope: opts?.conflictScope,
       } satisfies CollaborativeTextMarker,
       enumerable: false,
+    });
+    Object.defineProperty(schema, "default", {
+      value: (value: unknown) => stampDefault(schema, value),
+      enumerable: false,
+      configurable: true,
+      writable: true,
     });
     return schema as unknown as CollaborativeTextSchema<E>;
   },
@@ -306,6 +411,17 @@ export function defineEntity<TFields extends Record<string, TSchema>, TName exte
   return buildEntityDef(name, fields, options);
 }
 
+/** Raised when a derived (collaborative-text) field declares a default. */
+export class DerivedFieldDefaultError extends Error {
+  constructor(entityName: string, field: string) {
+    super(
+      `Field "${field}" on entity "${entityName}" is derived (e.collaborativeText()) ` +
+        `and cannot declare a default; a derived body has a seed policy.`,
+    );
+    this.name = "DerivedFieldDefaultError";
+  }
+}
+
 /**
  * Unchecked entity factory. `defineEntity` validates reserved names
  * first; the SDK's own system entities (`group`, `groupMember`,
@@ -324,6 +440,9 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   for (const [key, schema] of Object.entries(fields)) {
     const marker = readCollaborativeTextMarker(schema as TSchema);
     if (marker !== undefined) {
+      if (hasDefault(schema as TSchema)) {
+        throw new DerivedFieldDefaultError(name, key);
+      }
       derived[key] = {
         kind: "collaborative-text",
         entity: marker.entity,

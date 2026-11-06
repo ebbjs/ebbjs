@@ -251,6 +251,29 @@ describe("SyncClient schema option", () => {
     expect(body.schema_hash).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  it("changes schema_hash when a declared default changes", async () => {
+    const hashOf = async (defaultValue: string): Promise<string> => {
+      const { fn } = makeFetchMock([{ body: JSON.stringify({ actor_id: "a_test", groups: [] }) }]);
+      const client = createClient({
+        serverUrl: "http://localhost:4000",
+        actorId: "a_test",
+        fetchImpl: fn,
+        schema: defineSchema({
+          entities: {
+            todo: defineEntity("todo", {
+              priority: e.string().default(defaultValue),
+            }),
+          },
+          version: 1,
+        }),
+      });
+      await client.handshake();
+      const body = JSON.parse((fn.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);
+      return body.schema_hash as string;
+    };
+    expect(await hashOf("normal")).not.toBe(await hashOf("urgent"));
+  });
+
   it("produces the same schema_hash for equivalent schemas on independent clients", async () => {
     const schemaA = defineSchema({
       entities: {
