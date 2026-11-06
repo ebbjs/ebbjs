@@ -23,6 +23,10 @@ defmodule EbbServer.Application do
 
     validate_tailscale_secret!(auth_mode)
 
+    # The promoted admin credential is resolved before functions, which use it
+    # for their deploy routes, and before any listener accepts a request.
+    resolve_admin!()
+
     # Resolved once, before `children/0` reads it and before Bandit can serve
     # the route: `enabled?/0` must not consult the environment per request.
     resolve_functions!()
@@ -220,6 +224,14 @@ defmodule EbbServer.Application do
 
   defp resolve_functions! do
     EbbServer.Functions.resolve!()
+  rescue
+    error in RuntimeError ->
+      IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
+      reraise error, __STACKTRACE__
+  end
+
+  defp resolve_admin! do
+    EbbServer.Admin.Token.resolve!()
   rescue
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")

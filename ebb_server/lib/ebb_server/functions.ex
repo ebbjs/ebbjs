@@ -77,7 +77,6 @@ defmodule EbbServer.Functions do
   alias EbbServer.Functions.Worker.Pool
 
   @enabled_env "EBB_FUNCTIONS_ENABLED"
-  @admin_env "EBB_FUNCTIONS_ADMIN_TOKEN"
   @enabled_key ":ebb_server, :functions, enabled"
   @config_key :functions
 
@@ -541,10 +540,10 @@ defmodule EbbServer.Functions do
   defp put_resolved(config, key, value), do: Keyword.put(config, key, value)
 
   defp resolve_admin_token do
-    case env_value(@admin_env) do
-      nil -> blank_to_nil(Keyword.get(config(), :admin_token))
-      token -> token
-    end
+    # One resolution shared with the registry's admin routes:
+    # `EBB_ADMIN_TOKEN` / the server-level key first, then the functions
+    # environment variable and nested key this deployment may already use.
+    EbbServer.Admin.Token.resolve_value()
   end
 
   defp resolve_secrets(config) do
