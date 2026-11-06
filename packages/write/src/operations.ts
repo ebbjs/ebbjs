@@ -198,7 +198,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
 
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    const violations = validatePayload(def.createShape, input.fields, input.entity, false);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -293,12 +293,13 @@ export interface CreateSystemEntityInput {
  * Put one system entity row. The row's fan-out scope comes from the
  * wire itself (`group` is its own group; `groupMember` names its
  * `group_id`), so no cached membership view is consulted. Validation
- * runs against the registered definition like {@link createEntity}.
+ * is per-field like an update: a system row may legitimately be absent
+ * for a field without a default (`group.apps` on an unscoped group).
  */
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, false);
+    const violations = validatePayload(def.shape, input.fields, input.entity, true);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -496,7 +497,9 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   const fields = input.source.data?.fields ?? {};
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, projectFieldValues(fields), input.entity, false);
+    // A copy validates the live values it carries; absence in the source
+    // row is normal, so this is a partial check like an update.
+    const violations = validatePayload(def.shape, projectFieldValues(fields), input.entity, true);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
@@ -517,11 +520,16 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   };
 };
 
-/** Project a wire field map to the plain values the schema validator checks. */
+/**
+ * Project a wire field map to the plain values the schema validator checks.
+ * Tombstoned and absent leaves are omitted: a copy carries absence forward
+ * rather than asserting a null.
+ */
 const projectFieldValues = (fields: Record<string, FieldValue>): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(fields)) {
-    out[key] = projectFieldValue(field);
+    const value = projectFieldValue(field);
+    if (value !== null && value !== undefined) out[key] = value;
   }
   return out;
 };

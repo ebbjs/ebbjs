@@ -987,8 +987,8 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row: Todo | null = await client.todo.get("t1");
     expect(row).not.toBeNull();
     if (row === null) throw new Error("unreachable");
-    const _title: string = row.title;
-    const _completed: boolean = row.completed;
+    const _title: string | undefined = row.title;
+    const _completed: boolean | undefined = row.completed;
     void _title;
     void _completed;
   });
@@ -1013,7 +1013,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const tags: QueryBuilder<EntityFields<typeof labelEntity>> = row.tags;
-    const resolved: readonly { name: string }[] = await tags;
+    const resolved: readonly { name?: string }[] = await tags;
     expect(resolved.map((t) => t.name).sort()).toEqual(["a", "b", "c"]);
   });
 
@@ -1196,7 +1196,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     if (row === null) throw new Error("expected row");
     // The accessor type (a QueryBuilder), not the `string[]` field type.
     const tags: QueryBuilder<EntityFields<typeof tag>> = row.tags;
-    const resolved: readonly { name: string }[] = await tags;
+    const resolved: readonly { name?: string }[] = await tags;
     expect(resolved.map((t) => t.name)).toEqual(["a"]);
   });
 
@@ -1343,7 +1343,7 @@ describe("doc.groups — built-in membership accessor", () => {
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
     const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
-    const resolved: readonly { name: string }[] = await groups;
+    const resolved: readonly { name?: string }[] = await groups;
     expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
   });
 
@@ -1872,17 +1872,16 @@ describe("draft create / update — runtime validation", () => {
   const todoForCreate = defineEntity("todo", {
     title: e.string(),
     completed: e.boolean(),
+    // A declared default is what lets `create()` omit a field.
+    priority: e.string().default("normal"),
   });
 
   /**
    * Nullable variant of the same `todo` schema, used by the
    * "nullable accepts null / non-nullable rejects null" tests and
-   * the type-asymmetry tests below (#212). `defineEntity` wraps
-   * nullable fields in `Type.Optional` at runtime, so `Value.Check`
-   * accepts both `{ body: null }` and the no-body variant. The
-   * static type mirrors that wrap via `ShapeFields` so callers can
-   * write `{ title, completed }` (omitting `body`) and have it
-   * both typecheck and run.
+   * the type-asymmetry tests below (#212). A nullable field has no
+   * default, so `create()` still has to provide it — absence is what
+   * `.default()` grants, not nullability.
    */
   const todoWithNullable = defineEntity("todo", {
     title: e.string(),
@@ -2232,12 +2231,21 @@ describe("draft create / update — runtime validation", () => {
     expect(true).toBe(true);
   });
 
-  it("create() with a nullable schema: omitting the nullable field typechecks and runs (#212)", async () => {
-    // The static type for nullable fields must be `T | null | undefined`,
-    // not `T | null`. The runtime accepts omission (Type.Optional wrap
-    // in withImplicitOptional), and the type system should agree so
-    // callers don't have to pass `null` for fields they want to leave
-    // unset.
+  it("create() omits a defaulted field and fills it", async () => {
+    const seen: string[] = [];
+    const { client, storage } = await mkClient(seen);
+    await expect(
+      client.actions.createTodo({
+        input: { title: "Ship", completed: false },
+        ...createOpts,
+      }),
+    ).resolves.toBeDefined();
+    const rows = await storage.entities.query("todo");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.data?.fields).not.toHaveProperty("priority");
+  });
+
+  it("create() requires a field with no default, even when it is nullable", async () => {
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
     await expect(
@@ -2245,8 +2253,7 @@ describe("draft create / update — runtime validation", () => {
         input: { title: "Ship", completed: false },
         ...createOpts,
       }),
-    ).resolves.toBeDefined();
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
+    ).rejects.toBeInstanceOf(EntityValidationError);
   });
 
   it("create() with a nullable schema: static type still rejects wrong inner type (#212)", () => {
@@ -2267,18 +2274,15 @@ describe("draft create / update — runtime validation", () => {
     expect(true).toBe(true);
   });
 
-  it("create() with a nullable schema: omitting the field at runtime does not throw EntityValidationError (#212)", async () => {
-    // Round-trip: omitting body passes both the static type check and
-    // Value.Check. Catches any drift between the runtime shape
-    // (Type.Optional wrap) and the static type after the fix.
+  it("create() rejects a literal null for a nullable field at runtime", async () => {
     const seen: string[] = [];
     const { client } = await mkClientWithNullable(seen);
     await expect(
       client.actions.createNullableTodo({
-        input: { title: "Ship", completed: false },
+        input: { title: null, completed: false, body: null },
         groups: ["g_1"],
       }),
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(EntityValidationError);
   });
 });
 

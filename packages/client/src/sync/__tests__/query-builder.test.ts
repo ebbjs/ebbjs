@@ -359,7 +359,7 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
     expect(await qb.count()).toBe(3);
     expect(await qb.exists()).toBe(true);
     const titles: string[] = [];
-    for await (const row of qb) titles.push(row.title);
+    for await (const row of qb) titles.push(row.title ?? "");
     expect(titles).toEqual(["banana", "apple", "cherry"]);
     expect((await qb.toRaw()).map((e) => e.id)).toEqual(["1", "2", "3"]);
   });
@@ -741,7 +741,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["a", "c"]);
   });
@@ -770,7 +770,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).orderBy("title", "asc")) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["apple", "banana"]);
   });
@@ -783,7 +783,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).limit(2)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
     }
     expect(titles).toEqual(["a", "b"]);
   });
@@ -796,7 +796,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape)) {
-      titles.push(row.title);
+      titles.push(row.title ?? "");
       if (titles.length === 2) break;
     }
     expect(titles).toEqual(["a", "b"]);

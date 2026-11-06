@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { Type } from "@sinclair/typebox";
+import { describe, it, expect, expectTypeOf } from "vitest";
+import { Type, type Static } from "@sinclair/typebox";
 import {
   defineEntity,
   e,
@@ -243,13 +243,43 @@ describe("declarative field defaults", () => {
   it("Value.Check ignores the annotation", () => {
     const todo = defineEntity("todo", { priority: e.string().default("normal") });
     // The default does not relax the declared type.
-    expect(validatePayload(todo.shape, { priority: "normal" }, "todo", false)).toEqual([]);
-    expect(validatePayload(todo.shape, { priority: 1 }, "todo", false)).not.toEqual([]);
+    expect(validatePayload(todo.createShape, { priority: "normal" }, "todo", false)).toEqual([]);
+    expect(validatePayload(todo.createShape, { priority: 1 }, "todo", false)).not.toEqual([]);
   });
 
   it("rejects a default on a derived collaborative-text field", () => {
     expect(() => defineEntity("doc", { body: e.collaborativeText().default("seed") })).toThrow(
       DerivedFieldDefaultError,
     );
+  });
+});
+
+describe("read types state absence", () => {
+  const task = defineEntity("task", {
+    title: e.string(),
+    priority: e.string().default("normal"),
+  });
+
+  it("a defaulted field reads as T; an undefaulted one as T | undefined", () => {
+    type Task = Static<typeof task.shape>;
+    expectTypeOf<Task["priority"]>().toEqualTypeOf<string>();
+    expectTypeOf<Task["title"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  it("create may omit a defaulted field and must provide an undefaulted one", () => {
+    type Create = Static<typeof task.createShape>;
+    expectTypeOf<Create["priority"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<Create["title"]>().toEqualTypeOf<string>();
+  });
+
+  it("the runtime read shape marks an undefaulted property optional", () => {
+    const shape = task.shape as unknown as {
+      properties: Record<string, { [key: symbol]: unknown }>;
+    };
+    const properties = shape.properties as Record<string, Record<string, unknown>>;
+    expect(properties.priority).toBeDefined();
+    expect(properties.title).toBeDefined();
+    // Type.Optional stamps OptionalKind on the property schema.
+    expect(Object.getOwnPropertySymbols(properties.title!).length).toBeGreaterThan(0);
   });
 });

@@ -18,7 +18,7 @@ export function IssueFiltersBar({
   onChange,
 }: {
   filters: IssueFilters;
-  profiles: readonly { id: string; display_name: string; actor_id: string }[];
+  profiles: readonly { id: string; display_name: string; actor_id?: string }[];
   onChange: (next: IssueFilters) => void;
 }) {
   const set = (patch: Partial<IssueFilters>): void => {

@@ -25,6 +25,7 @@ import type {
   EntityRegistry,
   GroupFields,
   GroupMemberFields,
+  CreateShapeFields,
   RelationshipDef,
   Schema,
   ShapeFields,
@@ -158,6 +159,15 @@ export type WireStatic<TFields extends Record<string, TSchema>> = Static<
   TObject<ShapeFields<WireFields<TFields>>>
 >;
 
+/**
+ * Static value a create accepts: a defaulted field may be omitted (the
+ * default fills it), a field without one is required. The inverse of
+ * {@link WireStatic}, which is the read type.
+ */
+export type WireCreateStatic<TFields extends Record<string, TSchema>> = Static<
+  TObject<CreateShapeFields<WireFields<TFields>>>
+>;
+
 /** Values accepted for derived bodies on `create`: the initial text. */
 export type DerivedInputs<TFields extends Record<string, TSchema>> = {
   readonly [K in DerivedKeys<TFields>]?: string;
@@ -277,7 +287,7 @@ export type EntityRow<
  * the design comment on #161).
  */
 export type QueryFilter<TFields extends Record<string, TSchema>> = {
-  [K in keyof WireFields<TFields>]?: Static<WireFields<TFields>[K]>;
+  [K in keyof WireFields<TFields>]?: Static<WireFields<TFields>[K]> | null;
 };
 
 /**
@@ -724,7 +734,7 @@ export function createEntityNamespace<
   TJoins extends object = NoJoins,
 >(
   entityName: string,
-  shape: TObject<WireFields<TFields>>,
+  shape: TObject<ShapeFields<WireFields<TFields>>>,
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
@@ -741,7 +751,13 @@ export function createEntityNamespace<
     if (entity.type !== entityName) return null;
     const accessors = buildRowAccessors(entityName, entity.id, storage, registry, read, replica);
     const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
-      subscribeToEntity(watcher, entityName, entity.id, shape, cb);
+      subscribeToEntity(
+        watcher,
+        entityName,
+        entity.id,
+        shape,
+        cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<WireFields<TFields>>>) => void,
+      );
     const subscribeAccessors = (cb: () => void): (() => void) =>
       watcher === null ? () => {} : watcher.accessors(entity.id, cb);
     // Accessors spread last so a declared relationship shadows a
@@ -766,14 +782,19 @@ export function createEntityNamespace<
           `client.${entityName}.query(): no replica binding — build the namespace through createClient (or pass a ReplicaAccess)`,
         );
       }
-      return buildReplicaQueryBuilder<WireFields<TFields>, TJoins>(entityName, shape, {
+      return buildReplicaQueryBuilder<ShapeFields<WireFields<TFields>>, TJoins>(entityName, shape, {
         entityName,
         registry,
         replica: replica.replica,
         queries: replica.queries,
         hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
-      });
+      }) as unknown as QueryBuilder<
+        WireFields<TFields>,
+        TJoins,
+        NoJoins,
+        QueryRow<WireFields<TFields>>
+      >;
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       // The accessors read the replica's adjacency, so bring it up to
@@ -831,7 +852,7 @@ export function createEntityNamespace<
             const row = replica.replica.get(id);
             return row === undefined
               ? []
-              : [toEntitySnapshot(row, shape) as EntitySnapshot<TFields>];
+              : [toEntitySnapshot(row, shape) as unknown as EntitySnapshot<TFields>];
           });
           cb({ entities, filter, count: entities.length });
         },
@@ -851,9 +872,7 @@ function createGroupNamespace(
 ): GroupNamespace {
   return createEntityNamespace<GroupFields, MembershipAccessors>(
     "group",
-    // The group shape marks `apps` optional; projection only needs the
-    // per-field schemas, so the wire-field view is the one it reads.
-    groupSystemEntity.shape as unknown as TObject<WireFields<GroupFields>>,
+    groupSystemEntity.shape,
     storage,
     read,
     replica,

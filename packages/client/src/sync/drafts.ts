@@ -43,7 +43,7 @@ import {
   type GroupMemberView,
   type LiveGroupMember,
 } from "@ebbjs/write";
-import type { DerivedInputs, EntityFields, WireStatic } from "./namespace";
+import type { DerivedInputs, EntityFields, WireCreateStatic, WireStatic } from "./namespace";
 import {
   ActionRejectedError,
   call,
@@ -374,7 +374,7 @@ interface ResolveContext {
  * derived bodies, and the forward relationship pointers themselves.
  */
 type DraftCreateInput<TFields extends Record<string, TSchema>, TCreateExtras extends object> = Omit<
-  WireStatic<TFields>,
+  WireCreateStatic<TFields>,
   keyof TCreateExtras & string
 > &
   DerivedInputs<TFields> &
@@ -428,9 +428,23 @@ export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit
   "create" | "addToGroup" | "removeFromGroup" | "setGroups"
 > & {
   create(
-    input: WireStatic<TFields> & DerivedInputs<TFields>,
+    input: WireCreateStatic<TFields> & DerivedInputs<TFields>,
     opts?: EntityWriteOptions,
   ): CreatedEntity<TFields>;
+};
+
+/**
+ * `client.group.create`: the name is required, while `apps` is genuinely
+ * optional — an absent scope means "every app", which is not `{}`.
+ */
+export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFields>, "create"> & {
+  create(
+    input: {
+      readonly name: string;
+      readonly apps?: Record<string, boolean> | null;
+    },
+    opts?: EntityWriteOptions,
+  ): CreatedEntity<GroupFields>;
 };
 
 /**
@@ -464,7 +478,7 @@ export type ActionDrafts<S> =
           DraftPointerInputs<TRels, EntityNameOf<TEntities[K]>>
         >;
       } & {
-        readonly group: SystemDraftNamespace<GroupFields>;
+        readonly group: GroupDraftNamespace;
         readonly membership: MembershipDraftNamespace;
       }
     : Record<string, never>;
@@ -745,7 +759,7 @@ const createSystemDrafts = (
   cap: ActionCapability,
   collector: DraftCollector,
 ): {
-  group: SystemDraftNamespace<GroupFields>;
+  group: GroupDraftNamespace;
   membership: MembershipDraftNamespace;
 } => {
   const group = createDraftNamespace<GroupFields>("group", groupSystemEntity, cap, collector);

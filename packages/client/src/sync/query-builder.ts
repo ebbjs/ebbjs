@@ -363,7 +363,7 @@ export interface QueryBuilder<
    */
   where<K extends keyof TFields & string>(
     key: K,
-    value: Static<TFields[K]>,
+    value: Static<TFields[K]> | null,
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Relationship-target overload. It stays open over every key because
@@ -383,7 +383,7 @@ export interface QueryBuilder<
    */
   or<K extends keyof TFields & string>(
     key: K,
-    value: Static<TFields[K]>,
+    value: Static<TFields[K]> | null,
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Open pointer overload for {@link or}, mirroring {@link where}'s. */
   or(

@@ -275,50 +275,57 @@ const deriveMarker = (schema: TSchema): FieldMarker =>
   isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
 
 /**
- * True at the type level when `T` is the union shape produced by
- * `.nullable()`: `Type.Union<[T, TNull]>`. The chain helper drops
- * its `.nullable` method when called, so the resulting `TUnion` is
- * the user-facing marker that a field is nullable.
+ * True at the type level when a field declares a default. Keyed on the
+ * `.default()` brand, not the annotation key: TypeBox's option bag
+ * accepts `default?: any` on every schema.
  */
-type IsNullableUnion<T> =
-  T extends TUnion<infer Members>
-    ? Members extends readonly [unknown, infer Second]
-      ? Second extends TNull
-        ? true
-        : false
-      : false
-    : false;
+export type HasDefault<T extends TSchema> = [T] extends [{ readonly [DEFAULT_BRAND]: unknown }]
+  ? true
+  : false;
 
 /**
- * Type-level mirror of {@link withImplicitOptional}: nullable fields
- * become `TOptional<T>` in the static type so `Static<TObject<...>>`
- * agrees with the runtime shape (`Type.Optional(...)` wrap that
- * `Value.Check` accepts). Non-nullable fields pass through untouched.
+ * The read shape of a field map: a defaulted field reads as `T`, a field
+ * without one reads as `T | undefined`. `TOptional<T>` is TypeBox's
+ * spelling of an optional property, so `Static<TObject<ShapeFields<...>>>`
+ * yields exactly those read types.
  *
- * Detection keys on the union shape produced by `.nullable()`
- * rather than the `.nullable` chain method (which every `e.*()` builder
- * carries by default and would over-eagerly mark every field
- * optional).
+ * Absence is the truth for a non-defaulted field: any row can predate the
+ * field's declaration. Declaring a default is the statement that absence
+ * has a value.
  */
-type WithImplicitOptional<T extends TSchema> = IsNullableUnion<T> extends true ? TOptional<T> : T;
-
 export type ShapeFields<TFields extends Record<string, TSchema>> = {
-  [K in keyof TFields]: WithImplicitOptional<TFields[K]>;
+  [K in keyof TFields]: HasDefault<TFields[K]> extends true
+    ? StripOptional<TFields[K]>
+    : TOptional<StripOptional<TFields[K]>>;
+};
+
+/** The read shape is already optional-wrapped; re-applying it must not nest. */
+type StripOptional<T extends TSchema> = T extends TOptional<infer S> ? S : T;
+
+/**
+ * The create-validation shape of a field map. `Value.Check` treats an
+ * unwrapped property as required, so `create()` may omit a field exactly
+ * when it has a default: the validation wrap is optional iff defaulted.
+ *
+ * This is the inverse of {@link ShapeFields}, which is why the two are
+ * separate shapes rather than one type doing double duty.
+ */
+export type CreateShapeFields<TFields extends Record<string, TSchema>> = {
+  [K in keyof TFields]: HasDefault<TFields[K]> extends true ? TOptional<TFields[K]> : TFields[K];
 };
 
 /**
- * The TypeBox object schema wrapping a field map. Returned by
- * `defineEntity` as `EntityDef.shape`. Field-value types flow through
- * `Static<TObject<TFields>>` (TypeBox's static resolver); callers can
- * reach them with `Static<typeof def["shape"]>` if they want explicit
- * value-type extraction.
- *
- * Nullable fields are represented as `TOptional<T>` in the static type
- * to match the runtime `Type.Optional(...)` wrap applied by
- * `withImplicitOptional` — see `ShapeFields`.
+ * The TypeBox object schema wrapping a field map. `EntityDef.shape` is the
+ * read shape; field-value types flow through `Static<TObject<...>>`, or
+ * `Static<typeof def["shape"]>` for explicit extraction.
  */
 export type EntityShape<TFields extends Record<string, TSchema>> = ReturnType<
   typeof Type.Object<ShapeFields<TFields>>
+>;
+
+/** The create-validation counterpart of {@link EntityShape}. */
+export type EntityCreateShape<TFields extends Record<string, TSchema>> = ReturnType<
+  typeof Type.Object<CreateShapeFields<TFields>>
 >;
 
 /**
@@ -377,10 +384,17 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
    */
   readonly materialization: Materialization;
   /**
-   * TypeBox schema — drives value-shape typing. Implicit `Type.Object`
-   * wrapper over the *wire* fields; derived fields are hoisted out.
+   * Read shape — drives value-shape typing and projection. Implicit
+   * `Type.Object` wrapper over the *wire* fields; derived fields are
+   * hoisted out. A non-defaulted field is optional here.
    */
   readonly shape: EntityShape<WireFields<TFields>>;
+  /**
+   * Create-validation shape: a defaulted field is optional (the default
+   * fills it), a field without one is required. Only `Value.Check` for a
+   * full `create()` payload reads this.
+   */
+  readonly createShape: EntityCreateShape<WireFields<TFields>>;
   /** Merge-semantics markers for the wire fields — derived fields are absent. */
   readonly fields: { [K in keyof WireFields<TFields>]: FieldMarker };
   /** Fields declared with `e.collaborativeText()`, awaiting expansion. */
@@ -453,7 +467,8 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
     wireFields[key] = schema as TSchema;
   }
 
-  const shapeFields = withImplicitOptional(wireFields);
+  const shapeFields = withReadOptional(wireFields);
+  const createShapeFields = withCreateOptional(wireFields);
 
   const derivedFields = Object.fromEntries(
     Object.keys(wireFields).map((k) => [k, deriveMarker(wireFields[k] as TSchema)]),
@@ -464,35 +479,43 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
     conflictScope: entityScope,
     materialization: options.materialization ?? "held",
     shape: Type.Object(shapeFields) as EntityShape<WireFields<TFields>>,
+    createShape: Type.Object(createShapeFields) as EntityCreateShape<WireFields<TFields>>,
     fields: derivedFields,
     derived: derivedMarkers,
   });
 }
 
 /**
- * Wrap every nullable field in `Type.Optional` so `Value.Check`
- * treats absent values as valid (matching the wire envelope's
- * set / nulled / absent projection). The static type mirrors this
- * wrap via `ShapeFields` so `Static<TObject<...>>` agrees — nullable
- * fields are optional at both runtime and compile time.
+ * The read wrap: a field without a default is optional, so an absent value
+ * reads as `T | undefined`. A defaulted field stays required — its value
+ * always resolves.
  */
-const withImplicitOptional = <TFields extends Record<string, TSchema>>(
+const withReadOptional = <TFields extends Record<string, TSchema>>(
   fields: TFields,
 ): Record<string, TSchema> => {
   const out: Record<string, TSchema> = {};
   for (const [key, schema] of Object.entries(fields)) {
-    out[key] = isNullableSchema(schema)
-      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
-      : schema;
+    out[key] = hasDefault(schema)
+      ? schema
+      : Type.Optional(schema as Parameters<typeof Type.Optional>[0]);
   }
   return out;
 };
 
-/** True for fields that came through `.nullable()` — either the chain method or the marker. */
-const isNullableSchema = (schema: TSchema): boolean => {
-  if ("nullable" in schema && typeof schema.nullable === "function") return true;
-
-  return Object.getOwnPropertyDescriptor(schema, NULLABLE_MARKER)?.value === true;
+/**
+ * The create-validation wrap: a defaulted field is optional because the
+ * default fills it, while a field without one is required.
+ */
+const withCreateOptional = <TFields extends Record<string, TSchema>>(
+  fields: TFields,
+): Record<string, TSchema> => {
+  const out: Record<string, TSchema> = {};
+  for (const [key, schema] of Object.entries(fields)) {
+    out[key] = hasDefault(schema)
+      ? Type.Optional(schema as Parameters<typeof Type.Optional>[0])
+      : schema;
+  }
+  return out;
 };
 
 export type { TSchema };

@@ -16,7 +16,7 @@ import {
 
 const buildRegistry = () => {
   const project = defineEntity("project", { name: e.string() });
-  const issue = defineEntity("issue", { title: e.string(), project: e.string().nullable() });
+  const issue = defineEntity("issue", { title: e.string(), project: e.string().default("") });
   const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
   return defineSchema({
     entities: { project, issue },
