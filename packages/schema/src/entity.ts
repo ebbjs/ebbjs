@@ -18,8 +18,6 @@ import { Type } from "@sinclair/typebox";
 import type {
   TSchema,
   TOptional,
-  TUnion,
-  TNull,
   TNever,
   TRecord,
   TString,
@@ -57,11 +55,6 @@ export type ConflictScope = "field" | "entity";
  */
 export type Materialization = "held" | "on-demand";
 
-/** Schema with a `.nullable()` chain producing `T | null`. */
-export type NullableSchema<T extends TSchema> = T & {
-  readonly nullable: () => ReturnType<typeof Type.Union<[T, ReturnType<typeof Type.Null>]>>;
-};
-
 /**
  * Type-level stamp identifying a field schema that went through
  * `.default(value)`. A symbol brand is needed because every TypeBox
@@ -84,28 +77,23 @@ export type DefaultedSchema<T extends TSchema, V = unknown> = T & {
  * the inherited annotation slot, so the chain stays typed.
  */
 export interface StringField extends TString {
-  nullable(): TUnion<[TString, TNull]>;
   default(value: Static<TString>): DefaultedSchema<TString, Static<TString>>;
 }
 
 export interface NumberField extends TNumber {
-  nullable(): TUnion<[TNumber, TNull]>;
   default(value: Static<TNumber>): DefaultedSchema<TNumber, Static<TNumber>>;
 }
 
 export interface IntegerField extends TInteger {
-  nullable(): TUnion<[TInteger, TNull]>;
   default(value: Static<TInteger>): DefaultedSchema<TInteger, Static<TInteger>>;
 }
 
 export interface BooleanField extends TBoolean {
-  nullable(): TUnion<[TBoolean, TNull]>;
   default(value: Static<TBoolean>): DefaultedSchema<TBoolean, Static<TBoolean>>;
 }
 
 /** A map field builder: `.default()` takes the map's projected value. */
 export interface MapField<V extends TSchema> extends MapSchema<V> {
-  nullable(): TUnion<[MapSchema<V>, TNull]>;
   default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
 }
 
@@ -146,24 +134,8 @@ export const hasDefault = (schema: TSchema): boolean => {
 export const readDefault = (schema: TSchema): unknown =>
   hasDefault(schema) ? (schema as { default?: unknown }).default : undefined;
 
-/**
- * Marker stamped onto the union returned by `.nullable()` so
- * `defineEntity` can recognize the field came through the chain
- * even though the union itself doesn't carry the `.nullable`
- * method.
- */
-const NULLABLE_MARKER = Symbol.for("@ebbjs/nullable");
-
-const withNullable = <T extends TSchema>(schema: T): T => {
-  const self = schema as T & { nullable: unknown; default: unknown };
-  Object.defineProperty(self, "nullable", {
-    value: () => {
-      const union = Type.Union([schema, Type.Null()]);
-      Object.defineProperty(union, NULLABLE_MARKER, { value: true, enumerable: false });
-      return union;
-    },
-    enumerable: false,
-  });
+const withFieldChain = <T extends TSchema>(schema: T): T => {
+  const self = schema as T & { default: unknown };
   Object.defineProperty(self, "default", {
     value: (value: Static<T>) => stampDefault(schema, value),
     enumerable: false,
@@ -227,17 +199,17 @@ const readCollaborativeTextMarker = (schema: TSchema): CollaborativeTextMarker |
 
 /** Last-writer-wins typed-field helpers. Each returns a TypeBox primitive. */
 export const e = {
-  string: (): StringField => withNullable(Type.String()) as StringField,
-  number: (): NumberField => withNullable(Type.Number()) as NumberField,
-  integer: (): IntegerField => withNullable(Type.Integer()) as IntegerField,
-  boolean: (): BooleanField => withNullable(Type.Boolean()) as BooleanField,
+  string: (): StringField => withFieldChain(Type.String()) as StringField,
+  number: (): NumberField => withFieldChain(Type.Number()) as NumberField,
+  integer: (): IntegerField => withFieldChain(Type.Integer()) as IntegerField,
+  boolean: (): BooleanField => withFieldChain(Type.Boolean()) as BooleanField,
   /**
    * A map field: a string-keyed object whose entries merge key by key
    * under the wire's recursive merge rule rather than replacing the
    * whole field.
    */
   map: <V extends TSchema>(value: V): MapField<V> =>
-    withNullable(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
+    withFieldChain(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
   /**
    * Declare a collaborative-text body. The field is derived: it stays
    * out of the parent's wire shape. `defineSchema` expands it into a
@@ -265,11 +237,7 @@ export const e = {
   },
 } as const;
 
-const isMapSchema = (schema: TSchema): boolean => {
-  if ("patternProperties" in schema) return true;
-  const anyOf = (schema as { anyOf?: readonly TSchema[] }).anyOf;
-  return Array.isArray(anyOf) && anyOf.some(isMapSchema);
-};
+const isMapSchema = (schema: TSchema): boolean => "patternProperties" in schema;
 
 const deriveMarker = (schema: TSchema): FieldMarker =>
   isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
@@ -425,6 +393,41 @@ export function defineEntity<TFields extends Record<string, TSchema>, TName exte
   return buildEntityDef(name, fields, options);
 }
 
+/** Raised when a field schema admits `null`. */
+export class NullFieldError extends Error {
+  constructor(entityName: string, field: string) {
+    super(
+      `Field "${field}" on entity "${entityName}" admits Null. Absence is the only ` +
+        `spelling: declare a default for a read-time value, or clear with \`unset\`.`,
+    );
+    this.name = "NullFieldError";
+  }
+}
+
+/**
+ * True when a field schema admits `null` anywhere in its type: a `null`
+ * type, a union branch, a `const`, or an enum entry. The wire's
+ * `{ value: null }` is a tombstone, not a stored null, so no field
+ * schema may admit one.
+ */
+export const admitsNull = (schema: TSchema): boolean => {
+  const candidate = schema as {
+    type?: unknown;
+    anyOf?: readonly TSchema[];
+    oneOf?: readonly TSchema[];
+    const?: unknown;
+    enum?: readonly unknown[];
+  };
+  if (candidate.type === "null") return true;
+  if (Array.isArray(candidate.type) && candidate.type.includes("null")) return true;
+  if (candidate.const === null) return true;
+  if (Array.isArray(candidate.enum) && candidate.enum.includes(null)) return true;
+  for (const branches of [candidate.anyOf, candidate.oneOf]) {
+    if (Array.isArray(branches) && branches.some(admitsNull)) return true;
+  }
+  return false;
+};
+
 /** Raised when a derived (collaborative-text) field declares a default. */
 export class DerivedFieldDefaultError extends Error {
   constructor(entityName: string, field: string) {
@@ -463,6 +466,9 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
         conflictScope: marker.conflictScope ?? entityScope,
       };
       continue;
+    }
+    if (admitsNull(schema as TSchema)) {
+      throw new NullFieldError(name, key);
     }
     wireFields[key] = schema as TSchema;
   }

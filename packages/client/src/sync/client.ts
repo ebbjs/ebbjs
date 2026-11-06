@@ -2255,11 +2255,10 @@ const residencyFromRegistry = (registry: EntityRegistry): MaterializationPolicy 
  * level) is enough for the server-side drift check; the hash is not
  * a security primitive.
  *
- * Entity and relationship records are walked by value — the schema
- * itself is frozen, but TypeBox shapes carry non-enumerable
- * `nullable` chains and other helpers that `JSON.stringify` ignores
- * by default, so two schemas that differ only in those helpers hash
- * the same.
+ * Entity and relationship records are walked by value. The builder's
+ * `.default()` chain method is non-enumerable, so `stableStringify` sees
+ * only a declared default annotation (which is part of the hash), not
+ * the chain helper itself.
  */
 const computeSchemaHash = (schema: AnySchema): string => fnv1a64(stableStringify(schema));
 

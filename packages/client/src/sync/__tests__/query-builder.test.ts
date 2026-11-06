@@ -26,7 +26,7 @@ import {
 const todo = defineEntity("todo", {
   title: e.string(),
   completed: e.boolean(),
-  body: e.string().nullable(),
+  body: e.string(),
 });
 
 type Todo = Static<typeof todo.shape>;
@@ -530,7 +530,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
     // Title is e.string() → value is string.
     builder.where("title", "hello");
     builder.where("title", "world");
-    // Body is e.string().nullable() → value is string | null.
+    // Body is e.string() → value is string | undefined.
     builder.where("body", null);
     builder.where("body", "note");
     // Completed is e.boolean() → value is boolean.

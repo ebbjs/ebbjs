@@ -447,7 +447,7 @@ export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFields>, "creat
   create(
     input: {
       readonly name: string;
-      readonly apps?: Record<string, boolean> | null;
+      readonly apps?: Record<string, boolean>;
     },
     opts?: EntityWriteOptions,
   ): CreatedEntity<GroupFields>;

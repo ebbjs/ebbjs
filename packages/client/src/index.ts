@@ -309,7 +309,6 @@ export {
   type FieldMarker,
   type ConflictScope,
   type Materialization,
-  type NullableSchema,
   type MapSchema,
   type CollaborativeTextSchema,
   type CollaborativeTextOptions,

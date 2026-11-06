@@ -65,7 +65,7 @@ const field = (spec: string): TSchema => {
     case "number":
       return e.number();
     case "string[]":
-      return Type.Union([Type.Array(Type.String()), Type.Null()]);
+      return Type.Array(Type.String());
     default:
       throw new Error(`planner fixture: unknown field spec "${spec}"`);
   }

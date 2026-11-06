@@ -81,8 +81,7 @@ const schema = defineSchema({
 /** The system drafts under test, each declared so the call site stays typed. */
 const createGroup = defineAction(
   schema,
-  ({ group }, params: { name: string; apps?: Record<string, boolean> | null }) =>
-    group.create(params),
+  ({ group }, params: { name: string; apps?: Record<string, boolean> }) => group.create(params),
 );
 
 const createMembership = defineAction(

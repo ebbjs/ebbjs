@@ -18,7 +18,7 @@ const buildSchema = () => {
   const issue = defineEntity("issue", {
     title: e.string(),
     body: e.collaborativeText(),
-    project: e.string().nullable(),
+    project: e.string().default(""),
   });
   const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
   return {

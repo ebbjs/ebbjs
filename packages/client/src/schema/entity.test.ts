@@ -8,7 +8,7 @@ import {
   validatePayload,
   DerivedFieldDefaultError,
   type EntityDef,
-  type NullableSchema,
+  NullFieldError,
 } from "@ebbjs/schema";
 import { ReservedNameError, RESERVED_ENTITY_NAMES } from "@ebbjs/schema";
 
@@ -169,26 +169,6 @@ describe("e.* primitives", () => {
     const b = e.boolean();
     expect(b.type).toBe("boolean");
   });
-
-  it("e.string().nullable() returns Type.Union([Type.String(), Type.Null()])", () => {
-    const n = e.string().nullable();
-    expect(Type.Union).toBeDefined();
-    expect(n.anyOf).toHaveLength(2);
-    expect(n.anyOf[0]).toMatchObject({ type: "string" });
-    expect(n.anyOf[1]).toMatchObject({ type: "null" });
-  });
-
-  it("e.boolean().nullable() also produces a union with Type.Null", () => {
-    const n = e.boolean().nullable();
-    expect(n.anyOf).toHaveLength(2);
-    expect(n.anyOf[1]).toMatchObject({ type: "null" });
-  });
-
-  it("NullableSchema carries the .nullable() chain as a non-enumerable property", () => {
-    const s: NullableSchema<ReturnType<typeof Type.String>> = e.string();
-    expect(typeof s.nullable).toBe("function");
-    expect(Object.keys(s)).not.toContain("nullable");
-  });
 });
 
 describe("bare-field-map authoring", () => {
@@ -196,7 +176,7 @@ describe("bare-field-map authoring", () => {
     const todo = defineEntity("todo", {
       title: e.string(),
       completed: e.boolean(),
-      body: e.string().nullable(),
+      body: e.string(),
     });
     expect(todo.name).toBe("todo");
     expect(todo.shape.type).toBe("object");
@@ -281,5 +261,23 @@ describe("read types state absence", () => {
     expect(properties.title).toBeDefined();
     // Type.Optional stamps OptionalKind on the property schema.
     expect(Object.getOwnPropertySymbols(properties.title!).length).toBeGreaterThan(0);
+  });
+});
+
+describe("field schemas may not admit null", () => {
+  it("rejects a union that includes Type.Null, naming the field", () => {
+    expect(() => defineEntity("todo", { body: Type.Union([Type.String(), Type.Null()]) })).toThrow(
+      NullFieldError,
+    );
+  });
+
+  it("rejects a bare null-typed field", () => {
+    expect(() => defineEntity("todo", { gone: Type.Null() })).toThrow(NullFieldError);
+  });
+
+  it("rejects a schema whose type array includes null", () => {
+    expect(() => defineEntity("todo", { value: { type: ["string", "null"] } as never })).toThrow(
+      NullFieldError,
+    );
   });
 });
