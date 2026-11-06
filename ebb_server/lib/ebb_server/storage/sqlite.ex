@@ -151,7 +151,7 @@ defmodule EbbServer.Storage.SQLite do
 
   # Per-page relationship ids (#744). A relationship is scoped by its source
   # and never gets an `entityGroup` row of its own, so the membership keyset
-  # above cannot name it; the page finds its edges by joining its own window
+  # above cannot name it; the page finds its rows by joining its own window
   # to `source_id`.
   #
   # The fence and the index hint are both load-bearing, and nothing in this
@@ -161,10 +161,14 @@ defmodule EbbServer.Storage.SQLite do
   # the page and drop every later source in the window. `INDEXED BY` makes the
   # plan a seek per window row; without it the shape is a scan of the whole
   # live relationship set on a database that has no statistics.
+  #
+  # The window is bounded at both ends by the membership rows the caller
+  # already read, so a membership row committed between the caller's two
+  # statements cannot slide the window and strand the last source's rows.
   @list_page_relationship_ids_sql """
   WITH page AS MATERIALIZED (
     SELECT entity_id FROM entities
-    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id <= ?
     ORDER BY id LIMIT ?
   )
   SELECT r.id
@@ -176,7 +180,8 @@ defmodule EbbServer.Storage.SQLite do
   @list_page_relationship_ids_after_sql """
   WITH page AS MATERIALIZED (
     SELECT entity_id FROM entities
-    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id > ?
+    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+      AND id > ? AND id <= ?
     ORDER BY id LIMIT ?
   )
   SELECT r.id
@@ -317,9 +322,10 @@ defmodule EbbServer.Storage.SQLite do
   Lists the live `relationship` row ids whose source an `entityGroup` row in
   the group's window names.
 
-  The window is `[after_key, after_key + limit)` over the membership keyset
-  `list_entity_group_memberships/4` pages, so a page's edges are found from
-  its own membership keys rather than from the group's whole edge set. Two
+  The window is `(after_key, window_end]` over the membership keyset
+  `list_entity_group_memberships/4` pages, cut to `limit` rows. It is bounded
+  by the membership rows the caller already read, not recomputed, so a
+  membership row committed between the two calls cannot slide it. Two
   membership rows can name one source, so an id can repeat; the caller
   dedupes. Rows are ids only: every row the listing ships is materialized and
   read through `get_entities/2`, and reading `data` twice would double that.
@@ -327,11 +333,15 @@ defmodule EbbServer.Storage.SQLite do
   @spec list_page_relationship_ids(
           String.t(),
           String.t() | nil,
-          non_neg_integer(),
+          String.t(),
+          pos_integer(),
           GenServer.server()
-        ) :: [String.t()]
-  def list_page_relationship_ids(group_id, after_key, limit, server \\ __MODULE__) do
-    GenServer.call(server, {:list_page_relationship_ids, group_id, after_key, limit})
+        ) :: {:ok, [String.t()]} | {:error, term()}
+  def list_page_relationship_ids(group_id, after_key, window_end, limit, server \\ __MODULE__) do
+    GenServer.call(
+      server,
+      {:list_page_relationship_ids, group_id, after_key, window_end, limit}
+    )
   end
 
   @doc """
@@ -604,8 +614,12 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
-  def handle_call({:list_page_relationship_ids, group_id, after_key, limit}, _from, state) do
-    {sql, params} = page_relationship_statement(group_id, after_key, limit)
+  def handle_call(
+        {:list_page_relationship_ids, group_id, after_key, window_end, limit},
+        _from,
+        state
+      ) do
+    {sql, params} = page_relationship_statement(group_id, after_key, window_end, limit)
 
     {:reply, collect_ids(state, sql, params), state}
   end
@@ -613,7 +627,9 @@ defmodule EbbServer.Storage.SQLite do
   @impl true
   def handle_call({:explain_page_relationship_ids, after_key}, _from, state) do
     %{db: db} = state
-    {sql, params} = page_relationship_statement("", after_key, 0)
+    # An explain never runs the statement, so the window it is given only has
+    # to bind: the plan is the answer.
+    {sql, params} = page_relationship_statement(nil, after_key, nil, 0)
 
     result =
       case Sqlite3.prepare(db, "EXPLAIN QUERY PLAN " <> sql) do
@@ -838,12 +854,12 @@ defmodule EbbServer.Storage.SQLite do
     end
   end
 
-  defp page_relationship_statement(group_id, nil, limit) do
-    {@list_page_relationship_ids_sql, [group_id, limit]}
+  defp page_relationship_statement(group_id, nil, window_end, limit) do
+    {@list_page_relationship_ids_sql, [group_id, window_end, limit]}
   end
 
-  defp page_relationship_statement(group_id, after_key, limit) do
-    {@list_page_relationship_ids_after_sql, [group_id, after_key, limit]}
+  defp page_relationship_statement(group_id, after_key, window_end, limit) do
+    {@list_page_relationship_ids_after_sql, [group_id, after_key, window_end, limit]}
   end
 
   defp collect_pairs(state, sql, params) do
@@ -858,22 +874,34 @@ defmodule EbbServer.Storage.SQLite do
     pairs
   end
 
+  # Every failure on the read path becomes a reply: this process is shared by
+  # every tenant, so a statement SQLite refuses must not take it down.
   defp collect_ids(state, sql, params) do
     %{db: db} = state
 
-    {:ok, stmt} = Sqlite3.prepare(db, sql)
-    :ok = Sqlite3.bind(stmt, params)
+    case Sqlite3.prepare(db, sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params) do
+            collect_id_rows(db, stmt, [])
+          end
+        rescue
+          error -> {:error, error}
+        after
+          Sqlite3.release(db, stmt)
+        end
 
-    ids = collect_id_rows(db, stmt, [])
-    Sqlite3.release(db, stmt)
-
-    ids
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp collect_id_rows(db, stmt, acc) do
     case Sqlite3.step(db, stmt) do
       {:row, [id]} -> collect_id_rows(db, stmt, [id | acc])
-      :done -> Enum.reverse(acc)
+      :done -> {:ok, Enum.reverse(acc)}
+      :busy -> {:error, :busy}
+      {:error, reason} -> {:error, reason}
     end
   end
 

@@ -10,10 +10,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
+import { defineEntity, defineSchema, e } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
+import { readGeneratedParts } from "./generated-parts";
 import {
   createGroupListing,
   GROUP_LISTING_VERSION,
@@ -73,13 +75,19 @@ const membership = (
  * A relationship row as the listing ships it: scoped by its source, which is
  * what the local adjacency index keys on.
  */
-const edge = (id: string, sourceId: string, targetId: string, lastGsn: number): EntityResponse =>
+const relationshipRow = (
+  id: string,
+  sourceId: string,
+  targetId: string,
+  lastGsn: number,
+  fields: { readonly field?: string; readonly type?: string } = {},
+): EntityResponse =>
   wire({
     id,
     type: "relationship",
     fields: {
-      field: "assignee",
-      type: "blog_post",
+      field: fields.field ?? "assignee",
+      type: fields.type ?? "blog_post",
       source_id: sourceId,
       target_id: targetId,
     },
@@ -263,6 +271,24 @@ describe("bootstrapGroupListing", () => {
     expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 12, through: 12 });
   });
 
+  it("does not resume an interrupted seed of an older listing version", async () => {
+    const storage = createMemoryAdapter();
+    // A marker in flight from a client that never recorded a version: the
+    // redo would resume at its pinned watermark and keep the old shape.
+    await storage.cursors.setRecord("g_1", {
+      seed: { group_id: "g_1", w: 40, token: "1" },
+    });
+    const { fetchImpl, tokens } = listingFetch([]);
+
+    const result = await mkListing(storage, fetchImpl).bootstrap("g_1");
+
+    expect(tokens).toEqual([]);
+    expect(result).toMatchObject({ seeded: false, cursor: null });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      seed: { group_id: "g_1", w: 40, token: "1" },
+    });
+  });
+
   it("pages with the server's token and keeps one watermark", async () => {
     const storage = createMemoryAdapter();
     const { fetchImpl, tokens } = listingFetch([
@@ -313,6 +339,7 @@ describe("bootstrapGroupListing", () => {
     const storage = createMemoryAdapter();
     // A previous attempt seeded page 1 at W=40 and died before page 2.
     await storage.cursors.setRecord("g_1", {
+      listingVersion: GROUP_LISTING_VERSION,
       seed: { group_id: "g_1", w: 40, token: "1" },
     });
     // The server has moved on: a newer watermark, and page 2 at the old one.
@@ -406,7 +433,10 @@ describe("bootstrapGroupListing", () => {
   it("does not claim a window it never pinned", async () => {
     const storage = createMemoryAdapter();
     // An earlier attempt died before it learned a watermark.
-    await storage.cursors.setRecord("g_1", { seed: { group_id: "g_1" } });
+    await storage.cursors.setRecord("g_1", {
+      listingVersion: GROUP_LISTING_VERSION,
+      seed: { group_id: "g_1" },
+    });
     const { fetchImpl } = listingFetch([
       {
         watermark: 400,
@@ -639,6 +669,20 @@ describe("SyncClient group listing", () => {
 
   it("converges with a full log replay on the rows both paths can derive", async () => {
     const ahead = [
+      // A relationship row the log carries too: both paths must end with it,
+      // and with the same adjacency answer.
+      putAction({
+        id: "act_link",
+        gsn: 35,
+        entityId: "rel_1",
+        entityType: "relationship",
+        fields: {
+          source_id: "post_2",
+          target_id: "post_1",
+          type: "blog_post",
+          field: "parent",
+        },
+      }),
       putAction({ id: "act_put", gsn: 45, entityId: "post_2", fields: { title: "V1" } }),
       {
         ...putAction({ id: "act_patch", gsn: 60, entityId: "post_2", fields: { title: "V2" } }),
@@ -663,6 +707,10 @@ describe("SyncClient group listing", () => {
             // Content predating membership: in the seed, never in the log.
             wire({ id: "post_1", type: "blog_post", fields: { title: "Old" }, lastGsn: 3 }),
             membership("eg_2", "post_2", "g_1", 4),
+            relationshipRow("rel_1", "post_2", "post_1", 35, {
+              field: "parent",
+              type: "blog_post",
+            }),
           ],
         }),
       catchUp: () => catchUpActions(ahead),
@@ -684,6 +732,14 @@ describe("SyncClient group listing", () => {
     expect(seeded.replica.get("post_2")).toEqual(replayed.replica.get("post_2"));
     expect(titleOf(seeded.replica.get("post_1"))).toBe("Old");
     expect(replayed.replica.get("post_1")).toBeUndefined();
+
+    // The relationship row is the other half of the row set: the seed ships
+    // it, the log carries it, and both paths answer the same adjacency.
+    for (const client of [seeded, replayed]) {
+      expect(
+        client.replica.relationships({ as: "parent", type: "blog_post", sourceId: "post_2" }),
+      ).toEqual(["post_1"]);
+    }
 
     unsubSeeded();
     unsubReplayed();
@@ -1111,11 +1167,11 @@ describe("SyncClient group listing", () => {
     client.close();
   });
 
-  it("resets a base seeded before the listing carried edges, then re-seeds it", async () => {
+  it("resets a base seeded before the listing carried relationship rows, then re-seeds it", async () => {
     const storage = createMemoryAdapter();
     // The base this version's predecessor built: a cursor, a row, and no
     // listing version. Its listing never shipped relationship rows, so the
-    // edge between post_1 and post_2 is missing from it.
+    // link between post_1 and post_2 is missing from it.
     await storage.actions.append(
       putAction({ id: "act_stale", gsn: 900, entityId: "post_gone", fields: { title: "Stale" } }),
     );
@@ -1128,7 +1184,7 @@ describe("SyncClient group listing", () => {
             membership("eg_1", "post_1", "g_1", 4),
             wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
             wire({ id: "post_2", type: "blog_post", fields: { title: "Child" }, lastGsn: 5 }),
-            edge("rel_1", "post_1", "post_2", 6),
+            relationshipRow("rel_1", "post_1", "post_2", 6),
           ],
         }),
     });
@@ -1145,11 +1201,76 @@ describe("SyncClient group listing", () => {
     // Nothing of the old base survives under the new cursor.
     expect((await storage.actions.getAll()).map((action) => action.id)).not.toContain("act_stale");
     expect(client.replica.get("post_gone")).toBeUndefined();
-    // The edge the old listing omitted is here, and traversable.
+    // The relationship row the old listing omitted is here, and traversable.
     expect(
       client.replica.relationships({ as: "assignee", type: "blog_post", sourceId: "post_1" }),
     ).toEqual(["post_2"]);
     expect((await storage.cursors.getRecord("g_1"))?.listingVersion).toBe(GROUP_LISTING_VERSION);
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("resolves a seeded relationship row through the join, the index, and the derived parts", async () => {
+    const schema = defineSchema({
+      entities: {
+        blog_post: defineEntity("blog_post", {
+          title: e.string(),
+          body: e.collaborativeText(),
+        }),
+      },
+      version: 1,
+    });
+    const body = schema._registry.getRelationship("blog_post", "body");
+    if (body === undefined) throw new Error("the derived body relationship is missing");
+    const documentId = `doc_${body.target.name}_1`;
+
+    const server = mkServer({
+      listing: () =>
+        listingPage({
+          watermark: 40,
+          entities: [
+            membership("eg_1", "post_1", "g_1", 4),
+            wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
+            wire({ id: documentId, type: body.target.name, fields: { text: "" }, lastGsn: 5 }),
+            relationshipRow("rel_body_1", "post_1", documentId, 6, {
+              field: "body",
+              type: body.type,
+            }),
+          ],
+        }),
+    });
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl: server.fetchImpl,
+      schema,
+    });
+
+    const unsubscribe = client.subscribe(["g_1"], () => {});
+    await waitFor(async () => (await client.readLocalEntity("post_1")) !== null);
+    await tick();
+
+    // The three reads the missing row broke on a cold replica: the join a
+    // derived read plans, the adjacency index an accessor traverses, and the
+    // document `readGeneratedParts` only finds through its relationship row.
+    const links = await client.storage.entities.queryByRelationshipSource({
+      as: "body",
+      type: body.type,
+      sourceId: "post_1",
+    });
+    expect(links.map((link) => link.targetId)).toEqual([documentId]);
+
+    expect(
+      client.replica.relationships({ as: "body", type: body.type, sourceId: "post_1" }),
+    ).toEqual([documentId]);
+
+    const parts = await readGeneratedParts(client.storage, client.registry, "blog_post", "post_1");
+    expect(parts.edges.map((link) => ({ field: link.field, targetId: link.targetId }))).toEqual([
+      { field: "body", targetId: documentId },
+    ]);
+    expect(parts.documents.map((document) => document.id)).toEqual([documentId]);
+    expect(await client.readLocalEntity(documentId)).not.toBeNull();
 
     unsubscribe();
     client.close();

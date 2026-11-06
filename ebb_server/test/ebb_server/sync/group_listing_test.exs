@@ -274,7 +274,8 @@ defmodule EbbServer.Sync.GroupListingTest do
   end
 
   describe "GET /sync/groups/:group_id/entities — relationship rows" do
-    test "ships a pre-watermark derived edge and a pre-watermark domain edge", %{tmp_dir: _} do
+    test "ships a pre-watermark derived relationship row and a pre-watermark domain relationship row",
+         %{tmp_dir: _} do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
@@ -291,38 +292,44 @@ defmodule EbbServer.Sync.GroupListingTest do
 
       {:ok, page} = GroupListing.list(group_id, actor_id)
 
-      edges = Enum.filter(page.entities, &(&1.type == "relationship"))
-      assert Enum.sort(Enum.map(edges, & &1.id)) == Enum.sort([derived_id, domain_id])
+      relationship_rows = Enum.filter(page.entities, &(&1.type == "relationship"))
+      assert Enum.sort(Enum.map(relationship_rows, & &1.id)) == Enum.sort([derived_id, domain_id])
 
-      for edge <- edges do
-        assert get_in(edge.data, ["fields", "source_id", "value"]) == todo_id
-        # Both edges existed before the frontier the listing was seeded at.
-        assert edge.last_gsn <= page.watermark
+      for row <- relationship_rows do
+        assert get_in(row.data, ["fields", "source_id", "value"]) == todo_id
+        # Both rows existed before the frontier the listing was seeded at.
+        assert row.last_gsn <= page.watermark
       end
     end
 
-    test "ships each edge exactly once at any limit, and the union is the unpaged listing", %{
-      tmp_dir: _
-    } do
+    test "ships each relationship row exactly once at any limit, and the union is the unpaged listing",
+         %{
+           tmp_dir: _
+         } do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
 
       todos = write_todos(actor_id, group_id, 4)
 
-      edge_ids =
+      relationship_ids =
         Enum.flat_map(todos, fn {todo_id, _eg_id, _} ->
           Enum.map(1..2, fn i ->
-            edge_id = unique("rel")
-            write_action(actor_id, [relationship_update(edge_id, todo_id, unique("t"), "f#{i}")])
-            edge_id
+            relationship_id = unique("rel")
+
+            write_action(actor_id, [
+              relationship_update(relationship_id, todo_id, unique("t"), "f#{i}")
+            ])
+
+            relationship_id
           end)
         end)
 
       {:ok, unpaged} = GroupListing.list(group_id, actor_id)
       unpaged_ids = Enum.map(unpaged.entities, & &1.id)
 
-      assert Enum.sort(Enum.filter(unpaged_ids, &(&1 in edge_ids))) == Enum.sort(edge_ids)
+      assert Enum.sort(Enum.filter(unpaged_ids, &(&1 in relationship_ids))) ==
+               Enum.sort(relationship_ids)
 
       for limit <- [1, 2, 3, 5] do
         listed = walk_pages(group_id, actor_id, limit) |> Enum.flat_map(& &1.entities)
@@ -333,7 +340,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       end
     end
 
-    test "does not ship a deleted source's edges", %{tmp_dir: _} do
+    test "does not ship a deleted source's relationship rows", %{tmp_dir: _} do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
@@ -341,12 +348,12 @@ defmodule EbbServer.Sync.GroupListingTest do
       [{kept_id, _kept_eg, _}, {deleted_id, _deleted_eg, _}] =
         write_todos(actor_id, group_id, 2)
 
-      kept_edge = unique("rel")
-      deleted_edge = unique("rel")
+      kept_relationship = unique("rel")
+      deleted_relationship = unique("rel")
 
       write_action(actor_id, [
-        relationship_update(kept_edge, kept_id, unique("t"), "assignee"),
-        relationship_update(deleted_edge, deleted_id, unique("t"), "assignee")
+        relationship_update(kept_relationship, kept_id, unique("t"), "assignee"),
+        relationship_update(deleted_relationship, deleted_id, unique("t"), "assignee")
       ])
 
       assert write_delete(actor_id, deleted_id).status == 200
@@ -354,32 +361,37 @@ defmodule EbbServer.Sync.GroupListingTest do
       {:ok, page} = GroupListing.list(group_id, actor_id)
       ids = Enum.map(page.entities, & &1.id)
 
-      assert kept_edge in ids
-      refute deleted_edge in ids
+      assert kept_relationship in ids
+      refute deleted_relationship in ids
     end
 
-    test "ships a never-read edge committed just before the listing is seeded", %{tmp_dir: _} do
+    test "ships a never-read relationship row committed just before the listing is seeded",
+         %{tmp_dir: _} do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
 
       [{todo_id, _eg_id, _}] = write_todos(actor_id, group_id, 1)
 
-      edge_id = unique("rel")
-      write_action(actor_id, [relationship_update(edge_id, todo_id, unique("doc"), "body")])
+      relationship_id = unique("rel")
 
-      # Nothing has read the edge, so the cache has no row for it yet.
-      assert SQLite.get_entity(edge_id, SQLite) == :not_found
+      write_action(actor_id, [
+        relationship_update(relationship_id, todo_id, unique("doc"), "body")
+      ])
+
+      # Nothing has read the row, so the cache has no row for it yet.
+      assert SQLite.get_entity(relationship_id, SQLite) == :not_found
 
       {:ok, page} = GroupListing.list(group_id, actor_id)
 
-      assert edge_id in Enum.map(page.entities, & &1.id)
-      assert {:ok, _row} = SQLite.get_entity(edge_id, SQLite)
+      assert relationship_id in Enum.map(page.entities, & &1.id)
+      assert {:ok, _row} = SQLite.get_entity(relationship_id, SQLite)
     end
 
-    test "a window source with 500 edges ships them all and none outside the window", %{
-      tmp_dir: _
-    } do
+    test "a window source with 500 relationship rows ships them all and none outside the window",
+         %{
+           tmp_dir: _
+         } do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
@@ -407,17 +419,17 @@ defmodule EbbServer.Sync.GroupListingTest do
         ]
       )
 
-      heavy_edges = Enum.map(1..500, fn _i -> unique("rel") end)
+      heavy_relationships = Enum.map(1..500, fn _i -> unique("rel") end)
 
-      light_edge = unique("rel")
-      outside_edge = unique("rel")
+      light_relationship = unique("rel")
+      outside_relationship = unique("rel")
 
       write_action(
         actor_id,
-        Enum.map(heavy_edges, &relationship_update(&1, heavy_todo, unique("t"), "many")) ++
+        Enum.map(heavy_relationships, &relationship_update(&1, heavy_todo, unique("t"), "many")) ++
           [
-            relationship_update(light_edge, light_todo, unique("t"), "link"),
-            relationship_update(outside_edge, outside_todo, unique("t"), "link")
+            relationship_update(light_relationship, light_todo, unique("t"), "link"),
+            relationship_update(outside_relationship, outside_todo, unique("t"), "link")
           ]
       )
 
@@ -436,23 +448,23 @@ defmodule EbbServer.Sync.GroupListingTest do
       assert page2.has_more
 
       ids = Enum.map(page2.entities, & &1.id)
-      shipped = Enum.filter(ids, &(&1 in heavy_edges))
+      shipped = Enum.filter(ids, &(&1 in heavy_relationships))
 
       assert length(shipped) == 500
-      assert Enum.sort(shipped) == Enum.sort(heavy_edges)
-      assert light_edge in ids
-      refute outside_edge in ids
+      assert Enum.sort(shipped) == Enum.sort(heavy_relationships)
+      assert light_relationship in ids
+      refute outside_relationship in ids
       refute outside_eg in ids
 
       # The token is the window's last membership row, not the last row the
-      # page shipped: a page's edges never move the keyset.
+      # page shipped: a page's relationship rows never move the keyset.
       assert page2.cursor |> cursor_key() == [1, light_eg]
 
       {:ok, page3} = GroupListing.list(group_id, actor_id, limit: 2, cursor: page2.cursor)
-      assert outside_edge in Enum.map(page3.entities, & &1.id)
+      assert outside_relationship in Enum.map(page3.entities, & &1.id)
     end
 
-    test "ships a source's edges once when two membership rows name it", %{tmp_dir: _} do
+    test "ships a source's relationship rows once when two membership rows name it", %{tmp_dir: _} do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap(actor_id, group_id)
@@ -485,17 +497,17 @@ defmodule EbbServer.Sync.GroupListingTest do
           SQLite
         )
 
-      edge_id = unique("rel")
-      write_action(actor_id, [relationship_update(edge_id, todo_id, unique("t"), "link")])
+      relationship_id = unique("rel")
+      write_action(actor_id, [relationship_update(relationship_id, todo_id, unique("t"), "link")])
 
       {:ok, page} = GroupListing.list(group_id, actor_id)
       ids = Enum.map(page.entities, & &1.id)
 
       assert Enum.count(ids, &(&1 in [eg_id, duplicate_eg])) == 2
-      assert Enum.count(ids, &(&1 == edge_id)) == 1
+      assert Enum.count(ids, &(&1 == relationship_id)) == 1
     end
 
-    test "the edge statement seeks idx_entities_source_id inside the fenced window", %{
+    test "the relationship statement seeks idx_entities_source_id inside the fenced window", %{
       tmp_dir: _
     } do
       for after_key <- [nil, "eg_1"] do
@@ -510,6 +522,59 @@ defmodule EbbServer.Sync.GroupListingTest do
         refute Enum.any?(plan, &(&1 =~ ~r/SCAN entities\b/)),
                "plan scanned the entities table: #{inspect(plan)}"
       end
+    end
+
+    test "the statement window ends at the page's last membership row", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      hlc = generate_hlc()
+      [first, second, third] = Enum.map(1..3, fn _i -> unique("todo") end)
+      # Fixed-order membership row ids, so the window below is the keyset's
+      # own order rather than four rows of nanoid.
+      [first_eg, second_eg, third_eg] = ["eg_744_a", "eg_744_b", "eg_744_c"]
+
+      write_action(
+        actor_id,
+        Enum.flat_map(
+          [{first, first_eg}, {second, second_eg}, {third, third_eg}],
+          fn {entity_id, eg_id} ->
+            [
+              todo_update(entity_id, "title"),
+              entity_group_update(entity_id, group_id, hlc, eg_id)
+            ]
+          end
+        )
+      )
+
+      relationship_ids =
+        Enum.map([first, second, third], fn source_id ->
+          relationship_id = unique("rel")
+
+          write_action(actor_id, [
+            relationship_update(relationship_id, source_id, unique("t"), "f")
+          ])
+
+          relationship_id
+        end)
+
+      # One listing first: `relationship` is a system type, so the page's
+      # system materialization is what puts these rows in the cache.
+      {:ok, _page} = GroupListing.list(group_id, actor_id)
+
+      # A window cut at the second membership row carries the first two
+      # sources' rows and nothing of the third's, however many rows a later
+      # read finds: the bound is the page's own row, not a re-derived limit.
+      assert {:ok, listed} =
+               SQLite.list_page_relationship_ids(group_id, nil, second_eg, 2, SQLite)
+
+      assert Enum.sort(listed) == Enum.sort(Enum.take(relationship_ids, 2))
+
+      assert {:ok, both} =
+               SQLite.list_page_relationship_ids(group_id, first_eg, third_eg, 2, SQLite)
+
+      assert Enum.sort(both) == Enum.sort(Enum.drop(relationship_ids, 1))
     end
   end
 
@@ -848,10 +913,10 @@ defmodule EbbServer.Sync.GroupListingTest do
     }
   end
 
-  defp relationship_update(edge_id, source_id, target_id, field) do
+  defp relationship_update(relationship_id, source_id, target_id, field) do
     %{
       "id" => unique("upd"),
-      "subject_id" => edge_id,
+      "subject_id" => relationship_id,
       "subject_type" => "relationship",
       "method" => "put",
       "data" => %{

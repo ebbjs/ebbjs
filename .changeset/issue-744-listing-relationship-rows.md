@@ -8,13 +8,14 @@ they were there (#744).
 
 A relationship row is scoped by its **source** and owns no `entityGroup` row,
 while the listing enumerates memberships — so a replica built from the listing
-plus its tail held no edge created before its watermark, for good. Every
-relationship read on such a device answered "nothing linked": an accessor
-returned `null`, an adjacency join came back empty, and `readGeneratedParts`
-could not see a document whose edge it discovers through. The listing now
-ships the live relationship rows of each page's sources, in the same `entities`
-array and under the same page token and watermark. Nothing on the wire or in a
-seeded row changes shape; a seeded edge is an ordinary snapshot `put`.
+plus its tail held no relationship row created before its watermark, for
+good. Every relationship read on such a device answered "nothing linked": an
+accessor returned `null`, an adjacency join came back empty, and
+`readGeneratedParts` could not see a document whose link it discovers through.
+The listing now ships the live relationship rows of each page's sources, in the
+same `entities` array and under the same page token and watermark. Nothing on
+the wire or in a seeded row changes shape; a seeded relationship row is an
+ordinary snapshot `put`.
 
 The client's resume record gains an optional listing version (`@ebbjs/storage`
 `CursorRecord.listingVersion`), written when a seed starts and kept when it

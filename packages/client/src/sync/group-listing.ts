@@ -76,7 +76,7 @@ export const LISTING_SEED_ACTOR_ID = "a_seed_listing";
 /**
  * Version of the row shape a listing seed fills a base from. Version 1 ships
  * the live relationship rows of each page's sources (#744); a base below it
- * is missing edges the listing never claimed to carry before.
+ * is missing relationship rows the listing never claimed to carry before.
  *
  * A resume record without a version is version 0, so the first bootstrap
  * after this version ships resets a pre-existing base once and re-seeds it.
@@ -172,9 +172,9 @@ export interface GroupListing {
    *
    * Precondition: a base at an older listing version (`isStaleListingBase`)
    * must be reset by the caller first. This module cannot do it — a put-only
-   * seed over a stale base leaves rows the server has since deleted — and it
-   * will not silently claim such a base is current, so it is skipped as if it
-   * were complete.
+   * seed over a stale base leaves rows the server has since deleted — so a
+   * stale base is left untouched and reported as seeded: false, never
+   * overlaid and never claimed current.
    */
   bootstrap(groupId: string): Promise<GroupListingResult>;
 }
@@ -255,6 +255,19 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
 
   const seed = async (groupId: string): Promise<GroupListingResult> => {
     const record = await storage.cursors.getRecord(groupId);
+    // A base at an older listing version is the caller's to reset: a put-only
+    // page cannot remove a row the server deleted since that base was built,
+    // so this module must not overlay it and must not claim it is current.
+    // Returning it untouched is the honest answer; the caller that skipped
+    // the reset sees a base it was told to replace.
+    if (isStaleListingBase(record)) {
+      return {
+        seeded: false,
+        cursor: record?.cursor ?? null,
+        supported: true,
+        through: record?.through ?? 0,
+      };
+    }
     if (!needsGroupListing(record) && record?.cursor !== undefined) {
       return {
         seeded: false,
