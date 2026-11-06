@@ -92,7 +92,12 @@ import { readEntityMemberships } from "./entity-group";
 import { groupMembersOf } from "@ebbjs/write";
 import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
-import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
+import {
+  createGroupListing,
+  isStaleListingBase,
+  LISTING_SEED_ACTOR_ID,
+  type GroupListing,
+} from "./group-listing";
 import {
   ActionRejectedError,
   createActionRuntime,
@@ -840,6 +845,19 @@ export class SyncClient<
       if (record.cursor !== undefined) cursors[groupId] = record.cursor;
     }
     return cursors;
+  }
+
+  /**
+   * Whether any subscribed group's base predates the current listing shape.
+   * One read per group, before the seed loop, so the answer cannot change
+   * between groups: the reset it triggers is all-or-nothing.
+   */
+  private async hasStaleListingBase(groupIds: readonly string[]): Promise<boolean> {
+    for (const groupId of groupIds) {
+      const record = await this.storage.cursors.getRecord(groupId);
+      if (isStaleListingBase(record)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1718,6 +1736,18 @@ export class SyncClient<
    */
   private async catchUpSubscribed(sub: ActiveSubscription, catchUpId: string): Promise<void> {
     const missed: Action[] = [];
+    // A base seeded before the listing carried relationship rows has to come
+    // down rather than be re-listed: the seed only puts, so a row the server
+    // deleted between the old and the new watermark would survive under a
+    // cursor that has moved past its delete (#744). One decision for the
+    // whole pass, before any group seeds: a reset in the middle of the loop
+    // would wipe the groups already seeded by it.
+    if (await this.hasStaleListingBase(sub.groupIds)) {
+      console.warn(
+        "[SyncClient] listing version advanced; resetting the local base and re-seeding",
+      );
+      await this.resetSyncState();
+    }
     // Seed the groups whose view the log cannot describe before any page is
     // requested: the seed publishes `cursor(G) = W`, which is exactly where
     // the catch-up below then starts.

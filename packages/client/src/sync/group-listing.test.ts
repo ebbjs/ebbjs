@@ -14,7 +14,13 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
-import { createGroupListing, listingSeedActionId, needsGroupListing } from "./group-listing";
+import {
+  createGroupListing,
+  GROUP_LISTING_VERSION,
+  isStaleListingBase,
+  listingSeedActionId,
+  needsGroupListing,
+} from "./group-listing";
 import {
   callApplyAction,
   emptyCatchUpResponse,
@@ -62,6 +68,23 @@ const membership = (
   lastGsn: number,
 ): EntityResponse =>
   wire({ id, type: "entityGroup", fields: { entity_id: entityId, group_id: groupId }, lastGsn });
+
+/**
+ * A relationship row as the listing ships it: scoped by its source, which is
+ * what the local adjacency index keys on.
+ */
+const edge = (id: string, sourceId: string, targetId: string, lastGsn: number): EntityResponse =>
+  wire({
+    id,
+    type: "relationship",
+    fields: {
+      field: "assignee",
+      type: "blog_post",
+      source_id: sourceId,
+      target_id: targetId,
+    },
+    lastGsn,
+  });
 
 /** One listing page, served by token (page 1 has no token). */
 interface Page {
@@ -122,6 +145,23 @@ const mkListing = (
     onError: () => {},
   });
 
+/**
+ * Put a group's base at a cursor under the current listing shape — the state a
+ * client this version seeded is in.
+ */
+const seedCurrentBase = (storage: StorageAdapter, groupId: string, cursor: number): Promise<void> =>
+  storage.cursors.setRecord(groupId, { cursor, listingVersion: GROUP_LISTING_VERSION });
+
+/**
+ * A base a pre-#744 client left behind: a listing seed's cursor and folded
+ * position, and no listing version. The client resets it rather than re-lists.
+ */
+const seedPreListingBase = (
+  storage: StorageAdapter,
+  groupId: string,
+  cursor: number,
+): Promise<void> => storage.cursors.setRecord(groupId, { cursor, through: cursor });
+
 describe("needsGroupListing", () => {
   it("triggers on no cursor and on a seed in flight", () => {
     expect(needsGroupListing(null)).toBe(true);
@@ -130,6 +170,33 @@ describe("needsGroupListing", () => {
     expect(needsGroupListing({ cursor: 0 })).toBe(false);
     expect(needsGroupListing({ cursor: 5, through: 9 })).toBe(false);
     expect(needsGroupListing({ cursor: 5, seed: { group_id: "g_1", w: 5 } })).toBe(true);
+  });
+});
+
+describe("isStaleListingBase", () => {
+  it("counts a listing-seeded base with no version as version 0", () => {
+    // No record, no base: nothing to be stale about.
+    expect(isStaleListingBase(null)).toBe(false);
+    expect(isStaleListingBase({})).toBe(false);
+
+    // Seeded before versions existed, so it predates this listing shape.
+    expect(isStaleListingBase({ cursor: 5, through: 9 })).toBe(true);
+    // An interrupted seed may already hold rows of the older shape.
+    expect(isStaleListingBase({ seed: { group_id: "g_1" } })).toBe(true);
+
+    expect(
+      isStaleListingBase({ cursor: 5, through: 9, listingVersion: GROUP_LISTING_VERSION }),
+    ).toBe(false);
+    expect(
+      isStaleListingBase({ cursor: 5, through: 9, listingVersion: GROUP_LISTING_VERSION - 1 }),
+    ).toBe(true);
+  });
+
+  it("leaves a base the log built alone", () => {
+    // A cursor without the folded position a completed seed writes is a
+    // tail-only base: the log never omitted a row, so there is nothing to fix.
+    expect(isStaleListingBase({ cursor: 0 })).toBe(false);
+    expect(isStaleListingBase({ cursor: 5 })).toBe(false);
   });
 });
 
@@ -163,18 +230,37 @@ describe("bootstrapGroupListing", () => {
     expect(actions.map((action) => action.gsn)).toEqual([4, 7]);
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("One");
     // `cursor(G) = W` means the view is complete as of W; the marker is gone.
-    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 40, through: 7 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 40,
+      through: 7,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
   });
 
   it("leaves a group whose view is already complete alone", async () => {
     const storage = createMemoryAdapter();
-    await storage.cursors.set("g_1", 12);
+    await seedCurrentBase(storage, "g_1", 12);
     const { fetchImpl, tokens } = listingFetch([]);
 
     const result = await mkListing(storage, fetchImpl).bootstrap("g_1");
 
     expect(result).toEqual({ seeded: false, cursor: 12, supported: true, through: 0 });
     expect(tokens).toEqual([]);
+  });
+
+  it("does not overlay a base seeded at an older listing version", async () => {
+    const storage = createMemoryAdapter();
+    await seedPreListingBase(storage, "g_1", 12);
+    const { fetchImpl, tokens } = listingFetch([]);
+
+    const result = await mkListing(storage, fetchImpl).bootstrap("g_1");
+
+    // A put-only page cannot remove a row the server deleted since the old
+    // watermark, so the base is the caller's to reset, not this module's to
+    // add to or to declare current.
+    expect(tokens).toEqual([]);
+    expect(result).toMatchObject({ seeded: false, cursor: 12 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 12, through: 12 });
   });
 
   it("pages with the server's token and keeps one watermark", async () => {
@@ -194,7 +280,11 @@ describe("bootstrapGroupListing", () => {
 
     expect(tokens).toEqual([null, "1"]);
     expect(result).toMatchObject({ cursor: 40, through: 9 });
-    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 40, through: 9 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 40,
+      through: 9,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
   });
 
   it("skips tombstoned rows the server should not have sent", async () => {
@@ -245,7 +335,11 @@ describe("bootstrapGroupListing", () => {
     // a delete in (40, 400] must reach it through the tail.
     expect(tokens).toEqual(["1"]);
     expect(result.cursor).toBe(40);
-    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 40, through: 9 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 40,
+      through: 9,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
   });
 
   it("keeps the marker and its folded bound when a page read fails mid-seed", async () => {
@@ -271,6 +365,7 @@ describe("bootstrapGroupListing", () => {
     expect(await storage.cursors.getRecord("g_1")).toEqual({
       seed: { group_id: "g_1", w: 40, token: "1" },
       through: 4,
+      listingVersion: GROUP_LISTING_VERSION,
     });
     expect((await storage.actions.getAll()).map((action) => action.id)).toEqual([
       listingSeedActionId("g_1", "post_1"),
@@ -301,7 +396,11 @@ describe("bootstrapGroupListing", () => {
 
     // Page 2's lower position must not lower the bound page 1 already set.
     expect(result.through).toBe(100);
-    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 40, through: 100 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 40,
+      through: 100,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
   });
 
   it("does not claim a window it never pinned", async () => {
@@ -322,7 +421,11 @@ describe("bootstrapGroupListing", () => {
     // The rows are seeded, but the cursor stays at 0: the tail still covers
     // the window the lost attempt may have covered.
     expect(result.cursor).toBe(0);
-    expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 0, through: 4 });
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 0,
+      through: 4,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
   });
 
   it("falls back to the log path when the server has no listing endpoint", async () => {
@@ -567,7 +670,7 @@ describe("SyncClient group listing", () => {
     const seeded = mkClient(server);
     // A client whose base is complete as of 0 replays the whole tail instead.
     const replayedStorage = createMemoryAdapter();
-    await replayedStorage.cursors.set("g_1", 0);
+    await seedCurrentBase(replayedStorage, "g_1", 0);
     const replayed = mkClient(server, replayedStorage);
 
     const unsubSeeded = seeded.subscribe(["g_1"], () => {});
@@ -639,7 +742,7 @@ describe("SyncClient group listing", () => {
   it("does not list a group whose view is already complete", async () => {
     const server = mkServer();
     const storage = createMemoryAdapter();
-    await storage.cursors.set("g_1", 12);
+    await seedCurrentBase(storage, "g_1", 12);
     const client = mkClient(server, storage);
 
     const unsubscribe = client.subscribe(["g_1"], () => {});
@@ -691,7 +794,7 @@ describe("SyncClient group listing", () => {
   it("guards a row seeded by another group", async () => {
     const storage = createMemoryAdapter();
     // g_1 already had a complete view, so only g_2 is listed.
-    await storage.cursors.set("g_1", 10);
+    await seedCurrentBase(storage, "g_1", 10);
     const seeded = wire({
       id: "post_1",
       type: "blog_post",
@@ -727,7 +830,7 @@ describe("SyncClient group listing", () => {
 
   it("guards a row seeded by a later group when the stream names another", async () => {
     const storage = createMemoryAdapter();
-    await storage.cursors.set("g_1", 10);
+    await seedCurrentBase(storage, "g_1", 10);
     const seeded = wire({
       id: "post_1",
       type: "blog_post",
@@ -1005,6 +1108,177 @@ describe("SyncClient group listing", () => {
     expect(await client.storage.cursors.get("g_1")).toBe(40);
     expect(titleOf(client.replica.get("post_1"))).toBe("Mine");
 
+    client.close();
+  });
+
+  it("resets a base seeded before the listing carried edges, then re-seeds it", async () => {
+    const storage = createMemoryAdapter();
+    // The base this version's predecessor built: a cursor, a row, and no
+    // listing version. Its listing never shipped relationship rows, so the
+    // edge between post_1 and post_2 is missing from it.
+    await storage.actions.append(
+      putAction({ id: "act_stale", gsn: 900, entityId: "post_gone", fields: { title: "Stale" } }),
+    );
+    await seedPreListingBase(storage, "g_1", 900);
+    const server = mkServer({
+      listing: () =>
+        listingPage({
+          watermark: 40,
+          entities: [
+            membership("eg_1", "post_1", "g_1", 4),
+            wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
+            wire({ id: "post_2", type: "blog_post", fields: { title: "Child" }, lastGsn: 5 }),
+            edge("rel_1", "post_1", "post_2", 6),
+          ],
+        }),
+    });
+    const client = mkClient(server, storage);
+
+    const unsubscribe = client.subscribe(["g_1"], () => {});
+    await waitFor(async () => (await storage.cursors.get("g_1")) === 40);
+    await tick();
+
+    // One listing from scratch, at the server's watermark: no re-list over
+    // the old base, and the tail starts where the fresh seed ended.
+    expect(server.listingTokens).toEqual([{ groupId: "g_1", token: null }]);
+    expect(server.catchUpOffsets).toEqual([{ groupId: "g_1", offset: 40 }]);
+    // Nothing of the old base survives under the new cursor.
+    expect((await storage.actions.getAll()).map((action) => action.id)).not.toContain("act_stale");
+    expect(client.replica.get("post_gone")).toBeUndefined();
+    // The edge the old listing omitted is here, and traversable.
+    expect(
+      client.replica.relationships({ as: "assignee", type: "blog_post", sourceId: "post_1" }),
+    ).toEqual(["post_2"]);
+    expect((await storage.cursors.getRecord("g_1"))?.listingVersion).toBe(GROUP_LISTING_VERSION);
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("resets once for the whole pass, before any group seeds", async () => {
+    const storage = createMemoryAdapter();
+    // One group is current, the other is a pre-#744 base. The reset both
+    // groups need is the stale one's, and it has to reach the current group
+    // before its own seed lands.
+    await seedCurrentBase(storage, "g_1", 10);
+    await seedPreListingBase(storage, "g_2", 20);
+    const server = mkServer({
+      groups: [{ id: "g_1" }, { id: "g_2" }],
+      listing: (groupId) =>
+        listingPage({
+          watermark: 40,
+          entities: [membership(`eg_${groupId}`, `post_${groupId}`, groupId, 4)],
+        }),
+    });
+    const client = mkClient(server, storage);
+
+    const unsubscribe = client.subscribe(["g_1", "g_2"], () => {});
+    await waitFor(async () => (await storage.cursors.get("g_2")) === 40);
+    await tick();
+
+    // A check inside the seed loop would find g_1 current, seed it, and then
+    // wipe its fresh seed when g_2's stale record reset the base.
+    expect(server.listingTokens.map((call) => call.groupId).sort()).toEqual(["g_1", "g_2"]);
+    expect(await storage.cursors.get("g_1")).toBe(40);
+    expect(await storage.cursors.get("g_2")).toBe(40);
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("does nothing on the next bootstrap of a re-seeded group", async () => {
+    const storage = createMemoryAdapter();
+    const server = mkServer({
+      listing: () =>
+        listingPage({
+          watermark: 40,
+          entities: [membership("eg_1", "post_1", "g_1", 4)],
+        }),
+    });
+    const client = mkClient(server, storage);
+
+    const first = client.subscribe(["g_1"], () => {});
+    await waitFor(async () => (await storage.cursors.get("g_1")) === 40);
+    first();
+    const seeded = (await storage.actions.getAll()).map((action) => action.id);
+
+    const second = client.subscribe(["g_1"], () => {});
+    await waitFor(() => server.catchUpOffsets.length === 2);
+    await tick();
+
+    // The version makes the base current, so the second pass neither lists
+    // nor resets: the tail resumes at 40 instead of restarting at 0.
+    expect(server.listingTokens).toHaveLength(1);
+    expect(server.catchUpOffsets).toEqual([
+      { groupId: "g_1", offset: 40 },
+      { groupId: "g_1", offset: 40 },
+    ]);
+    expect((await storage.actions.getAll()).map((action) => action.id)).toEqual(seeded);
+
+    second();
+    client.close();
+  });
+
+  it("leaves a base already at the current listing version alone", async () => {
+    const storage = createMemoryAdapter();
+    await storage.actions.append(
+      putAction({ id: "act_here", gsn: 900, entityId: "post_here", fields: { title: "Here" } }),
+    );
+    await seedCurrentBase(storage, "g_1", 900);
+    const server = mkServer();
+    const client = mkClient(server, storage);
+
+    const unsubscribe = client.subscribe(["g_1"], () => {});
+    await waitFor(() => server.catchUpOffsets.length > 0);
+    await tick();
+
+    expect(server.listingTokens).toEqual([]);
+    expect(server.catchUpOffsets).toEqual([{ groupId: "g_1", offset: 900 }]);
+    // Nothing was torn down on the way to the tail.
+    expect((await storage.actions.getAll()).map((action) => action.id)).toEqual(["act_here"]);
+    expect(await storage.cursors.getRecord("g_1")).toEqual({
+      cursor: 900,
+      listingVersion: GROUP_LISTING_VERSION,
+    });
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("keeps the outbox across the listing-version reset", async () => {
+    const storage = createMemoryAdapter();
+    await seedPreListingBase(storage, "g_1", 900);
+    const server = mkServer({
+      listing: () =>
+        listingPage({
+          watermark: 40,
+          entities: [
+            membership("eg_1", "post_1", "g_1", 4),
+            wire({ id: "post_1", type: "blog_post", fields: { title: "Server" }, lastGsn: 3 }),
+          ],
+        }),
+    });
+    const client = mkClient(server, storage);
+    await client.outbox.enqueue(
+      putAction({
+        id: "act_local",
+        gsn: 0,
+        entityId: "post_1",
+        fields: { title: "Mine" },
+        hlc: NEWER,
+      }),
+    );
+
+    const unsubscribe = client.subscribe(["g_1"], () => {});
+    await waitFor(async () => (await storage.cursors.get("g_1")) === 40);
+    await tick();
+
+    // The reset takes the base, never the user's writes; the overlay is
+    // re-applied on the freshly seeded rows.
+    expect((await storage.outbox.list()).map((entry) => entry.action.id)).toContain("act_local");
+    expect(titleOf(await client.readLocalEntity("post_1"))).toBe("Mine");
+
+    unsubscribe();
     client.close();
   });
 

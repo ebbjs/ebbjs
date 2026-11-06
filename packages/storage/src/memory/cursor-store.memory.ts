@@ -8,12 +8,12 @@ import type { CursorRecord, CursorStore } from "../types/cursor-store";
  * - `records` — Record<groupId, CursorRecord> — O(1) get/set
  *
  * ## Notes
- * A record holds the group's cursor and, mid-seed, its pinned listing
- * marker. Cursor represents the highest GSN the group's view is complete
- * as of, used for sync resumption.
+ * A record holds the group's cursor, the listing version its base was seeded
+ * at, and, mid-seed, its pinned listing marker. Cursor represents the highest
+ * GSN the group's view is complete as of, used for sync resumption.
  *
- * A record lives as long as it holds anything; a `setRecord` that leaves
- * neither a cursor, a seed marker, nor a folded position drops it, so
+ * A record lives as long as it holds anything; a `setRecord` that leaves no
+ * cursor, seed marker, folded position, or listing version drops it, so
  * `records()` only reports groups with something to resume from.
  */
 interface CursorStoreState {

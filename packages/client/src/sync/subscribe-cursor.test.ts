@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { createClient } from "./client";
+import { GROUP_LISTING_VERSION } from "./group-listing";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import {
   emptyCatchUpResponse,
@@ -79,7 +80,9 @@ describe("SyncClient.subscribe inferred cursor", () => {
     }) as unknown as typeof fetch;
 
     const storage = createMemoryAdapter();
-    await storage.cursors.set("grp_1", 12);
+    // A base at the current listing shape: the client resumes it rather than
+    // treating it as pre-#744 state to reset.
+    await storage.cursors.setRecord("grp_1", { cursor: 12, listingVersion: GROUP_LISTING_VERSION });
 
     const client = createClient({
       serverUrl: "http://localhost:4000",
