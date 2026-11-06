@@ -133,14 +133,6 @@ defmodule EbbServer.CORS do
     {:allow, "*", lookup_app_id(origin, lookup), false}
   end
 
-  defp lookup_app_id(origin, lookup) do
-    case lookup.(origin) do
-      {:ok, app_id, _credentials?} -> app_id
-      {:ok, app_id} -> app_id
-      :error -> nil
-    end
-  end
-
   defp decide(origin, %{origins: origins}, lookup) do
     cond do
       origin in origins ->
@@ -151,6 +143,14 @@ defmodule EbbServer.CORS do
 
       true ->
         registry_decision(origin, lookup)
+    end
+  end
+
+  defp lookup_app_id(origin, lookup) do
+    case lookup.(origin) do
+      {:ok, app_id, _credentials?} -> app_id
+      {:ok, app_id} -> app_id
+      :error -> nil
     end
   end
 
