@@ -100,7 +100,12 @@ Local-first sync SDK — handshake, catch-up, live SSE, and a local query engine
 ```ts
 import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
 
-const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
+const todo = defineEntity("todo", {
+  title: e.string(),
+  completed: e.boolean(),
+  // Read-time only: absence reads as "normal"; no write fills it.
+  priority: e.string().default("normal"),
+});
 const schema = defineSchema({ entities: { todo }, version: 1 });
 
 // Declared at module scope; the client mounts it as `client.actions.*`.
@@ -140,7 +145,7 @@ await client.actions.completeTodo({ id });
 
 Shipped primitives:
 
-- **Query engine** — `client.<entity>.query()` with `where` / `or` / `orderBy` / `limit` and one-level `with` joins. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface.
+- **Query engine** — `client.<entity>.query()` with `where` / `or` / `orderBy` / `limit` and one-level `with` joins. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface. Fields may declare a read-time `.default()`; a `null` filter value asks for "no live value" — see [Absence and defaults](/docs/absence-and-defaults).
 - **Schema-bound entity namespaces** — `client.<entity>` is the read API: `query()` for typed reads over the replica. Every write is a `defineAction` declared at module scope and mounted as `client.actions.<name>`; one call commits one Action spanning any number of entities and groups, and a rejection throws `ActionRejectedError`. `get()`, the async row accessors, and `subscribe(filter, cb)` are internal.
 - **Reactive subscribe** — `client.onStateChange(cb)` tracks the connection state machine; live sync runs through `client.subscribe(groupIds, onEvent)`.
 - **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
