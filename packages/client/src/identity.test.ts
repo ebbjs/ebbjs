@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { IdentityResolutionError, resolveIdentity } from "./identity";
+import * as entryPoint from "./index";
 
 const serverUrl = "http://ebb.test:4000";
 
@@ -20,7 +21,7 @@ const json = (body: unknown, status = 200): Response =>
 /** A `fetch` stand-in that answers every request with `respond`. */
 const stubFetch = (
   respond: () => Response | Promise<Response>,
-): ReturnType<typeof vi.fn<typeof fetch>> => vi.fn<typeof fetch>(respond);
+): ReturnType<typeof vi.fn<typeof fetch>> => vi.fn<typeof fetch>(async () => respond());
 
 const rejection = async (promise: Promise<unknown>): Promise<IdentityResolutionError> => {
   try {
@@ -33,6 +34,10 @@ const rejection = async (promise: Promise<unknown>): Promise<IdentityResolutionE
 };
 
 describe("resolveIdentity", () => {
+  it("is exported from the package entry point", () => {
+    expect(entryPoint.resolveIdentity).toBe(resolveIdentity);
+    expect(entryPoint.IdentityResolutionError).toBe(IdentityResolutionError);
+  });
   it("parses the full identity payload into camelCase", async () => {
     const fetchImpl = stubFetch(() =>
       json({

@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useState } from "react";
+import { describeWriteError } from "./identity";
 
 export interface WriteState {
   /** A write is in flight; disable the control that started it. */
@@ -28,7 +29,7 @@ export function useWrite(): WriteState {
     try {
       await work();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeWriteError(err) ?? (err instanceof Error ? err.message : String(err)));
     } finally {
       setPending(false);
     }

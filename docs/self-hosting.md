@@ -188,6 +188,41 @@ $ curl -s http://127.0.0.1:4000/sync/identity \
 {"actor_id":"alice@example.com","display_name":"Alice","provider":"tailscale"}
 ```
 
+#### Resolving the actor in a browser
+
+`@ebbjs/client` exports `resolveIdentity` for exactly this handshake. Resolve
+first, then construct the client with the actor the server reported:
+
+```typescript
+import { createClient, resolveIdentity } from "@ebbjs/client";
+
+const identity = await resolveIdentity({ serverUrl });
+const client = createClient({ serverUrl, actorId: identity.actorId });
+```
+
+The helper sends no `x-ebb-actor-id`; the server is authoritative. When the app
+is served through the gateway, the browser's request already carries the
+identity headers the gateway injected, so the call needs no configuration.
+`identity.provider` is `"tailscale"`, `"external"`, or `"bypass"` (the last
+only when the server accepts a client-supplied actor). Keep an actor picker for
+`bypass`; use the resolved id everywhere else.
+
+Two consequences to design around:
+
+- **First run needs connectivity.** Cache `identity.actorId` under the app's
+  storage key and start from the cache when the identity request fails. After
+  that first resolution the app starts offline like any other client.
+- **A Tailscale login change is a new actor.** A client that cached the old
+  login keeps writing with it and the server rejects every Action with
+  `actor_mismatch`. Retrying cannot succeed: re-resolve, build a new client for
+  the new `actorId`, and use that actor's storage. The demo surfaces the
+  rejection as a reload instruction rather than an automatic retry.
+
+`resolveIdentity` throws `IdentityResolutionError` with a `kind`
+(`network`, `unauthorized`, `invalid-response`, `http`) so the app can tell an
+offline start (use the cache) from an unauthenticated request (send the user
+through the gateway) from an HTML proxy login page (stop and explain).
+
 #### Embedded node
 
 The image bundles the gateway (`EBB_TAILSCALE_NODE=embedded` is its default), so

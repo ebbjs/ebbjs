@@ -379,13 +379,22 @@ Three scripts:
    Override the server URL with `EBB_TEST_URL=http://localhost:4001` for
    a non-default port.
 
+   The identity suite needs a server in tailscale mode. Boot one with
+   `EBB_AUTH_MODE=tailscale` (it binds loopback), then run the same command;
+   `EBB_TAILSCALE_TEST_URL` overrides its address. A bypass or external server
+   makes those tests skip.
+
 ### Integration test layout
 
-`src/__tests__/integration/` contains two files:
+`src/__tests__/integration/` contains three files:
 
 - `ebb-server.test.ts` — self-seeding. Creates a unique group + members
   per run and exercises the full client ↔ server round-trip (handshake,
   catchUp, write, presence, permission rejection).
+- `identity.test.ts` — requires `EBB_AUTH_MODE=tailscale`. Wraps `fetch` to
+  inject the gateway's identity headers, then resolves the actor, handshakes,
+  writes, and observes the write over the live stream. It also pins the stale
+  actor's `actor_mismatch`. Skips cleanly on a bypass or external server.
 - `presence.test.ts` — requires a pre-seeded `grp_demo` group with a
   `demo-seeder` member and the demo's document (`doc_grp_demo`), none of
   which this package bootstraps. The test probes for the group at load
