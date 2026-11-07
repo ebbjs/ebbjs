@@ -3,10 +3,10 @@
  * positions that differ.
  *
  * Shared by every reader that compares two rows at the field-position
- * level: the conflict view's subject states and, in time, entity history.
- * Positions are the vocabulary the merge uses — a top-level field, then
- * ordered map keys — so the diff reads like the merge's verdict rather
- * than a structural object walk.
+ * level: the conflict view's subject states and entity history. Positions
+ * are the vocabulary the merge uses — a top-level field, then ordered map
+ * keys — so the diff reads like the merge's verdict rather than a
+ * structural object walk.
  */
 
 import { isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
@@ -24,9 +24,9 @@ export interface EntityDiff {
   readonly field: string;
   /** Ordered map keys from the field root to the position; empty at the root. */
   readonly path: readonly string[];
-  /** The client's projected value before the sync; `undefined` when absent. */
+  /** The projected value on the before row; `undefined` when absent. */
   readonly before: unknown;
-  /** The server's projected value after the sync; `undefined` when absent. */
+  /** The projected value on the after row; `undefined` when absent. */
   readonly after: unknown;
   /** Derived from the projected values: an absent before is `added`, an absent after `removed`, else `changed`. */
   readonly kind: "changed" | "added" | "removed";
@@ -70,7 +70,7 @@ const presentChild = (child: FieldValue | undefined): FieldValue | undefined =>
  * matches the merge; any other pair projects each present side and emits
  * one diff when the projected values differ.
  */
-export const diffFieldValue = (
+const diffFieldValue = (
   field: string,
   path: readonly string[],
   before: FieldValue | undefined,

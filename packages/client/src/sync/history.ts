@@ -2,11 +2,11 @@
  * Entity history — the application-facing read over the replica's Action
  * log.
  *
- * One event per Action that touched the entity, in the order the replica
- * folded it. `changes` is the shared field-path projection the conflict
- * view reads, so a map-key edit is a `path` entry rather than a whole-map
- * replacement, and `methods` is what makes a delete legible: `applyUpdate`
- * keeps a deleted row's fields, so a delete has no removals to diff.
+ * One event per Action that touched the entity, in GSN order. `changes` is
+ * the shared field-path projection the conflict view reads, so a map-key
+ * edit is a `path` entry rather than a whole-map replacement, and `methods`
+ * is what makes a delete legible: `applyUpdate` keeps a deleted row's
+ * fields, so a delete has no removals to diff.
  *
  * Pure functions over the log, not the replica: the read is unit-testable
  * without a client, and it holds no state between calls.
@@ -44,8 +44,10 @@ export interface HistoryEvent {
   /** The Action's server sequence number; the ordering and paging key. */
   readonly gsn: number;
   /**
-   * The methods of this Action's Updates addressed to the entity, in
-   * first-seen order. A create-plus-patch Action reports both.
+   * The methods of this Action's Updates addressed to the entity, each once
+   * and in first-seen order. A create-plus-patch Action reports both. The
+   * method is what the Action attempted: a patch the fold rejected (a
+   * tombstoned or absent row) still appears here with no `changes`.
    */
   readonly methods: readonly Update["method"][];
   /** The field positions the Action moved, in the shared diff vocabulary. */
@@ -72,8 +74,9 @@ const entityMethods = (action: Action, entityId: string): readonly Update["metho
 
 /**
  * One event per Action, folding the log forward so each event's diff reads
- * the row before and after that Action — the same fold the replica runs, so
- * a position cannot be reported differently here than it materializes.
+ * the row before and after that Action — the same fold rule the entity
+ * stores apply, so a position cannot be reported differently here than the
+ * read model materializes it.
  */
 const foldEvents = (entityId: string, actions: readonly Action[]): readonly HistoryEvent[] => {
   const events: HistoryEvent[] = [];
@@ -96,8 +99,10 @@ const foldEvents = (entityId: string, actions: readonly Action[]): readonly Hist
 /**
  * Read the entity's events, newest first.
  *
- * Reads whatever the local log holds. A just-saved local edit is absent
- * until its echo lands: local Actions are applied to the replica
+ * `getForEntity` orders by GSN and the fold follows that order, including a
+ * backfill Action with `gsn: 0` folding first even though it was delivered
+ * later. Reads whatever the local log holds. A just-saved local edit is
+ * absent until its echo lands: local Actions are applied to the replica
  * optimistically but are not appended to the log until the server returns
  * them with a GSN.
  *
@@ -106,8 +111,8 @@ const foldEvents = (entityId: string, actions: readonly Action[]): readonly Hist
  * the log's full read — `ActionLog.getForEntity` reads the entity's whole
  * action list — so `limit` bounds the result, not the cost. Backfill
  * Actions can carry `gsn: 0` and a re-delivered Action can repeat a GSN, so
- * paging by GSN cannot split those ties; {@link replayEntity} at an
- * `actionId` can.
+ * a page boundary inside such a tie can omit the other events sharing that
+ * GSN; keep the tied events in one page or resume from the tied events.
  */
 export const readEntityHistory = async (
   log: Pick<ActionLog, "getForEntity">,
@@ -127,9 +132,11 @@ export const readEntityHistory = async (
  * The row as of an Action, folding through and including it.
  *
  * Returns `null` when the entity's local log holds no such Action — a
- * compacted id, or one that belongs to another entity. A tombstoned row
- * keeps its fields and its `deleted_hlc`: this is the row the replica
- * materialized, not a post-delete absence.
+ * compacted id, or one that belongs to another entity — or when the fold
+ * never materialized a row at that point (a `patch` or `delete` with no
+ * earlier base, as a compacted log can leave). A tombstoned row keeps its
+ * fields and its `deleted_hlc`: this is the row the log materializes, not a
+ * post-delete absence.
  */
 export const replayEntity = async (
   log: Pick<ActionLog, "getForEntity">,

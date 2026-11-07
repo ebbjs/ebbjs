@@ -8,7 +8,7 @@ import type {
 } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
-import { foldEntityAction } from "../internal/materialize";
+import { foldEntityActions } from "../internal/materialize";
 import {
   applyIndexDelta,
   forwardIndexDelta,
@@ -119,10 +119,7 @@ export const createMemoryEntityStore = (
     const actions = await actionLog.getForEntity(entityId);
     if (actions.length === 0) return;
 
-    const entity = actions.reduce<Entity | null>(
-      (row, action) => foldEntityAction(row, entityId, action),
-      null,
-    );
+    const entity = foldEntityActions(actions, entityId);
 
     if (entity === null) return;
 

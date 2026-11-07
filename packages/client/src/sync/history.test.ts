@@ -277,6 +277,36 @@ describe("replayEntity", () => {
     // the entity's read, so it cannot be replayed here either.
     expect(await replayEntity(log, { entityId: WALL, at: { actionId: "a_other" } })).toBeNull();
   });
+
+  it("cannot replay a delete that has no surviving base after compaction", async () => {
+    const log = await logWith([action("a_delete", 3, [remove()])]);
+
+    expect(await readEntityHistory(log, { entityId: WALL })).toEqual([
+      {
+        actionId: "a_delete",
+        actorId: "actor_1",
+        hlc: stamp(3),
+        gsn: 3,
+        methods: ["delete"],
+        changes: [],
+      },
+    ]);
+    expect(await replayEntity(log, { entityId: WALL, at: { actionId: "a_delete" } })).toBeNull();
+  });
+
+  it("records an attempted patch the fold rejected on a tombstoned row", async () => {
+    const log = await logWith([
+      action("a_put", 1, [write("put", { title: leaf("wall", 1) })]),
+      action("a_delete", 2, [remove()]),
+      action("a_late", 3, [write("patch", { title: leaf("late", 3) })]),
+    ]);
+
+    const [newest] = await readEntityHistory(log, { entityId: WALL });
+
+    expect(newest.actionId).toBe("a_late");
+    expect(newest.methods).toEqual(["patch"]);
+    expect(newest.changes).toEqual([]);
+  });
 });
 
 describe("SyncClient history surface", () => {

@@ -1289,10 +1289,11 @@ export class SyncClient<
   /**
    * The entity's materialized row as of one Action, folding the local log
    * through and including it. `null` when the log holds no such Action for
-   * the entity — a compacted id, or one that belongs to another entity.
+   * the entity, or when the fold never produced a row at that point (a
+   * `patch` or `delete` with no earlier base).
    *
    * A tombstoned row keeps its fields and its `deleted_hlc`; this is the
-   * row the replica materialized, which is what a restore UI starts from.
+   * row the log materializes, which is what a restore UI starts from.
    */
   async replay(options: ReplayOptions): Promise<Entity | null> {
     return replayEntity(this.storage.actions, options);

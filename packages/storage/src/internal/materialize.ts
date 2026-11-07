@@ -170,3 +170,17 @@ export const foldEntityAction = (
 
   return folded;
 };
+
+/**
+ * Fold a whole Action sequence for one subject, in the order given. Both
+ * entity stores replay a `getForEntity` read through this.
+ */
+export const foldEntityActions = (actions: readonly Action[], entityId: string): Entity | null => {
+  let folded: Entity | null = null;
+
+  for (const action of actions) {
+    folded = foldEntityAction(folded, entityId, action);
+  }
+
+  return folded;
+};

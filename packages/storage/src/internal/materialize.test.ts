@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Action, Entity, FieldValue, Update } from "@ebbjs/core";
-import { applyUpdate, foldEntityAction, mergeFields } from "./materialize";
+import { applyUpdate, foldEntityAction, foldEntityActions, mergeFields } from "./materialize";
 
 const leaf = (value: unknown, hlc: string, updateId: string): FieldValue => ({
   value,
@@ -172,6 +172,42 @@ describe("foldEntityAction", () => {
       null,
       "doc_1",
       action(5, [update("patch", { title: leaf("late", "5", "u_late") })]),
+    );
+
+    expect(folded).toBeNull();
+  });
+});
+
+/**
+ * The whole-read fold both entity stores replay: the same per-subject fold,
+ * applied across the Actions `getForEntity` returned.
+ */
+describe("foldEntityActions", () => {
+  it("folds a whole read for one subject in the given order", () => {
+    const folded = foldEntityActions(
+      [
+        action(3, [update("put", { title: leaf("first", "3", "u_put") })]),
+        action(5, [update("patch", { title: leaf("other", "5", "u_other") }, "doc_2")]),
+        action(7, [update("patch", { title: leaf("third", "7", "u_patch") })]),
+      ],
+      "doc_1",
+    );
+
+    expect(folded).toEqual({
+      id: "doc_1",
+      type: "doc",
+      data: { fields: { title: leaf("third", "7", "u_patch") } },
+      created_hlc: "3",
+      updated_hlc: "7",
+      deleted_hlc: null,
+      last_gsn: 7,
+    });
+  });
+
+  it("returns null when no Action touches the subject", () => {
+    const folded = foldEntityActions(
+      [action(4, [update("put", { content: leaf("other", "1", "u_other") }, "doc_2")])],
+      "doc_1",
     );
 
     expect(folded).toBeNull();
