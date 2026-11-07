@@ -36,12 +36,14 @@ const identity = await resolveIdentity({ serverUrl });
 const client = createClient({ serverUrl, actorId: identity.actorId });
 ```
 
-The server is authoritative, so no `x-ebb-actor-id` is sent. That matters for
-tailscale deployments: the browser cannot know its tailnet login in advance,
-but the server derives it per request. `identity.provider` (`"bypass"`,
+The server is authoritative, so the helper sends no `x-ebb-actor-id`. That
+matters for tailscale deployments: the browser cannot know its tailnet login in
+advance, but the server derives it per request. `identity.provider` (`"bypass"`,
 `"external"`, `"tailscale"`) says which mode answered; `displayName` and
 `providerId` carry what that mode knows. Keep the actor picker for `bypass`;
-use the resolved id as-is otherwise.
+use the resolved id as-is otherwise. The long-lived client still stamps
+`x-ebb-actor-id` on its own requests for bypass compatibility; in tailscale
+mode the server ignores it and authenticates from the gateway's headers.
 
 Resolution is the one online step. A first run on a new device must reach the
 server to learn its actor — after that, cache `identity.actorId` under the
