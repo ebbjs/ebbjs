@@ -10,8 +10,9 @@ This package ships the client plumbing plus the data hooks:
   together. Reads go through `useQuery`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
-- `createEbbHooks<C>()` — bind `useClient` and `useQuery` to your client type
-  once, so components need neither a generic nor a callback annotation.
+- `usePresence()` — the peers observed on one presence channel of one entity, typed from the channel's declared schema when bound with `createEbbHooks`.
+- `createEbbHooks<C>()` — bind `useClient`, `useQuery`, and `usePresence` to your
+  client type once, so components need neither a generic nor a callback annotation.
 
 SSR / Suspense are out of scope for now.
 
@@ -24,14 +25,21 @@ npm install @ebbjs/react react   # react ^18 || ^19 is a peer
 Node `>=22.8.0`. `@ebbjs/client` is a normal dependency and installs with it.
 
 ```tsx
-import { EbbProvider, useClient, useConnection, useQuery } from "@ebbjs/react";
+import { EbbProvider, useClient, useConnection, usePresence, useQuery } from "@ebbjs/react";
 ```
 
 ## Usage
 
 ```tsx
 import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
-import { EbbProvider, useClient, useConnection, useQuery, type QueryRoot } from "@ebbjs/react";
+import {
+  EbbProvider,
+  useClient,
+  useConnection,
+  usePresence,
+  useQuery,
+  type QueryRoot,
+} from "@ebbjs/react";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
 const schema = defineSchema({ entities: { todo }, version: 1 });
@@ -171,6 +179,75 @@ internal / undocumented; `useEntity` was removed in #501.
 - **There is no `id` predicate**, so a single row is a collection query plus
   `find`, as above.
 
+## Presence
+
+`usePresence(entityId, channel)` subscribes a component to the peers observed
+on one presence channel of one entity. Presence is declared when the client is
+built — `definePresence` fixes each channel's schema, send debounce, receive
+TTL, and entry cap:
+
+```tsx
+import { Type } from "@sinclair/typebox";
+import { createClient, definePresence } from "@ebbjs/client";
+
+const presence = definePresence({
+  camera: {
+    schema: Type.Object({ x: Type.Number(), y: Type.Number(), zoom: Type.Number() }),
+    ttlMs: 5_000,
+  },
+  cursor: Type.Object({ anchorId: Type.String(), anchorOffset: Type.Number() }),
+});
+
+const client = createClient({ serverUrl, actorId, schema, presence });
+type AppClient = typeof client;
+
+// Bind once, at module scope.
+export const { useClient: useEbb, useQuery, usePresence } = createEbbHooks<AppClient>();
+```
+
+Bound from `createEbbHooks<C>()`, the channel name is checked against the
+client's registry and the payload type follows the channel's schema, so a
+misspelled channel and a cursor payload on the camera channel are both compile
+errors:
+
+```tsx
+function Cameras({ planId }: { planId: string }) {
+  const peers = usePresence(planId, "camera");
+  // ReadonlyMap<string, PeerPresence<{ x: number; y: number; zoom: number }>>
+
+  return (
+    <ul>
+      {[...peers].map(([actorId, peer]) => (
+        <li key={actorId}>
+          {`${actorId} at ${peer.data.x},${peer.data.y} (zoom ${peer.data.zoom})`}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+The snapshot is `client.presence.forEntity(entityId, channel)`; the
+subscription is `client.presence.onUpdate`, filtered to the same target, so a
+20 Hz camera channel does not re-render a cursor consumer. The store notifies
+on a peer's packet, on the channel's TTL expiry, and when the live stream
+resets, so a peer that leaves stops rendering instead of leaving a stale
+cursor behind. Sending is unchanged: `client.presence.set(entityId, channel,
+value)` coalesces per target, and `client.presence.clear` sends the channel's
+`null`.
+
+The standalone `usePresence<T>()` cannot see the client type (React context
+erases it), so it does not narrow the channel; pass the payload type there:
+
+```tsx
+const cursors = usePresence<CursorPresence>(docId, "cursor");
+```
+
+Presence is ephemeral: it never enters the Action log, is lossy on
+disconnect, and the server holds no state for it. A peer that stops sending is
+aged out by the channel's receive TTL, and the whole peer set is dropped when
+the live stream closes — both surface as a re-render, not as a stale cursor.
+
 ## `useClient` and writes
 
 `useClient<C>()` returns the provider's client typed by the client type
@@ -207,15 +284,16 @@ gives `useQuery` a typed `q` without the `QueryRoot<Schema>` annotation
 would drop the row types; binding the client is the way out):
 
 ```tsx
-// use-ebb.ts — bind both hooks to the client type once, at module scope.
+// use-ebb.ts — bind the hooks to the client type once, at module scope.
 export type AppClient = typeof client;
-export const { useClient: useEbb, useQuery } = createEbbHooks<AppClient>();
+export const { useClient: useEbb, useQuery, usePresence } = createEbbHooks<AppClient>();
 
 // anywhere below the provider: no generics, no annotations
 const client = useEbb();
 await client.actions.createIssue({ title: "Buy milk", groupId });
 
 const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
+const cameras = usePresence(boardId, "camera");
 ```
 
 `q` is the client's **read root** — every namespace narrowed to `query()` — so
@@ -238,18 +316,22 @@ await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 
 ## API
 
-| Export                   | What                                                                             |
-| ------------------------ | -------------------------------------------------------------------------------- |
-| `EbbProvider`            | Makes the app's client available to hooks below it.                              |
-| `useClient<C>()`         | Returns the nearest provider's client typed as `C`; throws outside a provider.   |
-| `useConnection()`        | Subscribes to connection state and re-renders on transitions.                    |
-| `useQuery(build, deps?)` | Subscribes to a cached query result; `{ data, status, loading, error }`.         |
-| `createEbbHooks<C>()`    | Binds `useClient` and `useQuery` to one client type; call once, at module scope. |
-| `QueryRootOf<C>`         | The read root of a client type — what a bound `useQuery`'s `q` is.               |
-| `EbbProviderProps`       | The provider's prop type.                                                        |
-| `UseQueryResult`         | The `useQuery` result type.                                                      |
-| `QueryRows`              | The projected row-list type a `QueryBuilder` resolves to.                        |
-| `ConnectionState`        | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.       |
+| Export                           | What                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------- |
+| `EbbProvider`                    | Makes the app's client available to hooks below it.                                    |
+| `useClient<C>()`                 | Returns the nearest provider's client typed as `C`; throws outside a provider.         |
+| `useConnection()`                | Subscribes to connection state and re-renders on transitions.                          |
+| `useQuery(build, deps?)`         | Subscribes to a cached query result; `{ data, status, loading, error }`.               |
+| `usePresence(entityId, channel)` | Subscribes to the peers on one presence channel; `ReadonlyMap<actorId, PeerPresence>`. |
+| `createEbbHooks<C>()`            | Binds `useClient`, `useQuery`, and `usePresence` to one client type.                   |
+| `QueryRootOf<C>`                 | The read root of a client type — what a bound `useQuery`'s `q` is.                     |
+| `PresenceChannelOf<C>`           | The presence channel names a client type declares.                                     |
+| `PresencePeerMapOf<C, K>`        | The peer map a bound `usePresence` returns for one declared channel.                   |
+| `EbbClient`                      | The client types the hooks accept: no presence registry, or any `definePresence` one.  |
+| `EbbProviderProps`               | The provider's prop type.                                                              |
+| `UseQueryResult`                 | The `useQuery` result type.                                                            |
+| `QueryRows`                      | The projected row-list type a `QueryBuilder` resolves to.                              |
+| `ConnectionState`                | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.             |
 
 ## Peer dependencies
 

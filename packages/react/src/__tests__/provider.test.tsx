@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { createClient, type SyncClient } from "@ebbjs/client";
-import { EbbProvider, useClient, useConnection } from "../index";
+import { EbbProvider, useClient, useConnection, type EbbClient } from "../index";
 
 afterEach(cleanup);
 
@@ -48,6 +48,18 @@ describe("useClient", () => {
 
     expect(() => render(<Bare />)).toThrow(/EbbProvider/);
     errorSpy.mockRestore();
+  });
+});
+
+describe("EbbClient", () => {
+  it("admits a real client but not a structural lookalike", () => {
+    const client = makeClient();
+    const accepted: EbbClient = client;
+    // @ts-expect-error — both union arms name the class, so a lookalike is not a client
+    const rejected: EbbClient = { actorId: "alice" };
+
+    expect(accepted).toBe(client);
+    expect(rejected).toBeDefined();
   });
 });
 
