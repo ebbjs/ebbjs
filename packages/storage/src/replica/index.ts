@@ -1,4 +1,4 @@
-export { applyUpdate } from "../internal/materialize";
+export { applyUpdate, foldEntityAction } from "../internal/materialize";
 export { contentChanged } from "./content-changed";
 export { DEFAULT_PINNED_CAPACITY, DEFAULT_PINNED_TTL_MS, createReplica, holdAll } from "./replica";
 export type {
