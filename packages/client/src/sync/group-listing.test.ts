@@ -10,10 +10,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
+import { defineEntity, defineSchema, e } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
+import { readGeneratedParts } from "./generated-parts";
 import { createGroupListing, listingSeedActionId, needsGroupListing } from "./group-listing";
 import {
   callApplyAction,
@@ -62,6 +64,29 @@ const membership = (
   lastGsn: number,
 ): EntityResponse =>
   wire({ id, type: "entityGroup", fields: { entity_id: entityId, group_id: groupId }, lastGsn });
+
+/**
+ * A relationship row as the listing ships it: scoped by its source, which is
+ * what the local adjacency index keys on.
+ */
+const relationshipRow = (
+  id: string,
+  sourceId: string,
+  targetId: string,
+  lastGsn: number,
+  fields: { readonly field?: string; readonly type?: string } = {},
+): EntityResponse =>
+  wire({
+    id,
+    type: "relationship",
+    fields: {
+      field: fields.field ?? "assignee",
+      type: fields.type ?? "blog_post",
+      source_id: sourceId,
+      target_id: targetId,
+    },
+    lastGsn,
+  });
 
 /** One listing page, served by token (page 1 has no token). */
 interface Page {
@@ -536,6 +561,20 @@ describe("SyncClient group listing", () => {
 
   it("converges with a full log replay on the rows both paths can derive", async () => {
     const ahead = [
+      // A relationship row the log carries too: both paths must end with it,
+      // and with the same adjacency answer.
+      putAction({
+        id: "act_link",
+        gsn: 35,
+        entityId: "rel_1",
+        entityType: "relationship",
+        fields: {
+          source_id: "post_2",
+          target_id: "post_1",
+          type: "blog_post",
+          field: "parent",
+        },
+      }),
       putAction({ id: "act_put", gsn: 45, entityId: "post_2", fields: { title: "V1" } }),
       {
         ...putAction({ id: "act_patch", gsn: 60, entityId: "post_2", fields: { title: "V2" } }),
@@ -560,6 +599,10 @@ describe("SyncClient group listing", () => {
             // Content predating membership: in the seed, never in the log.
             wire({ id: "post_1", type: "blog_post", fields: { title: "Old" }, lastGsn: 3 }),
             membership("eg_2", "post_2", "g_1", 4),
+            relationshipRow("rel_1", "post_2", "post_1", 35, {
+              field: "parent",
+              type: "blog_post",
+            }),
           ],
         }),
       catchUp: () => catchUpActions(ahead),
@@ -581,6 +624,14 @@ describe("SyncClient group listing", () => {
     expect(seeded.replica.get("post_2")).toEqual(replayed.replica.get("post_2"));
     expect(titleOf(seeded.replica.get("post_1"))).toBe("Old");
     expect(replayed.replica.get("post_1")).toBeUndefined();
+
+    // The relationship row is the other half of the row set: the seed ships
+    // it, the log carries it, and both paths answer the same adjacency.
+    for (const client of [seeded, replayed]) {
+      expect(
+        client.replica.relationships({ as: "parent", type: "blog_post", sourceId: "post_2" }),
+      ).toEqual(["post_1"]);
+    }
 
     unsubSeeded();
     unsubReplayed();
@@ -954,6 +1005,71 @@ describe("SyncClient group listing", () => {
     expect(titleOf(client.replica.get("post_1"))).toBe("Mine");
     expect(titleOf(await client.readLocalEntity("post_1"))).toBe("Mine");
     expect(await client.outbox.size("pending")).toBe(0);
+
+    unsubscribe();
+    client.close();
+  });
+
+  it("resolves a seeded relationship row through the join, the index, and the derived parts", async () => {
+    const schema = defineSchema({
+      entities: {
+        blog_post: defineEntity("blog_post", {
+          title: e.string(),
+          body: e.collaborativeText(),
+        }),
+      },
+      version: 1,
+    });
+    const body = schema._registry.getRelationship("blog_post", "body");
+    if (body === undefined) throw new Error("the derived body relationship is missing");
+    const documentId = `doc_${body.target.name}_1`;
+
+    const server = mkServer({
+      listing: () =>
+        listingPage({
+          watermark: 40,
+          entities: [
+            membership("eg_1", "post_1", "g_1", 4),
+            wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
+            wire({ id: documentId, type: body.target.name, fields: { text: "" }, lastGsn: 5 }),
+            relationshipRow("rel_body_1", "post_1", documentId, 6, {
+              field: "body",
+              type: body.type,
+            }),
+          ],
+        }),
+    });
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl: server.fetchImpl,
+      schema,
+    });
+
+    const unsubscribe = client.subscribe(["g_1"], () => {});
+    await waitFor(async () => (await client.readLocalEntity("post_1")) !== null);
+    await tick();
+
+    // The three reads a missing relationship row broke on a cold replica: the
+    // join a derived read plans, the adjacency index an accessor traverses,
+    // and the document `readGeneratedParts` only finds through its link.
+    const links = await client.storage.entities.queryByRelationshipSource({
+      as: "body",
+      type: body.type,
+      sourceId: "post_1",
+    });
+    expect(links.map((link) => link.targetId)).toEqual([documentId]);
+
+    expect(
+      client.replica.relationships({ as: "body", type: body.type, sourceId: "post_1" }),
+    ).toEqual([documentId]);
+
+    const parts = await readGeneratedParts(client.storage, client.registry, "blog_post", "post_1");
+    expect(parts.edges.map((link) => ({ field: link.field, targetId: link.targetId }))).toEqual([
+      { field: "body", targetId: documentId },
+    ]);
+    expect(parts.documents.map((document) => document.id)).toEqual([documentId]);
+    expect(await client.readLocalEntity(documentId)).not.toBeNull();
 
     unsubscribe();
     client.close();

@@ -12,8 +12,24 @@ defmodule EbbServer.Sync.GroupListing do
 
   The row set is the group's state, not just its contents: the `group` row,
   its live `groupMember` rows, every live `entityGroup` row in the group,
-  and the live entities those rows name. `group` and `groupMember` carry no
+  the live entities those rows name, and the live `relationship` rows whose
+  source one of those entities is. `group` and `groupMember` carry no
   `entityGroup` row, so a membership join alone would miss them.
+
+  A relationship row is scoped by its source and never gets an `entityGroup`
+  row of its own, so enumerating memberships alone never named one. Nothing
+  else on the cold path fetches them either, which left a replica seeded from
+  this listing with no relationship row created before its watermark —
+  derived rows and domain rows alike — and every accessor that traverses one
+  reporting a live link as absent. A relationship row rides the page its
+  source appears on, scoped by that source: it is shipped only when its
+  source is one of the page's live membership rows.
+
+  A membership row deleted between the page's two reads is the one window
+  this leaves: the source still ships, its rows do not, because the page's
+  window is a membership keyset and a tombstoned row is not in it. That
+  delete is above `W`, so the tail delivers it and the group stops naming the
+  source; a group that still names it seeds those rows from its own listing.
 
   ## Materialization
 
@@ -32,11 +48,13 @@ defmodule EbbServer.Sync.GroupListing do
   then its `groupMember` rows keyed on `(actor_id, id)` through
   `idx_entities_group_member`. Phase 1 pages the group's `entityGroup` rows
   by row id through `idx_entities_entity_group_page`, fetching the named
-  entities for the page in one `id IN (...)` lookup.
+  entities and the relationship rows of the page's sources.
 
   An `entityGroup` row may name an entity that is also named by another
   membership row; a repeat is idempotent for the client, whose store is
-  keyed by entity id. Rows are deduplicated within a page only.
+  keyed by entity id. Rows are deduplicated within a page only, and so are
+  the relationship rows two membership rows naming one source would
+  otherwise repeat.
 
   The cursor is opaque: base64url of `{v, group_id, w, key}`. The `w` is
   echoed on every page so a client can assert it did not move, and a cursor
@@ -89,8 +107,9 @@ defmodule EbbServer.Sync.GroupListing do
     - `:cursor` - opaque token from a previous page (`nil` starts at page 1,
       which is also the only page that reads the frontier)
     - `:limit` - maximum membership keys in the page, 200 by default, 1000
-      at most; a membership key may ship its entity too, so a page can carry
-      up to twice that many entity objects
+      at most; a membership key also ships its entity and its live
+      relationship rows, so a page's row count is that of its keys' rows
+      rather than of the keys
     - `:sqlite_name`, `:rocks_name`, `:dirty_set` - isolated storage
       instances (tests)
     - `:watermark_tracker` - the tracker process name (tests)
@@ -272,10 +291,60 @@ defmodule EbbServer.Sync.GroupListing do
 
     {taken, rest} = Enum.split(entries, limit)
 
-    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts) do
-      {:ok, prefix ++ membership_rows(taken, by_id), next_membership_key(rest, List.last(taken)),
-       rest != []}
+    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts),
+         {:ok, relationship_rows} <-
+           page_relationship_rows(group_id, after_id, taken, by_id, opts) do
+      {:ok, prefix ++ membership_rows(taken, by_id) ++ relationship_rows,
+       next_membership_key(rest, List.last(taken)), rest != []}
     end
+  end
+
+  # A page's relationship rows come from its own membership window, which ends
+  # at the last membership row the page read — `limit + 1` only probes for a
+  # next page, and that row's rows belong to it.
+  #
+  # The window is pinned by the membership rows already read rather than
+  # re-derived from a count. Membership row ids are opaque, so a row committed
+  # between the two reads can land inside the window; re-cutting the window to
+  # a count would then drop the highest id it holds, which is the page's own
+  # last source, and that source's rows would sit below the watermark where the
+  # tail never repairs them. A source whose membership row this page did not
+  # ship is discarded instead, in `live_relationship_rows/4`.
+  defp page_relationship_rows(_group_id, _after_id, [], _by_id, _opts), do: {:ok, []}
+
+  defp page_relationship_rows(group_id, after_id, taken, by_id, opts) do
+    {window_end, _entity_id} = List.last(taken)
+
+    case SQLite.list_page_relationship_ids(group_id, after_id, window_end, sqlite_name(opts)) do
+      {:ok, ids} -> live_relationship_rows(ids, taken, by_id, opts)
+      {:error, _reason} -> {:error, :materialization_failed}
+    end
+  end
+
+  # A relationship row ships only when its source is one the page actually
+  # carries: `load_live_rows/2` omits a tombstoned source, and a row must not
+  # outlive the visibility of the entity it hangs off. Two membership rows can
+  # name one source, so the page dedupes the rows its window finds.
+  defp live_relationship_rows(ids, taken, by_id, opts) do
+    ids = Enum.uniq(ids)
+    page_sources = page_sources(taken, by_id)
+
+    with {:ok, rows_by_id} <- load_live_rows(ids, opts) do
+      {:ok,
+       ids
+       |> Enum.flat_map(&typed_row(rows_by_id, &1, "relationship"))
+       |> Enum.filter(&MapSet.member?(page_sources, source_of(&1)))}
+    end
+  end
+
+  defp page_sources(taken, by_id) do
+    taken
+    |> Enum.flat_map(&page_source(&1, by_id))
+    |> MapSet.new()
+  end
+
+  defp page_source({_membership_id, entity_id}, by_id) do
+    if Map.has_key?(by_id, entity_id), do: [entity_id], else: []
   end
 
   defp page_ids(taken) do
@@ -391,6 +460,11 @@ defmodule EbbServer.Sync.GroupListing do
 
   defp group_field(%{data: %{"fields" => %{"group_id" => %{"value" => group_id}}}}), do: group_id
   defp group_field(_row), do: nil
+
+  defp source_of(%{data: %{"fields" => %{"source_id" => %{"value" => source_id}}}}),
+    do: source_id
+
+  defp source_of(_row), do: nil
 
   defp decode_row(%{data: data} = row) when is_binary(data),
     do: %{row | data: Jason.decode!(data)}
