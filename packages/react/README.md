@@ -11,10 +11,16 @@ This package ships the client plumbing plus the data hooks:
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 - `usePresence()` — the peers observed on one presence channel of one entity, typed from the channel's declared schema when bound with `createEbbHooks`.
-- `createEbbHooks<C>()` — bind `useClient`, `useQuery`, and `usePresence` to your
-  client type once, so components need neither a generic nor a callback annotation.
+- `useOutbox()` — the write buffer's depth and flush latency: pending, acknowledged, error, conflicted, `flushLatency`, `storeFaults`.
+- `useConflicts()` — the conflicts awaiting an application decision.
+- `useEbbStatus()` — connection + `lastSyncedAt` + outbox + conflicts in one subscription.
+- `useSyncObservable<T>(observable)` — the generic `useSyncExternalStore` wrapper the hooks above build on, exported for `client.sync.backfill` and app-owned observables.
+- `createEbbHooks<C>()` — bind `useClient`, `useQuery`, `usePresence`, and the
+  sync-state hooks to your client type once, so components need neither a
+  generic nor a callback annotation.
 
-SSR / Suspense are out of scope for now.
+SSR / Suspense are out of scope for now; the hooks have no
+`getServerSnapshot`.
 
 ## Install
 
@@ -248,6 +254,83 @@ disconnect, and the server holds no state for it. A peer that stops sending is
 aged out by the channel's receive TTL, and the whole peer set is dropped when
 the live stream closes — both surface as a re-render, not as a stale cursor.
 
+## Sync state: outbox, conflicts, and status
+
+The client publishes its sync state as read-only observables — a synchronous
+`get()` plus a `subscribe(cb)` — and these hooks are the React half. Nothing
+polls, and nothing reaches into the client's internals.
+
+```tsx
+import { useEbbStatus } from "@ebbjs/react";
+
+function SyncBar() {
+  const { connection, lastSyncedAt, outbox, conflicts } = useEbbStatus();
+
+  if (connection === "offline" && outbox.pending > 0) {
+    return <span>{outbox.pending} writes queued, offline</span>;
+  }
+  if (conflicts.count > 0) {
+    return <span>{conflicts.count} edits need review</span>;
+  }
+  if (outbox.pending > 0 || outbox.acknowledged > 0) return <span>Saving…</span>;
+  return <span>{lastSyncedAt === null ? "Not synced yet" : "Synced"}</span>;
+}
+```
+
+`useOutbox()` returns the `OutboxSnapshot`: `pending`, `acknowledged`,
+`error`, `conflicted`, `flushLatency` (wall time of the last resolved flush,
+`null` before one), and `storeFaults` (cumulative durable store faults). A
+flush reports its depth first and its latency second, so the same flush can
+re-render twice; `get()` always holds the latest of both.
+
+`useConflicts()` returns the `ConflictSnapshot`: `count` and `conflicts`,
+oldest detection first. `client.sync.conflicts` republishes whenever the
+outbox's counts change — a detection, a resolution, and the initial durable
+load all arrive that way, with no async refetch. A write that does not touch
+the conflict set can republish an equal snapshot, so the consumer may re-render
+without its data changing. A conflict carries its losing entries, its subject
+states with a before/after `diff`, and `remoteWins()`, which is enough to
+render "2 edits need review" and to build a review UI.
+
+`useEbbStatus()` returns the aggregate `ClientStatus`: `connection`,
+`lastSyncedAt` (epoch ms of the last applied remote Action or completed
+catch-up, `null` before the first), `outbox`, and `conflicts`. It is one
+subscription over four sources, and any of them changing re-renders the
+consumer — reach for `useOutbox` / `useConflicts` when a component needs only
+one slice.
+
+`useSyncObservable<T>(observable)` subscribes to any `ReadonlyObservable<T>`.
+The client's sync state is published in exactly that shape, so it covers the
+slots without a dedicated hook — `client.sync.backfill`, for instance — and an
+app-owned observable:
+
+```tsx
+import { useSyncObservable } from "@ebbjs/react";
+
+// Entity ids being backfilled because a membership row named an entity the
+// local cache lacks — render a pending row rather than an empty one.
+const backfilling = useSyncObservable(client.sync.backfill);
+```
+
+An observable must return the same value reference until its value changes; a
+fresh object on every `get()` makes React warn and re-render in a loop, while
+a new reference on a real change is what triggers the re-render.
+
+### Resolving conflicts is not a hook
+
+`useConflicts` is read-only, matching the client's split between reading the
+set and resolving it. Resolution goes through `client.conflicts`, outside the
+render pass:
+
+```tsx
+const [conflict] = await client.conflicts.list();
+await client.conflicts.resolve(conflict.id, "retry"); // or "discard"
+```
+
+`retry` re-asserts the losing Actions; `discard` drops their optimistic writes
+and replays the log. Either way the conflict set shrinks, `useConflicts`
+re-renders, and no refetch is involved.
+
 ## `useClient` and writes
 
 `useClient<C>()` returns the provider's client typed by the client type
@@ -323,7 +406,11 @@ await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 | `useConnection()`                | Subscribes to connection state and re-renders on transitions.                          |
 | `useQuery(build, deps?)`         | Subscribes to a cached query result; `{ data, status, loading, error }`.               |
 | `usePresence(entityId, channel)` | Subscribes to the peers on one presence channel; `ReadonlyMap<actorId, PeerPresence>`. |
-| `createEbbHooks<C>()`            | Binds `useClient`, `useQuery`, and `usePresence` to one client type.                   |
+| `useOutbox()`                    | Subscribes to the write buffer; `OutboxSnapshot` (depth, latency, faults).             |
+| `useConflicts()`                 | Subscribes to the conflict set; `ConflictSnapshot` (`count`, `conflicts`).             |
+| `useEbbStatus()`                 | Subscribes to the aggregate `ClientStatus`; one hook for a status bar.                 |
+| `useSyncObservable(o)`           | Subscribes to any `ReadonlyObservable<T>`; the generic wrapper above.                  |
+| `createEbbHooks<C>()`            | Binds `useClient`, `useQuery`, `usePresence`, and the sync-state hooks to one type.    |
 | `QueryRootOf<C>`                 | The read root of a client type — what a bound `useQuery`'s `q` is.                     |
 | `PresenceChannelOf<C>`           | The presence channel names a client type declares.                                     |
 | `PresencePeerMapOf<C, K>`        | The peer map a bound `usePresence` returns for one declared channel.                   |
@@ -331,6 +418,10 @@ await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 | `UseQueryResult`                 | The `useQuery` result type.                                                            |
 | `QueryRows`                      | The projected row-list type a `QueryBuilder` resolves to.                              |
 | `ConnectionState`                | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.             |
+| `OutboxSnapshot`                 | Re-exported outbox snapshot type (`pending`, `flushLatency`, …).                       |
+| `ConflictSnapshot`               | Re-exported conflict snapshot type (`count`, `conflicts`).                             |
+| `ClientStatus`                   | Re-exported aggregate status type (`connection`, `outbox`, …).                         |
+| `ReadonlyObservable<T>`          | Re-exported observable interface `useSyncObservable` accepts.                          |
 
 ## Peer dependencies
 

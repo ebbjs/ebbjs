@@ -169,7 +169,7 @@ await server.kill();
 
 ### `@ebbjs/react`
 
-React bindings for `@ebbjs/client` — a provider, a connection hook, the query hooks, and the presence hook, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `usePresence`, and `createEbbHooks` (which binds `useClient`, `useQuery`, and `usePresence` to one client type). `useQuery` is the read root, `usePresence` reads the peers on one presence channel of an entity, and `useClient` exposes `client.actions`.
+React bindings for `@ebbjs/client` — a provider, a connection hook, the query hooks, the presence hook, and the sync-state hooks, plus `useClient` for actions. Ships `EbbProvider`, `useClient`, `useConnection`, `useQuery`, `usePresence`, `useOutbox`, `useConflicts`, `useEbbStatus`, `useSyncObservable`, and `createEbbHooks` (which binds `useClient`, `useQuery`, `usePresence`, and the sync-state hooks to one client type). `useQuery` is the read root, `usePresence` reads the peers on one presence channel of an entity, `useClient` exposes `client.actions`, and the sync-state hooks are read-only.
 
 ```tsx
 import { createClient, defineAction } from "@ebbjs/client";

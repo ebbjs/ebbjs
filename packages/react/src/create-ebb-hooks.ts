@@ -1,5 +1,6 @@
 /**
- * Bind `useClient`, `useQuery`, and `usePresence` to one client type.
+ * Bind `useClient`, `useQuery`, `usePresence`, and the sync-state hooks to one
+ * client type.
  *
  * React context erases types, so `useClient` must be told the client type at
  * every call site; `useQuery` cannot take the schema as a type argument
@@ -8,23 +9,37 @@
  * from the client's registry. Binding once removes all three:
  *
  * ```tsx
- * export const { useClient: useEbb, useQuery, usePresence } =
+ * export const { useClient: useEbb, useQuery, usePresence, useOutbox } =
  *   createEbbHooks<AppClient>();
  *
  * const client = useEbb();
  * const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
  * const cameras = usePresence(planId, "camera");
+ * const { pending } = useOutbox();
  * ```
  *
- * Call it at module scope: each call makes new hook functions, and a
- * per-render call would hand React a new hook identity on every render.
+ * Call it at module scope: each call makes a new bound `useClient`,
+ * `useQuery`, and `usePresence`, and a per-render call would hand React a new
+ * hook identity on every render. The sync-state hooks need no binding, so they
+ * are returned as the module-level functions.
  */
 
-import type { ProjectedRow, QueryBuilder, SyncClient, TSchema } from "@ebbjs/client";
+import type {
+  ClientStatus,
+  ConflictSnapshot,
+  OutboxSnapshot,
+  ProjectedRow,
+  QueryBuilder,
+  SyncClient,
+  TSchema,
+} from "@ebbjs/client";
 
 import { useClient } from "./context";
+import { useConflicts } from "./use-conflicts";
+import { useOutbox } from "./use-outbox";
 import { usePresence, type PresenceChannelOf, type PresencePeerMapOf } from "./use-presence";
 import { useQueryRoot, type UseQueryResult } from "./use-query";
+import { useEbbStatus } from "./use-status";
 
 /**
  * The read root of a client type: its namespaces narrowed to `query()`, so a
@@ -58,6 +73,15 @@ export interface EbbHooks<C extends SyncClient> {
     entityId: string,
     channel: K,
   ): PresencePeerMapOf<C, K>;
+  /**
+   * {@link useOutbox}: the bound client's write-buffer snapshot, so a status
+   * bar reads depth and flush latency without a client call.
+   */
+  useOutbox(): OutboxSnapshot;
+  /** {@link useConflicts}: the bound client's conflicts awaiting a decision. */
+  useConflicts(): ConflictSnapshot;
+  /** {@link useEbbStatus}: connection + `lastSyncedAt` + outbox + conflicts. */
+  useEbbStatus(): ClientStatus;
 }
 
 /** Bind the hooks to one client type. Call it once, at module scope. */
@@ -79,5 +103,8 @@ export function createEbbHooks<C extends SyncClient>(): EbbHooks<C> {
     useClient: useBoundClient,
     useQuery: useBoundQuery,
     usePresence: useBoundPresence,
+    useOutbox,
+    useConflicts,
+    useEbbStatus,
   };
 }
