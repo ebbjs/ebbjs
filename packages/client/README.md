@@ -406,5 +406,6 @@ Three scripts:
 
 The CI integration job (`elixir-integration-tests` in
 `.github/workflows/ci.yml`) boots the cached release and runs
-`test:integration`. `presence.test.ts` skips there because the demo
+`test:integration`, then boots a second release in `tailscale` mode on port
+4001 for `identity.test.ts`. `presence.test.ts` skips there because the demo
 fixture is not seeded.
