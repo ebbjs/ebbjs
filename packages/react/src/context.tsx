@@ -17,6 +17,10 @@ export interface EbbProviderProps<C extends SyncClient = SyncClient> {
 /**
  * Makes the app's client available to the hooks below it. The caller owns the
  * client, so remounting the tree doesn't tear down the connection.
+ *
+ * A client built with `definePresence(...)` is accepted because its typed
+ * presence is assignable to the plain one: the dynamic channel map yields
+ * `unknown` payloads, and the typed surface only narrows them.
  */
 export function EbbProvider<C extends SyncClient = SyncClient>({
   client,
@@ -34,8 +38,8 @@ export function EbbProvider<C extends SyncClient = SyncClient>({
  * const bound = useClient<AppClient>();
  * ```
  *
- * Throws outside a provider. {@link createEbbHooks} binds this and
- * `useQuery` once so components need no generic at all.
+ * Throws outside a provider. {@link createEbbHooks} binds this, `useQuery`,
+ * and `usePresence` once so components need no generic at all.
  */
 export function useClient<C extends SyncClient = SyncClient>(): C {
   const client = useContext(EbbClientContext);

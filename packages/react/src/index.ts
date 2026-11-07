@@ -9,8 +9,10 @@
  * - `useConnection` — `useSyncExternalStore` over connection state
  * - `useQuery` — the reactive read root: build a query through the typed
  *   entity namespaces and subscribe to its cached result
- * - `createEbbHooks` — bind `useClient` and `useQuery` to your client type
- *   once, so components need no generic and no callback annotation
+ * - `usePresence` — the peers observed on one presence channel of one entity,
+ *   typed from the channel's declared schema
+ * - `createEbbHooks` — bind `useClient`, `useQuery`, and `usePresence` to your
+ *   client type once, so components need no generic and no callback annotation
  *
  * Writes are not a hook: every application write is an Action declared at
  * module scope with `defineAction` and called as `client.actions.<name>`.
@@ -23,6 +25,8 @@ export { EbbProvider, useClient, type EbbProviderProps } from "./context";
 export { useConnection } from "./use-connection";
 
 export { useQuery, type QueryRows, type UseQueryResult } from "./use-query";
+
+export { usePresence, type PresenceChannelOf, type PresencePeerMapOf } from "./use-presence";
 
 export { createEbbHooks, type EbbHooks, type QueryRootOf } from "./create-ebb-hooks";
 

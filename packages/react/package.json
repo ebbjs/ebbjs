@@ -47,6 +47,7 @@
     "@ebbjs/client": "workspace:^"
   },
   "devDependencies": {
+    "@sinclair/typebox": "^0.34.52",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.0",
     "@types/react": "^19.1.2",

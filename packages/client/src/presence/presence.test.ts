@@ -25,9 +25,9 @@ import {
   PresenceValidationError,
   UndeclaredPresenceChannelError,
   type PeerPresence,
+  type PresenceApi,
   type PresenceChannelConfig,
   type PresenceChange,
-  type UntypedPresenceApi,
 } from "./presence";
 import type { SSEEvent } from "../sync/types";
 import {
@@ -347,7 +347,7 @@ describe("presence send", () => {
       presence: definePresence({ cursor: cursorSchema }),
     });
     // A JS caller (or a cast) can still reach the untyped shape.
-    const untyped = client.presence as unknown as UntypedPresenceApi;
+    const untyped = client.presence as unknown as PresenceApi;
 
     expect(() => untyped.set("doc_demo", "tool", "pen")).toThrow(UndeclaredPresenceChannelError);
     expect(() => untyped.clear("doc_demo", "tool")).toThrow(UndeclaredPresenceChannelError);
@@ -363,7 +363,7 @@ describe("presence send", () => {
       fetchImpl: h.fetchImpl,
       presence: definePresence({ cursor: cursorSchema }),
     });
-    const untyped = client.presence as unknown as UntypedPresenceApi;
+    const untyped = client.presence as unknown as PresenceApi;
 
     expect(() => untyped.set("doc_demo", "cursor", { ...cursor, anchorOffset: "one" })).toThrow(
       PresenceValidationError,
@@ -828,6 +828,10 @@ describe("typed presence surface", () => {
 
     // Never called: this body exists so `tsc` checks the typed surface.
     const exercise = (typed: typeof client): void => {
+      // A registered client is usable wherever a plain `SyncClient` is, which
+      // is what lets the provider keep one constraint for every app.
+      const plain: SyncClient = typed;
+      void plain;
       typed.presence.set("doc_demo", "cursor", cursor);
       typed.presence.clear("doc_demo", "cursor");
       const peers: ReadonlyMap<string, PeerPresence<typeof cursor>> = typed.presence.forEntity(

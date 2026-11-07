@@ -1,16 +1,19 @@
 /**
- * Bind `useClient` and `useQuery` to one client type.
+ * Bind `useClient`, `useQuery`, and `usePresence` to one client type.
  *
  * React context erases types, so `useClient` must be told the client type at
- * every call site; and `useQuery` cannot take the schema as a type argument
+ * every call site; `useQuery` cannot take the schema as a type argument
  * instead (TypeScript does not partially infer type arguments, so the rows
- * would fall back to their defaults). Binding once removes both:
+ * would fall back to their defaults), and `usePresence` cannot name a channel
+ * from the client's registry. Binding once removes all three:
  *
  * ```tsx
- * export const { useClient: useEbb, useQuery } = createEbbHooks<AppClient>();
+ * export const { useClient: useEbb, useQuery, usePresence } =
+ *   createEbbHooks<AppClient>();
  *
  * const client = useEbb();
  * const { data } = useQuery((q) => q.issue.query().with({ assignee: true }));
+ * const cameras = usePresence(planId, "camera");
  * ```
  *
  * Call it at module scope: each call makes new hook functions, and a
@@ -20,6 +23,7 @@
 import type { ProjectedRow, QueryBuilder, SyncClient, TSchema } from "@ebbjs/client";
 
 import { useClient } from "./context";
+import { usePresence, type PresenceChannelOf, type PresencePeerMapOf } from "./use-presence";
 import { useQueryRoot, type UseQueryResult } from "./use-query";
 
 /**
@@ -46,6 +50,14 @@ export interface EbbHooks<C extends SyncClient> {
     build: (q: QueryRootOf<C>) => QueryBuilder<TFields, TJoins, TJoined, TRow>,
     deps?: readonly unknown[],
   ): UseQueryResult<TFields, TJoined, TRow>;
+  /**
+   * {@link usePresence} bound to `C`: the channel is checked against the
+   * client's `definePresence` registry and the peer payload follows its schema.
+   */
+  usePresence<K extends PresenceChannelOf<C>>(
+    entityId: string,
+    channel: K,
+  ): PresencePeerMapOf<C, K>;
 }
 
 /** Bind the hooks to one client type. Call it once, at module scope. */
@@ -58,5 +70,14 @@ export function createEbbHooks<C extends SyncClient>(): EbbHooks<C> {
     // only hides the extra members (mutations, sync methods) `query()` ignores.
     useQueryRoot(useBoundClient() as QueryRootOf<C>, build, deps);
 
-  return { useClient: useBoundClient, useQuery: useBoundQuery };
+  const useBoundPresence: EbbHooks<C>["usePresence"] = (entityId, channel) =>
+    // SAFETY: the registry types this channel's payload and the provider holds
+    // that same client; only the declared payload type is asserted.
+    usePresence(entityId, channel) as PresencePeerMapOf<C, typeof channel>;
+
+  return {
+    useClient: useBoundClient,
+    useQuery: useBoundQuery,
+    usePresence: useBoundPresence,
+  };
 }

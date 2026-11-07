@@ -99,34 +99,26 @@ export type PresenceValue<
   K extends keyof C,
 > = C[K]["schema"] extends TSchema ? Static<C[K]["schema"]> : unknown;
 
+/** The channel map a client's presence is keyed by: declared, or dynamic. */
+export type PresenceChannelsMap = Readonly<Record<string, PresenceChannelConfig>>;
+
 /** The normalized channel map behind a registry type. */
 export type PresenceChannelsOf<R> = R extends { readonly channels: infer C }
-  ? C extends Readonly<Record<string, PresenceChannelConfig>>
+  ? C extends PresenceChannelsMap
     ? C
-    : Readonly<Record<string, PresenceChannelConfig>>
-  : Readonly<Record<string, PresenceChannelConfig>>;
+    : PresenceChannelsMap
+  : PresenceChannelsMap;
 
 /**
- * The `client.presence` surface. With a declared registry the channel name and
- * the value type are checked at the call site; without one, channels are
- * dynamic strings and values are unvalidated `unknown`.
+ * The `client.presence` surface, typed by the channel map. With a declared
+ * registry the channel name and the value type are checked at the call site;
+ * without one the map is dynamic and payloads are unvalidated `unknown`.
+ *
+ * One interface rather than a registry/no-registry pair: a registered client
+ * must be usable wherever a plain `SyncClient` is, and a caller-named
+ * `forEntity<T>` would force it to promise every payload type at once.
  */
-export type PresenceApi<R = undefined> = R extends AnyPresenceRegistry
-  ? TypedPresenceApi<PresenceChannelsOf<R>>
-  : UntypedPresenceApi;
-
-/** `client.presence` on a client built without a registry. */
-export interface UntypedPresenceApi {
-  set(entityId: string, channel: string, value: unknown): void;
-  clear(entityId: string, channel: string): void;
-  forEntity<T = unknown>(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<T>>;
-  onUpdate(callback: (change: PresenceChange) => void): () => void;
-  /** Send every pending (debounced) write now; resolves once they settle. */
-  flush(): Promise<void>;
-}
-
-/** `client.presence` on a client built with `definePresence(...)`. */
-export interface TypedPresenceApi<C extends Readonly<Record<string, PresenceChannelConfig>>> {
+export interface PresenceApi<C extends PresenceChannelsMap = PresenceChannelsMap> {
   set<K extends keyof C & string>(entityId: string, channel: K, value: PresenceValue<C, K>): void;
   clear(entityId: string, channel: keyof C & string): void;
   forEntity<K extends keyof C & string>(
@@ -139,10 +131,10 @@ export interface TypedPresenceApi<C extends Readonly<Record<string, PresenceChan
 }
 
 /**
- * The runtime behind `client.presence`: the public surface plus the two
+ * The runtime behind `client.presence`: the public surface plus the three
  * connection hooks the client owns.
  */
-export interface PresenceRuntime extends UntypedPresenceApi {
+export interface PresenceRuntime extends PresenceApi {
   /** Fold one `presence` packet from the live stream into the store. */
   ingest(payload: unknown): void;
   /** Drop every observed peer: the stream that carried them is gone. */
@@ -204,8 +196,8 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
       transport.send(entityId, channel, null);
     },
 
-    forEntity<T>(entityId: string, channel: string): ReadonlyMap<string, PeerPresence<T>> {
-      return store.forEntity<T>(entityId, channel);
+    forEntity(entityId, channel) {
+      return store.forEntity(entityId, channel);
     },
 
     onUpdate(callback) {
