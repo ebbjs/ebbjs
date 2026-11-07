@@ -178,10 +178,10 @@ export {
   type PresenceChannelOptions,
   type PresenceChannelSpec,
   type PresenceChannels,
+  type PresenceChannelsMap,
+  type PresenceChannelsOf,
   type PresenceRegistry,
   type PresenceValue,
-  type TypedPresenceApi,
-  type UntypedPresenceApi,
 } from "./presence/presence";
 
 export {

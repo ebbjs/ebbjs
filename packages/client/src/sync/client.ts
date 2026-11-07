@@ -51,6 +51,7 @@ import {
   createPresence,
   type AnyPresenceRegistry,
   type PresenceApi,
+  type PresenceChannelsOf,
   type PresenceRuntime,
 } from "../presence/presence";
 import { openSSEStream, type SSESubscription } from "./sse";
@@ -232,10 +233,11 @@ export class SyncClient<
   readonly replicaSignal: ReplicaSignal;
   /**
    * Ephemeral presence: send on declared channels, read the peers observed on
-   * the live stream (#677). Typed by the registry passed to
-   * {@link SyncClientOptions.presence}, untyped without one.
+   * the live stream (#677). Keyed by the registry passed to
+   * {@link SyncClientOptions.presence}: its channels when declared, the dynamic
+   * map without one.
    */
-  readonly presence: PresenceApi<R>;
+  readonly presence: PresenceApi<PresenceChannelsOf<R>>;
   /**
    * The runtime behind {@link presence}. The client owns it because the stream
    * does: `handleSSEEvent` folds every `presence` packet in before the
@@ -443,7 +445,7 @@ export class SyncClient<
     });
     // The runtime's untyped methods are the same call shape the typed surface
     // exposes; the cast only restores the registry's channel typing.
-    this.presence = this.presenceRuntime as unknown as PresenceApi<R>;
+    this.presence = this.presenceRuntime as unknown as PresenceApi<PresenceChannelsOf<R>>;
     // The outbox owns the whole write lifecycle, including a detected
     // conflict: a loser is a status + payload on its own row, so detection
     // is one durable write and the flush path holds it structurally.
