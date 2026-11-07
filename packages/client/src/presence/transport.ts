@@ -29,13 +29,21 @@ export interface PresenceTransportOptions {
   readonly channels?: Readonly<Record<string, PresenceChannelConfig>>;
 }
 
+export interface PresenceSendOptions {
+  /**
+   * Mark the POST `keepalive` so it outlives the document: the send still
+   * goes out when the page is being torn down (`pagehide`).
+   */
+  readonly keepalive?: boolean;
+}
+
 export interface PresenceTransport {
   /**
    * Coalesce one channel write behind the channel's debounce. Throws
    * {@link PresencePayloadTooLargeError} synchronously when the serialized
    * body exceeds the limit.
    */
-  send(entityId: string, channel: string, value: unknown): void;
+  send(entityId: string, channel: string, value: unknown, options?: PresenceSendOptions): void;
   /** Send everything pending now and resolve once those requests settle. */
   flush(): Promise<void>;
   /** Drop everything pending without sending it. */
@@ -46,6 +54,7 @@ interface PendingSend {
   readonly entityId: string;
   readonly channel: string;
   readonly body: string;
+  readonly keepalive: boolean;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -53,17 +62,21 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
   const pending = new Map<string, PendingSend>();
   const inFlight = new Set<Promise<void>>();
 
-  const post = (send: { entityId: string; body: string }): Promise<void> => {
+  const post = (send: { entityId: string; body: string; keepalive: boolean }): Promise<void> => {
+    const request: RequestInit = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-ebb-actor-id": opts.actorId,
+      },
+      body: send.body,
+    };
+    // Only when asked: the browser keeps a `keepalive` request alive after the
+    // document is gone, which an ordinary write does not need.
+    const init = send.keepalive ? { ...request, keepalive: true } : request;
     const attempt = (async (): Promise<void> => {
       try {
-        const response = await opts.fetchImpl(`${opts.serverUrl}/sync/presence`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-ebb-actor-id": opts.actorId,
-          },
-          body: send.body,
-        });
+        const response = await opts.fetchImpl(`${opts.serverUrl}/sync/presence`, init);
         if (!response.ok && response.status !== 204) {
           await response.text().catch(() => "");
         }
@@ -85,7 +98,8 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
   };
 
   return {
-    send(entityId, channel, value) {
+    send(entityId, channel, value, options) {
+      const keepalive = options?.keepalive === true;
       const body = JSON.stringify({ entity_id: entityId, data: { channel, value } });
       const bytes = byteLength(body);
       if (bytes > MAX_PRESENCE_PAYLOAD_BYTES) {
@@ -102,10 +116,10 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
       const debounceMs = opts.channels?.[channel]?.debounceMs ?? DEFAULT_PRESENCE_DEBOUNCE_MS;
       const timer = setTimeout(() => {
         pending.delete(key);
-        void post({ entityId, body });
+        void post({ entityId, body, keepalive });
       }, debounceMs);
       unrefTimer(timer);
-      pending.set(key, { entityId, channel, body, timer });
+      pending.set(key, { entityId, channel, body, keepalive, timer });
     },
 
     async flush() {

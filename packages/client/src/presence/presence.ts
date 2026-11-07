@@ -21,6 +21,12 @@
  * rendering lives in `@ebbjs/codemirror/src/presence/cursor-decoration` and
  * reads the same `forEntity()` map.
  *
+ * Leaving: `leave()` retracts every `(entityId, channel)` this client has
+ * announced with a null, so peers drop this actor instead of waiting out the
+ * channel's TTL. `close()` is local teardown and sends nothing: a transient
+ * remount must not broadcast an absence. A page that is really going away
+ * calls `leave({ keepalive: true })` from its unload handler.
+ *
  * Network model:
  *   - Outgoing: `POST /sync/presence` with `{entity_id, data: {channel, value}}`
  *   - Incoming: `presence` events on the `/sync/live` stream that
@@ -36,13 +42,18 @@ import {
   type AnyPresenceRegistry,
   type PresenceChannelConfig,
 } from "./define";
+import { targetKey } from "./keys";
 import {
   createPresenceStore,
   type PeerPresence,
   type PresenceChange,
   type PresenceStore,
 } from "./store";
-import { createPresenceTransport, type PresenceTransport } from "./transport";
+import {
+  createPresenceTransport,
+  type PresenceSendOptions,
+  type PresenceTransport,
+} from "./transport";
 
 export {
   definePresence,
@@ -71,6 +82,7 @@ export {
 } from "./store";
 export {
   createPresenceTransport,
+  type PresenceSendOptions,
   type PresenceTransport,
   type PresenceTransportOptions,
 } from "./transport";
@@ -128,6 +140,13 @@ export interface PresenceApi<C extends PresenceChannelsMap = PresenceChannelsMap
   onUpdate(callback: (change: PresenceChange) => void): () => void;
   /** Send every pending (debounced) write now; resolves once they settle. */
   flush(): Promise<void>;
+  /**
+   * Send a null for every target this client currently claims, then forget
+   * them. Best-effort and idempotent: a second call sends nothing.
+   * `keepalive` marks the POSTs so a pagehide-issued leave survives page
+   * teardown; it defaults to false.
+   */
+  leave(options?: PresenceSendOptions): Promise<void>;
 }
 
 /**
@@ -139,7 +158,11 @@ export interface PresenceRuntime extends PresenceApi {
   ingest(payload: unknown): void;
   /** Drop every observed peer: the stream that carried them is gone. */
   reset(): void;
-  /** Cancel pending sends; the client is shutting down. */
+  /**
+   * Local teardown: drop the claimed targets and cancel pending sends. It
+   * sends no leave — a transient remount must not broadcast an absence — so a
+   * page that is actually going away calls {@link PresenceApi.leave} first.
+   */
   close(): void;
 }
 
@@ -163,6 +186,11 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
     localActorId: opts.actorId,
     channels,
   });
+  /**
+   * The `(entity, channel)` targets this session has announced state on, so
+   * `leave()` can retract exactly those and nothing else.
+   */
+  const claimed = new Map<string, { readonly entityId: string; readonly channel: string }>();
   const transport: PresenceTransport = createPresenceTransport({
     serverUrl: opts.serverUrl,
     actorId: opts.actorId,
@@ -189,11 +217,15 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
         throw new PresenceValidationError(channel, value);
       }
       transport.send(entityId, channel, value);
+      claimed.set(targetKey(entityId, channel), { entityId, channel });
     },
 
     clear(entityId, channel) {
       assertChannel(channel);
       transport.send(entityId, channel, null);
+      // The null just announced our absence, so there is nothing left to
+      // retract for this target.
+      claimed.delete(targetKey(entityId, channel));
     },
 
     forEntity(entityId, channel) {
@@ -208,6 +240,18 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
       return transport.flush();
     },
 
+    async leave(options) {
+      const targets = [...claimed.values()];
+      claimed.clear();
+      for (const target of targets) {
+        transport.send(target.entityId, target.channel, null, {
+          keepalive: options?.keepalive === true,
+        });
+      }
+      // The page may be gone before the debounce fires: post now.
+      await transport.flush();
+    },
+
     ingest(payload) {
       store.ingest(payload);
     },
@@ -217,6 +261,7 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
     },
 
     close() {
+      claimed.clear();
       transport.cancel();
       store.close();
     },

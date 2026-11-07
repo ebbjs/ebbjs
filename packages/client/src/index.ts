@@ -187,6 +187,7 @@ export {
   type PresenceChannelsMap,
   type PresenceChannelsOf,
   type PresenceRegistry,
+  type PresenceSendOptions,
   type PresenceValue,
 } from "./presence/presence";
 

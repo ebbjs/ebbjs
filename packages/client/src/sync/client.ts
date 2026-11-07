@@ -1529,6 +1529,12 @@ export class SyncClient<
   /**
    * Tear down all subscriptions and timers. After `close()` the client is
    * unusable; create a new one with `createClient`.
+   *
+   * Local teardown only: it cancels pending presence writes and drops the
+   * observed peers, and deliberately sends no presence leave, because a
+   * transient remount must not broadcast an absence. A page that is actually
+   * going away (a `pagehide` handler for the tab) calls
+   * `client.presence.leave({ keepalive: true })`.
    */
   close(): void {
     // Stop timers and in-flight retries first: no flush should start while
