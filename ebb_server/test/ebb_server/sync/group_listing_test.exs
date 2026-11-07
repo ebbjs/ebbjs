@@ -475,27 +475,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       # duplicate (#623) can still exist in a data dir seeded before that
       # check, so the page must stay correct when both rows name one source.
       duplicate_eg = unique("eg")
-
-      :ok =
-        SQLite.upsert_entity(
-          %{
-            id: duplicate_eg,
-            type: "entityGroup",
-            data:
-              Jason.encode!(%{
-                "fields" => %{
-                  "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => 1},
-                  "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => 1}
-                }
-              }),
-            created_hlc: 1,
-            updated_hlc: 1,
-            deleted_hlc: nil,
-            deleted_by: nil,
-            last_gsn: 0
-          },
-          SQLite
-        )
+      insert_cached_membership(duplicate_eg, todo_id, group_id)
 
       relationship_id = unique("rel")
       write_action(actor_id, [relationship_update(relationship_id, todo_id, unique("t"), "link")])
@@ -566,15 +546,67 @@ defmodule EbbServer.Sync.GroupListingTest do
       # A window cut at the second membership row carries the first two
       # sources' rows and nothing of the third's, however many rows a later
       # read finds: the bound is the page's own row, not a re-derived limit.
-      assert {:ok, listed} =
-               SQLite.list_page_relationship_ids(group_id, nil, second_eg, 2, SQLite)
+      assert {:ok, listed} = SQLite.list_page_relationship_ids(group_id, nil, second_eg, SQLite)
 
       assert Enum.sort(listed) == Enum.sort(Enum.take(relationship_ids, 2))
 
       assert {:ok, both} =
-               SQLite.list_page_relationship_ids(group_id, first_eg, third_eg, 2, SQLite)
+               SQLite.list_page_relationship_ids(group_id, first_eg, third_eg, SQLite)
 
       assert Enum.sort(both) == Enum.sort(Enum.drop(relationship_ids, 1))
+    end
+
+    test "a membership row committed inside the window does not cut it", %{tmp_dir: _} do
+      actor_id = unique("a")
+      group_id = unique("g")
+      bootstrap(actor_id, group_id)
+
+      hlc = generate_hlc()
+      [first, second] = Enum.map(1..2, fn _i -> unique("todo") end)
+      [first_eg, second_eg] = ["eg_744_a", "eg_744_b"]
+
+      write_action(
+        actor_id,
+        Enum.flat_map([{first, first_eg}, {second, second_eg}], fn {entity_id, eg_id} ->
+          [todo_update(entity_id, "title"), entity_group_update(entity_id, group_id, hlc, eg_id)]
+        end)
+      )
+
+      relationship_ids =
+        Enum.map([first, second], fn source_id ->
+          relationship_id = unique("rel")
+
+          write_action(actor_id, [
+            relationship_update(relationship_id, source_id, unique("t"), "f")
+          ])
+
+          relationship_id
+        end)
+
+      {:ok, _page} = GroupListing.list(group_id, actor_id)
+
+      # What a concurrent commit leaves behind between the page's two reads: a
+      # membership row whose opaque id sorts *inside* the page's window. A
+      # window re-cut to the page's row count would fill up on this row and
+      # drop `second_eg`, which is the page's own last source.
+      insert_cached_membership("eg_744_ab", unique("todo"), group_id)
+
+      assert {:ok, listed} = SQLite.list_page_relationship_ids(group_id, nil, second_eg, SQLite)
+
+      for relationship_id <- relationship_ids do
+        assert relationship_id in listed
+      end
+
+      # The page still ships only the sources it read: the interior row's own
+      # source is not a live entity, and the second source is past the window.
+      {:ok, page} = GroupListing.list(group_id, actor_id, limit: 2)
+      {:ok, page2} = GroupListing.list(group_id, actor_id, limit: 2, cursor: page.cursor)
+      page_ids = Enum.map(page2.entities, & &1.id)
+
+      assert Enum.sort(page_ids) ==
+               Enum.sort([first_eg, "eg_744_ab", first, hd(relationship_ids)])
+
+      refute Enum.at(relationship_ids, 1) in page_ids
     end
   end
 
@@ -888,6 +920,33 @@ defmodule EbbServer.Sync.GroupListingTest do
     if page.has_more,
       do: collect_pages(group_id, actor_id, limit, page.cursor, acc),
       else: acc
+  end
+
+  # A membership row written straight into the cache: the shape a data dir
+  # from before #623, or a commit landing between a page's two reads, can hold
+  # without the write path minting it here. `last_gsn: 0` puts it below every
+  # real row, so nothing materializes over it.
+  defp insert_cached_membership(eg_id, entity_id, group_id) do
+    :ok =
+      SQLite.upsert_entity(
+        %{
+          id: eg_id,
+          type: "entityGroup",
+          data:
+            Jason.encode!(%{
+              "fields" => %{
+                "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => 1},
+                "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => 1}
+              }
+            }),
+          created_hlc: 1,
+          updated_hlc: 1,
+          deleted_hlc: nil,
+          deleted_by: nil,
+          last_gsn: 0
+        },
+        SQLite
+      )
   end
 
   defp write_action(actor_id, updates) do

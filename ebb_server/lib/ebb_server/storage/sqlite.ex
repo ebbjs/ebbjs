@@ -155,21 +155,24 @@ defmodule EbbServer.Storage.SQLite do
   # to `source_id`.
   #
   # The fence and the index hint are both load-bearing, and nothing in this
-  # application runs `ANALYZE`. `AS MATERIALIZED` keeps `LIMIT` on the
-  # membership window: left to flatten the subquery, SQLite applies the limit
-  # to the joined rows, so one source with a large outgoing degree would fill
-  # the page and drop every later source in the window. `INDEXED BY` makes the
-  # plan a seek per window row; without it the shape is a scan of the whole
-  # live relationship set on a database that has no statistics.
+  # application runs `ANALYZE`. `AS MATERIALIZED` keeps the window on the
+  # membership rows: left to flatten the subquery, SQLite applies it to the
+  # joined rows, so one source with a large outgoing degree would fill the page
+  # and drop every later source in the window. `INDEXED BY` makes the plan a
+  # seek per window row; without it the shape is a scan of the whole live
+  # relationship set on a database that has no statistics.
   #
-  # The window is bounded at both ends by the membership rows the caller
-  # already read, so a membership row committed between the caller's two
-  # statements cannot slide the window and strand the last source's rows.
+  # The window is bounded by the membership rows the caller already read —
+  # `id <=` the page's own last row — and there is deliberately no `LIMIT`.
+  # Membership row ids are opaque, so a row committed between the caller's two
+  # statements can land inside the window; a limit would then re-cut it and
+  # drop the highest id, which is the page's own last source, leaving that
+  # source's rows below the watermark where the tail never repairs them. A
+  # source the page did not ship is discarded by the caller instead.
   @list_page_relationship_ids_sql """
   WITH page AS MATERIALIZED (
     SELECT entity_id FROM entities
     WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id <= ?
-    ORDER BY id LIMIT ?
   )
   SELECT r.id
   FROM page m
@@ -182,7 +185,6 @@ defmodule EbbServer.Storage.SQLite do
     SELECT entity_id FROM entities
     WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
       AND id > ? AND id <= ?
-    ORDER BY id LIMIT ?
   )
   SELECT r.id
   FROM page m
@@ -323,10 +325,10 @@ defmodule EbbServer.Storage.SQLite do
   the group's window names.
 
   The window is `(after_key, window_end]` over the membership keyset
-  `list_entity_group_memberships/4` pages, cut to `limit` rows. It is bounded
-  by the membership rows the caller already read, not recomputed, so a
-  membership row committed between the two calls cannot slide it. Two
-  membership rows can name one source, so an id can repeat; the caller
+  `list_entity_group_memberships/4` pages. It is bounded by the membership
+  rows the caller already read rather than recomputed, so a row committed
+  between the two calls cannot slide it, and it is not cut to a count: two
+  membership rows can name one source, so an id can repeat and the caller
   dedupes. Rows are ids only: every row the listing ships is materialized and
   read through `get_entities/2`, and reading `data` twice would double that.
   """
@@ -334,13 +336,12 @@ defmodule EbbServer.Storage.SQLite do
           String.t(),
           String.t() | nil,
           String.t(),
-          pos_integer(),
           GenServer.server()
         ) :: {:ok, [String.t()]} | {:error, term()}
-  def list_page_relationship_ids(group_id, after_key, window_end, limit, server \\ __MODULE__) do
+  def list_page_relationship_ids(group_id, after_key, window_end, server \\ __MODULE__) do
     GenServer.call(
       server,
-      {:list_page_relationship_ids, group_id, after_key, window_end, limit}
+      {:list_page_relationship_ids, group_id, after_key, window_end}
     )
   end
 
@@ -614,12 +615,8 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
-  def handle_call(
-        {:list_page_relationship_ids, group_id, after_key, window_end, limit},
-        _from,
-        state
-      ) do
-    {sql, params} = page_relationship_statement(group_id, after_key, window_end, limit)
+  def handle_call({:list_page_relationship_ids, group_id, after_key, window_end}, _from, state) do
+    {sql, params} = page_relationship_statement(group_id, after_key, window_end)
 
     {:reply, collect_ids(state, sql, params), state}
   end
@@ -629,7 +626,7 @@ defmodule EbbServer.Storage.SQLite do
     %{db: db} = state
     # An explain never runs the statement, so the window it is given only has
     # to bind: the plan is the answer.
-    {sql, params} = page_relationship_statement(nil, after_key, nil, 0)
+    {sql, params} = page_relationship_statement(nil, after_key, nil)
 
     result =
       case Sqlite3.prepare(db, "EXPLAIN QUERY PLAN " <> sql) do
@@ -854,12 +851,12 @@ defmodule EbbServer.Storage.SQLite do
     end
   end
 
-  defp page_relationship_statement(group_id, nil, window_end, limit) do
-    {@list_page_relationship_ids_sql, [group_id, window_end, limit]}
+  defp page_relationship_statement(group_id, nil, window_end) do
+    {@list_page_relationship_ids_sql, [group_id, window_end]}
   end
 
-  defp page_relationship_statement(group_id, after_key, window_end, limit) do
-    {@list_page_relationship_ids_after_sql, [group_id, after_key, window_end, limit]}
+  defp page_relationship_statement(group_id, after_key, window_end) do
+    {@list_page_relationship_ids_after_sql, [group_id, after_key, window_end]}
   end
 
   defp collect_pairs(state, sql, params) do

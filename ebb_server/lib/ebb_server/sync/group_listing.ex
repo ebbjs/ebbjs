@@ -25,6 +25,12 @@ defmodule EbbServer.Sync.GroupListing do
   source appears on, scoped by that source: it is shipped only when its
   source is one of the page's live membership rows.
 
+  A membership row deleted between the page's two reads is the one window
+  this leaves: the source still ships, its rows do not, because the page's
+  window is a membership keyset and a tombstoned row is not in it. That
+  delete is above `W`, so the tail delivers it and the group stops naming the
+  source; a group that still names it seeds those rows from its own listing.
+
   ## Materialization
 
   The SQLite read model is materialized lazily and `DirtyTracker` marks are
@@ -293,27 +299,23 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  # A page's relationship rows come from its own membership window, not from a
-  # wider scan: `length(taken)`, not `limit + 1`, because the extra row only
-  # probes for a next page and its rows belong to that page.
+  # A page's relationship rows come from its own membership window, which ends
+  # at the last membership row the page read — `limit + 1` only probes for a
+  # next page, and that row's rows belong to it.
   #
-  # The window is pinned at both ends by the membership rows already read. A
-  # membership row committed between the two reads would otherwise enter the
-  # second statement's window and push the page's last source out of it, so
-  # that source would ship with no relationship rows and — being below the
-  # watermark — would never be repaired by the tail.
+  # The window is pinned by the membership rows already read rather than
+  # re-derived from a count. Membership row ids are opaque, so a row committed
+  # between the two reads can land inside the window; re-cutting the window to
+  # a count would then drop the highest id it holds, which is the page's own
+  # last source, and that source's rows would sit below the watermark where the
+  # tail never repairs them. A source whose membership row this page did not
+  # ship is discarded instead, in `live_relationship_rows/4`.
   defp page_relationship_rows(_group_id, _after_id, [], _by_id, _opts), do: {:ok, []}
 
   defp page_relationship_rows(group_id, after_id, taken, by_id, opts) do
     {window_end, _entity_id} = List.last(taken)
 
-    case SQLite.list_page_relationship_ids(
-           group_id,
-           after_id,
-           window_end,
-           length(taken),
-           sqlite_name(opts)
-         ) do
+    case SQLite.list_page_relationship_ids(group_id, after_id, window_end, sqlite_name(opts)) do
       {:ok, ids} -> live_relationship_rows(ids, taken, by_id, opts)
       {:error, _reason} -> {:error, :materialization_failed}
     end
