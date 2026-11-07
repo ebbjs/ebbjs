@@ -127,6 +127,12 @@ export {
 } from "./sync/query-cache";
 
 export type { ReplicaSignal } from "./sync/replica-signal";
+export {
+  DEFAULT_HISTORY_LIMIT,
+  type HistoryEvent,
+  type HistoryOptions,
+  type ReplayOptions,
+} from "./sync/history";
 export type { EntityDiff, ManyPointerValue } from "@ebbjs/write";
 export { isUnset, unset, type Unset } from "@ebbjs/core";
 export type { ReplicaStats } from "@ebbjs/storage/replica";

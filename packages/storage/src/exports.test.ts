@@ -36,6 +36,7 @@ describe("@ebbjs/storage subpaths", () => {
       "applyUpdate",
       "contentChanged",
       "createReplica",
+      "foldEntityAction",
       "holdAll",
     ]);
   });

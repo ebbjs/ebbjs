@@ -63,6 +63,13 @@ import {
   type Conflicts,
 } from "./conflicts";
 import { subjectIds } from "./action-subjects";
+import {
+  readEntityHistory,
+  replayEntity,
+  type HistoryEvent,
+  type HistoryOptions,
+  type ReplayOptions,
+} from "./history";
 import type { ReadonlyObservable } from "./observable";
 import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
@@ -1259,6 +1266,36 @@ export class SyncClient<
    */
   async readLocalEntity(id: string): Promise<Entity | null> {
     return this.storage.entities.get(id);
+  }
+
+  /**
+   * The entity's history from the local Action log, newest first.
+   *
+   * One event per Action that touched the entity, each carrying the actor,
+   * HLC, GSN, the entity's Update methods, and the field positions the
+   * Action moved in the conflict view's diff vocabulary. Newest first;
+   * `limit` / `beforeGsn` page backwards through it.
+   *
+   * A just-saved local edit is absent until its echo lands: local Actions
+   * are applied optimistically but are not appended to the log until the
+   * server returns them with a GSN. The read is bounded by whatever the
+   * local log holds, so a compacted log starts at its oldest surviving
+   * Action.
+   */
+  async history(options: HistoryOptions): Promise<readonly HistoryEvent[]> {
+    return readEntityHistory(this.storage.actions, options);
+  }
+
+  /**
+   * The entity's materialized row as of one Action, folding the local log
+   * through and including it. `null` when the log holds no such Action for
+   * the entity — a compacted id, or one that belongs to another entity.
+   *
+   * A tombstoned row keeps its fields and its `deleted_hlc`; this is the
+   * row the replica materialized, which is what a restore UI starts from.
+   */
+  async replay(options: ReplayOptions): Promise<Entity | null> {
+    return replayEntity(this.storage.actions, options);
   }
 
   /**
