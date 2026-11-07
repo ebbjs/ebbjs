@@ -1,11 +1,19 @@
 /**
- * Tests for `createEbbHooks`: `useClient` and `useQuery` bound to one client
- * type, so a component needs no generic and no callback annotation.
+ * Tests for `createEbbHooks`: `useClient`, `useQuery`, and the sync-state
+ * hooks bound to one client type, so a component needs no generic and no
+ * callback annotation.
  */
 
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { createClient, defineEntity, defineSchema, e, type NamespacedClient } from "@ebbjs/client";
+import {
+  createClient,
+  defineEntity,
+  defineSchema,
+  e,
+  type NamespacedClient,
+  type SyncClient,
+} from "@ebbjs/client";
 import { EbbProvider, createEbbHooks } from "../index";
 
 const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
@@ -15,11 +23,46 @@ const schema = defineSchema({ entities: { todo }, version: 1 });
 type Schema = typeof schema;
 type Client = NamespacedClient<Schema>;
 
+type WireAction = Parameters<SyncClient["outbox"]["enqueue"]>[0];
+
 const makeClient = (): Client =>
   createClient({ serverUrl: "http://localhost:4000", actorId: "alice", schema });
 
 /** Bound once, at module scope — the pattern the hook factory documents. */
-const { useClient: useEbb, useQuery } = createEbbHooks<Client>();
+const {
+  useClient: useEbb,
+  useQuery,
+  useOutbox,
+  useConflicts,
+  useEbbStatus,
+} = createEbbHooks<Client>();
+
+/** One `todo_1` title write at an explicit HLC, so LWW is pinnable. */
+const writeTitle = (args: {
+  id: string;
+  actorId: string;
+  value: string;
+  hlc: string;
+  gsn: number;
+}): WireAction => ({
+  id: args.id,
+  actor_id: args.actorId,
+  hlc: args.hlc,
+  gsn: args.gsn,
+  updates: [
+    {
+      id: `u_${args.id}`,
+      subject_id: "todo_1",
+      subject_type: "todo",
+      method: "put",
+      data: {
+        fields: {
+          title: { value: args.value, update_id: `u_${args.id}`, hlc: args.hlc },
+        },
+      },
+    },
+  ],
+});
 
 let seedPosition = 0;
 
@@ -73,6 +116,20 @@ function TodoList() {
   );
 }
 
+function SyncStateProbe() {
+  // No generic, no client: each bound hook reads the provider's client.
+  const outbox = useOutbox();
+  const conflicts = useConflicts();
+  const status = useEbbStatus();
+  return (
+    <div>
+      <span data-testid="pending">{outbox.pending}</span>
+      <span data-testid="conflicts">{conflicts.count}</span>
+      <span data-testid="connection">{status.connection}</span>
+    </div>
+  );
+}
+
 describe("createEbbHooks", () => {
   it("hands the component the provider's client without a generic", async () => {
     const client = makeClient();
@@ -98,6 +155,34 @@ describe("createEbbHooks", () => {
 
     expect(screen.getByTestId("titles").textContent).toBe("Ship it");
     expect(screen.getByTestId("status").textContent).toBe("current");
+  });
+
+  it("binds the sync-state hooks to the same observables", async () => {
+    const client = makeClient();
+    render(
+      <EbbProvider client={client}>
+        <SyncStateProbe />
+      </EbbProvider>,
+    );
+    expect(screen.getByTestId("pending").textContent).toBe("0");
+    expect(screen.getByTestId("conflicts").textContent).toBe("0");
+    expect(screen.getByTestId("connection").textContent).toBe("connecting");
+
+    await act(async () => {
+      await client.outbox.enqueue(
+        writeTitle({ id: "act_local", actorId: "alice", value: "mine", hlc: "10", gsn: 0 }),
+      );
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("1");
+
+    const peer = writeTitle({ id: "act_peer", actorId: "bob", value: "theirs", hlc: "20", gsn: 9 });
+    await act(async () => {
+      await client.outbox.detectConflicts([peer], "cu_1");
+    });
+    expect(screen.getByTestId("conflicts").textContent).toBe("1");
+
+    act(() => client.setState("live"));
+    expect(screen.getByTestId("connection").textContent).toBe("live");
   });
 
   it("exposes a read-only root, not the client", () => {
