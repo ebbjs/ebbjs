@@ -33,25 +33,6 @@
  * seeds the whole group again but leaves the group's cursor where it was, so
  * the tail still covers the unknown window instead of assuming it is done.
  *
- * ## Listing versions
- *
- * A seed writes the version of the listing shape it filled the base from
- * into the group's resume record, and keeps it when the seed completes. A
- * base seeded before this existed carries no version and counts as version
- * 0.
- *
- * A base at an older version has to be **reset, not re-listed**. The seed is
- * put-only: re-listing at a newer W cannot remove a row the server deleted
- * between the two watermarks, and the cursor would then jump past that
- * delete (#744). Tearing the base down is the caller's job, because only the
- * caller owns the rest of the local state — this module must never overlay a
- * page on a stale base and must never claim one is current.
- *
- * Only a base a seed actually built can be stale. A record that holds a
- * cursor but neither a marker nor the folded position a completed seed
- * writes was filled from the log alone — the log is not the path that
- * omitted rows, so it has nothing to redo.
- *
  * ## Server support
  *
  * A server that does not serve the endpoint (404 / 501) or answers with
@@ -72,30 +53,6 @@ import type { GroupListingResponse } from "./types";
  * a peer's write.
  */
 export const LISTING_SEED_ACTOR_ID = "a_seed_listing";
-
-/**
- * Version of the row shape a listing seed fills a base from. Version 1 ships
- * the live relationship rows of each page's sources (#744); a base below it
- * is missing relationship rows the listing never claimed to carry before.
- *
- * A resume record without a version is version 0, so the first bootstrap
- * after this version ships resets a pre-existing base once and re-seeds it.
- */
-export const GROUP_LISTING_VERSION = 1;
-
-/**
- * Whether this record's base was seeded by an older listing version, and so
- * has to be reset rather than re-listed or added to.
- *
- * Either field a seed leaves behind identifies the base as listing-built: the
- * marker of an interrupted attempt (which may already hold rows of the older
- * shape) or the folded position of a completed one. A cursor on its own does
- * not — every base gets one from the tail — and a base the log built never
- * missed a row, so it is not stale however old it is.
- */
-export const isStaleListingBase = (record: CursorRecord | null): boolean =>
-  (record?.seed !== undefined || record?.through !== undefined) &&
-  (record.listingVersion ?? 0) < GROUP_LISTING_VERSION;
 
 /**
  * Whether `groupId` needs a listing seed: nothing has completed a view for
@@ -169,12 +126,6 @@ export interface GroupListing {
    * Bring `groupId`'s view complete, seeding from the listing when it has no
    * cursor or a seed is in flight. Idempotent: a group whose view is already
    * complete is left alone.
-   *
-   * Precondition: a base at an older listing version (`isStaleListingBase`)
-   * must be reset by the caller first. This module cannot do it — a put-only
-   * seed over a stale base leaves rows the server has since deleted — so a
-   * stale base is left untouched and reported as seeded: false, never
-   * overlaid and never claimed current.
    */
   bootstrap(groupId: string): Promise<GroupListingResult>;
 }
@@ -255,19 +206,6 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
 
   const seed = async (groupId: string): Promise<GroupListingResult> => {
     const record = await storage.cursors.getRecord(groupId);
-    // A base at an older listing version is the caller's to reset: a put-only
-    // page cannot remove a row the server deleted since that base was built,
-    // so this module must not overlay it and must not claim it is current.
-    // Returning it untouched is the honest answer; the caller that skipped
-    // the reset sees a base it was told to replace.
-    if (isStaleListingBase(record)) {
-      return {
-        seeded: false,
-        cursor: record?.cursor ?? null,
-        supported: true,
-        through: record?.through ?? 0,
-      };
-    }
     if (!needsGroupListing(record) && record?.cursor !== undefined) {
       return {
         seeded: false,
@@ -290,12 +228,9 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
     if (!resuming) {
       // Mark the attempt before its first row lands: a crash then leaves
       // this marker, which is what tells the redo it cannot trust a new W.
-      // The version rides with it so a base seeded by an interrupted attempt
-      // is not mistaken for one built by an older listing shape.
       await storage.cursors.setRecord(groupId, {
         cursor: heldCursor,
         through: heldThrough,
-        listingVersion: GROUP_LISTING_VERSION,
         seed: { group_id: groupId },
       });
     }
@@ -341,7 +276,6 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
       await storage.cursors.setRecord(groupId, {
         cursor: heldCursor,
         through: Math.max(heldThrough ?? 0, through),
-        listingVersion: GROUP_LISTING_VERSION,
         seed: { group_id: groupId, w: watermark, token: next },
       });
       if (next === undefined) break;
@@ -351,12 +285,8 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
     const cursor = unpinnedRedo ? (heldCursor ?? 0) : (watermark ?? heldCursor ?? 0);
     const reached = Math.max(heldThrough ?? 0, through);
     // One record write clears the marker and publishes the cursor: the
-    // coalesced form of "write the cursor, then drop the marker". The version
-    // stays: it is what stops the next bootstrap from resetting this base.
-    const completed: { cursor: number; through?: number; listingVersion: number } = {
-      cursor,
-      listingVersion: GROUP_LISTING_VERSION,
-    };
+    // coalesced form of "write the cursor, then drop the marker".
+    const completed: { cursor: number; through?: number } = { cursor };
     if (reached > 0) completed.through = reached;
     await storage.cursors.setRecord(groupId, completed);
     return { seeded, cursor, supported: true, through: reached };

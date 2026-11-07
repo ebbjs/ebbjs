@@ -10,13 +10,9 @@ export const compactCursorRecord = (record: CursorRecord): CursorRecord => {
   if (record.cursor !== undefined) compact.cursor = record.cursor;
   if (record.seed !== undefined) compact.seed = record.seed;
   if (record.through !== undefined) compact.through = record.through;
-  if (record.listingVersion !== undefined) compact.listingVersion = record.listingVersion;
   return compact;
 };
 
 /** Whether a record holds nothing and so should not be stored at all. */
 export const isEmptyCursorRecord = (record: CursorRecord): boolean =>
-  record.cursor === undefined &&
-  record.seed === undefined &&
-  record.through === undefined &&
-  record.listingVersion === undefined;
+  record.cursor === undefined && record.seed === undefined && record.through === undefined;

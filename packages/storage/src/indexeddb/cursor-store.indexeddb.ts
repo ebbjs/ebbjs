@@ -7,13 +7,13 @@ import type { EbbDBSchema } from "./schema";
  * IndexedDB-backed CursorStore.
  *
  * Each group is one row in the `cursors` store: its cursor, its in-flight
- * seed marker, how far a completed seed folded, and the listing version that
- * base was seeded at. Storing `0` is intentionally allowed: get returns 0,
- * not null, for any group whose cursor has been set, even if the value is 0.
+ * seed marker, and how far a completed seed folded. Storing `0` is
+ * intentionally allowed: get returns 0, not null, for any group whose cursor
+ * has been set, even if the value is 0.
  *
- * The row shape only gained optional fields (`seed`, `through`, the listing
- * version), so a row written by an earlier version reads back as a cursor
- * with no seed in flight and the schema version did not need to move.
+ * The row shape only gained optional fields, so a row written by an earlier
+ * version reads back as a cursor with no seed in flight and the schema
+ * version did not need to move.
  */
 const toRecord = (row: EbbDBSchema["cursors"]["value"] | undefined): CursorRecord | null =>
   row === undefined ? null : compactCursorRecord(row);

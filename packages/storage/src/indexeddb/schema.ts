@@ -114,21 +114,9 @@ export interface EbbDBSchema extends DBSchema {
     key: string;
     /**
      * One resume record per group: its cursor, any in-flight seed marker,
-     * how far a completed seed's base folded, and the listing version that
-     * base was seeded at (#744).
-     *
-     * `listingVersion` is optional, so a row written by an earlier release
-     * reads back as a version-0 base and the store's shape is compatible in
-     * both directions: no object store changes and no persisted field
-     * changes meaning, so `EBB_SCHEMA_VERSION` does not move for it.
+     * and how far a completed seed's base folded.
      */
-    value: {
-      groupId: string;
-      cursor?: number;
-      seed?: SeedMarker;
-      through?: number;
-      listingVersion?: number;
-    };
+    value: { groupId: string; cursor?: number; seed?: SeedMarker; through?: number };
   };
   /**
    * Durable buffer of pending local Actions, keyed by `action.id`.

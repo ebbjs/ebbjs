@@ -5,18 +5,15 @@
  * while a group listing seed is in flight, the marker that pins the seed's
  * watermark so a crash redoes the same listing instead of a newer one
  * (#476). Cursor and marker live in one record because they are one resume
- * concept: the bootstrap trigger is a single read. The listing version the
- * base was seeded at lives there too, so a base built by an older seed
- * shape is recognisable from the same read (#744).
+ * concept: the bootstrap trigger is a single read.
  *
  * ## Methods
  * - `get(groupId)` — the group's cursor (GSN), or null if none
  * - `set(groupId, cursor)` — writes the cursor, keeping any seed marker
  * - `getRecord(groupId)` — the whole resume record (`{cursor?, seed?}`)
  * - `setRecord(groupId, record)` — replaces the record; omitting `seed`
- *   clears the marker, which is how the final seed page commits, `through`
- *   records how far the seed's base folded, and `listingVersion` which
- *   listing shape it was filled from
+ *   clears the marker, which is how the final seed page commits, and
+ *   `through` records how far the seed's base folded
  * - `records()` — every group's record, for the handshake's cursor map
  * - `clear()` — drops every group's resume state (a full local sync reset)
  */
@@ -45,18 +42,6 @@ export interface CursorRecord {
   readonly cursor?: number;
   /** Present while a listing seed is in flight. */
   readonly seed?: SeedMarker;
-  /**
-   * Version of the listing that seeded this base (#744); absent counts as
-   * version 0, i.e. seeded before the listing carried relationship rows.
-   *
-   * It lives on the record rather than on the seed marker because it outlives
-   * the marker: a completed seed clears `seed`, and the version is what tells
-   * the next bootstrap that this base is current — the one-time reset of a
-   * pre-version base depends on it. Optional, so a stored row from an earlier
-   * release reads back as a version-0 base and the IndexedDB schema version
-   * does not move for it.
-   */
-  readonly listingVersion?: number;
   /**
    * Highest entity log position the group's seeded base folded. A row's
    * `last_gsn` at or below it is the server's own state, so a re-delivered

@@ -61,16 +61,6 @@ export const defineCursorStoreTests = ({ name, factory }: CursorStoreTestSuiteOp
 
         expect(await store.getRecord("group_1")).toEqual({ cursor: 7, seed });
       });
-
-      it("keeps the listing version that seeded the base", async () => {
-        const store = await factory();
-        await store.setRecord("group_1", { cursor: 7, listingVersion: 1 });
-        await store.set("group_1", 8);
-
-        // The version survives a plain cursor write: it describes the base,
-        // not the write that advanced the cursor.
-        expect(await store.getRecord("group_1")).toEqual({ cursor: 8, listingVersion: 1 });
-      });
     });
 
     describe("getRecord / setRecord", () => {
@@ -103,24 +93,6 @@ export const defineCursorStoreTests = ({ name, factory }: CursorStoreTestSuiteOp
 
         expect(await store.getRecord("group_1")).toBe(null);
         expect((await store.records()).has("group_1")).toBe(false);
-      });
-
-      it("round-trips the listing version without a seed marker", async () => {
-        const store = await factory();
-        await store.setRecord("group_1", { cursor: 40, through: 9, listingVersion: 2 });
-
-        // The version outlives the marker: it is what keeps an already
-        // seeded base from being reset again on the next bootstrap.
-        expect(await store.getRecord("group_1")).toEqual({
-          cursor: 40,
-          through: 9,
-          listingVersion: 2,
-        });
-        expect((await store.records()).get("group_1")).toEqual({
-          cursor: 40,
-          through: 9,
-          listingVersion: 2,
-        });
       });
 
       it("keeps groups independent", async () => {
