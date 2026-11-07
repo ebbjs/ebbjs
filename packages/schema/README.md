@@ -43,6 +43,80 @@ because any row can predate the declaration. A `null` filter value means "no
 live value" (absent or cleared) — see the
 [absence and defaults](https://ebbjs.com/docs/absence-and-defaults) page.
 
+## Fields
+
+`e` ships the builders below. A field's type flows to `EntityValues`, local
+write validation, and `where` / `orderBy`.
+
+| Builder                 | Reads as                      | Notes                                           |
+| ----------------------- | ----------------------------- | ----------------------------------------------- |
+| `e.string()`            | `string`                      |                                                 |
+| `e.number()`            | `number`                      |                                                 |
+| `e.integer()`           | `number`                      |                                                 |
+| `e.boolean()`           | `boolean`                     |                                                 |
+| `e.enum(values)`        | the members' literal union    | closed set; a write outside it fails validation |
+| `e.array(value)`        | `Static<typeof value>[]`      |                                                 |
+| `e.map(value)`          | `Record<string, Static<...>>` | entries merge key by key, not the whole field   |
+| `e.collaborativeText()` | none — derived body           | row accessor is `Promise<TextDocument \| null>` |
+
+### Enums
+
+`e.enum([...])` declares a closed set of values:
+
+```ts
+const wall = defineEntity("wall", {
+  kind: e.enum(["exterior", "interior", "railing"]).default("interior"),
+});
+```
+
+`EntityValues<typeof wall>["kind"]` is `"exterior" | "interior" | "railing"`,
+so a `switch` over it can be exhaustive. A write carrying a value outside the
+set fails local validation the same way a wrong type does, and `.default()`
+takes a member.
+
+Strings are the app case. Numbers and booleans are accepted and validated as
+literals; `orderBy` compares numbers numerically, everything else by locale,
+and sorts an absent value last. Ordering follows the stored value, not the
+order the members were declared in.
+
+`where("kind", "interior")` narrows to the members on the field overload. The
+open relationship-target overload means a non-member string still compiles —
+the registry may be about to read it as a pointer — so the set is enforced on
+write, not on filter: a filter only compares against stored values, and cannot
+prove none outside the set was ever written.
+
+## Anything else is TypeBox
+
+`defineEntity` accepts any TypeBox schema as a field, so a shape `e` does not
+cover is the schema itself:
+
+```ts
+import { Type } from "@sinclair/typebox";
+
+const wall = defineEntity("wall", {
+  kind: Type.Union([Type.Literal("exterior"), Type.Literal("interior"), Type.Literal("railing")]),
+});
+```
+
+That is also the way to give a map a nested-object value, which `e.map` takes
+as its value schema:
+
+```ts
+const plan = defineEntity("plan", {
+  openings: e.map(
+    Type.Object({
+      kind: Type.Union([Type.Literal("door"), Type.Literal("window")]),
+      width: Type.Number(),
+    }),
+  ),
+});
+```
+
+The field rules still apply: a schema may not admit `null` (absence is the
+only spelling), and a map field's entries merge key by key. A raw schema can
+carry its own JSON Schema annotations, including `default`, the same way the
+builders do.
+
 ## Module map
 
 | Module                    | What it ships                                                          |

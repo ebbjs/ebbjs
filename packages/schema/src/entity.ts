@@ -26,6 +26,8 @@ import type {
   TNumber,
   TInteger,
   TBoolean,
+  TLiteral,
+  TUnion,
   Static,
 } from "@sinclair/typebox/type";
 
@@ -102,6 +104,18 @@ export interface ArrayField<V extends TSchema> extends TArray<V> {
 /** A map field builder: `.default()` takes the map's projected value. */
 export interface MapField<V extends TSchema> extends MapSchema<V> {
   default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
+}
+
+/** A value a closed-set field admits: the primitives TypeBox can make a literal of. */
+export type LiteralValue = string | number | boolean;
+
+/**
+ * A closed-set field builder. The field reads as the union of its
+ * members, so `.default()` takes one of them and a `switch` over the
+ * value can be exhaustive.
+ */
+export interface EnumField<V extends LiteralValue = LiteralValue> extends TUnion<TLiteral<V>[]> {
+  default(value: V): DefaultedSchema<TUnion<TLiteral<V>[]>, V>;
 }
 
 /**
@@ -223,6 +237,19 @@ export const e = {
   number: (): NumberField => withFieldChain(Type.Number()) as NumberField,
   integer: (): IntegerField => withFieldChain(Type.Integer()) as IntegerField,
   boolean: (): BooleanField => withFieldChain(Type.Boolean()) as BooleanField,
+  /**
+   * A closed-set field: the value must be one of `values`. Reads as the
+   * members' literal union, so a typo or a stale client's value fails
+   * local validation like a wrong type does. Strings are the app case;
+   * numbers are stored as numbers and ordered numerically.
+   */
+  enum: <const V extends readonly LiteralValue[]>(values: V): EnumField<V[number]> => {
+    if (values.length === 0) {
+      throw new Error("e.enum() requires at least one value: a closed set cannot be empty.");
+    }
+    const union = Type.Union(values.map((value) => Type.Literal(value)));
+    return withFieldChain(union) as EnumField<V[number]>;
+  },
   /** A list field: an array of `value`. On the wire it is an ordinary leaf. */
   array: <V extends TSchema>(value: V): ArrayField<V> =>
     withFieldChain(Type.Array(value)) as ArrayField<V>,
