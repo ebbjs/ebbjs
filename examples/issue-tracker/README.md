@@ -29,11 +29,18 @@ Then open:
 
 Switching the actor in the header re-bootstraps the client under the new identity.
 
+That picker is the `bypass` auth path. When the server is booted with
+`EBB_AUTH_MODE=tailscale`, the gateway injects the Tailscale login, the app
+resolves it with `resolveIdentity`, and the picker is replaced by
+`signed in as …`; the `?actor=` parameter is ignored. See
+[Actor identity](#actor-identity).
+
 The collaborative-text demo still runs with `pnpm dev:collab`.
 
 ## How it works
 
-1. `?actor=` selects the bypass-auth actor id (default `alice`).
+1. The actor comes from the server in tailscale mode, or from `?actor=`
+   (default `alice`) under bypass auth. The picker only exists for bypass.
 2. On load, `client.seed()` submits two bootstrap Actions through the public write path:
    - the actor's **personal workspace** (`grp_<actorId>`), their own `groupMember`, a `workspace`, a `profile`, and one `entityGroup` per row — attributed to the actor, so the server's group-bootstrap exemption authorizes it;
    - the **shared workspace** (`grp_shared`) with a sample issue, attributed to the dedicated service actor `demo-seeder` (the invite/service-account pattern from [#126](https://github.com/ebbjs/ebbjs/issues/126)).
@@ -42,6 +49,24 @@ The collaborative-text demo still runs with `pnpm dev:collab`.
 5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, membership panel, issue list, and issue detail. Joining or leaving the shared workspace re-runs `handshake()` and replaces the subscription, so the group set stays current without a reload.
 
 Every seed id is derived from the actor id (or a fixed literal for the shared fixtures), so reloading re-`put`s the same rows: the seed is idempotent and its permissions cover the re-`put` path (a committed group is authorized by `group.create` in that group, not by the bootstrap exemption).
+
+## Actor identity
+
+The demo is the reference app for `resolveIdentity` (issue #731). On load it
+asks `GET /sync/identity` who the server thinks it is:
+
+- **tailscale / external** — the server reports the actor, so the app hides the
+  actor picker and shows `signed in as <display name>`. The id is cached per
+  server URL; a later load that cannot reach the server starts from that cache
+  and syncs when it reconnects.
+- **bypass** — the headerless identity read is rejected (401), so the app keeps
+  the picker and the `?actor=` URL parameter exactly as before.
+
+A Tailscale login change is a new actor. Reloading re-resolves and bootstraps
+under the new id (per-actor IndexedDB keeps the two logins apart). A long-lived
+session that writes after the login changed gets `actor_mismatch` from the
+server; the write surface turns that into "reload to sign in with the new
+identity" instead of retrying a write that cannot succeed.
 
 ## Issue CRUD
 

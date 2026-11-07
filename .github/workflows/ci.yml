@@ -487,19 +487,65 @@ jobs:
         # asserts the typed namespaces against the same ebb_server; the
         # test short-circuits when the server is unreachable.
         run: pnpm --filter issue-tracker test:integration
-      - name: Stop ebb_server
-        if: always()
+      - name: Stop bypass ebb_server
+        # The release names its Erlang node after the host, so two releases
+        # cannot run side by side. Swap to the tailscale-mode server now.
         run: |
           if [ -f /tmp/ebb_server.pid ]; then
             pid=$(cat /tmp/ebb_server.pid)
-            # Kill the BEAM process and any children.
             pkill -P "$pid" 2>/dev/null || true
             kill "$pid" 2>/dev/null || true
-            # Give it a moment, then force-kill anything still bound to :4000.
-            sleep 2
-            pkill -f 'packages/testing/dist/ebb_server/bin/ebb_server' 2>/dev/null || true
             rm -f /tmp/ebb_server.pid
           fi
+          sleep 2
+          pkill -f 'packages/testing/dist/ebb_server' 2>/dev/null || true
+      - name: Start tailscale-mode ebb_server
+        # The identity suite needs a server whose actor comes from the
+        # gateway headers, which bypass mode never provides.
+        env:
+          EBB_AUTH_MODE: tailscale
+          # No tailnet in CI: a sidecar/gateway would inject the headers.
+          EBB_TAILSCALE_NODE: external
+          EBB_PORT: 4001
+          EBB_DATA_DIR: /tmp/ebb-tailscale-integration-data
+          EBB_FUNCTIONS_ENABLED: "false"
+        run: |
+          mkdir -p "$EBB_DATA_DIR"
+          rm -rf "$EBB_DATA_DIR"/*
+          nohup ./packages/testing/dist/ebb_server/bin/ebb_server start >/tmp/ebb_tailscale_server.log 2>&1 &
+          echo $! > /tmp/ebb_tailscale_server.pid
+          # Tailscale mode binds loopback; the identity read needs the trusted header.
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://127.0.0.1:4001/sync/identity \
+              -H 'tailscale-user-login: ci_healthcheck' || true)
+            if [ "$code" = "200" ]; then
+              echo "tailscale-mode ebb_server ready (HTTP $code) after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "tailscale-mode ebb_server did not become ready within 60s"
+          echo '--- last 100 lines of ebb_tailscale_server.log ---'
+          tail -n 100 /tmp/ebb_tailscale_server.log
+          exit 1
+      - name: Run identity integration tests
+        env:
+          EBB_TAILSCALE_TEST_URL: http://127.0.0.1:4001
+        run: >-
+          pnpm --filter @ebbjs/client exec vitest --run
+          src/__tests__/integration/identity.test.ts
+      - name: Stop tailscale-mode ebb_server
+        if: always()
+        run: |
+          if [ -f /tmp/ebb_tailscale_server.pid ]; then
+            pid=$(cat /tmp/ebb_tailscale_server.pid)
+            pkill -P "$pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
+            rm -f /tmp/ebb_tailscale_server.pid
+          fi
+          sleep 2
+          pkill -f 'packages/testing/dist/ebb_server/bin/ebb_server' 2>/dev/null || true
 
   playwright-e2e:
     name: Playwright e2e (collaborative-text-demo)

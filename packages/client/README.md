@@ -24,6 +24,38 @@ engine (typed `query()` reads with one-level `with` joins and cached reactive
 results). The React bindings live in `@ebbjs/react`; server functions are
 still being designed.
 
+## Resolving the actor
+
+`createClient` still takes the actor id up front. Ask the server which actor
+it authenticated, then build the client:
+
+```typescript
+import { createClient, resolveIdentity } from "@ebbjs/client";
+
+const identity = await resolveIdentity({ serverUrl });
+const client = createClient({ serverUrl, actorId: identity.actorId });
+```
+
+The server is authoritative, so the helper sends no `x-ebb-actor-id`. That
+matters for tailscale deployments: the browser cannot know its tailnet login in
+advance, but the server derives it per request. `identity.provider` (`"bypass"`,
+`"external"`, `"tailscale"`) says which mode answered; `displayName` and
+`providerId` carry what that mode knows. Keep the actor picker for `bypass`;
+use the resolved id as-is otherwise. The long-lived client still stamps
+`x-ebb-actor-id` on its own requests for bypass compatibility; in tailscale
+mode the server ignores it and authenticates from the gateway's headers.
+
+Resolution is the one online step. A first run on a new device must reach the
+server to learn its actor — after that, cache `identity.actorId` under the
+app's storage key and start offline with it.
+
+A Tailscale login change is a new actor: a client still holding the old id
+writes with it and gets `actor_mismatch` from the server. Re-resolve, build a
+new client for the new `actorId`, and use that actor's storage — retrying with
+the stale id cannot succeed. `resolveIdentity` throws
+`IdentityResolutionError` with a `kind` (`network`, `unauthorized`,
+`invalid-response`, `http`) that says which of these happened.
+
 ## Reads and writes
 
 `client.<entity>` is the schema-bound read API; a schema-bound client also
@@ -349,13 +381,22 @@ Three scripts:
    Override the server URL with `EBB_TEST_URL=http://localhost:4001` for
    a non-default port.
 
+   The identity suite needs a server in tailscale mode. Boot one with
+   `EBB_AUTH_MODE=tailscale` (it binds loopback), then run the same command;
+   `EBB_TAILSCALE_TEST_URL` overrides its address. A bypass or external server
+   makes those tests skip.
+
 ### Integration test layout
 
-`src/__tests__/integration/` contains two files:
+`src/__tests__/integration/` contains three files:
 
 - `ebb-server.test.ts` — self-seeding. Creates a unique group + members
   per run and exercises the full client ↔ server round-trip (handshake,
   catchUp, write, presence, permission rejection).
+- `identity.test.ts` — requires `EBB_AUTH_MODE=tailscale`. Wraps `fetch` to
+  inject the gateway's identity headers, then resolves the actor, handshakes,
+  writes, and observes the write over the live stream. It also pins the stale
+  actor's `actor_mismatch`. Skips cleanly on a bypass or external server.
 - `presence.test.ts` — requires a pre-seeded `grp_demo` group with a
   `demo-seeder` member and the demo's document (`doc_grp_demo`), none of
   which this package bootstraps. The test probes for the group at load
@@ -365,5 +406,6 @@ Three scripts:
 
 The CI integration job (`elixir-integration-tests` in
 `.github/workflows/ci.yml`) boots the cached release and runs
-`test:integration`. `presence.test.ts` skips there because the demo
+`test:integration`, then boots a second release in `tailscale` mode on port
+4001 for `identity.test.ts`. `presence.test.ts` skips there because the demo
 fixture is not seeded.
