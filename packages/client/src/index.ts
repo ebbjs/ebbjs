@@ -127,7 +127,7 @@ export {
 } from "./sync/query-cache";
 
 export type { ReplicaSignal } from "./sync/replica-signal";
-export type { ManyPointerValue } from "@ebbjs/write";
+export type { EntityDiff, ManyPointerValue } from "@ebbjs/write";
 export { isUnset, unset, type Unset } from "@ebbjs/core";
 export type { ReplicaStats } from "@ebbjs/storage/replica";
 
@@ -215,7 +215,6 @@ export {
   type Conflict,
   type ConflictSlotView,
   type ConflictSubjectStateView,
-  type EntityDiff,
   type ConflictResolution,
   type ConflictChangeListener,
   type ConflictSnapshot,
