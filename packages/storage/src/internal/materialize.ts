@@ -1,4 +1,4 @@
-import type { Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
+import type { Action, Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
 import { latestHlc, mergeFieldValue } from "@ebbjs/core";
 
 import { adoptMapFields, mergeResidentFieldValue, toWireMapFields } from "./map-field";
@@ -146,4 +146,41 @@ export const applyUpdate = (
         last_gsn: Math.max(entity.last_gsn, gsn),
       };
   }
+};
+
+/**
+ * Fold one Action's Updates for `entityId` into a row: every Update addressed
+ * to that subject, in `updates` order, under the Action's `gsn` and `hlc`.
+ * An Update for another subject belongs to a different row and is skipped.
+ *
+ * This is the replay step every EntityStore adapter runs for the row it is
+ * materializing.
+ */
+export const foldEntityAction = (
+  entity: Entity | null,
+  entityId: string,
+  action: Action,
+): Entity | null => {
+  let folded = entity;
+
+  for (const update of action.updates) {
+    if (update.subject_id !== entityId) continue;
+    folded = applyUpdate(folded, update, action.gsn, action.hlc);
+  }
+
+  return folded;
+};
+
+/**
+ * Fold a whole Action sequence for one subject, in the order given. Both
+ * entity stores replay a `getForEntity` read through this.
+ */
+export const foldEntityActions = (actions: readonly Action[], entityId: string): Entity | null => {
+  let folded: Entity | null = null;
+
+  for (const action of actions) {
+    folded = foldEntityAction(folded, entityId, action);
+  }
+
+  return folded;
 };
