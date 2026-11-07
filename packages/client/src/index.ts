@@ -26,6 +26,15 @@ export {
 } from "./sync/client";
 
 export {
+  IdentityResolutionError,
+  resolveIdentity,
+  type IdentityProvider,
+  type IdentityResolutionErrorKind,
+  type ResolveIdentityOptions,
+  type ResolvedIdentity,
+} from "./identity";
+
+export {
   functionContract,
   FunctionCallError,
   type AnyFunctionContract,

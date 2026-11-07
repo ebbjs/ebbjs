@@ -24,6 +24,36 @@ engine (typed `query()` reads with one-level `with` joins and cached reactive
 results). The React bindings live in `@ebbjs/react`; server functions are
 still being designed.
 
+## Resolving the actor
+
+`createClient` still takes the actor id up front. Ask the server which actor
+it authenticated, then build the client:
+
+```typescript
+import { createClient, resolveIdentity } from "@ebbjs/client";
+
+const identity = await resolveIdentity({ serverUrl });
+const client = createClient({ serverUrl, actorId: identity.actorId });
+```
+
+The server is authoritative, so no `x-ebb-actor-id` is sent. That matters for
+tailscale deployments: the browser cannot know its tailnet login in advance,
+but the server derives it per request. `identity.provider` (`"bypass"`,
+`"external"`, `"tailscale"`) says which mode answered; `displayName` and
+`providerId` carry what that mode knows. Keep the actor picker for `bypass`;
+use the resolved id as-is otherwise.
+
+Resolution is the one online step. A first run on a new device must reach the
+server to learn its actor — after that, cache `identity.actorId` under the
+app's storage key and start offline with it.
+
+A Tailscale login change is a new actor: a client still holding the old id
+writes with it and gets `actor_mismatch` from the server. Re-resolve, build a
+new client for the new `actorId`, and use that actor's storage — retrying with
+the stale id cannot succeed. `resolveIdentity` throws
+`IdentityResolutionError` with a `kind` (`network`, `unauthorized`,
+`invalid-response`, `http`) that says which of these happened.
+
 ## Reads and writes
 
 `client.<entity>` is the schema-bound read API; a schema-bound client also
