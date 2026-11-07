@@ -431,6 +431,9 @@ importers:
         specifier: workspace:^
         version: link:../client
     devDependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@testing-library/dom':
         specifier: ^10.4.0
         version: 10.4.2
