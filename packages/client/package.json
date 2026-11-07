@@ -1,6 +1,6 @@
 {
   "name": "@ebbjs/client",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
   "description": "Local-first sync client for ebbjs: handshake, live sync, typed query engine, actions, presence, and collaborative text.",
   "homepage": "https://ebbjs.com",
