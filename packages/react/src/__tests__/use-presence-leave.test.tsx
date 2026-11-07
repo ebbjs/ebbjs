@@ -47,7 +47,14 @@ const makeClient = (fetchImpl: typeof fetch) =>
 
 const bodyOf = (call: RecordedCall): unknown => JSON.parse(String(call.init.body));
 
-const pageHide = () => act(() => void window.dispatchEvent(new Event("pagehide")));
+const pageHide = (persisted = false): void =>
+  act(() => {
+    const event = new Event("pagehide") as PageTransitionEvent;
+    // happy-dom's PageTransitionEvent drops `persisted`, and that flag is the
+    // difference between a page that is gone and one that may come back.
+    Object.defineProperty(event, "persisted", { value: persisted });
+    window.dispatchEvent(event);
+  });
 
 /** Let any fire-and-forget leave settle before asserting it did not happen. */
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 10)));
@@ -100,6 +107,28 @@ describe("leaving presence on pagehide", () => {
 
     unmount();
     pageHide();
+    await settle();
+
+    expect(h.presenceCalls()).toHaveLength(before);
+    client.close();
+  });
+
+  it("does not leave when the page enters the back/forward cache", async () => {
+    const h = harness();
+    const client = makeClient(h.fetchImpl);
+    render(
+      <EbbProvider client={client}>
+        <span>inside</span>
+      </EbbProvider>,
+    );
+
+    client.presence.set("plan_1", "cursor", cursor);
+    await client.presence.flush();
+    const before = h.presenceCalls().length;
+
+    // The document may be restored, and nothing re-announces presence on
+    // `pageshow`, so retracting now would show a false absence on Back.
+    pageHide(true);
     await settle();
 
     expect(h.presenceCalls()).toHaveLength(before);

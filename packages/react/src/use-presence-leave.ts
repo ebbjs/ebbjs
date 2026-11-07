@@ -20,12 +20,21 @@ import { useClient } from "./context";
  * A hidden tab is not a leave either: `visibilitychange` fires on every tab
  * switch, and a peer who is merely looking elsewhere still has a cursor. That
  * case is covered by the channel's TTL, which ages a peer out without a
- * round-trip. The leave is fire-and-forget: nothing awaits it, and a failure
+ * round-trip. A page entering the back/forward cache is not a leave either —
+ * `pagehide` fires with `persisted` set, the document may be restored, and a
+ * restored client re-announces nothing until it writes again, so retracting
+ * here would show a false absence on Back. The TTL covers the page that never
+ * returns. The leave is fire-and-forget: nothing awaits it, and a failure
  * costs a TTL.
+ *
+ * `keepalive` is best-effort by nature — Firefox ignored it before 133, and a
+ * document torn down before a cold CORS preflight completes still loses the
+ * POST — but the TTL is the design's backstop for exactly that.
  */
 export function useLeaveOnPageHide(client: SyncClient): void {
   useEffect(() => {
-    const leave = () => {
+    const leave = (event: PageTransitionEvent): void => {
+      if (event.persisted) return;
       void client.presence.leave({ keepalive: true });
     };
     window.addEventListener("pagehide", leave);

@@ -32,7 +32,10 @@ export interface PresenceTransportOptions {
 export interface PresenceSendOptions {
   /**
    * Mark the POST `keepalive` so it outlives the document: the send still
-   * goes out when the page is being torn down (`pagehide`).
+   * goes out when the page is being torn down (`pagehide`). It is not a
+   * delivery guarantee — a browser without keepalive (Firefox before 133) or
+   * a document that dies before a cold CORS preflight completes still loses
+   * the request — so the channel's TTL remains the backstop.
    */
   readonly keepalive?: boolean;
 }

@@ -17,6 +17,7 @@ and sends no leave, because a transient remount must not broadcast an absence.
 
 `@ebbjs/react` wires the unload path for you: `<EbbProvider>` leaves with
 `keepalive` on `pagehide`, so an app that never heard of `leave` stops ghosting
-when its tab closes. A remount, a client swap, and a hidden tab all stay put —
-only page teardown retracts presence, and a custom provider calls
-`usePresenceLeave()` instead.
+when its tab closes. A remount, a client swap, a hidden tab, and a page entering
+the back/forward cache all stay put — only a page that is really gone retracts
+presence, and a custom provider calls `usePresenceLeave()` instead. Keepalive is
+best-effort: an older browser may ignore it and the channel TTL still applies.

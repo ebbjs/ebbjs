@@ -249,9 +249,11 @@ session announced so peers drop the actor instead of waiting out the TTL. That
 is page lifetime, not a React lifetime, so it is not tied to unmounting —
 `client.close()` stays local teardown, because a remount or a client swap must
 not broadcast an absence — and `visibilitychange` is not a leave either, since
-a hidden tab still has a cursor and the TTL covers it. Under a custom provider
-that does not wire this, call `usePresenceLeave()` in a component that stays
-mounted for the page's lifetime.
+a hidden tab still has a cursor and the TTL covers it. A page entering the
+back/forward cache is skipped too: it can be restored, and a restored client
+re-announces nothing until it writes again. Under a custom provider that does
+not wire this, call `usePresenceLeave()` in a component that stays mounted for
+the page's lifetime.
 
 The standalone `usePresence<T>()` cannot see the client type (React context
 erases it), so it does not narrow the channel; pass the payload type there:
