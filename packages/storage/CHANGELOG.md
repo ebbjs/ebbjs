@@ -1,5 +1,14 @@
 # @ebbjs/storage
 
+## 0.4.0
+
+### Patch Changes
+
+- Updated dependencies [ce74122]
+- Updated dependencies [6e2df83]
+- Updated dependencies [6e2df83]
+  - @ebbjs/core@0.4.0
+
 ## 0.3.0
 
 ### Patch Changes
