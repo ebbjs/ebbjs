@@ -246,6 +246,12 @@ describe("integration: presence", () => {
     const presenceEvents = alice.events.filter((event) => event.type === "presence");
     expect(presenceEvents).toHaveLength(1);
 
+    // A normal leave retracts the peer: alice drops drew now, not at the
+    // channel's 30s TTL.
+    await drew.client.presence.leave();
+    const alicePresence = alice.client.presence;
+    await waitFor(() => alicePresence.forEntity(DOC_ID, "cursor").size === 0, 2000);
+
     // Closing the subscription drops the peers it observed.
     alice.unsubscribe();
     expect(alice.client.presence.forEntity(DOC_ID, "cursor").size).toBe(0);
