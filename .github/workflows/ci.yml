@@ -482,6 +482,23 @@ jobs:
         # future self-seeding tests added to that directory will run
         # automatically.
         run: pnpm --filter @ebbjs/client test:integration
+      - name: Run issue-tracker integration tests
+        # Seeds the issue-tracker fixtures through the typed client and
+        # asserts the typed namespaces against the same ebb_server; the
+        # test short-circuits when the server is unreachable.
+        run: pnpm --filter issue-tracker test:integration
+      - name: Stop bypass ebb_server
+        # The release names its Erlang node after the host, so two releases
+        # cannot run side by side. Swap to the tailscale-mode server now.
+        run: |
+          if [ -f /tmp/ebb_server.pid ]; then
+            pid=$(cat /tmp/ebb_server.pid)
+            pkill -P "$pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
+            rm -f /tmp/ebb_server.pid
+          fi
+          sleep 2
+          pkill -f 'packages/testing/dist/ebb_server' 2>/dev/null || true
       - name: Start tailscale-mode ebb_server
         # The identity suite needs a server whose actor comes from the
         # gateway headers, which bypass mode never provides.
@@ -518,26 +535,17 @@ jobs:
         run: >-
           pnpm --filter @ebbjs/client exec vitest --run
           src/__tests__/integration/identity.test.ts
-      - name: Run issue-tracker integration tests
-        # Seeds the issue-tracker fixtures through the typed client and
-        # asserts the typed namespaces against the same ebb_server; the
-        # test short-circuits when the server is unreachable.
-        run: pnpm --filter issue-tracker test:integration
-      - name: Stop ebb_server
+      - name: Stop tailscale-mode ebb_server
         if: always()
         run: |
-          for pid_file in /tmp/ebb_server.pid /tmp/ebb_tailscale_server.pid; do
-            if [ -f "$pid_file" ]; then
-              pid=$(cat "$pid_file")
-              # Kill the BEAM process and any children.
-              pkill -P "$pid" 2>/dev/null || true
-              kill "$pid" 2>/dev/null || true
-            fi
-          done
-          # Give it a moment, then force-kill anything still bound to :4000/:4001.
+          if [ -f /tmp/ebb_tailscale_server.pid ]; then
+            pid=$(cat /tmp/ebb_tailscale_server.pid)
+            pkill -P "$pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
+            rm -f /tmp/ebb_tailscale_server.pid
+          fi
           sleep 2
           pkill -f 'packages/testing/dist/ebb_server/bin/ebb_server' 2>/dev/null || true
-          rm -f /tmp/ebb_server.pid /tmp/ebb_tailscale_server.pid
 
   playwright-e2e:
     name: Playwright e2e (collaborative-text-demo)
