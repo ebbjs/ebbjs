@@ -48,10 +48,17 @@ The unit of a conflict is a **position**, produced by the generic map-key recurs
 - a map field merges key by key, so two writes to different keys are different positions and do not conflict;
 - a shared leaf, or the path where the two sides' kinds diverge, is one position.
 
-For a collaborative-text document, runs live in `content`, a map field. One `content[runId]` is one position:
+For a collaborative-text document, cells live in `content`, a map field keyed by cell
+id. Every write only adds keys — a run is immutable and a delete is an additive cut —
+so two concurrent edits never share a position:
 
-- concurrent inserts at different runs → different positions → no conflict;
-- an extend and a tombstone on the same run → one position → conflict.
+- concurrent inserts are different run keys → no conflict;
+- a delete is its own cut key and an extend is a new run key → no conflict;
+- text therefore surfaces no slots at all. Same-run delete-vs-insert and
+  delete-vs-delete commute, so the rule #392 recorded for same-run text edits no
+  longer applies ([#764](https://github.com/ebbjs/ebbjs/issues/764)).
+
+The body's `version` leaf is metadata declaring the cell format, never a position.
 
 There is no per-field "address a value" hook. A field type with non-map positions would extend the field marker.
 

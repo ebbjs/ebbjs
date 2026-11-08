@@ -8,6 +8,9 @@
  */
 
 import type { SeedData } from "@ebbjs/core/seed";
+// The demo does not depend on `@ebbjs/schema` directly; the client re-exports
+// the cell-format constants the seed has to stamp.
+import { CURRENT_TEXT_VERSION, DOC_VERSION_FIELD } from "@ebbjs/client";
 
 export const DEMO_GROUP_ID = "grp_demo";
 export const DEMO_MEMBER_ID = "gm_demo";
@@ -51,7 +54,7 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
       {
         id: docId,
         type: "text_document",
-        patches: [{ fields: {} }], // empty document
+        patches: [{ fields: { [DOC_VERSION_FIELD]: CURRENT_TEXT_VERSION } }], // empty document, current cell format
       },
     ],
     entityGroups: [

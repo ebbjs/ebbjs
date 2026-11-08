@@ -1,273 +1,219 @@
 /**
- * Causal Tree (Run-Length Optimized)
+ * The text module: runs, cuts, and the one projection.
  *
- * Reducer-based document state using RunNodes — contiguous sequences of
- * characters by the same peer — ordered by Hybrid Logical Clocks. Maintains
- * an incremental PositionIndex that maps document positions to runs without
- * requiring a full DFS traversal on every edit.
+ * A document is a map of immutable cells. A **run** carries text; a **cut**
+ * retracts a half-open range of the run it names. Neither is ever rewritten:
+ * an insert is a new run anchored at `(runId, offset)`, an extend is a new run
+ * anchored at the end of an existing run, and a delete is a new cut. Because
+ * runs never move, an anchor is permanent and `(offset, stamp, author, id)` is
+ * a total order over inserts.
+ *
+ * The read path is `project(cells)`: walk runs from the root, interleave the
+ * runs anchored inside each run at their offsets, and hide characters covered
+ * by cuts. Cuts hide only the owning run's characters, so text inserted at a
+ * retracted position survives, and cut-vs-cut / cut-vs-insert are commutative
+ * and idempotent.
  *
  * This is the "model" — no knowledge of CodeMirror, React, or the network.
  *
- * ## Run ID format
- *
- * Run IDs are derived from the originating Action's HLC plus the actor ID:
- *
- * ```ts
- * id = `${formatHlc(hlc)}:${actor_id}`
- * ```
- *
- * Where `formatHlc` is `@ebbjs/core`'s bigint-to-string formatter. The
- * `actor_id` is the originating Action's actor — it is NOT baked into the
- * HLC (the HLC encodes `(logical_time << 16) | counter`). Merge order
- * reduces to: HLC compare first, actor_id lexicographic tiebreak.
- *
- * The POC's format (`{ts}:{count}:{peerId}`, zero-padded) was changed so
- * the run ID matches production wire format and round-trips with
- * `@ebbjs/core`'s HLC. Sibling ordering uses `compare(hlc1, hlc2)`
- * directly instead of string comparison.
- *
- * @see ../../docs/prototypes/collaborative-text/README.md for design.
+ * @see ../../docs/prototypes/collaborative-text/README.md for the original
+ *      design record; this module supersedes its run-rewriting model.
  */
 
 import { compare as compareHlc, type HLCTimestamp } from "@ebbjs/core";
 
-// ---------------------------------------------------------------------------
-// Field-update wire shape
-// ---------------------------------------------------------------------------
+import {
+  compareInsertOrder,
+  normalizeCutIntervals,
+  ROOT_ANCHOR,
+  ROOT_ID,
+  type Anchor,
+  type CutInterval,
+  type InsertOrder,
+  type StampedCell,
+} from "./position";
 
-/**
- * The value shape of a `run:<runId>` field on a text document. This is the
- * wire-level representation of a run update — storage sees only this
- * opaque blob; the client interprets it to drive the tree reducer.
- *
- * `value: null` is the canonical tombstone encoding — storage keeps the
- * field with a null value (cheap), the client knows to drop the run.
- */
-export type RunFieldValue =
-  | { readonly value: RunNode; readonly update_id: string; readonly hlc: HLCTimestamp }
-  | { readonly value: null; readonly update_id: string; readonly hlc: HLCTimestamp };
+export { ROOT_ID, ROOT_ANCHOR };
+export type { Anchor, CutInterval };
 
 // ---------------------------------------------------------------------------
-// Types
+// Cells
 // ---------------------------------------------------------------------------
 
-/** A run of consecutive characters by one peer. */
-export type RunNode = {
-  readonly id: string; // `${formatHlc(hlc)}:${actor_id}`
-  readonly hlc: HLCTimestamp; // Originating HLC (for sibling ordering)
-  readonly actorId: string; // Originating actor (tiebreak after HLC)
-  readonly text: string; // 1+ characters (the run content)
-  readonly parentId: string; // ID of the run this was inserted after
-  readonly deleted: boolean; // Tombstone flag (applies to entire run)
+/** An immutable run of text, anchored at a point in another run (or ROOT). */
+export type RunCell = StampedCell & {
+  readonly kind: "run";
+  readonly text: string;
+  readonly anchor: Anchor;
 };
 
+/** An immutable, additive retraction of `[from, to)` characters of one run. */
+export type CutCell = StampedCell & {
+  readonly kind: "cut";
+  readonly runId: string;
+  readonly from: number;
+  readonly to: number;
+};
+
+export type TextCell = RunCell | CutCell;
+
 /**
- * A span in the position index. Each span covers a contiguous range
- * of document positions belonging to one visible run.
+ * One entry in a document's `content` map. The envelope's `hlc` /
+ * `update_id` are the map's per-key merge inputs; the cell's own `stamp` is
+ * the write that created it.
+ */
+export type CellFieldValue = {
+  readonly value: TextCell;
+  readonly update_id: string;
+  readonly hlc: HLCTimestamp;
+};
+
+// ---------------------------------------------------------------------------
+// Projection
+// ---------------------------------------------------------------------------
+
+/**
+ * A contiguous visible fragment of one run. `offset` is the fragment's
+ * character offset within the run, so a run interrupted by an insert yields
+ * two spans with the same `runId` and different `offset`s.
  */
 export type RunSpan = {
-  readonly runId: string; // Which RunNode this span belongs to
-  readonly length: number; // Number of visible characters in this span
+  readonly runId: string;
+  readonly offset: number;
+  readonly length: number;
 };
 
-/**
- * Incremental position index. A flat array of RunSpan entries where
- * each entry covers a contiguous range of document positions.
- * Maintained atomically with every tree mutation by the reducer.
- */
+/** The document's visible layout: spans in document order. */
 export type PositionIndex = {
-  readonly spans: readonly RunSpan[]; // Ordered list of visible spans
-  readonly totalLength: number; // Sum of all span lengths (= doc length)
-};
-
-export type DocState = {
-  readonly nodes: ReadonlyMap<string, RunNode>;
-  readonly children: ReadonlyMap<string, readonly string[]>; // parentId → ordered child IDs
-  readonly index: PositionIndex;
+  readonly spans: readonly RunSpan[];
+  readonly totalLength: number;
 };
 
 /** Result of looking up a document position in the index. */
 export type PositionLookup = {
-  readonly runId: string; // Which run contains this position
-  readonly offset: number; // Offset within the run's text
-  readonly spanIndex: number; // Index into PositionIndex.spans
-};
-
-export type InsertRunAction = {
-  readonly type: "INSERT_RUN";
-  readonly node: RunNode;
-  /**
-   * If set, the parent run was split at this offset before this insert.
-   * The reducer ignores this — it's informational metadata carried through
-   * to the wire protocol so the receiving peer can perform the same split.
-   */
-  readonly splitParentAt?: number;
-};
-
-export type DeleteRangeAction = {
-  readonly type: "DELETE_RANGE";
   readonly runId: string;
-  readonly offset: number; // Start offset within the run's text
-  readonly count: number; // Number of characters to delete
+  /** Offset within the run's own text, not the span's. */
+  readonly offset: number;
+  readonly spanIndex: number;
 };
 
-/**
- * Split a run at a given offset. The left half keeps the original ID.
- * The right half gets a deterministic split ID.
- */
-export type SplitAction = {
-  readonly type: "SPLIT";
-  readonly runId: string;
-  readonly offset: number; // Split point within the run's text
+/** The projected document: the cell map plus everything derived from it. */
+export type DocState = {
+  readonly cells: ReadonlyMap<string, CellFieldValue>;
+  readonly runs: ReadonlyMap<string, RunCell>;
+  readonly cuts: ReadonlyMap<string, readonly CutInterval[]>;
+  readonly index: PositionIndex;
+  readonly text: string;
 };
 
+/** An empty document. */
+export const createDocState = (): DocState => project(new Map());
+
 /**
- * Extend an existing run by appending text to it.
+ * Project a cell set into the visible document. The only read path: the
+ * result depends only on the cells, never on the order they arrived in.
  *
- * This is the run-length coalescing optimization: when a user types
- * sequentially at the end of their own run, we grow the existing run
- * instead of creating a new node. The run keeps its original ID.
- *
- * Only valid when:
- * - The run belongs to the same peer
- * - The insertion point is at the exact end of the run
- * - The run hasn't been deleted
+ * A run whose anchor is missing (or that sits in a cycle) is not rendered:
+ * there is no placeholder parent and no fallback position. The cells are
+ * still kept, so the run appears once its anchor is delivered.
  */
-export type ExtendRunAction = {
-  readonly type: "EXTEND_RUN";
-  readonly runId: string; // Which run to extend
-  readonly appendText: string; // Text to append
-  /**
-   * HLC of the extend action. The reducer advances the run's HLC to
-   * this value so downstream consumers (the wire adapter's "is the
-   * received state newer than ours" check) can distinguish sequential
-   * extends.
-   */
-  readonly hlc: HLCTimestamp;
-};
+export const project = (cells: ReadonlyMap<string, CellFieldValue>): DocState => {
+  const runs = new Map<string, RunCell>();
+  const rawCuts = new Map<string, CutInterval[]>();
 
-export type DocAction = InsertRunAction | DeleteRangeAction | SplitAction | ExtendRunAction;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Sentinel root node. All top-level runs are children of ROOT. */
-export const ROOT_ID = "ROOT";
-
-/** Separator between HLC and actor_id in a run's ID. */
-const ID_SEPARATOR = ":";
-
-/** Separator in deterministic split IDs. Chosen so it can never appear in an HLC or actor_id (which use letters+digits only). */
-const SPLIT_SEPARATOR = ":s:";
-
-const ROOT_NODE: RunNode = {
-  id: ROOT_ID,
-  hlc: "0",
-  actorId: "",
-  text: "",
-  parentId: "",
-  deleted: false,
-};
-
-// ---------------------------------------------------------------------------
-// Public functions
-// ---------------------------------------------------------------------------
-
-/**
- * Deterministic split-ID generation.
- *
- * Same inputs always produce the same output, regardless of which peer
- * performs the split. The format `originalId:s:offset` is unambiguous
- * because HLCs and actor IDs in our format never contain `:s:` (HLC is
- * decimal digits from `format()`; actor IDs from `@ebbjs/core`'s id module
- * are `prefix_alphanum`).
- */
-export const makeSplitId = (originalId: string, offset: number): string =>
-  `${originalId}${SPLIT_SEPARATOR}${offset}`;
-
-/** Parse an ID back into its HLC + actor parts. Returns null for ROOT. */
-export const parseRunId = (
-  id: string,
-): { readonly hlc: HLCTimestamp; readonly actorId: string } | null => {
-  if (id === ROOT_ID) return null;
-  // Split IDs end in `:s:N`. The actor is the last `:s:`-separated segment,
-  // but a normal ID is `<packed-bignum>:<actor>` so the actor may itself
-  // contain `:`. We split on the first `:` to get HLC; the rest is actor.
-  const firstColon = id.indexOf(ID_SEPARATOR);
-  if (firstColon <= 0) return null;
-  const hlc = id.slice(0, firstColon);
-  const rest = id.slice(firstColon + 1);
-  // If `rest` ends with `:s:N`, strip the split suffix first.
-  const splitIdx = rest.lastIndexOf(SPLIT_SEPARATOR);
-  const actorId = splitIdx === -1 ? rest : rest.slice(0, splitIdx);
-  return { hlc, actorId };
-};
-
-/**
- * Sibling ordering comparator for RunNodes.
- *
- * Total order: HLC first, then actorId lexicographic. Descending in the
- * children list (higher first). Returns negative if `a` comes before `b`,
- * positive if `a` comes after `b`, 0 if equal.
- *
- * Used to position a newly-inserted run among its parent's existing
- * children.
- */
-export const compareRuns = (a: RunNode, b: RunNode): number => {
-  const h = compareHlc(a.hlc, b.hlc);
-  if (h !== 0) return -h; // descending — higher HLC first
-  // Tiebreak on actorId: higher actorId comes first (matches the POC's
-  // string-comparison behavior where the ID format put a higher peerId
-  // before a lower one lexicographically).
-  if (a.actorId > b.actorId) return -1;
-  if (a.actorId < b.actorId) return 1;
-  return 0;
-};
-
-/** Create an empty document state with only the root sentinel node. */
-export const createDocState = (): DocState => ({
-  nodes: new Map([[ROOT_ID, ROOT_NODE]]),
-  children: new Map([[ROOT_ID, []]]),
-  index: { spans: [], totalLength: 0 },
-});
-
-/**
- * Pure reducer. Handles INSERT_RUN, DELETE_RANGE, SPLIT, and EXTEND_RUN actions.
- * Returns new state with updated index.
- */
-export const docReducer = (state: DocState, action: DocAction): DocState => {
-  switch (action.type) {
-    case "INSERT_RUN":
-      return applyInsertRun(state, action.node);
-    case "SPLIT":
-      return applySplit(state, action.runId, action.offset);
-    case "DELETE_RANGE":
-      return applyDeleteRange(state, action.runId, action.offset, action.count);
-    case "EXTEND_RUN":
-      return applyExtendRun(state, action.runId, action.appendText, action.hlc);
-  }
-};
-
-/**
- * DFS traversal of the causal tree, skipping deleted nodes, producing the
- * visible document string. For debugging/consistency checks only — not on
- * the hot path.
- */
-export const reconstruct = (state: DocState): string => {
-  const result: string[] = [];
-  dfs(state, ROOT_ID, (node) => {
-    if (!node.deleted && node.id !== ROOT_ID) {
-      result.push(node.text);
+  for (const [id, field] of cells) {
+    const cell = field.value;
+    if (cell.kind === "run") {
+      runs.set(id, cell);
+    } else {
+      const list = rawCuts.get(cell.runId);
+      if (list === undefined) rawCuts.set(cell.runId, [{ from: cell.from, to: cell.to }]);
+      else list.push({ from: cell.from, to: cell.to });
     }
-  });
-  return result.join("");
+  }
+
+  const cuts = new Map<string, readonly CutInterval[]>();
+  for (const [runId, intervals] of rawCuts) cuts.set(runId, normalizeCutIntervals(intervals));
+
+  const children = new Map<string, RunCell[]>();
+  for (const run of runs.values()) {
+    if (run.anchor.runId === run.id) continue; // a self-anchored run cannot be placed
+    const siblings = children.get(run.anchor.runId);
+    if (siblings === undefined) children.set(run.anchor.runId, [run]);
+    else siblings.push(run);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((a: InsertOrder, b: InsertOrder) => compareInsertOrder(a, b));
+  }
+
+  const spans: RunSpan[] = [];
+  const out: string[] = [];
+  const visited = new Set<string>();
+
+  const emit = (runId: string, offset: number): void => {
+    const last = spans[spans.length - 1];
+    if (last !== undefined && last.runId === runId && last.offset + last.length === offset) {
+      spans[spans.length - 1] = { runId, offset: last.offset, length: last.length + 1 };
+    } else {
+      spans.push({ runId, offset, length: 1 });
+    }
+  };
+
+  const render = (run: RunCell): void => {
+    if (visited.has(run.id)) return;
+    visited.add(run.id);
+
+    const anchored = children.get(run.id) ?? [];
+    const runCuts = cuts.get(run.id) ?? [];
+    let childIndex = 0;
+    let cutIndex = 0;
+
+    // Emit runs anchored at or before `offset`, then the character at
+    // `offset` itself if no cut covers it. Cuts and inserts both apply at
+    // retracted positions: inserts survive, the run's own chars do not.
+    const renderAt = (offset: number): void => {
+      while (childIndex < anchored.length && anchored[childIndex]!.anchor.offset <= offset) {
+        render(anchored[childIndex]!);
+        childIndex += 1;
+      }
+    };
+
+    for (let offset = 0; offset <= run.text.length; offset += 1) {
+      renderAt(offset);
+      if (offset === run.text.length) break;
+
+      while (cutIndex < runCuts.length && runCuts[cutIndex]!.to <= offset) cutIndex += 1;
+      const covered =
+        cutIndex < runCuts.length &&
+        runCuts[cutIndex]!.from <= offset &&
+        offset < runCuts[cutIndex]!.to;
+
+      if (!covered) {
+        out.push(run.text[offset]!);
+        emit(run.id, offset);
+      }
+    }
+  };
+
+  for (const rootChild of children.get(ROOT_ID) ?? []) render(rootChild);
+
+  return {
+    cells,
+    runs,
+    cuts,
+    index: { spans, totalLength: out.length },
+    text: out.join(""),
+  };
 };
 
-/**
- * O(spans) lookup: which run contains a given document position.
- * Returns undefined if position is out of bounds.
- */
+/** The visible document text. */
+export const reconstruct = (state: DocState): string => state.text;
+
+// ---------------------------------------------------------------------------
+// Position helpers
+// ---------------------------------------------------------------------------
+
+/** O(spans) lookup: which run (and run-offset) contains a document position. */
 export const lookupPosition = (
   index: PositionIndex,
   position: number,
@@ -275,12 +221,12 @@ export const lookupPosition = (
   if (position < 0 || position >= index.totalLength) return undefined;
 
   let cumulative = 0;
-  for (let i = 0; i < index.spans.length; i++) {
+  for (let i = 0; i < index.spans.length; i += 1) {
     const span = index.spans[i]!;
     if (position < cumulative + span.length) {
       return {
         runId: span.runId,
-        offset: position - cumulative,
+        offset: span.offset + (position - cumulative),
         spanIndex: i,
       };
     }
@@ -291,8 +237,9 @@ export const lookupPosition = (
 };
 
 /**
- * Given a run ID and offset within it, return the absolute document position.
- * O(spans). Returns undefined if the run is not in the index.
+ * Absolute document position of `(runId, offset)`. `offset` may equal the
+ * run's visible end for a span, but only a position actually present in the
+ * index resolves.
  */
 export const runOffsetToPosition = (
   index: PositionIndex,
@@ -301,629 +248,124 @@ export const runOffsetToPosition = (
 ): number | undefined => {
   let cumulative = 0;
   for (const span of index.spans) {
-    if (span.runId === runId) {
-      if (offset >= span.length) return undefined;
-      return cumulative + offset;
+    if (span.runId === runId && offset >= span.offset && offset < span.offset + span.length) {
+      return cumulative + (offset - span.offset);
     }
     cumulative += span.length;
   }
   return undefined;
 };
 
-/**
- * Determine the document position where a new run should appear, based on
- * sibling ordering. Uses the span index — no DFS traversal.
- *
- * Approach: find the parent's position in the span array, advance past the
- * parent's own span, then for each preceding sibling (higher HLC) sum the
- * span lengths of its entire subtree.
- */
-export const findInsertPosition = (state: DocState, parentId: string, newNode: RunNode): number => {
-  const siblings = state.children.get(parentId) ?? [];
-
-  // Find where among siblings the new node would go (descending HLC order)
-  let insertIdx = siblings.length;
-  for (let i = 0; i < siblings.length; i++) {
-    const sib = state.nodes.get(siblings[i]!);
-    if (!sib) continue;
-    if (compareRuns(newNode, sib) < 0) {
-      insertIdx = i;
-      break;
-    }
-  }
-
-  // Compute base position: right after the parent (or 0 for ROOT)
-  let basePos: number;
-  if (parentId === ROOT_ID) {
-    basePos = 0;
-  } else {
-    const parentPos = runOffsetToPosition(state.index, parentId, 0);
-    if (parentPos === undefined) {
-      // Parent is deleted or not in index — fallback
-      return 0;
-    }
-    const parentSpan = state.index.spans.find((s) => s.runId === parentId);
-    basePos = parentPos + (parentSpan?.length ?? 0);
-  }
-
-  // Add visible characters in subtrees of siblings that precede insertIdx.
-  // Uses the span index: collect all node IDs in each sibling's subtree,
-  // then sum the lengths of matching spans.
-  for (let i = 0; i < insertIdx; i++) {
-    basePos += subtreeVisibleLength(state, siblings[i]!);
-  }
-
-  return basePos;
-};
-
-/**
- * Build a run ID from an HLC and actor ID. This is the canonical wire
- * format — every run's ID is derived this way.
- */
-export const makeRunId = (hlc: HLCTimestamp, actorId: string): string =>
-  `${hlc}${ID_SEPARATOR}${actorId}`;
-
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Cell ids
 // ---------------------------------------------------------------------------
 
-/** Apply an INSERT_RUN action. */
-const applyInsertRun = (state: DocState, node: RunNode): DocState => {
-  // Idempotency: if node already exists, skip
-  if (state.nodes.has(node.id)) {
-    return state;
-  }
+/** Separator between the HLC and the actor id in a run id. */
+const ID_SEPARATOR = ":";
 
-  // Add to nodes map
-  const newNodes = new Map(state.nodes);
-  newNodes.set(node.id, node);
+/** Suffix that distinguishes a cut id from a run id at the same stamp. */
+const CUT_SUFFIX = ":cut";
 
-  // Insert into children list at the correct sorted position (descending HLC)
-  const newChildren = new Map(state.children);
-  const siblings = [...(newChildren.get(node.parentId) ?? [])];
+/**
+ * Build a run id from the write that created it. `unique` discriminates two
+ * writes from the same author at the same stamp (two tabs of one actor);
+ * a seeded cell that only one writer creates may omit it.
+ */
+export const makeRunId = (stamp: HLCTimestamp, author: string, unique?: string): string =>
+  unique === undefined
+    ? `${stamp}${ID_SEPARATOR}${author}`
+    : `${stamp}${ID_SEPARATOR}${author}${ID_SEPARATOR}${unique}`;
 
-  let insertIdx = siblings.length;
-  for (let i = 0; i < siblings.length; i++) {
-    const sib = newNodes.get(siblings[i]!);
-    if (!sib) continue;
-    if (compareRuns(node, sib) < 0) {
-      insertIdx = i;
-      break;
-    }
-  }
-
-  siblings.splice(insertIdx, 0, node.id);
-  newChildren.set(node.parentId, siblings);
-
-  // Ensure the new node has an entry in the children map
-  if (!newChildren.has(node.id)) {
-    newChildren.set(node.id, []);
-  }
-
-  // Update the position index: find where in the flat span array this run goes.
-  // We need the state with updated children for findSpanInsertIndex to work,
-  // but we'll compute the span position based on the tree structure.
-  const stateWithTree: DocState = {
-    nodes: newNodes,
-    children: newChildren,
-    index: state.index,
-  };
-
-  const spanIndex = findSpanInsertIndex(stateWithTree, node);
-  const newSpans = [...state.index.spans];
-
-  if (!node.deleted) {
-    newSpans.splice(spanIndex, 0, { runId: node.id, length: node.text.length });
-  }
-
-  return {
-    nodes: newNodes,
-    children: newChildren,
-    index: {
-      spans: newSpans,
-      totalLength: node.deleted
-        ? state.index.totalLength
-        : state.index.totalLength + node.text.length,
-    },
-  };
-};
-
-/** Apply a SPLIT action. */
-const applySplit = (state: DocState, runId: string, offset: number): DocState => {
-  const node = state.nodes.get(runId);
-  if (!node) {
-    console.error(`SPLIT: node ${runId} not found`);
-    return state;
-  }
-
-  if (offset <= 0 || offset >= node.text.length) {
-    console.error(`SPLIT: invalid offset ${offset} for node with text length ${node.text.length}`);
-    return state;
-  }
-
-  const splitId = makeSplitId(runId, offset);
-
-  // If the split has already been performed (idempotency), skip
-  if (state.nodes.has(splitId)) {
-    return state;
-  }
-
-  // Left half: keeps original ID, truncated text
-  const leftNode: RunNode = {
-    ...node,
-    text: node.text.slice(0, offset),
-  };
-
-  // Right half: new split ID, remainder text, parented to left half
-  const rightNode: RunNode = {
-    id: splitId,
-    hlc: node.hlc, // Same HLC (split is local — not an authored edit)
-    actorId: node.actorId,
-    text: node.text.slice(offset),
-    parentId: runId, // child of left half
-    deleted: node.deleted,
-  };
-
-  // Update nodes
-  const newNodes = new Map(state.nodes);
-  newNodes.set(runId, leftNode);
-  newNodes.set(splitId, rightNode);
-
-  // Update children:
-  // - Right half inherits original's children
-  // - Left half's children = [rightId, ...] (right is the first/highest-priority child
-  //   because it's the continuation of the original text)
-  const newChildren = new Map(state.children);
-  const originalChildren = newChildren.get(runId) ?? [];
-
-  // Right half gets the original's children
-  newChildren.set(splitId, [...originalChildren]);
-
-  // Left half's first child is the right half — placed at position 0 because
-  // it's the immediate continuation of the run. Children that were inserted
-  // after the run are now children of the right half (see re-parent below).
-  newChildren.set(runId, [splitId]);
-
-  // Re-parent the original's children to point to the right half.
-  // The children entries in the children map are keyed by parent, so we
-  // already moved them above. But the child nodes' parentId fields point
-  // to the original — we need to update those to point to the right half.
-  for (const childId of originalChildren) {
-    const childNode = newNodes.get(childId);
-    if (childNode) {
-      newNodes.set(childId, { ...childNode, parentId: splitId });
-    }
-  }
-
-  // Update the position index:
-  // Find the span for the original run, replace with two spans
-  if (node.deleted) {
-    // Deleted nodes have no spans — just update the tree structure
-    return { nodes: newNodes, children: newChildren, index: state.index };
-  }
-
-  const newSpans = [...state.index.spans];
-  const spanIdx = newSpans.findIndex((s) => s.runId === runId);
-
-  if (spanIdx === -1) {
-    console.error(`SPLIT: span for ${runId} not found in index`);
-    return { nodes: newNodes, children: newChildren, index: state.index };
-  }
-
-  // Replace one span with two
-  newSpans.splice(
-    spanIdx,
-    1,
-    {
-      runId: runId,
-      length: offset,
-    },
-    {
-      runId: splitId,
-      length: node.text.length - offset,
-    },
-  );
-
-  return {
-    nodes: newNodes,
-    children: newChildren,
-    index: { spans: newSpans, totalLength: state.index.totalLength },
-  };
-};
-
-/** Apply a DELETE_RANGE action. */
-const applyDeleteRange = (
-  state: DocState,
+/**
+ * Build a cut id from the write and the range it retracts. Two cuts with the
+ * same stamp, author, and range are the same logical cut, so the id is
+ * stable; a different range (even from the same write's clock) is a
+ * different id, so one tab can never rewrite another's cut.
+ */
+export const makeCutId = (
+  stamp: HLCTimestamp,
+  author: string,
   runId: string,
-  offset: number,
-  count: number,
-): DocState => {
-  const node = state.nodes.get(runId);
-  if (!node || node.deleted) return state;
+  from: number,
+  to: number,
+): string => `${stamp}${ID_SEPARATOR}${author}${CUT_SUFFIX}:${from}-${to}:${runId}`;
 
-  const textLen = node.text.length;
+/** Parse a run or cut id back into its stamp + author. Returns null for ROOT. */
+export const parseRunId = (
+  id: string,
+): { readonly stamp: HLCTimestamp; readonly author: string } | null => {
+  if (id === ROOT_ID) return null;
+  const firstColon = id.indexOf(ID_SEPARATOR);
+  if (firstColon <= 0) return null;
+  const stamp = id.slice(0, firstColon) as HLCTimestamp;
+  let author = id.slice(firstColon + 1);
+  const cutIdx = author.indexOf(`${CUT_SUFFIX}:`);
+  if (cutIdx !== -1) author = author.slice(0, cutIdx);
+  const runSuffixIdx = author.indexOf(`${ID_SEPARATOR}run_`);
+  if (runSuffixIdx !== -1) author = author.slice(0, runSuffixIdx);
+  return { stamp, author };
+};
 
-  // Validate range
-  if (offset < 0 || count <= 0 || offset + count > textLen) {
-    console.error(
-      `DELETE_RANGE: invalid range [${offset}, ${offset + count}) for text length ${textLen}`,
+/**
+ * Total order over runs. Offsets first, then newer write first. Kept as a
+ * named export because callers reason about sibling order directly; the
+ * projection uses the same comparator.
+ */
+export const compareRuns = (a: InsertOrder, b: InsertOrder): number => compareInsertOrder(a, b);
+
+// ---------------------------------------------------------------------------
+// Applying cells
+// ---------------------------------------------------------------------------
+
+/**
+ * Structural equality of two cells, independent of how a peer serialized
+ * their object keys. The id, author, and stamp pin the write; the remaining
+ * fields pin the content.
+ */
+export const cellValuesEqual = (a: TextCell, b: TextCell): boolean => {
+  if (a === b) return true;
+  if (a.kind !== b.kind || a.id !== b.id || a.author !== b.author || a.stamp !== b.stamp) {
+    return false;
+  }
+  if (a.kind === "run" && b.kind === "run") {
+    return (
+      a.text === b.text && a.anchor.runId === b.anchor.runId && a.anchor.offset === b.anchor.offset
     );
-    return state;
   }
-
-  // Case 1: Full delete — tombstone the entire run
-  if (offset === 0 && count === textLen) {
-    return tombstoneRun(state, runId);
+  if (a.kind === "cut" && b.kind === "cut") {
+    return a.runId === b.runId && a.from === b.from && a.to === b.to;
   }
-
-  // Case 2: Delete from the beginning of the run
-  if (offset === 0) {
-    // Split at `count`, then tombstone the left half
-    const split = applySplit(state, runId, count);
-    return tombstoneRun(split, runId);
-  }
-
-  // Case 3: Delete from the end of the run
-  if (offset + count === textLen) {
-    // Split at `offset`, then tombstone the right half
-    const split = applySplit(state, runId, offset);
-    const rightId = makeSplitId(runId, offset);
-    return tombstoneRun(split, rightId);
-  }
-
-  // Case 4: Delete from the middle of the run
-  // First split at `offset` to isolate the tail
-  const split1 = applySplit(state, runId, offset);
-  const rightId = makeSplitId(runId, offset);
-
-  // Then split the right half at `count` to isolate the portion to delete
-  const split2 = applySplit(split1, rightId, count);
-
-  // Tombstone the right half (which now contains only the deleted characters)
-  return tombstoneRun(split2, rightId);
+  return false;
 };
 
-/** Tombstone a single run and remove its span from the index. */
-const tombstoneRun = (state: DocState, runId: string): DocState => {
-  const node = state.nodes.get(runId);
-  if (!node || node.deleted) return state;
+/** Same key, same write, same cell: a re-delivery, not a rewrite. */
+const sameCell = (a: CellFieldValue, b: CellFieldValue): boolean =>
+  a === b || (a.hlc === b.hlc && a.update_id === b.update_id && cellValuesEqual(a.value, b.value));
 
-  const newNodes = new Map(state.nodes);
-  newNodes.set(runId, { ...node, deleted: true });
-
-  // Remove the span from the index
-  const newSpans = state.index.spans.filter((s) => s.runId !== runId);
-
-  return {
-    nodes: newNodes,
-    children: state.children,
-    index: {
-      spans: newSpans,
-      totalLength: state.index.totalLength - node.text.length,
-    },
-  };
+/** Pick the winning envelope for one key under the wire's leaf rule. */
+const pickCell = (a: CellFieldValue, b: CellFieldValue): CellFieldValue => {
+  if (sameCell(a, b)) return a;
+  const byHlc = compareHlc(a.hlc, b.hlc);
+  if (byHlc !== 0) return byHlc > 0 ? a : b;
+  return b.update_id >= a.update_id ? b : a;
 };
 
 /**
- * Extend an existing run by appending text. O(spans) to find the span.
- *
- * This is the run-length coalescing optimization: instead of creating a
- * new RunNode for every keystroke, we grow the existing run's text and
- * its span. The run keeps its original ID, parentId, and position in
- * the tree — only the text and span length change.
- *
- * Safe because:
- * - Only the authoring peer extends its own runs (same-peer check in bridge)
- * - Extension is append-only (no reordering needed)
- * - The run ID stays the same, so all existing parent references remain valid
+ * Merge incoming cells into a projected state. Keys are append-only, so a
+ * re-delivered cell is a no-op; if a peer ever rewrites one, the wire's leaf
+ * rule decides and the result is still delivery-order independent.
  */
-const applyExtendRun = (
+export const applyCellFields = (
   state: DocState,
-  runId: string,
-  appendText: string,
-  hlc: HLCTimestamp,
+  incoming: ReadonlyMap<string, CellFieldValue>,
 ): DocState => {
-  const node = state.nodes.get(runId);
-  if (!node || node.deleted) return state;
-
-  // Update the node's text AND advance its HLC. The HLC advance is
-  // what lets the wire adapter distinguish sequential extends — if
-  // we receive an EXTEND with an older HLC, we know our local state
-  // is newer (the run was extended further locally) and can skip.
-  const newNodes = new Map(state.nodes);
-  newNodes.set(runId, { ...node, text: node.text + appendText, hlc });
-
-  // Grow the span in the index
-  const newSpans = state.index.spans.map((s) =>
-    s.runId === runId ? { ...s, length: s.length + appendText.length } : s,
-  );
-
-  return {
-    nodes: newNodes,
-    children: state.children,
-    index: {
-      spans: newSpans,
-      totalLength: state.index.totalLength + appendText.length,
-    },
-  };
-};
-
-/**
- * Replace a run's text outright (used by the wire adapter when it
- * receives a field update with a new RunNode value for an existing run).
- *
- * The run keeps its ID, parentId, and position in the tree — only the
- * text and span length change. The text delta is applied to the
- * position index so totalLength stays in sync.
- */
-const applySetRun = (state: DocState, runId: string, newNode: RunNode): DocState => {
-  const existing = state.nodes.get(runId);
-  if (!existing || existing.deleted) {
-    // Caller should have routed to applyInsertRun.
-    return state;
+  let merged: Map<string, CellFieldValue> | undefined;
+  for (const [id, field] of incoming) {
+    const previous = (merged ?? state.cells).get(id);
+    const next = previous === undefined ? field : pickCell(previous, field);
+    if (next === previous) continue;
+    if (merged === undefined) merged = new Map(state.cells);
+    merged.set(id, next);
   }
-  const textDelta = newNode.text.length - existing.text.length;
-  const newNodes = new Map(state.nodes);
-  newNodes.set(runId, {
-    ...newNode,
-    id: runId,
-    parentId: existing.parentId,
-    deleted: false,
-  });
-  const newSpans = state.index.spans.map((s) =>
-    s.runId === runId ? { ...s, length: newNode.text.length } : s,
-  );
-  return {
-    nodes: newNodes,
-    children: state.children,
-    index: {
-      spans: newSpans,
-      totalLength: state.index.totalLength + textDelta,
-    },
-  };
-};
-
-/** DFS traversal from a given root, calling visitor for each node. */
-const dfs = (state: DocState, nodeId: string, visitor: (node: RunNode) => void): void => {
-  const node = state.nodes.get(nodeId);
-  if (!node) return;
-
-  visitor(node);
-
-  const childIds = state.children.get(nodeId) ?? [];
-  for (const childId of childIds) {
-    dfs(state, childId, visitor);
-  }
-};
-
-/**
- * Collect all node IDs in a subtree rooted at `rootId` (inclusive).
- * Walks the children map only — no DFS over node values.
- * O(subtree-size).
- */
-const collectSubtreeIds = (state: DocState, rootId: string): Set<string> => {
-  const result = new Set<string>();
-  const stack = [rootId];
-  while (stack.length > 0) {
-    const id = stack.pop()!;
-    result.add(id);
-    const childIds = state.children.get(id) ?? [];
-    for (let i = childIds.length - 1; i >= 0; i--) {
-      stack.push(childIds[i]!);
-    }
-  }
-  return result;
-};
-
-/**
- * Sum the visible character count (span lengths) for all nodes in a subtree.
- * Uses the span index — no DFS over node text.
- *
- * Collects subtree IDs via the children map, then sums matching span lengths.
- * O(subtree-size + spans).
- */
-const subtreeVisibleLength = (state: DocState, rootId: string): number => {
-  const ids = collectSubtreeIds(state, rootId);
-  let total = 0;
-  for (const span of state.index.spans) {
-    if (ids.has(span.runId)) {
-      total += span.length;
-    }
-  }
-  return total;
-};
-
-/**
- * Find the index in the flat span array where a newly inserted run's span
- * should be spliced. Uses the span index — no full-document DFS.
- *
- * Approach:
- * 1. Find the parent's span in the array (or start at 0 for ROOT).
- * 2. Advance past the parent's span.
- * 3. For each sibling with a higher HLC (comes before the new node in the
- *    children list), skip past all spans belonging to that sibling's subtree.
- * 4. The resulting position is the insertion index.
- *
- * This works because the span array is in document order, and subtrees
- * occupy contiguous ranges in the span array.
- */
-const findSpanInsertIndex = (state: DocState, newNode: RunNode): number => {
-  const { spans } = state.index;
-  const siblings = state.children.get(newNode.parentId) ?? [];
-
-  // Find where the new node sits among its siblings (descending HLC)
-  let siblingInsertIdx = siblings.length;
-  for (let i = 0; i < siblings.length; i++) {
-    if (siblings[i] === newNode.id) {
-      siblingInsertIdx = i;
-      break;
-    }
-  }
-
-  // Find the starting span index: right after the parent's span
-  let spanIdx: number;
-  if (newNode.parentId === ROOT_ID) {
-    spanIdx = 0;
-  } else {
-    // Find the parent's span index
-    const parentSpanIdx = spans.findIndex((s) => s.runId === newNode.parentId);
-    if (parentSpanIdx === -1) {
-      // Parent is deleted (no span) — find where its subtree would be
-      // by scanning for any span belonging to its subtree. If none, append.
-      // For a deleted parent with no visible descendants before us, we need
-      // to find the right position by walking up to the grandparent.
-      // Simplification: count visible chars before us and locate the span index.
-      // This path is rare (inserting as child of a deleted node).
-      return spans.length;
-    }
-    spanIdx = parentSpanIdx + 1;
-  }
-
-  // Skip past spans belonging to subtrees of preceding siblings
-  for (let i = 0; i < siblingInsertIdx; i++) {
-    const sibId = siblings[i]!;
-    const sibIds = collectSubtreeIds(state, sibId);
-    while (spanIdx < spans.length && sibIds.has(spans[spanIdx]!.runId)) {
-      spanIdx++;
-    }
-  }
-
-  return spanIdx;
-};
-
-// ---------------------------------------------------------------------------
-// Field-update reducer (wire path)
-// ---------------------------------------------------------------------------
-
-/**
- * Apply a single `run:<runId>` field value to the tree state.
- *
- * This is the wire-level entry point. It collapses the three local
- * operations (INSERT_RUN / EXTEND_RUN / DELETE_RANGE) plus the implicit
- * SPLIT into one atomic reducer that handles the three shapes a run
- * field can carry:
- *
- * - `{ value: <RunNode> }` for a new run — `applyInsertRun`
- * - `{ value: <RunNode> }` for an existing run — replace text + span
- *   length (covers both extend and partial-delete + split atomicly)
- * - `{ value: null }` for a tombstone — `tombstoneRun`
- *
- * Returns the new state plus a list of the equivalent `DocAction`s the
- * receiver conceptually applied. This lets the wire adapter and conflict
- * detector reason in DocAction terms even though the wire carries fields.
- */
-export const applyRunFieldUpdate = (
-  state: DocState,
-  runId: string,
-  field: RunFieldValue,
-): { state: DocState; applied: DocAction[] } => {
-  if (field.value === null) {
-    const node = state.nodes.get(runId);
-    if (!node || node.deleted) {
-      return { state, applied: [] };
-    }
-    // Tombstone the whole run. The wire carries the FINAL state, so
-    // partial deletes are encoded by the sender as a set of field updates
-    // (split halves + tombstoned middle). The receiver just patches.
-    const fullTombstone: DocAction = {
-      type: "DELETE_RANGE",
-      runId,
-      offset: 0,
-      count: node.text.length,
-    };
-    return {
-      state: docReducer(state, fullTombstone),
-      applied: [fullTombstone],
-    };
-  }
-
-  const newNode = field.value;
-  if (state.nodes.has(runId)) {
-    // Existing run — the wire payload is the final state. Replace text
-    // and span length in one step. This single DocAction (`EXTEND_RUN`
-    // with the new full text) handles all of: extend, shrink, partial
-    // delete-after-split, and re-attribution. The receiver does NOT
-    // need to perform the sender's splits because they're encoded in
-    // the sibling field updates that follow in the same Action.
-    const existing = state.nodes.get(runId)!;
-    if (existing.deleted) {
-      // Re-creating a tombstoned run: treat as insert.
-      return {
-        state: docReducer(state, { type: "INSERT_RUN", node: newNode }),
-        applied: [{ type: "INSERT_RUN", node: newNode }],
-      };
-    }
-    if (
-      newNode.text === existing.text &&
-      newNode.hlc === existing.hlc &&
-      newNode.actorId === existing.actorId
-    ) {
-      // No-op: same final state.
-      return { state, applied: [] };
-    }
-    // Skip when our local state is already newer than the received
-    // state. This happens when we receive our own previously-written
-    // actions back via catchUp after we've moved on to newer ones
-    // locally — without this check, every older action would rewind
-    // the run text back to its intermediate value.
-    if (compareHlc(existing.hlc, newNode.hlc) > 0) {
-      return { state, applied: [] };
-    }
-    // Replace the run's text and span length atomically. The wire
-    // carries the FINAL state, so we set the text outright (no delta
-    // computation needed). We model this as a new reducer operation
-    // `setRun` that replaces text + span length in one step.
-    const setRun = applySetRun(state, runId, newNode);
-    return {
-      state: setRun,
-      applied: [{ type: "EXTEND_RUN", runId, appendText: newNode.text, hlc: newNode.hlc }],
-    };
-  }
-
-  // New run — insert. If the run's parent doesn't exist in the tree
-  // (typical when receiving split-half survivors from a partial
-  // DELETE_RANGE on a peer), materialize a tombstoned placeholder for
-  // the missing parent so the new run has a valid parent reference.
-  let working = state;
-  if (newNode.parentId !== ROOT_ID && !working.nodes.has(newNode.parentId)) {
-    const placeholder: RunNode = {
-      id: newNode.parentId,
-      hlc: newNode.hlc,
-      actorId: newNode.actorId,
-      text: "",
-      parentId: ROOT_ID,
-      deleted: true,
-    };
-    working = applyInsertRun(working, placeholder);
-    if (working === state) {
-      // Insert failed (shouldn't happen with our inputs); skip.
-      return { state, applied: [] };
-    }
-  }
-  return {
-    state: docReducer(working, { type: "INSERT_RUN", node: newNode }),
-    applied: [{ type: "INSERT_RUN", node: newNode }],
-  };
-};
-
-/**
- * Apply a list of `run:<runId>` field updates to the tree. Returns the new
- * state plus the flat list of DocActions applied (in document order).
- *
- * Field names are expected to have the `run:` prefix stripped already
- * (this function deals in run IDs, not field names). Callers parse the
- * prefix off first.
- */
-export const applyRunFieldUpdates = (
-  state: DocState,
-  updates: ReadonlyMap<string, RunFieldValue>,
-): { state: DocState; applied: DocAction[] } => {
-  let current = state;
-  const applied: DocAction[] = [];
-  for (const [runId, field] of updates) {
-    const result = applyRunFieldUpdate(current, runId, field);
-    current = result.state;
-    applied.push(...result.applied);
-  }
-  return { state: current, applied };
+  return merged === undefined ? state : project(merged);
 };

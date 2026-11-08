@@ -75,6 +75,8 @@ declare global {
       docId: string;
       actorId: string;
       getRunIds: () => readonly string[];
+      /** The document's projected text (the authoritative view). */
+      getText: () => string;
       /** Force a localExtend on a run with a pinned HLC. */
       forceExtend: (runId: string, appendText: string, hlc: string) => string | null;
       /** Flush any locally-queued actions to the server. */

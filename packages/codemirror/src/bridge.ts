@@ -1,40 +1,41 @@
 /**
  * CodeMirror 6 bridge for `@ebbjs/client`'s TextDocument.
  *
- * Two-way sync between a CM6 EditorView and a TextDocument:
+ * Two-way sync between a CM6 EditorView and a TextDocument. The document is
+ * a set of immutable runs plus additive cuts; a run is never split or
+ * rewritten, only re-anchored around. The document's projection
+ * (`doc.docState.index.spans`) is therefore one `{ runId, offset, length }`
+ * span per *visible fragment*, and one run can yield several spans whenever
+ * another run is anchored inside it.
  *
  * 1. Local CM edits (annotation: NOT `isRemote`) → translated to
  *    `doc.localInsert` / `doc.localExtend` / `doc.localDelete` calls.
- *    - Insertions immediately after the end of the local peer's last
- *      own run use `localExtend` (no new run, no new run id).
- *    - Mid-run insertions use `localInsert` with `splitParentAt`; the
- *      TextDocument handles the split atomically.
- *    - Deletions walk the affected runs and dispatch one
+ *    - Deletions walk the affected visible fragments and dispatch one
  *      `localDelete` per contiguous same-run segment.
+ *    - Insertions look up the run owning the character before the cursor.
+ *      Typing right after the end of the peer's own leaf run appends with
+ *      `localExtend`; anything else anchors a new run at a run-text offset.
  *
- * 2. Remote `doc.onUpdate` events (catch-up / SSE) → applied to CM.
- *    - 'insert' kind: find the run's parent in the previous spans,
- *      insert the run's text after the parent's end.
- *    - 'extend' kind: replace the run's previous span with the new text.
- *    - 'tombstone' kind: delete the run's previous span.
- *    - Tombstoned placeholder runs (created to satisfy a missing
- *      parent reference on receive) are skipped — they have no visible
- *      text in CM.
+ * 2. Remote `doc.onUpdate` events (catch-up / SSE) → applied to CM by
+ *    diffing CM's text against `doc.text`. The document owns the layout,
+ *    so re-deriving one incremental CM change per event would have to
+ *    re-implement the whole projection; diffing one replacement range keeps
+ *    CM equal to `doc.text` for every event kind (insert, cut, or several
+ *    cells in one batch).
  *
  * A CM `StateField` (`idMapField`) mirrors `doc.docState.index.spans`,
- * letting consumers map CM positions to run ids (for presence,
- * cursor anchoring, etc). The field is updated in the same dispatch
- * that applies remote changes — the local listener doesn't need to
- * update it because CM is the source of truth during local edits.
+ * letting consumers map CM positions to run ids (for presence, cursor
+ * anchoring, etc). The field is pushed on every doc update — including the
+ * ones raised by a local edit, where CM already holds the new text.
  *
- * Both directions use the `isRemote` annotation to avoid recursive
- * loops: a CM dispatch made by the bridge is marked remote, and the
- * bridge's updateListener skips remote transactions.
+ * Both directions use the `isRemote` annotation to avoid recursive loops: a
+ * CM dispatch made by the bridge is marked remote, and the bridge's local
+ * listener skips remote transactions.
  */
 
 import { Annotation, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ROOT_ID, type AppliedUpdate, type RunSpan, type TextDocument } from "@ebbjs/client";
+import { ROOT_ID, type RunSpan, type TextDocument } from "@ebbjs/client";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -68,10 +69,10 @@ export const setIdMapEffect = StateEffect.define<readonly RunSpan[]>();
 /**
  * Zero-length span at the document root. The CM-side `idMapField`
  * always carries this so empty-doc clicks resolve to `(ROOT_ID, 0)`
- * for presence anchoring. The doc tree's `PositionIndex.spans` never
+ * for presence anchoring. The doc's `PositionIndex.spans` never
  * contains this — it lives only in the CM mirror.
  */
-export const ROOT_PLACEHOLDER_SPAN: RunSpan = { runId: ROOT_ID, length: 0 };
+export const ROOT_PLACEHOLDER_SPAN: RunSpan = { runId: ROOT_ID, offset: 0, length: 0 };
 
 /** Ensure the spans array carries the ROOT placeholder so the CM mirror never goes empty. */
 export const ensureRootSpan = (spans: readonly RunSpan[]): readonly RunSpan[] =>
@@ -100,12 +101,39 @@ export const createIdMapField = (): StateField<readonly RunSpan[]> =>
 // ---------------------------------------------------------------------------
 
 /**
+ * Find the visible fragment containing a document position.
+ *
+ * `runOffset` is the offset within the run's own text: a run interrupted by
+ * an insert yields two spans with the same `runId` and different offsets, so
+ * the span's `offset` is the base and the position contributes only the
+ * distance into this fragment.
+ */
+export function lookupPositionFromSpans(
+  spans: readonly RunSpan[],
+  position: number,
+): SpanLookup | undefined {
+  let cumulative = 0;
+  for (let i = 0; i < spans.length; i += 1) {
+    const span = spans[i]!;
+    if (position < cumulative + span.length) {
+      return {
+        runId: span.runId,
+        runOffset: span.offset + (position - cumulative),
+        spanIndex: i,
+        spanLength: span.length,
+      };
+    }
+    cumulative += span.length;
+  }
+  return undefined;
+}
+
+/**
  * Find the run that contains a given document position, using the
  * StateField. Returns `{ runId, offset, spanIndex }` or undefined.
  *
- * CodeMirror positions are in `[0, doc.length]` inclusive, so a
- * position equal to the sum of all spans' lengths is still inside
- * the last run.
+ * CodeMirror positions are in `[0, doc.length]` inclusive, so a position
+ * equal to the total span length resolves to the end of the last span.
  */
 export const getRunAtPosition = (
   state: { field: <T>(f: StateField<T>) => T },
@@ -113,23 +141,28 @@ export const getRunAtPosition = (
   idMapField: StateField<readonly RunSpan[]>,
 ): { runId: string; offset: number; spanIndex: number } | undefined => {
   const spans = state.field(idMapField);
-  let cumulative = 0;
-  for (let i = 0; i < spans.length; i++) {
-    const span = spans[i]!;
-    if (position <= cumulative + span.length) {
-      return { runId: span.runId, offset: position - cumulative, spanIndex: i };
-    }
-    cumulative += span.length;
+  const lookup = lookupPositionFromSpans(spans, position);
+  if (lookup !== undefined) {
+    return { runId: lookup.runId, offset: lookup.runOffset, spanIndex: lookup.spanIndex };
   }
-  return undefined;
+
+  const lastIndex = spans.length - 1;
+  const last = spans[lastIndex];
+  if (last === undefined) return undefined;
+  const total = spans.reduce((sum, span) => sum + span.length, 0);
+  if (position !== total) return undefined;
+  return { runId: last.runId, offset: last.offset + last.length, spanIndex: lastIndex };
 };
 
 /**
- * Compute the document position of a given (runId, offsetWithinRun).
- * Returns undefined if the run is not visible in the current spans.
+ * Compute the document position of a given `(runId, offsetWithinRun)`.
+ * Returns undefined if no visible fragment of the run covers the offset.
  *
- * `offset` may equal `span.length` — that's the position immediately
- * past the last character of the run, a legitimate cursor position.
+ * `offset` is a run-text offset, and a fragment covers
+ * `[span.offset, span.offset + span.length]` — the inclusive end is the
+ * cursor position immediately past the fragment's last character. When two
+ * fragments of the same run share a boundary, the earlier fragment wins:
+ * the position before anything anchored at that offset.
  */
 export const getPositionOfRun = (
   state: { field: <T>(f: StateField<T>) => T },
@@ -140,9 +173,8 @@ export const getPositionOfRun = (
   const spans = state.field(idMapField);
   let cumulative = 0;
   for (const span of spans) {
-    if (span.runId === runId) {
-      if (offset > span.length) return undefined;
-      return cumulative + offset;
+    if (span.runId === runId && offset >= span.offset && offset <= span.offset + span.length) {
+      return cumulative + (offset - span.offset);
     }
     cumulative += span.length;
   }
@@ -156,7 +188,7 @@ export const getPositionOfRun = (
 /**
  * Shared mutable state between the bridge extension (which sets the
  * flag during a local edit) and `mountEditorBridge` (which reads it
- * to skip applying cmChanges for events raised during a local edit).
+ * to skip re-applying text CM already has).
  *
  * Lives in a plain object so the reference is stable across the
  * two closures — both `createBridgeExtension` and `mountEditorBridge`
@@ -179,9 +211,9 @@ export interface BridgeExtensionConfig {
   readonly getView: () => EditorView | null;
   /**
    * Shared tracker that the bridge flips on/off around local-CM→doc
-   * dispatches. `mountEditorBridge` reads it to skip applying
-   * cmChanges for events raised during a local edit. Optional — if
-   * omitted, the bridge assumes all doc updates are remote.
+   * dispatches. `mountEditorBridge` reads it to skip the text diff for
+   * events raised during a local edit. Optional — if omitted, the bridge
+   * assumes all doc updates are remote.
    */
   readonly localEdit?: LocalEditTracker;
 }
@@ -194,8 +226,9 @@ export interface BridgeExtensionConfig {
  * `doc.local*` calls. Remote transactions are skipped.
  */
 export const createBridgeExtension = (config: BridgeExtensionConfig): Extension => {
+  const { doc, idMapField, localEdit } = config;
   return [
-    config.idMapField,
+    idMapField,
     EditorView.updateListener.of((update) => {
       const view = config.getView();
       if (!view) return;
@@ -205,91 +238,15 @@ export const createBridgeExtension = (config: BridgeExtensionConfig): Extension 
       const localTr = update.transactions.find((tr) => tr.docChanged && !tr.annotation(isRemote));
       if (!localTr) return;
 
-      const { idMapField, doc, localEdit } = config;
-      const spans = view.state.field(idMapField);
+      // The pre-transaction mirror: `fromA` / `toA` are positions in the
+      // document the change was computed against, and the spans the bridge
+      // pushes mid-listener describe that same document.
+      const spans = localTr.startState.field(idMapField);
 
       if (localEdit) localEdit.active = true;
       try {
         localTr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-          // ----- Deletions first ----------------------------------------
-          if (toA > fromA) {
-            let pos = fromA;
-            while (pos < toA) {
-              const lookup = lookupPositionFromSpans(spans, pos);
-              if (!lookup) {
-                // Position falls in a gap (shouldn't happen if spans
-                // mirror doc.text); advance by one to avoid an infinite
-                // loop.
-                pos += 1;
-                continue;
-              }
-              const remainingInRun = lookup.spanLength - lookup.runOffset;
-              const remainingInDel = toA - pos;
-              const count = Math.min(remainingInRun, remainingInDel);
-
-              doc.localDelete({
-                runId: lookup.runId,
-                offset: lookup.runOffset,
-                count,
-              });
-
-              pos += count;
-            }
-          }
-
-          // ----- Insertions ---------------------------------------------
-          const insertedText = inserted.toString();
-          if (insertedText.length === 0) return;
-
-          if (fromA === 0) {
-            // Inserting at position 0 — parent is ROOT. Never an
-            // extension (there's no preceding character owned by us).
-            doc.localInsert(insertedText, { afterRun: "ROOT" });
-            return;
-          }
-
-          // Look up the run containing the character just before `fromA`.
-          const parentLookup = lookupPositionFromSpans(spans, fromA - 1);
-          if (!parentLookup) {
-            // Shouldn't happen, but fall back to inserting at ROOT.
-            doc.localInsert(insertedText, { afterRun: "ROOT" });
-            return;
-          }
-
-          const parentRun = doc.docState.nodes.get(parentLookup.runId);
-          if (!parentRun || parentRun.deleted) {
-            // Parent missing or tombstoned — insert at ROOT.
-            doc.localInsert(insertedText, { afterRun: "ROOT" });
-            return;
-          }
-
-          const isAtEndOfRun = parentLookup.runOffset === parentRun.text.length - 1;
-          const isSamePeer = parentRun.actorId === doc.actorId;
-          const isNotDeleted = !parentRun.deleted;
-          const childrenOfParent = doc.docState.children.get(parentRun.id) ?? [];
-          const isLeaf = childrenOfParent.length === 0;
-
-          // Extension optimization: typing right after the end of our
-          // own leaf run. Avoids creating a new run per keystroke.
-          if (isAtEndOfRun && isSamePeer && isNotDeleted && isLeaf) {
-            doc.localExtend({
-              runId: parentRun.id,
-              appendText: insertedText,
-            });
-            return;
-          }
-
-          // New run path. Compute split offset if mid-run.
-          let splitParentAt: number | undefined;
-          if (!isAtEndOfRun) {
-            // Mid-run: split at runOffset + 1 (after the parent char).
-            splitParentAt = parentLookup.runOffset + 1;
-          }
-
-          doc.localInsert(insertedText, {
-            afterRun: parentRun.id,
-            ...(splitParentAt !== undefined && { splitParentAt }),
-          });
+          applyLocalChange(doc, spans, fromA, toA, inserted.toString());
         });
       } finally {
         if (localEdit) localEdit.active = false;
@@ -326,33 +283,16 @@ export function mountEditorBridge(
   idMapField: StateField<readonly RunSpan[]>,
   localEdit?: LocalEditTracker,
 ): EditorBridge {
-  // Initial sync: replace CM's doc text with the document's current
-  // text (if they differ) and seed the spans StateField.
-  const initialText = doc.text;
-  const initialSpans = ensureRootSpan(spansToRunSpans(doc.docState.index.spans));
-  if (view.state.doc.toString() !== initialText) {
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: initialText },
-      effects: setIdMapEffect.of(initialSpans),
-      annotations: isRemote.of(true),
-    });
-  } else {
-    view.dispatch({
-      effects: setIdMapEffect.of(initialSpans),
-      annotations: isRemote.of(true),
-    });
-  }
+  const currentText = view.state.doc.toString();
+  const replacement = diffDocument(currentText, doc.text);
+  const effect = {
+    effects: setIdMapEffect.of(ensureRootSpan(doc.docState.index.spans)),
+    annotations: isRemote.of(true),
+  };
+  view.dispatch(replacement === undefined ? effect : { ...effect, changes: replacement });
 
-  // Wire doc updates to CM. The localEdit tracker is set by the
-  // bridge extension during a local-CM→doc dispatch; reading it
-  // here lets us skip applying cmChanges for events raised during
-  // a local edit (CM already has the new text in that case, and
-  // re-applying would double the characters and push mid-run
-  // inserts to the wrong side of the parent because the spans
-  // StateField hasn't caught up yet).
-  const unsubscribeDoc = doc.onUpdate((evt) => {
-    if (!evt) return; // type guard
-    applyDocUpdateToCM(view, doc, idMapField, evt, localEdit);
+  const unsubscribeDoc = doc.onUpdate(() => {
+    applyDocUpdateToCM(view, doc, idMapField, localEdit);
   });
 
   return {
@@ -363,143 +303,171 @@ export function mountEditorBridge(
 }
 
 // ---------------------------------------------------------------------------
-// Internal: apply a single doc update to CM
+// Internal: local change translation
+// ---------------------------------------------------------------------------
+
+/** Translate one CM change into the document's cell operations. */
+function applyLocalChange(
+  doc: TextDocument,
+  spans: readonly RunSpan[],
+  fromA: number,
+  toA: number,
+  insertedText: string,
+): void {
+  // ----- Deletions first ---------------------------------------------
+  let pos = fromA;
+  while (pos < toA) {
+    const lookup = lookupPositionFromSpans(spans, pos);
+    if (lookup === undefined) {
+      // Position falls in a gap (there shouldn't be one if spans mirror
+      // doc.text); advance by one to avoid an infinite loop.
+      pos += 1;
+      continue;
+    }
+    const span = spans[lookup.spanIndex]!;
+    const remainingInSpan = span.offset + span.length - lookup.runOffset;
+    const count = Math.min(remainingInSpan, toA - pos);
+    doc.localDelete({ runId: lookup.runId, offset: lookup.runOffset, count });
+    pos += count;
+  }
+
+  // ----- Insertions ---------------------------------------------------
+  if (insertedText.length === 0) return;
+
+  if (fromA === 0) {
+    // Inserting at position 0 — parent is ROOT. Never an extension
+    // (there's no preceding character owned by us).
+    doc.localInsert(insertedText, { afterRun: ROOT_ID });
+    return;
+  }
+
+  // The run owning the character just before `fromA`.
+  const parentLookup = lookupPositionFromSpans(spans, fromA - 1);
+  const parent = parentLookup ? doc.docState.runs.get(parentLookup.runId) : undefined;
+  if (parentLookup === undefined || parent === undefined) {
+    // Shouldn't happen, but fall back to inserting at ROOT.
+    doc.localInsert(insertedText, { afterRun: ROOT_ID });
+    return;
+  }
+
+  const isAtEndOfRun = parentLookup.runOffset === parent.text.length - 1;
+  const isOwnRun = parent.author === doc.actorId;
+  const isLeaf = !hasAnchoredChild(doc, parent.id);
+
+  // Typing right after the end of our own leaf run appends to it
+  // (`localExtend` is an insert anchored at the run's end, so the run
+  // keeps its text and id either way).
+  if (isAtEndOfRun && isOwnRun && isLeaf) {
+    doc.localExtend({ runId: parent.id, appendText: insertedText });
+    return;
+  }
+
+  // Any other insert anchors a new run after the parent character. At the
+  // run's end this is the same anchor an extend would use.
+  doc.localInsert(insertedText, {
+    afterRun: parent.id,
+    splitParentAt: parentLookup.runOffset + 1,
+  });
+}
+
+/** Does any run in the document anchor itself inside `runId`? */
+const hasAnchoredChild = (doc: TextDocument, runId: string): boolean => {
+  for (const run of doc.docState.runs.values()) {
+    if (run.anchor.runId === runId) return true;
+  }
+  return false;
+};
+
+// ---------------------------------------------------------------------------
+// Internal: remote doc updates → CM
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a single AppliedUpdate event to the CM view.
+ * Push the document's current text and spans into CM.
  *
- * The CM state field (`idMapField`) at the moment of entry holds the
- * PRE-update spans (because we haven't dispatched the spans-update
- * effect yet — that happens in this same dispatch). That makes it
- * safe to look up the run's previous position for an extend or
- * tombstone, and the parent's previous position for an insert.
+ * The document's projection is the only layout authority, so CM is brought
+ * in line by diffing rather than by re-deriving an incremental change from
+ * the event's run. That keeps CM exactly `doc.text` for inserts, cuts, and
+ * batches, including multi-span runs.
  *
- * The dispatch carries:
- * - `changes`: the text mutation, or empty if the run is a tombstoned
- *   placeholder (no visible change to CM).
- * - `effects`: the new spans array (always).
- * - `annotations`: `isRemote` so the local-CM→doc listener skips it.
+ * During a local CM edit, CM already holds the new text from the user's
+ * input: skip the text diff but still push the new spans.
  */
 function applyDocUpdateToCM(
   view: EditorView,
   doc: TextDocument,
   idMapField: StateField<readonly RunSpan[]>,
-  evt: AppliedUpdate,
   localEdit: LocalEditTracker | undefined,
 ): void {
-  const oldSpans = view.state.field(idMapField);
-  const node = doc.docState.nodes.get(evt.runId);
+  const isLocal = localEdit?.active ?? false;
+  const replacement = isLocal ? undefined : diffDocument(view.state.doc.toString(), doc.text);
+  const nextSpans = ensureRootSpan(doc.docState.index.spans);
 
-  // During a local CM edit, CM already has the new text from the
-  // user's input. Re-applying the change here would double the
-  // characters and push mid-run inserts to the wrong side of the
-  // parent (the spans StateField hasn't caught up to the local edit
-  // yet). Skip the cmChanges — but still push the new spans so the
-  // field stays in sync.
-  const isLocal = !!localEdit?.active;
+  // Several events in one batch can leave both the text and the spans
+  // unchanged (e.g. a cell that projects to nothing); skip the dispatch.
+  if (replacement === undefined && sameSpans(view.state.field(idMapField), nextSpans)) return;
 
-  let cmChanges: { from: number; to?: number; insert?: string }[] = [];
-
-  if (evt.kind === "tombstone") {
-    // Tombstone: find the run in oldSpans and delete its range.
-    const range = findRunRange(oldSpans, evt.runId);
-    if (range && !isLocal) {
-      cmChanges = [{ from: range.start, to: range.end }];
-    }
-  } else if (evt.kind === "extend") {
-    // Extend: find the run in oldSpans, replace its text with the
-    // current full text.
-    const range = findRunRange(oldSpans, evt.runId);
-    if (range && node && !node.deleted && !isLocal) {
-      cmChanges = [{ from: range.start, to: range.end, insert: node.text }];
-    }
-  } else if (evt.kind === "insert") {
-    // Insert: the run is new in oldSpans. Insert its text after the
-    // parent's end position. Skip tombstoned placeholders (they have
-    // no visible text in CM).
-    if (node && !node.deleted && !isLocal) {
-      const parentRange = findRunRange(oldSpans, node.parentId);
-      const insertAt = parentRange ? parentRange.end : 0;
-      cmChanges = [{ from: insertAt, insert: node.text }];
-    }
-  }
-
-  view.dispatch({
-    changes: cmChanges,
-    effects: setIdMapEffect.of(ensureRootSpan(spansToRunSpans(doc.docState.index.spans))),
+  const effect = {
+    effects: setIdMapEffect.of(nextSpans),
     annotations: isRemote.of(true),
-  });
+  };
+  view.dispatch(replacement === undefined ? effect : { ...effect, changes: replacement });
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+/** Structural equality of two span arrays. */
+const sameSpans = (a: readonly RunSpan[], b: readonly RunSpan[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i]!;
+    const right = b[i]!;
+    if (
+      left.runId !== right.runId ||
+      left.offset !== right.offset ||
+      left.length !== right.length
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
+ * One replacement range turning `current` into `target`: the longest common
+ * prefix and suffix are kept, everything between them is replaced.
+ */
+const diffDocument = (
+  current: string,
+  target: string,
+): { from: number; to: number; insert: string } | undefined => {
+  if (current === target) return undefined;
+
+  const shortest = Math.min(current.length, target.length);
+  let prefix = 0;
+  while (prefix < shortest && current.charCodeAt(prefix) === target.charCodeAt(prefix)) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < shortest - prefix &&
+    current.charCodeAt(current.length - 1 - suffix) ===
+      target.charCodeAt(target.length - 1 - suffix)
+  ) {
+    suffix += 1;
+  }
+
+  return {
+    from: prefix,
+    to: current.length - suffix,
+    insert: target.slice(prefix, target.length - suffix),
+  };
+};
 
 /** Span returned by `lookupPositionFromSpans` (without a StateField indirection). */
-type SpanLookup = {
+export type SpanLookup = {
   readonly runId: string;
+  /** Offset within the run's own text. */
   readonly runOffset: number;
   readonly spanIndex: number;
   readonly spanLength: number;
 };
-
-/**
- * Pure lookup against a spans array — the same logic as
- * `getRunAtPosition` but takes the spans directly so we can use it
- * from within `tr.changes.iterChanges` (where `view.state` isn't
- * available mid-callback).
- */
-export function lookupPositionFromSpans(
-  spans: readonly RunSpan[],
-  position: number,
-): SpanLookup | undefined {
-  let cumulative = 0;
-  for (let i = 0; i < spans.length; i++) {
-    const span = spans[i]!;
-    if (position < cumulative + span.length) {
-      return {
-        runId: span.runId,
-        runOffset: position - cumulative,
-        spanIndex: i,
-        spanLength: span.length,
-      };
-    }
-    cumulative += span.length;
-  }
-  return undefined;
-}
-
-/**
- * Find the document range occupied by a run in the given spans.
- * Returns `{ start, end }` (end exclusive) or undefined if not found.
- */
-export function findRunRange(
-  spans: readonly RunSpan[],
-  runId: string,
-): { start: number; end: number } | undefined {
-  let cumulative = 0;
-  for (const span of spans) {
-    if (span.runId === runId) {
-      return { start: cumulative, end: cumulative + span.length };
-    }
-    cumulative += span.length;
-  }
-  return undefined;
-}
-
-/**
- * Convert the tree's PositionIndex spans to the lighter `RunSpan`
- * shape we expose via the CM StateField. Drops any tombstoned runs
- * (they have no presence in CM).
- *
- * Note: this is intentionally permissive about input shape — the
- * tree's spans are `{ runId, length }` pairs, which is what we want.
- * The function lives here rather than in `@ebbjs/client` because
- * `RunSpan` is a CM-bridge concept.
- */
-function spansToRunSpans(
-  spans: ReadonlyArray<{ runId: string; length: number }>,
-): readonly RunSpan[] {
-  return spans.map((s) => ({ runId: s.runId, length: s.length }));
-}

@@ -1,10 +1,14 @@
 # Collaborative Text Prototype — Design Doc
 
-> **Status: Forward-looking — authoritative design for the next major piece of work.** The Elixir sync server (`ebb_server/`, slices 1–4), the `@ebbjs/core` package, and the in-memory `@ebbjs/storage` adapter are **shipped and tested**. The local-first sync SDK (`@ebbjs/client`), the `@ebbjs/codemirror` bridge, and `examples/collaborative-text-demo` have since shipped too; treat the slice plan below as the original design record, superseded by the code where they disagree. A CodeMirror-based causal-tree POC exists in [`experiment/collaborative-text/`](../../../experiment/collaborative-text/) using `BroadcastChannel` as a stand-in for the server. This document describes the architecture and slice plan for shipping a working browser-based collaborative text prototype against `mix dev`, replacing the BroadcastChannel relay with the real Action / SSE / catch-up stack.
+> **Status: Forward-looking — authoritative design for the next major piece of work.** The Elixir sync server (`ebb_server/`, slices 1–4), the `@ebbjs/core` package, and the in-memory `@ebbjs/storage` adapter are **shipped and tested**. The local-first sync SDK (`@ebbjs/client`), the `@ebbjs/codemirror` bridge, and `examples/collaborative-text-demo` have since shipped too; treat the slice plan below as the original design record, superseded by the code where they disagree.
+
+> **Superseded in part by [#764](https://github.com/ebbjs/ebbjs/issues/764).** Runs are now immutable and deletes are additive cuts, so the same-run rewrite model, its split/tombstone encodings, and the same-run conflict slot described below are historical. The current model is `packages/schema/src/collaborative-text/`.
+
+A CodeMirror-based causal-tree POC exists in [`experiment/collaborative-text/`](../../../experiment/collaborative-text/) using `BroadcastChannel` as a stand-in for the server. This document describes the architecture and slice plan for shipping a working browser-based collaborative text prototype against `mix dev`, replacing the BroadcastChannel relay with the real Action / SSE / catch-up stack.
 
 ## Goal
 
-Two browser tabs editing the same document see each other's keystrokes in real time, with edits flowing through Actions, the Elixir sync server, and SSE fan-out — **not via `BroadcastChannel`**. The "Colour scenario" from the [April 2026 devlog](../../../packages/www/src/content/devlog/how-collaborative-editing-works.mdx) must surface as a human-visible conflict, not be silently merged.
+Two browser tabs editing the same document see each other's keystrokes in real time, with edits flowing through Actions, the Elixir sync server, and SSE fan-out — **not via `BroadcastChannel`**. The "Colour scenario" from the [April 2026 devlog](../../../packages/www/src/content/devlog/how-collaborative-editing-works.mdx) was originally planned to surface as a human-visible conflict. [#764](https://github.com/ebbjs/ebbjs/issues/764) removed that position: same-run edits no longer contest a key, so text surfaces no slots.
 
 ## Non-goals (explicitly out of scope)
 

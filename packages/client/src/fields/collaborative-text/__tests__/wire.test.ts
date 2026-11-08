@@ -1,509 +1,278 @@
 /**
- * Wire format tests — runs-as-map-keys wire model.
+ * Wire adapter tests — cells in and out of ebb Actions.
  *
- * Verifies:
- * - applyActions parses the `content` map and applies it to the tree
- * - Map entries with value: null are tombstones
- * - Map entries with value: <RunNode> are inserts (new run) or updates (existing run)
- * - diffRunFields / diffRunFieldsForDeleteRange produce the run map for local edits
- * - docActionToUpdate wraps the run map in a doc-targeted Update
- * - isDocSubjectUpdate filters by subject type
+ * The body is a map field keyed by cell id with a `version` leaf written by
+ * every edit. These tests cover parsing, building, the version gate, the
+ * append-only rule, and delivery as re-projection.
  */
 
 import { describe, expect, it } from "vitest";
-import { pack, format, type Action, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
 import {
+  format,
+  pack,
+  type Action,
+  type FieldValue,
+  type HLCTimestamp,
+  type Update,
+} from "@ebbjs/core";
+import {
+  appendOnlyRewrites,
+  appendOnlyViolations,
   applyActions,
-  diffRunFields,
-  diffRunFieldsForDeleteRange,
-  DEFAULT_DOC_SUBJECT_TYPE,
-  docActionToUpdate,
-  isDocSubjectUpdate,
-  parseContentField,
-} from "@ebbjs/schema";
-import {
+  assertAppendOnly,
+  assertKnownVersion,
+  AppendOnlyViolationError,
+  buildInitialDocumentFields,
+  contentFieldFromCells,
+  contentKeys,
   createDocState,
-  docReducer,
+  CURRENT_TEXT_VERSION,
+  docActionToUpdate,
+  DOC_CONTENT_FIELD,
+  DOC_VERSION_FIELD,
+  DocumentVersionError,
+  isDocSubjectUpdate,
   makeRunId,
-  type DocState,
-  type RunFieldValue,
-  type RunNode,
+  parseContentField,
+  readCellFields,
+  versionField,
+  type RunCell,
+  type TextCell,
 } from "@ebbjs/schema";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
+const T = hlc(10);
 
-const makeHlc = (ts: number, count = 0): HLCTimestamp => format(pack(BigInt(ts), BigInt(count)));
-
-const makeRun = (ts: number, actorId: string, text: string, parentId: string): RunNode => {
-  const hlc = makeHlc(ts);
-  return { id: makeRunId(hlc, actorId), hlc, actorId, text, parentId, deleted: false };
-};
-
-/** Build an Action with one Update targeting docId with the given run map. */
-const makeFieldAction = (
-  docId: string,
-  actorId: string,
-  hlc: HLCTimestamp,
-  runs: Record<string, RunFieldValue>,
-  actionId = "a_test",
-  updateId = "u_test",
-): Action => ({
-  id: actionId,
-  actor_id: actorId,
-  hlc,
-  gsn: 0,
-  updates: [
-    {
-      id: updateId,
-      subject_id: docId,
-      subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-      method: "patch",
-      data: { fields: { content: { map: runs } } } as unknown as never,
-    },
-  ],
+const run = (id: string, text: string, anchor = { runId: "ROOT", offset: 0 }): RunCell => ({
+  kind: "run",
+  id,
+  text,
+  author: "a",
+  stamp: T,
+  anchor,
 });
 
-// ---------------------------------------------------------------------------
-// isDocSubjectUpdate
-// ---------------------------------------------------------------------------
+const updateWith = (fields: Record<string, FieldValue>, subjectType = "text_document"): Update => ({
+  id: "upd_1",
+  subject_id: "doc_1",
+  subject_type: subjectType,
+  method: "patch",
+  data: { fields } as never,
+});
 
-describe("isDocSubjectUpdate", () => {
-  it("returns true for subject_type matching the doc type", () => {
+const actionWith = (update: Update): Action => ({
+  id: "act_1",
+  actor_id: "a",
+  hlc: T,
+  gsn: 1,
+  updates: [update],
+});
+
+const contentOf = (cellList: TextCell[]): FieldValue => ({
+  map: Object.fromEntries(
+    cellList.map((cell) => [cell.id, { value: cell, update_id: `u_${cell.id}`, hlc: cell.stamp }]),
+  ),
+});
+
+describe("parseContentField", () => {
+  it("parses current run cells", () => {
+    const base = run("r1", "hello");
+    const parsed = parseContentField(contentOf([base]));
+    expect(parsed.get("r1")?.value).toEqual(base);
+  });
+
+  it("ignores non-map content and legacy shapes", () => {
+    expect(parseContentField(undefined).size).toBe(0);
+    expect(parseContentField({ value: 1, update_id: "u", hlc: T }).size).toBe(0);
     expect(
-      isDocSubjectUpdate(
-        {
-          id: "u_1",
-          subject_id: "doc_x",
-          subject_type: DEFAULT_DOC_SUBJECT_TYPE,
-          method: "patch",
-          data: null,
+      parseContentField({
+        map: {
+          r1: {
+            value: { id: "r1", text: "hi", parentId: "ROOT", deleted: false },
+            update_id: "u",
+            hlc: T,
+          },
         },
-        DEFAULT_DOC_SUBJECT_TYPE,
-      ),
-    ).toBe(true);
+      }).size,
+    ).toBe(0);
   });
 
-  it("returns false for other subject types", () => {
-    expect(
-      isDocSubjectUpdate(
-        {
-          id: "u_1",
-          subject_id: "x",
-          subject_type: "todo",
-          method: "patch",
-          data: null,
-        },
-        DEFAULT_DOC_SUBJECT_TYPE,
-      ),
-    ).toBe(false);
-  });
-
-  it("supports custom doc types", () => {
-    expect(
-      isDocSubjectUpdate(
-        {
-          id: "u_1",
-          subject_id: "doc_x",
-          subject_type: "rich_text",
-          method: "patch",
-          data: null,
-        },
-        "rich_text",
-      ),
-    ).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// applyActions
-// ---------------------------------------------------------------------------
-
-describe("applyActions", () => {
-  it("applies a single field update (insert new run)", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const fields = {
-      [node.id]: {
-        value: node,
-        update_id: "u_1",
-        hlc: node.hlc,
-      },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", node.hlc, fields);
-
-    const { state, applied } = applyActions(createDocState(), [action]);
-
-    expect(state.nodes.has(node.id)).toBe(true);
-    expect(state.index.spans).toEqual([{ runId: node.id, length: 5 }]);
-    expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ type: "INSERT_RUN", node });
-  });
-
-  it("applies a tombstone (value: null) as DELETE_RANGE", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
-
-    const fields = {
-      [node.id]: {
-        value: null,
-        update_id: "u_2",
-        hlc: makeHlc(2000),
-      },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(2000), fields);
-
-    const { state: s2, applied } = applyActions(state, [action]);
-
-    expect(s2.nodes.get(node.id)?.deleted).toBe(true);
-    expect(s2.index.totalLength).toBe(0);
-    expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({ type: "DELETE_RANGE", runId: node.id, offset: 0, count: 5 });
-  });
-
-  it("applies a field update to an existing run as EXTEND_RUN (text replacement)", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
-
-    const updated = { ...node, text: "hello world", hlc: makeHlc(2000) };
-    const fields = {
-      [node.id]: {
-        value: updated,
-        update_id: "u_2",
-        hlc: makeHlc(2000),
-      },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(2000), fields);
-
-    const { state: s2, applied } = applyActions(state, [action]);
-
-    expect(s2.nodes.get(node.id)?.text).toBe("hello world");
-    expect(s2.index.totalLength).toBe(11);
-    expect(applied).toHaveLength(1);
-    expect(applied[0]).toEqual({
-      type: "EXTEND_RUN",
-      runId: node.id,
-      appendText: "hello world",
-      hlc: expect.anything(),
-    });
-  });
-
-  it("is a no-op for a field update with the same final state", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
-
-    const fields = {
-      [node.id]: {
-        value: node,
-        update_id: "u_2",
-        hlc: node.hlc,
-      },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", node.hlc, fields);
-
-    const { state: s2, applied } = applyActions(state, [action]);
-
-    expect(s2).toBe(state);
-    expect(applied).toHaveLength(0);
-  });
-
-  it("applies multiple field updates in one Update atomically", () => {
-    const a = makeRun(1000, "peer-A", "a", "ROOT");
-    const b = makeRun(1001, "peer-B", "b", "ROOT");
-    const fields = {
-      [a.id]: { value: a, update_id: "u_1", hlc: a.hlc },
-      [b.id]: { value: b, update_id: "u_2", hlc: b.hlc },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", a.hlc, fields);
-
-    const { state } = applyActions(createDocState(), [action]);
-
-    expect(state.nodes.has(a.id)).toBe(true);
-    expect(state.nodes.has(b.id)).toBe(true);
-  });
-
-  it("applies insert + tombstone for partial DELETE_RANGE (split halves + tombstoned middle)", () => {
-    const node = makeRun(1000, "peer-A", "abcdef", "ROOT");
-    let state = docReducer(createDocState(), { type: "INSERT_RUN", node });
-
-    // Sender deletes "cd" (offset 2, count 2) — splits into "ab" / "cd" / "ef"
-    // with the middle tombstoned. The receiver gets three field updates.
-    const left = { ...node, text: "ab" };
-    const splitId = makeRunId(makeHlc(1000), "peer-A") + ":s:2";
-    const right = {
-      id: splitId + ":s:2",
-      hlc: makeHlc(1000),
-      actorId: "peer-A",
-      text: "ef",
-      parentId: splitId,
-      deleted: false,
-    };
-    const fields = {
-      [node.id]: { value: left, update_id: "u_del", hlc: makeHlc(2000) },
-      [splitId]: { value: null, update_id: "u_del", hlc: makeHlc(2000) },
-      [right.id]: { value: right, update_id: "u_del", hlc: makeHlc(2000) },
-    };
-    const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(2000), fields);
-
-    const { state: s2 } = applyActions(state, [action]);
-
-    expect(s2.index.totalLength).toBe(4); // "ab" + "ef"
-    expect(s2.nodes.get(node.id)?.text).toBe("ab");
-    expect(s2.nodes.get(right.id)?.text).toBe("ef");
-    // The split half (splitId) is local-only on the sender; the receiver
-    // doesn't have it in its tree, so the tombstone field update is a
-    // no-op. The visible text is correct via the left + right halves.
-  });
-
-  it("ignores Updates targeting a different subject type", () => {
-    const action: Action = {
-      id: "a_1",
-      actor_id: "peer-A",
-      hlc: makeHlc(1000),
-      gsn: 0,
-      updates: [
-        {
-          id: "u_1",
-          subject_id: "todo_x",
-          subject_type: "todo",
-          method: "patch",
-          data: null,
-        },
-      ],
-    };
-
-    const { state, applied } = applyActions(createDocState(), [action]);
-
-    expect(state.nodes.size).toBe(1); // ROOT only
-    expect(applied).toHaveLength(0);
-  });
-
-  it("ignores a `content` map whose entries are not run leaves", () => {
-    const action = makeFieldAction("doc_xxx", "peer-A", makeHlc(1000), {
-      title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1000) } as unknown as RunFieldValue,
-    });
-
-    const { state, applied } = applyActions(createDocState(), [action]);
-
-    expect(state.nodes.size).toBe(1); // ROOT only — no runs added
-    expect(applied).toHaveLength(0);
-  });
-
-  it("filters by custom docSubjectType", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const fields = {
-      [node.id]: {
-        value: node,
-        update_id: "u_1",
-        hlc: node.hlc,
-      },
-    };
-    const action: Action = {
-      id: "a_1",
-      actor_id: "peer-A",
-      hlc: node.hlc,
-      gsn: 0,
-      updates: [
-        {
-          id: "u_1",
-          subject_id: "doc_xxx",
-          subject_type: "rich_text", // custom type
-          method: "patch",
-          data: { fields: { content: { map: fields } } } as unknown as never,
-        },
-      ],
-    };
-
-    // Default docSubjectType filter excludes "rich_text"
-    const { applied: a1 } = applyActions(createDocState(), [action]);
-    expect(a1).toHaveLength(0);
-
-    // Explicit docSubjectType="rich_text" includes it
-    const { applied: a2 } = applyActions(createDocState(), [action], "rich_text");
-    expect(a2).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// diffRunFields
-// ---------------------------------------------------------------------------
-
-describe("diffRunFields", () => {
-  it("emits one field update for a new run", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const post = docReducer(createDocState(), { type: "INSERT_RUN", node });
-
-    const fields = diffRunFields(createDocState(), post, {
-      updateId: "u_1",
-      hlc: node.hlc,
-    });
-
-    expect(Object.keys(fields)).toEqual([node.id]);
-    expect(fields[node.id]!.value).toEqual(node);
-  });
-
-  it("emits a tombstone (value: null) for a deleted run", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const pre = docReducer(createDocState(), { type: "INSERT_RUN", node });
-    const post = docReducer(pre, {
-      type: "DELETE_RANGE",
-      runId: node.id,
-      offset: 0,
-      count: 5,
-    });
-
-    const fields = diffRunFields(pre, post, {
-      updateId: "u_2",
-      hlc: makeHlc(2000),
-    });
-
-    expect(fields[node.id]!.value).toBeNull();
-  });
-
-  it("emits multiple field updates for split-half survivors", () => {
-    const node = makeRun(1000, "peer-A", "abcdef", "ROOT");
-    const pre = docReducer(createDocState(), { type: "INSERT_RUN", node });
-    const post = docReducer(pre, {
-      type: "DELETE_RANGE",
-      runId: node.id,
-      offset: 2,
-      count: 2,
-    });
-
-    const fields = diffRunFields(pre, post, {
-      updateId: "u_3",
-      hlc: makeHlc(2000),
-    });
-
-    // Expect: left shrunk (node), middle tombstoned (split), right created (split split)
-    expect(Object.keys(fields).length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("returns empty object when pre == post", () => {
-    const fields = diffRunFields(createDocState(), createDocState(), {
-      updateId: "u_x",
-      hlc: makeHlc(1000),
-    });
-    expect(fields).toEqual({});
-  });
-});
-
-// ---------------------------------------------------------------------------
-// diffRunFieldsForDeleteRange
-// ---------------------------------------------------------------------------
-
-describe("diffRunFieldsForDeleteRange", () => {
-  it("matches diffRunFields output for a full delete", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const pre = docReducer(createDocState(), { type: "INSERT_RUN", node });
-    const post = docReducer(pre, {
-      type: "DELETE_RANGE",
-      runId: node.id,
-      offset: 0,
-      count: 5,
-    });
-
-    const a = diffRunFields(pre, post, { updateId: "u", hlc: makeHlc(2000) });
-    const b = diffRunFieldsForDeleteRange(pre, post, { updateId: "u", hlc: makeHlc(2000) });
-
-    expect(a).toEqual(b);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// docActionToUpdate
-// ---------------------------------------------------------------------------
-
-describe("docActionToUpdate", () => {
-  it("returns null for empty field updates", () => {
-    const update = docActionToUpdate({}, { docId: "doc_xxx", updateId: "u_1" });
-    expect(update).toBeNull();
-  });
-
-  it("wraps field updates in a doc-targeted Update with method: patch", () => {
-    const node = makeRun(1000, "peer-A", "hello", "ROOT");
-    const fields = {
-      [node.id]: {
-        value: node,
-        update_id: "u_1",
-        hlc: node.hlc,
-      },
-    };
-    const update = docActionToUpdate(fields, {
-      docId: "doc_xxx",
-      updateId: "u_1",
-    });
-
-    expect(update).not.toBeNull();
-    expect(update!.subject_id).toBe("doc_xxx");
-    expect(update!.subject_type).toBe(DEFAULT_DOC_SUBJECT_TYPE);
-    expect(update!.method).toBe("patch");
-    expect(update!.id).toBe("u_1");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Acceptance: POC ↔ new wire format produces the same tree
-// ---------------------------------------------------------------------------
-
-describe("acceptance — same edits produce the same document via field-update wire", () => {
-  it("two clients editing the same doc converge", () => {
-    const docA = new (class {
-      state: DocState = createDocState();
-      pending: Action[] = [];
-    })() as unknown as { state: DocState; pending: Action[] };
-
-    // Peer-A inserts "hello"
-    const a = makeRun(1000, "peer-A", "hello", "ROOT");
-    const aAction = makeFieldAction("doc_xxx", "peer-A", a.hlc, {
-      [a.id]: { value: a, update_id: "u_a", hlc: a.hlc },
-    });
-    const r1 = applyActions(docA.state, [aAction]);
-    docA.state = r1.state;
-
-    // Peer-B sees A's insert, types " world"
-    const b = makeRun(2000, "peer-B", " world", a.id);
-    const bAction = makeFieldAction("doc_xxx", "peer-B", b.hlc, {
-      [b.id]: { value: b, update_id: "u_b", hlc: b.hlc },
-    });
-    const r2 = applyActions(docA.state, [bAction]);
-    docA.state = r2.state;
-
-    // Reconstruct
-    const reconstruct = (state: DocState): string => {
-      const out: string[] = [];
-      const stack = ["ROOT"];
-      while (stack.length > 0) {
-        const id = stack.pop()!;
-        const node = state.nodes.get(id);
-        if (!node) continue;
-        if (!node.deleted && node.id !== "ROOT") out.push(node.text);
-        const cs = state.children.get(id) ?? [];
-        for (let i = cs.length - 1; i >= 0; i--) stack.push(cs[i]!);
-      }
-      return out.join("");
-    };
-
-    expect(reconstruct(docA.state)).toBe("hello world");
-  });
-});
-
-describe("parseContentField caching", () => {
-  const run = makeRun(1, "actor_1", "hello", "ROOT");
-  const content = (): FieldValue => ({
-    map: { [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.hlc } },
-  });
-
-  it("returns the same parse for the same content version", () => {
-    const field = content();
-
+  it("caches by content version", () => {
+    const field = contentOf([run("r1", "hello")]);
     expect(parseContentField(field)).toBe(parseContentField(field));
   });
+});
 
-  it("parses a new content version separately", () => {
-    const first = content();
-    const second = content();
+describe("contentKeys", () => {
+  it("returns the map's keys and nothing for other shapes", () => {
+    expect(contentKeys(contentOf([run("r1", "a"), run("r2", "b")]))).toEqual(["r1", "r2"]);
+    expect(contentKeys(undefined)).toEqual([]);
+    expect(contentKeys({ value: 1 })).toEqual([]);
+  });
+});
 
-    expect(parseContentField(second)).not.toBe(parseContentField(first));
+describe("version", () => {
+  it("accepts the current version", () => {
+    expect(() => assertKnownVersion(versionField(T, "u"))).not.toThrow();
+  });
+
+  it("accepts an absent version (an empty seeded body)", () => {
+    expect(() => assertKnownVersion(undefined)).not.toThrow();
+  });
+
+  it("fails loudly for a version this client does not know", () => {
+    expect(() => assertKnownVersion(versionField(T, "u", CURRENT_TEXT_VERSION + 1))).toThrow(
+      DocumentVersionError,
+    );
+    expect(() => assertKnownVersion(versionField(T, "u", "v9" as never))).toThrow(
+      /not readable by this client/,
+    );
+  });
+
+  it("writes the version leaf on every Update", () => {
+    const update = docActionToUpdate([run("r1", "hi")], { docId: "doc_1", updateId: "u1" })!;
+    const fields = (update.data as { fields: Record<string, FieldValue> }).fields;
+    expect(fields[DOC_VERSION_FIELD]).toMatchObject({
+      value: CURRENT_TEXT_VERSION,
+      update_id: "u1",
+    });
+    expect(fields[DOC_CONTENT_FIELD]).toBeDefined();
+  });
+});
+
+describe("building content", () => {
+  it("wraps cells under the document's content map with their own stamps", () => {
+    const base = run("r1", "hi");
+    const field = contentFieldFromCells([base], "u1");
+    expect(field).toEqual({ map: { r1: { value: base, update_id: "u1", hlc: base.stamp } } });
+  });
+
+  it("builds a first run at the root plus the version leaf", () => {
+    const fields = buildInitialDocumentFields("hello", T, "actor_a", "u1");
+    expect(fields[DOC_VERSION_FIELD]).toMatchObject({ value: CURRENT_TEXT_VERSION });
+    expect(contentKeys(fields[DOC_CONTENT_FIELD])).toEqual([makeRunId(T, "actor_a")]);
+
+    const parsed = parseContentField(
+      buildInitialDocumentFields("hello", T, "actor_a", "u1")[DOC_CONTENT_FIELD]!,
+    );
+    const cells = [...parsed.values()];
+    expect(cells[0]?.value).toMatchObject({
+      kind: "run",
+      text: "hello",
+      author: "actor_a",
+      anchor: { runId: "ROOT", offset: 0 },
+    });
+  });
+});
+
+describe("append-only discipline", () => {
+  it("permits keys that are new", () => {
+    expect(appendOnlyViolations(["a", "b"], ["c"])).toEqual([]);
+    expect(() => assertAppendOnly(["a"], ["b"])).not.toThrow();
+  });
+
+  it("reports every rewritten key", () => {
+    expect(appendOnlyViolations(["a", "b", "c"], ["b", "c"])).toEqual(["b", "c"]);
+  });
+
+  it("treats an identical re-delivery as the same cell, not a rewrite", () => {
+    const base = run("r1", "hello");
+    const incoming = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
+    expect(appendOnlyRewrites(incoming, incoming)).toEqual([]);
+  });
+
+  it("compares cells structurally, not by JSON key order", () => {
+    const base = run("r1", "hello");
+    const reordered = {
+      anchor: { offset: base.anchor.offset, runId: base.anchor.runId },
+      stamp: base.stamp,
+      text: base.text,
+      author: base.author,
+      id: base.id,
+      kind: base.kind,
+    } as RunCell;
+    const incoming = new Map([[base.id, { value: reordered, update_id: "u1", hlc: base.stamp }]]);
+    const existing = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
+    expect(appendOnlyRewrites(incoming, existing)).toEqual([]);
+  });
+
+  it("reports a different value under an existing key", () => {
+    const base = run("r1", "hello");
+    const rewritten = { ...base, text: "goodbye" };
+    const incoming = new Map([[base.id, { value: rewritten, update_id: "u2", hlc: base.stamp }]]);
+    const existing = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
+    expect(appendOnlyRewrites(incoming, existing)).toEqual([base.id]);
+  });
+
+  it("throws with the existing key set", () => {
+    try {
+      assertAppendOnly(["a"], ["a"]);
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppendOnlyViolationError);
+      expect((error as AppendOnlyViolationError).keys).toEqual(["a"]);
+    }
+  });
+});
+
+describe("applyActions", () => {
+  it("projects delivered cells and reports only newly delivered ones", () => {
+    const base = run("r1", "hello");
+    const update = updateWith({
+      [DOC_CONTENT_FIELD]: contentOf([base]),
+      [DOC_VERSION_FIELD]: versionField(T, "u"),
+    });
+
+    const first = applyActions(createDocState(), [actionWith(update)]);
+    expect(first.state.text).toBe("hello");
+    expect(first.applied).toEqual([{ cellId: "r1", cell: base }]);
+
+    const again = applyActions(first.state, [actionWith(update)]);
+    expect(again.state).toBe(first.state);
+    expect(again.applied).toEqual([]);
+  });
+
+  it("is delivery-order independent", () => {
+    const base = run("r1", "abc");
+    const x = run("r2", "X", { runId: "r1", offset: 1 });
+    const updateFor = (cell: TextCell) =>
+      updateWith({
+        [DOC_CONTENT_FIELD]: contentOf([cell]),
+        [DOC_VERSION_FIELD]: versionField(T, `u_${cell.id}`),
+      });
+
+    const ab = applyActions(applyActions(createDocState(), [actionWith(updateFor(base))]).state, [
+      actionWith(updateFor(x)),
+    ]);
+    const ba = applyActions(applyActions(createDocState(), [actionWith(updateFor(x))]).state, [
+      actionWith(updateFor(base)),
+    ]);
+    expect(ab.state.text).toBe("aXbc");
+    expect(ba.state.text).toBe("aXbc");
+  });
+
+  it("skips Updates for another subject type", () => {
+    const update = updateWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) }, "other_doc");
+    expect(applyActions(createDocState(), [actionWith(update)]).state.text).toBe("");
+  });
+
+  it("fails on an unknown version", () => {
+    const update = updateWith({
+      [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]),
+      [DOC_VERSION_FIELD]: versionField(T, "u", 999),
+    });
+    expect(() => applyActions(createDocState(), [actionWith(update)])).toThrow(
+      DocumentVersionError,
+    );
+  });
+
+  it("identifies the doc subject", () => {
+    expect(isDocSubjectUpdate(updateWith({}, "text_document"), "text_document")).toBe(true);
+    expect(isDocSubjectUpdate(updateWith({}, "other"), "text_document")).toBe(false);
+  });
+
+  it("reads cells out of an Update", () => {
+    const update = updateWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) });
+    expect([...readCellFields(update).keys()]).toEqual(["r1"]);
   });
 });

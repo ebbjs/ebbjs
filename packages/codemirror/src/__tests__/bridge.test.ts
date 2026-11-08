@@ -2,10 +2,11 @@
  * Tests for the collaborative-text-editor bridge.
  *
  * Covers:
- * - Pure helpers (getRunAtPosition, getPositionOfRun)
- * - Local CM edit → doc translation (insert / extend / delete)
- * - doc.onUpdate → CM application (insert / extend / tombstone)
- * - Roundtrip: type in CM, see doc update; apply remote Action, see CM update
+ * - Pure helpers (lookupPositionFromSpans, getRunAtPosition, getPositionOfRun),
+ *   including runs that project to more than one span.
+ * - Local CM edit → doc translation (insert / extend / cut)
+ * - doc.onUpdate → CM application (insert / cut): CM must end up equal to
+ *   `doc.text` after every event.
  *
  * The integration tests use a real CM6 EditorView (happy-dom provides
  * the DOM). The bridge wires both directions; we assert via
@@ -16,12 +17,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { TextDocument } from "@ebbjs/client";
+import { TextDocument, type TextCell } from "@ebbjs/client";
+import type { Action } from "@ebbjs/core";
 import {
   createBridgeExtension,
   createIdMapField,
   ensureRootSpan,
-  findRunRange,
   getPositionOfRun,
   getRunAtPosition,
   isRemote,
@@ -48,6 +49,92 @@ afterEach(() => {
   view = null;
   _doc = null;
 });
+
+/**
+ * A run split by a sibling anchored in the middle. Renders
+ * "hello" + "XYZ" + "!!": run `a` yields two spans, `b` one.
+ */
+const SPLIT_SPANS: RunSpan[] = [
+  { runId: "a", offset: 0, length: 5 },
+  { runId: "b", offset: 0, length: 3 },
+  { runId: "a", offset: 5, length: 2 },
+];
+
+/** A run with no inserts anchored inside it. */
+const SIMPLE_SPANS: RunSpan[] = [
+  { runId: "a", offset: 0, length: 5 },
+  { runId: "b", offset: 0, length: 3 },
+];
+
+/** Build a run cell. */
+function runCell(opts: {
+  id: string;
+  text: string;
+  author: string;
+  stamp: string;
+  parentId: string;
+  offset: number;
+}): TextCell {
+  return {
+    kind: "run",
+    id: opts.id,
+    text: opts.text,
+    author: opts.author,
+    stamp: opts.stamp,
+    anchor: { runId: opts.parentId, offset: opts.offset },
+  };
+}
+
+/** Build a cut cell retracting `[from, to)` of one run. */
+function cutCell(opts: {
+  id: string;
+  runId: string;
+  from: number;
+  to: number;
+  author: string;
+  stamp: string;
+}): TextCell {
+  return {
+    kind: "cut",
+    id: opts.id,
+    runId: opts.runId,
+    from: opts.from,
+    to: opts.to,
+    author: opts.author,
+    stamp: opts.stamp,
+  };
+}
+
+/** Wrap cells in the wire's Action shape. */
+function wireAction(actionId: string, cells: readonly TextCell[]): Action {
+  const hlc = cells[0]!.stamp;
+  return {
+    id: actionId,
+    actor_id: cells[0]!.author,
+    hlc,
+    gsn: 0,
+    updates: [
+      {
+        id: `${actionId}_update`,
+        subject_id: "doc_test",
+        subject_type: "text_document",
+        method: "patch",
+        data: {
+          fields: {
+            content: {
+              map: Object.fromEntries(
+                cells.map((cell) => [
+                  cell.id,
+                  { value: cell, update_id: `${actionId}_update`, hlc: cell.stamp },
+                ]),
+              ),
+            },
+          },
+        },
+      },
+    ],
+  } as Action;
+}
 
 /**
  * Create a fresh EditorView wired to a fresh TextDocument. Returns the
@@ -104,105 +191,108 @@ function localDelete(v: EditorView, from: number, to: number): void {
 // ---------------------------------------------------------------------------
 
 describe("bridge helpers", () => {
-  it("lookupPositionFromSpans finds a span by absolute position", () => {
-    const spans: RunSpan[] = [
-      { runId: "a", length: 5 },
-      { runId: "b", length: 3 },
-      { runId: "c", length: 4 },
-    ];
-    expect(lookupPositionFromSpans(spans, 0)).toEqual({
+  it("lookupPositionFromSpans reports run-text offsets, per fragment", () => {
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 0)).toEqual({
       runId: "a",
       runOffset: 0,
       spanIndex: 0,
       spanLength: 5,
     });
-    expect(lookupPositionFromSpans(spans, 4)).toEqual({
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 4)).toEqual({
       runId: "a",
       runOffset: 4,
       spanIndex: 0,
       spanLength: 5,
     });
-    expect(lookupPositionFromSpans(spans, 5)).toEqual({
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 5)).toEqual({
       runId: "b",
       runOffset: 0,
       spanIndex: 1,
       spanLength: 3,
     });
-    expect(lookupPositionFromSpans(spans, 12)).toBeUndefined();
-  });
-
-  it("findRunRange returns the absolute range of a run", () => {
-    const spans: RunSpan[] = [
-      { runId: "a", length: 5 },
-      { runId: "b", length: 3 },
-      { runId: "c", length: 4 },
-    ];
-    expect(findRunRange(spans, "a")).toEqual({ start: 0, end: 5 });
-    expect(findRunRange(spans, "b")).toEqual({ start: 5, end: 8 });
-    expect(findRunRange(spans, "c")).toEqual({ start: 8, end: 12 });
-    expect(findRunRange(spans, "missing")).toBeUndefined();
-  });
-
-  it("getRunAtPosition via StateField", () => {
-    const idMapField = createIdMapField();
-    const state = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    });
-    // Seed the spans
-    const seeded = state.update({
-      effects: setIdMapEffect.of([
-        { runId: "a", length: 5 },
-        { runId: "b", length: 3 },
-      ]),
-    }).state;
-    expect(getRunAtPosition(seeded, 0, idMapField)).toEqual({
+    // Second fragment of run "a": offset is relative to the run's text.
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 8)).toEqual({
       runId: "a",
-      offset: 0,
-      spanIndex: 0,
+      runOffset: 5,
+      spanIndex: 2,
+      spanLength: 2,
     });
-    expect(getRunAtPosition(seeded, 7, idMapField)).toEqual({
-      runId: "b",
-      offset: 2,
-      spanIndex: 1,
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 9)).toEqual({
+      runId: "a",
+      runOffset: 6,
+      spanIndex: 2,
+      spanLength: 2,
     });
-    expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
-      runId: "b",
-      offset: 3,
-      spanIndex: 1,
-    });
+    expect(lookupPositionFromSpans(SPLIT_SPANS, 10)).toBeUndefined();
   });
 
-  it("getPositionOfRun via StateField", () => {
-    const idMapField = createIdMapField();
-    const state = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    });
-    const seeded = state.update({
-      effects: setIdMapEffect.of([
-        { runId: "a", length: 5 },
-        { runId: "b", length: 3 },
-      ]),
-    }).state;
-    expect(getPositionOfRun(seeded, "a", 0, idMapField)).toBe(0);
-    expect(getPositionOfRun(seeded, "a", 4, idMapField)).toBe(4);
-    expect(getPositionOfRun(seeded, "b", 0, idMapField)).toBe(5);
-    expect(getPositionOfRun(seeded, "b", 2, idMapField)).toBe(7);
-    expect(getPositionOfRun(seeded, "missing", 0, idMapField)).toBeUndefined();
-    // Offset beyond run length is rejected.
-    expect(getPositionOfRun(seeded, "a", 100, idMapField)).toBeUndefined();
-  });
-
-  it("getPositionOfRun accepts offset === span.length (end-of-run cursor)", () => {
+  it("getRunAtPosition resolves run-text offsets across fragments", () => {
     const idMapField = createIdMapField();
     const seeded = EditorState.create({
       doc: "",
       extensions: [idMapField],
     }).update({
-      effects: setIdMapEffect.of([{ runId: "a", length: 5 }]),
+      effects: setIdMapEffect.of(SPLIT_SPANS),
+    }).state;
+
+    expect(getRunAtPosition(seeded, 0, idMapField)).toEqual({
+      runId: "a",
+      offset: 0,
+      spanIndex: 0,
+    });
+    expect(getRunAtPosition(seeded, 6, idMapField)).toEqual({
+      runId: "b",
+      offset: 1,
+      spanIndex: 1,
+    });
+    // Second fragment of run "a".
+    expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
+      runId: "a",
+      offset: 5,
+      spanIndex: 2,
+    });
+    // End of the last fragment.
+    expect(getRunAtPosition(seeded, 10, idMapField)).toEqual({
+      runId: "a",
+      offset: 7,
+      spanIndex: 2,
+    });
+    expect(getRunAtPosition(seeded, 11, idMapField)).toBeUndefined();
+  });
+
+  it("getPositionOfRun resolves the offset inside each fragment", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of(SPLIT_SPANS),
+    }).state;
+
+    expect(getPositionOfRun(seeded, "a", 0, idMapField)).toBe(0);
+    expect(getPositionOfRun(seeded, "a", 4, idMapField)).toBe(4);
+    expect(getPositionOfRun(seeded, "b", 2, idMapField)).toBe(7);
+    // Second fragment of run "a".
+    expect(getPositionOfRun(seeded, "a", 6, idMapField)).toBe(9);
+    // Inclusive end of the last fragment.
+    expect(getPositionOfRun(seeded, "a", 7, idMapField)).toBe(10);
+    // Beyond the run's visible offsets.
+    expect(getPositionOfRun(seeded, "a", 8, idMapField)).toBeUndefined();
+    expect(getPositionOfRun(seeded, "missing", 0, idMapField)).toBeUndefined();
+  });
+
+  it("getPositionOfRun accepts offset === span end (end-of-run cursor)", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of(SIMPLE_SPANS),
     }).state;
     expect(getPositionOfRun(seeded, "a", 5, idMapField)).toBe(5);
+    expect(getPositionOfRun(seeded, "b", 3, idMapField)).toBe(8);
+    // Offset beyond the run length is rejected.
+    expect(getPositionOfRun(seeded, "a", 100, idMapField)).toBeUndefined();
   });
 });
 
@@ -211,105 +301,95 @@ describe("bridge helpers", () => {
 // ---------------------------------------------------------------------------
 
 describe("local CM edit → doc", () => {
-  it("typing at position 0 calls localInsert with afterRun=ROOT", () => {
+  it("typing at position 0 anchors a new run at ROOT", () => {
     const { view, doc } = setup();
     localInsert(view, 0, "hi");
+
     expect(doc.text).toBe("hi");
+    expect(view.state.doc.toString()).toBe("hi");
+    const runs = [...doc.docState.runs.values()];
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.anchor).toEqual({ runId: ROOT_ID, offset: 0 });
     expect(doc.pendingActions()).toHaveLength(1);
   });
 
-  it("typing at end of own run calls localExtend (no new run)", () => {
+  it("typing at the end of our leaf run appends an anchored run", () => {
     const { view, doc } = setup();
     localInsert(view, 0, "hello");
-    const runsBefore = doc.docState.nodes.size;
-    const pendingBefore = doc.pendingActions().length;
+    const rootRun = [...doc.docState.runs.values()][0]!;
 
-    // Type one more character at the end.
     localInsert(view, 5, "!");
 
     expect(doc.text).toBe("hello!");
-    // No new run created.
-    expect(doc.docState.nodes.size).toBe(runsBefore);
-    // Exactly one new pending action (the extend).
-    expect(doc.pendingActions().length).toBe(pendingBefore + 1);
+    expect(view.state.doc.toString()).toBe("hello!");
+    // The parent keeps its text; the extension is a new run at its end.
+    expect(doc.docState.runs.get(rootRun.id)!.text).toBe("hello");
+    const appended = [...doc.docState.runs.values()].find((run) => run.text === "!");
+    expect(appended?.anchor).toEqual({ runId: rootRun.id, offset: 5 });
   });
 
-  it("typing mid-run calls localInsert with splitParentAt", () => {
+  it("typing mid-run anchors a new run without splitting the parent", () => {
     const { view, doc } = setup();
     localInsert(view, 0, "abcdef");
-    // Type at position 3 (between c and d).
+    const parentId = doc.docState.index.spans[0]!.runId;
+
     localInsert(view, 3, "X");
 
     expect(doc.text).toBe("abcXdef");
-    // Should have created at least one new run for the inserted X
-    // (parent split into two halves + new run inserted between).
-    const insertedRuns = Array.from(doc.docState.nodes.values()).filter((n) => n.text === "X");
-    expect(insertedRuns.length).toBeGreaterThan(0);
+    expect(view.state.doc.toString()).toBe("abcXdef");
+    // Runs are immutable: the parent keeps its full text and id.
+    expect(doc.docState.runs.get(parentId)!.text).toBe("abcdef");
+    const inserted = [...doc.docState.runs.values()].find((run) => run.text === "X");
+    expect(inserted?.anchor).toEqual({ runId: parentId, offset: 3 });
+    // The parent now projects to two spans.
+    const parentSpans = doc.docState.index.spans.filter((span) => span.runId === parentId);
+    expect(parentSpans).toEqual([
+      { runId: parentId, offset: 0, length: 3 },
+      { runId: parentId, offset: 3, length: 3 },
+    ]);
   });
 
-  it("deleting across two runs produces two localDelete calls", () => {
+  it("deleting across two runs adds one cut per run", () => {
     const { view, doc } = setup();
-    localInsert(view, 0, "hello world");
-    // pending actions: 1 insert (the whole run was one extend, actually 1 insert for "hello world")
-    // Let's set up a clearer scenario: 3 separate inserts by closing the runs
-    // by switching actor context isn't possible without re-creating the doc.
+    localInsert(view, 0, "hello");
+    localInsert(view, 0, ">> ");
+    expect(doc.text).toBe(">> hello");
 
-    // Just delete a middle range.
-    const pendingBefore = doc.pendingActions().length;
-    localDelete(view, 3, 8); // delete "lo wo"
-    expect(doc.text).toBe("helrld");
-    expect(doc.pendingActions().length).toBeGreaterThan(pendingBefore);
+    // Delete " he": the tail of the second run plus the head of the first.
+    localDelete(view, 2, 5);
+
+    expect(doc.text).toBe(">>llo");
+    expect(view.state.doc.toString()).toBe(">>llo");
+    expect(doc.docState.cuts.size).toBe(2);
+    for (const intervals of doc.docState.cuts.values()) {
+      expect(intervals).toHaveLength(1);
+    }
   });
 
-  it("typing at end of OTHER peer's run inserts a new run (no extend)", () => {
+  it("typing at the end of another peer's run anchors a new run", () => {
     const { view, doc } = setup();
-    // Seed a run owned by peer-B.
     doc.applyActions([
-      {
-        id: "act_seed",
-        actor_id: "peer-B",
-        hlc: "1000",
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_seed",
-            subject_id: "doc_test",
-            subject_type: "text_document",
-            method: "patch",
-            data: {
-              fields: {
-                content: {
-                  map: {
-                    "1000:peer-B": {
-                      value: {
-                        id: "1000:peer-B",
-                        hlc: "1000",
-                        actorId: "peer-B",
-                        text: "hello",
-                        parentId: "ROOT",
-                        deleted: false,
-                      },
-                      update_id: "upd_seed",
-                      hlc: "1000",
-                    },
-                  },
-                },
-              },
-            } as never,
-          },
-        ],
-      },
+      wireAction("act_seed", [
+        runCell({
+          id: "1000:peer-B",
+          text: "hello",
+          author: "peer-B",
+          stamp: "1000",
+          parentId: ROOT_ID,
+          offset: 0,
+        }),
+      ]),
     ]);
     expect(doc.text).toBe("hello");
+    expect(view.state.doc.toString()).toBe("hello");
 
-    // Now type at position 5 (end of peer-B's run). Should NOT extend
-    // because the peer is different.
-    const runsBefore = doc.docState.nodes.size;
     localInsert(view, 5, "X");
 
     expect(doc.text).toBe("helloX");
-    // A new run for "X" was created.
-    expect(doc.docState.nodes.size).toBe(runsBefore + 1);
+    expect(view.state.doc.toString()).toBe("helloX");
+    expect(doc.docState.runs.size).toBe(2);
+    const inserted = [...doc.docState.runs.values()].find((run) => run.text === "X");
+    expect(inserted?.anchor).toEqual({ runId: "1000:peer-B", offset: 5 });
   });
 });
 
@@ -318,7 +398,7 @@ describe("local CM edit → doc", () => {
 // ---------------------------------------------------------------------------
 //
 // For local edits, CM already has the new text from the user input.
-// The bridge's doc.onUpdate listener used to dispatch cmChanges
+// The bridge's doc.onUpdate listener used to dispatch a text change
 // anyway, which inserted the same characters a second time on top of
 // what CM already had (and pushed mid-run inserts to the wrong side
 // of the parent because the spans StateField hadn't caught up yet).
@@ -335,7 +415,6 @@ describe("regression: local CM edits do not double-apply", () => {
       localInsert(view, i, letters[i]!);
     }
     expect(doc.text).toBe("hello");
-    // And CM's view matches.
     expect(view.state.doc.toString()).toBe("hello");
   });
 
@@ -375,142 +454,145 @@ describe("regression: local CM edits do not double-apply", () => {
 // ---------------------------------------------------------------------------
 
 describe("doc.onUpdate → CM", () => {
-  it("applyActions insert: CM doc gets the new run's text at the right position", () => {
+  it("remote insert at ROOT: CM text equals doc.text", () => {
     const { view, doc } = setup();
-    // Receive a remote insert of "world" as a child of ROOT.
+
     doc.applyActions([
-      {
-        id: "act_remote",
-        actor_id: "peer-B",
-        hlc: "2000",
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_remote",
-            subject_id: "doc_test",
-            subject_type: "text_document",
-            method: "patch",
-            data: {
-              fields: {
-                content: {
-                  map: {
-                    "2000:peer-B": {
-                      value: {
-                        id: "2000:peer-B",
-                        hlc: "2000",
-                        actorId: "peer-B",
-                        text: "world",
-                        parentId: "ROOT",
-                        deleted: false,
-                      },
-                      update_id: "upd_remote",
-                      hlc: "2000",
-                    },
-                  },
-                },
-              },
-            } as never,
-          },
-        ],
-      },
+      wireAction("act_remote", [
+        runCell({
+          id: "2000:peer-B",
+          text: "world",
+          author: "peer-B",
+          stamp: "2000",
+          parentId: ROOT_ID,
+          offset: 0,
+        }),
+      ]),
     ]);
 
     expect(doc.text).toBe("world");
     expect(view.state.doc.toString()).toBe("world");
   });
 
-  it("applyActions tombstone: CM doc deletes the run's text", () => {
+  it("remote insert anchored mid-run lands at the anchor", () => {
     const { view, doc } = setup();
-    // Seed "hello"
-    doc.localInsert("hello");
-    expect(view.state.doc.toString()).toBe("hello");
-    const runId = doc.docState.children.get("ROOT")![0]!;
+    localInsert(view, 0, "hello world");
+    const parentId = doc.docState.index.spans[0]!.runId;
 
-    // Tombstone the run via wire-format Action.
     doc.applyActions([
-      {
-        id: "act_del",
-        actor_id: "peer-B",
-        hlc: "5000",
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_del",
-            subject_id: "doc_test",
-            subject_type: "text_document",
-            method: "patch",
-            data: {
-              fields: {
-                content: {
-                  map: {
-                    [runId]: {
-                      value: null,
-                      update_id: "upd_del",
-                      hlc: "5000",
-                    },
-                  },
-                },
-              },
-            } as never,
-          },
-        ],
-      },
+      wireAction("act_mid", [
+        runCell({
+          id: "2000:peer-B",
+          text: "X",
+          author: "peer-B",
+          stamp: "2000",
+          parentId,
+          offset: 5,
+        }),
+      ]),
     ]);
 
-    expect(doc.text).toBe("");
-    expect(view.state.doc.toString()).toBe("");
+    expect(doc.text).toBe("helloX world");
+    expect(view.state.doc.toString()).toBe("helloX world");
   });
 
-  it("applyActions extend: CM doc replaces run's text", () => {
+  it("remote cut removes only the cut run's characters", () => {
     const { view, doc } = setup();
-    doc.localInsert("hello");
-    expect(view.state.doc.toString()).toBe("hello");
-    const runId = doc.docState.children.get("ROOT")![0]!;
-    const original = doc.docState.nodes.get(runId)!;
-
-    // Receive an extend via wire format — the run's text becomes "hello world".
-    // Use an HLC strictly greater than the local run's, otherwise the
-    // "skip older catchUp" check in applyRunFieldUpdate rejects the
-    // update (local text came from a Date.now()-sourced bigint, so any
-    // literal number smaller than ~10^18 loses to it).
-    const wireHlc = String(BigInt(original.hlc) + 1n);
+    const parentId = "1000:peer-B";
 
     doc.applyActions([
-      {
-        id: "act_ext",
-        actor_id: "peer-A",
-        hlc: wireHlc,
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_ext",
-            subject_id: "doc_test",
-            subject_type: "text_document",
-            method: "patch",
-            data: {
-              fields: {
-                content: {
-                  map: {
-                    [runId]: {
-                      value: {
-                        ...original,
-                        text: "hello world",
-                        hlc: wireHlc,
-                      },
-                      update_id: "upd_ext",
-                      hlc: wireHlc,
-                    },
-                  },
-                },
-              },
-            } as never,
-          },
-        ],
-      },
+      wireAction("act_runs", [
+        runCell({
+          id: parentId,
+          text: "abcdef",
+          author: "peer-B",
+          stamp: "1000",
+          parentId: ROOT_ID,
+          offset: 0,
+        }),
+        runCell({
+          id: "2000:peer-C",
+          text: "XY",
+          author: "peer-C",
+          stamp: "2000",
+          parentId,
+          offset: 3,
+        }),
+      ]),
+    ]);
+    expect(doc.text).toBe("abcXYdef");
+    expect(view.state.doc.toString()).toBe("abcXYdef");
+
+    doc.applyActions([
+      wireAction("act_cut", [
+        cutCell({
+          id: "3000:peer-B:cut",
+          runId: parentId,
+          from: 2,
+          to: 5,
+          author: "peer-B",
+          stamp: "3000",
+        }),
+      ]),
     ]);
 
-    expect(doc.text).toBe("hello world");
-    expect(view.state.doc.toString()).toBe("hello world");
+    // "c", "d", "e" of the parent are hidden; the nested "XY" survives.
+    expect(doc.text).toBe("abXYf");
+    expect(view.state.doc.toString()).toBe("abXYf");
+  });
+
+  it("every remote event leaves CM equal to doc.text", () => {
+    const { view, doc } = setup();
+    const parentId = "1000:peer-B";
+
+    const steps: readonly (readonly TextCell[])[] = [
+      [
+        runCell({
+          id: parentId,
+          text: "iam",
+          author: "peer-B",
+          stamp: "1000",
+          parentId: ROOT_ID,
+          offset: 0,
+        }),
+      ],
+      [
+        runCell({
+          id: "2000:peer-C",
+          text: "X",
+          author: "peer-C",
+          stamp: "2000",
+          parentId,
+          offset: 1,
+        }),
+      ],
+      [
+        runCell({
+          id: "2001:peer-D",
+          text: "Y",
+          author: "peer-D",
+          stamp: "2001",
+          parentId,
+          offset: 1,
+        }),
+      ],
+      [
+        cutCell({
+          id: "3000:peer-B:cut",
+          runId: parentId,
+          from: 2,
+          to: 3,
+          author: "peer-B",
+          stamp: "3000",
+        }),
+      ],
+    ];
+
+    for (let i = 0; i < steps.length; i++) {
+      doc.applyActions([wireAction(`act_step_${i}`, steps[i]!)]);
+      expect(view.state.doc.toString()).toBe(doc.text);
+    }
+    expect(doc.text).toBe("iYXa");
   });
 });
 
@@ -544,6 +626,7 @@ describe("mountEditorBridge initial sync", () => {
     const bridge = mountEditorBridge(v, d, idMapField);
 
     expect(v.state.doc.toString()).toBe("preloaded");
+    expect(v.state.field(idMapField)).toEqual(d.docState.index.spans);
     bridge.detach();
     v.destroy();
   });
@@ -574,15 +657,27 @@ describe("getRunAtPosition at end of doc", () => {
       doc: "",
       extensions: [idMapField],
     }).update({
-      effects: setIdMapEffect.of([
-        { runId: "a", length: 5 },
-        { runId: "b", length: 3 },
-      ]),
+      effects: setIdMapEffect.of(SIMPLE_SPANS),
     }).state;
     expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
       runId: "b",
       offset: 3,
       spanIndex: 1,
+    });
+  });
+
+  it("returns the last fragment of a split run at the doc end", () => {
+    const idMapField = createIdMapField();
+    const seeded = EditorState.create({
+      doc: "",
+      extensions: [idMapField],
+    }).update({
+      effects: setIdMapEffect.of(SPLIT_SPANS),
+    }).state;
+    expect(getRunAtPosition(seeded, 10, idMapField)).toEqual({
+      runId: "a",
+      offset: 7,
+      spanIndex: 2,
     });
   });
 
@@ -592,7 +687,7 @@ describe("getRunAtPosition at end of doc", () => {
       doc: "",
       extensions: [idMapField],
     }).update({
-      effects: setIdMapEffect.of([{ runId: "solo", length: 5 }]),
+      effects: setIdMapEffect.of([{ runId: "solo", offset: 0, length: 5 }]),
     }).state;
     expect(getRunAtPosition(seeded, 5, idMapField)).toEqual({
       runId: "solo",
@@ -607,7 +702,7 @@ describe("getRunAtPosition at end of doc", () => {
       doc: "",
       extensions: [idMapField],
     }).update({
-      effects: setIdMapEffect.of([{ runId: "a", length: 5 }]),
+      effects: setIdMapEffect.of([{ runId: "a", offset: 0, length: 5 }]),
     }).state;
     expect(getRunAtPosition(seeded, 6, idMapField)).toBeUndefined();
   });
@@ -621,7 +716,7 @@ describe("empty-doc ROOT placeholder", () => {
       extensions: [idMapField],
     });
     expect(state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
-    expect(ROOT_PLACEHOLDER_SPAN).toEqual({ runId: ROOT_ID, length: 0 });
+    expect(ROOT_PLACEHOLDER_SPAN).toEqual({ runId: ROOT_ID, offset: 0, length: 0 });
   });
 
   it("ensureRootSpan returns the placeholder for an empty array", () => {
@@ -629,10 +724,7 @@ describe("empty-doc ROOT placeholder", () => {
   });
 
   it("ensureRootSpan is a no-op for a non-empty array", () => {
-    const spans: readonly RunSpan[] = [
-      { runId: "a", length: 5 },
-      { runId: "b", length: 3 },
-    ];
+    const spans: readonly RunSpan[] = SIMPLE_SPANS;
     expect(ensureRootSpan(spans)).toBe(spans);
   });
 
@@ -692,45 +784,29 @@ describe("empty-doc ROOT placeholder", () => {
     expect(doc.text).toBe("h");
     const spans = view.state.field(idMapField);
     expect(spans).not.toEqual([ROOT_PLACEHOLDER_SPAN]);
-    expect(spans.length).toBe(1);
+    expect(spans).toHaveLength(1);
     expect(spans[0]!.runId).not.toBe(ROOT_ID);
+    expect(spans[0]!.offset).toBe(0);
     expect(spans[0]!.length).toBe(1);
   });
 
-  it("remote tombstone of the only run re-seeds the placeholder", () => {
+  it("a remote cut of the only run re-seeds the placeholder", () => {
     const { view, doc, idMapField } = setup();
     doc.localInsert("x");
-    expect(view.state.field(idMapField).length).toBe(1);
-    const runId = doc.docState.children.get("ROOT")![0]!;
+    expect(view.state.field(idMapField)).toHaveLength(1);
+    const runId = doc.docState.index.spans[0]!.runId;
 
     doc.applyActions([
-      {
-        id: "act_del",
-        actor_id: "peer-B",
-        hlc: "5000",
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_del",
-            subject_id: "doc_test",
-            subject_type: "text_document",
-            method: "patch",
-            data: {
-              fields: {
-                content: {
-                  map: {
-                    [runId]: {
-                      value: null,
-                      update_id: "upd_del",
-                      hlc: "5000",
-                    },
-                  },
-                },
-              },
-            } as never,
-          },
-        ],
-      },
+      wireAction("act_cut", [
+        cutCell({
+          id: "5000:peer-B:cut",
+          runId,
+          from: 0,
+          to: 1,
+          author: "peer-B",
+          stamp: "5000",
+        }),
+      ]),
     ]);
 
     expect(doc.text).toBe("");
@@ -738,11 +814,11 @@ describe("empty-doc ROOT placeholder", () => {
     expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
   });
 
-  it("placeholder never leaks into the doc tree's spans", () => {
+  it("placeholder never leaks into the doc's spans", () => {
     const { doc } = setup();
     expect(doc.docState.index.spans).toEqual([]);
     doc.localInsert("x");
-    const docSpanIds = doc.docState.index.spans.map((s) => s.runId);
+    const docSpanIds = doc.docState.index.spans.map((span) => span.runId);
     expect(docSpanIds).not.toContain(ROOT_ID);
   });
 });

@@ -178,17 +178,16 @@ export function Editor({ client, docId, actorId, groupIds, caughtUpActions }: Pr
     const reconnectRef: { current: () => void } = { current: () => {} };
     const exposeState = window.__EBB_DEMO_TEST_CONFIG__?.exposeState;
     if (exposeState) {
-      const getRunIds = (): readonly string[] => {
-        const ids: string[] = [];
-        for (const [id, node] of doc.docState.nodes) {
-          if (id !== "ROOT" && !node.deleted) ids.push(id);
-        }
-        return ids;
-      };
+      // Document order, deduped: a run can appear as several spans when a
+      // peer inserts inside it, and the last id is the run at the text end.
+      const getRunIds = (): readonly string[] => [
+        ...new Set(doc.docState.index.spans.map((span) => span.runId)),
+      ];
       window.__EBB_DEMO_TEST_STATE__ = {
         docId,
         actorId,
         getRunIds,
+        getText: () => doc.text,
         forceExtend: (runId: string, appendText: string, hlc: string) => {
           // localExtend accepts an `hlc` override; we use it to pin
           // the HLC to a value the test controls so two tabs can

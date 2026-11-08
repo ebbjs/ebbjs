@@ -35,6 +35,7 @@ import type {
 } from "@ebbjs/schema";
 import {
   DOC_CONTENT_FIELD,
+  DOC_VERSION_FIELD,
   GROUPS_ACCESSOR,
   groupMemberSystemEntity,
   groupSystemEntity,
@@ -491,7 +492,7 @@ const collaborativeTextForwardOne = (
   forwardOne(readEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
     if (entity === null || entity === undefined) return null;
     const doc = openTextDocument(entity.id, entity.type);
-    doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD]);
+    doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD], entity.data?.fields?.[DOC_VERSION_FIELD]);
     return doc;
   });
 

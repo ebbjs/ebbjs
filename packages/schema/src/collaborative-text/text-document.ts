@@ -1,25 +1,25 @@
 /**
- * TextDocument — user-facing facade for the causal-tree field type.
+ * TextDocument — the user-facing facade for the collaborative-text field type.
  *
- * Owns the document's `DocState` plus an outbound action queue for
- * locally-authored edits. Incoming Actions (from SSE / catch-up) flow
- * through `applyActions`; locally-authored edits flow through
- * `localInsert` / `localDelete` which both apply locally AND queue the
- * resulting Action for `client.write()`. When the client binds a write
- * path, a local edit also self-flushes.
+ * Holds the document's merged `content` field and the projection derived from
+ * it. Local edits create new cells, merge them optimistically, and queue one
+ * Action for `client.write()` (or self-flush when the client binds a write
+ * path). Incoming Actions are delivery: their cells merge into the same map
+ * and the projection is recomputed. There is one read path —
+ * `project(mergedCells)` — and no state-carrying action reducer.
  *
  * ## Wire format
  *
  * Each Update targets the document entity (subject_id = docId,
- * subject_type = docType, method: "patch") with run changes encoded in
- * the doc's `content` map field: `data.fields.content.map[<runId>] =
- * { value: <RunNode | null>, update_id, hlc }`. Runs are map keys on the
- * doc, not separate entities — this keeps the server's `<type>.<verb>`
- * permission model applicable to the doc as a whole and avoids the
- * cross-author rewrite problem that `run.update` would have if runs
- * were independent entities. Concurrent writes to different run keys
- * never conflict; a same-run race is one slot and surfaces through
- * `client.conflicts`.
+ * subject_type = docType, method: "patch") and carries two fields:
+ *
+ * - `content`: a map keyed by cell id, each `{ value: RunCell | CutCell,
+ *   update_id, hlc }`;
+ * - `version`: the cell-format leaf, written by every edit.
+ *
+ * Runs are immutable and cuts are additive, so a write only ever adds map
+ * keys. The map's per-key merge therefore never drops a peer's edit, and a
+ * same-run race is no longer a conflict position.
  *
  * ## Usage
  *
@@ -44,18 +44,21 @@ import {
   type Update,
 } from "@ebbjs/core";
 import {
-  applyRunFieldUpdates,
+  applyCellFields,
   createDocState,
-  docReducer,
-  reconstruct,
+  makeCutId,
+  makeRunId,
+  ROOT_ID,
+  type CellFieldValue,
+  type CutCell,
   type DocState,
-  type RunFieldValue,
-  type RunNode,
+  type RunCell,
+  type TextCell,
 } from "./tree";
 import {
   applyActions,
-  diffRunFields,
-  diffRunFieldsForDeleteRange,
+  assertAppendOnly,
+  assertKnownVersion,
   docActionToUpdate,
   DEFAULT_DOC_SUBJECT_TYPE,
   parseContentField,
@@ -66,22 +69,19 @@ import { DOC_CONTENT_FIELD } from "./schema";
 // Types
 // ---------------------------------------------------------------------------
 
-/** A single Update as it was applied (post-translation). */
+/** One cell as it was delivered or authored, paired with its Action. */
 export type AppliedUpdate = {
   readonly action: Action;
-  readonly runId: string;
-  readonly kind: "insert" | "extend" | "tombstone";
+  readonly cellId: string;
+  /** A run is an insertion; a cut is a retraction. */
+  readonly kind: "insert" | "cut";
 };
 
 /** Local insert options. */
 export interface LocalInsertOptions {
-  /** Run id to insert the new run after. Defaults to the last visible run. */
+  /** Run id to insert into. Defaults to the last visible run (or ROOT). */
   readonly afterRun?: string;
-  /**
-   * Offset within the parent run to split at (if inserting mid-run).
-   * The split is performed locally and the resulting halves are encoded
-   * as field updates on the wire (the receiver doesn't need to re-split).
-   */
+  /** Character offset within the parent run. Defaults to the run's end. */
   readonly splitParentAt?: number;
   /** HLC for the new run. Defaults to Date.now()-derived packed bigint. */
   readonly hlc?: HLCTimestamp;
@@ -96,14 +96,10 @@ export interface LocalDeleteOptions {
 }
 
 /**
- * Local extend options. Extends an existing run by appending text to it
- * (no new run, no new HLC for the run itself — the existing run's text
- * is replaced atomically). The Action's HLC advances so peers can
- * order the extend relative to other operations, but the run's
- * identity is preserved.
+ * Local extend options: append after the end of an existing run.
  *
- * Run extension is what lets the cm-bridge avoid creating a new run on
- * every keystroke when typing at the end of your own last run.
+ * An extend is an insert, not a rewrite. It creates a new run anchored at
+ * `(runId, run.text.length)`, so the original run's text never changes.
  */
 export interface LocalExtendOptions {
   readonly runId: string;
@@ -127,24 +123,20 @@ export type TextDocumentSubmit = (
 // Local clock helper
 // ---------------------------------------------------------------------------
 
+/** A local HLC state: logical time and counter. */
+type LocalHlcState = { readonly l: bigint; readonly c: bigint };
+
 /**
  * Advance a local HLC state for a local event. If `now > state.l`, set
- * l=now, c=0. Otherwise bump c. Returns the new HLC and the new state
- * (mutated).
+ * l=now, c=0. Otherwise bump c.
  */
-const advanceLocalHlc = (state: {
-  l: bigint;
-  c: bigint;
-}): { hlc: HLCTimestamp; state: { l: bigint; c: bigint } } => {
-  const now = BigInt(Date.now());
-  if (now > state.l) {
-    state.l = now;
-    state.c = 0n;
-  } else {
-    state.c = state.c + 1n;
-  }
-  const packed = (state.l << 16n) | (state.c & 0xffffn);
-  return { hlc: packed.toString() as HLCTimestamp, state };
+const advanceLocalHlc = (
+  state: LocalHlcState,
+  now: bigint = BigInt(Date.now()),
+): { readonly hlc: HLCTimestamp; readonly state: LocalHlcState } => {
+  const next = now > state.l ? { l: now, c: 0n } : { l: state.l, c: state.c + 1n };
+  const packed = (next.l << 16n) | (next.c & 0xffffn);
+  return { hlc: packed.toString() as HLCTimestamp, state: next };
 };
 
 // ---------------------------------------------------------------------------
@@ -152,7 +144,7 @@ const advanceLocalHlc = (state: {
 // ---------------------------------------------------------------------------
 
 export class TextDocument {
-  /** Document id (the entity id hosting the runs). */
+  /** Document id (the entity id hosting the cells). */
   readonly docId: string;
   /** Local actor id (used for outgoing action attribution). */
   readonly actorId: string;
@@ -163,19 +155,11 @@ export class TextDocument {
   readonly docType: string;
 
   private state: DocState = createDocState();
-  /**
-   * Content version last hydrated and the state it produced. Both are
-   * copy-on-write, so reference equality is a safe "nothing changed" key.
-   */
-  private hydrated: { readonly content: FieldValue | undefined; readonly state: DocState } | null =
-    null;
   private readonly updateListeners = new Set<UpdateListener>();
   /** Outbound queue: local edits waiting for `client.write()`. */
   private readonly pending: Action[] = [];
   /** Local HLC state for advancing on local edits. */
-  private readonly localHlcState = { l: 0n, c: 0n };
-  /** Counter for generating update IDs for local edits. */
-  private updateCounter = 0;
+  private localHlcState: LocalHlcState = { l: 0n, c: 0n };
   /**
    * Optional write path. When set (the client wires it), a local edit
    * self-flushes instead of waiting for a caller to submit
@@ -202,53 +186,37 @@ export class TextDocument {
   // Public read API
   // -------------------------------------------------------------------------
 
-  /** Current document state. Read-only — callers should not mutate. */
+  /** The projected document. Read-only. */
   get docState(): DocState {
     return this.state;
   }
 
-  /** Current document text. */
+  /** The projected document text. */
   get text(): string {
-    return reconstruct(this.state);
+    return this.state.text;
   }
 
-  /**
-   * Hydrate the document from a materialized `content` map field.
-   *
-   * The derived-body accessor resolves the document entity from the
-   * relationship index and hands its map field here instead of replaying
-   * Actions. Idempotent for the same or older state: a run whose stored
-   * HLC is older than the local one is skipped, so a re-read after a
-   * local optimistic edit cannot rewind it.
-   *
-   * A repeat hydrate of the same content version with no intervening state
-   * change is a no-op. The content object is immutable per version and the
-   * state is copy-on-write, so reference equality is the cache key; a local
-   * edit or an applied Action replaces the state and re-arms the hydrate.
-   */
-  hydrate(content: FieldValue | undefined): void {
-    if (
-      this.hydrated !== null &&
-      content === this.hydrated.content &&
-      this.state === this.hydrated.state
-    ) {
-      return;
-    }
-    const runs = parseContentField(content);
-    if (runs.size > 0) this.state = applyRunFieldUpdates(this.state, runs).state;
-    this.hydrated = { content, state: this.state };
-  }
-
-  /** Sentinel id of the root run — convenience for "insert at start". */
+  /** Sentinel id of the root — convenience for "insert at start". */
   get rootRunId(): string {
-    return "ROOT";
+    return ROOT_ID;
   }
 
   /**
-   * Find the id of the last visible run in document order. Walks the
-   * span array in reverse to find the last runId. Returns null for an
-   * empty document.
+   * Merge a materialized `content` map field into the document and
+   * re-project.
+   *
+   * A repeat read of the same content version is a no-op. A stale read never
+   * rewinds the document: the map merge keeps every key the local state
+   * already has. `version` is the body's declared cell format; an unknown
+   * value fails the read rather than projecting a wrong view.
    */
+  hydrate(content: FieldValue | undefined, version?: FieldValue): void {
+    assertKnownVersion(version);
+    if (content === undefined) return;
+    this.state = applyCellFields(this.state, parseContentField(content));
+  }
+
+  /** The id of the last visible run in document order, or null. */
   private findLastVisibleRunId(): string | null {
     const spans = this.state.index.spans;
     if (spans.length === 0) return null;
@@ -260,31 +228,24 @@ export class TextDocument {
   // -------------------------------------------------------------------------
 
   /**
-   * Apply a list of Actions to this document. Runs them through the
-   * wire-format adapter, applies them to the tree, and fires onUpdate
-   * listeners.
+   * Deliver a list of Actions: merge their cells, re-project once, and fire
+   * `onUpdate` for each cell that was not already present.
    */
   applyActions(actions: readonly Action[]): void {
     if (actions.length === 0) return;
-    const { state: post, applied, sourceActions } = applyActions(this.state, actions, this.docType);
-    this.state = post;
 
-    // Fire update listeners — one per applied DocAction. Each event is
-    // paired with the source Action that produced it (threaded through
-    // from applyActions; no scanning of the input batch required).
-    for (let i = 0; i < applied.length; i++) {
-      const docAction = applied[i]!;
-      const sourceAction = sourceActions[i]!;
-      const evt = appliedToEvent(docAction, sourceAction);
-      if (!evt) continue;
-      for (const cb of this.updateListeners) {
-        try {
-          cb(evt);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error("[TextDocument] onUpdate handler threw:", err);
-        }
-      }
+    const { state, applied, sourceActions } = applyActions(this.state, actions, this.docType);
+    if (state === this.state) return;
+    this.state = state;
+
+    for (let i = 0; i < applied.length; i += 1) {
+      const cell = applied[i]!;
+      const action = sourceActions[i]!;
+      this.emit({
+        action,
+        cellId: cell.cellId,
+        kind: cell.cell.kind === "run" ? "insert" : "cut",
+      });
     }
   }
 
@@ -308,69 +269,128 @@ export class TextDocument {
   // -------------------------------------------------------------------------
 
   /**
-   * Insert text as a new run.
+   * Insert text as a new run anchored at `(afterRun, splitParentAt)`.
    *
-   * Local-only — applies optimistically to the tree immediately, then
-   * queues the resulting Action for `client.write()`. The wire payload
-   * carries the field updates produced by the local edit (new run +
-   * any split halves + any tombstones).
+   * Defaults to appending after the last visible run. Nothing is split or
+   * rewritten: the target run keeps its text and id forever, and the new run
+   * is placed at the given character offset.
    *
-   * Default behavior: append at the end of the document (after the
-   * last visible run). Pass `afterRun: <runId>` to insert at a
-   * specific position, or `afterRun: 'ROOT'` to insert among the
-   * root children.
-   *
-   * Returns the new run's id (or null if the local edit was rejected).
+   * Returns the new run's id, or null if the edit was invalid.
    */
   localInsert(text: string, opts: LocalInsertOptions = {}): string | null {
-    const parentId = opts.afterRun ?? this.findLastVisibleRunId() ?? "ROOT";
+    if (text.length === 0) return null;
 
-    // Advance local HLC
-    const { hlc, state: newHlcState } = advanceLocalHlc(this.localHlcState);
-    this.localHlcState.l = newHlcState.l;
-    this.localHlcState.c = newHlcState.c;
-    const finalHlc = opts.hlc ?? hlc;
+    const parentId = opts.afterRun ?? this.findLastVisibleRunId() ?? ROOT_ID;
+    const parent = parentId === ROOT_ID ? undefined : this.state.runs.get(parentId);
+    if (parentId !== ROOT_ID && parent === undefined) return null;
 
-    // Build the new RunNode
-    const runId = `${finalHlc}:${this.actorId}`;
-    const node: RunNode = {
-      id: runId,
-      hlc: finalHlc,
-      actorId: this.actorId,
+    const parentLength = parent?.text.length ?? 0;
+    const offset = opts.splitParentAt ?? parentLength;
+    if (offset < 0 || offset > parentLength) return null;
+
+    const finalHlc = opts.hlc ?? this.advanceHlc();
+    const cell: RunCell = {
+      kind: "run",
+      id: makeRunId(finalHlc, this.actorId, generateId("run")),
       text,
-      parentId,
-      deleted: false,
+      author: this.actorId,
+      stamp: finalHlc,
+      anchor: { runId: parentId, offset },
     };
 
-    // Apply locally — optimistic. Capture pre/post for the field diff.
-    const pre = this.state;
-    let next = pre;
-    if (opts.splitParentAt !== undefined) {
-      // Validate up front so the caller sees a rejection (null) instead of an
-      // applySplit console.error followed by a mis-positioned insert.
-      // applySplit requires offset in [1, text.length).
-      const parentNode = next.nodes.get(parentId);
-      const validOffset =
-        !!parentNode && opts.splitParentAt >= 1 && opts.splitParentAt < parentNode.text.length;
-      if (!validOffset) return null;
-      next = docReducer(next, {
-        type: "SPLIT",
-        runId: parentId,
-        offset: opts.splitParentAt,
-      });
-    }
-    next = docReducer(next, { type: "INSERT_RUN", node });
-    this.state = next;
+    return this.commit([cell]) === null ? null : cell.id;
+  }
 
-    // Build the wire-format Action from the pre/post diff.
-    const fields = diffRunFields(pre, next, { updateId: `u_${runId}`, hlc: finalHlc });
-    if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate(fields, {
+  /**
+   * Delete a range within a run by adding one cut cell.
+   *
+   * Returns the resulting action id, or null if the edit was invalid.
+   */
+  localDelete(opts: LocalDeleteOptions): string | null {
+    const run = this.state.runs.get(opts.runId);
+    if (run === undefined) return null;
+
+    if (opts.offset < 0 || opts.count <= 0 || opts.offset + opts.count > run.text.length) {
+      return null;
+    }
+
+    const finalHlc = opts.hlc ?? this.advanceHlc();
+    const cell: CutCell = {
+      kind: "cut",
+      id: makeCutId(finalHlc, this.actorId, opts.runId, opts.offset, opts.offset + opts.count),
+      runId: opts.runId,
+      from: opts.offset,
+      to: opts.offset + opts.count,
+      author: this.actorId,
+      stamp: finalHlc,
+    };
+
+    const action = this.commit([cell]);
+    return action === null ? null : action.id;
+  }
+
+  /**
+   * Append text after the end of an existing run by adding a new run
+   * anchored at its end. The original run is never rewritten.
+   *
+   * Returns the resulting action id, or null if the edit was invalid.
+   */
+  localExtend(opts: LocalExtendOptions): string | null {
+    if (opts.appendText.length === 0) return null;
+
+    const parent = this.state.runs.get(opts.runId);
+    if (parent === undefined) return null;
+
+    const finalHlc = opts.hlc ?? this.advanceHlc();
+    const cell: RunCell = {
+      kind: "run",
+      id: makeRunId(finalHlc, this.actorId, generateId("run")),
+      text: opts.appendText,
+      author: this.actorId,
+      stamp: finalHlc,
+      anchor: { runId: parent.id, offset: parent.text.length },
+    };
+
+    const action = this.commit([cell]);
+    return action === null ? null : action.id;
+  }
+
+  // -------------------------------------------------------------------------
+  // Commit
+  // -------------------------------------------------------------------------
+
+  private advanceHlc(): HLCTimestamp {
+    const { hlc, state } = advanceLocalHlc(this.localHlcState);
+    this.localHlcState = state;
+    return hlc;
+  }
+
+  /**
+   * Apply one batch of new cells: refuse a rewrite, merge optimistically,
+   * then queue and self-flush the Action.
+   */
+  private commit(cells: readonly TextCell[]): Action | null {
+    if (cells.length === 0) return null;
+
+    // The write path's discipline is checked before anything is queued.
+    assertAppendOnly(
+      cells.map((cell) => cell.id),
+      this.state.cells.keys(),
+    );
+
+    const hlc = cells[0]!.stamp;
+    const updateId = `u_${cells[0]!.id}`;
+    const update = docActionToUpdate(cells, {
       docId: this.docId,
-      updateId: `u_${runId}`,
+      updateId,
       docSubjectType: this.docType,
     });
-    if (!update) return null;
+    if (update === null) return null;
+
+    const batch = new Map<string, CellFieldValue>(
+      cells.map((cell) => [cell.id, { value: cell, update_id: updateId, hlc: cell.stamp }]),
+    );
+    this.state = applyCellFields(this.state, batch);
 
     const action: Action = {
       // Globally unique, not derived from the run or a per-instance
@@ -378,167 +398,28 @@ export class TextDocument {
       // not regenerate an id a different edit already committed.
       id: generateId(ID_PREFIX_ACTION),
       actor_id: this.actorId,
-      hlc: finalHlc,
+      hlc,
       gsn: 0,
       updates: [update],
     };
     this.pending.push(action);
     this.selfFlush(action);
 
-    const evt: AppliedUpdate = {
-      action,
-      runId,
-      kind: "insert",
-    };
-    for (const cb of this.updateListeners) {
-      try {
-        cb(evt);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[TextDocument] onUpdate handler threw:", err);
-      }
+    for (const cell of cells) {
+      this.emit({ action, cellId: cell.id, kind: cell.kind === "run" ? "insert" : "cut" });
     }
-
-    return runId;
+    return action;
   }
 
-  /**
-   * Delete a range within a run.
-   *
-   * Returns the resulting action id, or null if the local edit was
-   * invalid (e.g., run not found, range out of bounds).
-   */
-  localDelete(opts: LocalDeleteOptions): string | null {
-    const node = this.state.nodes.get(opts.runId);
-    if (!node || node.deleted) return null;
-
-    if (opts.offset < 0 || opts.count <= 0 || opts.offset + opts.count > node.text.length) {
-      return null;
-    }
-
-    const { hlc, state: newHlcState } = advanceLocalHlc(this.localHlcState);
-    this.localHlcState.l = newHlcState.l;
-    this.localHlcState.c = newHlcState.c;
-    const finalHlc = opts.hlc ?? hlc;
-
-    const pre = this.state;
-    const post = docReducer(pre, {
-      type: "DELETE_RANGE",
-      runId: opts.runId,
-      offset: opts.offset,
-      count: opts.count,
-    });
-    this.state = post;
-
-    const fields = diffRunFieldsForDeleteRange(pre, post, {
-      updateId: `u_del_${this.updateCounter++}`,
-      hlc: finalHlc,
-    });
-    if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate(fields, {
-      docId: this.docId,
-      updateId: fields[Object.keys(fields)[0]!]!.update_id,
-      docSubjectType: this.docType,
-    });
-    if (!update) return null;
-
-    const action: Action = {
-      id: generateId(ID_PREFIX_ACTION),
-      actor_id: this.actorId,
-      hlc: finalHlc,
-      gsn: 0,
-      updates: [update],
-    };
-    this.pending.push(action);
-    this.selfFlush(action);
-
-    const evt: AppliedUpdate = {
-      action,
-      runId: opts.runId,
-      kind: "tombstone",
-    };
+  private emit(update: AppliedUpdate): void {
     for (const cb of this.updateListeners) {
       try {
-        cb(evt);
+        cb(update);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[TextDocument] onUpdate handler threw:", err);
       }
     }
-
-    return action.id;
-  }
-
-  /**
-   * Extend an existing run by appending text.
-   *
-   * Returns the resulting action id, or null if the local edit was
-   * invalid (run not found, run is tombstoned, or appendText is empty).
-   *
-   * Local-only — applies optimistically to the tree immediately, then
-   * queues the resulting Action for `client.write()`. The wire payload
-   * carries a single field update for the run with the replaced text;
-   * the receiver's wire adapter treats it as an EXTEND_RUN.
-   */
-  localExtend(opts: LocalExtendOptions): string | null {
-    if (opts.appendText.length === 0) return null;
-
-    const node = this.state.nodes.get(opts.runId);
-    if (!node || node.deleted) return null;
-
-    const { hlc, state: newHlcState } = advanceLocalHlc(this.localHlcState);
-    this.localHlcState.l = newHlcState.l;
-    this.localHlcState.c = newHlcState.c;
-    const finalHlc = opts.hlc ?? hlc;
-
-    const pre = this.state;
-    const post = docReducer(pre, {
-      type: "EXTEND_RUN",
-      runId: opts.runId,
-      appendText: opts.appendText,
-      hlc: finalHlc,
-    });
-    this.state = post;
-
-    // diffRunFields emits a field update when the run's text changes.
-    // For an extend, only the extended run's field appears in the diff.
-    const fields = diffRunFields(pre, post, {
-      updateId: `u_ext_${this.updateCounter++}`,
-      hlc: finalHlc,
-    });
-    if (Object.keys(fields).length === 0) return null;
-    const update = docActionToUpdate(fields, {
-      docId: this.docId,
-      updateId: fields[Object.keys(fields)[0]!]!.update_id,
-      docSubjectType: this.docType,
-    });
-    if (!update) return null;
-
-    const action: Action = {
-      id: generateId(ID_PREFIX_ACTION),
-      actor_id: this.actorId,
-      hlc: finalHlc,
-      gsn: 0,
-      updates: [update],
-    };
-    this.pending.push(action);
-    this.selfFlush(action);
-
-    const evt: AppliedUpdate = {
-      action,
-      runId: opts.runId,
-      kind: "extend",
-    };
-    for (const cb of this.updateListeners) {
-      try {
-        cb(evt);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[TextDocument] onUpdate handler threw:", err);
-      }
-    }
-
-    return action.id;
   }
 
   // -------------------------------------------------------------------------
@@ -572,10 +453,8 @@ export class TextDocument {
    */
   ackPending(actionIds: readonly string[]): void {
     const idSet = new Set(actionIds);
-    for (let i = this.pending.length - 1; i >= 0; i--) {
-      if (idSet.has(this.pending[i]!.id)) {
-        this.pending.splice(i, 1);
-      }
+    for (let i = this.pending.length - 1; i >= 0; i -= 1) {
+      if (idSet.has(this.pending[i]!.id)) this.pending.splice(i, 1);
     }
   }
 
@@ -600,46 +479,12 @@ export class TextDocument {
   // Reset
   // -------------------------------------------------------------------------
 
-  /** Reset state to empty (for tests / reload). */
+  /** Reset state to empty (for tests / reload). The clock stays monotonic. */
   reset(): void {
     this.state = createDocState();
-    this.hydrated = null;
     this.pending.length = 0;
-    this.localHlcState.l = 0n;
-    this.localHlcState.c = 0n;
-    this.updateCounter = 0;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Convert an applied DocAction into the public AppliedUpdate event shape.
- * The source Action is passed in directly (paired by `applyActions`) so
- * we don't have to scan the input batch to find it.
- *
- * Returns null for SPLITs (internal, never exposed).
- *
- * For DELETE_RANGE, the event's `kind` is "tombstone" (the wire value is
- * `null`, but conceptually we surface it as a tombstone to listeners).
- */
-const appliedToEvent = (
-  docAction: import("./tree").DocAction,
-  action: Action,
-): AppliedUpdate | null => {
-  switch (docAction.type) {
-    case "INSERT_RUN":
-      return { action, runId: docAction.node.id, kind: "insert" };
-    case "EXTEND_RUN":
-      return { action, runId: docAction.runId, kind: "extend" };
-    case "DELETE_RANGE":
-      return { action, runId: docAction.runId, kind: "tombstone" };
-    case "SPLIT":
-      return null;
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Registry — one TextDocument per (client, docId)
@@ -687,11 +532,5 @@ export class TextDocumentRegistry {
 // Re-exports for callers
 // ---------------------------------------------------------------------------
 
-export {
-  applyActions,
-  docActionToUpdate,
-  diffRunFields,
-  DEFAULT_DOC_SUBJECT_TYPE,
-  DOC_CONTENT_FIELD,
-};
-export type { DocState, RunNode, RunFieldValue } from "./tree";
+export { applyActions, docActionToUpdate, DEFAULT_DOC_SUBJECT_TYPE, DOC_CONTENT_FIELD };
+export type { DocState, RunCell, CutCell, TextCell, CellFieldValue } from "./tree";

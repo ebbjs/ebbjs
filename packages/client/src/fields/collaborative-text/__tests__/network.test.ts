@@ -1,20 +1,23 @@
 /**
  * Network-driven tests for TextDocument.
  *
- * Verifies that two TextDocuments connected through a mock SSE source
- * (representing the ebb_server fan-out path) converge to the same
- * document text.
- *
- * The mock source accepts Action submissions from one side and forwards
- * them to the other side as SSE data events — emulating the server's
- * SSE fan-out without booting the real server.
+ * Two TextDocuments connected through a mock SSE source (representing the
+ * ebb_server fan-out path) converge to the same projected text. Actions are
+ * produced by ordinary local edits, so they carry the body's `version` leaf
+ * and only ever add cell keys.
  */
 
 import { describe, expect, it } from "vitest";
-import { pack, format, type Action, type HLCTimestamp } from "@ebbjs/core";
-import { TextDocument, type AppliedUpdate } from "@ebbjs/schema";
-import { DEFAULT_DOC_SUBJECT_TYPE } from "@ebbjs/schema";
-import type { RunNode } from "@ebbjs/schema";
+import { format, pack, type Action, type HLCTimestamp } from "@ebbjs/core";
+import {
+  DOC_CONTENT_FIELD,
+  DOC_VERSION_FIELD,
+  makeRunId,
+  TextDocument,
+  versionField,
+  type AppliedUpdate,
+  type RunCell,
+} from "@ebbjs/schema";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,48 +25,57 @@ import type { RunNode } from "@ebbjs/schema";
 
 const makeHlc = (ts: number, count = 0): HLCTimestamp => format(pack(BigInt(ts), BigInt(count)));
 
-const makeRun = (ts: number, actorId: string, text: string, parentId: string): RunNode => {
-  const hlc = makeHlc(ts);
-  return { id: `${hlc}:${actorId}`, hlc, actorId, text, parentId, deleted: false };
+const peerRun = (
+  ts: number,
+  actorId: string,
+  text: string,
+  anchor: RunCell["anchor"],
+  id?: string,
+): RunCell => {
+  const stamp = makeHlc(ts);
+  return {
+    kind: "run",
+    id: id ?? makeRunId(stamp, actorId),
+    text,
+    author: actorId,
+    stamp,
+    anchor,
+  };
 };
 
-const makeInsertAction = (run: RunNode): Action => ({
+const makeInsertAction = (run: RunCell, subjectType = "text_document"): Action => ({
   id: `act_${run.id}`,
-  actor_id: run.actorId,
-  hlc: run.hlc,
+  actor_id: run.author,
+  hlc: run.stamp,
   gsn: 0,
   updates: [
     {
       id: `upd_${run.id}`,
-      subject_id: "doc_xxx",
-      subject_type: DEFAULT_DOC_SUBJECT_TYPE,
+      subject_id: "doc_1",
+      subject_type: subjectType,
       method: "patch",
       data: {
         fields: {
-          content: {
+          [DOC_CONTENT_FIELD]: {
             map: {
-              [run.id]: {
-                value: run,
-                update_id: `upd_${run.id}`,
-                hlc: run.hlc,
-              },
+              [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.stamp },
             },
           },
+          [DOC_VERSION_FIELD]: versionField(run.stamp, `upd_${run.id}`),
         },
       },
-    } as never,
+    },
   ],
 });
 
 /**
  * Mock SSE source — accepts Actions from any side, fans them out to all
- * other sides as SSE `data` events. Mirrors the server's
- * watermark-gated fan-out behavior (slice 1's SSEConnection process).
+ * other sides as SSE `data` events, mirroring the server's watermark-gated
+ * fan-out.
  */
 class MockSSESource {
   private subscribers = new Map<string, (action: Action) => void>();
 
-  /** Subscribe a client to receive future Actions. */
   subscribe(actorId: string, cb: (action: Action) => void): () => void {
     this.subscribers.set(actorId, cb);
     return () => {
@@ -71,7 +83,6 @@ class MockSSESource {
     };
   }
 
-  /** Broadcast an Action to all subscribers (excluding the sender). */
   broadcast(action: Action, excludeActorId?: string): void {
     for (const [actorId, cb] of this.subscribers) {
       if (actorId === excludeActorId) continue;
@@ -79,6 +90,11 @@ class MockSSESource {
     }
   }
 }
+
+const wire = (from: TextDocument, source: MockSSESource): void => {
+  for (const action of from.pendingActions()) source.broadcast(action, from.actorId);
+  from.ackPending(from.pendingActions().map((action) => action.id));
+};
 
 // ---------------------------------------------------------------------------
 // Convergence via mock SSE
@@ -89,86 +105,74 @@ describe("TextDocument — mock SSE convergence", () => {
     const source = new MockSSESource();
     const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
     const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
-
     source.subscribe("peer-A", (action) => docA.applyActions([action]));
     source.subscribe("peer-B", (action) => docB.applyActions([action]));
 
-    // Each side's local edits broadcast to the other side
-    docA.onUpdate(() => {
-      for (const action of docA.pendingActions()) {
-        source.broadcast(action, "peer-A");
-      }
-    });
-    docB.onUpdate(() => {
-      for (const action of docB.pendingActions()) {
-        source.broadcast(action, "peer-B");
-      }
-    });
-
-    // Simpler: directly broadcast after each edit
     docA.localInsert("hello");
-    for (const action of docA.pendingActions()) source.broadcast(action, "peer-A");
-    docA.clearPending();
+    wire(docA, source);
+    expect(docB.text).toBe("hello");
 
     docB.localInsert("world");
-    for (const action of docB.pendingActions()) source.broadcast(action, "peer-B");
-    docB.clearPending();
-
+    wire(docB, source);
     expect(docA.text).toBe(docB.text);
   });
 
-  it("interleaved edits converge", () => {
+  it("interleaved edits converge and keep every character", () => {
     const source = new MockSSESource();
     const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
     const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
-
     source.subscribe("peer-A", (action) => docA.applyActions([action]));
     source.subscribe("peer-B", (action) => docB.applyActions([action]));
 
-    // Peer A types "hello"
     docA.localInsert("hello");
     const aActs = docA.pendingActions();
-    docA.clearPending();
-    for (const action of aActs) source.broadcast(action, "peer-A");
-
-    // Peer B sees A's text and types " world"
-    expect(docB.text).toBe("hello");
     docB.localInsert(" world");
     const bActs = docB.pendingActions();
-    docB.clearPending();
-    for (const action of bActs) source.broadcast(action, "peer-B");
 
-    // Peer A sees B's text
-    expect(docA.text).toBe("hello world");
+    docA.applyActions(bActs);
+    docB.applyActions(aActs);
+
+    expect(docA.text).toBe(docB.text);
+    expect([...docA.text].sort().join("")).toBe([..."hello world"].sort().join(""));
   });
 
-  it("deletes propagate correctly across clients", () => {
+  it("deletes propagate as cuts and stay deleted", () => {
     const source = new MockSSESource();
     const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
     const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
-
     source.subscribe("peer-A", (action) => docA.applyActions([action]));
     source.subscribe("peer-B", (action) => docB.applyActions([action]));
 
-    // Peer A inserts "hello world"
     docA.localInsert("hello world");
-    for (const action of docA.pendingActions()) {
-      source.broadcast(action, "peer-A");
-    }
-    docA.clearPending();
-
+    wire(docA, source);
     expect(docB.text).toBe("hello world");
 
-    // Peer B deletes "world" (offset 6, count 5)
-    const runId = docB.docState.children.get("ROOT")![0]!;
+    const runId = docB.docState.index.spans[0]!.runId;
     docB.localDelete({ runId, offset: 6, count: 5 });
-    for (const action of docB.pendingActions()) {
-      source.broadcast(action, "peer-B");
-    }
-    docB.clearPending();
+    wire(docB, source);
 
     expect(docA.text).toBe("hello ");
     expect(docB.text).toBe("hello ");
+  });
+
+  it("a later insert into a deleted range survives the delete", () => {
+    const source = new MockSSESource();
+    const docA = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
+    const docB = new TextDocument({ docId: "doc_1", actorId: "peer-B" });
+    source.subscribe("peer-A", (action) => docA.applyActions([action]));
+    source.subscribe("peer-B", (action) => docB.applyActions([action]));
+
+    docA.localInsert("hello");
+    wire(docA, source);
+    const runId = docB.docState.index.spans[0]!.runId;
+
+    docB.localInsert("X", { afterRun: runId, splitParentAt: 2, hlc: makeHlc(5) });
+    docA.localDelete({ runId, offset: 0, count: 5, hlc: makeHlc(6) });
+    wire(docB, source);
+    wire(docA, source);
+
+    expect(docA.text).toBe("X");
+    expect(docB.text).toBe("X");
   });
 });
 
@@ -177,26 +181,22 @@ describe("TextDocument — mock SSE convergence", () => {
 // ---------------------------------------------------------------------------
 
 describe("TextDocument — update event flow", () => {
-  it("fires onUpdate for each applied Update", () => {
+  it("fires onUpdate for each delivered cell", () => {
     const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-
     const events: AppliedUpdate[] = [];
     doc.onUpdate((evt) => events.push(evt));
 
-    const run1 = makeRun(1000, "peer-B", "a", "ROOT");
-    const run2 = makeRun(1001, "peer-C", "b", "ROOT");
-
+    const run1 = peerRun(1000, "peer-B", "a", { runId: "ROOT", offset: 0 }, "r1");
+    const run2 = peerRun(1001, "peer-C", "b", { runId: "ROOT", offset: 0 }, "r2");
     doc.applyActions([makeInsertAction(run1), makeInsertAction(run2)]);
 
     expect(events).toHaveLength(2);
-    expect(events[0]!.runId).toBe(run1.id);
-    expect(events[0]!.kind).toBe("insert");
-    expect(events[1]!.runId).toBe(run2.id);
+    expect(events[0]).toMatchObject({ cellId: "r1", kind: "insert" });
+    expect(events[1]).toMatchObject({ cellId: "r2", kind: "insert" });
   });
 
-  it("ignores Updates targeting non-run subjects", () => {
+  it("ignores Updates targeting other subjects", () => {
     const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-
     const events: AppliedUpdate[] = [];
     doc.onUpdate((evt) => events.push(evt));
 
@@ -231,30 +231,16 @@ describe("TextDocument — simulated full server roundtrip", () => {
     const source = new MockSSESource();
     const docLocal = new TextDocument({ docId: "doc_1", actorId: "peer-local" });
     const docRemote = new TextDocument({ docId: "doc_1", actorId: "peer-remote" });
-
     source.subscribe("peer-local", (action) => docLocal.applyActions([action]));
     source.subscribe("peer-remote", (action) => docRemote.applyActions([action]));
 
-    // Local edit
     docLocal.localInsert("hello");
-
-    // Simulate client.write() — the server would broadcast these to other subscribers
-    for (const action of docLocal.pendingActions()) {
-      source.broadcast(action, "peer-local");
-    }
-    docLocal.ackPending(docLocal.pendingActions().map((a) => a.id));
-
-    // Remote peer now has the text
+    wire(docLocal, source);
     expect(docRemote.text).toBe("hello");
 
-    // Local sends another edit
     docLocal.localInsert(" world");
-    for (const action of docLocal.pendingActions()) {
-      source.broadcast(action, "peer-local");
-    }
-    docLocal.ackPending(docLocal.pendingActions().map((a) => a.id));
+    wire(docLocal, source);
 
-    // Convergence
     expect(docLocal.text).toBe("hello world");
     expect(docRemote.text).toBe("hello world");
   });

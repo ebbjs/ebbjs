@@ -18,10 +18,11 @@ import { EntityValidationError, validatePayload } from "@ebbjs/schema";
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
 import { defineSchema, type Schema } from "@ebbjs/schema";
 import { ConflictScopeMismatchError, DerivedDocNameCollisionError } from "@ebbjs/schema";
-import { generatedDocEntityName, RunFieldValueSchema } from "@ebbjs/schema";
+import { generatedDocEntityName, TextCellSchema } from "@ebbjs/schema";
 import { derivedDocumentId, derivedRelationshipId } from "@ebbjs/schema";
 import { entityGroupId } from "@ebbjs/write";
 import { createClient } from "../sync/client";
+import { AppendOnlyViolationError } from "@ebbjs/schema";
 import { callApplyAction, jsonResponse } from "../sync/test-utils";
 import { testActions } from "../sync/__tests__/test-actions";
 
@@ -559,7 +560,7 @@ describe("generated document entities", () => {
   it("keeps the materialization of an explicitly declared document entity", () => {
     const declaredDoc = defineEntity(
       "article_body",
-      { content: e.map(RunFieldValueSchema) },
+      { content: e.map(TextCellSchema) },
       { materialization: "held" },
     );
     const custom = defineEntity("post", {
@@ -704,7 +705,7 @@ describe("local edits through the derived accessor", () => {
 // ---------------------------------------------------------------------------
 
 describe("conflicts through client.conflicts", () => {
-  it("surfaces a same-run race after the local edit has been flushed", async () => {
+  it("does not surface a same-run extend-vs-delete as a slot", async () => {
     const { client, written } = harness(schema);
     await client.handshake();
     const { id } = await client.actions.create({
@@ -713,45 +714,47 @@ describe("conflicts through client.conflicts", () => {
       groups: ["g_1"],
     });
     const createAction = written[0]!;
-    // Simulate the create Action's echo so it leaves the outbox; only
-    // the extend should be a buffered loss.
     await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
 
     const doc = await (await client.blogPost.get(id))!.body;
-    const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
+    const runId = doc!.docState.index.spans[0]!.runId;
     const before = written.length;
-    const fired: number[] = [];
-    client.sync.conflicts.subscribe((snapshot) => fired.push(snapshot.count));
     doc!.localExtend({ runId, appendText: "!" });
     await waitForFlush(() => doc!.pendingActions());
-    // The derived accessor self-flushes, so the local edit is
-    // acknowledged by the time the peer write lands; the conflict sweep
-    // must still surface the loss.
     expect(written.length).toBeGreaterThan(before);
 
     const docId = createAction.updates.find(
       (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
     )!.subject_id;
-    const node = doc!.docState.nodes.get(runId)!;
-    const peerHlc = String(BigInt(node.hlc) + 60_000n);
+    const peerHlc = makeHlc(1_711_036_800_500);
+    // A delete is a cut keyed by its own id; the extend is a new run keyed by
+    // its own id. There is no shared position, so the race collapses.
     const peerAction: Action = {
-      id: "act_peer",
+      id: "act_peer_cut",
       actor_id: "actor_peer",
       hlc: peerHlc,
       gsn: 9,
       updates: [
         {
-          id: "upd_peer",
+          id: "upd_peer_cut",
           subject_id: docId,
           subject_type: generatedDocEntityName("blog_post", "body"),
-          method: "put",
+          method: "patch",
           data: {
             fields: {
               content: {
                 map: {
-                  [runId]: {
-                    value: { ...node, text: "hello!", hlc: peerHlc, actorId: "actor_peer" },
-                    update_id: "upd_peer",
+                  "peer-cut": {
+                    value: {
+                      kind: "cut",
+                      id: "peer-cut",
+                      runId,
+                      from: 0,
+                      to: 1,
+                      author: "actor_peer",
+                      stamp: peerHlc,
+                    },
+                    update_id: "upd_peer_cut",
                     hlc: peerHlc,
                   },
                 },
@@ -762,27 +765,9 @@ describe("conflicts through client.conflicts", () => {
       ],
     };
     await callApplyAction(client, peerAction, "g_1");
-    // Live inbound no longer detects; the catch-up pass does.
     await client.outbox.detectConflicts([peerAction], "cu_1");
 
-    const conflicts = await client.conflicts.list();
-    expect(conflicts).toHaveLength(1);
-    const [entry] = conflicts[0]!.entries;
-    expect(
-      entry!.slots.map((slot) => ({
-        subjectId: slot.subjectId,
-        field: slot.field,
-        path: slot.path,
-      })),
-    ).toEqual([{ subjectId: docId, field: "content", path: [runId] }]);
-    const snapshot = client.sync.conflicts.get();
-    expect(snapshot.count).toBe(conflicts.length);
-    expect(snapshot.conflicts).toEqual(conflicts);
-    expect(fired[fired.length - 1]).toBe(1);
-
-    await client.conflicts.resolve(conflicts[0]!.id, "discard");
-    expect(client.sync.conflicts.get().count).toBe(0);
-    expect(fired[fired.length - 1]).toBe(0);
+    expect(await client.conflicts.list()).toEqual([]);
   });
 
   it("does not surface a write to a different run", async () => {
@@ -795,15 +780,14 @@ describe("conflicts through client.conflicts", () => {
     });
 
     const doc = await (await client.blogPost.get(id))!.body;
-    const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
+    const runId = doc!.docState.index.spans[0]!.runId;
     doc!.localExtend({ runId, appendText: "!" });
     await waitForFlush(() => doc!.pendingActions());
 
     const docId = written[0]!.updates.find(
       (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
     )!.subject_id;
-    const node = doc!.docState.nodes.get(runId)!;
-    const peerHlc = String(BigInt(node.hlc) + 60_000n);
+    const peerHlc = makeHlc(1_711_036_800_500);
     const peerAction: Action = {
       id: "act_peer_other",
       actor_id: "actor_peer",
@@ -821,12 +805,12 @@ describe("conflicts through client.conflicts", () => {
                 map: {
                   "peer-run": {
                     value: {
+                      kind: "run",
                       id: "peer-run",
-                      hlc: peerHlc,
-                      actorId: "actor_peer",
                       text: "other",
-                      parentId: "ROOT",
-                      deleted: false,
+                      author: "actor_peer",
+                      stamp: peerHlc,
+                      anchor: { runId: "ROOT", offset: 0 },
                     },
                     update_id: "upd_peer_other",
                     hlc: peerHlc,
@@ -844,74 +828,70 @@ describe("conflicts through client.conflicts", () => {
     expect(await client.conflicts.list()).toEqual([]);
   });
 
-  it.each([
-    { label: "a newer tombstone", offset: 60_000n, remoteWins: true },
-    { label: "an older tombstone", offset: -60_000n, remoteWins: false },
-  ])(
-    "surfaces the devlog Colour scenario with $label, on the GSN base rather than HLC",
-    async ({ offset, remoteWins }) => {
-      const { client, written } = harness(schema);
-      await client.handshake();
-      const { id } = await client.actions.create({
-        entity: "blogPost",
-        input: { title: "Colour", published: false, body: "Red Magic" },
-        groups: ["g_1"],
-      });
-      const createAction = written[0]!;
-      // Retire the create so only the offline extend is a buffered loss.
-      await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
+  it("no longer surfaces the devlog Colour scenario", async () => {
+    // #392 treated a same-run extend-vs-delete as one position. The rebuild
+    // gives the extend its own run key and the delete its own cut key, so
+    // there is no position to contest. This is the documented behaviour
+    // change: text surfaces no slots at all.
+    const { client, written } = harness(schema);
+    await client.handshake();
+    const { id } = await client.actions.create({
+      entity: "blogPost",
+      input: { title: "Colour", published: false, body: "Red Magic" },
+      groups: ["g_1"],
+    });
+    const createAction = written[0]!;
+    await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
 
-      const doc = await (await client.blogPost.get(id))!.body;
-      const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
-      doc!.localExtend({ runId, appendText: " Magic" });
-      await waitForFlush(() => doc!.pendingActions());
+    const doc = await (await client.blogPost.get(id))!.body;
+    const runId = doc!.docState.index.spans[0]!.runId;
+    doc!.localExtend({ runId, appendText: " Magic" });
+    await waitForFlush(() => doc!.pendingActions());
 
-      const docId = createAction.updates.find(
-        (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
-      )!.subject_id;
-      const bobNode = doc!.docState.nodes.get(runId)!;
-      // The tombstone's HLC is varied above and below Bob's, so the suite
-      // proves the conflict comes from the GSN base (#390), not from LWW
-      // out-dating: it surfaces either way.
-      const aliceHlc = String(BigInt(bobNode.hlc) + offset);
-      const deleteAction: Action = {
-        id: "act_alice_delete",
-        actor_id: "actor_alice",
-        hlc: aliceHlc,
-        gsn: 9,
-        updates: [
-          {
-            id: "upd_alice",
-            subject_id: docId,
-            subject_type: generatedDocEntityName("blog_post", "body"),
-            method: "put",
-            data: {
-              fields: {
-                content: {
-                  map: { [runId]: { value: null, update_id: "upd_alice", hlc: aliceHlc } },
+    const docId = createAction.updates.find(
+      (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),
+    )!.subject_id;
+    const aliceHlc = makeHlc(1_711_036_800_600);
+    const deleteAction: Action = {
+      id: "act_alice_delete",
+      actor_id: "actor_alice",
+      hlc: aliceHlc,
+      gsn: 9,
+      updates: [
+        {
+          id: "upd_alice",
+          subject_id: docId,
+          subject_type: generatedDocEntityName("blog_post", "body"),
+          method: "patch",
+          data: {
+            fields: {
+              content: {
+                map: {
+                  "alice-cut": {
+                    value: {
+                      kind: "cut",
+                      id: "alice-cut",
+                      runId,
+                      from: 0,
+                      to: 9,
+                      author: "actor_alice",
+                      stamp: aliceHlc,
+                    },
+                    update_id: "upd_alice",
+                    hlc: aliceHlc,
+                  },
                 },
               },
-            } as never,
-          },
-        ],
-      };
-      await callApplyAction(client, deleteAction, "g_1");
-      await client.outbox.detectConflicts([deleteAction], "cu_1");
+            },
+          } as never,
+        },
+      ],
+    };
+    await callApplyAction(client, deleteAction, "g_1");
+    await client.outbox.detectConflicts([deleteAction], "cu_1");
 
-      const conflicts = await client.conflicts.list();
-      expect(conflicts).toHaveLength(1);
-      const slot = conflicts[0]!.entries[0]!.slots[0]!;
-      expect(slot.subjectId).toBe(docId);
-      expect(slot.field).toBe("content");
-      expect(slot.path).toEqual([runId]);
-      // local = Bob's extended run, remote = Alice's tombstone.
-      expect(slot.local.value).toMatchObject({ text: expect.stringContaining("Magic") });
-      expect(slot.remote.value).toBeUndefined();
-      // The HLC verdict follows the tombstone; the conflict itself does not.
-      expect(slot.remoteWins()).toBe(remoteWins);
-      expect(conflicts[0]!.remoteWins()).toBe(remoteWins);
-    },
-  );
+    expect(await client.conflicts.list()).toEqual([]);
+  });
 
   it("surfaces a different-run edit at entity scope, with no overlapping slots", async () => {
     const { client, written } = harness(entitySchema);
@@ -925,7 +905,7 @@ describe("conflicts through client.conflicts", () => {
     await callApplyAction(client, { ...createAction, gsn: 1 }, "g_1");
 
     const doc = await (await client.entityPost.get(id))!.body;
-    const runId = [...doc!.docState.nodes.keys()].find((key) => key !== "ROOT")!;
+    const runId = doc!.docState.index.spans[0]!.runId;
     doc!.localExtend({ runId, appendText: "!" });
     await waitForFlush(() => doc!.pendingActions());
 
@@ -950,12 +930,12 @@ describe("conflicts through client.conflicts", () => {
                 map: {
                   "peer-run": {
                     value: {
+                      kind: "run",
                       id: "peer-run",
-                      hlc: peerHlc,
-                      actorId: "actor_peer",
                       text: "other",
-                      parentId: "ROOT",
-                      deleted: false,
+                      author: "actor_peer",
+                      stamp: peerHlc,
+                      anchor: { runId: "ROOT", offset: 0 },
                     },
                     update_id: "upd_peer_entity",
                     hlc: peerHlc,
@@ -976,6 +956,108 @@ describe("conflicts through client.conflicts", () => {
     // Entity scope: surfaced even though no position overlapped.
     expect(conflicts[0]!.entries[0]!.slots).toEqual([]);
     expect(conflicts[0]!.remoteWins()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Write discipline
+// ---------------------------------------------------------------------------
+
+describe("the client write path is append-only for a text body", () => {
+  const docType = generatedDocEntityName("blog_post", "body");
+
+  const patchAction = (
+    docId: string,
+    cells: Record<string, unknown>,
+    updateId: string,
+    hlc: string,
+  ): Action => ({
+    id: `act_${updateId}`,
+    actor_id: "actor_1",
+    hlc,
+    gsn: 0,
+    updates: [
+      {
+        id: updateId,
+        subject_id: docId,
+        subject_type: docType,
+        method: "patch",
+        data: {
+          fields: {
+            content: { map: cells },
+            version: { value: 1, update_id: updateId, hlc },
+          },
+        } as never,
+      },
+    ],
+  });
+
+  it("refuses a rewrite of an existing cell and permits a new one", async () => {
+    const { client, written } = harness(schema);
+    await client.handshake();
+    await client.actions.create({
+      entity: "blogPost",
+      input: { title: "T", published: false, body: "hello" },
+      groups: ["g_1"],
+    });
+    const createAction = written[0]!;
+    await callApplyAction(client, createAction, "g_1");
+
+    const docUpdate = createAction.updates.find((u) => u.subject_type === docType)!;
+    const docId = docUpdate.subject_id;
+    const content = (
+      docUpdate.data as unknown as {
+        fields: {
+          content: {
+            map: Record<string, { value: { id: string }; update_id: string; hlc: string }>;
+          };
+        };
+      }
+    ).fields.content;
+    const [cellId, entry] = Object.entries(content.map)[0]!;
+    const rewriteHlc = (BigInt(entry.hlc) + 1_000n).toString();
+
+    const rewrite = patchAction(
+      docId,
+      {
+        [cellId]: {
+          ...entry,
+          value: { ...entry.value, text: "rewritten" },
+          update_id: "u_rewrite",
+          hlc: rewriteHlc,
+        },
+      },
+      "u_rewrite",
+      rewriteHlc,
+    );
+
+    const submittedBefore = written.length;
+    await expect(client.write([rewrite])).rejects.toBeInstanceOf(AppendOnlyViolationError);
+    expect(written.length).toBe(submittedBefore);
+
+    // A new cell key is exactly what every real edit writes: accepted.
+    const newHlc = (BigInt(rewriteHlc) + 1_000n).toString();
+    const added = patchAction(
+      docId,
+      {
+        [`${newHlc}:actor_1`]: {
+          value: {
+            kind: "run",
+            id: `${newHlc}:actor_1`,
+            text: "!",
+            author: "actor_1",
+            stamp: newHlc,
+            anchor: { runId: cellId, offset: 5 },
+          },
+          update_id: "u_add",
+          hlc: newHlc,
+        },
+      },
+      "u_add",
+      newHlc,
+    );
+    await expect(client.write([added])).resolves.toEqual({ rejected: [] });
+    expect(written.length).toBeGreaterThan(submittedBefore);
   });
 });
 

@@ -16,7 +16,7 @@ import { format, pack, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
 
 import { TextDocument } from "@ebbjs/schema";
 import { parseContentField } from "@ebbjs/schema";
-import type { RunNode } from "@ebbjs/schema";
+import type { RunCell } from "@ebbjs/schema";
 import { projectFieldValue } from "../sync/query-builder";
 
 const SIZES = [500, 1000, 5000, 10000] as const;
@@ -30,13 +30,16 @@ const runs = (n: number): FieldValue => {
   for (let index = 0; index < n; index += 1) {
     const hlc = hlcOf(index + 1);
     const id = `${hlc}:actor_1`;
-    const node: RunNode = {
+    const node: RunCell = {
+      kind: "run",
       id,
-      hlc,
-      actorId: "actor_1",
       text: "x",
-      parentId: index === 0 ? "ROOT" : `${hlcOf(index)}:actor_1`,
-      deleted: false,
+      author: "actor_1",
+      stamp: hlc,
+      anchor: {
+        runId: index === 0 ? "ROOT" : `${hlcOf(index)}:actor_1`,
+        offset: 0,
+      },
     };
     map[id] = { value: node, update_id: `u_${index}`, hlc };
   }
@@ -115,7 +118,7 @@ const main = (): void => {
       const start = performance.now();
       for (const version of versions) {
         doc.hydrate(version);
-        sink += doc.docState.nodes.size;
+        sink += doc.docState.runs.size;
       }
       hydrateColdSamples.push(((performance.now() - start) * 1000) / COLD_VERSIONS);
     }
@@ -126,7 +129,7 @@ const main = (): void => {
     const hydrateWarmUs = micros(
       () => {
         warmDoc.hydrate(first);
-        sink += warmDoc.docState.nodes.size;
+        sink += warmDoc.docState.runs.size;
       },
       n >= 5000 ? 200 : 1000,
     );

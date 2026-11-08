@@ -79,7 +79,13 @@ import { evictableRowIds, scopeEvictedGroupIds } from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
 import {
+  appendOnlyRewrites,
+  AppendOnlyViolationError,
+  DOC_CONTENT_FIELD,
   EntityRegistry,
+  parseContentField,
+  readUpdateFields,
+  type CellFieldValue,
   EntityValidationError,
   TextDocument,
   TextDocumentRegistry,
@@ -1007,6 +1013,7 @@ export class SyncClient<
     if (permissionViolations.length > 0) {
       throw new PermissionError(permissionViolations);
     }
+    await this.refuseContentRewrites(actions);
     for (const action of actions) {
       await this.outbox.enqueue(action);
     }
@@ -1018,6 +1025,48 @@ export class SyncClient<
     if (outcome.kind === "unreachable") throw outcome.error;
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
+  }
+
+  /**
+   * Refuse a text body rewrite before it is queued. A body's `content` map is
+   * append-only: a batch may add cell keys, never replace one. The field list
+   * is hardcoded to `content` here; #767 moves the declaration onto the body's
+   * definition and reads it from there.
+   */
+  private async refuseContentRewrites(actions: readonly Action[]): Promise<void> {
+    for (const action of actions) {
+      for (const update of action.updates) {
+        const incoming = readUpdateFields(update)?.[DOC_CONTENT_FIELD];
+        if (incoming === undefined) continue;
+
+        // The replica is the read path, but an on-demand body may not be
+        // materialized there yet. The open document is the other place the
+        // same cells live. An identical value is the same cell (a local edit's
+        // optimistic cell, or a re-delivery); only a different value under an
+        // existing key is a rewrite. A key neither source knows may still be
+        // durable, so only that residue pays for a storage read.
+        const incomingCells = parseContentField(incoming);
+        const known = new Map<string, CellFieldValue>();
+        const addCells = (field: unknown): void => {
+          for (const [key, cell] of parseContentField(field)) known.set(key, cell);
+        };
+        addCells(this.replica.get(update.subject_id)?.data?.fields?.[DOC_CONTENT_FIELD]);
+        const open = this.textDocumentRegistry.get(update.subject_id);
+        if (open !== undefined) for (const [key, cell] of open.docState.cells) known.set(key, cell);
+
+        const violated = new Set(appendOnlyRewrites(incomingCells, known));
+        const unknown = new Map([...incomingCells].filter(([key]) => !known.has(key)));
+        if (unknown.size > 0) {
+          const stored = (await this.storage.entities.get(update.subject_id))?.data?.fields?.[
+            DOC_CONTENT_FIELD
+          ];
+          for (const key of appendOnlyRewrites(unknown, parseContentField(stored))) {
+            violated.add(key);
+          }
+        }
+        if (violated.size > 0) throw new AppendOnlyViolationError([...violated]);
+      }
+    }
   }
 
   /**
