@@ -7,11 +7,25 @@
  * - onUpdate event hooks
  * - pendingActions / ackPending queue management
  * - TextDocumentRegistry singleton-per-doc semantics
+ * - #762's same-run concurrency reproductions, expected failures until #764
  */
 
 import { describe, expect, it } from "vitest";
-import { pack, format, type Action, type FieldValue, type HLCTimestamp } from "@ebbjs/core";
-import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "@ebbjs/schema";
+import {
+  mergeFieldValue,
+  pack,
+  format,
+  type Action,
+  type FieldValue,
+  type HLCTimestamp,
+  type Update,
+} from "@ebbjs/core";
+import {
+  DOC_CONTENT_FIELD,
+  TextDocument,
+  TextDocumentRegistry,
+  type AppliedUpdate,
+} from "@ebbjs/schema";
 import { DEFAULT_DOC_SUBJECT_TYPE } from "@ebbjs/schema";
 import type { RunNode } from "@ebbjs/schema";
 
@@ -624,5 +638,198 @@ describe("acceptance — applyActions matches POC for same edit sequence", () =>
     docB.applyActions(aActions);
 
     expect(docA.text).toBe(docB.text);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-run concurrent edits: #762's reproductions (#763)
+// ---------------------------------------------------------------------------
+//
+// Written from #762's report rather than from the implementation: two peers
+// editing inside one run at the same time. Each asserts exact text rather than
+// replica equality — two replicas can agree on text nobody wrote — and each
+// also hydrates from the merged cell map, which is its own read path.
+//
+// They are the specification #764 has to satisfy. Every fixture is an expected
+// failure today; flipping `it.fails` to `it` is #764's definition of done. The
+// rebuilt model's properties — convergence, write discipline, no resurrection,
+// total order, stamp provenance — are asserted in #764.
+
+const DOC_ID = "doc_1";
+const BASE_TEXT = "I think I can";
+const BASE_ACTOR = "actor_a";
+
+type Seed = {
+  /** The base document as the merged `content` field a peer would receive. */
+  readonly content: FieldValue;
+  /** Id of the single run holding `BASE_TEXT`. */
+  readonly runId: string;
+};
+
+type Scenario = {
+  readonly name: string;
+  readonly editA: (doc: TextDocument, runId: string) => void;
+  readonly editB: (doc: TextDocument, runId: string) => void;
+  /** What each peer sees after its own optimistic edit, before exchange. */
+  readonly localTextA: string;
+  readonly localTextB: string;
+  /** What both peers must see once the edits have reached each other. */
+  readonly expectedText: string;
+};
+
+const SCENARIOS: readonly Scenario[] = [
+  {
+    name: "insert vs insert inside one run",
+    editA: (doc, runId) => {
+      doc.localInsert("X", { afterRun: runId, splitParentAt: 7 });
+    },
+    editB: (doc, runId) => {
+      doc.localInsert("Y", { afterRun: runId, splitParentAt: 9 });
+    },
+    localTextA: "I thinkX I can",
+    localTextB: "I think IY can",
+    expectedText: "I thinkX IY can",
+  },
+  {
+    name: "partial delete vs mid-run insert",
+    editA: (doc, runId) => {
+      doc.localDelete({ runId, offset: 2, count: 5 });
+    },
+    editB: (doc, runId) => {
+      doc.localInsert("X", { afterRun: runId, splitParentAt: 7 });
+    },
+    localTextA: "I  I can",
+    localTextB: "I thinkX I can",
+    expectedText: "I X I can",
+  },
+  {
+    name: "two partial deletes in one run",
+    editA: (doc, runId) => {
+      doc.localDelete({ runId, offset: 2, count: 5 });
+    },
+    editB: (doc, runId) => {
+      doc.localDelete({ runId, offset: 8, count: 5 });
+    },
+    localTextA: "I  I can",
+    localTextB: "I think ",
+    expectedText: "I  ",
+  },
+  {
+    name: "extend vs mid-run insert",
+    editA: (doc, runId) => {
+      doc.localExtend({ runId, appendText: "." });
+    },
+    editB: (doc, runId) => {
+      doc.localInsert("X", { afterRun: runId, splitParentAt: 7 });
+    },
+    localTextA: "I think I can.",
+    localTextB: "I thinkX I can",
+    expectedText: "I thinkX I can.",
+  },
+];
+
+const contentOf = (update: Update): FieldValue | undefined => {
+  const data = update.data;
+  if (data === null || typeof data !== "object" || !("fields" in data)) return undefined;
+  return data.fields[DOC_CONTENT_FIELD];
+};
+
+/** Fold a batch of Actions into one `content` map, using the wire's merge rule. */
+const mergedContent = (actions: readonly Action[], base?: FieldValue): FieldValue => {
+  let merged = base;
+  for (const action of actions) {
+    for (const update of action.updates) {
+      const incoming = contentOf(update);
+      if (incoming !== undefined) merged = mergeFieldValue(merged, incoming);
+    }
+  }
+  if (merged === undefined) throw new Error("action batch carries no content field");
+  return merged;
+};
+
+const seedBase = (): Seed => {
+  const doc = new TextDocument({ docId: DOC_ID, actorId: BASE_ACTOR });
+  // An old HLC keeps the base run distinct from the edits, which would
+  // otherwise reuse its id when they land in the same millisecond.
+  const runId = doc.localInsert(BASE_TEXT, { hlc: makeHlc(1) });
+  if (runId === null) throw new Error("failed to seed the base run");
+  return { content: mergedContent(doc.pendingActions()), runId };
+};
+
+const openReplica = (seed: Seed, actorId: string): TextDocument => {
+  const doc = new TextDocument({ docId: DOC_ID, actorId });
+  doc.hydrate(seed.content);
+  return doc;
+};
+
+const editOnBothReplicas = (scenario: Scenario) => {
+  const seed = seedBase();
+  const a = openReplica(seed, "actor_a");
+  const b = openReplica(seed, "actor_b");
+  scenario.editA(a, seed.runId);
+  scenario.editB(b, seed.runId);
+  return { seed, a, b, aActions: a.pendingActions(), bActions: b.pendingActions() };
+};
+
+/** A applies B's actions, B applies A's: both delivery orders. */
+const textAfterReplay = (scenario: Scenario) => {
+  const { a, b, aActions, bActions } = editOnBothReplicas(scenario);
+  a.applyActions(bActions);
+  b.applyActions(aActions);
+  return { aAppliesB: a.text, bAppliesA: b.text };
+};
+
+/** Hydrate a fresh replica from the merged cell map, merged in both orders. */
+const textFromMergedCells = (scenario: Scenario) => {
+  const { seed, aActions, bActions } = editOnBothReplicas(scenario);
+  const aThenB = openReplica(
+    { ...seed, content: mergedContent([...aActions, ...bActions], seed.content) },
+    "observer",
+  );
+  const bThenA = openReplica(
+    { ...seed, content: mergedContent([...bActions, ...aActions], seed.content) },
+    "observer",
+  );
+  return { aThenB: aThenB.text, bThenA: bThenA.text };
+};
+
+/**
+ * A fixture that never reaches the buggy state would let every expected
+ * failure below pass for the wrong reason, so assert the starting point as
+ * plain expectations: the base run hydrates, and each local edit is correct
+ * before any exchange.
+ */
+describe("concurrent edits inside one run — fixtures", () => {
+  it.each(SCENARIOS)("$name reaches the state #762 describes", (scenario) => {
+    const seed = seedBase();
+    const a = openReplica(seed, "actor_a");
+    const b = openReplica(seed, "actor_b");
+
+    expect(a.text).toBe(BASE_TEXT);
+    expect(b.text).toBe(BASE_TEXT);
+
+    scenario.editA(a, seed.runId);
+    scenario.editB(b, seed.runId);
+
+    expect(a.text).toBe(scenario.localTextA);
+    expect(b.text).toBe(scenario.localTextB);
+  });
+});
+
+describe("concurrent edits inside one run — #762 reproductions", () => {
+  describe.each(SCENARIOS)("$name", (scenario) => {
+    it.fails("converges on the exact text in both apply orders", () => {
+      expect(textAfterReplay(scenario)).toEqual({
+        aAppliesB: scenario.expectedText,
+        bAppliesA: scenario.expectedText,
+      });
+    });
+
+    it.fails("projects the merged cell map to the exact text in either merge order", () => {
+      expect(textFromMergedCells(scenario)).toEqual({
+        aThenB: scenario.expectedText,
+        bThenA: scenario.expectedText,
+      });
+    });
   });
 });
