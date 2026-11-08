@@ -165,6 +165,20 @@ const presenceCalls = (calls: readonly RecordedCall[]): readonly RecordedCall[] 
 
 const bodyOf = (call: RecordedCall): unknown => JSON.parse(String(call.init.body));
 
+interface PresenceBody {
+  readonly entity_id: string;
+  readonly data: { readonly channel: string; readonly value: unknown };
+}
+
+/** Readable `entity/channel=value` form, for order-insensitive assertions. */
+const posted = (calls: readonly RecordedCall[]): string[] =>
+  presenceCalls(calls)
+    .map((call) => {
+      const body = bodyOf(call) as PresenceBody;
+      return `${body.entity_id}/${body.data.channel}=${JSON.stringify(body.data.value)}`;
+    })
+    .sort();
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -422,6 +436,227 @@ describe("presence send", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(presenceCalls(h.calls)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leave
+// ---------------------------------------------------------------------------
+
+describe("presence leave", () => {
+  const registeredClient = (h: Harness): SyncClient =>
+    createClient({
+      serverUrl: SERVER_URL,
+      actorId: LOCAL_ACTOR,
+      fetchImpl: h.fetchImpl,
+      presence: definePresence({ cursor: cursorSchema, camera: cameraSchema }),
+    });
+
+  it("posts a null for every target this session sent on", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    client.presence.set("doc_a", "camera", camera);
+    client.presence.set("doc_b", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    await client.presence.leave();
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual([
+      "doc_a/camera=null",
+      "doc_a/cursor=null",
+      "doc_b/cursor=null",
+    ]);
+    client.close();
+  });
+
+  it("marks the leave POST keepalive so it survives page teardown", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    await client.presence.leave({ keepalive: true });
+
+    const leaves = presenceCalls(h.calls).slice(before);
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]!.init.keepalive).toBe(true);
+    client.close();
+  });
+
+  it("leaves an ordinary set or clear unmarked", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    client.presence.clear("doc_a", "camera");
+    await client.presence.flush();
+
+    const writes = presenceCalls(h.calls);
+    expect(writes).toHaveLength(2);
+    for (const call of writes) expect(call.init).not.toHaveProperty("keepalive");
+    client.close();
+  });
+
+  it("posts the leave without waiting for the debounce, and leaves nothing pending", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    let settled = false;
+    const leaving = client.presence.leave().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled).toBe(true);
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/cursor=null"]);
+
+    // Nothing was left behind for the debounce to post later.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/cursor=null"]);
+    await leaving;
+    client.close();
+  });
+
+  it("coalesces a pending set into the leave null for that target", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    client.presence.set("doc_a", "camera", camera);
+    client.presence.set("doc_b", "cursor", { ...cursor, anchorOffset: 5 });
+
+    await client.presence.leave();
+
+    expect(posted(presenceCalls(h.calls))).toEqual([
+      "doc_a/camera=null",
+      "doc_a/cursor=null",
+      "doc_b/cursor=null",
+    ]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(presenceCalls(h.calls)).toHaveLength(3);
+    client.close();
+  });
+
+  it("posts the leave before the caller's first await", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    // No await here: a pagehide handler is torn down with its document, so the
+    // POST must already be issued when `leave()` returns its promise.
+    const leaving = client.presence.leave({ keepalive: true });
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/cursor=null"]);
+    await leaving;
+    client.close();
+  });
+
+  it("sends nothing when leave runs after the client closed", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    client.close();
+    await client.presence.leave({ keepalive: true });
+
+    expect(presenceCalls(h.calls)).toHaveLength(before);
+  });
+
+  it("leaves a dynamic channel on an untyped client", async () => {
+    const h = harness();
+    const client = connectedClient(h);
+
+    client.presence.set("doc_a", "activeTool", { name: "pen" });
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    await client.presence.leave({ keepalive: true });
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/activeTool=null"]);
+    client.close();
+  });
+
+  it("sends nothing more on a second leave", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    await client.presence.leave();
+    const afterFirst = presenceCalls(h.calls).length;
+
+    await client.presence.leave({ keepalive: true });
+    await client.presence.flush();
+
+    expect(presenceCalls(h.calls)).toHaveLength(afterFirst);
+    client.close();
+  });
+
+  it("does not announce a target that was already cleared", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    client.presence.set("doc_a", "camera", camera);
+    await client.presence.flush();
+    client.presence.clear("doc_a", "camera");
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    await client.presence.leave({ keepalive: true });
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/cursor=null"]);
+    client.close();
+  });
+
+  it("flushes an unrelated pending write through the normal path", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    client.presence.clear("doc_a", "camera");
+
+    await client.presence.leave({ keepalive: true });
+
+    const writes = presenceCalls(h.calls).slice(1);
+    expect(posted(writes)).toEqual(["doc_a/camera=null", "doc_a/cursor=null"]);
+    const cameraWrite = writes.find(
+      (call) => (bodyOf(call) as PresenceBody).data.channel === "camera",
+    )!;
+    expect(cameraWrite.init).not.toHaveProperty("keepalive");
+    client.close();
+  });
+
+  it("sends nothing on the wire when the client closes instead", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    client.presence.set("doc_a", "camera", camera);
+    client.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(posted(presenceCalls(h.calls))).toEqual([`doc_a/cursor=${JSON.stringify(cursor)}`]);
   });
 });
 
