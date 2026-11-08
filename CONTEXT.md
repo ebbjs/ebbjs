@@ -76,7 +76,8 @@ _Avoid_: remote user, collaborator, participant, viewer
 **Leave**:
 Retract the presence this session announced: send a `null` for each claimed
 `(entity, channel)`, so peers drop the actor now instead of aging it out on the
-channel TTL. Triggered by the page going away, never by `client.close()`.
+channel TTL. The app calls it when the actor is really gone; `client.close()`
+is local teardown and never leaves.
 _Avoid_: unload, broadcast absence, release
 
 ### Materialization

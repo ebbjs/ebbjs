@@ -11,7 +11,6 @@ This package ships the client plumbing plus the data hooks:
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 - `usePresence()` — the peers observed on one presence channel of one entity, typed from the channel's declared schema when bound with `createEbbHooks`.
-- `usePresenceLeave()` — retract this session's presence when the page goes away. `EbbProvider` already installs it; call it yourself only under a custom provider.
 - `useOutbox()` — the write buffer's depth and flush latency: pending, acknowledged, error, conflicted, `flushLatency`, `storeFaults`.
 - `useConflicts()` — the conflicts awaiting an application decision.
 - `useEbbStatus()` — connection + `lastSyncedAt` + outbox + conflicts in one subscription.
@@ -243,18 +242,6 @@ cursor behind. Sending is unchanged: `client.presence.set(entityId, channel,
 value)` coalesces per target, and `client.presence.clear` sends the channel's
 `null`.
 
-The provider also leaves: on `pagehide` it calls
-`client.presence.leave({ keepalive: true })`, retracting every target this
-session announced so peers drop the actor instead of waiting out the TTL. That
-is page lifetime, not a React lifetime, so it is not tied to unmounting —
-`client.close()` stays local teardown, because a remount or a client swap must
-not broadcast an absence — and `visibilitychange` is not a leave either, since
-a hidden tab still has a cursor and the TTL covers it. A page entering the
-back/forward cache is skipped too: it can be restored, and a restored client
-re-announces nothing until it writes again. Under a custom provider that does
-not wire this, call `usePresenceLeave()` in a component that stays mounted for
-the page's lifetime.
-
 The standalone `usePresence<T>()` cannot see the client type (React context
 erases it), so it does not narrow the channel; pass the payload type there:
 
@@ -412,30 +399,29 @@ await client.actions.leaveWorkspace({ profileId, groupId, memberId });
 
 ## API
 
-| Export                           | What                                                                                     |
-| -------------------------------- | ---------------------------------------------------------------------------------------- |
-| `EbbProvider`                    | Makes the app's client available to hooks below it.                                      |
-| `useClient<C>()`                 | Returns the nearest provider's client typed as `C`; throws outside a provider.           |
-| `useConnection()`                | Subscribes to connection state and re-renders on transitions.                            |
-| `useQuery(build, deps?)`         | Subscribes to a cached query result; `{ data, status, loading, error }`.                 |
-| `usePresence(entityId, channel)` | Subscribes to the peers on one presence channel; `ReadonlyMap<actorId, PeerPresence>`.   |
-| `usePresenceLeave()`             | Leaves (`keepalive`) every claimed presence target on `pagehide`; the provider wires it. |
-| `useOutbox()`                    | Subscribes to the write buffer; `OutboxSnapshot` (depth, latency, faults).               |
-| `useConflicts()`                 | Subscribes to the conflict set; `ConflictSnapshot` (`count`, `conflicts`).               |
-| `useEbbStatus()`                 | Subscribes to the aggregate `ClientStatus`; one hook for a status bar.                   |
-| `useSyncObservable(o)`           | Subscribes to any `ReadonlyObservable<T>`; the generic wrapper above.                    |
-| `createEbbHooks<C>()`            | Binds `useClient`, `useQuery`, `usePresence`, and the sync-state hooks to one type.      |
-| `QueryRootOf<C>`                 | The read root of a client type — what a bound `useQuery`'s `q` is.                       |
-| `PresenceChannelOf<C>`           | The presence channel names a client type declares.                                       |
-| `PresencePeerMapOf<C, K>`        | The peer map a bound `usePresence` returns for one declared channel.                     |
-| `EbbProviderProps`               | The provider's prop type.                                                                |
-| `UseQueryResult`                 | The `useQuery` result type.                                                              |
-| `QueryRows`                      | The projected row-list type a `QueryBuilder` resolves to.                                |
-| `ConnectionState`                | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.               |
-| `OutboxSnapshot`                 | Re-exported outbox snapshot type (`pending`, `flushLatency`, …).                         |
-| `ConflictSnapshot`               | Re-exported conflict snapshot type (`count`, `conflicts`).                               |
-| `ClientStatus`                   | Re-exported aggregate status type (`connection`, `outbox`, …).                           |
-| `ReadonlyObservable<T>`          | Re-exported observable interface `useSyncObservable` accepts.                            |
+| Export                           | What                                                                                   |
+| -------------------------------- | -------------------------------------------------------------------------------------- |
+| `EbbProvider`                    | Makes the app's client available to hooks below it.                                    |
+| `useClient<C>()`                 | Returns the nearest provider's client typed as `C`; throws outside a provider.         |
+| `useConnection()`                | Subscribes to connection state and re-renders on transitions.                          |
+| `useQuery(build, deps?)`         | Subscribes to a cached query result; `{ data, status, loading, error }`.               |
+| `usePresence(entityId, channel)` | Subscribes to the peers on one presence channel; `ReadonlyMap<actorId, PeerPresence>`. |
+| `useOutbox()`                    | Subscribes to the write buffer; `OutboxSnapshot` (depth, latency, faults).             |
+| `useConflicts()`                 | Subscribes to the conflict set; `ConflictSnapshot` (`count`, `conflicts`).             |
+| `useEbbStatus()`                 | Subscribes to the aggregate `ClientStatus`; one hook for a status bar.                 |
+| `useSyncObservable(o)`           | Subscribes to any `ReadonlyObservable<T>`; the generic wrapper above.                  |
+| `createEbbHooks<C>()`            | Binds `useClient`, `useQuery`, `usePresence`, and the sync-state hooks to one type.    |
+| `QueryRootOf<C>`                 | The read root of a client type — what a bound `useQuery`'s `q` is.                     |
+| `PresenceChannelOf<C>`           | The presence channel names a client type declares.                                     |
+| `PresencePeerMapOf<C, K>`        | The peer map a bound `usePresence` returns for one declared channel.                   |
+| `EbbProviderProps`               | The provider's prop type.                                                              |
+| `UseQueryResult`                 | The `useQuery` result type.                                                            |
+| `QueryRows`                      | The projected row-list type a `QueryBuilder` resolves to.                              |
+| `ConnectionState`                | Re-exported `"connecting" \| "live" \| "reconnecting" \| "offline"` union.             |
+| `OutboxSnapshot`                 | Re-exported outbox snapshot type (`pending`, `flushLatency`, …).                       |
+| `ConflictSnapshot`               | Re-exported conflict snapshot type (`count`, `conflicts`).                             |
+| `ClientStatus`                   | Re-exported aggregate status type (`connection`, `outbox`, …).                         |
+| `ReadonlyObservable<T>`          | Re-exported observable interface `useSyncObservable` accepts.                          |
 
 ## Peer dependencies
 

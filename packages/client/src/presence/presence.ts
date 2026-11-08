@@ -24,8 +24,8 @@
  * Leaving: `leave()` retracts every `(entityId, channel)` this client has
  * announced with a null, so peers drop this actor instead of waiting out the
  * channel's TTL. `close()` is local teardown and sends nothing: a transient
- * remount must not broadcast an absence. A page that is really going away
- * calls `leave({ keepalive: true })` from its unload handler.
+ * remount must not broadcast an absence. An app that knows the page is really
+ * going away calls `leave({ keepalive: true })` from its own unload handler.
  *
  * Network model:
  *   - Outgoing: `POST /sync/presence` with `{entity_id, data: {channel, value}}`
@@ -133,19 +133,12 @@ export type PresenceChannelsOf<R> = R extends { readonly channels: infer C }
 export interface PresenceApi<C extends PresenceChannelsMap = PresenceChannelsMap> {
   set<K extends keyof C & string>(entityId: string, channel: K, value: PresenceValue<C, K>): void;
   clear(entityId: string, channel: keyof C & string): void;
-  forEntity<K extends keyof C & string>(
-    entityId: string,
-    channel: K,
-  ): ReadonlyMap<string, PeerPresence<PresenceValue<C, K>>>;
-  onUpdate(callback: (change: PresenceChange) => void): () => void;
-  /** Send every pending (debounced) write now; resolves once they settle. */
-  flush(): Promise<void>;
   /**
    * Send a null for every target this client currently claims, then forget
    * them, and flush anything else already pending. Best-effort and
    * idempotent: a second call sends nothing. `keepalive` marks the POSTs of
-   * this leave so a pagehide-issued one survives page teardown (defaults to
-   * false); the channel TTL is the backstop when a leave is lost.
+   * this leave so one issued from an unload handler survives page teardown
+   * (defaults to false); the channel TTL is the backstop when a leave is lost.
    *
    * A long session's leave is bounded at both ends: the server's per-actor
    * presence burst rejects a very large batch, and the browser's in-flight
@@ -153,6 +146,13 @@ export interface PresenceApi<C extends PresenceChannelsMap = PresenceChannelsMap
    * remaining peers age out on the TTL.
    */
   leave(options?: PresenceSendOptions): Promise<void>;
+  forEntity<K extends keyof C & string>(
+    entityId: string,
+    channel: K,
+  ): ReadonlyMap<string, PeerPresence<PresenceValue<C, K>>>;
+  onUpdate(callback: (change: PresenceChange) => void): () => void;
+  /** Send every pending (debounced) write now; resolves once they settle. */
+  flush(): Promise<void>;
 }
 
 /**
@@ -234,18 +234,6 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
       claimed.delete(targetKey(entityId, channel));
     },
 
-    forEntity(entityId, channel) {
-      return store.forEntity(entityId, channel);
-    },
-
-    onUpdate(callback) {
-      return store.onUpdate(callback);
-    },
-
-    flush() {
-      return transport.flush();
-    },
-
     async leave(options) {
       const targets = [...claimed.values()];
       claimed.clear();
@@ -256,6 +244,18 @@ export function createPresence(opts: PresenceOptions): PresenceRuntime {
       }
       // The page may be gone before the debounce fires: post now.
       await transport.flush();
+    },
+
+    forEntity(entityId, channel) {
+      return store.forEntity(entityId, channel);
+    },
+
+    onUpdate(callback) {
+      return store.onUpdate(callback);
+    },
+
+    flush() {
+      return transport.flush();
     },
 
     ingest(payload) {

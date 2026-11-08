@@ -1532,9 +1532,9 @@ export class SyncClient<
    *
    * Local teardown only: it cancels pending presence writes and drops the
    * observed peers, and deliberately sends no presence leave, because a
-   * transient remount must not broadcast an absence. A page that is actually
-   * going away (a `pagehide` handler for the tab) calls
-   * `client.presence.leave({ keepalive: true })`.
+   * transient remount must not broadcast an absence. An app that knows the tab
+   * is going away can call `client.presence.leave({ keepalive: true })` from
+   * its own unload handler.
    */
   close(): void {
     // Stop timers and in-flight retries first: no flush should start while

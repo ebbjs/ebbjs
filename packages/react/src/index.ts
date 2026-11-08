@@ -11,8 +11,6 @@
  *   entity namespaces and subscribe to its cached result
  * - `usePresence` — the peers observed on one presence channel of one entity,
  *   typed from the channel's declared schema
- * - `usePresenceLeave` — retract this session's presence on `pagehide`, wired
- *   by `EbbProvider` already and only needed for a custom provider
  * - `useOutbox` / `useConflicts` / `useEbbStatus` — read-only subscriptions to
  *   `client.sync.outbox`, `client.sync.conflicts`, and the aggregate
  *   `client.status`, so a UI can render pending depth, conflict depth, and
@@ -48,8 +46,6 @@ export { useEbbStatus } from "./use-status";
 export { useQuery, type QueryRows, type UseQueryResult } from "./use-query";
 
 export { usePresence, type PresenceChannelOf, type PresencePeerMapOf } from "./use-presence";
-
-export { usePresenceLeave } from "./use-presence-leave";
 
 export { createEbbHooks, type EbbHooks, type QueryRootOf } from "./create-ebb-hooks";
 
