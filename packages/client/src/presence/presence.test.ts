@@ -548,6 +548,51 @@ describe("presence leave", () => {
     client.close();
   });
 
+  it("posts the leave before the caller's first await", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    // No await here: a pagehide handler is torn down with its document, so the
+    // POST must already be issued when `leave()` returns its promise.
+    const leaving = client.presence.leave({ keepalive: true });
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/cursor=null"]);
+    await leaving;
+    client.close();
+  });
+
+  it("sends nothing when leave runs after the client closed", async () => {
+    const h = harness();
+    const client = registeredClient(h);
+
+    client.presence.set("doc_a", "cursor", cursor);
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    client.close();
+    await client.presence.leave({ keepalive: true });
+
+    expect(presenceCalls(h.calls)).toHaveLength(before);
+  });
+
+  it("leaves a dynamic channel on an untyped client", async () => {
+    const h = harness();
+    const client = connectedClient(h);
+
+    client.presence.set("doc_a", "activeTool", { name: "pen" });
+    await client.presence.flush();
+    const before = presenceCalls(h.calls).length;
+
+    await client.presence.leave({ keepalive: true });
+
+    expect(posted(presenceCalls(h.calls).slice(before))).toEqual(["doc_a/activeTool=null"]);
+    client.close();
+  });
+
   it("sends nothing more on a second leave", async () => {
     const h = harness();
     const client = registeredClient(h);

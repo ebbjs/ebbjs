@@ -12,6 +12,7 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { Type } from "@sinclair/typebox";
 import { createClient, definePresence } from "@ebbjs/client";
+import type { SyncClient } from "@ebbjs/client";
 
 import { EbbProvider, usePresenceLeave } from "../index";
 
@@ -42,8 +43,16 @@ function harness() {
   };
 }
 
-const makeClient = (fetchImpl: typeof fetch) =>
-  createClient({ serverUrl: "http://localhost:4000", actorId: "alice", fetchImpl, presence });
+const makeClient = (fetchImpl: typeof fetch, actorId = "alice") =>
+  createClient({ serverUrl: "http://localhost:4000", actorId, fetchImpl, presence });
+
+/** The private receive seam the live stream feeds; tests fold packets in here. */
+interface PresenceRuntimeSeam {
+  ingest(payload: unknown): void;
+}
+
+const runtimeOf = (client: SyncClient): PresenceRuntimeSeam =>
+  (client as unknown as { presenceRuntime: PresenceRuntimeSeam }).presenceRuntime;
 
 const bodyOf = (call: RecordedCall): unknown => JSON.parse(String(call.init.body));
 
@@ -82,6 +91,9 @@ describe("leaving presence on pagehide", () => {
 
     pageHide();
 
+    // The handler must issue the POST synchronously: the document can be torn
+    // down before any promise resumes.
+    expect(h.presenceCalls()).toHaveLength(2);
     await waitFor(() => expect(h.presenceCalls()).toHaveLength(2));
     const leave = h.presenceCalls()[1]!;
     expect(leave.init.keepalive).toBe(true);
@@ -111,6 +123,35 @@ describe("leaving presence on pagehide", () => {
 
     expect(h.presenceCalls()).toHaveLength(before);
     client.close();
+  });
+
+  it("removes the actor from a peer as soon as the page hides", async () => {
+    const h = harness();
+    const drew = makeClient(h.fetchImpl, "drew");
+    const alice = makeClient(h.fetchImpl, "alice");
+    render(
+      <EbbProvider client={drew}>
+        <span>inside</span>
+      </EbbProvider>,
+    );
+
+    drew.presence.set("plan_1", "cursor", cursor);
+    await drew.presence.flush();
+
+    // What the server broadcasts to a subscriber: the sender's body plus the
+    // actor id it authenticated.
+    const present = bodyOf(h.presenceCalls()[0]!) as { entity_id: string; data: unknown };
+    runtimeOf(alice).ingest({ actor_id: "drew", ...present });
+    expect(alice.presence.forEntity("plan_1", "cursor").size).toBe(1);
+
+    pageHide();
+    const leave = bodyOf(h.presenceCalls()[1]!) as { entity_id: string; data: unknown };
+    runtimeOf(alice).ingest({ actor_id: "drew", ...leave });
+
+    // No TTL and no debounce: the leave's null is what drops the peer.
+    expect(alice.presence.forEntity("plan_1", "cursor").size).toBe(0);
+    drew.close();
+    alice.close();
   });
 
   it("does not leave when the page enters the back/forward cache", async () => {

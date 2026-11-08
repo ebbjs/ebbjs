@@ -142,9 +142,15 @@ export interface PresenceApi<C extends PresenceChannelsMap = PresenceChannelsMap
   flush(): Promise<void>;
   /**
    * Send a null for every target this client currently claims, then forget
-   * them. Best-effort and idempotent: a second call sends nothing.
-   * `keepalive` marks the POSTs so a pagehide-issued leave survives page
-   * teardown; it defaults to false.
+   * them, and flush anything else already pending. Best-effort and
+   * idempotent: a second call sends nothing. `keepalive` marks the POSTs of
+   * this leave so a pagehide-issued one survives page teardown (defaults to
+   * false); the channel TTL is the backstop when a leave is lost.
+   *
+   * A long session's leave is bounded at both ends: the server's per-actor
+   * presence burst rejects a very large batch, and the browser's in-flight
+   * keepalive budget drops the rest. Presence stays lossy by design, so the
+   * remaining peers age out on the TTL.
    */
   leave(options?: PresenceSendOptions): Promise<void>;
 }

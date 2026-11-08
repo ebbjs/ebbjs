@@ -1,7 +1,7 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { SyncClient } from "@ebbjs/client";
 
-import { useLeaveOnPageHide } from "./use-presence-leave";
+import { useLeaveOnPageHide } from "./use-leave-on-page-hide";
 
 /**
  * The app's client, erased to `SyncClient`: the caller's type re-enters at

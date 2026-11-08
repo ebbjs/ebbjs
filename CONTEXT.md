@@ -73,6 +73,12 @@ Another actor observed on a presence channel of an entity: the payload that
 actor last sent plus the local time it arrived.
 _Avoid_: remote user, collaborator, participant, viewer
 
+**Leave**:
+Retract the presence this session announced: send a `null` for each claimed
+`(entity, channel)`, so peers drop the actor now instead of aging it out on the
+channel TTL. Triggered by the page going away, never by `client.close()`.
+_Avoid_: unload, broadcast absence, release
+
 ### Materialization
 
 **Held**:

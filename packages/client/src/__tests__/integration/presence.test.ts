@@ -13,7 +13,10 @@
  * demo's document (`doc_grp_demo`) that the standard integration CI job does
  * not bootstrap. The test
  * probes for that fixture at load time and skips cleanly with a
- * warning when it's missing. See `packages/client/README.md` for how
+ * warning when it's missing. The leave half of the round trip therefore only
+ * runs when the fixtures are seeded; the debounce-free leave path itself is
+ * covered by `src/presence/presence.test.ts`. See
+ * `packages/client/README.md` for how
  * to seed the demo fixtures locally.
  */
 
@@ -250,7 +253,7 @@ describe("integration: presence", () => {
     // channel's 30s TTL.
     await drew.client.presence.leave();
     const alicePresence = alice.client.presence;
-    await waitFor(() => alicePresence.forEntity(DOC_ID, "cursor").size === 0, 2000);
+    await waitFor(() => alicePresence.forEntity(DOC_ID, "cursor").size === 0, 300);
 
     // Closing the subscription drops the peers it observed.
     alice.unsubscribe();

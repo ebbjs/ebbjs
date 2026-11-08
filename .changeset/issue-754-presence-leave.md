@@ -1,6 +1,6 @@
 ---
-"@ebbjs/client": patch
-"@ebbjs/react": patch
+"@ebbjs/client": minor
+"@ebbjs/react": minor
 ---
 
 `client.presence.leave()` retracts every `(entityId, channel)` this session
