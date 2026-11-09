@@ -350,7 +350,6 @@ export {
 export {
   defineRelationship,
   type RelationshipDef,
-  type RelationshipKind,
   type SourceCardinality,
   type DefineRelationshipInput,
 } from "@ebbjs/schema";
