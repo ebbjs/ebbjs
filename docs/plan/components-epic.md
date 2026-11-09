@@ -622,6 +622,17 @@ with a constants module keeps the shape and removes one symptom.
 rows; dispatch on the component; the cache tables keyed by component; `ebb/link` declaring its own
 conflict scope and its own membership rows per #790.
 
+**The rows stay.** A membership does _not_ become a key on the member's row, and a group member does
+not become a key on the group's row. Both are tempting — `ebb/membership: { grp1: {}, grp2: {} }` on
+the entity would make "which groups is this in?" a field read with no cache, and cut adding an
+entity to three groups from three Updates to one. It fails on the paths #790 exists to fix: group
+listing, membership listing, and backfill are **keyset pagination** over ordered rows
+(`idx_entities_entity_group_page`, `idx_entities_group_member`, `GroupListing`), and a JSON key set
+cannot serve an ordered window. It would also move the delivery scope of a membership change from
+the row's own identity to keys inside the payload.
+
+**Rule:** anything you paginate must be a row.
+
 **Work.**
 
 - [ ] Name and register the four system components; `SYSTEM_ENTITY_NAMES` and
