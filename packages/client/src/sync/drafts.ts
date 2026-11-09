@@ -8,15 +8,14 @@
  * intent, and the resolver splices each intent's calls back into its own
  * position — so a created row's `put` precedes a later patch of it. **The batch
  * overlay outranks the capability**: `create` / `duplicate` seed the entity's
- * groups and parts, membership verbs keep them current, and a read consults the
- * overlay before the live store so a later verb sees what the batch did rather
- * than what is materialized.
+ * groups, membership verbs keep them current, and a read consults the overlay
+ * before the live store so a later verb sees what the batch did rather than what
+ * is materialized.
  */
 
 import { generateId, type Entity, type FieldValue } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
-import { derivedBodyIds } from "@ebbjs/schema";
 import type { EntityDef, ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import type { EntityRegistry } from "@ebbjs/schema";
@@ -36,14 +35,13 @@ import {
   type SourceNameOf,
 } from "./definition-types";
 import type { LiveMembership } from "./entity-group";
-import type { GeneratedDocument, GeneratedEdge, GeneratedParts } from "./generated-parts";
 import {
   entityGroupId,
   lastGroupMemberRefusal,
   type GroupMemberView,
   type LiveGroupMember,
 } from "@ebbjs/write";
-import type { DerivedInputs, EntityFields, EntityPatch, WireCreateStatic } from "./namespace";
+import type { EntityFields, EntityPatch, WireCreateStatic } from "./namespace";
 import {
   ActionRejectedError,
   call,
@@ -258,8 +256,6 @@ export interface DraftDuplicateOptions extends EntityWriteOptions {
 export interface ActionReads {
   /** Live `entityGroup` rows for an entity id. */
   memberships(entityId: string): Promise<readonly LiveMembership[]>;
-  /** The entity's live generated parts, carried on a membership change. */
-  generatedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
   /** The live row of `entityType`, or `null` when it is absent or another type. */
   entity(entityType: string, entityId: string): Promise<Entity | null>;
   /** The `before` row of the entity's earliest unresolved conflict. */
@@ -285,8 +281,6 @@ interface BatchEntity {
   groups: Set<string>;
   /** `entityGroup` row ids the batch knows, keyed by group. */
   membershipIds: Map<string, string>;
-  /** Parts a batch-local `create` minted, not yet in the local store. */
-  readonly parts?: GeneratedParts;
 }
 
 /** One membership delta against an entity's group set. */
@@ -369,15 +363,14 @@ interface ResolveContext {
 }
 
 /**
- * What a draft `create` accepts: the entity's wire fields (a field that is
- * also a relationship's `as` name takes its pointer type), the optional
- * derived bodies, and the forward relationship pointers themselves.
+ * What a draft `create` accepts: the entity's fields (a field that is
+ * also a relationship's `as` name takes its pointer type) and the forward
+ * relationship pointers themselves.
  */
 type DraftCreateInput<TFields extends Record<string, TSchema>, TCreateExtras extends object> = Omit<
   WireCreateStatic<TFields>,
   keyof TCreateExtras & string
 > &
-  DerivedInputs<TFields> &
   TCreateExtras;
 
 /**
@@ -427,10 +420,7 @@ export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit
   DraftNamespace<TFields>,
   "create" | "addToGroup" | "removeFromGroup" | "setGroups"
 > & {
-  create(
-    input: WireCreateStatic<TFields> & DerivedInputs<TFields>,
-    opts?: EntityWriteOptions,
-  ): CreatedEntity<TFields>;
+  create(input: WireCreateStatic<TFields>, opts?: EntityWriteOptions): CreatedEntity<TFields>;
 };
 
 /**
@@ -559,54 +549,10 @@ const createDraftNamespace = <
     const source = (input ?? {}) as unknown as Record<string, unknown>;
     const fields: Record<string, unknown> = {};
     const pointers: ResolvedPointer[] = [];
-    const bodies: Record<string, string> = {};
-    const createdDocuments: GeneratedDocument[] = [];
-    const createdEdges: GeneratedEdge[] = [];
     const handle: Record<string, unknown> = { id };
     const groups = resolveGroupIds(opts?.groups, entityName);
-    const derived = def.derived as Record<string, unknown> | undefined;
 
     for (const [key, value] of Object.entries(source)) {
-      if (derived !== undefined && Object.prototype.hasOwnProperty.call(derived, key)) {
-        if (value === undefined || value === null) {
-          handle[key] = null;
-          continue;
-        }
-        if (typeof value !== "string") {
-          throw new EntityValidationError([
-            {
-              entityName,
-              field: key,
-              message: `create: derived field "${key}" must be a string body`,
-            },
-          ]);
-        }
-        handle[key] = value;
-        if (value.length > 0) {
-          // The same derivation the create operation runs, so the overlay
-          // this batch reads back names the rows the wire will name.
-          bodies[key] = value;
-          const part = derivedBodyIds({
-            registry: cap.registry,
-            entityName,
-            parentId: id,
-            field: key,
-          });
-          createdDocuments.push({
-            id: part.documentId,
-            type: part.documentType,
-            memberships: [],
-          });
-          createdEdges.push({
-            relationshipId: part.relationshipId,
-            sourceId: id,
-            targetId: part.documentId,
-            field: key,
-            type: entityName,
-          });
-        }
-        continue;
-      }
       const rel = cap.registry.getRelationship(entityName, key);
       if (rel === undefined) {
         const resolved = resolveReferences(value);
@@ -638,14 +584,9 @@ const createDraftNamespace = <
       }
     }
 
-    const parts: GeneratedParts | undefined =
-      createdDocuments.length > 0
-        ? { documents: createdDocuments, edges: createdEdges }
-        : undefined;
     collector.batching.set(id, {
       groups: new Set(groups),
       membershipIds: new Map(groups.map((groupId) => [groupId, entityGroupId(id, groupId)])),
-      parts,
     });
     record(
       collector,
@@ -654,7 +595,6 @@ const createDraftNamespace = <
         id,
         fields,
         pointers,
-        bodies,
         groups,
         validate: opts?.validate,
       }),
@@ -857,35 +797,6 @@ const readMembershipState = async (ctx: ResolveContext, id: string): Promise<Bat
   return entry;
 };
 
-/** The entity's parts, merging what the batch minted with the live read. */
-const readParts = async (
-  ctx: ResolveContext,
-  entity: string,
-  id: string,
-): Promise<GeneratedParts> =>
-  mergeGeneratedParts(await ctx.cap.read.generatedParts(entity, id), ctx.batching.get(id)?.parts);
-
-/**
- * Merge what a batch-local `create` minted into the parts read from the
- * local store. A shared id keeps the read entry: the create's copy of a
- * membership row is empty.
- */
-const mergeGeneratedParts = (
-  read: GeneratedParts,
-  created: GeneratedParts | undefined,
-): GeneratedParts => {
-  if (created === undefined) return read;
-  const documents = new Map(read.documents.map((document) => [document.id, document]));
-  for (const document of created.documents) {
-    if (!documents.has(document.id)) documents.set(document.id, document);
-  }
-  const edges = new Map(read.edges.map((edge) => [edge.relationshipId, edge]));
-  for (const edge of created.edges) {
-    if (!edges.has(edge.relationshipId)) edges.set(edge.relationshipId, edge);
-  }
-  return { documents: [...documents.values()], edges: [...edges.values()] };
-};
-
 /**
  * Emit one `changeGroups` call for the net delta and carry it into the
  * batch overlay. An add the entity already holds is a no-op, which is what
@@ -913,7 +824,6 @@ const applyGroupDelta = async (
     removals.push({ membershipId, groupId });
   }
   if (puts.length === 0 && removals.length === 0) return [];
-  const generated = await readParts(ctx, intent.entity, intent.id);
   for (const groupId of puts) {
     state.groups.add(groupId);
     state.membershipIds.set(groupId, entityGroupId(intent.id, groupId));
@@ -929,7 +839,6 @@ const applyGroupDelta = async (
       puts,
       removes: removals,
       currentGroups,
-      generated,
     }),
   ];
 };

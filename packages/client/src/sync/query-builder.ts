@@ -58,7 +58,7 @@ import type { Entity } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
-import type { ShapeFields, WireFields } from "@ebbjs/schema";
+import type { ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError, readDefault, type EntityRegistry } from "@ebbjs/schema";
 import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
 import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
@@ -234,7 +234,7 @@ export function projectQueryRow<TFields extends Record<string, TSchema>>(
 export type NoJoins = Record<never, never>;
 
 /** A joined row: the target's wire projection plus its id. No nested accessors. */
-type JoinedTarget<D> = ProjectedRow<WireFields<FieldsOf<D>>>;
+type JoinedTarget<D> = ProjectedRow<FieldsOf<D>>;
 
 type ForwardJoinValue<R> = R extends {
   readonly target: infer T;
@@ -284,7 +284,7 @@ export type JoinRecord<TRels, TName extends string> = [TRels] extends [undefined
 
 /** Built-in membership join carried by every entity's query. */
 export type MembershipJoin = {
-  readonly [GROUPS_ACCESSOR]: readonly ProjectedRow<WireFields<GroupFields>>[];
+  readonly [GROUPS_ACCESSOR]: readonly ProjectedRow<GroupFields>[];
 };
 
 /** Selector accepted by {@link QueryBuilder.with}. */

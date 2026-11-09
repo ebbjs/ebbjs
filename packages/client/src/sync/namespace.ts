@@ -19,8 +19,6 @@ import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
 import type {
-  DerivedAccessors,
-  DerivedKeys,
   EntityDef,
   EntityRegistry,
   GroupFields,
@@ -29,18 +27,8 @@ import type {
   RelationshipDef,
   Schema,
   ShapeFields,
-  TextDocument,
-  TextDocumentSubmit,
-  WireFields,
 } from "@ebbjs/schema";
-import {
-  DOC_CONTENT_FIELD,
-  DOC_VERSION_FIELD,
-  GROUPS_ACCESSOR,
-  groupMemberSystemEntity,
-  groupSystemEntity,
-  isCollaborativeText,
-} from "@ebbjs/schema";
+import { GROUPS_ACCESSOR, groupMemberSystemEntity, groupSystemEntity } from "@ebbjs/schema";
 import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
 import {
   buildReplicaQueryBuilder,
@@ -81,7 +69,6 @@ import {
  */
 export type RowAccessor =
   | Promise<Entity | null | undefined>
-  | Promise<TextDocument | null>
   | QueryBuilder<Record<string, TSchema>>;
 
 /** Empty per-`as` accessor record for entities with no relationships. */
@@ -152,12 +139,10 @@ export type RowAccessorRecord<TRels, TName extends string> = [TRels] extends [un
     : NoAccessors;
 
 /**
- * Static value of an entity's *wire* fields. Derived bodies are not
- * wire fields, so they never appear here; the row adds them as
- * accessors via {@link DerivedAccessors}.
+ * Static value of an entity's fields: the read shape of its rows.
  */
 export type WireStatic<TFields extends Record<string, TSchema>> = Static<
-  TObject<ShapeFields<WireFields<TFields>>>
+  TObject<ShapeFields<TFields>>
 >;
 
 /**
@@ -166,19 +151,14 @@ export type WireStatic<TFields extends Record<string, TSchema>> = Static<
  * {@link WireStatic}, which is the read type.
  */
 export type WireCreateStatic<TFields extends Record<string, TSchema>> = Static<
-  TObject<CreateShapeFields<WireFields<TFields>>>
+  TObject<CreateShapeFields<TFields>>
 >;
 
-/** Values accepted for derived bodies on `create`: the initial text. */
-export type DerivedInputs<TFields extends Record<string, TSchema>> = {
-  readonly [K in DerivedKeys<TFields>]?: string;
-};
-
 /**
- * The value shape of an entity's wire fields: what a draft `create`
- * takes (before pointers and derived bodies) and what `update`
- * patches, keyed by field name. Names the type an app's patch object
- * would otherwise restate by hand, so a schema change flows through:
+ * The value shape of an entity's fields: what a draft `create` takes
+ * (before relationship pointers) and what `update` patches, keyed by field
+ * name. Names the type an app's patch object would otherwise restate by
+ * hand, so a schema change flows through:
  *
  * ```ts
  * type IssuePatch = Partial<EntityValues<typeof issue>>;
@@ -187,12 +167,12 @@ export type DerivedInputs<TFields extends Record<string, TSchema>> = {
 export type EntityValues<TEntityDef> = WireStatic<EntityFields<TEntityDef>>;
 
 /**
- * What an update patch accepts: each wire field's value, or `unset` to
- * assert it absent. `unset` is a value-shaped marker, not row data; it
- * compiles to the tombstone the merge rule already understands.
+ * What an update patch accepts: each field's value, or `unset` to assert it
+ * absent. `unset` is a value-shaped marker, not row data; it compiles to the
+ * tombstone the merge rule already understands.
  */
 export type EntityPatch<TFields extends Record<string, TSchema>> = Partial<{
-  [K in keyof WireFields<TFields>]: PatchValue<WireFields<TFields>[K]>;
+  [K in keyof TFields]: PatchValue<TFields[K]>;
 }>;
 
 /**
@@ -236,9 +216,9 @@ export type EntityWithAccessors<
 > = Omit<WireStatic<TFields>, keyof TAccessors> & TAccessors;
 
 /**
- * Projection snapshot over a *wire* field map. Kept separate from
- * {@link EntitySnapshot} so the internal projection helpers can name
- * the shape's own field map without re-applying {@link WireFields}.
+ * Projection snapshot over a field map. Kept separate from
+ * {@link EntitySnapshot} so the internal projection helpers can name the
+ * shape's own field map directly.
  */
 export type EntitySnapshotOf<TWire extends Record<string, TSchema>> = Static<
   TObject<ShapeFields<TWire>>
@@ -263,9 +243,7 @@ export type EntitySnapshotOf<TWire extends Record<string, TSchema>> = Static<
  * suppresses no-op snapshots uses the row's `subscribeAccessors` to
  * force a re-read.
  */
-export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnapshotOf<
-  WireFields<TFields>
->;
+export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnapshotOf<TFields>;
 
 /**
  * Row returned by `client.<entity>.get(id)`.
@@ -307,7 +285,7 @@ export type EntityRow<
  * the design comment on #161).
  */
 export type QueryFilter<TFields extends Record<string, TSchema>> = {
-  [K in keyof WireFields<TFields>]?: Static<WireFields<TFields>[K]> | null;
+  [K in keyof TFields]?: Static<TFields[K]> | null;
 };
 
 /**
@@ -351,7 +329,7 @@ export interface EntityNamespace<
   TJoins extends object = NoJoins,
 > {
   /** The public read root: a typed chain over the entity's fields and joins. */
-  query(): QueryBuilder<WireFields<TFields>, TJoins, NoJoins, QueryRow<WireFields<TFields>>>;
+  query(): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>;
   /**
    * Single-row read with relationship accessors attached.
    *
@@ -412,9 +390,7 @@ export type EntityNamespaces<S> =
     ? {
         [K in keyof TEntities & string]: EntityNamespace<
           EntityFields<TEntities[K]>,
-          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> &
-            MembershipAccessors &
-            DerivedAccessors<EntityFields<TEntities[K]>>,
+          RowAccessorRecord<TRels, EntityNameOf<TEntities[K]>> & MembershipAccessors,
           JoinRecord<TRels, EntityNameOf<TEntities[K]>> & MembershipJoin
         >;
       } & SystemNamespaces
@@ -441,9 +417,9 @@ type SchemaEntities<S> = S extends Schema<infer TEntities, infer _TRels> ? TEnti
 /** The schema's relationship map, or `undefined` when it declares none. */
 type SchemaRelationships<S> = S extends Schema<infer _TEntities, infer TRels> ? TRels : undefined;
 
-/** The wire fields of the schema entity named `TName`. */
-type FieldsFor<S, TName extends keyof SchemaEntities<S> & string> = WireFields<
-  EntityFields<SchemaEntities<S>[TName]>
+/** The fields of the schema entity named `TName`. */
+type FieldsFor<S, TName extends keyof SchemaEntities<S> & string> = EntityFields<
+  SchemaEntities<S>[TName]
 >;
 
 /** The joins a query over `TName` exposes: its relationships plus `groups`. */
@@ -474,27 +450,6 @@ export type QueryRowOf<
   Pick<JoinsFor<S, TName>, TJoinKeys>,
   QueryRow<FieldsFor<S, TName>>
 >;
-
-/**
- * Resolve a collaborative-text body: follow the generated edge to the
- * document entity, hydrate a `TextDocument` from its `content` map, and
- * return it. `null` when no document is linked.
- */
-const collaborativeTextForwardOne = (
-  readEntity: (id: string) => Promise<Entity | null>,
-  adjacency: AdjacencyReader,
-  sourceId: string,
-  sourceName: string,
-  field: string,
-  type: string,
-  openTextDocument: (docId: string, docType: string) => TextDocument,
-): Promise<TextDocument | null> =>
-  forwardOne(readEntity, adjacency, sourceId, sourceName, field, type).then((entity) => {
-    if (entity === null || entity === undefined) return null;
-    const doc = openTextDocument(entity.id, entity.type);
-    doc.hydrate(entity.data?.fields?.[DOC_CONTENT_FIELD], entity.data?.fields?.[DOC_VERSION_FIELD]);
-    return doc;
-  });
 
 /**
  * The replica binding the namespace reads adjacency through. The
@@ -556,18 +511,10 @@ function buildRowAccessors(
   sourceId: string,
   storage: StorageAdapter,
   registry: EntityRegistry,
-  read: ReadCapability,
   replica?: ReplicaAccess,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
-  // A body is an on-demand row: opening it pins it in the replica, so the
-  // document reached through its edge is read through `open`. The local store
-  // stays the fallback for a namespace built without a replica binding.
-  const readDocumentEntity =
-    replica === undefined
-      ? readLocalEntity
-      : (id: string): Promise<Entity | null> => replica.replica.open(id);
   // Traversals read the adjacency index rather than scanning the
   // `relationship` / `entityGroup` type, so their cost tracks the
   // source row's degree. The replica owns the index once supplied;
@@ -586,18 +533,6 @@ function buildRowAccessors(
     const targetName = rel.target.name;
     const field = rel.as;
     const relType = rel.type;
-    if (isCollaborativeText(rel)) {
-      out[field] = collaborativeTextForwardOne(
-        readDocumentEntity,
-        adjacency,
-        sourceId,
-        entityName,
-        field,
-        relType,
-        read.openTextDocument,
-      );
-      continue;
-    }
     const targetShape = registry.get(targetName)?.shape;
     if (rel.sourceCardinality === "many") {
       // Defensive: `defineSchema` rejects an unregistered target, so a
@@ -726,15 +661,7 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  */
 export interface ReadCapability {
   readonly registry: EntityRegistry;
-  /**
-   * Open (or get) the `TextDocument` for a linked document entity. The
-   * client binds it to the write path so local edits self-flush.
-   */
-  openTextDocument(docId: string, docType: string): TextDocument;
 }
-
-/** Write path bound to a document for self-flushing locally-authored edits. */
-export type { TextDocumentSubmit };
 
 /**
  * Build a namespace for one entity. The namespace's `query()` returns
@@ -745,8 +672,7 @@ export type { TextDocumentSubmit };
  * `shape` is the entity's TypeBox object schema (the projection
  * source); the builder reads it at materialization time to drive
  * the per-field lookup. `read` supplies the registry the row's
- * relationship accessors resolve against and the document opener the
- * collaborative-text accessor hydrates through.
+ * relationship accessors resolve against.
  */
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -754,7 +680,7 @@ export function createEntityNamespace<
   TJoins extends object = NoJoins,
 >(
   entityName: string,
-  shape: TObject<ShapeFields<WireFields<TFields>>>,
+  shape: TObject<ShapeFields<TFields>>,
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
@@ -769,14 +695,14 @@ export function createEntityNamespace<
     // alongside unknown ids. Callers don't distinguish — a missing
     // row and a wrong-type row are both "no row here".
     if (entity.type !== entityName) return null;
-    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, read, replica);
+    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, replica);
     const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
       subscribeToEntity(
         watcher,
         entityName,
         entity.id,
         shape,
-        cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<WireFields<TFields>>>) => void,
+        cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<TFields>>) => void,
       );
     const subscribeAccessors = (cb: () => void): (() => void) =>
       watcher === null ? () => {} : watcher.accessors(entity.id, cb);
@@ -793,7 +719,7 @@ export function createEntityNamespace<
   };
 
   return {
-    query(): QueryBuilder<WireFields<TFields>, TJoins, NoJoins, QueryRow<WireFields<TFields>>> {
+    query(): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
       // Only a directly-constructed namespace can lack the binding;
       // `createClient` always supplies one. Falling back to the storage
       // shim here would silently read a stale, scan-based path.
@@ -802,19 +728,14 @@ export function createEntityNamespace<
           `client.${entityName}.query(): no replica binding — build the namespace through createClient (or pass a ReplicaAccess)`,
         );
       }
-      return buildReplicaQueryBuilder<ShapeFields<WireFields<TFields>>, TJoins>(entityName, shape, {
+      return buildReplicaQueryBuilder<ShapeFields<TFields>, TJoins>(entityName, shape, {
         entityName,
         registry,
         replica: replica.replica,
         queries: replica.queries,
         hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
-      }) as unknown as QueryBuilder<
-        WireFields<TFields>,
-        TJoins,
-        NoJoins,
-        QueryRow<WireFields<TFields>>
-      >; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
+      }) as unknown as QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       // The accessors read the replica's adjacency, so bring it up to
