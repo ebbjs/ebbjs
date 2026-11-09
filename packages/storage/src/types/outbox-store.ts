@@ -8,7 +8,8 @@ import type { Action, Entity } from "@ebbjs/core";
  * `conflicted` is a terminal-until-resolved hold: a catch-up pass
  * classified the Action as a loser, so it is structurally excluded from
  * `pending()` and never submitted. The application resolves it by
- * retrying (back to `pending`) or discarding (removed).
+ * sending the Action unchanged (back to `pending`) or clearing it
+ * (removed).
  */
 export type OutboxStatus = "pending" | "acknowledged" | "error" | "conflicted";
 
@@ -47,6 +48,16 @@ export interface ConflictSlot {
   readonly local: ConflictSide;
   /** The value the server holds at the position after the missed window. */
   readonly remote: ConflictSide;
+}
+
+/** Conflict granularity a subject's entity declares. */
+export type ConflictScope = "field" | "entity";
+
+/** One missed Action that out-dated a buffered write and made it a conflict. */
+export interface ConflictRemoteAction {
+  readonly actorId: string;
+  readonly actionId: string;
+  readonly gsn: number;
 }
 
 /**
@@ -88,6 +99,17 @@ export interface OutboxConflict {
    * application reads that as "nothing of mine would be lost".
    */
   readonly slots: readonly ConflictSlot[];
+  /**
+   * The looser of the losing subjects' declared scopes: `"entity"` when
+   * any losing subject declared entity scope, else `"field"`.
+   */
+  readonly scope: ConflictScope;
+  /**
+   * The concurrent missed Actions that touched the losing subjects,
+   * deduped by action id, in window order. The remote half of the
+   * report an application builds a policy from.
+   */
+  readonly remoteActions: readonly ConflictRemoteAction[];
   /** The catch-up pass that produced this entry. */
   readonly catchUpId: string;
   /**
@@ -138,10 +160,9 @@ export interface OutboxEntry {
 export interface OutboxStore {
   put(entry: OutboxEntry): Promise<void>;
   /**
-   * Persist `entry` and delete `deleteId` in one durable operation. Used
-   * to resolve a conflict by retrying: the fresh re-assert must never
-   * exist without the conflicted row being gone, nor the row be gone
-   * without the re-assert persisted.
+   * Persist `entry` and delete `deleteId` in one durable operation: the
+   * replacement must never exist without the replaced row being gone,
+   * nor the row be gone without the replacement persisted.
    */
   putAndDelete(entry: OutboxEntry, deleteId: string): Promise<void>;
   list(): Promise<readonly OutboxEntry[]>;

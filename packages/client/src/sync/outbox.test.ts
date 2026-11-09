@@ -1302,7 +1302,9 @@ describe("createOutbox conflict detection", () => {
     expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
   });
 
-  it("moves an acknowledged entry that loses, not only pending ones", async () => {
+  it("never holds an acknowledged entry a later detection out-dates", async () => {
+    // An acknowledged row is already on the server: re-holding it would
+    // report a conflict the application can no longer resolve locally.
     const deps = mkDeps();
     const { outbox } = await seed(deps);
     await outbox.flush();
@@ -1310,9 +1312,9 @@ describe("createOutbox conflict detection", () => {
 
     const detected = await outbox.detectConflicts([peerTitle()], "cu_1");
 
-    expect(detected.map((conflict) => conflict.actionId)).toEqual(["a_local"]);
-    expect(outbox.size("acknowledged")).toBe(0);
-    expect(outbox.conflicts().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    expect(detected).toEqual([]);
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(outbox.conflicts()).toEqual([]);
   });
 
   it("never treats an errored entry as a conflict candidate", async () => {
@@ -1854,7 +1856,7 @@ describe("createOutbox counts + onChange", () => {
   });
 });
 
-describe("createOutbox conflict holds and retries", () => {
+describe("createOutbox releaseConflict", () => {
   /** A peer `patch` concurrent with a base-0 `todo_1` write. */
   const peer = (): Action =>
     mkFieldAction({
@@ -1883,40 +1885,65 @@ describe("createOutbox conflict holds and retries", () => {
     };
   };
 
-  it("replaces a conflicted row with a pending re-assert in one durable write", async () => {
-    const deps = mkDeps();
+  /** Enqueue a `todo_1` title write, hold it, and return the held Action. */
+  const held = async (
+    deps: OutboxDependencies,
+  ): Promise<{ outbox: ReturnType<typeof createOutbox>; action: Action }> => {
     const outbox = createOutbox(deps);
-    await outbox.enqueue(localTitle());
+    const action = localTitle();
+    await outbox.enqueue(action);
     await outbox.detectConflicts([peer()], "cu_1");
     expect(outbox.size("conflicted")).toBe(1);
+    return { outbox, action };
+  };
+
+  it("sends the held Action unchanged and returns the row to pending", async () => {
+    const deps = mkDeps();
+    const { outbox, action } = await held(deps);
+    const before = outbox.conflicts()[0]?.action;
+    expect(before).toEqual(action);
     expect(deps.applied).toHaveLength(1);
 
-    const reassert = mkFieldAction({
-      id: "a_reassert",
-      subjectId: "todo_1",
-      fields: { title: { value: "mine", update_id: "u_new", hlc: "30" } },
-    });
-    await outbox.retryConflicted("a_local", reassert);
+    await outbox.releaseConflict("a_local");
 
-    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_reassert"]);
-    expect(outbox.size("conflicted")).toBe(0);
-    // The atomic write replaced the row: the old id is gone from the store.
-    expect(await deps.store.get("a_local")).toBeNull();
-    expect(await deps.store.get("a_reassert")).toMatchObject({
-      action: reassert,
-      status: "pending",
+    const released = outbox.pending()[0];
+    // The same Action, id for id: nothing re-minted, nothing re-stamped.
+    expect(released?.action).toEqual(before);
+    expect(released?.action.id).toBe("a_local");
+    expect(released?.action.actor_id).toBe("actor_1");
+    expect(released?.action.hlc).toBe("10");
+    expect(released?.action.updates.map((update) => update.id)).toEqual(["u_a_local"]);
+    expect(released?.action.updates[0]?.data?.fields).toEqual({
+      title: { value: "mine", update_id: "u_local", hlc: "10" },
     });
-    expect(deps.applied).toHaveLength(2);
+    expect(released?.status).toBe("pending");
+    expect(released?.enqueuedAtHlc).toBe("1");
+    expect(released?.basedOnGsn).toBe(0);
+    expect(released?.conflict).toBeUndefined();
+    expect(outbox.size("conflicted")).toBe(0);
+    // The optimistic overlay for this action id is already in the replica.
+    expect(deps.applied).toHaveLength(1);
+    // The conflict payload left the durable row with the status.
+    expect(await deps.store.get("a_local")).toEqual({
+      action,
+      status: "pending",
+      enqueuedAtHlc: "1",
+      basedOnGsn: 0,
+    });
   });
 
-  it("leaves the conflict resolvable when the atomic retry write fails", async () => {
+  it("leaves the row conflicted when the release write fails", async () => {
     const store = mkStore();
+    let puts = 0;
     const outbox = createOutbox(
       mkDeps({
         store: {
           ...store,
-          putAndDelete: vi.fn(async () => {
-            throw new Error("disk full");
+          put: vi.fn(async (entry: StoredOutboxEntry) => {
+            puts += 1;
+            // enqueue, detection, then the release.
+            if (puts === 3) throw new Error("disk full");
+            store.rows.set(entry.action.id, structuredClone(entry));
           }),
         },
       }),
@@ -1924,25 +1951,23 @@ describe("createOutbox conflict holds and retries", () => {
     await outbox.enqueue(localTitle());
     await outbox.detectConflicts([peer()], "cu_1");
 
-    await expect(outbox.retryConflicted("a_local", mkAction("a_reassert"))).rejects.toThrow(
-      "disk full",
-    );
+    await expect(outbox.releaseConflict("a_local")).rejects.toThrow("disk full");
 
-    // No half-applied transition: the loser is still held and nothing new
-    // is pending.
     expect(outbox.size("conflicted")).toBe(1);
     expect(outbox.pending()).toEqual([]);
     expect(await store.get("a_local")).toMatchObject({ status: "conflicted" });
   });
 
-  it("no-ops retryConflicted for an unknown or non-conflicted id", async () => {
-    const outbox = createOutbox(mkDeps());
+  it("no-ops for an unknown or non-conflicted id", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
     await outbox.enqueue(mkAction("a_pending"));
 
-    await outbox.retryConflicted("a_pending", mkAction("a_reassert"));
-    await outbox.retryConflicted("a_missing", mkAction("a_reassert"));
+    await outbox.releaseConflict("a_pending");
+    await outbox.releaseConflict("a_missing");
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_pending"]);
+    expect(await deps.store.get("a_missing")).toBeNull();
   });
 
   it("isolates a throwing store-fault listener", async () => {
@@ -1959,5 +1984,256 @@ describe("createOutbox conflict holds and retries", () => {
 
     expect(good).toHaveBeenCalledTimes(1);
     consoleError.mockRestore();
+  });
+});
+
+describe("createOutbox subject hold", () => {
+  /** A peer `patch` concurrent with a base-0 `todo_1` write. */
+  const peer = (): Action =>
+    mkFieldAction({
+      id: "a_peer",
+      subjectId: "todo_1",
+      fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+      gsn: 5,
+    });
+
+  const localTitle = (): Action =>
+    mkFieldAction({
+      id: "a_local",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+    });
+
+  const writeTo = (id: string, subjectId: string): Action =>
+    mkFieldAction({
+      id,
+      subjectId,
+      fields: { title: { value: id, update_id: `u_${id}`, hlc: "11" } },
+    });
+
+  /** Hold `todo_1` by losing a `todo_1` write to a concurrent peer. */
+  const holdTodo1 = async (deps: OutboxDependencies): Promise<ReturnType<typeof createOutbox>> => {
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(localTitle());
+    await outbox.detectConflicts([peer()], "cu_1");
+    expect(outbox.conflicts().map((entry) => entry.action.id)).toEqual(["a_local"]);
+    return outbox;
+  };
+
+  it("keeps a new write to a held subject out of pending() and the flush batch", async () => {
+    const deps = mkDeps();
+    const outbox = await holdTodo1(deps);
+
+    // The write is accepted and buffered — local reads continue — but the
+    // subject an open conflict names stays off the wire.
+    await outbox.enqueue(writeTo("a_new", "todo_1"));
+
+    expect(outbox.size("pending")).toBe(1);
+    expect(outbox.pending()).toEqual([]);
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(deps.submitted).toEqual([]);
+    expect((await deps.store.get("a_new"))?.status).toBe("pending");
+  });
+
+  it("flushes the non-loser pending write once releaseConflict clears the hold", async () => {
+    const deps = mkDeps();
+    const outbox = await holdTodo1(deps);
+    await outbox.enqueue(writeTo("a_new", "todo_1"));
+
+    await outbox.releaseConflict("a_local");
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_local", "a_new"]);
+    await expect(outbox.flush()).resolves.toEqual({
+      kind: "accepted",
+      actionIds: ["a_local", "a_new"],
+    });
+    expect(deps.submitted.map((batch) => batch.map((action) => action.id))).toEqual([
+      ["a_local", "a_new"],
+    ]);
+  });
+
+  it("flushes the non-loser pending write once clearConflict clears the hold", async () => {
+    const deps = mkDeps();
+    const outbox = await holdTodo1(deps);
+    await outbox.enqueue(writeTo("a_new", "todo_1"));
+
+    await outbox.clearConflict("a_local");
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_new"]);
+    await outbox.flush();
+    expect(deps.submitted.map((batch) => batch.map((action) => action.id))).toEqual([["a_new"]]);
+  });
+
+  it("still flushes a pending write on an unheld subject", async () => {
+    const deps = mkDeps();
+    const outbox = await holdTodo1(deps);
+
+    await outbox.enqueue(writeTo("a_other", "todo_2"));
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_other"]);
+    await outbox.flush();
+    expect(deps.submitted.map((batch) => batch.map((action) => action.id))).toEqual([["a_other"]]);
+  });
+
+  it("holds an Action whole when it writes a held and an unheld subject", async () => {
+    const deps = mkDeps();
+    const outbox = await holdTodo1(deps);
+    const both: Action = {
+      ...writeTo("a_both", "todo_2"),
+      updates: [
+        ...writeTo("a_both", "todo_2").updates,
+        ...writeTo("a_both_held", "todo_1").updates,
+      ],
+    };
+    await outbox.enqueue(both);
+
+    expect(outbox.pending()).toEqual([]);
+    await expect(outbox.flush()).resolves.toEqual({ kind: "empty" });
+  });
+
+  it("derives the hold from the durable conflicted rows across a reload", async () => {
+    const store = mkStore();
+    const first = await holdTodo1(mkDeps({ store }));
+    await first.enqueue(writeTo("a_new", "todo_1"));
+
+    // A fresh outbox over the same store sees the same hold.
+    const reloaded = createOutbox(mkDeps({ store }));
+    await reloaded.rehydrate();
+
+    expect(reloaded.pending()).toEqual([]);
+  });
+});
+
+describe("createOutbox dropHeld", () => {
+  /** A peer `patch` concurrent with a base-0 `todo_1` write. */
+  const peer = (): Action =>
+    mkFieldAction({
+      id: "a_peer",
+      subjectId: "todo_1",
+      fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+      gsn: 5,
+    });
+
+  const writeTo = (id: string, subjectId: string): Action =>
+    mkFieldAction({
+      id,
+      subjectId,
+      fields: { title: { value: id, update_id: `u_${id}`, hlc: "10" } },
+    });
+
+  /** An outbox holding `todo_1`, with an acknowledged `todo_3` row. */
+  const seed = async (): Promise<{
+    deps: OutboxDependencies & { submitted: (readonly Action[])[] };
+    outbox: ReturnType<typeof createOutbox>;
+  }> => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(writeTo("a_ack", "todo_3"));
+    await outbox.flush();
+    expect(outbox.size("acknowledged")).toBe(1);
+    await outbox.enqueue(writeTo("a_local", "todo_1"));
+    await outbox.detectConflicts([peer()], "cu_1");
+    expect(outbox.size("conflicted")).toBe(1);
+    return { deps, outbox };
+  };
+
+  it("drops only the pending writes to the held subject", async () => {
+    const { deps, outbox } = await seed();
+    const heldWrite = writeTo("a_held", "todo_1");
+    await outbox.enqueue(heldWrite);
+    await outbox.enqueue(writeTo("a_free", "todo_2"));
+
+    const dropped = await outbox.dropHeld(["todo_1"]);
+
+    expect(dropped).toEqual([heldWrite]);
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);
+    expect(await deps.store.get("a_held")).toBeNull();
+    expect((await deps.store.get("a_free"))?.status).toBe("pending");
+    // Already on the server, so never dropped.
+    expect(outbox.size("acknowledged")).toBe(1);
+    expect(await deps.store.get("a_ack")).toMatchObject({ status: "acknowledged" });
+    // The conflict row is the hold, and stays until it is resolved.
+    expect(outbox.conflicts().map((entry) => entry.action.id)).toEqual(["a_local"]);
+  });
+
+  it("drops a row whole when it writes the held subject and another", async () => {
+    const { outbox } = await seed();
+    const both: Action = {
+      ...writeTo("a_both", "todo_2"),
+      updates: [
+        ...writeTo("a_both", "todo_2").updates,
+        ...writeTo("a_both_held", "todo_1").updates,
+      ],
+    };
+    await outbox.enqueue(both);
+
+    const dropped = await outbox.dropHeld(["todo_1"]);
+
+    expect(dropped).toEqual([both]);
+    expect(outbox.pending()).toEqual([]);
+  });
+
+  it("no-ops for an unheld subject", async () => {
+    const { deps, outbox } = await seed();
+    await outbox.enqueue(writeTo("a_free", "todo_2"));
+
+    await expect(outbox.dropHeld(["todo_4"])).resolves.toEqual([]);
+
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);
+    expect((await deps.store.get("a_free"))?.status).toBe("pending");
+  });
+});
+
+describe("createOutbox conflict report", () => {
+  const localTitle = (): Action =>
+    mkFieldAction({
+      id: "a_local",
+      subjectId: "todo_1",
+      fields: { title: { value: "mine", update_id: "u_local", hlc: "10" } },
+    });
+
+  const peerTitle = (id: string, gsn: number, actorId = "actor_1"): Action => ({
+    ...mkFieldAction({
+      id,
+      subjectId: "todo_1",
+      fields: { title: { value: "theirs", update_id: `u_${id}`, hlc: "20" } },
+      gsn,
+    }),
+    actor_id: actorId,
+  });
+
+  it("carries field scope and the peer that out-dated the local write", async () => {
+    const outbox = createOutbox(mkDeps());
+    await outbox.enqueue(localTitle());
+
+    await outbox.detectConflicts([peerTitle("a_peer", 5, "actor_2")], "cu_1");
+
+    const conflict = outbox.conflicts()[0]?.conflict;
+    expect(conflict?.scope).toBe("field");
+    expect(conflict?.remoteActions).toEqual([{ actorId: "actor_2", actionId: "a_peer", gsn: 5 }]);
+  });
+
+  it("carries entity scope when a losing subject declares it", async () => {
+    const outbox = createOutbox(mkDeps({ conflictScope: () => "entity" }));
+    await outbox.enqueue(localTitle());
+
+    await outbox.detectConflicts([peerTitle("a_peer", 5)], "cu_1");
+
+    expect(outbox.conflicts()[0]?.conflict.scope).toBe("entity");
+  });
+
+  it("reports concurrent peers deduped and in window order", async () => {
+    const outbox = createOutbox(mkDeps());
+    await outbox.enqueue(localTitle());
+    const first = peerTitle("a_peer_1", 5, "actor_2");
+    const second = peerTitle("a_peer_2", 6, "actor_3");
+
+    // The same Action twice in one window is one remote peer.
+    await outbox.detectConflicts([first, second, first], "cu_1");
+
+    expect(outbox.conflicts()[0]?.conflict.remoteActions).toEqual([
+      { actorId: "actor_2", actionId: "a_peer_1", gsn: 5 },
+      { actorId: "actor_3", actionId: "a_peer_2", gsn: 6 },
+    ]);
   });
 });
