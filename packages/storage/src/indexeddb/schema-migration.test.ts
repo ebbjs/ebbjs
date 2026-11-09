@@ -3,6 +3,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
 import { buildPatchAction, buildPutAction } from "../testing/fixtures";
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
+import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
 import {
   ACTION_POSITION_SEQUENCE_ID,
   createEbbStores,
@@ -213,9 +214,15 @@ describe("IndexedDB v9 → v10 additive upgrade", () => {
 
     // Additive version: no reset, no data loss.
     expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(1);
-    const entry = await upgraded.get("outbox", action.id);
-    expect(entry?.status).toBe("conflicted");
-    expect(entry?.conflict?.conflictId).toBe("c_1");
+    const raw = await upgraded.get("outbox", action.id);
+    expect(raw?.status).toBe("conflicted");
+    expect(raw?.conflict?.conflictId).toBe("c_1");
     expect(upgraded.objectStoreNames.contains("replica")).toBe(true);
+
+    // Reading through the store normalizes the legacy payload rather than
+    // handing the conflict view a row it would throw on.
+    const entry = await createIndexedDBOutboxStore(upgraded).get(action.id);
+    expect(entry?.conflict?.scope).toBe("field");
+    expect(entry?.conflict?.remoteActions).toEqual([]);
   });
 });

@@ -199,9 +199,9 @@ export interface Conflicts {
    * converge the affected subjects on the remote view. The local writes the
    * hold was keeping off the wire are dropped with it — otherwise the
    * subject could not converge. Pending writes to unaffected subjects and
-   * writes made after the hold lifted are untouched. A pass with a failed
-   * entry drops nothing, so the still-conflicted subject keeps its held
-   * writes; retry the clear. Unknown ids are a no-op.
+   * writes made after the hold lifted are untouched. A subject still named
+   * by a failed entry stays held and keeps its writes; retry the clear for
+   * it. Unknown ids are a no-op.
    *
    * Per-entry failures are returned in {@link ResolveResult.failed}. A
    * durable-store fault in the pass's final drop or re-materialize rejects
@@ -328,17 +328,23 @@ const toSlotView = (slot: ConflictSlot): ConflictSlotView => ({
 });
 
 /** Project a conflicted outbox row into the entry the application reads. */
-const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
-  action: entry.action,
-  subjects: entry.conflict.subjects,
-  slots: entry.conflict.scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
-  scope: entry.conflict.scope,
-  remoteActions: entry.conflict.remoteActions,
-  basedOnGsn: entry.basedOnGsn,
-  catchUpId: entry.conflict.catchUpId,
-  conflictId: entry.conflict.conflictId,
-  detectedAtHlc: entry.conflict.detectedAtHlc,
-});
+const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => {
+  // A row written before IndexedDB schema v10 carries neither field. It is
+  // still a field-scope conflict with no recorded remote context, not a
+  // reason to make the whole view unreachable.
+  const scope = entry.conflict.scope ?? "field";
+  return {
+    action: entry.action,
+    subjects: entry.conflict.subjects,
+    slots: scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
+    scope,
+    remoteActions: entry.conflict.remoteActions ?? [],
+    basedOnGsn: entry.basedOnGsn,
+    catchUpId: entry.conflict.catchUpId,
+    conflictId: entry.conflict.conflictId,
+    detectedAtHlc: entry.conflict.detectedAtHlc,
+  };
+};
 
 /**
  * Aggregate one group's subject states, in `subjects` order. Deduped by
@@ -510,10 +516,18 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       }
     }
     if (verb === "clear") {
-      // A failed entry keeps its subject held; dropping that subject's
-      // writes would discard an edit the remaining conflict still owns.
-      if (failed.length === 0) {
-        const dropped = await deps.outbox.dropHeld(held.map((entry) => entry.action.id));
+      // Drop the snapshot rows for subjects this pass actually released. A
+      // subject a failed entry still names stays held, so its writes stay.
+      const stillHeld = new Set<string>();
+      for (const row of deps.outbox.conflicts()) {
+        for (const subject of row.conflict.subjects) stillHeld.add(subject);
+      }
+      const released = new Set(conflict.subjects.filter((subject) => !stillHeld.has(subject)));
+      const toDrop = held.filter((entry) =>
+        entry.action.updates.some((update) => released.has(update.subject_id)),
+      );
+      if (toDrop.length > 0) {
+        const dropped = await deps.outbox.dropHeld(toDrop.map((entry) => entry.action.id));
         for (const action of dropped) await deps.reMaterialize(action);
       }
     } else if (resolved.length > 0) {

@@ -138,7 +138,7 @@ interface EntityDiff {
 - `subjects` scopes the entity-level group. A create-plus-update write names only the entity that lost, so a freshly created entity is not dragged in.
 - `subjectStates` is one state per losing subject, in `subjects` order: the client's row before the sync, the server's row after it, and the positions that differ.
 - `slots` is the overlapping positions, in detection order, and is **absent** for an entity-scope entry — there is no position-level verdict to misread. Read the diff instead. `Conflict.scope` is the coarsest of its entries, so a mixed group reports `"entity"` while its field-scope entries still carry slots.
-- `remoteActions` is the concurrent missed Actions that made this a conflict: actor, action id, and server GSN. Deduped by action id in window order.
+- `remoteActions` is the concurrent missed Actions that made this a conflict: actor, action id, and server GSN. Deduped by action id, first-seen across the conflict's entries (each entry's own list is in window order).
 - `conflictId` is stamped at detection, one per connected set of losing subjects in a catch-up pass, so grouping survives a reload and a partial resolution.
 - The stored rows stay plain; the conflicts view rebuilds the method-carrying objects.
 
@@ -185,7 +185,7 @@ client.conflicts.onChange((conflicts) => {
 The verbs name the mechanism, not a policy:
 
 - `sendLocalActions(conflictId)` clears the hold and submits the held Actions **unchanged** — same action id, same Update ids, same field HLCs. Re-stamping would rewrite provenance on an append-only log and fabricate ordering. An application that wants its scalar value to win writes it again through `defineAction` with a fresh clock.
-- `clearLocalActions(conflictId)` drops the held Actions, drops the local writes the hold was keeping off the wire, and converges those subjects on the server's view. A write made after the hold lifts is never dropped; a pass with a failed entry drops nothing so the still-conflicted subject keeps its writes.
+- `clearLocalActions(conflictId)` drops the held Actions, drops the local writes the hold was keeping off the wire, and converges those subjects on the server's view. A write made after the hold lifts is never dropped. In a partial pass only the subjects the resolved entries released are converged; a subject a failed entry still names stays held and keeps its writes.
 
 Both return per-entry results and do **not** roll back:
 

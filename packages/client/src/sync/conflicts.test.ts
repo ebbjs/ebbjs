@@ -335,6 +335,106 @@ describe("createConflicts", () => {
     expect(harness.outbox.rows.map((row) => row.action.id)).toEqual(["act_local"]);
   });
 
+  it("reads a pre-v10 conflicted row as field scope with no remote context", async () => {
+    const legacy = mkRow("act_local", "1");
+    const { scope: _scope, remoteActions: _remoteActions, ...rest } = legacy.conflict;
+    const harness = mkDeps([{ ...legacy, conflict: rest as unknown as OutboxConflict }]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [projected] = await conflicts.list();
+    expect(projected?.scope).toBe("field");
+    expect(projected?.remoteActions).toEqual([]);
+    expect(projected?.entries[0]?.scope).toBe("field");
+    expect(projected?.entries[0]?.slots).toHaveLength(1);
+  });
+
+  it("rejects when the send's final flush faults, after the rows moved", async () => {
+    const harness = mkDeps([mkRow("act_local", "5")]);
+    harness.flush.mockRejectedValueOnce(new Error("store fault"));
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    await expect(conflicts.sendLocalActions("c_act_local")).rejects.toThrow("store fault");
+
+    // The release already committed: the row is pending, not conflicted.
+    expect(harness.outbox.rows).toEqual([]);
+    expect(harness.outbox.released).toEqual(["act_local"]);
+  });
+
+  it("rejects when a clear's drop faults, after the rows moved", async () => {
+    const harness = mkDeps([mkRow("act_local", "5")]);
+    harness.heldPending.mockReturnValueOnce([
+      {
+        action: mkAction("act_later"),
+        status: "pending",
+        enqueuedAtHlc: "6",
+        basedOnGsn: 0,
+      },
+    ]);
+    harness.dropHeld.mockRejectedValueOnce(new Error("drop fault"));
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    await expect(conflicts.clearLocalActions("c_act_local")).rejects.toThrow("drop fault");
+
+    expect(harness.outbox.rows).toEqual([]);
+  });
+
+  it("on a partial clear, drops only the writes of the subjects that were released", async () => {
+    const multi = (id: string, subjects: readonly string[]): Action => ({
+      id,
+      actor_id: "actor_1",
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: subjects.map((subjectId) => ({
+        id: `u_${id}_${subjectId}`,
+        subject_id: subjectId,
+        subject_type: "todo",
+        method: "patch",
+        data: { fields: {} },
+      })),
+    });
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        conflictId: "c_shared",
+        subjects: ["todo_1", "todo_2"],
+        action: multi("act_a", ["todo_1", "todo_2"]),
+      }),
+      mkRow("act_b", "2", {
+        conflictId: "c_shared",
+        subjects: ["todo_2", "todo_3"],
+        action: multi("act_b", ["todo_2", "todo_3"]),
+      }),
+    ]);
+    const toOne: OutboxEntry = {
+      action: multi("act_one", ["todo_1"]),
+      status: "pending",
+      enqueuedAtHlc: "3",
+      basedOnGsn: 0,
+    };
+    const toThree: OutboxEntry = {
+      action: multi("act_three", ["todo_3"]),
+      status: "pending",
+      enqueuedAtHlc: "4",
+      basedOnGsn: 0,
+    };
+    harness.heldPending.mockReturnValueOnce([toOne, toThree]);
+    // The first entry's clear fails; its subject stays held. The second
+    // resolves, releasing `todo_3` only.
+    harness.outbox.clearConflict.mockRejectedValueOnce(new Error("store unavailable"));
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const result = await conflicts.clearLocalActions("c_shared");
+
+    expect(result.resolved).toEqual(["act_b"]);
+    expect(result.failed.map((failure) => failure.entryId)).toEqual(["act_a"]);
+    // `todo_1` is still held by the failed entry; only the released
+    // subject's blocked write is dropped.
+    expect(harness.dropHeld).toHaveBeenCalledWith(["act_three"]);
+  });
+
   it("a verb on an unknown conflict id is an empty no-op with no flush", async () => {
     const harness = mkDeps();
     const { conflicts } = createConflicts(harness.deps);

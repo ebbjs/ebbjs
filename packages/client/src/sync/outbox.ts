@@ -12,12 +12,12 @@
  *
  * ```
  * enqueue ─► pending ─(flush accepted)─► acknowledged ─(own echo)─► removed
- *               │                            │
- *               │ (flush rejected)           │ (a catch-up race)
- *               ▼                            ▼
- *             error ─(retry)─► pending    conflicted ─(send)─► pending
- *                                               │
- *                                               └(clear)─► removed
+ *               │
+ *               ├(flush rejected)─► error ─(retry)─► pending
+ *               │
+ *               └(a catch-up race)─► conflicted ─(send)─► pending
+ *                                        │
+ *                                        └(clear)─► removed
  * ```
  *
  * `matchEcho` drives the echo leg: the single inbound funnel

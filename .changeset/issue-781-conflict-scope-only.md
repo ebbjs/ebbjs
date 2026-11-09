@@ -59,10 +59,13 @@ now absent for an entity-scope entry, and `ConflictEntry` carries its own
 a pre-v10 row reads as field scope with no recorded remote context).
 `ConflictRemoteAction` is exported from `@ebbjs/storage/types` and
 `@ebbjs/client`; `ConflictScope` remains the single declaration exported from
-`@ebbjs/schema`.
+`@ebbjs/schema`. The IndexedDB outbox store normalizes a pre-v10 payload on
+read, so a row written before the bump cannot make the conflict view
+unreachable.
 
 `clearLocalActions` drops the pending writes to the conflict's subjects, so the
 subjects really converge. An Action writing several subjects is held or
-dropped whole; an Action cannot be sent in part. A pass with a failed entry
-drops nothing, and a durable-store fault in the final drop or flush rejects
-rather than returning a partial result.
+dropped whole; an Action cannot be sent in part. In a partial pass, only the subjects the resolved entries released are
+converged; a subject a failed entry still names stays held and keeps its
+writes. A durable-store fault in the final drop or flush rejects rather than
+returning a partial result.
