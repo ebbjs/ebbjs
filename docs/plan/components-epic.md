@@ -633,6 +633,14 @@ conflict scope and its own membership rows per #790.
 - [ ] `ebb/membership` carries `entity_id`, `group_id` atomically for the same reason: a torn
       membership is a permission scope change.
 - [ ] `ebb/link` owns its `entityGroup` rows (#790); groups resolve from the edge's own membership.
+- [ ] **The SQLite read model stops hardcoding system field names.** Eight generated columns
+      (`source_id`, `target_id`, `rel_type`, `rel_field`, `actor_id`, `entity_id`, `group_id`,
+      `permissions`) and four partial indexes (`WHERE type = 'relationship'` etc.) name both the
+      type _and_ the field layout of the system entities. Each path gains a component segment, and
+      each `WHERE type = …` guard becomes a component-existence guard that has to be indexable —
+      this is the deepest coupling in the slice and the one most likely to be missed.
+- [ ] The four bespoke caches (`entity_groups_by_id`, `relationships_by_id`, `group_members_by_id`,
+      `entity_types`) are re-derived or collapse; `CacheTables` stops enumerating them by hand.
 
 **Acceptance.** `rg "resolve_groups_cached\(\"relationship\"\)"` and the literal system-type
 predicates in `ebb_server/lib` return nothing. A concurrent write cannot produce an edge with a
