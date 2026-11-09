@@ -299,7 +299,9 @@ export const buildDeletedTodoEntity = (id: string, title: string, hlc: string): 
  * an outbox entry to exercise the durable status transition.
  */
 export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
+  scope: "field",
   subjects: ["todo_1"],
+  remoteActions: [{ actorId: "actor_2", actionId: "a_peer", gsn: 2 }],
   subjectStates: [
     {
       subjectId: "todo_1",

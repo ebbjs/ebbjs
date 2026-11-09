@@ -8,7 +8,7 @@
  * self-flushing local edits reaching a second client.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
@@ -906,8 +906,11 @@ describe("conflicts through client.conflicts", () => {
 
     const doc = await (await client.entityPost.get(id))!.body;
     const runId = doc!.docState.index.spans[0]!.runId;
+    // Hold the flush so the edit is still `pending` when detection runs: an
+    // acknowledged write is already on the server and is never re-held.
+    (client as unknown as { flushScheduler: { hold(): void } }).flushScheduler.hold();
     doc!.localExtend({ runId, appendText: "!" });
-    await waitForFlush(() => doc!.pendingActions());
+    await vi.waitFor(() => expect(client.outbox.pending()).toHaveLength(1));
 
     const docId = createAction.updates.find(
       (u) => u.subject_type === generatedDocEntityName("blog_post", "body"),

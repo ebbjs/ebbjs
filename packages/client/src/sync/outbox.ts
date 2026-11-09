@@ -413,9 +413,9 @@ export interface Outbox {
   releaseConflict(actionId: string): Promise<void>;
   /**
    * Delete a conflicted entry from memory and the store without
-   * touching the local cache. `resolve`'s discard path re-materializes
-   * first; this is the row removal both resolutions end with. A no-op
-   * for an unknown or non-conflicted id.
+   * touching the local cache. `clearLocalActions` re-materializes
+   * first; this is the row removal both verbs end with. A no-op for an
+   * unknown or non-conflicted id.
    */
   clearConflict(actionId: string): Promise<void>;
   /**
