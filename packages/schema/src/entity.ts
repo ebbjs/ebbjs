@@ -384,15 +384,13 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   fields: TFields,
   options: EntityOptions = {},
 ): EntityDef<TFields, TName> {
+  const markers = {} as { [K in keyof TFields]: FieldMarker };
   for (const [key, schema] of Object.entries(fields)) {
     if (admitsNull(schema as TSchema)) {
       throw new NullFieldError(name, key);
     }
+    markers[key as keyof TFields] = deriveMarker(schema as TSchema);
   }
-
-  const markers = Object.fromEntries(
-    Object.entries(fields).map(([key, schema]) => [key, deriveMarker(schema as TSchema)]),
-  ) as { [K in keyof TFields]: FieldMarker };
   return Object.freeze({
     name,
     conflictScope: options.conflictScope ?? "field",

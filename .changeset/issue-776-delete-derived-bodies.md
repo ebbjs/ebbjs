@@ -39,8 +39,11 @@ What else changes:
   Nothing is generated, so no schema hash, permission string, entity name, id,
   or row accessor is minted behind the app's back.
 - A forward-one accessor over a document relationship resolves the target
-  entity, like any other link. Open the row with `client.textDocument(id, type)`
-  or through the document entity's own namespace.
+  entity, like any other link. Read an on-demand document through its own
+  namespace — `client.text_document.get(id)` — which also pins it;
+  `client.textDocument(id, type)` and `client.openDerivedTextDocument(id, type)`
+  still return the editing handle, but they neither read nor pin the row, so
+  hydrate it from the row's `content` / `version`. Both openers go away in #779.
 - `defineSchema` rejects an entity-map key that differs from the definition's
   own `name` with `EntityKeyMismatchError`. A preset keyed under another name
   would otherwise have addressed another entity type — and another permission
@@ -49,7 +52,12 @@ What else changes:
   `DerivedAccessors`, `DerivedFieldDef`, `WireFields`, `expandDerivedFields`,
   `derivedBodyIds`, `generatedDocEntityName`, `isCollaborativeText`,
   `RelationshipKind` and the relationship `kind`, the `generatedParts`
-  capability, and the reserved `text_document__` entity prefix.
-- Moving a note between groups does **not** move its document. That gap is
-  deliberate: relationships will own their group membership (#790), and no
+  capability, and the reserved `text_document__` entity prefix. Every public
+  `Derived*` / `CollaborativeText*` / `Generated*` type and error class goes with
+  them, as do `DERIVED_DOC_ENTITY_PREFIX`, `hasDerivedDocPrefix`,
+  `TextDocumentFields`, `buildTextDocumentEntity`, `ReadCapability.openTextDocument`,
+  and `ChangeGroupsInput.generated`.
+- Moving a note between groups does **not** move its document, and duplicating a
+  note does not duplicate its document. Both gaps are deliberate: relationships
+  will own their group membership (#790) and subgraph copy lands in #784, so no
   interim cascade ships here.

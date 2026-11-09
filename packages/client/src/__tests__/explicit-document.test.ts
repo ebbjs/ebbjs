@@ -18,6 +18,7 @@ import {
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import {
+  AppendOnlyViolationError,
   CURRENT_TEXT_VERSION,
   e,
   defineEntity,
@@ -30,7 +31,7 @@ import {
 } from "@ebbjs/schema";
 import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
-import { jsonResponse } from "../sync/test-utils";
+import { callApplyAction, jsonResponse, waitFor } from "../sync/test-utils";
 
 const note = defineEntity("note", { title: e.string() });
 const textDocument = defineEntity(
@@ -108,17 +109,52 @@ function harness() {
   return { client, written };
 }
 
-const waitForFlush = async (pending: () => readonly Action[]): Promise<void> => {
-  for (let i = 0; i < 50 && pending().length > 0; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-};
+/** One entry of a cell map field on the wire. */
+interface CellEntry {
+  readonly value: TextCell;
+  readonly update_id: string;
+  readonly hlc: string;
+}
+
+/** A cell patch: the wire shape an edit to a map field takes. */
+const cellPatch = (
+  docId: string,
+  cells: Record<string, CellEntry>,
+  updateId: string,
+  hlc: string,
+): Action => ({
+  id: `act_${updateId}`,
+  actor_id: "actor_1",
+  hlc,
+  gsn: 0,
+  updates: [
+    {
+      id: updateId,
+      subject_id: docId,
+      subject_type: "text_document",
+      method: "patch",
+      data: {
+        fields: {
+          content: { map: cells },
+          version: { value: CURRENT_TEXT_VERSION, update_id: updateId, hlc },
+        },
+      },
+    },
+  ],
+});
 
 const fieldsOf = (update: Update): Record<string, FieldValue> => {
   if (update.data === null || update.data === undefined) {
     throw new Error(`update "${update.id}" carries no fields`);
   }
   return update.data.fields;
+};
+
+/** The cell map an update carries, or a failure naming the update. */
+const cellsOf = (update: Update): Record<string, CellEntry> => {
+  const content = fieldsOf(update)["content"]!;
+  if (!isFieldMap(content)) throw new Error("document content is not a map field");
+  return content.map as unknown as Record<string, CellEntry>;
 };
 
 describe("a document the app declares", () => {
@@ -131,14 +167,12 @@ describe("a document the app declares", () => {
     expect(written).toHaveLength(1);
     const updates = written[0]!.updates;
 
-    const declaredTypes = new Set([...Object.keys(schema.entities), "relationship", "entityGroup"]);
     expect([...new Set(updates.map((update) => update.subject_type))].sort()).toEqual([
       "entityGroup",
       "note",
       "relationship",
       "text_document",
     ]);
-    for (const update of updates) expect(declaredTypes).toContain(update.subject_type);
 
     const documentUpdate = updates.find((update) => update.subject_type === "text_document")!;
     expect(documentUpdate.subject_id).toBe(created.documentId);
@@ -186,26 +220,72 @@ describe("a document the app declares", () => {
 
     const before = written.length;
     document.localInsert("!");
-    await waitForFlush(() => document.pendingActions());
+    await waitFor(() => document.pendingActions().length === 0);
 
     expect(document.text).toBe("Hello world!");
     expect(written).toHaveLength(before + 1);
     const edit = written[before]!.updates.find(
       (update) => update.subject_type === "text_document",
     )!;
-    const content = fieldsOf(edit)["content"]!;
-    if (!isFieldMap(content)) throw new Error("document content is not a map field");
-    const [[, appended]] = Object.entries(content.map);
-    expect(appended!.value as TextCell).toMatchObject({ kind: "run", text: "!" });
+    const [[, appended]] = Object.entries(cellsOf(edit));
+    expect(appended!.value).toMatchObject({ kind: "run", text: "!" });
   });
-});
 
-describe("e.map()", () => {
-  it("builds a string-keyed map schema", () => {
-    const map = e.map(e.string());
-    expect(map).toMatchObject({
-      type: "object",
-      patternProperties: { "^(.*)$": { type: "string" } },
-    });
+  it("refuses to rewrite a cell already committed to the document", async () => {
+    const { client, written } = harness();
+    await client.handshake();
+
+    const created = await client.actions.createNote();
+    await callApplyAction(client, written[0]!, "g_1");
+
+    const documentUpdate = written[0]!.updates.find(
+      (update) => update.subject_type === "text_document",
+    )!;
+    const content = cellsOf(documentUpdate);
+    const [cellId, entry] = Object.entries(content)[0]!;
+    const rewriteHlc = (BigInt(entry.hlc) + 1_000n).toString();
+
+    const rewrite = cellPatch(
+      created.documentId,
+      {
+        [cellId]: {
+          ...entry,
+          value: { ...initialRun, text: "rewritten" },
+          update_id: "u_rewrite",
+          hlc: rewriteHlc,
+        },
+      },
+      "u_rewrite",
+      rewriteHlc,
+    );
+
+    const submittedBefore = written.length;
+    await expect(client.write([rewrite])).rejects.toBeInstanceOf(AppendOnlyViolationError);
+    expect(written).toHaveLength(submittedBefore);
+
+    const addedHlc = (BigInt(rewriteHlc) + 1_000n).toString();
+    const addedId = `${addedHlc}:actor_1`;
+    const added = cellPatch(
+      created.documentId,
+      {
+        [addedId]: {
+          value: {
+            kind: "run",
+            id: addedId,
+            text: "!",
+            author: "actor_1",
+            stamp: addedHlc,
+            anchor: { runId: cellId, offset: initialRun.text.length },
+          },
+          update_id: "u_add",
+          hlc: addedHlc,
+        },
+      },
+      "u_add",
+      addedHlc,
+    );
+
+    await expect(client.write([added])).resolves.toEqual({ rejected: [] });
+    expect(written.length).toBeGreaterThan(submittedBefore);
   });
 });

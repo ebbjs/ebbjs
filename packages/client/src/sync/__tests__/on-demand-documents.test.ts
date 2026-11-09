@@ -115,7 +115,7 @@ const initialContent = (text: string): Record<string, TextCell> => {
   return { [run.id]: run };
 };
 
-/** The visible text of a projected document row. */
+/** The run text of a projected document row. */
 const textOf = (content: Record<string, TextCell>): string =>
   Object.values(content)
     .flatMap((cell) => (cell.kind === "run" ? [cell.text] : []))

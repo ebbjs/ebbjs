@@ -1635,10 +1635,11 @@ export class SyncClient<
   }
 
   /**
-   * Open (or get) the TextDocument for a schema-declared document entity,
-   * bound to the client's write path so local edits self-flush. `docType` is
-   * the document entity's wire `subject_type`; pass the name the schema
-   * registers the entity under.
+   * Return the `TextDocument` for a schema-declared document entity, bound
+   * to the client's write path so local edits self-flush. `docType` is the
+   * document entity's wire `subject_type`; pass the name the schema registers
+   * the entity under. Does not read or pin the row: hydrate it from the
+   * document's `content` / `version`.
    *
    * Deliberately separate from {@link textDocument}: the low-level API
    * keeps its manual `client.write(doc.pendingActions())` contract

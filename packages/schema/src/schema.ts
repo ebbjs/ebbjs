@@ -39,7 +39,7 @@ export class EntityKeyMismatchError extends Error {
     super(
       `Entity map key "${key}" does not match the definition's name "${entityName}". ` +
         `A preset keyed under another name could address another entity type and ` +
-        `permission string.`,
+        `permission string. Key it under its own name: entities: { ${entityName} }.`,
     );
     this.name = "EntityKeyMismatchError";
     this.key = key;

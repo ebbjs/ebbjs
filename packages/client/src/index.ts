@@ -357,6 +357,7 @@ export {
 
 export {
   defineSchema,
+  EntityKeyMismatchError,
   UnregisteredRelationshipEndpointError,
   type DefineSchemaInput,
   type Schema,
