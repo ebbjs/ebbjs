@@ -65,6 +65,50 @@ verdict for all three without appealing to performance.
 
 ---
 
+## 1.5 The link row is a denormalized index, and #789 is the denormalization bug
+
+This is the strongest form of the argument, and it only became visible after #790's decisions were
+written down.
+
+A link's delivery scope is, by #790's decision 1, **always** a function of its endpoints: the
+source's groups, unioned with the target's when `contained: true`. #790 rejected intersection-owned
+visibility on the grounds that it "changes the meaning of the primitive rather than fixing its
+bookkeeping" **[source]**. So there is no case where a link's scope is independent of the two rows
+it joins.
+
+Which means every `entityGroup` row a link owns is **a cached value of a function of two other
+rows**. And the cache has to be maintained: when the source moves, re-derive; when the target moves,
+re-derive. #790 says the mechanism for this — `changeGroups` re-emitting the edge (#777) — "is
+deleted: membership rows replace it" **[source]**. So the repository has already built one
+maintenance mechanism for this denormalization and then deleted it in favour of another.
+
+**#789 is not a bug in the mechanism; it is the denormalization.** "A relationship's group scope is
+frozen at write time" is what a cached derivation does when its input changes and nobody
+invalidates.
+
+The component representation stores the function's **input** — the link, on its source — and lets
+the scope be read off the source at commit time, where `update_scopes` freezes it correctly for that
+Action. Everything that motivated the rows then falls out:
+
+| What the row bought                         | Under components                                                                                                                   |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| A delivery subject with its own scope       | The update is addressed to the source, so the scope _is_ the source's. Free, and correct after a move, a bootstrap, or a backfill. |
+| An id to `unlink` by                        | The map key. Simpler — no minted id, no `entityGroupId(relId, groupId)` arithmetic.                                                |
+| "When did this link appear?"                | The leaf's HLC. `created_hlc` per edge is lost, the timestamp is not.                                                              |
+| An ordered structure for incoming traversal | **Survives, and must.** See §2.                                                                                                    |
+
+**The honest trade, stated once:** the row is currently both the truth _and_ the reverse index. Under
+components the truth moves to the source and the reverse index becomes a _pure_ index. That is
+strictly better, because a pure index can be rebuilt from truth, whereas a row acting as an index
+cannot be rebuilt without replaying history — and when it goes stale, it is a permission scope bug,
+not a slow query.
+
+**[judgment] The reverse index does not disappear on the server.** `cf_component_entities (ebb/link,
+sourceId)` tells you which sources carry any link; it cannot answer "who points at T" without
+reading them all. So the server needs `cf_link_targets (type, target_id) -> source ids`. The
+information is not deleted, it is moved from a row to an index — which is the whole point. The client
+already works this way: `ReverseIndex` is derived from materialized rows on every `resync`.
+
 ## 2. What the current representation actually costs
 
 ### Caches
