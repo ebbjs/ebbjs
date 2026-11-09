@@ -370,7 +370,7 @@ and the fixtures move with it.
 - [ ] `UpdateSchema` / `UpdateInputSchema` per the epic's wire; `FieldValue` is the only `data`.
 - [ ] `method: "replace"` refused for keyspace components, at validation, with the component named.
 - [ ] `ActionFormat` rejects the old shape (no read-through; #552 precedent).
-- [ ] The append-only guard becomes a **path** check: `isLogPosition(component, ["updates"])` rather
+- [ ] The append-only guard becomes a **position path** check: `isLogPosition(component, ["updates"])` rather
       than `isLogField(subjectType, field)` (#778). A log now sits at a named position inside a
       component instead of being the whole field, so the guard — and the `refuseContentRewrites`
       special case it replaces — both key on a path.

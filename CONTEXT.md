@@ -19,7 +19,7 @@ delivery.
 _Avoid_: mutation, change set, transaction
 
 **Update**:
-One write to one entity, carrying an HLC and an update id.
+One write to one component of one entity, carrying an HLC and an update id.
 _Avoid_: change, event, op
 
 **Action log**:
@@ -80,18 +80,105 @@ channel TTL. The app calls it when the actor is really gone; `client.close()`
 is local teardown and never leaves.
 _Avoid_: unload, broadcast absence, release
 
+### Components
+
+**Component**:
+A named value attached to an entity, together with the policy that applies to
+it: existence, residency, conflict scope, indexing, version. Declared with
+`defineComponent`; a bare field builder declares one anonymously.
+_Avoid_: field, attribute, property, column
+
+**Leaf**:
+The merge position: a `{value, update_id, hlc}` envelope, or a map of them keyed
+by entry id. Merging happens at leaves and nowhere else.
+_Avoid_: cell, slot, atom
+
+**Atomic component**:
+A component whose value is one merge position, so a concurrent write replaces
+the record whole and its fields cannot tear apart.
+_Avoid_: object, struct, record
+
+**Keyed component**:
+A component whose value is a key space, so each field holds its own merge
+position and a concurrent write to one leaves its siblings alone. An append-only
+component (`e.log`) is a keyed component that refuses rewrites.
+_Avoid_: map, sparse, table
+
+**Anonymous component**:
+The component a bare field builder declares — one leaf, held, model-scoped
+conflict, version 1. Every field declared before components existed is one.
+_Avoid_: plain field, implicit component
+
+**Model**:
+The declared component set `defineModel` names, and the unit of permission,
+query source, and projection. Which of its components an entity carries is
+dynamic; which of them it _may_ carry is fixed by the model.
+_Avoid_: entity, type, class, table, collection
+
+**Archetype**:
+The component set an entity actually carries, as against its model's declared
+set. One model's entities occupy one archetype per subset of present
+components.
+_Avoid_: shape, type
+
+**Existence index**:
+The component-keyed index answering "which entities carry this component" —
+`cf_component_entities` on the server, `componentIndex` in the replica. The
+replica also keeps a **model index** (model → ids) for `query()`, and an
+optional **archetype index** (component set → ids) to skip intersecting.
+_Avoid_: type index, presence index
+
+**Existence**:
+Whether an entity carries a component. Distinct from a leaf's value: a present
+leaf holding a tombstone still exists, and an absent component has no value at
+all. Never the ephemeral Presence primitive.
+_Avoid_: presence, attachment, membership
+
+**Tombstone**:
+A present leaf whose `value` is `null`: it records that the position was cleared
+and keeps an HLC so a later write can still win. A tombstone is a value, not an
+absence.
+_Avoid_: null, deletion, empty
+
+**Residency**:
+Whether the replica holds a component or materializes it only when opened.
+Declared per component. See _Held_ and _On demand_.
+_Avoid_: tier, cache policy, eviction policy
+
+**Conflict scope**:
+The granularity at which a concurrent write is surfaced as a conflict: _field_,
+_component_, or _entity_. Declared per component; an entity-scope conflict holds
+every pending write to the row.
+_Avoid_: conflict level, conflict granularity
+
+**Project**:
+Derive the value a reader sees from a component's stored leaves — resolve
+declared defaults, hide tombstones. Distinct from _Materialize_, which derives a
+row from the Action log.
+_Avoid_: hydrate, denormalize, resolve
+
+**System component**:
+A component in the `ebb/` namespace — `ebb/group`, `ebb/groupMember`,
+`ebb/membership`, `ebb/link` — on a row the platform owns and interprets.
+_Avoid_: system entity type, built-in type
+
+**Archive component**:
+A declared component holding superseded values — a document body kept at an
+older codec — so an upgrade needs no new entity id.
+_Avoid_: history, backup, version
+
 ### Materialization
 
 **Held**:
-An entity type the replica always materializes.
+A component the replica always materializes.
 _Avoid_: resident, pinned, eager, tiered
 
 **On demand**:
-An entity type the replica materializes only once it is opened.
+A component the replica materializes only once it is opened.
 _Avoid_: windowed, lazy, cold
 
 **Open** / **Close**:
-Bring a document's content into the replica / release it from memory.
+Bring an on-demand component's value into the replica / release it from memory.
 _Avoid_: load, fetch, hydrate, evict, window
 
 ### Queries
@@ -107,20 +194,40 @@ Whether a Query's result reflects the replica's current revision — _unloaded_
 revision), _failed_.
 _Avoid_: loading, cached, complete, error
 
+**Keyset pagination**:
+Resuming a listing from the last row's sort key rather than from an offset, so a
+row committed mid-page cannot shift the window. A listing that paginates needs
+ordered rows, not a key set.
+_Avoid_: offset pagination, cursor
+
 ### Schema
 
 **Entity**:
-A row of one type, identified by an id, whose fields are merged independently.
-_Avoid_: document, record, object
+An identified thing in the store, holding a set of components that merge
+independently. Its model fixes which components it may carry; which ones it
+does carry is its archetype.
+_Avoid_: document, object, model
 
-**Committed type**:
-The type an entity id is known by, set by its first write; a write's declared
-`subject_type` must equal it.
-_Avoid_: wire type, declared type, relabel, retype
+**Row**:
+The stored form of an entity: its id, the components it carries, and its
+lifecycle stamps. Say _entity_ about the domain, _row_ about storage.
+_Avoid_: record, document
+
+**Committed model**:
+The model an entity id is known by, set by its first write. Every later write
+must name a component that model declares, so an id cannot be re-filed under
+another model's permissions.
+_Avoid_: wire type, declared type, committed type, relabel, retype
 
 **Field**:
-A named value on an entity; either a leaf or a map of leaves.
+A named position inside a component's value. Fields are not addressed on the
+wire; the component is.
 _Avoid_: column, property, attribute
+
+**Position path**:
+The sequence of field names naming one leaf inside a component — `updates`, or
+`runs.abc.text`. Guards and conflict slots name a path, never a bare field name.
+_Avoid_: key path, pointer
 
 **Relationship**:
 A named, typed link from a source entity to a target entity.
