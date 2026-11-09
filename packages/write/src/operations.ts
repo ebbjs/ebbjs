@@ -31,7 +31,7 @@ import {
 } from "@ebbjs/schema";
 
 import { projectFieldValue } from "./field-projection";
-import type { GeneratedParts } from "./generated-parts";
+import type { CascadeParts } from "./cascade";
 import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 import type { PointerValue } from "./pointer";
 import type { Rejection } from "./rejection";
@@ -588,40 +588,40 @@ export interface ChangeGroupsInput {
    */
   readonly currentGroups?: readonly string[];
   /**
-   * The entity's live generated parts (documents + edges), when the
-   * caller resolved them. Absent for an entity with no derived fields,
-   * so the emitted Update shape is unchanged.
+   * The live cascade (targets + edges) of the relationships whose target the
+   * entity contains, when the caller resolved it. Absent for an entity with
+   * no contained target, so the emitted Update shape is unchanged.
    */
-  readonly generated?: GeneratedParts;
+  readonly cascade?: CascadeParts;
 }
 
 /**
  * Add, remove, or replace an entity's membership rows in one operation.
  * Adds precede removes so an incremental observer never sees the entity
- * with an empty membership set mid-Action. Generated documents are
- * filed into the added groups and their edges re-emitted in the same
- * Action; their memberships are deleted alongside the parent's. The
- * fan-out scope is the union of every affected group, resolved by the
- * membership checker from the Updates themselves.
+ * with an empty membership set mid-Action. Cascaded targets are filed into
+ * the added groups and their edges re-emitted in the same Action; their
+ * memberships are deleted alongside the parent's. The fan-out scope is the
+ * union of every affected group, resolved by the membership checker from
+ * the Updates themselves.
  */
 export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   const puts = input.puts ?? [];
   const removes = input.removes ?? [];
-  const generated = input.generated;
+  const cascade = input.cascade;
   const updates: Update[] = [
     ...buildEntityGroupUpdates(input.entityId, puts, () => ctx.ids.updateId()),
   ];
 
-  for (const document of generated?.documents ?? []) {
-    const held = new Set(document.memberships.map((membership) => membership.groupId));
+  for (const target of cascade?.targets ?? []) {
+    const held = new Set(target.memberships.map((membership) => membership.groupId));
     const addedGroups = puts.filter((groupId) => !held.has(groupId));
-    updates.push(...buildEntityGroupUpdates(document.id, addedGroups, () => ctx.ids.updateId()));
+    updates.push(...buildEntityGroupUpdates(target.id, addedGroups, () => ctx.ids.updateId()));
   }
 
   // The edge is re-emitted under its existing id so the server can
   // scope it to the new group; with no put there is nothing to carry.
   if (puts.length > 0) {
-    for (const edge of generated?.edges ?? []) {
+    for (const edge of cascade?.edges ?? []) {
       updates.push(
         buildRelationshipUpdate({
           relationshipId: edge.relationshipId,
@@ -645,8 +645,8 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   );
 
   const removedGroupIds = new Set(removes.map((removal) => removal.groupId));
-  for (const document of generated?.documents ?? []) {
-    for (const membership of document.memberships) {
+  for (const target of cascade?.targets ?? []) {
+    for (const membership of target.memberships) {
       if (!removedGroupIds.has(membership.groupId)) continue;
       updates.push(
         buildEntityGroupDelete({

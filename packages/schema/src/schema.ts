@@ -333,6 +333,10 @@ export function expandDerivedFields(
         as: field,
         sourceCardinality: "one",
         kind: "collaborative-text",
+        // The body is part of the parent's access scope: a membership
+        // change carries it into the same groups. Declared here so the
+        // generic cascade serves a derived body until #776 deletes it.
+        contained: true,
       });
     }
   }

@@ -284,6 +284,7 @@ describe("defineSchema system entities + membership", () => {
       as: "groups",
       sourceCardinality: "many" as const,
       type: "todo",
+      contained: false,
     };
     expect(() =>
       defineSchema({ entities: { todo }, relationships: { bad: colliding }, version: 1 }),

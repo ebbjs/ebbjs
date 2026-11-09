@@ -15,7 +15,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
-import { readGeneratedParts } from "./generated-parts";
+import { readCascadeParts } from "./cascade";
 import { createGroupListing, listingSeedActionId, needsGroupListing } from "./group-listing";
 import {
   callApplyAction,
@@ -1052,7 +1052,7 @@ describe("SyncClient group listing", () => {
 
     // The three reads a missing relationship row broke on a cold replica: the
     // join a derived read plans, the adjacency index an accessor traverses,
-    // and the document `readGeneratedParts` only finds through its link.
+    // and the document `readCascadeParts` only finds through its link.
     const links = await client.storage.entities.queryByRelationshipSource({
       as: "body",
       type: body.type,
@@ -1064,11 +1064,11 @@ describe("SyncClient group listing", () => {
       client.replica.relationships({ as: "body", type: body.type, sourceId: "post_1" }),
     ).toEqual([documentId]);
 
-    const parts = await readGeneratedParts(client.storage, client.registry, "blog_post", "post_1");
+    const parts = await readCascadeParts(client.storage, client.registry, "blog_post", "post_1");
     expect(parts.edges.map((link) => ({ field: link.field, targetId: link.targetId }))).toEqual([
       { field: "body", targetId: documentId },
     ]);
-    expect(parts.documents.map((document) => document.id)).toEqual([documentId]);
+    expect(parts.targets.map((document) => document.id)).toEqual([documentId]);
     expect(await client.readLocalEntity(documentId)).not.toBeNull();
 
     unsubscribe();

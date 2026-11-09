@@ -67,6 +67,15 @@ export interface RelationshipDef<
   readonly type: string;
   /** Semantic kind; absent for ordinary typed links. */
   readonly kind?: RelationshipKind;
+  /**
+   * Whether the target is part of the source's access scope: a membership
+   * change on the source files the target into the same groups. Declared
+   * data so the pure planner can walk it; one hop, no transitivity.
+   *
+   * Containment is not link visibility. A relationship's own delivery scope
+   * follows its source; this declaration adds the target's membership too.
+   */
+  readonly contained: boolean;
 }
 
 /**
@@ -86,6 +95,8 @@ export interface DefineRelationshipInput<
   sourceCardinality?: C;
   type?: string;
   kind?: RelationshipKind;
+  /** Defaults to `false`: only a declared relationship carries its target. */
+  contained?: boolean;
 }
 
 /**
@@ -108,5 +119,6 @@ export function defineRelationship<
     sourceCardinality,
     type,
     kind: opts.kind,
+    contained: opts.contained ?? false,
   });
 }

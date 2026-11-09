@@ -62,7 +62,7 @@ its own sequence.
 | `src/verbs.ts`            | `WriteVerb` / `operationCallFor` / `createEntityInput` — semantic verbs to planner calls.                  |
 | `src/relationship.ts`     | Wire builders for relationship and `entityGroup` Updates.                                                  |
 | `src/membership.ts`       | Group-scope resolution and the membership refusals.                                                        |
-| `src/generated-parts.ts`  | Types for the document entities and edges a membership change carries.                                     |
+| `src/cascade.ts`          | Types for the targets and edges a membership change carries.                                               |
 | `src/pointer.ts`          | `PointerValue` / `normalizePointer`.                                                                       |
 | `src/field-projection.ts` | `projectFieldValue` — wire field to application value.                                                     |
 | `src/rejection.ts`        | `Rejection` / `WriteResponse` wire shapes.                                                                 |

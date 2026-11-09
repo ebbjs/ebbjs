@@ -78,6 +78,7 @@ interface RegisteredRelationship {
   sourceCardinality: SourceCardinality;
   type: string;
   kind: RelationshipKind | undefined;
+  contained: boolean;
 }
 
 const relationshipKey = (sourceName: string, as: string): string => `${sourceName}::${as}`;
@@ -95,6 +96,7 @@ const toRelationshipDef = (r: RegisteredRelationship): AnyRelationshipDef => ({
   sourceCardinality: r.sourceCardinality,
   type: r.type,
   kind: r.kind,
+  contained: r.contained,
 });
 
 export class EntityRegistry {
@@ -165,6 +167,7 @@ export class EntityRegistry {
       sourceCardinality: def.sourceCardinality,
       type: def.type,
       kind: def.kind,
+      contained: def.contained,
     };
     this.relationships.set(key, entry);
     if (prev === undefined) {
@@ -186,6 +189,14 @@ export class EntityRegistry {
       if (r.sourceName === sourceName) out.push(toRelationshipDef(r));
     }
     return out;
+  }
+
+  /**
+   * Relationships whose target is contained in the source's access scope.
+   * The membership-change planner walks exactly these.
+   */
+  getContainedRelationshipsForSource(sourceName: string): readonly AnyRelationshipDef[] {
+    return this.getRelationshipsForSource(sourceName).filter((rel) => rel.contained);
   }
 
   /** All relationships declared with `targetName` as their target. */

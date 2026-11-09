@@ -36,7 +36,7 @@ import {
   type SourceNameOf,
 } from "./definition-types";
 import type { LiveMembership } from "./entity-group";
-import type { GeneratedDocument, GeneratedEdge, GeneratedParts } from "./generated-parts";
+import { NO_CASCADE, type CascadeEdge, type CascadeParts, type CascadeTarget } from "./cascade";
 import {
   entityGroupId,
   lastGroupMemberRefusal,
@@ -56,6 +56,7 @@ import {
   lastGroupMemberError,
   patchEntity,
   writeRelationship,
+  collectManyTargetIds,
   type MembershipRemoval,
   type OperationCall,
   type RelationshipPointer,
@@ -258,8 +259,8 @@ export interface DraftDuplicateOptions extends EntityWriteOptions {
 export interface ActionReads {
   /** Live `entityGroup` rows for an entity id. */
   memberships(entityId: string): Promise<readonly LiveMembership[]>;
-  /** The entity's live generated parts, carried on a membership change. */
-  generatedParts(entityType: string, entityId: string): Promise<GeneratedParts>;
+  /** The entity's live cascade, carried on a membership change. */
+  cascadeParts(entityType: string, entityId: string): Promise<CascadeParts>;
   /** The live row of `entityType`, or `null` when it is absent or another type. */
   entity(entityType: string, entityId: string): Promise<Entity | null>;
   /** The `before` row of the entity's earliest unresolved conflict. */
@@ -285,8 +286,19 @@ interface BatchEntity {
   groups: Set<string>;
   /** `entityGroup` row ids the batch knows, keyed by group. */
   membershipIds: Map<string, string>;
-  /** Parts a batch-local `create` minted, not yet in the local store. */
-  readonly parts?: GeneratedParts;
+  /**
+   * Cascade parts the batch already knows: a create minted a target, or a
+   * link named one, before either reached the local store.
+   */
+  cascade?: CascadeParts;
+  /**
+   * Cascading accessors whose target set this batch states in full
+   * (`link`, `unlink`, a many-cardinality `replace`). The stored edge must
+   * not be carried: the batch's own write is the authority.
+   */
+  cascadeReplaced?: Set<string>;
+  /** Cascading accessors whose target ids this batch removes. */
+  cascadeRemoved?: Map<string, Set<string>>;
 }
 
 /** One membership delta against an entity's group set. */
@@ -560,8 +572,8 @@ const createDraftNamespace = <
     const fields: Record<string, unknown> = {};
     const pointers: ResolvedPointer[] = [];
     const bodies: Record<string, string> = {};
-    const createdDocuments: GeneratedDocument[] = [];
-    const createdEdges: GeneratedEdge[] = [];
+    const createdTargets: CascadeTarget[] = [];
+    const createdEdges: CascadeEdge[] = [];
     const handle: Record<string, unknown> = { id };
     const groups = resolveGroupIds(opts?.groups, entityName);
     const derived = def.derived as Record<string, unknown> | undefined;
@@ -592,7 +604,7 @@ const createDraftNamespace = <
             parentId: id,
             field: key,
           });
-          createdDocuments.push({
+          createdTargets.push({
             id: part.documentId,
             type: part.documentType,
             memberships: [],
@@ -615,6 +627,15 @@ const createDraftNamespace = <
         continue;
       }
       const targets = resolvePointerTargets(value, entityName, key);
+      if (rel.contained) {
+        // A target created (or named) in this batch is not in the store
+        // yet, so a later group verb would not find it. Record it now; a
+        // target created here carries no memberships until the create's
+        // own `entityGroup` rows are applied.
+        for (const targetId of targets) {
+          createdTargets.push({ id: targetId, type: rel.target.name, memberships: [] });
+        }
+      }
       if (rel.sourceCardinality === "many") {
         handle[key] = targets;
         // A declared `as` field carries the canonical FK set on the
@@ -638,14 +659,14 @@ const createDraftNamespace = <
       }
     }
 
-    const parts: GeneratedParts | undefined =
-      createdDocuments.length > 0
-        ? { documents: createdDocuments, edges: createdEdges }
+    const cascade: CascadeParts | undefined =
+      createdTargets.length > 0 || createdEdges.length > 0
+        ? { targets: createdTargets, edges: createdEdges }
         : undefined;
     collector.batching.set(id, {
       groups: new Set(groups),
       membershipIds: new Map(groups.map((groupId) => [groupId, entityGroupId(id, groupId)])),
-      parts,
+      cascade,
     });
     record(
       collector,
@@ -857,33 +878,56 @@ const readMembershipState = async (ctx: ResolveContext, id: string): Promise<Bat
   return entry;
 };
 
-/** The entity's parts, merging what the batch minted with the live read. */
-const readParts = async (
+/**
+ * The entity's cascade: the live read, with any edge the batch replaced or
+ * removed filtered out, then merged with the targets the batch named.
+ *
+ * The filter is what keeps a same-batch `unlink` or `setLinks` from being
+ * undone: the store still holds the old edge until the Action lands, and
+ * `changeGroups` would otherwise re-emit it after the delete.
+ */
+const readCascade = async (
   ctx: ResolveContext,
   entity: string,
   id: string,
-): Promise<GeneratedParts> =>
-  mergeGeneratedParts(await ctx.cap.read.generatedParts(entity, id), ctx.batching.get(id)?.parts);
+): Promise<CascadeParts> => {
+  const stored = await ctx.cap.read.cascadeParts(entity, id);
+  const batch = ctx.batching.get(id);
+  if (batch === undefined) return stored;
+
+  const replaced = batch.cascadeReplaced;
+  const removed = batch.cascadeRemoved;
+  const filtering = (replaced?.size ?? 0) > 0 || (removed?.size ?? 0) > 0;
+  const live = filtering
+    ? (() => {
+        const edges = stored.edges.filter((edge) => {
+          if (replaced?.has(edge.field) === true) return false;
+          return removed?.get(edge.field)?.has(edge.targetId) !== true;
+        });
+        const kept = new Set(edges.map((edge) => edge.targetId));
+        return { targets: stored.targets.filter((target) => kept.has(target.id)), edges };
+      })()
+    : stored;
+
+  return mergeCascade(live, batch.cascade);
+};
 
 /**
- * Merge what a batch-local `create` minted into the parts read from the
- * local store. A shared id keeps the read entry: the create's copy of a
- * membership row is empty.
+ * Merge what the batch already knows into the cascade read from the local
+ * store. A shared target id keeps the read entry: the store knows the
+ * target's live memberships, a batch-local create's copy is empty.
  */
-const mergeGeneratedParts = (
-  read: GeneratedParts,
-  created: GeneratedParts | undefined,
-): GeneratedParts => {
+const mergeCascade = (read: CascadeParts, created: CascadeParts | undefined): CascadeParts => {
   if (created === undefined) return read;
-  const documents = new Map(read.documents.map((document) => [document.id, document]));
-  for (const document of created.documents) {
-    if (!documents.has(document.id)) documents.set(document.id, document);
+  const targets = new Map(read.targets.map((target) => [target.id, target]));
+  for (const target of created.targets) {
+    if (!targets.has(target.id)) targets.set(target.id, target);
   }
   const edges = new Map(read.edges.map((edge) => [edge.relationshipId, edge]));
   for (const edge of created.edges) {
     if (!edges.has(edge.relationshipId)) edges.set(edge.relationshipId, edge);
   }
-  return { documents: [...documents.values()], edges: [...edges.values()] };
+  return { targets: [...targets.values()], edges: [...edges.values()] };
 };
 
 /**
@@ -913,7 +957,7 @@ const applyGroupDelta = async (
     removals.push({ membershipId, groupId });
   }
   if (puts.length === 0 && removals.length === 0) return [];
-  const generated = await readParts(ctx, intent.entity, intent.id);
+  const cascade = await readCascade(ctx, intent.entity, intent.id);
   for (const groupId of puts) {
     state.groups.add(groupId);
     state.membershipIds.set(groupId, entityGroupId(intent.id, groupId));
@@ -929,7 +973,7 @@ const applyGroupDelta = async (
       puts,
       removes: removals,
       currentGroups,
-      generated,
+      cascade,
     }),
   ];
 };
@@ -999,6 +1043,35 @@ const resolveDuplicate = async (
 };
 
 /**
+ * The cascading targets a relationship pointer asserts. `replaces` is true
+ * when the accessor's target set is stated in full (`link`, `unlink`, a
+ * many-cardinality `replace`); otherwise `removed` names what the patch takes
+ * out.
+ */
+const cascadePointer = (
+  pointer: RelationshipPointer,
+  cardinality: "one" | "many",
+): { targets: readonly string[]; replaces: boolean; removed: readonly string[] } => {
+  const normalize = (value: unknown): readonly string[] => {
+    const id = normalizePointer(value, "relationship target");
+    return id === null ? [] : [id];
+  };
+  if (cardinality === "one") {
+    return { targets: normalize(pointer.targetId), replaces: true, removed: [] };
+  }
+  const patch = pointer.targetIds;
+  if (patch === undefined) return { targets: [], replaces: true, removed: [] };
+  if ("replace" in patch) {
+    return { targets: collectManyTargetIds(patch), replaces: true, removed: [] };
+  }
+  return {
+    targets: patch.add.flatMap(normalize),
+    replaces: false,
+    removed: patch.remove.flatMap(normalize),
+  };
+};
+
+/**
  * `link` / `unlink` / `setLinks`: a one-cardinality unlink resolves the
  * live edge's row id first, and an unlink with no live edge emits
  * nothing. The operation itself owns the built-in-accessor and
@@ -1017,13 +1090,74 @@ const resolveRelationship = async (
     ctx.cap.read.relationshipLink,
   );
   if (target.kind === "unlinked") return [];
+
+  const rel = ctx.cap.registry.getRelationship(intent.entity, intent.as);
+  let cascadingRelationshipId: string | undefined;
+
+  if (rel?.contained === true) {
+    const state = await readMembershipState(ctx, intent.sourceId);
+    const pointer = cascadePointer(intent.pointer, rel.sourceCardinality);
+
+    // A replaced accessor hides the stored edge from `readCascade`, so the
+    // store's stale target set cannot re-add memberships or re-emit an edge
+    // this batch is removing. A set-links patch hides only its removals.
+    if (pointer.replaces) {
+      (state.cascadeReplaced ??= new Set()).add(rel.as);
+    } else if (pointer.removed.length > 0) {
+      const removed = (state.cascadeRemoved ??= new Map());
+      const ids = removed.get(rel.as) ?? new Set<string>();
+      for (const id of pointer.removed) ids.add(id);
+      removed.set(rel.as, ids);
+    }
+
+    if (pointer.targets.length > 0) {
+      // A one-cardinality edge has one id, so resolve or mint it here and
+      // record it: `changeGroups` re-emits it after the membership puts, and
+      // the server then scopes the edge to the new group. A many-cardinality
+      // write mints one id per target inside `writeRelationship`, so those
+      // edges stay scoped at link time.
+      if (rel.sourceCardinality === "one") {
+        const existing = await ctx.cap.read.relationshipLink(rel.as, rel.type, intent.sourceId);
+        cascadingRelationshipId = existing?.relationshipId ?? generateId("rel");
+      }
+      const targets = await Promise.all(
+        pointer.targets.map(async (id) => {
+          const memberships = await ctx.cap.read.memberships(id);
+          return {
+            id,
+            type: rel.target.name,
+            memberships: memberships.map((membership) => ({
+              membershipId: membership.membershipId,
+              groupId: membership.groupId,
+            })),
+          };
+        }),
+      );
+      const edgeId = cascadingRelationshipId;
+      state.cascade = mergeCascade(state.cascade ?? NO_CASCADE, {
+        targets,
+        edges:
+          edgeId === undefined
+            ? []
+            : pointer.targets.map((id) => ({
+                relationshipId: edgeId,
+                sourceId: intent.sourceId,
+                targetId: id,
+                field: rel.as,
+                type: rel.type,
+              })),
+      });
+    }
+  }
+
   return [
     call(writeRelationship, {
       entity: intent.entity,
       sourceId: intent.sourceId,
       as: intent.as,
       pointer: intent.pointer,
-      relationshipSubjectId: target.kind === "existing" ? target.relationshipId : undefined,
+      relationshipSubjectId:
+        target.kind === "existing" ? target.relationshipId : cascadingRelationshipId,
       groups: await readGroups(ctx, intent.sourceId),
     }),
   ];

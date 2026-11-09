@@ -1,10 +1,10 @@
 /**
- * Membership changes carry an entity's generated parts: the document
- * entities backing its derived collaborative-text fields, and their
- * generated edges. Domain relationships never travel (#474).
+ * Membership changes carry an entity's cascade: the live targets of every
+ * relationship it declares `contained`, and the edges that reached
+ * them. Relationships that do not declare it never travel (#777).
  *
- * The stub fetch records decoded Actions so every test asserts the
- * wire shape the move emits.
+ * The stub fetch records decoded Actions so every test asserts the wire
+ * shape the move emits.
  */
 
 import { describe, expect, it } from "vitest";
@@ -14,9 +14,9 @@ import type { TSchema } from "@sinclair/typebox/type";
 import { e, defineEntity, type EntityDef } from "@ebbjs/schema";
 import { defineSchema, type Schema } from "@ebbjs/schema";
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
-import { generatedDocEntityName } from "@ebbjs/schema";
+import { buildTextDocumentEntity, generatedDocEntityName } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { readGeneratedParts } from "../generated-parts";
+import { readCascadeParts } from "../cascade";
 import { jsonResponse } from "../test-utils";
 import { testActions } from "./test-actions";
 
@@ -49,6 +49,8 @@ const PERMISSIONS = [
   BODY_DOC + ".*",
   SUBTITLE_DOC + ".*",
   "author.*",
+  "note.*",
+  "note_body.*",
   "shared_post.*",
   "shared_body.*",
   "relationship.*",
@@ -143,7 +145,7 @@ const docIdsOf = (updates: readonly SyncUpdate[]): readonly string[] =>
     .filter((update) => update.subject_type.startsWith("text_document__"))
     .map((update) => update.subject_id);
 
-describe("membership change carries generated parts (#474)", () => {
+describe("membership change carries cascade (#474)", () => {
   it("moves the parent, its documents, and their edges; the domain edge stays put", async () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client);
@@ -213,13 +215,13 @@ describe("membership change carries generated parts (#474)", () => {
     const id = await createPost(client);
 
     const createUpdates = updatesOf(actions[0]!);
-    const parts = await readGeneratedParts(client.storage, client.registry, "blog_post", id);
+    const parts = await readCascadeParts(client.storage, client.registry, "blog_post", id);
 
-    expect(parts.documents).toHaveLength(2);
-    expect(parts.documents.map((document) => document.id).sort()).toEqual(
+    expect(parts.targets).toHaveLength(2);
+    expect(parts.targets.map((target) => target.id).sort()).toEqual(
       [...docIdsOf(createUpdates)].sort(),
     );
-    expect([...new Set(parts.documents.map((document) => document.type))].sort()).toEqual(
+    expect([...new Set(parts.targets.map((target) => target.type))].sort()).toEqual(
       [BODY_DOC, SUBTITLE_DOC].sort(),
     );
 
@@ -261,15 +263,10 @@ describe("membership change carries generated parts (#474)", () => {
       mkEntity("eg_doc", "entityGroup", { entity_id: "doc_shared", group_id: "g_1" }),
     );
 
-    const parts = await readGeneratedParts(
-      client.storage,
-      client.registry,
-      "shared_post",
-      "post_1",
-    );
+    const parts = await readCascadeParts(client.storage, client.registry, "shared_post", "post_1");
 
-    expect(parts.documents).toHaveLength(1);
-    expect(parts.documents[0]).toEqual({
+    expect(parts.targets).toHaveLength(1);
+    expect(parts.targets[0]).toEqual({
       id: "doc_shared",
       type: "shared_body",
       memberships: [{ membershipId: "eg_doc", groupId: "g_1" }],
@@ -279,7 +276,7 @@ describe("membership change carries generated parts (#474)", () => {
   });
 });
 
-describe("membership verbs in a callback carry generated parts (#474)", () => {
+describe("membership verbs in a callback carry cascade (#474)", () => {
   it("carries the documents and edges on a draft addToGroup", async () => {
     const { client, actions } = await mkClient(schema);
     const id = await createPost(client);
@@ -352,5 +349,150 @@ describe("membership verbs in a callback carry generated parts (#474)", () => {
     }
     expect(emissions.size).toBe(2);
     expect([...emissions.values()]).toEqual([2, 2]);
+  });
+});
+
+describe("a contained relationship can cascade (#777)", () => {
+  it("carries a linked document into the source's new group", async () => {
+    const note = defineEntity("note", { title: e.string() });
+    const noteBody = buildTextDocumentEntity("note_body");
+    const explicit = defineSchema({
+      entities: { note, note_body: noteBody },
+      relationships: {
+        body: defineRelationship({
+          source: note,
+          target: noteBody,
+          as: "body",
+          contained: true,
+        }),
+      },
+      version: 1,
+    });
+    const { client, actions } = await mkClient(explicit);
+
+    let noteId = "";
+    let bodyId = "";
+    await client.actions.run(({ note: noteDraft, note_body: bodyDraft }) => {
+      const n = noteDraft.create({ title: "T" }, { groups: ["g_1"] });
+      const d = bodyDraft.create({ content: {}, version: 0 }, { groups: ["g_1"] });
+      noteId = n.id;
+      bodyId = d.id;
+      noteDraft.link(n.id, "body", d);
+      noteDraft.addToGroup(n.id, "g_2");
+    });
+
+    const updates = updatesOf(actions[actions.length - 1]!);
+    const added = updates.filter(
+      (update) =>
+        update.subject_type === "entityGroup" &&
+        update.method === "put" &&
+        fieldOf(update, "group_id") === "g_2",
+    );
+    expect(added.map((update) => fieldOf(update, "entity_id")).sort()).toEqual(
+      [noteId, bodyId].sort(),
+    );
+
+    // One create, one link, one membership change — one Action.
+    expect(updates.filter((update) => update.subject_type === "note")).toHaveLength(1);
+    expect(updates.filter((update) => update.subject_type === "note_body")).toHaveLength(1);
+
+    // The edge is put by the link and re-emitted by the membership change,
+    // under the same id, after the group put. That ordering is what lets the
+    // server scope the edge to the new group.
+    const edges = updates.filter((update) => update.subject_type === "relationship");
+    expect(edges).toHaveLength(2);
+    expect(new Set(edges.map((edge) => edge.subject_id)).size).toBe(1);
+    const addedPut = updates.findIndex(
+      (update) =>
+        update.subject_type === "entityGroup" &&
+        fieldOf(update, "group_id") === "g_2" &&
+        fieldOf(update, "entity_id") === noteId,
+    );
+    expect(updates.indexOf(edges[1]!)).toBeGreaterThan(addedPut);
+  });
+
+  it("does not resurrect an edge an unlink removed in the same batch", async () => {
+    const note = defineEntity("note", { title: e.string() });
+    const noteBody = buildTextDocumentEntity("note_body");
+    const explicit = defineSchema({
+      entities: { note, note_body: noteBody },
+      relationships: {
+        body: defineRelationship({
+          source: note,
+          target: noteBody,
+          as: "body",
+          contained: true,
+        }),
+      },
+      version: 1,
+    });
+    const { client, storage, actions } = await mkClient(explicit);
+
+    await storage.entities.set(mkEntity("post_1", "note", { title: "T" }));
+    await storage.entities.set(mkEntity("doc_1", "note_body", { content: {}, version: 0 }));
+    await storage.entities.set(
+      mkEntity("rel_body", "relationship", {
+        source_id: "post_1",
+        target_id: "doc_1",
+        field: "body",
+        type: "note",
+      }),
+    );
+    await storage.entities.set(
+      mkEntity("eg_post_g1", "entityGroup", { entity_id: "post_1", group_id: "g_1" }),
+    );
+    await storage.entities.set(
+      mkEntity("eg_doc_g1", "entityGroup", { entity_id: "doc_1", group_id: "g_1" }),
+    );
+
+    await client.actions.run(({ note: noteDraft }) => {
+      noteDraft.unlink("post_1", "body");
+      noteDraft.addToGroup("post_1", "g_2");
+    });
+
+    const updates = updatesOf(actions[actions.length - 1]!);
+    const edges = updates.filter((update) => update.subject_type === "relationship");
+    expect(edges.map((update) => update.method)).toEqual(["delete"]);
+    expect(edges[0]!.subject_id).toBe("rel_body");
+
+    // The removed document does not travel into g_2.
+    const added = updates.filter(
+      (update) => update.subject_type === "entityGroup" && fieldOf(update, "group_id") === "g_2",
+    );
+    expect(added.map((update) => fieldOf(update, "entity_id"))).toEqual(["post_1"]);
+  });
+
+  it("does not carry a relationship that is not contained", async () => {
+    const note = defineEntity("note", { title: e.string() });
+    const noteBody = buildTextDocumentEntity("note_body");
+    const plain = defineSchema({
+      entities: { note, note_body: noteBody },
+      relationships: {
+        body: defineRelationship({ source: note, target: noteBody, as: "body" }),
+      },
+      version: 1,
+    });
+    const { client, actions } = await mkClient(plain);
+
+    let noteId = "";
+    let bodyId = "";
+    await client.actions.run(({ note: noteDraft, note_body: bodyDraft }) => {
+      const n = noteDraft.create({ title: "T" }, { groups: ["g_1"] });
+      const d = bodyDraft.create({ content: {}, version: 0 }, { groups: ["g_1"] });
+      noteId = n.id;
+      bodyId = d.id;
+      noteDraft.link(n.id, "body", d);
+      noteDraft.addToGroup(n.id, "g_2");
+    });
+
+    const updates = updatesOf(actions[actions.length - 1]!);
+    const added = updates.filter(
+      (update) =>
+        update.subject_type === "entityGroup" &&
+        update.method === "put" &&
+        fieldOf(update, "group_id") === "g_2",
+    );
+    expect(added.map((update) => fieldOf(update, "entity_id"))).toEqual([noteId]);
+    expect(added.some((update) => fieldOf(update, "entity_id") === bodyId)).toBe(false);
   });
 });

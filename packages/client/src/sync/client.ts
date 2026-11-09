@@ -104,7 +104,7 @@ import {
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { groupMembersOf } from "@ebbjs/write";
-import { readGeneratedParts } from "./generated-parts";
+import { readCascadeParts } from "./cascade";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
 import {
@@ -2634,10 +2634,10 @@ export function createClient<
       // The draft membership verbs resolve against the local cache after
       // the synchronous callback returns.
       memberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
-      // A membership change carries the entity's generated documents and
-      // their edges, resolved from the local cache after the callback.
-      generatedParts: (entityType: string, entityId: string) =>
-        readGeneratedParts(client.storage, client.registry, entityType, entityId),
+      // A membership change carries the entity's contained targets, resolved
+      // from the local cache after the callback.
+      cascadeParts: (entityType: string, entityId: string) =>
+        readCascadeParts(client.storage, client.registry, entityType, entityId),
       // A `duplicate` copy source, and the groupMember the membership
       // guard reads. A wrong-type row reads as absent, like a missing one.
       entity: async (entityType: string, entityId: string) => {

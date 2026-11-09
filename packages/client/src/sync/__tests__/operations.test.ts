@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EntityRegistry } from "@ebbjs/schema";
-import type { GeneratedParts } from "../generated-parts";
+import type { CascadeParts } from "../cascade";
 import { ActionRejectedError, call, changeGroups, type OpContext } from "@ebbjs/write";
 import { commit, type CommitCapability } from "@ebbjs/write";
 
@@ -20,8 +20,8 @@ const mkCtx = (): OpContext => ({
   actorId: "actor_1",
 });
 
-const generatedParts: GeneratedParts = {
-  documents: [
+const cascadeParts: CascadeParts = {
+  targets: [
     {
       id: "doc_1",
       type: "text_document__blog_post__body",
@@ -78,14 +78,14 @@ describe("changeGroups", () => {
     ).toThrowError(ActionRejectedError);
   });
 
-  it("carries a generated document and re-emits its edge on an add", () => {
+  it("carries a cascaded target and re-emits its edge on an add", () => {
     const result = changeGroups(mkCtx(), {
       entity: "blog_post",
       entityId: "post_1",
       puts: ["g_2"],
       removes: [{ membershipId: "eg_post_1", groupId: "g_1" }],
       currentGroups: ["g_1"],
-      generated: generatedParts,
+      cascade: cascadeParts,
     });
 
     expect(result.updates.map((update) => update.method)).toEqual([
@@ -101,7 +101,7 @@ describe("changeGroups", () => {
     expect(result.updates[0]!.data?.fields?.["entity_id"]?.value).toBe("post_1");
     expect(result.updates[0]!.data?.fields?.["group_id"]?.value).toBe("g_2");
 
-    // Generated document membership put.
+    // Cascaded target membership put.
     expect(result.updates[1]!.subject_type).toBe("entityGroup");
     expect(result.updates[1]!.data?.fields?.["entity_id"]?.value).toBe("doc_1");
     expect(result.updates[1]!.data?.fields?.["group_id"]?.value).toBe("g_2");
@@ -115,7 +115,7 @@ describe("changeGroups", () => {
     expect(edge.data?.fields?.["field"]?.value).toBe("body");
     expect(edge.data?.fields?.["type"]?.value).toBe("blog_post");
 
-    // Parent membership delete, then the document's.
+    // Parent membership delete, then the target's.
     expect(result.updates[3]!.subject_id).toBe("eg_post_1");
     expect(result.updates[3]!.subject_type).toBe("entityGroup");
     expect(result.updates[4]!.subject_id).toBe("eg_doc_1");
@@ -126,14 +126,14 @@ describe("changeGroups", () => {
     expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 
-  it("skips a generated document membership the document already holds", () => {
+  it("skips a cascaded membership the target already holds", () => {
     const result = changeGroups(mkCtx(), {
       entity: "blog_post",
       entityId: "post_1",
       puts: ["g_2"],
       currentGroups: ["g_1"],
-      generated: {
-        documents: [
+      cascade: {
+        targets: [
           {
             id: "doc_1",
             type: "text_document__blog_post__body",
@@ -144,18 +144,18 @@ describe("changeGroups", () => {
       },
     });
 
-    // Only the parent's put; the document is already in g_2.
+    // Only the parent's put; the target is already in g_2.
     expect(result.updates).toHaveLength(1);
     expect(result.updates[0]!.data?.fields?.["entity_id"]?.value).toBe("post_1");
   });
 
-  it("does not re-emit a generated edge when no group is added", () => {
+  it("does not re-emit a cascaded edge when no group is added", () => {
     const result = changeGroups(mkCtx(), {
       entity: "blog_post",
       entityId: "post_1",
       removes: [{ membershipId: "eg_post_1", groupId: "g_1" }],
       currentGroups: ["g_1", "g_2"],
-      generated: generatedParts,
+      cascade: cascadeParts,
     });
 
     expect(result.updates.map((update) => update.method)).toEqual(["delete", "delete"]);
@@ -163,7 +163,7 @@ describe("changeGroups", () => {
     expect(result.updates[1]!.subject_id).toBe("eg_doc_1");
   });
 
-  it("leaves the shape of a delta with no generated parts unchanged", () => {
+  it("leaves the shape of a delta with no cascade unchanged", () => {
     const result = changeGroups(mkCtx(), {
       entity: "todo",
       entityId: "todo_1",
