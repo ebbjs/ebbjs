@@ -6,25 +6,37 @@ import {
   defineEntity,
   defineRelationship,
   defineSchema,
-  derivedBodyIds,
   e,
+  EntityKeyMismatchError,
   EntityRegistry,
-  generatedDocEntityName,
   groupSystemEntity,
+  TextCellSchema,
 } from "../index";
+
+const SYSTEM_ENTITY_NAMES = ["entityGroup", "group", "groupMember", "relationship"];
 
 const buildSchema = () => {
   const project = defineEntity("project", { name: e.string() });
+  const textDocument = defineEntity(
+    "text_document",
+    { content: e.map(TextCellSchema), version: e.number() },
+    { materialization: "on-demand" },
+  );
   const issue = defineEntity("issue", {
     title: e.string(),
-    body: e.collaborativeText(),
     project: e.string().default(""),
   });
   const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
+  const body = defineRelationship({
+    source: issue,
+    target: textDocument,
+    as: "body",
+    sourceCardinality: "one",
+  });
   return {
     schema: defineSchema({
-      entities: { project, issue },
-      relationships: { belongsTo },
+      entities: { project, issue, text_document: textDocument },
+      relationships: { belongsTo, body },
       version: 1,
     }),
     issue,
@@ -32,30 +44,33 @@ const buildSchema = () => {
 };
 
 describe("@ebbjs/schema", () => {
-  it("registers entities, relationships, and expanded derived documents", () => {
+  it("registers the entities and relationships the schema declares", () => {
     const { schema } = buildSchema();
 
     expect(schema._registry.entityNames()).toContain("issue");
     expect(schema._registry.getRelationship("issue", "project")?.target.name).toBe("project");
-    expect(schema._registry.get(generatedDocEntityName("issue", "body"))).toBeDefined();
+    expect(schema._registry.getRelationship("issue", "body")?.target.name).toBe("text_document");
   });
 
-  it("derives one document and relationship id for a body", () => {
+  it("produces exactly the entities and relationships it was given", () => {
     const { schema } = buildSchema();
-    const facts = {
-      registry: schema._registry,
-      entityName: "issue",
-      parentId: "e_parent",
-      field: "body",
-    };
 
-    const first = derivedBodyIds(facts);
-    const second = derivedBodyIds(facts);
+    expect(Object.keys(schema.entities).sort()).toEqual(["issue", "project", "text_document"]);
+    expect(Object.keys(schema.relationships ?? {}).sort()).toEqual(["belongsTo", "body"]);
+    expect(schema._registry.entityNames().sort()).toEqual(
+      [...SYSTEM_ENTITY_NAMES, "issue", "project", "text_document"].sort(),
+    );
+  });
 
-    expect(first).toEqual(second);
-    expect(first.documentType).toBe(generatedDocEntityName("issue", "body"));
-    expect(first.documentId).toContain("e_parent");
-    expect(first.relationshipId).toContain("e_parent");
+  it("rejects an entity map key that differs from the definition's name", () => {
+    const issue = defineEntity("issue", { title: e.string() });
+
+    expect(() => defineSchema({ entities: { task: issue }, version: 1 })).toThrow(
+      EntityKeyMismatchError,
+    );
+    expect(() => defineSchema({ entities: { task: issue }, version: 1 })).toThrow(
+      /does not match the definition's name "issue"/,
+    );
   });
 
   it("validates a payload against an entity's wire shape", () => {

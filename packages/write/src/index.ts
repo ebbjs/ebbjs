@@ -12,7 +12,6 @@ export { isUnset, unset, type Unset } from "@ebbjs/core";
 export * from "./committer";
 export * from "./entity-diff";
 export * from "./field-projection";
-export * from "./generated-parts";
 export * from "./membership";
 export * from "./operations";
 export * from "./pointer";

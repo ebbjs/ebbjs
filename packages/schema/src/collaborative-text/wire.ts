@@ -3,12 +3,11 @@
  *
  * ## The document is an entity; cells are keys of its map field
  *
- * A collaborative-text document is an ebb entity whose type is its document
- * entity name. The derived-body schema sugar generates one such entity per
- * field (`text_document__<parent>__<field>`), or the app names it with
- * `entity`; a raw document opened directly defaults to `text_document`. Its
- * cells live in a single declared map field, `content`, whose keys are cell
- * ids and whose values are `{ value: RunCell | CutCell, update_id, hlc }`.
+ * A collaborative-text document is an ebb entity whose type is the document
+ * entity name the app declares (a raw document opened directly defaults to
+ * `text_document`). Its cells live in a single declared map field, `content`,
+ * whose keys are cell ids and whose values are
+ * `{ value: RunCell | CutCell, update_id, hlc }`.
  *
  * The field is a *map* field (#326), so the merge is per key. Every write
  * only adds keys: a run is never rewritten, a cut is additive, and two
@@ -20,7 +19,7 @@
  * ```json
  * {
  *   "subject_id": "<docId>",
- *   "subject_type": "text_document__page__body",
+ *   "subject_type": "text_document",
  *   "method": "patch",
  *   "data": {
  *     "fields": {
@@ -302,8 +301,7 @@ const hlcOf = (cells: readonly TextCell[]): HLCTimestamp => cells[0]!.stamp;
 
 /**
  * Build the first field map for a freshly-created document: one run holding
- * `text` plus the version leaf. Used by the derived-body create path so the
- * parent and its document land in the same Action.
+ * `text` plus the version leaf.
  */
 export const buildInitialDocumentFields = (
   text: string,

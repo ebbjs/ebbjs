@@ -6,12 +6,6 @@
  * themselves. The wrapped schema is stored as `EntityDef.shape`; the
  * unwrapped field map, with its merge-marker projection, is stored as
  * `EntityDef.fields`. Marker and shape are independent axes.
- *
- * A field declared with `e.collaborativeText()` is *derived*: the
- * parent carries no wire value for it. `buildEntityDef` hoists it out
- * of `shape` / `fields` and records it under `EntityDef.derived`, so
- * `defineSchema` can expand it into a document entity plus a
- * relationship.
  */
 
 import { Type } from "@sinclair/typebox";
@@ -19,7 +13,6 @@ import { Value } from "@sinclair/typebox/value";
 import type {
   TSchema,
   TOptional,
-  TNever,
   TArray,
   TRecord,
   TString,
@@ -31,7 +24,6 @@ import type {
   Static,
 } from "@sinclair/typebox/type";
 
-import type { TextDocument } from "./collaborative-text/text-document";
 import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
@@ -125,8 +117,8 @@ export interface EnumField<V extends LiteralValue = LiteralValue> extends TUnion
  * ignores it and `Type.Object` carries it through.
  *
  * Mutates and returns the schema: each `e.*()` builder allocates a
- * fresh schema, and mutating in place preserves non-enumerable markers
- * (the collaborative-text marker) that a spread would drop.
+ * fresh schema, and mutating in place preserves the non-enumerable
+ * `.default()` builder that a spread would drop.
  */
 const stampDefault = <T extends TSchema, V>(schema: T, value: V): DefaultedSchema<T, V> => {
   // A default is shared by every row that resolves it, and it is part of the
@@ -186,51 +178,6 @@ const withFieldChain = <T extends TSchema>(schema: T): T => {
  */
 export type MapSchema<V extends TSchema> = TRecord<TString, V>;
 
-/** Options accepted by `e.collaborativeText`. */
-export interface CollaborativeTextOptions<E extends string | undefined = undefined> {
-  /**
-   * Name of the document entity backing the body. Defaults to a
-   * per-field generated document entity. Set it to share a document
-   * across fields or grant the body its own `<entity>.*` permissions
-   * independently of the parent.
-   */
-  readonly entity?: E;
-  /** Conflict granularity the body's document entity declares. Defaults to `"field"`. */
-  readonly conflictScope?: ConflictScope;
-}
-
-declare const COLLABORATIVE_TEXT_BRAND: unique symbol;
-
-/**
- * Marker-stamped schema returned by `e.collaborativeText()`. The
- * TypeBox schema is `Type.Never()` — the parent carries no wire value
- * — and the brand makes the field recognisable at the type level so
- * {@link WireFields} can hoist it out of the parent's shape. The
- * brand's type argument is the document entity name (`undefined` for a
- * per-field generated document).
- */
-export type CollaborativeTextSchema<E extends string | undefined = string | undefined> = TNever & {
-  readonly [COLLABORATIVE_TEXT_BRAND]: E;
-  /**
-   * Available so registration can reject it with a clear message: a
-   * derived body has a seed policy, not a field default.
-   */
-  default(value: unknown): CollaborativeTextSchema<E>;
-};
-
-const COLLABORATIVE_TEXT_MARKER = Symbol.for("@ebbjs/collaborative-text");
-
-/** Runtime payload stamped on a collaborative-text schema. */
-interface CollaborativeTextMarker {
-  readonly entity: string | undefined;
-  readonly conflictScope: ConflictScope | undefined;
-}
-
-const readCollaborativeTextMarker = (schema: TSchema): CollaborativeTextMarker | undefined =>
-  Object.getOwnPropertyDescriptor(schema, COLLABORATIVE_TEXT_MARKER)?.value as
-    | CollaborativeTextMarker
-    | undefined;
-
 /** Last-writer-wins typed-field helpers. Each carries the `.default()` chain. */
 export const e = {
   string: (): StringField => withFieldChain(Type.String()) as StringField,
@@ -260,31 +207,6 @@ export const e = {
    */
   map: <V extends TSchema>(value: V): MapField<V> =>
     withFieldChain(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
-  /**
-   * Declare a collaborative-text body. The field is derived: it stays
-   * out of the parent's wire shape. `defineSchema` expands it into a
-   * document entity plus a relationship, and the projected row carries
-   * a `Promise<TextDocument | null>` accessor under the same key.
-   */
-  collaborativeText: <const E extends string | undefined = undefined>(
-    opts?: CollaborativeTextOptions<E>,
-  ): CollaborativeTextSchema<E> => {
-    const schema = Type.Never();
-    Object.defineProperty(schema, COLLABORATIVE_TEXT_MARKER, {
-      value: {
-        entity: opts?.entity,
-        conflictScope: opts?.conflictScope,
-      } satisfies CollaborativeTextMarker,
-      enumerable: false,
-    });
-    Object.defineProperty(schema, "default", {
-      value: (value: unknown) => stampDefault(schema, value),
-      enumerable: false,
-      configurable: true,
-      writable: true,
-    });
-    return schema as unknown as CollaborativeTextSchema<E>;
-  },
 } as const;
 
 const isMapSchema = (schema: TSchema): boolean => "patternProperties" in schema;
@@ -347,40 +269,6 @@ export type EntityCreateShape<TFields extends Record<string, TSchema>> = ReturnT
 >;
 
 /**
- * Keys of `TFields` declared with `e.collaborativeText()`. `never`
- * when the entity has no derived fields, which makes {@link WireFields}
- * the identity and {@link DerivedAccessors} the empty object.
- */
-export type DerivedKeys<TFields> = {
-  [K in keyof TFields]: TFields[K] extends CollaborativeTextSchema ? K : never;
-}[keyof TFields];
-
-/**
- * `TFields` with its derived keys removed. Feeds `shape`, `QueryFilter`,
- * and `EntityNamespace` so a derived body is neither a wire field nor
- * filterable.
- */
-export type WireFields<TFields> = Omit<TFields, DerivedKeys<TFields>>;
-
-/** Runtime description of one derived field, recorded on `EntityDef.derived`. */
-export interface DerivedFieldDef {
-  readonly kind: "collaborative-text";
-  /** Document entity name; `undefined` for a per-field generated document. */
-  readonly entity: string | undefined;
-  /** Conflict granularity declared on the field; `"field"` when omitted. */
-  readonly conflictScope: ConflictScope;
-}
-
-/**
- * Row accessors contributed by derived fields: each derived key resolves
- * to the linked {@link TextDocument}, or `null` when no document is
- * linked.
- */
-export type DerivedAccessors<TFields> = {
-  readonly [K in DerivedKeys<TFields>]: Promise<TextDocument | null>;
-};
-
-/**
  * Passive entity definition value. The runtime registry consumes it.
  *
  * `TName` carries the literal name passed to `defineEntity` so
@@ -403,20 +291,18 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
   readonly materialization: Materialization;
   /**
    * Read shape — drives value-shape typing and projection. Implicit
-   * `Type.Object` wrapper over the *wire* fields; derived fields are
-   * hoisted out. A non-defaulted field is optional here.
+   * `Type.Object` wrapper over the field map. A non-defaulted field is
+   * optional here.
    */
-  readonly shape: EntityShape<WireFields<TFields>>;
+  readonly shape: EntityShape<TFields>;
   /**
    * Create-validation shape: a defaulted field is optional (the default
    * fills it), a field without one is required. Only `Value.Check` for a
    * full `create()` payload reads this.
    */
-  readonly createShape: EntityCreateShape<WireFields<TFields>>;
-  /** Merge-semantics markers for the wire fields — derived fields are absent. */
-  readonly fields: { [K in keyof WireFields<TFields>]: FieldMarker };
-  /** Fields declared with `e.collaborativeText()`, awaiting expansion. */
-  readonly derived: { [K in DerivedKeys<TFields>]: DerivedFieldDef };
+  readonly createShape: EntityCreateShape<TFields>;
+  /** Merge-semantics markers for the declared fields. */
+  readonly fields: { [K in keyof TFields]: FieldMarker };
 }
 
 /** Options accepted by `defineEntity`. */
@@ -429,9 +315,8 @@ export interface EntityOptions {
 
 /**
  * Define an entity by name and field map. The result is frozen.
- * Throws {@link ReservedNameError} when the name is a system entity
- * or a generated document entity, or the field map declares the
- * injected `groups` accessor.
+ * Throws {@link ReservedNameError} when the name is a system entity,
+ * or the field map declares the injected `groups` accessor.
  */
 export function defineEntity<TFields extends Record<string, TSchema>, TName extends string>(
   name: TName,
@@ -489,17 +374,6 @@ export const admitsNull = (schema: TSchema): boolean => {
   }
 };
 
-/** Raised when a derived (collaborative-text) field declares a default. */
-export class DerivedFieldDefaultError extends Error {
-  constructor(entityName: string, field: string) {
-    super(
-      `Field "${field}" on entity "${entityName}" is derived (e.collaborativeText()) ` +
-        `and cannot declare a default; a derived body has a seed policy.`,
-    );
-    this.name = "DerivedFieldDefaultError";
-  }
-}
-
 /**
  * Unchecked entity factory. `defineEntity` validates reserved names
  * first; the SDK's own system entities (`group`, `groupMember`,
@@ -510,45 +384,22 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
   fields: TFields,
   options: EntityOptions = {},
 ): EntityDef<TFields, TName> {
-  const wireFields: Record<string, TSchema> = {};
-  const derived: Record<string, DerivedFieldDef> = {};
-  // A derived body inherits the entity's declared scope unless the
-  // field sugar overrides it.
-  const entityScope = options.conflictScope ?? "field";
   for (const [key, schema] of Object.entries(fields)) {
-    const marker = readCollaborativeTextMarker(schema as TSchema);
-    if (marker !== undefined) {
-      if (hasDefault(schema as TSchema)) {
-        throw new DerivedFieldDefaultError(name, key);
-      }
-      derived[key] = {
-        kind: "collaborative-text",
-        entity: marker.entity,
-        conflictScope: marker.conflictScope ?? entityScope,
-      };
-      continue;
-    }
     if (admitsNull(schema as TSchema)) {
       throw new NullFieldError(name, key);
     }
-    wireFields[key] = schema as TSchema;
   }
 
-  const shapeFields = withReadOptional(wireFields);
-  const createShapeFields = withCreateOptional(wireFields);
-
-  const derivedFields = Object.fromEntries(
-    Object.keys(wireFields).map((k) => [k, deriveMarker(wireFields[k] as TSchema)]),
-  ) as { [K in keyof WireFields<TFields>]: FieldMarker };
-  const derivedMarkers = derived as { [K in DerivedKeys<TFields>]: DerivedFieldDef };
+  const markers = Object.fromEntries(
+    Object.entries(fields).map(([key, schema]) => [key, deriveMarker(schema as TSchema)]),
+  ) as { [K in keyof TFields]: FieldMarker };
   return Object.freeze({
     name,
-    conflictScope: entityScope,
+    conflictScope: options.conflictScope ?? "field",
     materialization: options.materialization ?? "held",
-    shape: Type.Object(shapeFields) as EntityShape<WireFields<TFields>>,
-    createShape: Type.Object(createShapeFields) as EntityCreateShape<WireFields<TFields>>,
-    fields: derivedFields,
-    derived: derivedMarkers,
+    shape: Type.Object(withReadOptional(fields)) as EntityShape<TFields>,
+    createShape: Type.Object(withCreateOptional(fields)) as EntityCreateShape<TFields>,
+    fields: markers,
   });
 }
 

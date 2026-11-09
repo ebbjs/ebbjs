@@ -20,8 +20,6 @@ import {
   type Update,
 } from "@ebbjs/core";
 import {
-  buildInitialDocumentFields,
-  derivedBodyIds,
   EntityValidationError,
   GROUPS_ACCESSOR,
   SYSTEM_ENTITY_NAMES,
@@ -31,7 +29,6 @@ import {
 } from "@ebbjs/schema";
 
 import { projectFieldValue } from "./field-projection";
-import type { GeneratedParts } from "./generated-parts";
 import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
 import type { PointerValue } from "./pointer";
 import type { Rejection } from "./rejection";
@@ -182,22 +179,14 @@ export interface CreateEntityInput {
   readonly id: string;
   readonly fields: Readonly<Record<string, unknown>>;
   readonly pointers?: readonly ResolvedPointer[];
-  /** Derived collaborative-text bodies, keyed by field. */
-  readonly bodies?: Readonly<Record<string, string>>;
   readonly groups: readonly string[];
   readonly validate?: boolean;
 }
 
 /**
- * Create one entity: the entity `put`, one `entityGroup` row per
- * group, then one document entity + edge + membership set per derived
- * collaborative-text body, then one Relationship `put` per resolved
- * pointer. Field validation runs here (never partially) unless the
- * caller opted out.
- *
- * A derived body's document and relationship ids come from
- * {@link derivedBodyIds}, never a mint: any client backfilling the same
- * missing body has to address the same rows (#695).
+ * Create one entity: the entity `put`, one `entityGroup` row per group,
+ * then one Relationship `put` per resolved pointer. Field validation runs
+ * here (never partially) unless the caller opted out.
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
@@ -230,44 +219,6 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
   });
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
-
-  // A derived body creates its own document entity, the relationship from
-  // the parent, and the document's membership rows in the same batch, so
-  // the body and the parent commit atomically.
-  for (const [field, text] of Object.entries(input.bodies ?? {})) {
-    const {
-      documentType: docEntity,
-      documentId: docId,
-      relationshipId,
-    } = derivedBodyIds({
-      registry: ctx.registry,
-      entityName: input.entity,
-      parentId: input.id,
-      field,
-    });
-    const docUpdateId = ctx.ids.updateId();
-    const docHlc = ctx.ids.hlc();
-    updates.push({
-      id: docUpdateId,
-      subject_id: docId,
-      subject_type: docEntity,
-      method: "put",
-      data: {
-        fields: buildInitialDocumentFields(text, docHlc, ctx.actorId, docUpdateId),
-      },
-    });
-    updates.push(
-      buildRelationshipUpdate({
-        relationshipId,
-        sourceId: input.id,
-        targetId: docId,
-        field,
-        type: input.entity,
-        updateId: ctx.ids.updateId(),
-      }),
-    );
-    updates.push(...buildEntityGroupUpdates(docId, groups, () => ctx.ids.updateId()));
-  }
 
   for (const pointer of input.pointers ?? []) {
     updates.push(
@@ -587,53 +538,21 @@ export interface ChangeGroupsInput {
    * local view cannot say whether the entity is unowned.
    */
   readonly currentGroups?: readonly string[];
-  /**
-   * The entity's live generated parts (documents + edges), when the
-   * caller resolved them. Absent for an entity with no derived fields,
-   * so the emitted Update shape is unchanged.
-   */
-  readonly generated?: GeneratedParts;
 }
 
 /**
  * Add, remove, or replace an entity's membership rows in one operation.
  * Adds precede removes so an incremental observer never sees the entity
- * with an empty membership set mid-Action. Generated documents are
- * filed into the added groups and their edges re-emitted in the same
- * Action; their memberships are deleted alongside the parent's. The
- * fan-out scope is the union of every affected group, resolved by the
- * membership checker from the Updates themselves.
+ * with an empty membership set mid-Action. The fan-out scope is the union
+ * of every affected group, resolved by the membership checker from the
+ * Updates themselves.
  */
 export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   const puts = input.puts ?? [];
   const removes = input.removes ?? [];
-  const generated = input.generated;
   const updates: Update[] = [
     ...buildEntityGroupUpdates(input.entityId, puts, () => ctx.ids.updateId()),
   ];
-
-  for (const document of generated?.documents ?? []) {
-    const held = new Set(document.memberships.map((membership) => membership.groupId));
-    const addedGroups = puts.filter((groupId) => !held.has(groupId));
-    updates.push(...buildEntityGroupUpdates(document.id, addedGroups, () => ctx.ids.updateId()));
-  }
-
-  // The edge is re-emitted under its existing id so the server can
-  // scope it to the new group; with no put there is nothing to carry.
-  if (puts.length > 0) {
-    for (const edge of generated?.edges ?? []) {
-      updates.push(
-        buildRelationshipUpdate({
-          relationshipId: edge.relationshipId,
-          sourceId: edge.sourceId,
-          targetId: edge.targetId,
-          field: edge.field,
-          type: edge.type,
-          updateId: ctx.ids.updateId(),
-        }),
-      );
-    }
-  }
 
   updates.push(
     ...removes.map((removal) =>
@@ -643,19 +562,6 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
       }),
     ),
   );
-
-  const removedGroupIds = new Set(removes.map((removal) => removal.groupId));
-  for (const document of generated?.documents ?? []) {
-    for (const membership of document.memberships) {
-      if (!removedGroupIds.has(membership.groupId)) continue;
-      updates.push(
-        buildEntityGroupDelete({
-          membershipId: membership.membershipId,
-          updateId: ctx.ids.updateId(),
-        }),
-      );
-    }
-  }
 
   const violation = lastMembershipViolation(input.currentGroups, {
     puts,

@@ -27,7 +27,7 @@ export type SourceCardinality = "one" | "many";
 
 /**
  * Semantic kind of a relationship. `undefined` is an ordinary typed
- * link. `"collaborative-text"` marks a generated relationship whose
+ * link. `"collaborative-text"` marks a link to a document entity: its
  * forward-one accessor hydrates a `TextDocument` from the target's
  * `content` map instead of returning the raw target entity.
  */
