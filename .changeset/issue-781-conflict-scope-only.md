@@ -65,7 +65,7 @@ unreachable.
 
 `clearLocalActions` drops the pending writes to the conflict's subjects, so the
 subjects really converge. An Action writing several subjects is held or
-dropped whole; an Action cannot be sent in part. In a partial pass, only the subjects the resolved entries released are
-converged; a subject a failed entry still names stays held and keeps its
+dropped whole; an Action cannot be sent in part. In a partial pass, only the
+subjects the resolved entries released are converged; a subject a failed entry still names stays held and keeps its
 writes. A durable-store fault in the final drop or flush rejects rather than
 returning a partial result.

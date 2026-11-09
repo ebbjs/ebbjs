@@ -347,6 +347,7 @@ describe("createConflicts", () => {
     expect(projected?.remoteActions).toEqual([]);
     expect(projected?.entries[0]?.scope).toBe("field");
     expect(projected?.entries[0]?.slots).toHaveLength(1);
+    expect(conflicts.count()).toBe(1);
   });
 
   it("rejects when the send's final flush faults, after the rows moved", async () => {
@@ -378,6 +379,7 @@ describe("createConflicts", () => {
 
     await expect(conflicts.clearLocalActions("c_act_local")).rejects.toThrow("drop fault");
 
+    expect(harness.dropHeld).toHaveBeenCalledWith(["act_later"]);
     expect(harness.outbox.rows).toEqual([]);
   });
 
@@ -419,7 +421,13 @@ describe("createConflicts", () => {
       enqueuedAtHlc: "4",
       basedOnGsn: 0,
     };
-    harness.heldPending.mockReturnValueOnce([toOne, toThree]);
+    const heldAndReleased: OutboxEntry = {
+      action: multi("act_mixed", ["todo_1", "todo_3"]),
+      status: "pending",
+      enqueuedAtHlc: "5",
+      basedOnGsn: 0,
+    };
+    harness.heldPending.mockReturnValueOnce([toOne, toThree, heldAndReleased]);
     // The first entry's clear fails; its subject stays held. The second
     // resolves, releasing `todo_3` only.
     harness.outbox.clearConflict.mockRejectedValueOnce(new Error("store unavailable"));
@@ -430,9 +438,10 @@ describe("createConflicts", () => {
 
     expect(result.resolved).toEqual(["act_b"]);
     expect(result.failed.map((failure) => failure.entryId)).toEqual(["act_a"]);
-    // `todo_1` is still held by the failed entry; only the released
-    // subject's blocked write is dropped.
-    expect(harness.dropHeld).toHaveBeenCalledWith(["act_three"]);
+    // `todo_1` is still held by the failed entry, so its write survives.
+    // The released subject's write is dropped, and an Action spanning both
+    // is dropped whole — it cannot be sent in part.
+    expect(harness.dropHeld).toHaveBeenCalledWith(["act_three", "act_mixed"]);
   });
 
   it("a verb on an unknown conflict id is an empty no-op with no flush", async () => {

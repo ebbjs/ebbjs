@@ -204,7 +204,7 @@ describe("IndexedDB v9 → v10 additive upgrade", () => {
       status: "conflicted",
       enqueuedAtHlc: action.hlc,
       basedOnGsn: 0,
-      conflict: v9Conflict as never,
+      conflict: v9Conflict,
     });
     v9.close();
 

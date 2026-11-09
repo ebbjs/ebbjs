@@ -185,7 +185,7 @@ client.conflicts.onChange((conflicts) => {
 The verbs name the mechanism, not a policy:
 
 - `sendLocalActions(conflictId)` clears the hold and submits the held Actions **unchanged** — same action id, same Update ids, same field HLCs. Re-stamping would rewrite provenance on an append-only log and fabricate ordering. An application that wants its scalar value to win writes it again through `defineAction` with a fresh clock.
-- `clearLocalActions(conflictId)` drops the held Actions, drops the local writes the hold was keeping off the wire, and converges those subjects on the server's view. A write made after the hold lifts is never dropped. In a partial pass only the subjects the resolved entries released are converged; a subject a failed entry still names stays held and keeps its writes.
+- `clearLocalActions(conflictId)` drops the held Actions, drops the local writes the hold was keeping off the wire, and converges those subjects on the server's view. A write made after the hold lifts is never dropped. In a partial pass only the subjects the resolved entries released are converged; a subject a failed entry still names stays held and keeps its writes, unless it shares an Action with a released subject — that Action is dropped whole.
 
 Both return per-entry results and do **not** roll back:
 

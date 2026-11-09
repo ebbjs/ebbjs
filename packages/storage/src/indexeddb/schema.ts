@@ -6,7 +6,7 @@ import {
   type StoreNames,
 } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
-import type { OutboxConflict, OutboxStatus } from "../types/outbox-store";
+import type { StoredOutboxEntry } from "../types/outbox-store";
 import type { SeedMarker } from "../types/cursor-store";
 import type { IndexRows } from "../internal/reverse-index";
 
@@ -141,13 +141,7 @@ export interface EbbDBSchema extends DBSchema {
    */
   outbox: {
     key: string;
-    value: {
-      action: Action;
-      status: OutboxStatus;
-      enqueuedAtHlc: string;
-      basedOnGsn: number;
-      conflict?: OutboxConflict;
-    };
+    value: StoredOutboxEntry;
   };
   /**
    * Generic monotonic counters, keyed by a fixed id. Holds the action

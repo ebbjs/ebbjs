@@ -121,6 +121,17 @@ export interface OutboxConflict {
 }
 
 /**
+ * The conflict payload as a row written before IndexedDB schema v10
+ * persisted it: `scope` and `remoteActions` were added at v10. The store's
+ * read path fills both in; a legacy row is still a field-scope conflict
+ * with no recorded remote context.
+ */
+export interface StoredOutboxConflict extends Omit<OutboxConflict, "scope" | "remoteActions"> {
+  readonly scope?: "field" | "entity";
+  readonly remoteActions?: readonly ConflictRemoteAction[];
+}
+
+/**
  * One locally-authored Action awaiting acknowledgement, plus the HLC at
  * which it entered the outbox. A `conflicted` entry carries its
  * {@link OutboxConflict} payload; the field is absent for every other
@@ -144,6 +155,14 @@ export interface OutboxEntry {
   readonly basedOnGsn: number;
   /** Present iff `status === "conflicted"`. */
   readonly conflict?: OutboxConflict;
+}
+
+/**
+ * The persisted form of an outbox entry. Identical to {@link OutboxEntry}
+ * except that a conflict payload may predate the v10 fields.
+ */
+export interface StoredOutboxEntry extends Omit<OutboxEntry, "conflict"> {
+  readonly conflict?: StoredOutboxConflict;
 }
 
 /**

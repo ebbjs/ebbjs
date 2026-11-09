@@ -1,7 +1,13 @@
 import { compare } from "@ebbjs/core";
 import type { IDBPDatabase } from "idb";
 
-import type { OutboxConflict, OutboxEntry, OutboxStore } from "../types/outbox-store";
+import type {
+  OutboxConflict,
+  OutboxEntry,
+  OutboxStore,
+  StoredOutboxConflict,
+  StoredOutboxEntry,
+} from "../types/outbox-store";
 import type { EbbDBSchema } from "./schema";
 
 /**
@@ -9,13 +15,13 @@ import type { EbbDBSchema } from "./schema";
  * gained `scope` and `remoteActions` at version 10; a legacy row is still
  * a field-scope conflict with no recorded remote context.
  */
-const toConflict = (conflict: OutboxConflict): OutboxConflict => ({
+const toConflict = (conflict: StoredOutboxConflict): OutboxConflict => ({
   ...conflict,
   scope: conflict.scope ?? "field",
   remoteActions: conflict.remoteActions ?? [],
 });
 
-const toEntry = (row: EbbDBSchema["outbox"]["value"]): OutboxEntry => ({
+const toEntry = (row: StoredOutboxEntry): OutboxEntry => ({
   action: row.action,
   status: row.status,
   enqueuedAtHlc: row.enqueuedAtHlc,
