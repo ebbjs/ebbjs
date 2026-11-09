@@ -4,11 +4,12 @@
  *
  * Reads the `cursor` channel's peers from `client.presence` (transport
  * lives in `@ebbjs/client/src/presence/presence`). The cursor payload
- * carries run ids, which are stable across edits, so we resolve them to
- * current document positions via the bridge's `idMapField` (a StateField
- * that mirrors the causal tree's span index). If a run was deleted or split
- * in a way the receiver can't resolve, the position falls back to undefined
- * and we skip rendering for that peer.
+ * carries run ids, which are permanent (runs are never rewritten), so we
+ * resolve them to current document positions via the bridge's `idMapField`
+ * (a StateField that mirrors the document's span index; a run split by an
+ * insert has several spans). If a run is cut away, or the receiver can't
+ * resolve the offset, the position falls back to undefined and we skip
+ * rendering for that peer.
  *
  * The plugin rebuilds decorations on every CM update. For a prototype
  * with a handful of peers, this is O(peers × spans) per update and

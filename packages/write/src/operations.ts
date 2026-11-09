@@ -20,8 +20,7 @@ import {
   type Update,
 } from "@ebbjs/core";
 import {
-  buildInitialContentField,
-  DOC_CONTENT_FIELD,
+  buildInitialDocumentFields,
   derivedBodyIds,
   EntityValidationError,
   GROUPS_ACCESSOR,
@@ -254,9 +253,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
       subject_type: docEntity,
       method: "put",
       data: {
-        fields: {
-          [DOC_CONTENT_FIELD]: buildInitialContentField(text, docHlc, ctx.actorId, docUpdateId),
-        },
+        fields: buildInitialDocumentFields(text, docHlc, ctx.actorId, docUpdateId),
       },
     });
     updates.push(

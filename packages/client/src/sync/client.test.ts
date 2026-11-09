@@ -812,11 +812,15 @@ describe("SyncClient reconnect backoff (#40)", () => {
 
     client.subscribe(["grp_1"], 0, () => {});
 
-    // 10 attempts × ~5ms backoff + 10 fetch calls ≈ 100ms. Wait 300ms
-    // to be safe; the loop should have hit the cap and stopped.
-    await new Promise((r) => setTimeout(r, 300));
+    // 10 attempts × ~5ms backoff + 10 fetch calls ≈ 100ms. Wait for the
+    // loop to actually reach the cap rather than assuming a fixed wall-clock
+    // window; under a loaded parallel run the timers can slip past 300ms.
+    for (let i = 0; i < 200 && client.state !== "offline"; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(client.state).toBe("offline");
 
-    // Wait a bit more and verify no additional fetches happen.
+    // Then verify no additional fetches happen.
     const countAfterTimeout = fetchCount;
     await new Promise((r) => setTimeout(r, 100));
     expect(fetchCount).toBe(countAfterTimeout);

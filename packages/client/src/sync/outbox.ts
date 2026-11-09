@@ -40,6 +40,7 @@
  */
 
 import { compare, type Action, type Entity } from "@ebbjs/core";
+import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "@ebbjs/schema";
 import type {
   ConflictSlot,
   ConflictSubjectState,
@@ -786,6 +787,9 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         for (const actionInbound of concurrent) {
           for (const [field, pendingValue] of pending.fields) {
             if (!isConflictableField(deps.isLwwField, inbound.subjectType, field)) continue;
+            // A text body's `version` leaf declares its cell format; it is
+            // metadata, not state, so a concurrent write never contests it.
+            if (field === DOC_VERSION_FIELD && pending.fields.has(DOC_CONTENT_FIELD)) continue;
             const remoteField = inbound.fields.get(field);
             const winner = actionInbound.fields.get(field);
             const paths = winner !== undefined ? overlappingPaths(pendingValue, winner) : [];

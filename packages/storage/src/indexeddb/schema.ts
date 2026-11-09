@@ -39,10 +39,22 @@ import type { IndexRows } from "../internal/reverse-index";
  * `replica` / `replicaCursor` stores for the persisted materialized replica.
  * It is the first version with a real migration: an existing database is
  * upgraded in place, backfilling a position for every stored Action and
- * leaving actions, cursors, and outbox rows intact. Bump this when adding
- * or changing object stores, or when a persisted row shape changes.
+ * leaving actions, cursors, and outbox rows intact. Version 9 is the
+ * collaborative-text cell-format reset (issue #764): text bodies now carry
+ * immutable run cells plus additive cut cells and declare a `version` leaf.
+ * The encoding changed incompatibly, so there is no migration from a lower
+ * version — an existing database below 9 is discarded at open and rebuilt
+ * empty. Bump this when adding or changing object stores, or when a
+ * persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 8;
+export const EBB_SCHEMA_VERSION = 9;
+
+/**
+ * The version at which the collaborative-text cell format changed
+ * incompatibly. A database below it is reset at open; a later bump must
+ * declare its own migration instead of inheriting this one.
+ */
+const TEXT_CELL_FORMAT_RESET_VERSION = 9;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -172,6 +184,12 @@ export interface EbbDBSchema extends DBSchema {
  * that predates it: a cursor walks `actions` in key order, stamps the row
  * 1-based, and the final count is written to the `sequence` counter. A fresh
  * database runs the same path over zero rows, leaving `sequence = 0`.
+ *
+ * From v9 an existing database is reset rather than upgraded: the text
+ * cell format changed incompatibly, so every store is deleted before the
+ * current stores are created and the action-position counter is opened at
+ * zero. Only a genuinely fresh database (`oldVersion === 0`) skips the
+ * reset.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,
@@ -179,6 +197,16 @@ export const createEbbStores = (
   _newVersion: number | null,
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
+  // The text cell format changed incompatibly at v9, so an older database is
+  // discarded instead of migrated. Gated explicitly: a later version bump must
+  // decide its own migration rather than inheriting this reset.
+  const reset = oldVersion > 0 && oldVersion < TEXT_CELL_FORMAT_RESET_VERSION;
+  if (reset) {
+    // `objectStoreNames` is live while stores are deleted, so iterate a copy.
+    for (const name of Array.from(database.objectStoreNames)) {
+      database.deleteObjectStore(name);
+    }
+  }
   if (!database.objectStoreNames.contains("actions")) {
     const store = database.createObjectStore("actions", { keyPath: "id" });
     // multiEntry on `subject_ids`: every element of the denormalized
@@ -225,7 +253,11 @@ export const createEbbStores = (
     database.createObjectStore("replicaCursor", { keyPath: "id" });
   }
 
-  if (oldVersion < 8) {
+  if (reset) {
+    // The reset left a fresh database: open the append cursor at zero so the
+    // counter row exists before the first append.
+    void transaction.objectStore("sequence").put({ id: ACTION_POSITION_SEQUENCE_ID, value: 0 });
+  } else if (oldVersion < 8) {
     backfillActionPositions(transaction);
   }
 };

@@ -11,22 +11,24 @@ import {
 } from "./schema";
 
 /**
- * The v7 store set, reproduced here so the migration test opens a database
- * shaped like the one a shipped client carries. `actions` is keyed by id with
- * the `subject_id` multiEntry index and no append order; there is no
- * `sequence`, `replica`, or `replicaCursor`.
+ * The pre-v9 store sets, reproduced here so the reset test opens databases
+ * shaped like the ones a shipped client carries. A v7 database has no append
+ * order on `actions` and no `sequence` / `replica` / `replicaCursor`; the v8
+ * additions are created only when the open targets v8.
  */
 const LEGACY_SCHEMA_VERSION = 7;
+const PRE_RESET_SCHEMA_VERSION = 8;
 
 interface LegacyStoredAction extends Action {
   subject_ids: readonly string[];
+  position?: number;
 }
 
 interface LegacyDBSchema extends DBSchema {
   actions: {
     key: string;
     value: LegacyStoredAction;
-    indexes: { subject_id: string };
+    indexes: { subject_id: string; position: number };
   };
   entities: { key: string; value: unknown };
   relationships: { key: string; value: unknown };
@@ -41,27 +43,78 @@ interface LegacyDBSchema extends DBSchema {
       basedOnGsn: number;
     };
   };
+  sequence: { key: string; value: { id: string; value: number } };
+  replica: { key: [string, string]; value: unknown };
+  replicaCursor: {
+    key: string;
+    value: { id: string; format: number; position: number; revision: number };
+  };
 }
 
 const createLegacyStores = (
   database: IDBPDatabase<LegacyDBSchema>,
   _oldVersion: number,
-  _newVersion: number | null,
+  newVersion: number | null,
 ): void => {
+  const version = newVersion ?? 0;
   const actions = database.createObjectStore("actions", { keyPath: "id" });
   actions.createIndex("subject_id", "subject_ids", { multiEntry: true });
+  if (version >= 8) actions.createIndex("position", "position");
   database.createObjectStore("entities", { keyPath: "id" });
   database.createObjectStore("relationships", { keyPath: "key" });
   database.createObjectStore("dirty", { keyPath: "entityId" });
   database.createObjectStore("cursors", { keyPath: "groupId" });
   database.createObjectStore("outbox", { keyPath: "action.id" });
+  if (version >= 8) {
+    database.createObjectStore("sequence", { keyPath: "id" });
+    database.createObjectStore("replica", { keyPath: ["type", "id"] });
+    database.createObjectStore("replicaCursor", { keyPath: "id" });
+  }
+};
+
+/** Every store the current version opens with. */
+const CURRENT_STORES = [
+  "actions",
+  "entities",
+  "relationships",
+  "dirty",
+  "cursors",
+  "outbox",
+  "sequence",
+  "replica",
+  "replicaCursor",
+] as const;
+
+/**
+ * A reset database comes up with the full current store set, an empty action
+ * log, no cursor or outbox rows, and the position counter at zero.
+ */
+const expectEmptyCurrentSchema = async (database: IDBPDatabase<EbbDBSchema>): Promise<void> => {
+  const names = Array.from(database.objectStoreNames);
+  expect(names.sort()).toEqual([...CURRENT_STORES].sort());
+
+  // `sequence` holds only the zeroed append counter; every other store is
+  // empty.
+  for (const store of CURRENT_STORES.filter((name) => name !== "sequence")) {
+    expect(await database.count(store)).toBe(0);
+  }
+
+  const actions = database.transaction("actions", "readonly").store;
+  expect(Array.from(actions.indexNames)).toEqual(
+    expect.arrayContaining(["subject_id", "position"]),
+  );
+
+  expect(await database.get("sequence", ACTION_POSITION_SEQUENCE_ID)).toEqual({
+    id: ACTION_POSITION_SEQUENCE_ID,
+    value: 0,
+  });
 };
 
 let counter = 0;
 const legacyDbName = (): string => `ebb-migration-${Date.now()}-${++counter}`;
 
-describe("IndexedDB v7 → v8 migration", () => {
-  it("backfills action positions and preserves cursors and outbox rows", async () => {
+describe("IndexedDB v7/v8 → v9 reset", () => {
+  it("discards a v7 database instead of half-reading the new cell format", async () => {
     const dbName = legacyDbName();
     const action = buildPutAction();
     const second = buildPatchAction();
@@ -79,36 +132,51 @@ describe("IndexedDB v7 → v8 migration", () => {
     await legacy.put("actions", { ...second, subject_ids: ["todo_1"] });
     await legacy.put("cursors", { groupId: "group_1", cursor: 42 });
     await legacy.put("outbox", outboxEntry);
+    expect(await legacy.count("actions")).toBe(2);
     legacy.close();
 
     const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
       upgrade: createEbbStores,
     });
 
-    for (const store of ["sequence", "replica", "replicaCursor"]) {
-      expect(Array.from(upgraded.objectStoreNames)).toContain(store);
-    }
-
-    const storedAction = await upgraded.get("actions", action.id);
-    expect(storedAction).toMatchObject(action);
-    expect(storedAction?.position).toBe(1);
-    expect((await upgraded.get("actions", second.id))?.position).toBe(2);
-
-    const tx = upgraded.transaction("actions", "readonly");
-    const indexed = await tx.store.index("position").getAll();
-    expect(indexed.map((row) => row.position)).toEqual([1, 2]);
-
-    expect(await upgraded.get("sequence", ACTION_POSITION_SEQUENCE_ID)).toEqual({
-      id: ACTION_POSITION_SEQUENCE_ID,
-      value: 2,
-    });
-    expect(await upgraded.get("cursors", "group_1")).toEqual({ groupId: "group_1", cursor: 42 });
-    expect(await upgraded.get("outbox", action.id)).toEqual(outboxEntry);
+    await expectEmptyCurrentSchema(upgraded);
+    expect(await upgraded.get("actions", action.id)).toBeUndefined();
+    expect(await upgraded.get("actions", second.id)).toBeUndefined();
+    expect(await upgraded.get("cursors", "group_1")).toBeUndefined();
+    expect(await upgraded.get("outbox", action.id)).toBeUndefined();
 
     const log = createIndexedDBActionLog(upgraded);
-    const tail = await log.readTail(0);
-    expect(tail.map((entry) => entry.position)).toEqual([1, 2]);
-    expect(tail[0]!.action).toEqual(action);
-    expect(await log.lastPosition()).toBe(2);
+    expect(await log.readTail(0)).toEqual([]);
+    expect(await log.lastPosition()).toBe(0);
+  });
+
+  it("also discards a v8 database", async () => {
+    const dbName = legacyDbName();
+    const action = buildPutAction();
+    const outboxEntry = {
+      action,
+      status: "pending" as const,
+      enqueuedAtHlc: action.hlc,
+      basedOnGsn: 0,
+    };
+
+    const legacy = await openDB<LegacyDBSchema>(dbName, PRE_RESET_SCHEMA_VERSION, {
+      upgrade: createLegacyStores,
+    });
+    await legacy.put("actions", { ...action, subject_ids: ["todo_1"], position: 1 });
+    await legacy.put("sequence", { id: ACTION_POSITION_SEQUENCE_ID, value: 1 });
+    await legacy.put("cursors", { groupId: "group_1", cursor: 42 });
+    await legacy.put("outbox", outboxEntry);
+    expect(await legacy.count("actions")).toBe(1);
+    expect(await legacy.count("replica")).toBe(0);
+    legacy.close();
+
+    const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
+      upgrade: createEbbStores,
+    });
+
+    await expectEmptyCurrentSchema(upgraded);
+    expect(await upgraded.get("outbox", action.id)).toBeUndefined();
+    expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(0);
   });
 });

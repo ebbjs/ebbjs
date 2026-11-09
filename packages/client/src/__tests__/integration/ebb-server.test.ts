@@ -394,6 +394,68 @@ describe("integration: localInsert round-trip", () => {
   });
 });
 
+describe("integration: same-run concurrency (#762 fixtures)", () => {
+  const openPair = async (docId: string) => {
+    await createTestDoc(docId);
+    const a = await connectAs(`a_${docId}`);
+    const b = await connectAs(`b_${docId}`);
+    const docA = a.textDocument(docId);
+    const docB = b.textDocument(docId);
+    docA.localInsert("I think I can");
+    expect((await a.write(docA.pendingActions())).rejected).toHaveLength(0);
+    docA.ackPending(docA.pendingActions().map((act) => act.id));
+    const baseActions = (await fetchActions()).filter((action) =>
+      action.updates.some((u) => u.subject_id === docId),
+    );
+    docB.applyActions(baseActions);
+    const runId = docA.docState.index.spans[0]!.runId;
+    return { a, b, docA, docB, runId, docId };
+  };
+
+  const exchange = async (pair: Awaited<ReturnType<typeof openPair>>): Promise<void> => {
+    const { a, b, docA, docB, docId } = pair;
+    expect((await a.write(docA.pendingActions())).rejected).toHaveLength(0);
+    docA.ackPending(docA.pendingActions().map((act) => act.id));
+    expect((await b.write(docB.pendingActions())).rejected).toHaveLength(0);
+    docB.ackPending(docB.pendingActions().map((act) => act.id));
+    const actions = (await fetchActions()).filter((action) =>
+      action.updates.some((u) => u.subject_id === docId),
+    );
+    docA.applyActions(actions);
+    docB.applyActions(actions);
+  };
+
+  it("insert vs insert converges on the exact text through a real Action exchange", async () => {
+    if (!(await shouldRun())) return;
+    const pair = await openPair(testDocId("concurrent_insert"));
+    try {
+      pair.docA.localInsert("X", { afterRun: pair.runId, splitParentAt: 7 });
+      pair.docB.localInsert("Y", { afterRun: pair.runId, splitParentAt: 9 });
+      await exchange(pair);
+      expect(pair.docA.text).toBe("I thinkX IY can");
+      expect(pair.docB.text).toBe("I thinkX IY can");
+    } finally {
+      pair.a.close();
+      pair.b.close();
+    }
+  });
+
+  it("delete vs insert converges and keeps the deleted range deleted", async () => {
+    if (!(await shouldRun())) return;
+    const pair = await openPair(testDocId("concurrent_delete"));
+    try {
+      pair.docA.localDelete({ runId: pair.runId, offset: 2, count: 5 });
+      pair.docB.localInsert("X", { afterRun: pair.runId, splitParentAt: 7 });
+      await exchange(pair);
+      expect(pair.docA.text).toBe("I X I can");
+      expect(pair.docB.text).toBe("I X I can");
+    } finally {
+      pair.a.close();
+      pair.b.close();
+    }
+  });
+});
+
 describe("integration: localExtend round-trip", () => {
   it("extending a run in A appears as a full-text update in B (no run split)", async () => {
     if (!(await shouldRun())) return;
@@ -418,8 +480,8 @@ describe("integration: localExtend round-trip", () => {
         a.updates.some((u) => u.subject_id === docId),
       );
       docB.applyActions(actions1);
-      const bRunId = docB.docState.children.get("ROOT")![0]!;
-      const bRun = docB.docState.nodes.get(bRunId)!;
+      const bRunId = docB.docState.index.spans[0]!.runId;
+      const bRun = docB.docState.runs.get(bRunId)!;
       expect(bRun.text).toBe("hello");
 
       docA.localExtend({ runId: bRunId, appendText: " world" });
@@ -434,7 +496,9 @@ describe("integration: localExtend round-trip", () => {
       );
       docB.applyActions(actions2);
       expect(docB.text).toBe("hello world");
-      expect(docB.docState.children.get("ROOT")!.length).toBe(1);
+      expect(
+        [...docB.docState.runs.values()].filter((run) => run.anchor.runId === "ROOT"),
+      ).toHaveLength(1);
     } finally {
       a.close();
       b.close();
@@ -466,7 +530,7 @@ describe("integration: localDelete round-trip", () => {
         a.updates.some((u) => u.subject_id === docId),
       );
       docB.applyActions(actions1);
-      const bRunId = docB.docState.children.get("ROOT")![0]!;
+      const bRunId = docB.docState.index.spans[0]!.runId;
       expect(docB.text).toBe("delete me please");
 
       docA.localDelete({ runId: bRunId, offset: 0, count: docA.text.length });

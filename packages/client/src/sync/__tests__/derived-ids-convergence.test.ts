@@ -179,10 +179,11 @@ describe("two writers deriving one missing body", () => {
     const documents = await storage.entities.query(DOC_TYPE);
     const live = documents.flatMap((document) =>
       [...parseContentField(document.data.fields["content"]).values()].filter(
-        (run) => run.value !== null && !run.value.deleted,
+        (entry) => entry.value.kind === "run",
       ),
     );
     expect(live).toHaveLength(1);
-    expect(live[0]!.value!.text).toBe(SEED);
+    const seed = live[0]!.value;
+    expect(seed.kind === "run" ? seed.text : undefined).toBe(SEED);
   });
 });
