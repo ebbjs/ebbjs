@@ -16,8 +16,8 @@ write, **variation in a row is expensive**: optional data has to be a tombstone,
 be a synthetic second entity, and a piece of a row that needs different policy has nowhere to
 declare it.
 
-This epic splits those six jobs. A **component** becomes the unit that presence, residency,
-conflict scope, and version attach to. A **model** — today's `defineEntity` — becomes the name
+This epic splits those six jobs. A **component** becomes the unit that owns existence, residency,
+conflict scope, and version. A **model** — today's `defineEntity` — becomes the name
 of a declared component set, used for permissions, query sources, and projection. `type` stops
 being identity and becomes a name for a set.
 
@@ -28,7 +28,7 @@ four powers.
 
 **The claim this epic can be falsified against:** after it lands, `@ebbjs/core`, `@ebbjs/storage`,
 `@ebbjs/client`, and `ebb_server` contain no site that dispatches on a _row type string_ to decide
-storage, residency, conflict, or presence behaviour. Type names survive in exactly two places —
+storage, residency, conflict, or existence behaviour. Type names survive in exactly two places —
 the permission string and the query source — and both read from the model.
 
 ## The model
@@ -36,7 +36,7 @@ the permission string and the query source — and both read from the model.
 ```
 leaf        the mergeable position: { value, update_id, hlc } or { map: { <key>: leaf } }
 component   a named value. One leaf (e.string, e.object) or one key space (e.map, e.log).
-            Carries: presence, residency, conflict scope, version, optional own permission.
+            Carries: existence, residency, conflict scope, version, optional own permission.
 model     a named component set. What defineModel declares. What client.<name> namespaces.
             Carries: the permission subject, the query source, the typed projection.
 row         an entity id plus the components currently attached to it.
@@ -84,7 +84,7 @@ lands.
   are attached is dynamic; which of them _can_ be attached is static.
 - A write to a component the model does not declare is rejected at validation. **This is the
   structural fix for #624** — `subject_type` stops being a client-supplied identity claim, because
-  there is no identity claim to make: the component set is a schema fact and the row's presence is
+  there is no identity claim to make: the component set is a schema fact and the row's existence is
   the only per-row question.
 - A component declared `optional: true` may be absent. A row with zero components is possible and
   means "an id that exists and has nothing attached"; only `delete` removes the id.
@@ -113,7 +113,7 @@ that only reads `status`.
 ## Decisions
 
 1. **`type` survives as the model.** It remains the permission subject, the query source, and the
-   projection shape. It stops being the storage, residency, conflict, or presence key. Claims that
+   projection shape. It stops being the storage, residency, conflict, or existence key. Claims that
    "ebb no longer has types" are wrong and would produce a worse permission model.
    **Model is not archetype:** a model is _declared_, an archetype is _actual_. One model's rows
    occupy one archetype per subset of present components.
@@ -139,14 +139,14 @@ that only reads `status`.
    field merges on its own, so a concurrent write to one leaves its siblings alone. This is the
    value-vs-key-space axis #760 records, and it is chosen **per component**, not per field. It is
    also the middle rung `conflictScope` is missing.
-5. **Presence is a bit, not a tombstone.** For an `optional` component, absent means absent. The
+5. **Existence is a bit, not a tombstone.** For an `optional` component, absent means absent. The
    `value: null` tombstone survives only for a _present_ leaf whose value was cleared, and that is
    a value, not an absence.
 6. **Residency is per component.** `materialization` moves from the model to the component. A
    component that is on-demand is fetched, pinned, and evicted independently of its row.
 7. **Conflict scope gains a middle rung.** `"field" | "component" | "entity"`, declared per
    component. A component-scope hold holds one component, not the whole row.
-8. **Indexing is opt-in per component.** A component declared `indexed: true` gets a presence row in
+8. **Indexing is opt-in per component.** A component declared `indexed: true` gets an row in
    `cf_component_entities`; one that does not is reachable only by id. Today _every_ entity sits in
    `cf_type_entities` whether or not anything queries by type. This is the decision that keeps the
    write-amplification cost bounded, and it must be taken in slice 2 (the declaration) even though
@@ -259,18 +259,20 @@ Each is independently shippable. Numbers are assigned on filing.
 
 ### 1. `design(components)`: ADR — the component model, vocabulary, and boundary
 
-**Why.** `CONTEXT.md` has no entry for component, model, presence, or leaf, and #787's
+**Why.** `CONTEXT.md` has no entry for component, model, existence, or leaf, and #787's
 vocabulary ADR is the natural home. Every later slice depends on the words being settled, and the
 two decisions that are expensive to reverse are in this list.
 
-**Scope.** Record in `CONTEXT.md` and an ADR: leaf, component, model, row, presence, residency,
+**Scope.** Record in `CONTEXT.md` and an ADR: leaf, component, model, row, existence, residency,
 conflict scope; the value-vs-key-space axis #760 records; the wire envelope from this epic; and the
 boundary rule — _a component inherits its entity's groups, so anything needing its own membership
 is an entity._
 
 **Work.**
 
-- [ ] `CONTEXT.md`: add Component, Model, Presence, Leaf; revise Entity, Field, Materialization,
+- [ ] `CONTEXT.md`: **leave the app-level Presence section untouched** — it is the ephemeral
+      cursor/camera primitive and must not be confused with component existence. Add Component,
+      Model, Existence, Leaf; revise Entity, Field, Materialization,
       Conflict.
 - [ ] ADR recording Decisions 1–10, with the `type`-survives-as-model limit stated explicitly.
 - [ ] Record the two reversal-expensive questions: atomic-vs-keyspace per builder, and whether
@@ -329,7 +331,7 @@ declaration naming a component outside its model fails at `defineSchema` with th
 **Why.** Absorbs #760. Nested shapes are the normal way to express a compound value, and today
 raw TypeBox "works" only for authoring and `Value.Check`; every other layer guesses, refuses
 misleadingly, or silently does the wrong thing. This slice is also where a component's write
-envelope is defined, so it must land before presence.
+envelope is defined, so it must land before slice 5.
 
 **Scope.** #760's proposal as written: a nested object is an ordinary atomic value on the wire
 (`{ value: {…} }`); properties closed by default; `admitsNull` and `unset` refused at definition
@@ -386,11 +388,11 @@ is recorded in the epic.
 
 ---
 
-### 5. `feat(schema)`: presence — `optional`, `drop`, and `has()`
+### 5. `feat(schema)`: existence — `optional`, `drop`, and `has()`
 
 **Why.** The highest-value slice. Today absence is a tombstone — a value that _means_ nothing —
 which is why projection has null/tombstone/default states and `matchesFieldValue` special-cases
-`expected === null`. Presence makes "has a draft" a queryable fact and collapses half the
+`expected === null`. Existence makes "has a draft" a queryable fact and collapses half the
 projection states.
 
 **Scope.** `optional: true`; `drop` as an ordinary write; `has(component)` and `hasNot(component)`
@@ -403,11 +405,11 @@ kept only for a present leaf whose value was cleared.
       not a `delete`.
 - [ ] Projection states for an optional component: absent → `undefined` (no default resolution, no
       tombstone); present → the stored projection.
-- [ ] `has`/`hasNot` planned as an index predicate, not a row filter, so a presence query costs its
+- [ ] `has`/`hasNot` planned as an index predicate, not a row filter, so an existence query costs its
       index.
 - [ ] `put` on a row that omits a present component no longer implies "absent" — only `drop` does.
 - [ ] Delete `STRUCTURAL_SUBJECT_TYPES`-style pathing that exists to express "this row has no
-      fields", since presence now says it directly.
+      fields", since existence now says it directly.
 
 **Acceptance.** An entity that drops its only optional component and is re-read reports absent, not
 tomblestone-with-default; `has` and `hasNot` are index plans in the recorded plan; the projection
@@ -417,9 +419,9 @@ state table has two states per optional component instead of four.
 
 ---
 
-### 6. `feat(storage)`: component presence index and archetype index
+### 6. `feat(storage)`: component existence index and archetype index
 
-**Why.** Presence and per-component reads need a component-keyed index on both sides. This is the
+**Why.** Existence and per-component reads need a component-keyed index on both sides. This is the
 slice with the only genuine throughput risk in the epic, so it is also the measurement slice.
 
 **Scope.** Three indices, not two. Today's `typeIndex` is doing all three jobs at once, because with
@@ -428,7 +430,7 @@ one mandatory component per row they are the same index:
 | Index            | Key → value                   | Answers                                                                              |
 | ---------------- | ----------------------------- | ------------------------------------------------------------------------------------ |
 | `modelIndex`     | model → id set                | `query("note")` — every row of that model, whichever optional components are present |
-| `componentIndex` | component → id set            | `has(note/draft)`, presence predicates                                               |
+| `componentIndex` | component → id set            | `has(note/draft)`, existence predicates                                              |
 | `archetypeIndex` | sorted component set → id set | skip the intersection when a query names an exact set. **Optional**                  |
 
 `modelIndex` is today's `typeIndex` renamed; it is not the same thing as `archetypeIndex`, and a
@@ -456,7 +458,7 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
       specified.
 
 **Acceptance.** The k = 2/4/8 table is recorded in the epic and the resulting write cost is
-accepted or the design is amended. A presence query touches one index range per component named.
+accepted or the design is amended. An existence query touches one index range per component named.
 No path reads `type` to find an entity's rows.
 
 **Depends on.** 4, 5.
@@ -552,7 +554,7 @@ benchmark in `503-replica-read-model.md` re-runs with resident bytes attributed 
 authorizer, the materialized row's type, the type-entity index, the SQLite type column, and the
 client replica's row type, and nothing compares it to the type the id was committed under. Per
 `docs/research/624-committed-type-authz.md` that is a live authorization defect. Under components
-the claim disappears: the component must be one the model declares, presence is the only
+the claim disappears: the component must be one the model declares, existence is the only
 per-row question, and `EntityIndex` stops dispatching on a type string.
 
 **Scope.** Validation that a write's component is declared by the model and allowed on the
@@ -646,7 +648,7 @@ new target and an old source, or a membership with a mismatched actor and group.
 1 ADR
 └── 2 schema shape
     ├── 3 e.object ─────────────┐
-    ├── 4 wire envelope ────────┼── 5 presence ── 6 index ──┬── 7 invalidation
+    ├── 4 wire envelope ────────┼── 5 existence ── 6 index ──┬── 7 invalidation
     │                           │                          ├── 8 conflict scope
     │                           │                          ├── 9 residency ── (#665, #775)
     │                           │                          └── 10 authz ── 12 system components
@@ -674,7 +676,7 @@ independent LWW leaves and only `put` keeps them coherent.
 (#195), the per-type residency plumbing, and `InboundSubject.replaced` all exist because _one_
 string had to serve six jobs. This is where most of the diff is, and it is negative.
 
-**Buys — presence as a fact.** Optional data stops being a tombstone that reads like an absence.
+**Buys — existence as a fact.** Optional data stops being a tombstone that reads like an absence.
 Projection loses two of its four states per optional component, and `has()` becomes an index
 predicate instead of a null filter.
 
@@ -683,7 +685,7 @@ for, cold reads and backfill sized to a component, and a read cache (#516) that 
 longer evicts. These are the real performance wins and they are all latency, not throughput.
 
 **Costs — throughput, slightly.** More Updates per Action (slice 4 measures the delta), and k
-presence rows per entity for the components declared `indexed` (slice 6 measures at k = 2/4/8). Both
+rows per entity for the components declared `indexed` (slice 6 measures at k = 2/4/8). Both
 are bounded and both are measured before the envelope lands.
 
 **Costs — replica persistence complexity, and it is not optional.** `toRecord` persists held rows on
@@ -698,7 +700,7 @@ acceptance criteria.
 
 - **Archetype/chunk storage.** The locality payoff needs dense POD arrays; ebb's rows are
   `Record<string, FieldValue>` in V8 over IndexedDB, and its churn is concentrated in exactly the
-  archetype-hostile places — edges, memberships, presence.
+  archetype-hostile places — edges, memberships, existence.
 - **A system scheduler.** No ordering graph, no frames, no global tick. Local derived components
   run after ingest in arbitrary order and are recomputable.
 - **Behaviour on components.** A component with a method is a design failure.

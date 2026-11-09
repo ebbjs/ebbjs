@@ -40,7 +40,7 @@ data.fields}`) is "attach component data to an entity". The read model is not:
   stores.** The archetype form is a denormalisation of that shape for locality,
   and ebb does not need the denormalisation. So the useful question is not
   "should ebb be an ECS?" but "which parts of the field's original model has ebb
-  not finished?" The answer is the two he deferred: presence as a first-class
+  not finished?" The answer is the two he deferred: existence as a first-class
   bit, and systems.
 - **[derived] That conflation is the direct cause of four real things in this
   codebase**: the `#624` authorization hole (wire `subject_type` treated as
@@ -84,7 +84,7 @@ sources that own the definitions; URLs are in [Sources](#sources).
    `Entity` type is a simple identifier: it has neither behavior nor data."_
    Martin hardens it: _"entities have NO data and NO methods … An entity is
    really just a name."_ **[primary]**
-2. **A component is typed data attached to an entity, and presence is a bit**,
+2. **A component is typed data attached to an entity, and existence is a bit**,
    distinct from a null value. Mertens' checklist: _"Entities can contain zero or
    more components / Entities can change components dynamically."_ Every primary
    source prefers absence-plus-query-filtering over nullable fields. **[primary]**
@@ -160,7 +160,7 @@ condition Unity and flecs document as a constraint (see 1.5).
 The honest answer depends on the test, and both tests are worth running:
 
 - **Mertens' loose test: no, but nearly.** Ebb can add _fields_ to entities and
-  query for entities with some fields and not others — but field presence is a
+  query for entities with some fields and not others — but field existence is a
   tombstone and merge state, not a component, and there is no notion of
   _attaching_ something the entity did not have. The gap is one operation.
 - **Martin's strict test: no, and the gap is the whole behaviour half.** No
@@ -253,12 +253,12 @@ engine's add-ons.
 | ECS concept                   | ebb today                                                                                                                              | Evidence                                                                                      |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Entity                        | `Entity {id, type, data.fields, created_hlc, updated_hlc, deleted_hlc, last_gsn}`                                                      | `packages/core/src/types/entity.ts:9`                                                         |
-| Entity set (presence)         | `entity.deleted_hlc === null`; deletion is a tombstone, never a free                                                                   | `entity.ts:15`, `packages/storage/src/replica/replica.ts` `resync`                            |
+| Entity set (existence)        | `entity.deleted_hlc === null`; deletion is a tombstone, never a free                                                                   | `entity.ts:15`, `packages/storage/src/replica/replica.ts` `resync`                            |
 | Component **type**            | `entity.type` — **exactly one, immutable after first write**                                                                           | `CONTEXT.md` "Committed type"; `#624` note                                                    |
 | Component **data**            | `entity.data.fields` — an _untyped_ `Record<string, FieldValue>`, one LWW envelope per field                                           | `packages/core/src/types/action.ts:33`                                                        |
-| Component presence            | **does not exist.** A field is always "there"; a cleared field is a `null` leaf tombstone that projection hides                        | `action.ts:60-70`, `query-builder.ts` projection states                                       |
+| Component existence           | **not modelled.** A field is always "there"; a cleared field is a `null` leaf tombstone that projection hides                          | `action.ts:60-70`, `query-builder.ts` projection states                                       |
 | Archetype                     | **does not exist.** The nearest thing is `typeIndex: Map<type, Set<id>>` — a one-component world where every type is its own archetype | `replica.ts:115`                                                                              |
-| Archetype index (server)      | `cf_type_entities (type, 0x00, entity_id) -> <<>>`, a presence index                                                                   | `ebb_server/lib/ebb_server/storage/rocks_db.ex:48`                                            |
+| Archetype index (server)      | `cf_type_entities (type, 0x00, entity_id) -> <<>>`, an existence index                                                                 | `ebb_server/lib/ebb_server/storage/rocks_db.ex:48`                                            |
 | Relationship / pair           | first-class row: `relationship {source_id, target_id, type, field}` + a bidirectional adjacency index                                  | `packages/schema/src/system-entities.ts:43`, `packages/storage/src/internal/reverse-index.ts` |
 | Tag component                 | `entityGroup {entity_id, group_id}` — a row whose existence scopes permission                                                          | `system-entities.ts:60`                                                                       |
 | Transient/ephemeral component | `presence` channel per `(entity, channel)` — never in the log, lossy on disconnect                                                     | `CONTEXT.md` "Presence"; `packages/client/src/presence/`                                      |
@@ -303,7 +303,7 @@ This is the crux. `entity.type` is simultaneously:
    (`packages/client/src/sync/conflict-slots.ts:35`).
 
 In ECS these six are six independent axes: component identity, component
-presence, the query, the permission on the component, the residency of the
+existence, the query, the permission on the component, the residency of the
 component's storage, and the component's merge rule. Collapsing them into one
 immutable string is what forces each of them to be a special case.
 
@@ -317,7 +317,7 @@ authorization research note (`docs/research/624-committed-type-authz.md`) shows
 type-entity index, the SQLite `type` column, and the client replica's row type,
 while nothing compares it to the type the id was committed under. In an ECS,
 that bug is _unrepresentable_: a write names a component, and a component the
-entity does not have is a `drop`-of-absent, not an identity claim. Presence is
+entity does not have is a `drop`-of-absent, not an identity claim. Existence is
 checked per component, and component existence is a schema fact checked at
 validation.
 
@@ -334,7 +334,7 @@ assertions, and `DerivedDocNameCollisionError` all stop existing.
 **(c) `STRUCTURAL_SUBJECT_TYPES`.** Three named types that are "rows, but not
 documents" and therefore exempt from conflict detection. ECS does not need this
 set: an edge is a pair component, a membership is a tag component, and whether a
-component merges by LWW or by presence is declared on the component.
+component merges by LWW or by existence is declared on the component.
 
 **(d) Type-granular invalidation.** `ReplicaChange` is
 `{revision, id, type, deleted}` (`packages/storage/src/replica/types.ts:17`), and
@@ -357,7 +357,7 @@ posts arguing that entities have no data and components hold all of it, answers
 
 One table per component type, rows keyed by entity id, columns being the
 component's fields. That is _literally_ what ebb already stores: `entities(id,
-type, data, …)` with `cf_type_entities (type, 0x00, entity_id)` as the presence
+type, data, …)` with `cf_type_entities (type, 0x00, entity_id)` as the existence
 index (`rocks_db.ex:48`), plus generated columns for the edge and membership
 fields (`sqlite.ex:83-90`).
 
@@ -366,7 +366,7 @@ has. The archetype/chunk form is a _denormalisation of that shape for locality_ 
 and ebb does not need the denormalisation, because it is not iterating millions
 of rows per frame. **[judgment] The useful question is not "should ebb be an
 ECS?" but "which of Martin's five posts should ebb finish implementing?" The
-answer is the two he explicitly deferred: presence as a first-class bit, and
+answer is the two he explicitly deferred: existence as a first-class bit, and
 systems.**
 
 ### Finding 5: the `Action` log is the right substrate for structural change
@@ -416,9 +416,9 @@ Three details worth being explicit about:
 
 - **Optional components are the feature, not a wart.** ECS's `add`/`remove` is
   how you express "this issue has a draft" or "this document is checked out".
-  Today that is a nullable field with a tombstone; as a component it is presence,
+  Today that is a nullable field with a tombstone; as a component it is existence,
   and a query can ask for `has(draft)` without a `null` filter.
-- **Presence wants three states, not two.** flecs ships `disabled` as a middle
+- **Existence wants three states, not two.** flecs ships `disabled` as a middle
   state and explains why: _"Disabling a component is a cheaper alternative to
   removing it … as it relies on setting a bit vs. moving an entity to another
   table."_ **[primary]** Ebb's analogue is free: a `disabled` bit on the field
@@ -567,7 +567,7 @@ client.issue.update(id, { title: "..." }); // unchanged
 
 `defineEntity("issue", [...])` remains the thing apps declare, because "a named
 set of components" is exactly what a domain object is. The ECS is an internal
-representation — model → component set → presence index → component columns —
+representation — model → component set → existence index → component columns —
 and the TypeScript surface stays a typed row over a model.
 
 **[judgment] Whether that counts as "ECS" depends on which test you use, and it
@@ -584,16 +584,16 @@ half does not.**
 
 ## 4. What it buys, priced
 
-| Claim                                             | Verdict                                     | Reasoning                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Faster iteration / scans                          | **No, and worse than neutral here**         | The win in the literature is cache locality over dense POD arrays, and both vendors tie it to _stable_ component sets (flecs' FAQ shows the win flipping to sparse sets under churn). Ebb rows are `Record<string, FieldValue>` with optional HLCs in V8, and ebb's churniest state is exactly the archetype-hostile kind: edges, memberships, presence. Adding archetypes would buy no locality and inherit fragmentation. |
-| Fewer round trips, less projection                | **Small, real**                             | Per-component columns mean a filter or a sort reads one component, not a projected full row; `projectEntity` runs at the end over requested components only. Worth measuring against the `1.5–12 µs` wrapper costs in `#503`.                                                                                                                                                                                               |
-| Finer cache invalidation                          | **Yes, and independently shippable**        | `{components}` in the journal + `readComponents` in the plan. Removes the "any `issue` change invalidates every `issue` query" floor.                                                                                                                                                                                                                                                                                       |
-| Fewer special cases                               | **Yes, large**                              | `STRUCTURAL_SUBJECT_TYPES`, the generated doc entity family, `#624`'s class of bug, and the per-type `materialization` plumbing all become ordinary component rules. This is where most of the code deletion is.                                                                                                                                                                                                            |
-| Structural flexibility (optional components)      | **Yes**                                     | Add/remove a component as an ordinary `Update`. Ebb's log makes this cheap where ECS implementations make it expensive.                                                                                                                                                                                                                                                                                                     |
-| Systems as a behaviour layer                      | **Only with a hard local/replicated split** | Local derived components: safe, useful, already half-built. Replicated client systems: a divergence generator.                                                                                                                                                                                                                                                                                                              |
-| Compatibility with the existing 1119 client tests | **Cost, not benefit**                       | `subject_type` appears in fixtures, conflict slots (`LwwFieldOracle(subjectType, field)`), permission strings, the outbox, and the catch-up frames. A rename is mechanical; a semantic change is not.                                                                                                                                                                                                                       |
-| Write amplification                               | **A real cost**                             | _k_ index rows per entity instead of 1. Needs a benchmark before commit.                                                                                                                                                                                                                                                                                                                                                    |
+| Claim                                             | Verdict                                     | Reasoning                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Faster iteration / scans                          | **No, and worse than neutral here**         | The win in the literature is cache locality over dense POD arrays, and both vendors tie it to _stable_ component sets (flecs' FAQ shows the win flipping to sparse sets under churn). Ebb rows are `Record<string, FieldValue>` with optional HLCs in V8, and ebb's churniest state is exactly the archetype-hostile kind: edges, memberships, and components that come and go. Adding archetypes would buy no locality and inherit fragmentation. |
+| Fewer round trips, less projection                | **Small, real**                             | Per-component columns mean a filter or a sort reads one component, not a projected full row; `projectEntity` runs at the end over requested components only. Worth measuring against the `1.5–12 µs` wrapper costs in `#503`.                                                                                                                                                                                                                      |
+| Finer cache invalidation                          | **Yes, and independently shippable**        | `{components}` in the journal + `readComponents` in the plan. Removes the "any `issue` change invalidates every `issue` query" floor.                                                                                                                                                                                                                                                                                                              |
+| Fewer special cases                               | **Yes, large**                              | `STRUCTURAL_SUBJECT_TYPES`, the generated doc entity family, `#624`'s class of bug, and the per-type `materialization` plumbing all become ordinary component rules. This is where most of the code deletion is.                                                                                                                                                                                                                                   |
+| Structural flexibility (optional components)      | **Yes**                                     | Add/remove a component as an ordinary `Update`. Ebb's log makes this cheap where ECS implementations make it expensive.                                                                                                                                                                                                                                                                                                                            |
+| Systems as a behaviour layer                      | **Only with a hard local/replicated split** | Local derived components: safe, useful, already half-built. Replicated client systems: a divergence generator.                                                                                                                                                                                                                                                                                                                                     |
+| Compatibility with the existing 1119 client tests | **Cost, not benefit**                       | `subject_type` appears in fixtures, conflict slots (`LwwFieldOracle(subjectType, field)`), permission strings, the outbox, and the catch-up frames. A rename is mechanical; a semantic change is not.                                                                                                                                                                                                                                              |
+| Write amplification                               | **A real cost**                             | _k_ index rows per entity instead of 1. Needs a benchmark before commit.                                                                                                                                                                                                                                                                                                                                                                           |
 
 **[judgment] Net: the identity model pays for itself in deleted special cases
 and in the `#624` class of bug, not in throughput. Anyone selling ECS to this
@@ -678,7 +678,7 @@ happens.
    `put`/`patch`/`delete` semantics unchanged; the value is just a namespaced
    string. This is a mechanical rename that makes the next slice possible and
    makes `STRUCTURAL_SUBJECT_TYPES` a declared property instead of a set.
-3. **Component-set identity.** Multiple components per entity, `drop`, presence
+3. **Component-set identity.** Multiple components per entity, `drop`, existence
    as a bit, per-component residency and conflict scope; retire the generated
    document entity and the `#624` class of bug. This is the real change, and it
    is where the index write amplification must be measured before commit.
