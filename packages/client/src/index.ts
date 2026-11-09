@@ -222,7 +222,6 @@ export {
   type Conflict,
   type ConflictSlotView,
   type ConflictSubjectStateView,
-  type ConflictResolution,
   type ConflictChangeListener,
   type ConflictSnapshot,
   type ResolveResult,
@@ -234,7 +233,7 @@ export { type ReadonlyObservable } from "./sync/observable";
 export { type ClientStatus } from "./sync/status";
 
 export type { ConflictEntry } from "./sync/conflicts";
-export type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
+export type { ConflictSide, ConflictSlot, ConflictRemoteAction } from "@ebbjs/storage/types";
 
 export {
   openSSEStream,

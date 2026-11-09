@@ -743,6 +743,10 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.entries[0]?.action.id).toBe("act_local");
     expect(conflicts[0]?.subjects).toEqual(["todo_1"]);
+    expect(conflicts[0]?.scope).toBe("field");
+    expect(conflicts[0]?.remoteActions).toEqual([
+      { actorId: ACTOR_ID, actionId: "act_peer", gsn: 9 },
+    ]);
     expect(conflicts[0]?.entries[0]?.basedOnGsn).toBe(0);
     expect(conflicts[0]?.entries[0]?.catchUpId).toMatch(/^cu_/);
     expect(conflicts[0]?.id).toMatch(/^c_/);

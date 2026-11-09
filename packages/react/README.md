@@ -288,9 +288,10 @@ oldest detection first. `client.sync.conflicts` republishes whenever the
 outbox's counts change — a detection, a resolution, and the initial durable
 load all arrive that way, with no async refetch. A write that does not touch
 the conflict set can republish an equal snapshot, so the consumer may re-render
-without its data changing. A conflict carries its losing entries, its subject
-states with a before/after `diff`, and `remoteWins()`, which is enough to
-render "2 edits need review" and to build a review UI.
+without its data changing. A conflict carries its `scope`, its losing entries,
+and its subject states with a before/after `diff` — plus per-slot
+`remoteWins()` verdicts at field scope — which is enough to render "2 edits
+need review" and to build a review UI.
 
 `useEbbStatus()` returns the aggregate `ClientStatus`: `connection`,
 `lastSyncedAt` (epoch ms of the last applied remote Action or completed
@@ -324,12 +325,13 @@ render pass:
 
 ```tsx
 const [conflict] = await client.conflicts.list();
-await client.conflicts.resolve(conflict.id, "retry"); // or "discard"
+await client.conflicts.sendLocalActions(conflict.id); // or clearLocalActions
 ```
 
-`retry` re-asserts the losing Actions; `discard` drops their optimistic writes
-and replays the log. Either way the conflict set shrinks, `useConflicts`
-re-renders, and no refetch is involved.
+`sendLocalActions` clears the hold and submits the held Actions unchanged;
+`clearLocalActions` drops them (and any later local writes to the same
+subjects) and converges on the server's view. Either way the conflict set
+shrinks, `useConflicts` re-renders, and no refetch is involved.
 
 ## `useClient` and writes
 

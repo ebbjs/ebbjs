@@ -66,7 +66,7 @@ Same reason. No schema builder until we have a second model. The client hardcode
 
 ### Decision 4 — Conflict surfacing API
 
-> **Superseded and shipped.** The earlier sketch that snapshotted the tree and stored both versions was replaced by the model in epic [#389](https://github.com/ebbjs/ebbjs/issues/389): catch-up detection with a declared scope ([#390](https://github.com/ebbjs/ebbjs/issues/390)) and the entity-level `Conflict` surface with `retry` / `discard` ([#392](https://github.com/ebbjs/ebbjs/issues/392)). The authoritative source is `packages/client/src/sync/conflicts.ts`; the design write-up is [#394](https://github.com/ebbjs/ebbjs/issues/394).
+> **Superseded and shipped.** The earlier sketch that snapshotted the tree and stored both versions was replaced by the model in epic [#389](https://github.com/ebbjs/ebbjs/issues/389): catch-up detection with a declared scope ([#390](https://github.com/ebbjs/ebbjs/issues/390)) and the entity-level `Conflict` surface with `sendLocalActions` / `clearLocalActions` ([#392](https://github.com/ebbjs/ebbjs/issues/392), [#781](https://github.com/ebbjs/ebbjs/issues/781)). The authoritative source is `packages/client/src/sync/conflicts.ts`; the design write-up is [#394](https://github.com/ebbjs/ebbjs/issues/394).
 
 What shipped differs from the old sketch in ways worth naming:
 
@@ -74,7 +74,7 @@ What shipped differs from the old sketch in ways worth naming:
 - **A detected loser is a `conflicted` status plus payload on its own outbox row.** There is no separate conflict store and no persisted before/after tree snapshots; the optimistic apply already left the local tree, and the losing Action is held for resolution.
 - **Granularity is declared per entity.** `conflictScope: "field" | "entity"` (default `"field"`), set on the entity or via `e.collaborativeText({ conflictScope })`. The position unit is the generic map-key recursion, so one `content[runId]` is one position and sibling run keys never conflict.
 - **Concurrency comes from the server sequence, not HLC.** A buffered write records `basedOnGsn`; a missed Action is concurrent when its GSN is higher. HLC stays the merge rule, so a lower-HLC concurrent write still surfaces.
-- **The application surface is entity-level.** `client.conflicts.list()` / `onChange()` deliver `Conflict[]` (grouped by the durable `conflictId`), `count()` counts conflicts, and `resolve(conflictId, "retry" | "discard")` / `resolveEntries(entryIds, ...)` resolve them, returning `{ resolved, failed }`. Each position exposes `remoteWins()` so an app can act only when its value would lose.
+- **The application surface is entity-level.** `client.conflicts.list()` / `onChange()` deliver `Conflict[]` (grouped by the durable `conflictId`), `count()` counts conflicts, and `sendLocalActions(conflictId)` submits the held Actions unchanged and `clearLocalActions(conflictId)` converges on the remote view, both returning `{ resolved, failed }`. A field-scope slot exposes `remoteWins()`; entity scope reports `scope` plus a per-subject diff instead.
 - **Pre-sync capture rides the conflict.** `Conflict.subjectStates[].before` ([#395](https://github.com/ebbjs/ebbjs/issues/395), [#410](https://github.com/ebbjs/ebbjs/issues/410)) carries the entity's row from before the merge, durable on the conflict payload; the standalone `client.snapshots` capture was retired, so `duplicate({ at: "preSync" })` requires an unresolved conflict.
 - **"Snapshot" no longer names a client surface.** The rejected per-entity compaction primitive from [#141](https://github.com/ebbjs/ebbjs/issues/141) and the retired pre-sync manager are both gone.
 
@@ -244,7 +244,7 @@ New package. Vite + React 19 + CodeMirror 6 + Tailwind, matching the POC stack. 
 
 **Connection state indicator** (small badge in the corner): connecting → live → reconnecting → offline.
 
-**Conflict panel** (collapsible right sidebar): shows the entity-level conflicts, each with its contested positions and a retry / discard action.
+**Conflict panel** (collapsible right sidebar): shows the entity-level conflicts, each with its scope, rows and diff, and a send / clear action.
 
 **Why this stack.** React 19 + Vite matches what the POC uses. CodeMirror 6 is the right editor for showing the actual document state (the POC already proved it works). Tailwind is a one-line config add.
 
@@ -418,7 +418,7 @@ Five vertical slices, ordered by what unblocks what. Each slice ends with a runn
 5. `doc.localInsert()` / `doc.localDelete()` → create an Action with the right Update, apply locally, mark pending for `client.write()`
 6. `doc.onUpdate()` event for incoming Updates (after local materialization)
 7. Conflict detection on catch-up (Decision 4) — shipped under #389 / #390
-8. `client.conflicts` surface (losing Actions + lost slots, with retry / discard)
+8. `client.conflicts` surface (losing Actions, scope, slots, diff, with send / clear)
 9. Tests: port `experiment/collaborative-text/src/__tests__/` to `packages/client/src/fields/collaborative-text/__tests__/`, add network-driven tests using a mock SSE source. **Verify the run-ID-format change preserves test expectations.**
 
 **Acceptance:** `client.applyActions([...])` on a text entity produces the same document as the BroadcastChannel POC for the same edit sequence. All POC tests pass with the new run ID format.

@@ -953,9 +953,10 @@ describe("conflicts through client.conflicts", () => {
     const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]!.subjects).toEqual([docId]);
-    // Entity scope: surfaced even though no position overlapped.
-    expect(conflicts[0]!.entries[0]!.slots).toEqual([]);
-    expect(conflicts[0]!.remoteWins()).toBe(false);
+    // Entity scope: surfaced even though no position overlapped, with no
+    // slot list to misread as a position-level verdict.
+    expect(conflicts[0]!.scope).toBe("entity");
+    expect(conflicts[0]!.entries[0]!.slots).toBeUndefined();
   });
 });
 

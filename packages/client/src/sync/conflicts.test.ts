@@ -3,13 +3,19 @@
  *
  * The view projects the outbox's `conflicted` rows into entity-level
  * {@link Conflict}s, keeps a synchronous count for #125, notifies
- * `onChange` without polling, and turns the application's `retry` /
- * `discard` decision into the outbox transition that decision implies.
+ * `onChange` without polling, and turns the application's choice into one
+ * of the two mechanism verbs: send the held Actions unchanged, or clear
+ * them and converge on the remote view.
  */
 
 import { describe, it, expect, vi, type Mock } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
-import type { ConflictSlot, ConflictSubjectState, OutboxConflict } from "@ebbjs/storage/types";
+import { makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import type {
+  ConflictRemoteAction,
+  ConflictSlot,
+  ConflictSubjectState,
+  OutboxConflict,
+} from "@ebbjs/storage/types";
 
 import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
 import { createConflicts, findPreSyncRow, type ConflictsDependencies } from "./conflicts";
@@ -70,6 +76,13 @@ const mkSlot = (overrides: Partial<ConflictSlot> = {}): ConflictSlot => ({
   ...overrides,
 });
 
+/** One conflated missed Action reference. */
+const mkRemote = (actionId: string, gsn = 9): ConflictRemoteAction => ({
+  actorId: "actor_peer",
+  actionId,
+  gsn,
+});
+
 /** One conflicted outbox row, keyed by its losing Action's id. */
 const mkRow = (
   actionId: string,
@@ -79,6 +92,8 @@ const mkRow = (
     readonly subjects?: readonly string[];
     readonly subjectStates?: readonly ConflictSubjectState[];
     readonly slots?: readonly ConflictSlot[];
+    readonly scope?: "field" | "entity";
+    readonly remoteActions?: readonly ConflictRemoteAction[];
     readonly action?: Action;
   } = {},
 ): ConflictedOutboxEntry => ({
@@ -87,19 +102,22 @@ const mkRow = (
   enqueuedAtHlc: detectedAtHlc,
   basedOnGsn: 0,
   conflict: {
+    scope: overrides.scope ?? "field",
     subjects: overrides.subjects ?? ["todo_1"],
     subjectStates: overrides.subjectStates ?? [],
     slots: overrides.slots ?? [mkSlot()],
+    remoteActions: overrides.remoteActions ?? [mkRemote("act_peer")],
     catchUpId: "cu_1",
     conflictId: overrides.conflictId ?? `c_${actionId}`,
     detectedAtHlc,
   } satisfies OutboxConflict,
 });
 
-/** In-test outbox exposing only the seam the view reads and resolves through. */
+/** In-test outbox exposing only the seam the view reads and verbs through. */
 const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
   let rows: readonly ConflictedOutboxEntry[] = initial.map((row) => structuredClone(row));
   const listeners = new Set<(counts: OutboxCounts) => void>();
+  const released: string[] = [];
 
   const counts = (): OutboxCounts => ({
     pending: 0,
@@ -110,10 +128,22 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
   const emit = (): void => {
     for (const listener of listeners) listener(counts());
   };
+  const releaseConflict = vi.fn(async (actionId: string): Promise<void> => {
+    if (!rows.some((row) => row.action.id === actionId)) return;
+    released.push(actionId);
+    rows = rows.filter((row) => row.action.id !== actionId);
+    emit();
+  });
+  const dropHeld = vi.fn(async (_subjects: readonly string[]): Promise<readonly Action[]> => []);
 
   return {
+    releaseConflict,
+    dropHeld,
     get rows(): readonly ConflictedOutboxEntry[] {
       return rows;
+    },
+    get released(): readonly string[] {
+      return released;
     },
     conflicts: (): readonly ConflictedOutboxEntry[] => rows.map((row) => structuredClone(row)),
     onChange: (listener: (counts: OutboxCounts) => void): (() => void) => {
@@ -136,42 +166,21 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
 interface Harness {
   deps: ConflictsDependencies;
   outbox: ReturnType<typeof mkOutbox>;
-  retry: Mock;
   reMaterialize: Mock;
-  stampAction: Mock;
+  flush: Mock;
+  dropHeld: Mock;
 }
 
 const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
   const outbox = mkOutbox(initial);
-  let tick = 0;
-  const retry = vi.fn(async (originalId: string, _action: Action): Promise<void> => {
-    // The real outbox replaces the conflicted row with the re-assert in one
-    // write; the fake just drops it, which is the same visible transition.
-    await outbox.clearConflict(originalId);
-  });
   const reMaterialize = vi.fn(async (_action: Action): Promise<void> => {});
-  const stampAction = vi.fn(
-    (updates: readonly Update[]): Action => ({
-      id: "act_rebased",
-      actor_id: "actor_1",
-      hlc: makeHlc(1_711_036_800_010),
-      gsn: 0,
-      updates: [...updates],
-    }),
-  );
+  const flush = vi.fn(async (): Promise<void> => {});
   return {
     outbox,
-    retry,
     reMaterialize,
-    stampAction,
-    deps: {
-      outbox,
-      retry,
-      reMaterialize,
-      stampAction,
-      hlc: () => String(++tick),
-      generateUpdateId: () => `u_fresh_${tick}`,
-    },
+    flush,
+    dropHeld: outbox.dropHeld as Mock,
+    deps: { outbox, reMaterialize, flush },
   };
 };
 
@@ -232,153 +241,93 @@ describe("createConflicts", () => {
     expect(conflicts.count()).toBe(2);
   });
 
-  it("retry re-asserts the whole Action, freshly stamped, and removes the conflict", async () => {
-    const harness = mkDeps([mkRow("act_local", "5")]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    const result = await conflicts.resolve("c_act_local", "retry");
-
-    expect(result).toEqual({ resolved: ["act_local"], failed: [] });
-    expect(harness.retry).toHaveBeenCalledTimes(1);
-    expect(harness.retry.mock.calls[0]?.[0]).toBe("act_local");
-    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
-    expect(rebased.id).toBe("act_rebased");
-    expect(rebased.updates[0]?.method).toBe("patch");
-    expect(rebased.updates[0]?.subject_id).toBe("todo_1");
-    const field = rebased.updates[0]?.data?.fields.title;
-    expect(field?.value).toBe("mine");
-    expect(field?.update_id).not.toBe("u_act_local");
-    expect(field?.hlc).toBe("1");
-
-    expect(harness.outbox.rows).toEqual([]);
-    expect(conflicts.count()).toBe(0);
-    expect(harness.reMaterialize).not.toHaveBeenCalled();
-  });
-
-  it("retry re-asserts the fields the conflict did not name", async () => {
-    const action: Action = {
-      id: "act_local",
-      actor_id: "actor_1",
-      hlc: LOCAL_HLC,
-      gsn: 0,
-      updates: [
-        {
-          id: "u_local",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: {
-              title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
-              completed: { value: true, update_id: "u_local", hlc: LOCAL_HLC },
-            },
-          },
-        },
-      ],
-    };
-    const harness = mkDeps([mkRow("act_local", "5", { action, slots: [mkSlot()] })]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    await conflicts.resolve("c_act_local", "retry");
-
-    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
-    expect(rebased.updates).toHaveLength(1);
-    const fields = rebased.updates[0]?.data?.fields ?? {};
-    expect(Object.keys(fields).sort()).toEqual(["completed", "title"]);
-    // Both leaves are fresh, so the whole Action out-dates the peer.
-    expect(fields.title?.update_id).not.toBe("u_local");
-    expect(fields.completed?.update_id).not.toBe("u_local");
-    expect(fields.completed?.value).toBe(true);
-  });
-
-  it("retry re-stamps every key of a map field, not only the losing one", async () => {
-    const action: Action = {
-      id: "act_local",
-      actor_id: "actor_1",
-      hlc: LOCAL_HLC,
-      gsn: 0,
-      updates: [
-        {
-          id: "u_local",
-          subject_id: "doc_1",
-          subject_type: "doc",
-          method: "patch",
-          data: {
-            fields: {
-              content: {
-                map: {
-                  a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
-                  b: { value: "keep", update_id: "u_local", hlc: LOCAL_HLC },
-                },
-              },
-            },
-          },
-        },
-      ],
-    };
-    const conflictSlot = mkSlot({
-      subjectId: "doc_1",
-      field: "content",
-      path: ["a"],
-    });
+  it("sendLocalActions releases every held Action unchanged, then flushes once", async () => {
     const harness = mkDeps([
-      mkRow("act_local", "5", { action, slots: [conflictSlot], subjects: ["doc_1"] }),
+      mkRow("act_a", "1", { conflictId: "c_shared" }),
+      mkRow("act_b", "2", { conflictId: "c_shared" }),
     ]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
-    await conflicts.resolve("c_act_local", "retry");
+    const result = await conflicts.sendLocalActions("c_shared");
 
-    const rebased = harness.retry.mock.calls[0]?.[1] as Action;
-    const content = rebased.updates[0]?.data?.fields.content;
-    if (content === undefined || !("map" in content)) throw new Error("expected a map field");
-    expect(Object.keys(content.map).sort()).toEqual(["a", "b"]);
-    expect(content.map.a?.update_id).not.toBe("u_local");
-    expect(content.map.b?.update_id).not.toBe("u_local");
-    expect(content.map.b?.value).toBe("keep");
+    expect(result).toEqual({ resolved: ["act_a", "act_b"], failed: [] });
+    // The view only names the row; the outbox keeps the Action verbatim.
+    expect(harness.outbox.releaseConflict.mock.calls.map((call) => call[0])).toEqual([
+      "act_a",
+      "act_b",
+    ]);
+    // One flush after the whole group left the hold.
+    expect(harness.flush).toHaveBeenCalledTimes(1);
+    expect(harness.outbox.rows).toEqual([]);
+    expect(conflicts.count()).toBe(0);
+    expect(harness.reMaterialize).not.toHaveBeenCalled();
   });
 
-  it("discard re-materializes from the log and removes the conflict", async () => {
-    const row = mkRow("act_local", "5");
-    const harness = mkDeps([row]);
+  it("sendLocalActions does not touch the losing Action's envelope", async () => {
+    const action = mkAction("act_local");
+    const harness = mkDeps([mkRow("act_local", "5", { action })]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
-    const result = await conflicts.resolve("c_act_local", "discard");
+    await conflicts.sendLocalActions("c_act_local");
+
+    // No re-stamping collaborator is even available: the view hands the
+    // outbox only the id of the row whose Action it sends.
+    expect(harness.outbox.releaseConflict).toHaveBeenCalledWith("act_local");
+    expect(harness.outbox.released).toEqual(["act_local"]);
+  });
+
+  it("clearLocalActions re-materializes each held Action, drops held writes, then converges", async () => {
+    const row = mkRow("act_local", "5");
+    const harness = mkDeps([row]);
+    const later = mkAction("act_later");
+    harness.dropHeld.mockResolvedValueOnce([later]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const result = await conflicts.clearLocalActions("c_act_local");
 
     expect(result).toEqual({ resolved: ["act_local"], failed: [] });
-    expect(harness.reMaterialize).toHaveBeenCalledWith(row.action);
-    expect(harness.retry).not.toHaveBeenCalled();
+    expect(harness.reMaterialize.mock.calls.map((call) => call[0])).toEqual([row.action, later]);
+    // The pending writes the hold was blocking are dropped, so the subject
+    // converges instead of re-dirtying itself.
+    expect(harness.dropHeld).toHaveBeenCalledWith(["todo_1"]);
+    expect(harness.outbox.releaseConflict).not.toHaveBeenCalled();
+    expect(harness.flush).not.toHaveBeenCalled();
     expect(harness.outbox.rows).toEqual([]);
     expect(conflicts.count()).toBe(0);
   });
 
-  it("resolve of an unknown conflict id is an empty no-op", async () => {
+  it("a verb on an unknown conflict id is an empty no-op with no flush", async () => {
     const harness = mkDeps();
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
-    expect(await conflicts.resolve("c_missing", "retry")).toEqual({ resolved: [], failed: [] });
+    expect(await conflicts.sendLocalActions("c_missing")).toEqual({ resolved: [], failed: [] });
+    expect(await conflicts.clearLocalActions("c_missing")).toEqual({ resolved: [], failed: [] });
 
-    expect(harness.retry).not.toHaveBeenCalled();
+    expect(harness.outbox.releaseConflict).not.toHaveBeenCalled();
+    expect(harness.dropHeld).not.toHaveBeenCalled();
     expect(harness.reMaterialize).not.toHaveBeenCalled();
+    expect(harness.flush).not.toHaveBeenCalled();
   });
 
   it("reports a failed entry and leaves it resolvable under the same conflictId", async () => {
     const harness = mkDeps([mkRow("act_local", "5")]);
     const error = new Error("outbox unavailable");
-    harness.retry.mockRejectedValueOnce(error);
+    harness.outbox.releaseConflict.mockRejectedValueOnce(error);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
-    const result = await conflicts.resolve("c_act_local", "retry");
+    const result = await conflicts.sendLocalActions("c_act_local");
 
     expect(result.resolved).toEqual([]);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0]?.entryId).toBe("act_local");
     expect(result.failed[0]?.error).toBe(error);
+    // A fully failed pass moves nothing, so there is nothing to flush.
+    expect(harness.flush).not.toHaveBeenCalled();
     expect(harness.outbox.rows.map((row) => row.action.id)).toEqual(["act_local"]);
     expect((await conflicts.list())[0]?.id).toBe("c_act_local");
   });
@@ -388,33 +337,19 @@ describe("createConflicts", () => {
       mkRow("act_a", "1", { conflictId: "c_shared" }),
       mkRow("act_b", "2", { conflictId: "c_shared" }),
     ]);
-    harness.retry.mockRejectedValueOnce(new Error("first failed"));
+    harness.outbox.releaseConflict.mockRejectedValueOnce(new Error("first failed"));
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
-    const result = await conflicts.resolve("c_shared", "retry");
+    const result = await conflicts.sendLocalActions("c_shared");
 
     expect(result.resolved).toEqual(["act_b"]);
     expect(result.failed.map((failure) => failure.entryId)).toEqual(["act_a"]);
+    expect(harness.flush).toHaveBeenCalledTimes(1);
     const list = await conflicts.list();
     expect(list).toHaveLength(1);
     expect(list[0]?.id).toBe("c_shared");
     expect(list[0]?.entries.map((entry) => entry.action.id)).toEqual(["act_a"]);
-  });
-
-  it("resolveEntries is the per-entry primitive and skips unknown ids", async () => {
-    const harness = mkDeps([
-      mkRow("act_a", "1", { conflictId: "c_shared" }),
-      mkRow("act_b", "2", { conflictId: "c_shared" }),
-    ]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    const result = await conflicts.resolveEntries(["act_b", "act_missing"], "discard");
-
-    expect(result).toEqual({ resolved: ["act_b"], failed: [] });
-    expect(harness.reMaterialize).toHaveBeenCalledTimes(1);
-    expect(harness.outbox.rows.map((row) => row.action.id)).toEqual(["act_a"]);
   });
 
   it("isolates a throwing onChange listener", async () => {
@@ -436,14 +371,99 @@ describe("createConflicts", () => {
   });
 });
 
+describe("Conflict scope and report", () => {
+  it("project a field-scope conflict's slots with their remoteWins verdicts", async () => {
+    const harness = mkDeps([mkRow("act_local", "1")]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+
+    expect(conflict?.scope).toBe("field");
+    expect(conflict?.entries[0]?.scope).toBe("field");
+    expect(conflict?.entries[0]?.slots).toHaveLength(1);
+    expect(conflict?.entries[0]?.slots?.[0]?.remoteWins()).toBe(true);
+  });
+
+  it("makes slots absent for an entity-scope conflict and keeps the diff", async () => {
+    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
+    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } });
+    const harness = mkDeps([
+      mkRow("act_local", "1", {
+        scope: "entity",
+        subjects: ["doc_1"],
+        slots: [],
+        subjectStates: [mkState("doc_1", before, after)],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+    expect(conflict?.scope).toBe("entity");
+    expect(conflict?.entries[0]?.scope).toBe("entity");
+    // No position-level verdict to misread at entity scope.
+    expect(conflict?.entries[0]?.slots).toBeUndefined();
+    expect(conflict?.subjectStates[0]?.diff).toEqual([
+      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
+    ]);
+  });
+
+  it("takes entity scope when any grouped entry declared it", async () => {
+    const harness = mkDeps([
+      mkRow("act_field", "1", { conflictId: "c_shared" }),
+      mkRow("act_entity", "2", { conflictId: "c_shared", scope: "entity", slots: [] }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+    expect(conflict?.scope).toBe("entity");
+    expect(conflict?.entries.map((entry) => entry.scope)).toEqual(["field", "entity"]);
+  });
+
+  it("unions remoteActions across entries, deduped by action id in window order", async () => {
+    const harness = mkDeps([
+      mkRow("act_a", "1", {
+        conflictId: "c_shared",
+        remoteActions: [mkRemote("act_peer_1", 7), mkRemote("act_peer_2", 8)],
+      }),
+      mkRow("act_b", "2", {
+        conflictId: "c_shared",
+        remoteActions: [mkRemote("act_peer_2", 8), mkRemote("act_peer_3", 9)],
+      }),
+    ]);
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const [conflict] = await conflicts.list();
+    expect(conflict?.remoteActions).toEqual([
+      mkRemote("act_peer_1", 7),
+      mkRemote("act_peer_2", 8),
+      mkRemote("act_peer_3", 9),
+    ]);
+    expect(conflict?.entries[0]?.remoteActions).toEqual([
+      mkRemote("act_peer_1", 7),
+      mkRemote("act_peer_2", 8),
+    ]);
+  });
+});
+
 describe("Conflict.subjectStates", () => {
   /** Project one row carrying a single subject's states into its conflict. */
   const conflictForState = async (
     state: ConflictSubjectState,
     slots: readonly ConflictSlot[] = [],
+    scope: "field" | "entity" = "entity",
   ) => {
     const harness = mkDeps([
-      mkRow("act_local", "1", { slots, subjectStates: [state], subjects: [state.subjectId] }),
+      mkRow("act_local", "1", {
+        scope,
+        slots,
+        subjectStates: [state],
+        subjects: [state.subjectId],
+      }),
     ]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
@@ -517,14 +537,14 @@ describe("Conflict.subjectStates", () => {
     ]);
   });
 
-  it("exposes a non-empty diff for an entity-scope conflict with empty slots", async () => {
+  it("exposes a non-empty diff for an entity-scope conflict with no slots", async () => {
     const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
     const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } });
 
-    const conflict = await conflictForState(mkState("doc_1", before, after), []);
+    const conflict = await conflictForState(mkState("doc_1", before, after), [], "entity");
 
-    expect(conflict.entries[0]?.slots).toEqual([]);
-    expect(conflict.remoteWins()).toBe(false);
+    expect(conflict.scope).toBe("entity");
+    expect(conflict.entries[0]?.slots).toBeUndefined();
     expect(conflict.subjectStates[0]?.diff).toEqual([
       { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
       { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
@@ -575,7 +595,7 @@ describe("Conflict.subjectStates", () => {
     expect(conflict?.subjectStates.map((state) => state.subjectId)).toEqual(["todo_2", "todo_1"]);
   });
 
-  it("leaves subjects, entries, remoteWins, and resolution unchanged when states are present", async () => {
+  it("leaves subjects, entries, and the verbs unchanged when states are present", async () => {
     const harness = mkDeps([
       mkRow("act_a", "1", {
         conflictId: "c_shared",
@@ -602,11 +622,10 @@ describe("Conflict.subjectStates", () => {
     const [conflict] = await conflicts.list();
     expect(conflict?.subjects).toEqual(["todo_1", "todo_2"]);
     expect(conflict?.entries.map((entry) => entry.action.id)).toEqual(["act_a", "act_b"]);
-    expect(conflict?.remoteWins()).toBe(false);
 
-    const result = await conflicts.resolve("c_shared", "retry");
+    const result = await conflicts.sendLocalActions("c_shared");
     expect(result.resolved).toEqual(["act_a", "act_b"]);
-    expect(harness.retry).toHaveBeenCalledTimes(2);
+    expect(harness.outbox.releaseConflict).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -659,14 +678,14 @@ describe("findPreSyncRow", () => {
   });
 });
 
-describe("remoteWins", () => {
+describe("ConflictSlotView.remoteWins", () => {
   /** Read the single projected slot's verdict for one row. */
   const verdict = async (slot: ConflictSlot): Promise<boolean> => {
     const harness = mkDeps([mkRow("act_local", "1", { slots: [slot] })]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
     const [conflict] = await conflicts.list();
-    return conflict?.entries[0]?.slots[0]?.remoteWins() ?? false;
+    return conflict?.entries[0]?.slots?.[0]?.remoteWins() ?? false;
   };
 
   it("treats an absent remote as a remote win", async () => {
@@ -715,26 +734,10 @@ describe("remoteWins", () => {
       ),
     ).toBe(false);
   });
-
-  it("aggregates over entries and is false for a conflict with no slots", async () => {
-    const losing = mkDeps([
-      mkRow("act_a", "1", {
-        slots: [mkSlot({ remote: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } })],
-      }),
-    ]);
-    const { conflicts: losingConflicts } = createConflicts(losing.deps);
-    await losingConflicts.rehydrate();
-    expect((await losingConflicts.list())[0]?.remoteWins()).toBe(true);
-
-    const empty = mkDeps([mkRow("act_b", "1", { slots: [] })]);
-    const { conflicts: emptyConflicts } = createConflicts(empty.deps);
-    await emptyConflicts.rehydrate();
-    expect((await emptyConflicts.list())[0]?.remoteWins()).toBe(false);
-  });
 });
 
 describe("createConflicts observable", () => {
-  it("publishes the conflict set on the initial load, a detection, and a resolution", async () => {
+  it("publishes the conflict set on the initial load, a detection, and a verb", async () => {
     const harness = mkDeps([mkRow("act_a", "1")]);
     const { conflicts, observable } = createConflicts(harness.deps);
     const listener = vi.fn();
@@ -750,7 +753,7 @@ describe("createConflicts observable", () => {
     expect(observable.get().count).toBe(2);
     expect(listener).toHaveBeenCalledTimes(2);
 
-    await conflicts.resolve("c_act_a", "discard");
+    await conflicts.clearLocalActions("c_act_a");
     expect(observable.get().count).toBe(1);
     expect(listener).toHaveBeenCalledTimes(3);
     expect(observable.get().conflicts.map((conflict) => conflict.id)).toEqual(["c_act_b"]);

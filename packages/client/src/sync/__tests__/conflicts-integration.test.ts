@@ -1,18 +1,18 @@
 /**
- * Integration tests for the `client.conflicts` surface (#310).
+ * Integration tests for the `client.conflicts` surface (#310, #781).
  *
  * These pin the application-facing contract over a conflict detected by
  * the #308 inbound sweep: how it is surfaced and counted as an
- * entity-level {@link Conflict}, how `retry` re-asserts the whole losing
- * Action, how `discard` converges the local cache on the server's view,
- * how a partial resolution leaves the remainder grouped under the same
- * `conflictId`, and that the count survives a reload over the same
+ * entity-level {@link Conflict}, how `sendLocalActions` submits the held
+ * Actions unchanged, how `clearLocalActions` converges the local cache on
+ * the server's view, how the subject hold keeps later writes off the wire
+ * until resolution, and that the hold survives a reload over the same
  * durable storage.
  */
 
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, isFieldMap, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -31,10 +31,6 @@ const todo = defineEntity("todo", {
 });
 
 const schema = defineSchema({ entities: { todo }, version: 1 });
-
-/** A map-valued field: the unit of per-key conflict resolution. */
-const doc = defineEntity("doc", { content: Type.Record(Type.String(), Type.String()) });
-const docSchema = defineSchema({ entities: { doc }, version: 2 });
 
 interface StubFetch {
   fn: typeof fetch;
@@ -91,6 +87,7 @@ const mkTodoWrite = (args: {
 
 const LOCAL_HLC = makeHlc(1_711_036_800_000);
 const PEER_HLC = makeHlc(1_711_036_800_001);
+const LATER_HLC = makeHlc(1_711_036_800_002);
 
 /** The single conflict a client currently reports; asserts one exists. */
 const onlyConflict = async (client: {
@@ -103,7 +100,7 @@ const onlyConflict = async (client: {
 
 /** One entry's contested positions flattened for shape assertions. */
 const slotPaths = (entry: ConflictEntry | undefined) =>
-  entry?.slots.map((slot) => ({ subjectId: slot.subjectId, field: slot.field, path: slot.path }));
+  entry?.slots?.map((slot) => ({ subjectId: slot.subjectId, field: slot.field, path: slot.path }));
 
 /** Seed one detected conflict: a pending local write out-dated by a peer. */
 const seedConflict = async () => {
@@ -160,8 +157,13 @@ const postedActions = (calls: { url: string; init: RequestInit }[]): Action[] =>
   return decodeSync<{ actions: Action[] }>(call.init.body as Uint8Array).actions;
 };
 
-describe("client.conflicts (#310)", () => {
-  it("surfaces a detected conflict with its winner, fields, and count", async () => {
+const allPostedActions = (calls: { url: string; init: RequestInit }[]): Action[] =>
+  calls
+    .filter((call) => call.url.endsWith("/sync/actions"))
+    .flatMap((call) => decodeSync<{ actions: Action[] }>(call.init.body as Uint8Array).actions);
+
+describe("client.conflicts (#781)", () => {
+  it("surfaces a detected conflict with its scope, slots, and remote context", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
@@ -185,23 +187,25 @@ describe("client.conflicts (#310)", () => {
 
     expect(conflicts).toHaveLength(1);
     const [conflict] = conflicts;
+    expect(conflict?.scope).toBe("field");
     expect(conflict?.entries[0]?.action.id).toBe("act_local");
     expect(conflict?.entries[0]?.subjects).toEqual(["todo_1"]);
     expect(conflict?.subjects).toEqual(["todo_1"]);
     expect(slotPaths(conflict?.entries[0])).toEqual([
       { subjectId: "todo_1", field: "title", path: [] },
     ]);
-    expect(conflict?.entries[0]?.slots[0]?.local).toEqual({
+    expect(conflict?.entries[0]?.slots?.[0]?.local).toEqual({
       value: "mine",
       update_id: "u_local",
       hlc: LOCAL_HLC,
     });
-    expect(conflict?.entries[0]?.slots[0]?.remote).toEqual({
+    expect(conflict?.entries[0]?.slots?.[0]?.remote).toEqual({
       value: "theirs",
       update_id: "u_peer",
       hlc: PEER_HLC,
     });
-    expect(conflict?.remoteWins()).toBe(true);
+    expect(conflict?.entries[0]?.slots?.[0]?.remoteWins()).toBe(true);
+    expect(conflict?.remoteActions).toEqual([{ actorId: ACTOR_ID, actionId: "act_peer", gsn: 9 }]);
     expect(client.conflicts.count()).toBe(1);
 
     // Surfaced from the durable store, not a private cache.
@@ -214,94 +218,41 @@ describe("client.conflicts (#310)", () => {
     expect(seen).toContain(1);
   });
 
-  it("retry re-enqueues a rebased Action that wins and flushes", async () => {
+  it("sendLocalActions submits the held Action unchanged and flushes", async () => {
     const { client, calls, conflictId } = await seedConflict();
+    const held = (await onlyConflict(client)).entries[0]?.action;
+    if (held === undefined) throw new Error("expected a held Action");
 
-    await client.conflicts.resolve(conflictId, "retry");
+    await client.conflicts.sendLocalActions(conflictId);
 
     const actions = postedActions(calls);
     expect(actions).toHaveLength(1);
-    const field = actions[0]?.updates[0]?.data?.fields.title;
-    expect(field?.value).toBe("mine");
-    expect(field?.update_id).not.toBe("u_local");
-    // The rebased HLC out-dates the peer's write.
-    expect(field?.hlc).not.toBe(LOCAL_HLC);
+    // Nothing was re-stamped: same Action, same Update, same field HLC.
+    expect(actions[0]).toEqual(held);
 
     expect(await client.conflicts.list()).toEqual([]);
     expect(client.conflicts.count()).toBe(0);
-    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("mine");
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
   });
 
-  it("retry re-asserts the whole Action, re-stamping every field", async () => {
-    const storage = createMemoryAdapter();
-    const stub = mkStubFetch();
-    const client = mkClient(stub.fn, storage);
+  it("sendLocalActions leaves the action log entry's envelope unchanged end to end", async () => {
+    const { client, storage, conflictId } = await seedConflict();
+    const held = (await onlyConflict(client)).entries[0]?.action;
+    if (held === undefined) throw new Error("expected a held Action");
 
-    // Seed the entity so the patches below have something to apply to.
-    await callApplyAction(
-      client,
-      mkTodoWrite({
-        id: "act_base",
-        value: "base",
-        updateId: "u_base",
-        hlc: makeHlc(1_711_036_799_000),
-        gsn: 1,
-      }),
-      "g_1",
+    await client.conflicts.sendLocalActions(conflictId);
+    // The server accepts the write it was sent and echoes it back.
+    await callApplyAction(client, { ...held, gsn: 9 }, "g_1");
+
+    const logged = (await storage.actions.getForEntity("todo_1")).find(
+      (action) => action.id === held.id,
     );
-    await client.outbox.enqueue({
-      id: "act_local",
-      actor_id: ACTOR_ID,
-      hlc: LOCAL_HLC,
-      gsn: 0,
-      updates: [
-        {
-          id: "u_local",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: {
-              title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
-              completed: { value: true, update_id: "u_local", hlc: LOCAL_HLC },
-            },
-          },
-        },
-      ],
-    });
-    const peer = mkTodoWrite({
-      id: "act_peer",
-      value: "theirs",
-      updateId: "u_peer",
-      hlc: PEER_HLC,
-      gsn: 9,
-      // A patch only touches `title`, so the local `completed` is not
-      // swept and the test isolates which fields retry re-asserts.
-      method: "patch",
-    });
-    await callApplyAction(client, peer, "g_1");
-    await client.outbox.detectConflicts([peer], "cu_1");
-
-    const conflict = await onlyConflict(client);
-    expect(slotPaths(conflict.entries[0])).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
-    ]);
-
-    await client.conflicts.resolve(conflict.id, "retry");
-
-    const actions = postedActions(stub.calls);
-    expect(actions).toHaveLength(1);
-    const fields = actions[0]?.updates[0]?.data?.fields ?? {};
-    // The conflict named only `title`, but retry re-asserts the whole
-    // Action, so `completed` travels with it.
-    expect(Object.keys(fields).sort()).toEqual(["completed", "title"]);
-    expect(fields.title?.value).toBe("mine");
-    expect(fields.completed?.value).toBe(true);
-    expect(fields.title?.update_id).not.toBe("u_local");
-    expect(fields.completed?.update_id).not.toBe("u_local");
+    expect(logged?.updates).toEqual(held.updates);
+    expect(logged?.hlc).toBe(held.hlc);
+    expect(logged?.actor_id).toBe(held.actor_id);
   });
 
-  it("retry re-stamps a field an inbound put reverted", async () => {
+  it("sendLocalActions submits a field an inbound put reverted unchanged", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
@@ -317,7 +268,7 @@ describe("client.conflicts (#310)", () => {
       }),
       "g_1",
     );
-    await client.outbox.enqueue({
+    const local: Action = {
       id: "act_local",
       actor_id: ACTOR_ID,
       hlc: LOCAL_HLC,
@@ -331,7 +282,8 @@ describe("client.conflicts (#310)", () => {
           data: { fields: { title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
         },
       ],
-    });
+    };
+    await client.outbox.enqueue(local);
     // The peer's put replaces the entity and omits `title`, so the local
     // patch's field is reverted rather than out-dated.
     const peer: Action = {
@@ -356,26 +308,50 @@ describe("client.conflicts (#310)", () => {
     expect(slotPaths(conflict.entries[0])).toEqual([
       { subjectId: "todo_1", field: "title", path: [] },
     ]);
-    expect(conflict.entries[0]?.slots[0]?.remote).toEqual({ value: undefined });
+    expect(conflict.entries[0]?.slots?.[0]?.remote).toEqual({ value: undefined });
 
-    await client.conflicts.resolve(conflict.id, "retry");
+    await client.conflicts.sendLocalActions(conflict.id);
 
     const actions = postedActions(stub.calls);
     expect(actions).toHaveLength(1);
-    const fields = actions[0]?.updates[0]?.data?.fields ?? {};
-    expect(Object.keys(fields)).toEqual(["title"]);
-    expect(fields.title?.value).toBe("mine");
-    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("mine");
+    expect(actions[0]).toEqual(local);
+    const field = actions[0]?.updates[0]?.data?.fields.title;
+    expect(field?.value).toBe("mine");
+    expect(field?.update_id).toBe("u_local");
+    expect(field?.hlc).toBe(LOCAL_HLC);
   });
 
-  it("discard converges local state on the server view and removes the conflict", async () => {
+  it("clearLocalActions converges local state on the server view and removes the conflict", async () => {
     const { client, calls, conflictId } = await seedConflict();
 
+    // The remote HLC wins the merge, so the materialized row is already the
+    // server's view; clearing removes the held Action without sending it.
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
 
-    await client.conflicts.resolve(conflictId, "discard");
+    await client.conflicts.clearLocalActions(conflictId);
 
     expect(await client.conflicts.list()).toEqual([]);
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
+    expect(actionCalls(calls)).toBe(0);
+  });
+
+  it("clearLocalActions drops a later write to the held subject so the subject converges", async () => {
+    const { client, storage, conflictId, calls } = await seedConflict();
+    const later = mkTodoWrite({
+      id: "act_later",
+      value: "local edit",
+      updateId: "u_later",
+      hlc: LATER_HLC,
+      gsn: 0,
+    });
+    await client.outbox.enqueue(later);
+    // The later write out-dates the peer, so it would win on the server.
+    expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("local edit");
+
+    await client.conflicts.clearLocalActions(conflictId);
+
+    expect(await storage.outbox.get("act_later")).toBeNull();
+    expect(client.outbox.unrejected()).toEqual([]);
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
     expect(actionCalls(calls)).toBe(0);
   });
@@ -391,12 +367,12 @@ describe("client.conflicts (#310)", () => {
     expect(clientB.conflicts.count()).toBe(1);
     const conflict = await onlyConflict(clientB);
     expect(conflict.entries.map((entry) => entry.action.id)).toEqual(["act_local"]);
-    expect(conflict.entries[0]?.slots[0]?.local).toEqual({
+    expect(conflict.entries[0]?.slots?.[0]?.local).toEqual({
       value: "mine",
       update_id: "u_local",
       hlc: LOCAL_HLC,
     });
-    expect(conflict.entries[0]?.slots[0]?.remote).toEqual({
+    expect(conflict.entries[0]?.slots?.[0]?.remote).toEqual({
       value: "theirs",
       update_id: "u_peer",
       hlc: PEER_HLC,
@@ -503,7 +479,7 @@ describe("client.conflicts (#310)", () => {
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
   });
 
-  it("re-materializes a losing Action's non-conflicting entity on discard", async () => {
+  it("re-materializes a losing Action's non-conflicting entity on clear", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
@@ -573,14 +549,14 @@ describe("client.conflicts (#310)", () => {
     const conflict = await onlyConflict(client);
     expect((await client.readLocalEntity("todo_2"))?.data.fields.title.value).toBe("mine");
 
-    await client.conflicts.resolve(conflict.id, "discard");
+    await client.conflicts.clearLocalActions(conflict.id);
 
     expect((await client.readLocalEntity("todo_2"))?.data.fields.title.value).toBe("server");
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
   });
 
-  it("groups losing Actions on one entity into one conflict and fans resolution out", async () => {
-    const { client } = await seedTwoLosers();
+  it("groups losing Actions on one entity into one conflict and fans sendLocalActions out", async () => {
+    const { client, calls } = await seedTwoLosers();
 
     const conflicts = await client.conflicts.list();
     expect(conflicts).toHaveLength(1);
@@ -588,31 +564,50 @@ describe("client.conflicts (#310)", () => {
     if (conflict === undefined) throw new Error("expected a conflict");
     expect(conflict.entries.map((entry) => entry.action.id)).toEqual(["act_a", "act_b"]);
 
-    // `resolve` fans out to every entry under the conflict.
-    const fanOut = await client.conflicts.resolve(conflict.id, "retry");
+    const fanOut = await client.conflicts.sendLocalActions(conflict.id);
     expect(fanOut).toEqual({ resolved: ["act_a", "act_b"], failed: [] });
     expect(await client.conflicts.list()).toEqual([]);
-
-    // A partial resolution leaves the remaining entry under the same id.
-    const second = await seedTwoLosers();
-    const shared = await onlyConflict(second.client);
-    const [firstId] = shared.entries.map((entry) => entry.action.id);
-    if (firstId === undefined) throw new Error("expected an entry");
-
-    const partial = await second.client.conflicts.resolveEntries([firstId], "retry");
-    expect(partial).toEqual({ resolved: [firstId], failed: [] });
-
-    // The remainder stays under the same id, even across a reload.
-    second.client.close();
-    const reloaded = mkStubFetch();
-    const clientC = mkClient(reloaded.fn, second.storage);
-    await clientC.conflicts.rehydrate();
-    const [remaining] = await clientC.conflicts.list();
-    expect(remaining?.id).toBe(shared.id);
-    expect(remaining?.entries.map((entry) => entry.action.id)).toEqual(["act_b"]);
+    // One flush carries the whole group, still in authoring order.
+    expect(postedActions(calls).map((action) => action.id)).toEqual(["act_a", "act_b"]);
   });
 
-  it("entity-scope loss with no position overlap reports non-winning and stays retryable", async () => {
+  it("keeps a later write to a held subject durable and off the wire until resolution", async () => {
+    const { client, storage, conflictId, calls } = await seedConflict();
+    const later = mkTodoWrite({
+      id: "act_later",
+      value: "local edit",
+      updateId: "u_later",
+      hlc: LATER_HLC,
+      gsn: 0,
+    });
+    await client.outbox.enqueue(later);
+
+    // Durable, and held out of the flushable set by the open conflict.
+    expect(await storage.outbox.get("act_later")).toMatchObject({ status: "pending" });
+    expect(client.outbox.pending()).toEqual([]);
+    await expect(client.outbox.flush()).resolves.toEqual({ kind: "empty" });
+    expect(actionCalls(calls)).toBe(0);
+
+    // A reload preserves the hold: it is derived from the durable
+    // conflicted row, not a session-private map.
+    client.close();
+    const reloaded = mkStubFetch();
+    const clientB = mkClient(reloaded.fn, storage);
+    await clientB.conflicts.rehydrate();
+    expect(clientB.conflicts.count()).toBe(1);
+    expect(clientB.outbox.pending()).toEqual([]);
+
+    // Resolution releases the whole held set, in authoring order.
+    await clientB.conflicts.sendLocalActions(conflictId);
+
+    expect(postedActions(reloaded.calls).map((action) => action.id)).toEqual([
+      "act_local",
+      "act_later",
+    ]);
+    expect(await clientB.conflicts.list()).toEqual([]);
+  });
+
+  it("entity-scope loss with no position overlap reports the diff and keeps the envelope", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const entityScopeDoc = defineEntity(
@@ -629,7 +624,7 @@ describe("client.conflicts (#310)", () => {
       storage,
     });
 
-    await client.outbox.enqueue({
+    const local: Action = {
       id: "act_local",
       actor_id: ACTOR_ID,
       hlc: LOCAL_HLC,
@@ -647,7 +642,8 @@ describe("client.conflicts (#310)", () => {
           },
         },
       ],
-    });
+    };
+    await client.outbox.enqueue(local);
 
     // Capture the optimistic row the way a catch-up pass does, before the
     // peer's window replaces it.
@@ -680,9 +676,10 @@ describe("client.conflicts (#310)", () => {
     await client.outbox.detectConflicts([peer], "cu_1");
 
     const conflict = await onlyConflict(client);
+    expect(conflict.scope).toBe("entity");
     expect(conflict.subjects).toEqual(["doc_1"]);
-    expect(conflict.entries[0]?.slots).toEqual([]);
-    expect(conflict.remoteWins()).toBe(false);
+    // No slot list at entity scope; the report is the rows and their diff.
+    expect(conflict.entries[0]?.slots).toBeUndefined();
     expect(conflict.subjectStates).toHaveLength(1);
     const state = conflict.subjectStates[0];
     expect(state?.subjectId).toBe("doc_1");
@@ -697,123 +694,26 @@ describe("client.conflicts (#310)", () => {
       { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
     ]);
 
-    await client.conflicts.resolve(conflict.id, "retry");
+    await client.conflicts.sendLocalActions(conflict.id);
 
     const actions = postedActions(stub.calls);
     expect(actions).toHaveLength(1);
-    const content = actions[0]?.updates[0]?.data?.fields.content;
-    if (content === undefined || !isFieldMap(content)) throw new Error("expected a map field");
-    expect(Object.keys(content.map)).toEqual(["a"]);
-    const a = content.map.a;
-    if (a === undefined || isFieldMap(a)) throw new Error("expected a leaf");
-    expect(a.value).toBe("mine");
-    expect(a.update_id).not.toBe("u_local");
+    // Sent verbatim: the local update id and HLC are untouched.
+    expect(actions[0]).toEqual(local);
   });
 
-  it("retry re-asserts the whole map field, re-stamping both keys", async () => {
-    const storage = createMemoryAdapter();
-    const stub = mkStubFetch();
-    const client = createClient({
-      serverUrl: SERVER_URL,
-      actorId: ACTOR_ID,
-      schema: docSchema,
-      fetchImpl: stub.fn,
-      storage,
-    });
-
-    await client.outbox.enqueue({
-      id: "act_local",
-      actor_id: ACTOR_ID,
-      hlc: LOCAL_HLC,
-      gsn: 0,
-      updates: [
-        {
-          id: "u_local",
-          subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          data: {
-            fields: {
-              content: {
-                map: {
-                  a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
-                  b: { value: "keep", update_id: "u_local", hlc: LOCAL_HLC },
-                },
-              },
-            },
-          },
-        },
-      ],
-    });
-
-    const peer: Action = {
-      id: "act_peer",
-      actor_id: ACTOR_ID,
-      hlc: PEER_HLC,
-      gsn: 9,
-      updates: [
-        {
-          id: "u_peer",
-          subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          data: {
-            fields: {
-              content: { map: { a: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
-            },
-          },
-        },
-      ],
-    };
-    await callApplyAction(client, peer, "g_1");
-    await client.outbox.detectConflicts([peer], "cu_1");
-
-    const conflict = await onlyConflict(client);
-    expect(slotPaths(conflict.entries[0])).toEqual([
-      { subjectId: "doc_1", field: "content", path: ["a"] },
-    ]);
-    expect(conflict.entries[0]?.slots[0]?.local).toEqual({
-      value: "mine",
-      update_id: "u_local",
-      hlc: LOCAL_HLC,
-    });
-    expect(conflict.entries[0]?.slots[0]?.remote).toEqual({
-      value: "theirs",
-      update_id: "u_peer",
-      hlc: PEER_HLC,
-    });
-
-    await client.conflicts.resolve(conflict.id, "retry");
-
-    const actions = postedActions(stub.calls);
-    expect(actions).toHaveLength(1);
-    const content = actions[0]?.updates[0]?.data?.fields.content;
-    if (content === undefined || !isFieldMap(content)) throw new Error("expected a map field");
-    // Only `a` lost, but retry re-asserts the whole map field, so `b` is
-    // re-stamped and travels too.
-    expect(Object.keys(content.map).sort()).toEqual(["a", "b"]);
-    const a = content.map.a;
-    const b = content.map.b;
-    if (a === undefined || isFieldMap(a)) throw new Error("expected a leaf");
-    if (b === undefined || isFieldMap(b)) throw new Error("expected a leaf");
-    expect(a.value).toBe("mine");
-    expect(b.value).toBe("keep");
-    expect(a.update_id).not.toBe("u_local");
-    expect(b.update_id).not.toBe("u_local");
-    expect(a.hlc).not.toBe(LOCAL_HLC);
-  });
-
-  it("reports per-entry resolution failures and leaves the failed entry resolvable", async () => {
+  it("reports per-entry send failures and leaves the failed entry resolvable", async () => {
     const storage = createMemoryAdapter();
     const outboxStore = storage.outbox;
-    let failAtomicWrite = false;
+    let failRelease = false;
     const guarded: ReturnType<typeof createMemoryAdapter> = {
       ...storage,
       outbox: {
         ...outboxStore,
-        putAndDelete: async (entry, deleteId) => {
-          if (failAtomicWrite) throw new Error("outbox store unavailable");
-          await outboxStore.putAndDelete(entry, deleteId);
+        put: async (entry) => {
+          if (failRelease && entry.status === "pending")
+            throw new Error("outbox store unavailable");
+          await outboxStore.put(entry);
         },
       },
     };
@@ -836,10 +736,10 @@ describe("client.conflicts (#310)", () => {
     const entryId = conflict.entries[0]?.action.id;
     if (entryId === undefined) throw new Error("expected an entry");
 
-    // A fault on the atomic retry write leaves the entry conflicted and
-    // enqueues nothing, so the next retry cannot duplicate the write.
-    failAtomicWrite = true;
-    const result = await client.conflicts.resolveEntries([entryId], "retry");
+    // A fault on the release write leaves the entry conflicted and
+    // enqueues nothing.
+    failRelease = true;
+    const result = await client.conflicts.sendLocalActions(conflict.id);
 
     expect(result.resolved).toEqual([]);
     expect(result.failed).toHaveLength(1);
@@ -848,13 +748,12 @@ describe("client.conflicts (#310)", () => {
     expect(client.outbox.pending()).toEqual([]);
     expect((await client.conflicts.list())[0]?.id).toBe(conflict.id);
 
-    // The entry is still resolvable once the store recovers, and the
-    // retry replaces the conflicted row rather than adding a second one.
-    failAtomicWrite = false;
-    const recovered = await client.conflicts.resolve(conflict.id, "retry");
+    // The entry is still resolvable once the store recovers, and the send
+    // replaces the hold rather than duplicating the Action.
+    failRelease = false;
+    const recovered = await client.conflicts.sendLocalActions(conflict.id);
     expect(recovered).toEqual({ resolved: [entryId], failed: [] });
     expect(await client.conflicts.list()).toEqual([]);
-    // One re-assert, not a second copy: the atomic write replaced the row.
-    expect(client.outbox.unrejected()).toHaveLength(1);
+    expect(allPostedActions(stub.calls)).toHaveLength(1);
   });
 });
