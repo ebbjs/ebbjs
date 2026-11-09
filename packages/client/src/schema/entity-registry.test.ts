@@ -1,15 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
-import { defineEntity, e } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const buildRegistry = (): EntityRegistry => {
-  const r = new EntityRegistry();
+const buildRegistry = (): ModelRegistry => {
+  const r = new ModelRegistry();
   r.register(todo);
   return r;
 };
@@ -43,30 +43,30 @@ const buildAction = (updates: Action["updates"]): Action => ({
   updates,
 });
 
-describe("EntityRegistry register / get / has", () => {
+describe("ModelRegistry register / get / has", () => {
   it("returns the same entity from get after register", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     r.register(todo);
     expect(r.get("todo")).toBe(todo);
     expect(r.has("todo")).toBe(true);
   });
 
   it("returns undefined for unknown names", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     expect(r.get("missing")).toBeUndefined();
     expect(r.has("missing")).toBe(false);
   });
 
   it("overwrites on duplicate register", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     r.register(todo);
-    const v2 = defineEntity("todo", { name: e.string() });
+    const v2 = defineModel("todo", { name: e.string() });
     r.register(v2);
     expect(r.get("todo")).toBe(v2);
   });
 
   it("preserves the TypeBox shape on get", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     r.register(todo);
     const got = r.get("todo");
     expect(got?.shape.type).toBe("object");
@@ -79,7 +79,7 @@ describe("EntityRegistry register / get / has", () => {
   });
 });
 
-describe("EntityRegistry.isLwwField", () => {
+describe("ModelRegistry.isLwwField", () => {
   it("reports a declared field on a registered entity as LWW", () => {
     expect(buildRegistry().isLwwField("todo", "title")).toBe(true);
   });
@@ -93,11 +93,11 @@ describe("EntityRegistry.isLwwField", () => {
   });
 
   it("defaults a client without a schema to LWW", () => {
-    expect(new EntityRegistry().isLwwField("todo", "title")).toBe(true);
+    expect(new ModelRegistry().isLwwField("todo", "title")).toBe(true);
   });
 });
 
-describe("EntityRegistry.validateAction", () => {
+describe("ModelRegistry.validateAction", () => {
   it("returns empty for a valid registered action", () => {
     const r = buildRegistry();
     const action = buildAction([validUpdate]);
@@ -178,7 +178,7 @@ describe("EntityRegistry.validateAction", () => {
   });
 });
 
-describe("EntityRegistry.validateFilter", () => {
+describe("ModelRegistry.validateFilter", () => {
   it("returns empty for an unfiltered query", () => {
     const r = buildRegistry();
     expect(r.validateFilter("todo", null)).toEqual([]);
@@ -216,11 +216,11 @@ describe("EntityRegistry.validateFilter", () => {
   });
 });
 
-describe("EntityRegistry.filterWarnings", () => {
-  const defaulted = (): EntityRegistry => {
-    const r = new EntityRegistry();
+describe("ModelRegistry.filterWarnings", () => {
+  const defaulted = (): ModelRegistry => {
+    const r = new ModelRegistry();
     r.register(
-      defineEntity("task", {
+      defineModel("task", {
         title: e.string(),
         priority: e.string().default("normal"),
       }),

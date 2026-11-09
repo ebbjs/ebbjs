@@ -16,7 +16,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
 import {
   createClient,
-  defineEntity,
+  defineModel,
   defineRelationship,
   defineSchema,
   e,
@@ -25,17 +25,17 @@ import {
 } from "@ebbjs/client";
 import { EbbProvider, useClient, useQuery, type QueryRoot } from "../index";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const user = defineEntity("user", {
+const user = defineModel("user", {
   name: e.string(),
 });
 
 const schema = defineSchema({
-  entities: { todo, user },
+  models: { todo, user },
   relationships: {
     todo_assignee: defineRelationship({
       source: todo,

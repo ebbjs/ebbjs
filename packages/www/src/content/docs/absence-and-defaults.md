@@ -22,7 +22,7 @@ the declaration. Declaring a default is the statement that absence has a value,
 and that value is resolved when a row is read.
 
 ```ts
-const task = defineEntity("task", {
+const task = defineModel("task", {
   title: e.string(),
   priority: e.string().default("normal"),
 });

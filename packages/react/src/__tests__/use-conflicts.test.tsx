@@ -10,12 +10,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { createClient, defineEntity, defineSchema, e, type SyncClient } from "@ebbjs/client";
+import { createClient, defineModel, defineSchema, e, type SyncClient } from "@ebbjs/client";
 import { EbbProvider, useConflicts } from "../index";
 
-const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
+const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
 
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 type WireAction = Parameters<SyncClient["outbox"]["enqueue"]>[0];
 

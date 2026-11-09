@@ -1,19 +1,19 @@
 /**
- * `defineRelationship` — typed link between two `defineEntity` outputs.
+ * `defineRelationship` — typed link between two `defineModel` outputs.
  *
  * The builder is a pure factory returning a frozen relationship
  * definition; no behavior at registration time. The runtime registry
- * (`EntityRegistry`) consumes the definition when the caller registers
+ * (`ModelRegistry`) consumes the definition when the caller registers
  * it, and the row accessors on `client.<entity>.get(id)` consume it
  * for traversal.
  *
- * Both ends of the link must be `defineEntity` outputs. The wire shape
+ * Both ends of the link must be `defineModel` outputs. The wire shape
  * (`Relationship` system entity in `@ebbjs/core`) is unchanged; this
  * builder is the schema-layer surface that produces wire Updates via
  * `SyncClient.buildRelationshipWrite`.
  */
 
-import type { EntityDef } from "./entity";
+import type { ModelDef } from "./model";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import { assertAccessorNameAvailable } from "./reserved";
@@ -27,17 +27,17 @@ export type SourceCardinality = "one" | "many";
 
 /**
  * Definition of one typed link between two entity definitions. Returned
- * by `defineRelationship`; consumed by `EntityRegistry.registerRelationship`
+ * by `defineRelationship`; consumed by `ModelRegistry.registerRelationship`
  * and the row accessors.
  *
- * `S` and `T` flow from the source and target `EntityDef` values so the
+ * `S` and `T` flow from the source and target `ModelDef` values so the
  * relationship knows the entity names it links. `A` carries the literal
  * `as` accessor name and `C` the literal `sourceCardinality`, so a
  * type-level walker can pick the right accessor value type per slot.
  */
 export interface RelationshipDef<
-  S extends EntityDef<Record<string, TSchema>>,
-  T extends EntityDef<Record<string, TSchema>>,
+  S extends ModelDef<Record<string, TSchema>>,
+  T extends ModelDef<Record<string, TSchema>>,
   A extends string = string,
   C extends SourceCardinality = SourceCardinality,
 > {
@@ -65,8 +65,8 @@ export interface RelationshipDef<
  * entity name when omitted.
  */
 export interface DefineRelationshipInput<
-  S extends EntityDef<Record<string, TSchema>>,
-  T extends EntityDef<Record<string, TSchema>>,
+  S extends ModelDef<Record<string, TSchema>>,
+  T extends ModelDef<Record<string, TSchema>>,
   A extends string = string,
   C extends SourceCardinality = SourceCardinality,
 > {
@@ -82,8 +82,8 @@ export interface DefineRelationshipInput<
  * Throws when `as` collides with the injected membership accessor.
  */
 export function defineRelationship<
-  S extends EntityDef<Record<string, TSchema>>,
-  T extends EntityDef<Record<string, TSchema>>,
+  S extends ModelDef<Record<string, TSchema>>,
+  T extends ModelDef<Record<string, TSchema>>,
   const A extends string,
   const C extends SourceCardinality = "one",
 >(opts: DefineRelationshipInput<S, T, A, C>): RelationshipDef<S, T, A, C> {

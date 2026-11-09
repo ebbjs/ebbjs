@@ -10,11 +10,11 @@
  * schema, but also imports the system entity for the seed).
  *
  * The system entities are built with the unchecked factory
- * (`buildEntityDef`) because `defineEntity` rejects the reserved
+ * (`buildModelDef`) because `defineModel` rejects the reserved
  * system names.
  */
 
-import { buildEntityDef, e, type EntityDef } from "./entity";
+import { buildModelDef, e, type ModelDef } from "./model";
 
 /**
  * Names of the wire-level entities the SDK owns. They are internal rows
@@ -35,7 +35,7 @@ export const SYSTEM_ENTITY_NAMES: ReadonlySet<string> = new Set([
  * is deleted (`method: "delete"` with no fields), so `target_id` is
  * absent rather than null on a cleared edge.
  */
-export const relationshipSystemEntity = buildEntityDef("relationship", {
+export const relationshipSystemEntity = buildModelDef("relationship", {
   source_id: e.string(),
   target_id: e.string(),
   type: e.string(),
@@ -43,7 +43,7 @@ export const relationshipSystemEntity = buildEntityDef("relationship", {
 });
 
 /** Wire shape of a `Group` record, mirroring `@ebbjs/core`'s `GroupSchema`. */
-export const groupSystemEntity = buildEntityDef("group", {
+export const groupSystemEntity = buildModelDef("group", {
   name: e.string(),
   /**
    * App scope: a group is in scope for an app iff its entry is `true`.
@@ -55,7 +55,7 @@ export const groupSystemEntity = buildEntityDef("group", {
 });
 
 /** Wire shape of a `GroupMember` record, mirroring `@ebbjs/core`'s `GroupMemberSchema`. */
-export const groupMemberSystemEntity = buildEntityDef("groupMember", {
+export const groupMemberSystemEntity = buildModelDef("groupMember", {
   group_id: e.string(),
   actor_id: e.string(),
   permissions: e.array(e.string()),
@@ -66,21 +66,21 @@ export const groupMemberSystemEntity = buildEntityDef("groupMember", {
  * membership, scoping an entity's writes to a group. Distinct from
  * `groupMember`, which carries actor permissions.
  */
-export const entityGroupSystemEntity = buildEntityDef("entityGroup", {
+export const entityGroupSystemEntity = buildModelDef("entityGroup", {
   entity_id: e.string(),
   group_id: e.string(),
 });
 
 /** Field map of the client-side `group` entity. */
-export type GroupFields = typeof groupSystemEntity extends EntityDef<infer F> ? F : never;
+export type GroupFields = typeof groupSystemEntity extends ModelDef<infer F> ? F : never;
 
 /** Field map of the `groupMember` system entity. */
 export type GroupMemberFields =
-  typeof groupMemberSystemEntity extends EntityDef<infer F> ? F : never;
+  typeof groupMemberSystemEntity extends ModelDef<infer F> ? F : never;
 
 /** Field map of the `entityGroup` system entity. */
 export type EntityGroupFields =
-  typeof entityGroupSystemEntity extends EntityDef<infer F> ? F : never;
+  typeof entityGroupSystemEntity extends ModelDef<infer F> ? F : never;
 
 /** Accessor name the built-in membership surface carries on every row. */
 export const GROUPS_ACCESSOR = "groups";

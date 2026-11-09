@@ -21,7 +21,7 @@ import {
   AppendOnlyViolationError,
   CURRENT_TEXT_VERSION,
   e,
-  defineEntity,
+  defineModel,
   defineRelationship,
   defineSchema,
   makeRunId,
@@ -33,8 +33,8 @@ import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
 import { callApplyAction, jsonResponse, waitFor } from "../sync/test-utils";
 
-const note = defineEntity("note", { title: e.string() });
-const textDocument = defineEntity(
+const note = defineModel("note", { title: e.string() });
+const textDocument = defineModel(
   "text_document",
   { content: e.map(TextCellSchema), version: e.number() },
   { materialization: "on-demand" },
@@ -46,7 +46,7 @@ const noteBody = defineRelationship({
   sourceCardinality: "one",
 });
 const schema = defineSchema({
-  entities: { note, text_document: textDocument },
+  models: { note, text_document: textDocument },
   relationships: { noteBody },
   version: 1,
 });

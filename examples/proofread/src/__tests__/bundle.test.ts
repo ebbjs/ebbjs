@@ -31,7 +31,7 @@ describe("the client bundle", () => {
     // client data, so its values remain, but the authoring helpers it came
     // from are inlined away by the bundler.
     expect(code).not.toContain("defineFunction");
-    expect(code).not.toContain("defineEntity");
+    expect(code).not.toContain("defineModel");
     expect(code).not.toContain("@ebbjs/server");
     expect(code).not.toContain("@ebbjs/functions-runtime");
     expect(code).not.toContain("createContext");

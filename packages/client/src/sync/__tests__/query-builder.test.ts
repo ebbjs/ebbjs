@@ -11,7 +11,7 @@ import { Type, type Static } from "@sinclair/typebox";
 
 import type { Entity, FieldValue } from "@ebbjs/core";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import {
   buildQueryBuilder,
@@ -23,7 +23,7 @@ import {
   projectRows,
 } from "../query-builder";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
   body: e.string(),
@@ -130,7 +130,7 @@ describe("projected rows carry the entity id", () => {
   });
 
   it("the injected groupIds wins over a same-named projected field", () => {
-    const withGroupIdsField = defineEntity("withGroupIdsField", {
+    const withGroupIdsField = defineModel("withGroupIdsField", {
       groupIds: e.string(),
       title: e.string(),
     });
@@ -139,7 +139,7 @@ describe("projected rows carry the entity id", () => {
   });
 
   it("the injected id wins over a same-named projected field", () => {
-    const withIdField = defineEntity("withIdField", {
+    const withIdField = defineModel("withIdField", {
       id: e.string(),
       title: e.string(),
     });
@@ -148,7 +148,7 @@ describe("projected rows carry the entity id", () => {
   });
 
   it("the injected id wins over a non-string `id` field", () => {
-    const withNumberId = defineEntity("withNumberId", {
+    const withNumberId = defineModel("withNumberId", {
       id: e.number(),
       title: e.string(),
     });
@@ -595,7 +595,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   });
 
   it("still accepts an array value for an array-typed field", async () => {
-    const tagged = defineEntity("tagged", {
+    const tagged = defineModel("tagged", {
       title: e.string(),
       tags: e.array(e.string()),
     });
@@ -618,7 +618,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
 });
 
 describe("buildQueryBuilder — field without a default", () => {
-  const defWithOptional = defineEntity("todo", {
+  const defWithOptional = defineModel("todo", {
     title: e.string(),
     // No default: absence is the truth, so the read type is `string | undefined`.
     note: e.string(),
@@ -870,7 +870,7 @@ describe("projectFieldValue caching", () => {
 });
 
 describe("projectEntity — declarative defaults", () => {
-  const task = defineEntity("task", {
+  const task = defineModel("task", {
     priority: e.string().default("normal"),
     title: e.string(),
     tags: e.map(e.string()).default({}),
@@ -912,7 +912,7 @@ describe("projectEntity — declarative defaults", () => {
 });
 
 describe("ordering — declarative defaults", () => {
-  const task = defineEntity("task", {
+  const task = defineModel("task", {
     priority: e.string().default("normal"),
     title: e.string(),
   });

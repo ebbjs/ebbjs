@@ -1,5 +1,5 @@
 import type { Update } from "@ebbjs/core";
-import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,11 +15,11 @@ import {
 } from "../index";
 
 const buildRegistry = () => {
-  const project = defineEntity("project", { name: e.string() });
-  const issue = defineEntity("issue", { title: e.string(), project: e.string().default("") });
+  const project = defineModel("project", { name: e.string() });
+  const issue = defineModel("issue", { title: e.string(), project: e.string().default("") });
   const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
   return defineSchema({
-    entities: { project, issue },
+    models: { project, issue },
     relationships: { belongsTo },
     version: 1,
   })._registry;
@@ -110,8 +110,8 @@ describe("@ebbjs/write", () => {
   });
 
   it("writes a user entity's map field as a map envelope", async () => {
-    const setting = defineEntity("setting", { name: e.string(), values: e.map(e.string()) });
-    const registry = defineSchema({ entities: { setting }, version: 1 })._registry;
+    const setting = defineModel("setting", { name: e.string(), values: e.map(e.string()) });
+    const registry = defineSchema({ models: { setting }, version: 1 })._registry;
 
     const updates = await commitUpdates(registry, [
       call(createEntity, {

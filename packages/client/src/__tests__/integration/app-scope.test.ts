@@ -14,7 +14,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAction, createClock, localEvent } from "@ebbjs/core";
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createClient, defineAction, type SyncClient } from "../..";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -35,8 +35,8 @@ const NOTE = `note_${RUN_ID}`;
 const MEMBER_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
 
 /** A schema-bearing client: `group.update` needs the map marker to write scope. */
-const note = defineEntity("note", { title: e.string() });
-const appScopeSchema = defineSchema({ entities: { note }, version: 1 });
+const note = defineModel("note", { title: e.string() });
+const appScopeSchema = defineSchema({ models: { note }, version: 1 });
 const appScopeActions = {
   setScope: defineAction(
     appScopeSchema,

@@ -1,5 +1,5 @@
 /**
- * Type-level views of `defineEntity` / `defineRelationship` outputs.
+ * Type-level views of `defineModel` / `defineRelationship` outputs.
  *
  * The schema keeps entity names and field maps as literals so the
  * namespace and the query builder can derive their typed surfaces from
@@ -9,20 +9,20 @@
 
 import type { TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef } from "@ebbjs/schema";
+import type { ModelDef } from "@ebbjs/schema";
 import type { RelationshipDef } from "@ebbjs/schema";
 
 /** An entity definition with its field map erased. */
-export type AnyEntityDef = EntityDef<Record<string, TSchema>>;
+export type AnyModelDef = ModelDef<Record<string, TSchema>>;
 
 /** A relationship definition with both endpoints' field maps erased. */
-export type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+export type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 
-/** Literal entity name carried by an `EntityDef`. */
-export type EntityNameOf<D> = D extends EntityDef<Record<string, TSchema>, infer N> ? N : never;
+/** Literal entity name carried by an `ModelDef`. */
+export type EntityNameOf<D> = D extends ModelDef<Record<string, TSchema>, infer N> ? N : never;
 
-/** Field map carried by an `EntityDef`. */
-export type FieldsOf<D> = D extends EntityDef<infer F, infer _N> ? F : never;
+/** Field map carried by an `ModelDef`. */
+export type FieldsOf<D> = D extends ModelDef<infer F, infer _N> ? F : never;
 
 /** `as` accessor name carried by a relationship. */
 export type AccessorKeyOf<R> =

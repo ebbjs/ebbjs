@@ -16,14 +16,14 @@
  */
 
 import { generateId, type Update } from "@ebbjs/core";
-import type { EntityRegistry } from "@ebbjs/schema";
+import type { ModelRegistry } from "@ebbjs/schema";
 
 import { type OperationCall, type OpContext } from "./operations";
 import type { WriteResponse } from "./rejection";
 
 /** What the committer needs from the client. */
 export interface CommitCapability {
-  readonly registry: EntityRegistry;
+  readonly registry: ModelRegistry;
   submitRelationshipUpdates(updates: readonly Update[]): Promise<WriteResponse>;
   freshHlc(): string;
   generateUpdateId(): string;

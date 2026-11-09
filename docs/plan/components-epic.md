@@ -16,7 +16,7 @@ write, **variation in a row is expensive**: optional data has to be a tombstone,
 be a synthetic second entity, and a piece of a row that needs different policy has nowhere to
 declare it.
 
-This epic splits those six jobs. A **component** becomes the unit that owns existence, residency,
+This epic splits those six jobs. A **component** becomes the unit that owns existence, loading,
 conflict scope, and version. A **model** — today's `defineEntity` — becomes the name
 of a declared component set, used for permissions, query sources, and projection. `type` stops
 being identity and becomes a name for a set.
@@ -36,7 +36,7 @@ the permission string and the query source — and both read from the model.
 ```
 leaf        the mergeable position: { value, update_id, hlc } or { map: { <key>: leaf } }
 component   a named value. One leaf (e.string, e.object) or one key space (e.map, e.log).
-            Carries: existence, residency, conflict scope, version, optional own permission.
+            Carries: existence, loading, conflict scope, version, optional own permission.
 model     a named component set. What defineModel declares. What client.<name> namespaces.
             Carries: the permission subject, the query source, the typed projection.
 row         an entity id plus the components currently attached to it.
@@ -215,7 +215,7 @@ migrations are for. Static is not immutable.
 So a document preset is `defineComponent`, and the note carries its body:
 
 ```ts
-const body = yjsDocument(); // defineComponent("…/body", e.log(entry), { residency: "on-demand" })
+const body = yjsDocument(); // defineComponent("…/body", e.log(entry), { loading: "lazy" })
 const note = defineModel("note", { title: e.string(), body });
 ```
 
@@ -263,7 +263,7 @@ Each is independently shippable. Numbers are assigned on filing.
 vocabulary ADR is the natural home. Every later slice depends on the words being settled, and the
 two decisions that are expensive to reverse are in this list.
 
-**Scope.** Record in `CONTEXT.md` and an ADR: leaf, component, model, row, existence, residency,
+**Scope.** Record in `CONTEXT.md` and an ADR: leaf, component, model, row, existence, loading, residency,
 conflict scope; the value-vs-key-space axis #760 records; the wire envelope from this epic; and the
 boundary rule — _a component inherits its entity's groups, so anything needing its own membership
 is an entity._
@@ -296,12 +296,12 @@ it.
 `defineModel(name, componentsOrBuilders, opts)` accepting both; a bare builder normalised to an
 anonymous component named `<model>/<field>`. `ModelDef.fields` becomes
 `ModelDef.components`, with `shape` derived. The registry answers "which components does this
-model declare" and "is this component optional / held / what scope".
+model declare" and "is this component optional / eager / what scope".
 
 ```ts
 const title = e.string();                                  // anonymous: note/title
 const body  = defineComponent("note/body", { … }, {         // named: the four powers
-  optional: true, residency: "on-demand", conflictScope: "component",
+  optional: true, loading: "lazy", conflictScope: "component",
 });
 const note  = defineModel("note", { title, status: e.enum([…]), body });
 ```
@@ -313,7 +313,7 @@ const note  = defineModel("note", { title, status: e.enum([…]), body });
 - [ ] `defineModel` accepts builders and components in one map; normalisation is total and
       reversible.
 - [ ] `ModelRegistry`: `componentsOf(model)`, `componentOf(model, name)`,
-      `isOptional`, `residencyOf`, `conflictScopeOf`, `permissionOf`.
+      `isOptional`, `loadingOf`, `conflictScopeOf`, `permissionOf`.
 - [ ] `ModelDef.shape` is derived from the attached components, so `Static<shape>` and every
       projection keep working unchanged.
 - [ ] Schema hash includes the model→component mapping (permission integrity; see sub-issue 10).

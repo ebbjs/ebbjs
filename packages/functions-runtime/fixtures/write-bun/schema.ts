@@ -7,19 +7,19 @@
  * acceptance tests seed and assert on.
  */
 
-import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   done: e.boolean().default(false),
   // The canonical FK set a many-cardinality relationship writes on the source.
   labels: e.array(e.string()).default([]),
 });
-const project = defineEntity("project", { name: e.string() });
-const label = defineEntity("label", { name: e.string() });
+const project = defineModel("project", { name: e.string() });
+const label = defineModel("label", { name: e.string() });
 
 export const schema = defineSchema({
-  entities: { todo, project, label },
+  models: { todo, project, label },
   relationships: {
     todo_project: defineRelationship({ source: todo, target: project, as: "project" }),
     todo_labels: defineRelationship({

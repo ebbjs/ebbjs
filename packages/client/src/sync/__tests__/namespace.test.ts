@@ -8,7 +8,7 @@ import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { groupSystemEntity } from "@ebbjs/schema";
@@ -22,17 +22,17 @@ import type { ManyPointerValue } from "../relationship";
 import { createClient } from "../client";
 import { seedReplicaRow } from "../test-utils";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const user = defineEntity("user", {
+const user = defineModel("user", {
   name: e.string(),
 });
 
 const schema = defineSchema({
-  entities: { todo, user },
+  models: { todo, user },
   version: 1,
 });
 
@@ -52,12 +52,12 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 
 describe("client.<entity>.query()", () => {
   it("a tombstoned leaf projects as absent, same as a missing one", async () => {
-    const todoWithBody = defineEntity("todo", {
+    const todoWithBody = defineModel("todo", {
       title: e.string(),
       body: e.string(),
     });
     const schemaWithBody = defineSchema({
-      entities: { todo: todoWithBody },
+      models: { todo: todoWithBody },
       version: 1,
     });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -83,11 +83,11 @@ describe("client.<entity>.query()", () => {
   });
 
   it("fills a declared default through query() and get()", async () => {
-    const task = defineEntity("task", {
+    const task = defineModel("task", {
       title: e.string(),
       priority: e.string().default("normal"),
     });
-    const taskSchema = defineSchema({ entities: { task }, version: 1 });
+    const taskSchema = defineSchema({ models: { task }, version: 1 });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -158,7 +158,7 @@ describe("client.<entity>.query()", () => {
     expect(rows.map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
 
-  it("rows are readonly Todo[] where Todo = Static<typeof schema.entities.todo.shape>", async () => {
+  it("rows are readonly Todo[] where Todo = Static<typeof schema.models.todo.shape>", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
@@ -168,7 +168,7 @@ describe("client.<entity>.query()", () => {
       mkEntity("t1", "todo", { title: "Ship", completed: false }),
     );
 
-    type Todo = Static<typeof schema.entities.todo.shape>;
+    type Todo = Static<typeof schema.models.todo.shape>;
     const rows: readonly Todo[] = await client.todo.query();
     expect(rows[0]?.title).toBe("Ship");
     expect(rows[0]?.completed).toBe(false);
@@ -283,12 +283,12 @@ describe("createClient without a schema", () => {
 });
 
 describe("client.<entity>.get(id)", () => {
-  it("resolves to Todo | null where Todo = Static<typeof schema.entities.todo.shape>", async () => {
+  it("resolves to Todo | null where Todo = Static<typeof schema.models.todo.shape>", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    type Todo = Static<typeof schema.entities.todo.shape>;
+    type Todo = Static<typeof schema.models.todo.shape>;
     const row: Todo | null = await client.todo.get("t1");
     expect(row).not.toBeNull();
     expect(row?.title).toBe("Ship");
@@ -311,7 +311,7 @@ describe("client.<entity>.get(id)", () => {
 
   it("the entity id wins over a relationship accessor named `id`", async () => {
     const idAccessorSchema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       relationships: {
         todo_user_id: defineRelationship({
           source: todo,
@@ -358,12 +358,12 @@ describe("client.<entity>.get(id)", () => {
   });
 
   it("projects a stored value, and a tombstone the same as absence", async () => {
-    const todoWithBody = defineEntity("todo", {
+    const todoWithBody = defineModel("todo", {
       title: e.string(),
       body: e.string(),
     });
     const schemaWithBody = defineSchema({
-      entities: { todo: todoWithBody },
+      models: { todo: todoWithBody },
       version: 1,
     });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -439,22 +439,22 @@ describe("client.<entity>.get(id)", () => {
  * - `list` is the target of `todo.parentList`; the same `as` name
  *   on `list` is the reverse accessor.
  */
-const todoEntity = defineEntity("todo", {
+const todoEntity = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
-const labelEntity = defineEntity("label", {
+const labelEntity = defineModel("label", {
   name: e.string(),
 });
-const listEntity = defineEntity("list", {
+const listEntity = defineModel("list", {
   name: e.string(),
 });
-const userEntity = defineEntity("user", {
+const userEntity = defineModel("user", {
   name: e.string(),
 });
 
 const schemaWithRels = defineSchema({
-  entities: {
+  models: {
     todo: todoEntity,
     label: labelEntity,
     list: listEntity,
@@ -561,15 +561,15 @@ const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise
  * exercises built-in `groups` membership, answered from `entityGroup`
  * rows rather than a declared relationship.
  */
-const whereTodo = defineEntity("todo", {
+const whereTodo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
   owner: e.string(),
 });
-const whereDocument = defineEntity("document", { title: e.string() });
+const whereDocument = defineModel("document", { title: e.string() });
 
 const schemaForWhere = defineSchema({
-  entities: {
+  models: {
     todo: whereTodo,
     list: listEntity,
     document: whereDocument,
@@ -983,7 +983,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
       storage,
       schema: schemaWithRels,
     });
-    type Todo = Static<typeof schemaWithRels.entities.todo.shape>;
+    type Todo = Static<typeof schemaWithRels.models.todo.shape>;
     const row: Todo | null = await client.todo.get("t1");
     expect(row).not.toBeNull();
     if (row === null) throw new Error("unreachable");
@@ -1163,13 +1163,13 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     // `card` declares a `tags` field AND a forward-many `tags`
     // relationship. The runtime overwrites the projected field with
     // the accessor; the static type follows (`Omit<...> & accessors`).
-    const card = defineEntity("card", {
+    const card = defineModel("card", {
       title: e.string(),
       tags: { type: "array", items: { type: "string" } } as never,
     });
-    const tag = defineEntity("tag", { name: e.string() });
+    const tag = defineModel("tag", { name: e.string() });
     const schemaWithOverlap = defineSchema({
-      entities: { card, tag },
+      models: { card, tag },
       relationships: {
         card_tags: defineRelationship({
           source: card,
@@ -1205,9 +1205,9 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     // reverse (`node` ← `node`). The runtime attaches forward then
     // reverse, so the reverse `QueryBuilder` wins; the static type
     // mirrors that precedence rather than producing an intersection.
-    const node = defineEntity("node", { label: e.string() });
+    const node = defineModel("node", { label: e.string() });
     const schemaWithSelf = defineSchema({
-      entities: { node },
+      models: { node },
       relationships: {
         node_parent: defineRelationship({ source: node, target: node, as: "parent" }),
       },
@@ -1325,7 +1325,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
 });
 
 describe("doc.groups — built-in membership accessor", () => {
-  const groupsSchema = defineSchema({ entities: { todo: todoEntity }, version: 1 });
+  const groupsSchema = defineSchema({ models: { todo: todoEntity }, version: 1 });
 
   it("resolves the group rows linked through entityGroup membership rows", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
@@ -1355,7 +1355,7 @@ describe("doc.groups — built-in membership accessor", () => {
       sourceCardinality: "many",
     });
     const schemaWithOwnedBy = defineSchema({
-      entities: { todo: todoEntity },
+      models: { todo: todoEntity },
       relationships: { todo_ownedBy: todoOwnedBy },
       version: 1,
     });
@@ -1429,18 +1429,18 @@ describe("doc.groups — built-in membership accessor", () => {
  * list.*` so the early permission check passes.
  */
 describe("draft link / unlink / setLinks", () => {
-  const list = defineEntity("list", { name: e.string() });
+  const list = defineModel("list", { name: e.string() });
 
   // `todo` declares a `tags` field carrying the canonical FK set
   // so the many-cardinality `setLinks` entity Update validates.
-  const todoWithTags = defineEntity("todo", {
+  const todoWithTags = defineModel("todo", {
     title: e.string(),
     completed: e.boolean(),
     tags: { type: "array", items: { type: "string" } } as never,
   });
 
   const schemaWithRels = defineSchema({
-    entities: { todo: todoWithTags, user, list },
+    models: { todo: todoWithTags, user, list },
     relationships: {
       todo_list: defineRelationship({ source: todoWithTags, target: list, as: "list" }),
       todo_tags: defineRelationship({
@@ -1677,8 +1677,8 @@ describe("draft link / unlink / setLinks", () => {
  * shape.
  */
 describe("draft addToGroup / removeFromGroup / setGroups", () => {
-  const memberTodo = defineEntity("todo", { title: e.string() });
-  const memberSchema = defineSchema({ entities: { todo: memberTodo }, version: 1 });
+  const memberTodo = defineModel("todo", { title: e.string() });
+  const memberSchema = defineSchema({ models: { todo: memberTodo }, version: 1 });
 
   const jsonResponse = (body: unknown): Response =>
     new Response(JSON.stringify(body), {
@@ -1869,7 +1869,7 @@ describe("draft create / update — runtime validation", () => {
    * any network call — `seen` captures every URL, so a passing
    * `/sync/actions` count proves the wire was actually reached.
    */
-  const todoForCreate = defineEntity("todo", {
+  const todoForCreate = defineModel("todo", {
     title: e.string(),
     completed: e.boolean(),
     // A declared default is what lets `create()` omit a field.
@@ -1877,7 +1877,7 @@ describe("draft create / update — runtime validation", () => {
   });
 
   const schemaForCreate = defineSchema({
-    entities: { todo: todoForCreate, user, list: defineEntity("list", { name: e.string() }) },
+    models: { todo: todoForCreate, user, list: defineModel("list", { name: e.string() }) },
     version: 1,
   });
 
@@ -2253,8 +2253,8 @@ describe("draft create — entityGroup rows", () => {
     }) as unknown as typeof fetch;
   };
 
-  const memberTodo = defineEntity("todo", { title: e.string() });
-  const memberSchema = defineSchema({ entities: { todo: memberTodo }, version: 1 });
+  const memberTodo = defineModel("todo", { title: e.string() });
+  const memberSchema = defineSchema({ models: { todo: memberTodo }, version: 1 });
 
   /**
    * The draft create under test. An omitted `groups` becomes the empty
@@ -2358,11 +2358,11 @@ describe("draft create — entityGroup rows", () => {
 });
 
 describe("draft delete", () => {
-  const todoForDelete = defineEntity("todo", {
+  const todoForDelete = defineModel("todo", {
     title: e.string(),
     completed: e.boolean(),
   });
-  const schemaForDelete = defineSchema({ entities: { todo: todoForDelete }, version: 1 });
+  const schemaForDelete = defineSchema({ models: { todo: todoForDelete }, version: 1 });
 
   const jsonResponse = (body: unknown): Response =>
     new Response(JSON.stringify(body), {

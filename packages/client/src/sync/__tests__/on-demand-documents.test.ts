@@ -18,11 +18,11 @@ import type { TSchema } from "@sinclair/typebox/type";
 import {
   CURRENT_TEXT_VERSION,
   e,
-  defineEntity,
+  defineModel,
   makeRunId,
   ROOT_ANCHOR,
   TextCellSchema,
-  type EntityDef,
+  type ModelDef,
   type TextCell,
 } from "@ebbjs/schema";
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
@@ -33,10 +33,10 @@ import type { SyncClientOptions } from "../types";
 import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 type AnySchema = Schema<
-  Record<string, AnyEntityDef>,
+  Record<string, AnyModelDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
 
@@ -78,14 +78,14 @@ function harness<S extends AnySchema>(
   return { client, storage, written };
 }
 
-const page = defineEntity("page", { title: e.string() });
-const pageBody = defineEntity(
+const page = defineModel("page", { title: e.string() });
+const pageBody = defineModel(
   "page_body",
   { content: e.map(TextCellSchema), version: e.number() },
   { materialization: "on-demand" },
 );
 const pageSchema = defineSchema({
-  entities: { page, page_body: pageBody },
+  models: { page, page_body: pageBody },
   relationships: {
     body: defineRelationship({
       source: page,
@@ -316,14 +316,14 @@ describe("querying on-demand types", () => {
 // ---------------------------------------------------------------------------
 
 describe("held source with an on-demand join", () => {
-  const pageEntity = defineEntity("page", { title: e.string() });
-  const contentEntity = defineEntity(
+  const pageEntity = defineModel("page", { title: e.string() });
+  const contentEntity = defineModel(
     "page_content",
     { text: e.string() },
     { materialization: "on-demand" },
   );
   const joinSchema = defineSchema({
-    entities: { page: pageEntity, page_content: contentEntity },
+    models: { page: pageEntity, page_content: contentEntity },
     relationships: {
       page_content: defineRelationship({
         source: pageEntity,

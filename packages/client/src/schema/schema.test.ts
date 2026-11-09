@@ -5,19 +5,19 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 
-import { defineEntity, e } from "@ebbjs/schema";
-import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ReservedNameError } from "@ebbjs/schema";
 import { defineSchema, UnregisteredRelationshipEndpointError, type Schema } from "@ebbjs/schema";
 import { entityGroupSystemEntity, groupMemberSystemEntity, groupSystemEntity } from "@ebbjs/schema";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const user = defineEntity("user", {
+const user = defineModel("user", {
   name: e.string(),
 });
 
@@ -35,20 +35,20 @@ const relationshipsFixture = { todo_ownedBy } as const;
 describe("defineSchema", () => {
   it("returns a frozen value with the declared entities and version", () => {
     const schema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       version: 2,
     });
     expect(Object.isFrozen(schema)).toBe(true);
     expect(schema.version).toBe(2);
     expect(schema.minSupportedVersion).toBeUndefined();
-    expect(Object.keys(schema.entities)).toEqual(["todo", "user"]);
-    expect(schema.entities.todo).toBe(todo);
-    expect(schema.entities.user).toBe(user);
+    expect(Object.keys(schema.models)).toEqual(["todo", "user"]);
+    expect(schema.models.todo).toBe(todo);
+    expect(schema.models.user).toBe(user);
   });
 
   it("records minSupportedVersion when provided", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 3,
       minSupportedVersion: 2,
     });
@@ -56,12 +56,12 @@ describe("defineSchema", () => {
     expect(schema.minSupportedVersion).toBe(2);
   });
 
-  it("exposes a runtime EntityRegistry on _registry with every entity registered", () => {
+  it("exposes a runtime ModelRegistry on _registry with every entity registered", () => {
     const schema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       version: 1,
     });
-    expect(schema._registry).toBeInstanceOf(EntityRegistry);
+    expect(schema._registry).toBeInstanceOf(ModelRegistry);
     expect(schema._registry.has("todo")).toBe(true);
     expect(schema._registry.has("user")).toBe(true);
     expect(schema._registry.get("todo")).toBe(todo);
@@ -70,7 +70,7 @@ describe("defineSchema", () => {
 
   it("registers every relationship on the composed registry", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       relationships: relationshipsFixture,
       version: 1,
     });
@@ -83,7 +83,7 @@ describe("defineSchema", () => {
 
   it("accepts a relationships slot and threads it through the type", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       relationships: relationshipsFixture,
       version: 1,
     });
@@ -93,7 +93,7 @@ describe("defineSchema", () => {
 
   it("omits the relationships slot when not provided", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
     expect(schema.relationships).toBeUndefined();
@@ -102,18 +102,18 @@ describe("defineSchema", () => {
 
   it("preserves the typed inference of TEntities in Schema<TEntities, TRelationships>", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
-    const fields: Schema<{ todo: typeof todo }>["entities"]["todo"]["fields"] =
-      schema.entities.todo.fields;
+    const fields: Schema<{ todo: typeof todo }>["models"]["todo"]["markers"] =
+      schema.models.todo.markers;
     expect(fields.title.type).toBe("lww");
     expect(fields.completed.type).toBe("lww");
   });
 
   it("rejects actions with unknown field names through the composed registry", async () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
     const hlc = makeHlc(1711036800000);
@@ -148,7 +148,7 @@ describe("defineSchema", () => {
 
   it("accepts a multi-entity action and validates every entity against the registry", () => {
     const schema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       version: 1,
     });
     const hlc = makeHlc(1711036800000);
@@ -188,7 +188,7 @@ describe("defineSchema", () => {
 
   it("flags updates whose subject_type isn't in the registry", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
     const hlc = makeHlc(1711036800000);
@@ -216,8 +216,8 @@ describe("defineSchema", () => {
   });
 
   it("two schemas share entities but build independent registries", () => {
-    const a = defineSchema({ entities: { todo }, version: 1 });
-    const b = defineSchema({ entities: { user }, version: 1 });
+    const a = defineSchema({ models: { todo }, version: 1 });
+    const b = defineSchema({ models: { user }, version: 1 });
     expect(a._registry.has("todo")).toBe(true);
     expect(a._registry.has("user")).toBe(false);
     expect(b._registry.has("todo")).toBe(false);
@@ -229,21 +229,21 @@ describe("defineSchema", () => {
 });
 
 describe("defineSchema materialization", () => {
-  const page = defineEntity("page", { title: e.string() });
-  const pageContent = defineEntity(
+  const page = defineModel("page", { title: e.string() });
+  const pageContent = defineModel(
     "page_content",
     { content: e.map(e.string()) },
     { materialization: "on-demand" },
   );
 
   it("keeps each entity's declared materialization", () => {
-    const schema = defineSchema({ entities: { page, page_content: pageContent }, version: 1 });
-    expect(schema.entities.page.materialization).toBe("held");
-    expect(schema.entities.page_content.materialization).toBe("on-demand");
+    const schema = defineSchema({ models: { page, page_content: pageContent }, version: 1 });
+    expect(schema.models.page.materialization).toBe("held");
+    expect(schema.models.page_content.materialization).toBe("on-demand");
   });
 
   it("leaves system entities held", () => {
-    const schema = defineSchema({ entities: { page }, version: 1 });
+    const schema = defineSchema({ models: { page }, version: 1 });
     expect(schema._registry.get("relationship")?.materialization).toBe("held");
     expect(schema._registry.get("group")?.materialization).toBe("held");
   });
@@ -251,7 +251,7 @@ describe("defineSchema materialization", () => {
 
 describe("defineSchema system entities + membership", () => {
   it("registers the system entities alongside user entities", () => {
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     expect(schema._registry.has("relationship")).toBe(true);
     expect(schema._registry.has("group")).toBe(true);
     expect(schema._registry.has("groupMember")).toBe(true);
@@ -262,18 +262,18 @@ describe("defineSchema system entities + membership", () => {
   });
 
   it("does not inject a groups relationship for user entities", () => {
-    const schema = defineSchema({ entities: { todo, user }, version: 1 });
+    const schema = defineSchema({ models: { todo, user }, version: 1 });
     for (const name of ["todo", "user"] as const) {
       expect(schema._registry.getRelationship(name, "groups")).toBeUndefined();
     }
   });
 
   it("rejects an app entity that collides with a system entity name", () => {
-    expect(() => defineSchema({ entities: { group: groupSystemEntity }, version: 1 })).toThrow(
+    expect(() => defineSchema({ models: { group: groupSystemEntity }, version: 1 })).toThrow(
       ReservedNameError,
     );
     expect(() =>
-      defineSchema({ entities: { entityGroup: entityGroupSystemEntity }, version: 1 }),
+      defineSchema({ models: { entityGroup: entityGroupSystemEntity }, version: 1 }),
     ).toThrow(ReservedNameError);
   });
 
@@ -286,18 +286,18 @@ describe("defineSchema system entities + membership", () => {
       type: "todo",
     };
     expect(() =>
-      defineSchema({ entities: { todo }, relationships: { bad: colliding }, version: 1 }),
+      defineSchema({ models: { todo }, relationships: { bad: colliding }, version: 1 }),
     ).toThrow(ReservedNameError);
   });
 });
 
 describe("defineSchema relationship endpoint validation", () => {
-  const label = defineEntity("label", { name: e.string() });
+  const label = defineModel("label", { name: e.string() });
 
   it("throws when a forward-one relationship's target is not registered", () => {
     const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
     expect(() =>
-      defineSchema({ entities: { todo }, relationships: { todo_label }, version: 1 }),
+      defineSchema({ models: { todo }, relationships: { todo_label }, version: 1 }),
     ).toThrow(UnregisteredRelationshipEndpointError);
   });
 
@@ -309,18 +309,18 @@ describe("defineSchema relationship endpoint validation", () => {
       sourceCardinality: "many",
     });
     expect(() =>
-      defineSchema({ entities: { todo }, relationships: { todo_labels }, version: 1 }),
+      defineSchema({ models: { todo }, relationships: { todo_labels }, version: 1 }),
     ).toThrow(UnregisteredRelationshipEndpointError);
   });
 
   it("throws when a relationship's source is not registered", () => {
     const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
     expect(() =>
-      defineSchema({ entities: { label }, relationships: { todo_label }, version: 1 }),
+      defineSchema({ models: { label }, relationships: { todo_label }, version: 1 }),
     ).toThrow(UnregisteredRelationshipEndpointError);
   });
 
-  it("names the missing endpoint, the accessor, and the entities map in the message", () => {
+  it("names the missing endpoint, the accessor, and the models map in the message", () => {
     const todo_labels = defineRelationship({
       source: todo,
       target: label,
@@ -329,7 +329,7 @@ describe("defineSchema relationship endpoint validation", () => {
     });
     let caught: unknown;
     try {
-      defineSchema({ entities: { todo }, relationships: { todo_labels }, version: 1 });
+      defineSchema({ models: { todo }, relationships: { todo_labels }, version: 1 });
     } catch (err) {
       caught = err;
     }
@@ -340,7 +340,7 @@ describe("defineSchema relationship endpoint validation", () => {
     expect(error.accessor).toBe("labels");
     expect(error.message).toContain('"label"');
     expect(error.message).toContain('"labels"');
-    expect(error.message).toContain('"entities"');
+    expect(error.message).toContain('"models"');
   });
 
   it("accepts a relationship whose target is a system entity", () => {
@@ -351,7 +351,7 @@ describe("defineSchema relationship endpoint validation", () => {
       sourceCardinality: "many",
     });
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       relationships: { todo_ownedBy },
       version: 1,
     });
@@ -366,7 +366,7 @@ describe("defineSchema relationship endpoint validation", () => {
       sourceCardinality: "many",
     });
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       relationships: { group_todos },
       version: 1,
     });
@@ -377,7 +377,7 @@ describe("defineSchema relationship endpoint validation", () => {
     const todo_label = defineRelationship({ source: todo, target: label, as: "label" });
     let caught: unknown;
     try {
-      defineSchema({ entities: { label }, relationships: { todo_label }, version: 1 });
+      defineSchema({ models: { label }, relationships: { todo_label }, version: 1 });
     } catch (err) {
       caught = err;
     }
@@ -389,13 +389,13 @@ describe("defineSchema relationship endpoint validation", () => {
 });
 
 describe("defineSchema TypeBox shape axis", () => {
-  it("exposes the implicit Type.Object wrapper as schema.entities.X.shape", () => {
+  it("exposes the implicit Type.Object wrapper as schema.models.X.shape", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
-    expect(schema.entities.todo.shape.type).toBe("object");
-    expect(schema.entities.todo.shape.properties).toEqual(
+    expect(schema.models.todo.shape.type).toBe("object");
+    expect(schema.models.todo.shape.properties).toEqual(
       expect.objectContaining({
         title: expect.objectContaining({ type: "string" }),
         completed: expect.objectContaining({ type: "boolean" }),
@@ -403,40 +403,40 @@ describe("defineSchema TypeBox shape axis", () => {
     );
   });
 
-  it("exposes the derived FieldMarker map as schema.entities.X.fields alongside shape", () => {
+  it("exposes the derived FieldMarker map as schema.models.X.markers alongside shape", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
     // Marker axis: FieldMarker map derived from the field set.
-    expect(schema.entities.todo.fields).toEqual({
+    expect(schema.models.todo.markers).toEqual({
       title: { type: "lww" },
       completed: { type: "lww" },
     });
     // Shape axis: implicit Type.Object wrapper, separate projection.
-    expect(schema.entities.todo.shape.type).toBe("object");
-    expect(schema.entities.todo.shape).not.toBe(schema.entities.todo.fields);
+    expect(schema.models.todo.shape.type).toBe("object");
+    expect(schema.models.todo.shape).not.toBe(schema.models.todo.markers);
   });
 
   it("threads the shape and fields axes independently across multiple entities", () => {
     const schema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       version: 1,
     });
     for (const entity of [todo, user]) {
-      expect(schema.entities[entity.name as "todo" | "user"].shape).toBe(entity.shape);
-      expect(schema.entities[entity.name as "todo" | "user"].fields).toBe(entity.fields);
+      expect(schema.models[entity.name as "todo" | "user"].shape).toBe(entity.shape);
+      expect(schema.models[entity.name as "todo" | "user"].markers).toBe(entity.markers);
     }
   });
 
   it("preserves the type-level reachability of Schema<TEntities, TRelationships>.entities.X.shape", () => {
     const schema = defineSchema({
-      entities: { todo },
+      models: { todo },
       version: 1,
     });
     // Both axes are reachable at the type level without casting.
-    const shape: typeof schema.entities.todo.shape = schema.entities.todo.shape;
-    const fields: typeof schema.entities.todo.fields = schema.entities.todo.fields;
+    const shape: typeof schema.models.todo.shape = schema.models.todo.shape;
+    const fields: typeof schema.models.todo.markers = schema.models.todo.markers;
     expect(shape.type).toBe("object");
     expect(fields.title.type).toBe("lww");
   });

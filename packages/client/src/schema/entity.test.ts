@@ -1,31 +1,31 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
 import { Type, type Static } from "@sinclair/typebox";
 import {
-  defineEntity,
+  defineModel,
   e,
   hasDefault,
   readDefault,
   validatePayload,
-  type EntityDef,
+  type ModelDef,
   NullFieldError,
 } from "@ebbjs/schema";
 import { ReservedNameError, RESERVED_ENTITY_NAMES } from "@ebbjs/schema";
 
-describe("defineEntity", () => {
+describe("defineModel", () => {
   it("returns a value with the given name and fields", () => {
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
     expect(todo.name).toBe("todo");
-    expect(todo.fields).toEqual({
+    expect(todo.markers).toEqual({
       title: { type: "lww" },
       completed: { type: "lww" },
     });
   });
 
   it("exposes the implicit Type.Object wrapper as shape", () => {
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
@@ -37,7 +37,7 @@ describe("defineEntity", () => {
   });
 
   it("returns a frozen value", () => {
-    const todo = defineEntity("todo", { title: e.string() });
+    const todo = defineModel("todo", { title: e.string() });
     expect(Object.isFrozen(todo)).toBe(true);
   });
 
@@ -49,62 +49,62 @@ describe("defineEntity", () => {
       patternProperties: { "^(.*)$": { type: "string" } },
     });
 
-    const doc = defineEntity("doc", {
+    const doc = defineModel("doc", {
       content: Type.Object({}, { additionalProperties: Type.String() }),
     });
     expect(doc.shape.properties.content).toMatchObject({
       type: "object",
       additionalProperties: { type: "string" },
     });
-    expect(doc.fields.content).toEqual({ type: "lww" });
+    expect(doc.components.content.marker).toEqual({ type: "lww" });
   });
 
-  it("preserves field-name typing in EntityDef<TFields>", () => {
-    const todo = defineEntity("todo", {
+  it("preserves field-name typing in ModelDef<TFields>", () => {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    expect(todo.fields.title.type).toBe("lww");
-    expect(todo.fields.completed.type).toBe("lww");
+    expect(todo.markers.title.type).toBe("lww");
+    expect(todo.markers.completed.type).toBe("lww");
   });
 
-  it("preserves the typed EntityDef<TFields> generic at the call site", () => {
-    const todo: EntityDef<{
+  it("preserves the typed ModelDef<TFields> generic at the call site", () => {
+    const todo: ModelDef<{
       title: ReturnType<typeof e.string>;
       completed: ReturnType<typeof e.boolean>;
-    }> = defineEntity("todo", {
+    }> = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    expect(todo.fields.title.type).toBe("lww");
+    expect(todo.markers.title.type).toBe("lww");
   });
 
   it("produces independent values for independent calls", () => {
-    const a = defineEntity("a", { x: e.number() });
-    const b = defineEntity("b", { y: e.boolean() });
+    const a = defineModel("a", { x: e.number() });
+    const b = defineModel("b", { y: e.boolean() });
     expect(a).not.toBe(b);
     expect(a.name).toBe("a");
     expect(b.name).toBe("b");
-    expect(a.fields).not.toBe(b.fields);
+    expect(a.markers).not.toBe(b.markers);
   });
 
   it('defaults conflictScope to "field"', () => {
-    const todo = defineEntity("todo", { title: e.string() });
+    const todo = defineModel("todo", { title: e.string() });
     expect(todo.conflictScope).toBe("field");
   });
 
   it("stores an explicit conflictScope", () => {
-    const todo = defineEntity("todo", { title: e.string() }, { conflictScope: "entity" });
+    const todo = defineModel("todo", { title: e.string() }, { conflictScope: "entity" });
     expect(todo.conflictScope).toBe("entity");
   });
 
   it('defaults materialization to "held"', () => {
-    const todo = defineEntity("todo", { title: e.string() });
+    const todo = defineModel("todo", { title: e.string() });
     expect(todo.materialization).toBe("held");
   });
 
   it("stores an explicit materialization", () => {
-    const pageContent = defineEntity(
+    const pageContent = defineModel(
       "page_content",
       { content: e.map(e.string()) },
       { materialization: "on-demand" },
@@ -113,7 +113,7 @@ describe("defineEntity", () => {
   });
 
   it("freezes the declared materialization", () => {
-    const pageContent = defineEntity(
+    const pageContent = defineModel(
       "page_content",
       { content: e.map(e.string()) },
       { materialization: "on-demand" },
@@ -125,19 +125,19 @@ describe("defineEntity", () => {
   });
 });
 
-describe("defineEntity reserved names", () => {
+describe("defineModel reserved names", () => {
   it.each(RESERVED_ENTITY_NAMES)("rejects the reserved entity name %s", (name) => {
-    expect(() => defineEntity(name, { name: e.string() })).toThrow(ReservedNameError);
-    expect(() => defineEntity(name, { name: e.string() })).toThrow(/reserved/);
+    expect(() => defineModel(name, { name: e.string() })).toThrow(ReservedNameError);
+    expect(() => defineModel(name, { name: e.string() })).toThrow(/reserved/);
   });
 
   it("rejects a field named groups — the injected membership accessor", () => {
-    expect(() => defineEntity("todo", { groups: e.string() })).toThrow(ReservedNameError);
-    expect(() => defineEntity("todo", { groups: e.string() })).toThrow(/reserved/);
+    expect(() => defineModel("todo", { groups: e.string() })).toThrow(ReservedNameError);
+    expect(() => defineModel("todo", { groups: e.string() })).toThrow(/reserved/);
   });
 
   it("still accepts app names and fields that don't collide", () => {
-    const todo = defineEntity("todo", { title: e.string(), grouping: e.string() });
+    const todo = defineModel("todo", { title: e.string(), grouping: e.string() });
     expect(todo.name).toBe("todo");
   });
 });
@@ -165,8 +165,8 @@ describe("e.* primitives", () => {
 });
 
 describe("bare-field-map authoring", () => {
-  it("defineEntity accepts a bare field map; callers never write Type.Object", () => {
-    const todo = defineEntity("todo", {
+  it("defineModel accepts a bare field map; callers never write Type.Object", () => {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
       body: e.string(),
@@ -178,7 +178,7 @@ describe("bare-field-map authoring", () => {
 
 describe("declarative field defaults", () => {
   it("e.string().default(v) stamps a plain default annotation on the property schema", () => {
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       priority: e.string().default("normal"),
     });
@@ -216,7 +216,7 @@ describe("declarative field defaults", () => {
   });
 
   it("Value.Check ignores the annotation", () => {
-    const todo = defineEntity("todo", { priority: e.string().default("normal") });
+    const todo = defineModel("todo", { priority: e.string().default("normal") });
     // The default does not relax the declared type.
     expect(validatePayload(todo.createShape, { priority: "normal" }, "todo", false)).toEqual([]);
     expect(validatePayload(todo.createShape, { priority: 1 }, "todo", false)).not.toEqual([]);
@@ -238,7 +238,7 @@ describe("declarative field defaults", () => {
 });
 
 describe("read types state absence", () => {
-  const task = defineEntity("task", {
+  const task = defineModel("task", {
     title: e.string(),
     priority: e.string().default("normal"),
   });
@@ -269,22 +269,22 @@ describe("read types state absence", () => {
 
 describe("field schemas may not admit null", () => {
   it("rejects a union that includes Type.Null, naming the field", () => {
-    expect(() => defineEntity("todo", { body: Type.Union([Type.String(), Type.Null()]) })).toThrow(
+    expect(() => defineModel("todo", { body: Type.Union([Type.String(), Type.Null()]) })).toThrow(
       NullFieldError,
     );
   });
 
   it("rejects a bare null-typed field", () => {
-    expect(() => defineEntity("todo", { gone: Type.Null() })).toThrow(NullFieldError);
+    expect(() => defineModel("todo", { gone: Type.Null() })).toThrow(NullFieldError);
   });
 
   it("rejects Any/Unknown, which admit null without naming it", () => {
-    expect(() => defineEntity("todo", { anything: Type.Any() })).toThrow(NullFieldError);
-    expect(() => defineEntity("todo", { anything: Type.Unknown() })).toThrow(NullFieldError);
+    expect(() => defineModel("todo", { anything: Type.Any() })).toThrow(NullFieldError);
+    expect(() => defineModel("todo", { anything: Type.Unknown() })).toThrow(NullFieldError);
   });
 
   it("rejects a schema whose type array includes null", () => {
-    expect(() => defineEntity("todo", { value: { type: ["string", "null"] } as never })).toThrow(
+    expect(() => defineModel("todo", { value: { type: ["string", "null"] } as never })).toThrow(
       NullFieldError,
     );
   });

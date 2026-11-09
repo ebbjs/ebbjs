@@ -11,7 +11,7 @@ import { Type } from "@sinclair/typebox";
 import { decodeSync, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
@@ -20,17 +20,17 @@ import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
 import { jsonResponse, openSseResponse } from "../test-utils";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
 const runSchema = Type.Object({ text: Type.String() });
-const doc = defineEntity("doc", {
+const doc = defineModel("doc", {
   content: e.map(runSchema),
 });
 
-const duplicateSchema = defineSchema({ entities: { todo, doc }, version: 1 });
+const duplicateSchema = defineSchema({ models: { todo, doc }, version: 1 });
 
 /** The definitions under test: one duplicate per entity, so the call site is typed. */
 const duplicateTodo = defineAction(

@@ -12,7 +12,7 @@
 import { createClock, type HLCState } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
 import type { LogLevel } from "@ebbjs/functions-protocol";
-import type { EntityRegistry } from "@ebbjs/schema";
+import type { ModelRegistry } from "@ebbjs/schema";
 import type { CreateHandle, OperationIds, PointerTarget } from "@ebbjs/write";
 
 import type { CommitOutcome } from "./commit.ts";
@@ -34,7 +34,7 @@ export type { Caller, HostOp, HostTransport, LogEntry } from "./transport.ts";
 export type { CreateOptions, UnrelateOptions, WriteOptions } from "./writes.ts";
 export type { CreateHandle } from "@ebbjs/write";
 export type { OperationIds } from "@ebbjs/write";
-export type { EntityRegistry } from "@ebbjs/schema";
+export type { ModelRegistry } from "@ebbjs/schema";
 
 /** A reference to an existing row: its id, or anything carrying one. */
 export type RelationshipTarget = PointerTarget;
@@ -125,7 +125,7 @@ export interface CreateContextOptions {
   readonly actor: { readonly id: string };
   readonly caller: Caller;
   /** The schema the write verbs resolve entity and relationship names against. */
-  readonly registry?: EntityRegistry;
+  readonly registry?: ModelRegistry;
   /** Deterministic id seam; defaults to core's nanoid `generateId`. */
   readonly ids?: OperationIds;
   /** The invocation's clock; defaults to a fresh `createClock()`. */

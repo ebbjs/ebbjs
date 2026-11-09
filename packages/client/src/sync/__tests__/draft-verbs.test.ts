@@ -12,7 +12,7 @@ import { Type } from "@sinclair/typebox";
 import { decodeSync, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
@@ -24,17 +24,17 @@ import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
 import type { Rejection } from "../types";
 
-const list = defineEntity("list", { name: e.string() });
-const label = defineEntity("label", { name: e.string() });
-const todo = defineEntity("todo", {
+const list = defineModel("list", { name: e.string() });
+const label = defineModel("label", { name: e.string() });
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
   tags: Type.Array(Type.String()),
 });
-const profile = defineEntity("profile", { name: e.string() });
+const profile = defineModel("profile", { name: e.string() });
 
 const schema = defineSchema({
-  entities: { todo, list, label, profile },
+  models: { todo, list, label, profile },
   relationships: {
     todo_list: defineRelationship({ source: todo, target: list, as: "list" }),
     todo_tags: defineRelationship({

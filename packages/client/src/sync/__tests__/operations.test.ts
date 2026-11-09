@@ -5,12 +5,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { EntityRegistry } from "@ebbjs/schema";
+import { ModelRegistry } from "@ebbjs/schema";
 import { ActionRejectedError, call, changeGroups, type OpContext } from "@ebbjs/write";
 import { commit, type CommitCapability } from "@ebbjs/write";
 
 const mkCtx = (): OpContext => ({
-  registry: new EntityRegistry(),
+  registry: new ModelRegistry(),
   ids: {
     updateId: () => "u_1",
     hlc: () => "hlc_1",
@@ -61,7 +61,7 @@ describe("changeGroups", () => {
   it("commits a membership span through the committer", async () => {
     const submitted: unknown[] = [];
     const cap: CommitCapability = {
-      registry: new EntityRegistry(),
+      registry: new ModelRegistry(),
       submitRelationshipUpdates: async (updates) => {
         submitted.push(updates);
         return { rejected: [] };

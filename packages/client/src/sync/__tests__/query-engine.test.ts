@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
@@ -21,12 +21,12 @@ import { buildQueryBuilder } from "../query-builder";
 import { planQuery } from "../query-plan";
 import { callApplyAction } from "../test-utils";
 
-const issue = defineEntity("issue", { title: e.string(), status: e.string() });
-const user = defineEntity("user", { name: e.string() });
-const project = defineEntity("project", { name: e.string() });
+const issue = defineModel("issue", { title: e.string(), status: e.string() });
+const user = defineModel("user", { name: e.string() });
+const project = defineModel("project", { name: e.string() });
 
 const schema = defineSchema({
-  entities: { issue, user, project },
+  models: { issue, user, project },
   relationships: {
     issue_assignee: defineRelationship({ source: issue, target: user, as: "assignee" }),
     issue_project: defineRelationship({ source: issue, target: project, as: "project" }),

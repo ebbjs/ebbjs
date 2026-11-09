@@ -59,12 +59,12 @@ import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "@ebbjs/schema";
-import { EntityValidationError, readDefault, type EntityRegistry } from "@ebbjs/schema";
+import { EntityValidationError, readDefault, type ModelRegistry } from "@ebbjs/schema";
 import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
 import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
 import type {
   AccessorKeyOf,
-  AnyEntityDef,
+  AnyModelDef,
   AnyRelationshipDef,
   FieldsOf,
   SourceNameOf,
@@ -240,7 +240,7 @@ type ForwardJoinValue<R> = R extends {
   readonly target: infer T;
   readonly sourceCardinality: infer C;
 }
-  ? T extends AnyEntityDef
+  ? T extends AnyModelDef
     ? [C] extends ["one"]
       ? JoinedTarget<T> | null
       : readonly JoinedTarget<T>[]
@@ -248,7 +248,7 @@ type ForwardJoinValue<R> = R extends {
   : never;
 
 type ReverseJoinValue<R> = R extends { readonly source: infer S }
-  ? S extends AnyEntityDef
+  ? S extends AnyModelDef
     ? readonly JoinedTarget<S>[]
     : never
   : never;
@@ -330,7 +330,7 @@ export { normalizePointer } from "@ebbjs/write";
  */
 export interface QueryContext {
   readonly entityName: string;
-  readonly registry: EntityRegistry;
+  readonly registry: ModelRegistry;
   /** The materialized read path the plan executes over. */
   readonly replica: Replica;
   /** The reactive result cache shared by every chain over this client. */
@@ -684,7 +684,7 @@ const projectResultRows = <
     return widened as TRow & Record<string, unknown>;
   });
 
-const resolveJoinDef = (entityName: string, key: string, registry: EntityRegistry): Join => {
+const resolveJoinDef = (entityName: string, key: string, registry: ModelRegistry): Join => {
   if (key === GROUPS_ACCESSOR) {
     return { kind: "membership", as: key, target: groupSystemEntity.name, cardinality: "many" };
   }

@@ -1,6 +1,6 @@
 /**
  * Names the SDK reserves for its system entities and the injected
- * membership accessor. `defineEntity` / `defineRelationship` reject an
+ * membership accessor. `defineModel` / `defineRelationship` reject an
  * app-authored collision at schema build time so the canonical surface
  * can't be shadowed.
  */
@@ -29,14 +29,14 @@ export class ReservedNameError extends Error {
   }
 }
 
-/** Reject a `defineEntity` name that collides with a system entity. */
+/** Reject a `defineModel` name that collides with a system entity. */
 export const assertEntityNameAvailable = (name: string): void => {
   if ((RESERVED_ENTITY_NAMES as readonly string[]).includes(name)) {
     throw new ReservedNameError(name, `Entity name "${name}" is reserved by the SDK`);
   }
 };
 
-/** Reject a `defineEntity` field name that collides with the membership accessor. */
+/** Reject a `defineModel` field name that collides with the membership accessor. */
 export const assertFieldNamesAvailable = (
   entityName: string,
   fields: Record<string, unknown>,

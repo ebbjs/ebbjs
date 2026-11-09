@@ -11,8 +11,8 @@ import {
   openSseResponse,
   waitFor,
 } from "./test-utils";
-import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
-import { defineEntity } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
+import { defineModel } from "@ebbjs/schema";
 import { defineRelationship, TextCellSchema } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { OutboxSnapshot } from "./outbox-observer";
@@ -101,7 +101,7 @@ describe("SyncClient.handshake", () => {
 
 describe("SyncClient schema option", () => {
   it("builds the per-client registry from schema._registry and exposes it on client.registry", () => {
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
@@ -110,9 +110,9 @@ describe("SyncClient schema option", () => {
       serverUrl: "http://localhost:4000",
       actorId: "a_test",
       fetchImpl: fn,
-      schema: defineSchema({ entities: { todo }, version: 1 }),
+      schema: defineSchema({ models: { todo }, version: 1 }),
     });
-    expect(client.registry).toBeInstanceOf(EntityRegistry);
+    expect(client.registry).toBeInstanceOf(ModelRegistry);
     expect(client.registry.has("todo")).toBe(true);
     expect(client.registry.get("todo")).toBe(todo);
   });
@@ -124,8 +124,8 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: {
-          todo: defineEntity("todo", {
+        models: {
+          todo: defineModel("todo", {
             title: e.string(),
             completed: e.boolean(),
           }),
@@ -172,8 +172,8 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: {
-          todo: defineEntity("todo", { title: e.string() }),
+        models: {
+          todo: defineModel("todo", { title: e.string() }),
         },
         version: 4,
       }),
@@ -194,8 +194,8 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: {
-          todo: defineEntity("todo", { title: e.string() }),
+        models: {
+          todo: defineModel("todo", { title: e.string() }),
         },
         version: 5,
         minSupportedVersion: 2,
@@ -217,8 +217,8 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: {
-          todo: defineEntity("todo", { title: e.string() }),
+        models: {
+          todo: defineModel("todo", { title: e.string() }),
         },
         version: 1,
       }),
@@ -234,8 +234,8 @@ describe("SyncClient schema option", () => {
       { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
     ]);
     const schema = defineSchema({
-      entities: {
-        todo: defineEntity("todo", { title: e.string() }),
+      models: {
+        todo: defineModel("todo", { title: e.string() }),
       },
       version: 1,
     });
@@ -260,8 +260,8 @@ describe("SyncClient schema option", () => {
         actorId: "a_test",
         fetchImpl: fn,
         schema: defineSchema({
-          entities: {
-            todo: defineEntity("todo", {
+          models: {
+            todo: defineModel("todo", {
               priority: e.string().default(defaultValue),
             }),
           },
@@ -277,14 +277,14 @@ describe("SyncClient schema option", () => {
 
   it("produces the same schema_hash for equivalent schemas on independent clients", async () => {
     const schemaA = defineSchema({
-      entities: {
-        todo: defineEntity("todo", { title: e.string() }),
+      models: {
+        todo: defineModel("todo", { title: e.string() }),
       },
       version: 1,
     });
     const schemaB = defineSchema({
-      entities: {
-        todo: defineEntity("todo", { title: e.string() }),
+      models: {
+        todo: defineModel("todo", { title: e.string() }),
       },
       version: 1,
     });
@@ -315,14 +315,14 @@ describe("SyncClient schema option", () => {
 
   it("produces the same schema_hash for equivalent schemas that declare a document entity", async () => {
     const buildSchema = () => {
-      const blogPost = defineEntity("blog_post", { title: e.string() });
-      const textDocument = defineEntity(
+      const blogPost = defineModel("blog_post", { title: e.string() });
+      const textDocument = defineModel(
         "text_document",
         { content: e.map(TextCellSchema), version: e.number() },
         { materialization: "on-demand" },
       );
       return defineSchema({
-        entities: { blog_post: blogPost, text_document: textDocument },
+        models: { blog_post: blogPost, text_document: textDocument },
         relationships: {
           body: defineRelationship({
             source: blogPost,
@@ -383,7 +383,7 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: { todo: defineEntity("todo", { title: e.string() }) },
+        models: { todo: defineModel("todo", { title: e.string() }) },
         version: 1,
       }),
     });
@@ -400,7 +400,7 @@ describe("SyncClient schema option", () => {
       actorId: "a_test",
       fetchImpl: fn,
       schema: defineSchema({
-        entities: { todo: defineEntity("todo", { title: e.string() }) },
+        models: { todo: defineModel("todo", { title: e.string() }) },
         version: 1,
       }),
     });
@@ -412,7 +412,7 @@ describe("SyncClient schema option", () => {
       actorId: "b_test",
       fetchImpl: fn2,
       schema: defineSchema({
-        entities: { user: defineEntity("user", { name: e.string() }) },
+        models: { user: defineModel("user", { name: e.string() }) },
         version: 1,
       }),
     });
@@ -845,7 +845,7 @@ describe("SyncClient reconnect backoff (#40)", () => {
   });
 });
 
-describe("SyncClient.write with EntityRegistry (#143)", () => {
+describe("SyncClient.write with ModelRegistry (#143)", () => {
   const todoAction = (overrides: Partial<Action["updates"][number]> = {}): Action => ({
     id: "act_ok",
     actor_id: "a_test",
@@ -872,8 +872,8 @@ describe("SyncClient.write with EntityRegistry (#143)", () => {
   });
 
   const todoEntity = () => {
-    const r = new EntityRegistry();
-    r.register(defineEntity("todo", { title: e.string() }));
+    const r = new ModelRegistry();
+    r.register(defineModel("todo", { title: e.string() }));
     return r;
   };
 
@@ -980,15 +980,15 @@ describe("SyncClient.write with EntityRegistry (#143)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "a_test",
     });
-    expect(client.registry).toBeInstanceOf(EntityRegistry);
+    expect(client.registry).toBeInstanceOf(ModelRegistry);
     expect(client.registry.has("todo")).toBe(false);
   });
 });
 
-describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
+describe("SyncClient.queryEntities with ModelRegistry (#143)", () => {
   const todoEntity = () => {
-    const r = new EntityRegistry();
-    r.register(defineEntity("todo", { title: e.string() }));
+    const r = new ModelRegistry();
+    r.register(defineModel("todo", { title: e.string() }));
     return r;
   };
 
@@ -1021,8 +1021,8 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
 
   it("emits a non-fatal warning when a filter skips a defaulted field's absence", async () => {
     const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
-    const registry = new EntityRegistry();
-    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const registry = new ModelRegistry();
+    registry.register(defineModel("task", { priority: e.string().default("normal") }));
     const warnings: { violations: readonly { field?: string }[]; direction: string }[] = [];
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -1046,8 +1046,8 @@ describe("SyncClient.queryEntities with EntityRegistry (#143)", () => {
 
   it("stays silent when the filter names the defaulted field's absence", async () => {
     const { fn } = makeFetchMock([{ body: JSON.stringify([]) }]);
-    const registry = new EntityRegistry();
-    registry.register(defineEntity("task", { priority: e.string().default("normal") }));
+    const registry = new ModelRegistry();
+    registry.register(defineModel("task", { priority: e.string().default("normal") }));
     const warnings: unknown[] = [];
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -1110,9 +1110,9 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
       serverUrl: "http://localhost:0",
       actorId: "a_test",
     });
-    const registry = new EntityRegistry();
-    registry.register(defineEntity("todo", { title: e.string() }));
-    (client as unknown as { registry: EntityRegistry }).registry = registry;
+    const registry = new ModelRegistry();
+    registry.register(defineModel("todo", { title: e.string() }));
+    (client as unknown as { registry: ModelRegistry }).registry = registry;
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1145,7 +1145,7 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
       expect(await client.readLocalEntity("todo_1")).not.toBeNull();
       expect(warnSpy).toHaveBeenCalled();
       const message = String(warnSpy.mock.calls[0]?.[0] ?? "");
-      expect(message).toMatch(/EntityRegistry.*incoming action violation/);
+      expect(message).toMatch(/ModelRegistry.*incoming action violation/);
     } finally {
       warnSpy.mockRestore();
     }
@@ -1156,9 +1156,9 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
       serverUrl: "http://localhost:0",
       actorId: "a_test",
     });
-    const registry = new EntityRegistry();
-    registry.register(defineEntity("todo", { title: e.string() }));
-    (client as unknown as { registry: EntityRegistry }).registry = registry;
+    const registry = new ModelRegistry();
+    registry.register(defineModel("todo", { title: e.string() }));
+    (client as unknown as { registry: ModelRegistry }).registry = registry;
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1233,8 +1233,8 @@ describe("SyncClient.onRegistryViolation hook", () => {
   });
 
   const todoEntity = () => {
-    const r = new EntityRegistry();
-    r.register(defineEntity("todo", { title: e.string() }));
+    const r = new ModelRegistry();
+    r.register(defineModel("todo", { title: e.string() }));
     return r;
   };
 

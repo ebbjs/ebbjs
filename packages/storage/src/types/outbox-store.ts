@@ -101,7 +101,7 @@ export interface OutboxConflict {
    * any losing subject declared entity scope, else `"field"`. The union is
    * spelled inline so storage stays independent of the schema package.
    */
-  readonly scope: "field" | "entity";
+  readonly scope: "field" | "component" | "entity";
   /**
    * The concurrent missed Actions that touched the losing subjects,
    * deduped by action id, in window order. The remote half of the
@@ -127,7 +127,7 @@ export interface OutboxConflict {
  * with no recorded remote context.
  */
 export interface StoredOutboxConflict extends Omit<OutboxConflict, "scope" | "remoteActions"> {
-  readonly scope?: "field" | "entity";
+  readonly scope?: "field" | "component" | "entity";
   readonly remoteActions?: readonly ConflictRemoteAction[];
 }
 

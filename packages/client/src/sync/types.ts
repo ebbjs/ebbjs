@@ -2,16 +2,16 @@ import { Type, Static } from "@sinclair/typebox";
 export type { Action } from "@ebbjs/core";
 // Bring `Action` into local scope so the interfaces below can use it.
 type Action = import("@ebbjs/core").Action;
-import type { EntityDef } from "@ebbjs/schema";
+import type { ModelDef } from "@ebbjs/schema";
 import type { RelationshipDef } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
 import type { AnyActionDef } from "../schema/action";
 import type { TSchema } from "@sinclair/typebox/type";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 type AnySchema = Schema<
-  Record<string, AnyEntityDef>,
+  Record<string, AnyModelDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
 
@@ -262,7 +262,7 @@ export interface SyncClientOptions<
    * violations. When omitted, an empty registry is constructed and
    * validation is a no-op (matching how `storage?`, `fetchImpl?` work).
    */
-  registry?: import("@ebbjs/schema").EntityRegistry;
+  registry?: import("@ebbjs/schema").ModelRegistry;
   /**
    * Observer fired for every batch of registry violations, both
    * outbound (immediately before `client.write()` /
@@ -277,7 +277,7 @@ export interface SyncClientOptions<
   onRegistryViolation?: RegistryViolationListener;
   /**
    * Composed schema (`defineSchema({ ... })`). When provided, the
-   * client builds a per-client `EntityRegistry` seeded from
+   * client builds a per-client `ModelRegistry` seeded from
    * `schema._registry` (so runtime mutations don't bleed across
    * clients sharing the same `schema` value) and advertises
    * `schema.version` (and `minSupportedVersion` when set) and a

@@ -7,19 +7,19 @@
 
 import { describe, expect, it } from "vitest";
 import { unset } from "@ebbjs/core";
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineSchema, e } from "@ebbjs/schema";
 
 import { defineAction } from "../../schema/action";
 import { createClient } from "../client";
 import type { EntityFields, EntityPatch } from "../namespace";
 
-const task = defineEntity("task", {
+const task = defineModel("task", {
   title: e.string(),
   dueDate: e.string().default(""),
   tags: e.map(e.string()).default({}),
 });
 
-const schema = defineSchema({ entities: { task }, version: 1 });
+const schema = defineSchema({ models: { task }, version: 1 });
 
 const updateTask = defineAction(
   schema,

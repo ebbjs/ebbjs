@@ -18,7 +18,7 @@ the actor can reach. App scope is the default view, not a fence.
 ## Group metadata, not a grant
 
 ```ts
-groupSystemEntity = buildEntityDef("group", {
+groupSystemEntity = buildModelDef("group", {
   name: e.string(),
   apps: e.map(e.boolean()),
 });

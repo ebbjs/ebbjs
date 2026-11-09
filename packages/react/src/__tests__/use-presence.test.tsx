@@ -14,7 +14,7 @@ import { useRef, useState } from "react";
 import { Type } from "@sinclair/typebox";
 import {
   createClient,
-  defineEntity,
+  defineModel,
   definePresence,
   defineSchema,
   e,
@@ -24,8 +24,8 @@ import {
 
 import { EbbProvider, createEbbHooks, usePresence } from "../index";
 
-const todo = defineEntity("todo", { title: e.string() });
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const todo = defineModel("todo", { title: e.string() });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 const cameraSchema = Type.Object({ x: Type.Number(), y: Type.Number(), zoom: Type.Number() });
 const cursorSchema = Type.Object({ anchorId: Type.String(), anchorOffset: Type.Number() });

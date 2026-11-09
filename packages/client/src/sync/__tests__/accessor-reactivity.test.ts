@@ -11,15 +11,15 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
 import { seedReplicaRow } from "../test-utils";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 
-const todo = defineEntity("todo", { title: e.string() });
-const user = defineEntity("user", { name: e.string() });
+const todo = defineModel("todo", { title: e.string() });
+const user = defineModel("user", { name: e.string() });
 
 const schema = defineSchema({
-  entities: { todo, user },
+  models: { todo, user },
   relationships: { todo_owner: defineRelationship({ source: todo, target: user, as: "owner" }) },
   version: 1,
 });

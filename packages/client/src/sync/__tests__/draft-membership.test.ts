@@ -11,15 +11,15 @@
 import { describe, expect, it } from "vitest";
 import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { ActionRejectedError } from "@ebbjs/write";
 import { EntityValidationError } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { testActions } from "./test-actions";
 
-const todo = defineEntity("todo", { title: e.string() });
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const todo = defineModel("todo", { title: e.string() });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity => ({
   id,

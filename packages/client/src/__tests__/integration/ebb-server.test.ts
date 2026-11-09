@@ -47,9 +47,9 @@ import {
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, defineAction, type SyncClient } from "../..";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
-import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { groupSystemEntity } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
@@ -553,7 +553,7 @@ describe("integration: localDelete round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #143: defineEntity + EntityRegistry round-trip
+// Issue #143: defineModel + ModelRegistry round-trip
 // ---------------------------------------------------------------------------
 
 /**
@@ -610,20 +610,20 @@ async function connectAsTodoActor(actorId: string): Promise<SyncClient> {
   return client;
 }
 
-describe("integration: defineEntity + EntityRegistry (#143)", () => {
+describe("integration: defineModel + ModelRegistry (#143)", () => {
   it("rejects a client-side unknown-field action before any fetch", async () => {
     if (!(await shouldRun())) return;
     const actor = "todo_validation_actor";
     const client = await connectAsTodoActor(actor);
     try {
-      const todo = defineEntity("todo", {
+      const todo = defineModel("todo", {
         title: e.string(),
         completed: e.boolean(),
       });
-      const registry = new EntityRegistry();
+      const registry = new ModelRegistry();
       registry.register(todo);
       // Swap in our populated registry without rebuilding the client.
-      (client as unknown as { registry: EntityRegistry }).registry = registry;
+      (client as unknown as { registry: ModelRegistry }).registry = registry;
 
       // The fetch impl here is the *real* fetch — if validation let
       // it through, this would 4xx at the server (unknown field is
@@ -714,14 +714,14 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
     client.setState("live");
 
     try {
-      const registry = new EntityRegistry();
+      const registry = new ModelRegistry();
       registry.register(
-        defineEntity("todo", {
+        defineModel("todo", {
           title: e.string(),
           completed: e.boolean(),
         }),
       );
-      (client as unknown as { registry: EntityRegistry }).registry = registry;
+      (client as unknown as { registry: ModelRegistry }).registry = registry;
 
       const hlc = makeHlc(Date.now());
       const action: Action = {
@@ -831,14 +831,14 @@ describe("integration: defineEntity + EntityRegistry (#143)", () => {
     receiverClient.setState("live");
 
     try {
-      const registry = new EntityRegistry();
+      const registry = new ModelRegistry();
       registry.register(
-        defineEntity("todo", {
+        defineModel("todo", {
           title: e.string(),
           completed: e.boolean(),
         }),
       );
-      (receiverClient as unknown as { registry: EntityRegistry }).registry = registry;
+      (receiverClient as unknown as { registry: ModelRegistry }).registry = registry;
 
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
@@ -886,13 +886,13 @@ async function findTodoByTitle(client: SyncClient, title: string): Promise<strin
 
 /** One domain relationship from `todo` to `list`, plus the canonical schema. */
 const buildLinkTestSchema = () => {
-  const todo = defineEntity("todo", {
+  const todo = defineModel("todo", {
     title: e.string(),
     completed: e.boolean(),
   });
-  const list = defineEntity("list", { name: e.string() });
+  const list = defineModel("list", { name: e.string() });
   return defineSchema({
-    entities: { todo, list },
+    models: { todo, list },
     relationships: {
       todo_list: defineRelationship({ source: todo, target: list, as: "list", type: "todo" }),
     },
@@ -905,11 +905,11 @@ describe("integration: draft create membership", () => {
     if (!(await shouldRun())) return;
     const actor = `membership_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: actor,
@@ -1079,11 +1079,11 @@ describe("integration: defineSchema", () => {
     const actor = "schema_handshake_actor";
     await addMemberWithTodoPerms(actor);
 
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const user = defineEntity("user", {
+    const user = defineModel("user", {
       name: e.string(),
     });
     const todo_ownedBy = defineRelationship({
@@ -1092,7 +1092,7 @@ describe("integration: defineSchema", () => {
       as: "ownedBy",
     });
     const schema = defineSchema({
-      entities: { todo, user },
+      models: { todo, user },
       relationships: { todo_ownedBy },
       version: 7,
       minSupportedVersion: 5,
@@ -1165,11 +1165,11 @@ describe("integration: draft create() runtime validation (#172)", () => {
     const seen: string[] = [];
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: "validation_actor",
@@ -1196,11 +1196,11 @@ describe("integration: draft create() runtime validation (#172)", () => {
     const seen: string[] = [];
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: "validation_actor",
@@ -1227,11 +1227,11 @@ describe("integration: draft create() runtime validation (#172)", () => {
     const seen: string[] = [];
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: "validation_actor",
@@ -1254,11 +1254,11 @@ describe("integration: draft create() runtime validation (#172)", () => {
     if (!(await shouldRun())) return;
     const actor = "validation_roundtrip";
     await addMemberWithTodoPerms(actor);
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: actor,
@@ -1293,11 +1293,11 @@ describe("integration: draft delete", () => {
     const actor = `delete_roundtrip_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
 
-    const todo = defineEntity("todo", {
+    const todo = defineModel("todo", {
       title: e.string(),
       completed: e.boolean(),
     });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: actor,
@@ -1365,10 +1365,10 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
  * same Action, so the entities are indexed into their group atomically.
  */
 describe("integration: multi-entity Action", () => {
-  const atomicTodo = defineEntity("todo", { title: e.string() });
-  const atomicList = defineEntity("list", { name: e.string() });
+  const atomicTodo = defineModel("todo", { title: e.string() });
+  const atomicList = defineModel("list", { name: e.string() });
   const atomicSchema = defineSchema({
-    entities: { todo: atomicTodo, list: atomicList },
+    models: { todo: atomicTodo, list: atomicList },
     version: 1,
   });
 
@@ -1464,10 +1464,10 @@ async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
  * option emits its `entityGroup` row into that same Action.
  */
 describe("integration: client.actions (defineAction)", () => {
-  const actionTodo = defineEntity("todo", { title: e.string() });
-  const actionList = defineEntity("list", { name: e.string() });
+  const actionTodo = defineModel("todo", { title: e.string() });
+  const actionList = defineModel("list", { name: e.string() });
   const actionSchema = defineSchema({
-    entities: { todo: actionTodo, list: actionList },
+    models: { todo: actionTodo, list: actionList },
     version: 1,
   });
   const createList = defineAction(actionSchema, ({ todo, list }, params: { title: string }) => {

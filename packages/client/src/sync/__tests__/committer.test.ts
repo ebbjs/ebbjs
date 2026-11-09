@@ -12,8 +12,8 @@
 import { describe, expect, it } from "vitest";
 import type { Update } from "@ebbjs/core";
 
-import { defineEntity, e } from "@ebbjs/schema";
-import { EntityRegistry } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
+import { ModelRegistry } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import {
   ActionRejectedError,
@@ -24,11 +24,11 @@ import {
 } from "@ebbjs/write";
 import { commit, type CommitCapability } from "@ebbjs/write";
 
-const todo = defineEntity("todo", { title: e.string() });
-const list = defineEntity("list", { name: e.string() });
+const todo = defineModel("todo", { title: e.string() });
+const list = defineModel("list", { name: e.string() });
 
-const mkRegistry = (): EntityRegistry => {
-  const registry = new EntityRegistry();
+const mkRegistry = (): ModelRegistry => {
+  const registry = new ModelRegistry();
   registry.register(todo);
   registry.register(list);
   registry.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));

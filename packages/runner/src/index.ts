@@ -1,4 +1,4 @@
-import { createContext, type EntityRegistry, type LogEntry } from "@ebbjs/functions-runtime";
+import { createContext, type ModelRegistry, type LogEntry } from "@ebbjs/functions-runtime";
 import type { FetchAuditFields, FunctionLimits } from "@ebbjs/functions-protocol";
 import type { Context } from "@ebbjs/server";
 
@@ -174,13 +174,13 @@ const schemaOf = (value: unknown): unknown =>
 export function schemaRegistryOf(
   module: Record<string, unknown>,
   entry?: string,
-): EntityRegistry | undefined {
+): ModelRegistry | undefined {
   const fromModule = registryOf(schemaOf(module));
   if (fromModule !== undefined || entry === undefined) return fromModule;
   return registryOf(schemaOf(module[entry]));
 }
 
-const registryOf = (schema: unknown): EntityRegistry | undefined => {
+const registryOf = (schema: unknown): ModelRegistry | undefined => {
   if (typeof schema !== "object" || schema === null) return undefined;
   const registry = (schema as { _registry?: unknown })._registry;
   if (typeof registry !== "object" || registry === null) return undefined;
@@ -191,7 +191,7 @@ const registryOf = (schema: unknown): EntityRegistry | undefined => {
   ) {
     return undefined;
   }
-  return registry as EntityRegistry;
+  return registry as ModelRegistry;
 };
 
 export class HandlerError extends Error {

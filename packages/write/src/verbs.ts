@@ -13,7 +13,7 @@
  * fixture pin one as JSON and replay it through either surface.
  */
 
-import { EntityValidationError, type EntityRegistry } from "@ebbjs/schema";
+import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
 import {
   call,
@@ -179,7 +179,7 @@ const collapseHandles = (value: unknown, seen: Set<object> = new Set()): unknown
   return resolved;
 };
 
-const declaresField = (def: ReturnType<EntityRegistry["get"]>, key: string): boolean =>
+const declaresField = (def: ReturnType<ModelRegistry["get"]>, key: string): boolean =>
   def !== undefined && Object.prototype.hasOwnProperty.call(def.shape.properties ?? {}, key);
 
 /**
@@ -221,10 +221,7 @@ export const normalizeGroupIds = (
  * This is the only place the create shape is interpreted, so the runtime and
  * the fixtures cannot disagree about what a create field means.
  */
-export const createEntityInput = (
-  registry: EntityRegistry,
-  verb: CreateVerb,
-): CreateEntityInput => {
+export const createEntityInput = (registry: ModelRegistry, verb: CreateVerb): CreateEntityInput => {
   const fields: Record<string, unknown> = {};
   const pointers: ResolvedPointer[] = [];
   const def = registry.get(verb.entity);
@@ -292,7 +289,7 @@ const unlinkTargetError = (verb: UnrelateVerb): EntityValidationError =>
  * that would lose links is worse than refusing the call.
  */
 export const operationCallFor = (
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   verb: WriteVerb,
   resolution: VerbResolution = UNRESOLVED,
 ): OperationCall | undefined => {

@@ -24,18 +24,18 @@ The boundary is the **catch-up call site**, not `connectionState`. The subscript
 Granularity is declared on the entity, not guessed:
 
 ```ts
-const post = defineEntity(
+const post = defineModel(
   "blog_post",
   { title: e.string() },
   { conflictScope: "field" }, // the default
 );
-const body = defineEntity(
+const body = defineModel(
   "text_document",
   { content: e.map(TextCellSchema), version: e.number() },
   { conflictScope: "entity", materialization: "on-demand" },
 );
 const schema = defineSchema({
-  entities: { blog_post: post, text_document: body },
+  models: { blog_post: post, text_document: body },
   relationships: {
     body: defineRelationship({ source: post, target: body, as: "body", sourceCardinality: "one" }),
   },

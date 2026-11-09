@@ -90,7 +90,7 @@ The list and the board are two renderings of **one** `useQuery`. `IssuesPanel` o
 
 ## The pinned data model
 
-Declared in `src/schema.ts` with `defineEntity` / `defineSchema`:
+Declared in `src/schema.ts` with `defineModel` / `defineSchema`:
 
 | Entity      | Fields / links                                        |
 | ----------- | ----------------------------------------------------- |

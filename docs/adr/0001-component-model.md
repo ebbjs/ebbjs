@@ -40,7 +40,7 @@ Three defects follow, all present in the tree:
 
 ## Decision
 
-**A component is the unit that existence, residency, conflict scope, indexing, and version attach
+**A component is the unit that existence, loading, conflict scope, indexing, and version attach
 to. A model is the unit of permission, query source, and projection. `type` stops being identity and
 becomes the name of a declared component set.**
 
@@ -57,8 +57,9 @@ becomes the name of a declared component set.**
    the builder the component was declared with; the component chooses.
 5. **Existence is a bit, not a tombstone.** For an `optional` component, absent means absent. The
    tombstone survives only for a _present_ leaf whose value was cleared, and that is a value.
-6. **Residency is per component.** `materialization` moves from the model to the component. An
-   on-demand component is fetched, pinned, and evicted independently of its row.
+6. **Loading is per component.** A component declares `loading: "eager" | "lazy"`. An eager
+   component is held in the replica; a lazy component is fetched, pinned, and evicted independently
+   of its row.
 7. **Conflict scope gains a middle rung.** `"field" | "component" | "entity"`, declared per
    component. A component-scope hold holds one component, not the whole row.
 8. **Indexing is opt-in per component.** A component declared `indexed: true` gets an existence row;

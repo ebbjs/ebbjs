@@ -33,11 +33,11 @@ export interface CommitOutcome {
 /**
  * The entity names the application schema declares.
  *
- * A schema without an `entities` map (a bare `{ tables: {} }`, say) cannot
+ * A schema without a `models` map (a bare `{ tables: {} }`, say) cannot
  * narrow the set, so the verbs accept any name and the server validates it.
  */
 export type EntityName<S> = S extends {
-  readonly entities: infer E extends Record<string, unknown>;
+  readonly models: infer E extends Record<string, unknown>;
 }
   ? keyof E & string
   : string;

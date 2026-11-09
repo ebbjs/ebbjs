@@ -138,7 +138,7 @@ An entity type is `held` (the replica materializes every row) or `on-demand`
 (a row materializes only while it is open). Declare it on the definition:
 
 ```typescript
-const pageContent = defineEntity(
+const pageContent = defineModel(
   "page_content",
   { content: e.map(e.string()) },
   { materialization: "on-demand" },
@@ -170,14 +170,14 @@ created with `actions` mounts it as `client.actions.<name>(params)`.
 import {
   createClient,
   defineAction,
-  defineEntity,
+  defineModel,
   defineSchema,
   e,
   type EntityValues,
 } from "@ebbjs/client";
 
-const issue = defineEntity("issue", { title: e.string(), status: e.string() });
-const schema = defineSchema({ entities: { issue }, version: 1 });
+const issue = defineModel("issue", { title: e.string(), status: e.string() });
+const schema = defineSchema({ models: { issue }, version: 1 });
 
 // Module scope. A definition is pure — no ids, no writes, no I/O — so it
 // builds at module load and mounts once when the client is created.

@@ -84,7 +84,7 @@ _Avoid_: unload, broadcast absence, release
 
 **Component**:
 A named value attached to an entity, together with the policy that applies to
-it: existence, residency, conflict scope, indexing, version. Declared with
+it: existence, loading, conflict scope, indexing, version. Declared with
 `defineComponent`; a bare field builder declares one anonymously.
 _Avoid_: field, attribute, property, column
 
@@ -140,9 +140,15 @@ and keeps an HLC so a later write can still win. A tombstone is a value, not an
 absence.
 _Avoid_: null, deletion, empty
 
+**Loading**:
+The policy a component declares for materialization: _eager_ keeps it held;
+_lazy_ materializes it only once it is opened. Declared per component. Distinct
+from _Residency_, the state that policy produces.
+_Avoid_: materialization, cache policy, load strategy
+
 **Residency**:
-Whether the replica holds a component or materializes it only when opened.
-Declared per component. See _Held_ and _On demand_.
+The state a component's _Loading_ policy produces: held, or on demand until
+opened. Distinct from the declaration. See _Held_ and _On demand_.
 _Avoid_: tier, cache policy, eviction policy
 
 **Conflict scope**:
@@ -171,11 +177,11 @@ _Avoid_: history, backup, version
 
 **Held**:
 A component the replica always materializes.
-_Avoid_: resident, pinned, eager, tiered
+_Avoid_: resident, pinned, tiered
 
 **On demand**:
 A component the replica materializes only once it is opened.
-_Avoid_: windowed, lazy, cold
+_Avoid_: windowed, cold
 
 **Open** / **Close**:
 Bring an on-demand component's value into the replica / release it from memory.

@@ -19,8 +19,8 @@ import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
 import type {
-  EntityDef,
-  EntityRegistry,
+  ModelDef,
+  ModelRegistry,
   GroupFields,
   GroupMemberFields,
   CreateShapeFields,
@@ -77,7 +77,7 @@ type NoAccessors = Record<never, never>;
 /** Which end of a relationship an accessor is derived from. */
 type RelationshipEnd = "source" | "target";
 
-/** The `EntityDef` on one end of a relationship. */
+/** The `ModelDef` on one end of a relationship. */
 type EntityAt<R, TEnd extends RelationshipEnd> =
   R extends RelationshipDef<infer S, infer T, infer _A, infer _C>
     ? TEnd extends "source"
@@ -122,7 +122,7 @@ export type MembershipAccessors = { readonly groups: QueryBuilder<GroupFields> }
  * cardinality; reverse relationships (entity is the target)
  * contribute a `QueryBuilder` over the source's field map. Entity
  * names and accessor names stay literal through
- * `defineEntity` / `defineRelationship`, so keys land exactly once.
+ * `defineModel` / `defineRelationship`, so keys land exactly once.
  *
  * A reverse accessor shadows a forward accessor on the same `as` key
  * (a self-referential relationship, say), mirroring the runtime's
@@ -355,7 +355,7 @@ export interface EntityNamespace<
 }
 
 /**
- * Map a single entity definition to its field map. `EntityDef<TFields>`
+ * Map a single entity definition to its field map. `ModelDef<TFields>`
  * carries `TFields` directly, so this is just `infer F`.
  */
 export type EntityFields<D> = FieldsOf<D>;
@@ -380,7 +380,7 @@ export type SystemNamespaces = {
  * `S extends Schema<infer TEntities, infer TRels>` distributes over
  * the generics so each entity gets its own field map and its own
  * per-`as` accessor record. A relationship's literal source/target
- * names and `as` key flow through `defineEntity` /
+ * names and `as` key flow through `defineModel` /
  * `defineRelationship`, so the walker matches relationships to the
  * entity by name without recursing through the entity map. Clients
  * without a schema see no extra properties.
@@ -510,7 +510,7 @@ function buildRowAccessors(
   entityName: string,
   sourceId: string,
   storage: StorageAdapter,
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   replica?: ReplicaAccess,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
@@ -660,7 +660,7 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  * here: they live on the action runtime's own capability in `./drafts`.
  */
 export interface ReadCapability {
-  readonly registry: EntityRegistry;
+  readonly registry: ModelRegistry;
 }
 
 /**
@@ -843,7 +843,7 @@ function createMembershipNamespace(
  * unknown property access to this map.
  */
 export function buildEntityNamespaces<
-  S extends Schema<Record<string, EntityDef<Record<string, TSchema>>>, unknown>,
+  S extends Schema<Record<string, ModelDef<Record<string, TSchema>>>, unknown>,
 >(
   schema: S,
   storage: StorageAdapter,
@@ -851,7 +851,7 @@ export function buildEntityNamespaces<
   replica?: ReplicaAccess,
 ): EntityNamespaces<S> {
   const out: Record<string, EntityNamespace<Record<string, TSchema>>> = {};
-  for (const [name, def] of Object.entries(schema.entities)) {
+  for (const [name, def] of Object.entries(schema.models)) {
     // The static accessor record is derived by `EntityNamespaces<S>`
     // from the schema's relationship map; the registry is the runtime
     // authority for which accessors actually attach.

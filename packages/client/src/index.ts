@@ -329,10 +329,10 @@ export {
 } from "./schema/action";
 
 export {
-  defineEntity,
+  defineModel,
   e,
-  type EntityDef,
-  type EntityOptions,
+  type ModelDef,
+  type ModelOptions,
   type FieldMarker,
   type ConflictScope,
   type Materialization,
@@ -348,7 +348,7 @@ export {
 } from "@ebbjs/schema";
 
 export {
-  EntityRegistry,
+  ModelRegistry,
   EntityValidationError,
   type Filter,
   type FilterGroup,
@@ -357,7 +357,7 @@ export {
 
 export {
   defineSchema,
-  EntityKeyMismatchError,
+  ModelKeyMismatchError,
   UnregisteredRelationshipEndpointError,
   type DefineSchemaInput,
   type Schema,

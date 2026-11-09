@@ -20,10 +20,10 @@ Node `>=22.8.0`.
 ## Usage
 
 ```ts
-import { EntityRegistry } from "@ebbjs/schema";
+import { ModelRegistry } from "@ebbjs/schema";
 import { call, commit, createEntity } from "@ebbjs/write";
 
-const registry = new EntityRegistry();
+const registry = new ModelRegistry();
 
 await commit([call(createEntity, input)], {
   registry,
