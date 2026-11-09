@@ -22,9 +22,17 @@ import {
   type FieldValue,
   type Update,
 } from "@ebbjs/core";
+import type { ConflictScope } from "@ebbjs/schema";
 import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 import { projectFieldValue } from "./query-builder";
+
+/**
+ * The coarsest scope wins: an entity-scope subject holds the whole conflict,
+ * whether the scopes are per subject or per grouped losing Action.
+ */
+export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
+  scopes.includes("entity") ? "entity" : "field";
 
 /**
  * Subject types whose Updates carry structural edges, not LWW field

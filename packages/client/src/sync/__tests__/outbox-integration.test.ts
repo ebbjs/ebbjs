@@ -959,9 +959,9 @@ describe("catch-up conflict detection (#308, #390)", () => {
       conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
     ).toEqual(["act_local_same"]);
     expect(conflicts[0]?.subjects).toEqual(["doc_1"]);
-    expect(conflicts[0]?.entries[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
-    expect(conflicts[0]?.entries[0]?.slots[0]?.local).toMatchObject({ value: "mine-same" });
-    expect(conflicts[0]?.entries[0]?.slots[0]?.remote).toMatchObject({ value: "peer-same" });
+    expect(conflicts[0]?.entries[0]?.slots?.map((slot) => slot.path)).toEqual([["run:r3"]]);
+    expect(conflicts[0]?.entries[0]?.slots?.[0]?.local).toMatchObject({ value: "mine-same" });
+    expect(conflicts[0]?.entries[0]?.slots?.[0]?.remote).toMatchObject({ value: "peer-same" });
   });
 
   it("treats a server rejection as an Outbox error, not a conflict", async () => {

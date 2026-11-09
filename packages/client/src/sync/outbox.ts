@@ -49,10 +49,9 @@
  */
 
 import { compare, type Action, type Entity } from "@ebbjs/core";
-import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "@ebbjs/schema";
+import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD, type ConflictScope } from "@ebbjs/schema";
 import type {
   ConflictRemoteAction,
-  ConflictScope,
   ConflictSlot,
   ConflictSubjectState,
   OutboxConflict,
@@ -62,6 +61,7 @@ import type {
 import type { Rejection, WriteResponse } from "./types";
 import {
   actionWrites,
+  coarsestScope,
   conflictSlot,
   foldInboundWindow,
   inboundSubjects,
@@ -117,8 +117,12 @@ const heldSubjects = (entries: readonly OutboxEntry[]): ReadonlySet<string> => {
 };
 
 /** Whether an Action writes a held subject. An Action cannot be sent in part. */
-const writesHeld = (action: Action, held: ReadonlySet<string>): boolean =>
-  [...actionWrites(action).keys()].some((subjectId) => held.has(subjectId));
+const writesHeld = (action: Action, held: ReadonlySet<string>): boolean => {
+  for (const subjectId of actionWrites(action).keys()) {
+    if (held.has(subjectId)) return true;
+  }
+  return false;
+};
 
 /** Whether a missed Action out-dates a buffered write — the concurrency rule. */
 const isConcurrent = (entry: OutboxEntry, action: Action): boolean => action.gsn > entry.basedOnGsn;
@@ -419,14 +423,22 @@ export interface Outbox {
    */
   clearConflict(actionId: string): Promise<void>;
   /**
-   * Delete every `pending` row whose Action writes one of `subjects` — the
-   * local writes the subject hold was keeping off the wire — and return
-   * their Actions so the caller can revert their optimistic overlays.
-   * `acknowledged` rows are already on the server and are never dropped.
-   * An Action writing several subjects is dropped whole; an Action cannot
-   * be sent in part.
+   * Snapshot the `pending` rows whose Action writes one of `subjects` —
+   * the local writes the current subject hold excludes from `pending()`.
+   * Read it *before* a verb moves the conflicted rows: a write enqueued
+   * after that point was never held, so dropping it later would discard
+   * an edit the hold never covered. An Action writing several subjects is
+   * held whole; an Action cannot be sent in part.
    */
-  dropHeld(subjects: readonly string[]): Promise<readonly Action[]>;
+  heldPending(subjects: readonly string[]): readonly OutboxEntry[];
+  /**
+   * Delete the named `pending` rows and return their Actions so the caller
+   * can revert their optimistic overlays. Only rows still `pending` are
+   * removed: an `acknowledged` row is already on the server and an echoed
+   * or re-conflicted row has a newer state. Callers pass ids from
+   * {@link heldPending}, so a write made after the hold lifted is safe.
+   */
+  dropHeld(actionIds: readonly string[]): Promise<readonly Action[]>;
   /**
    * Match an inbound Action against the buffer's echoes.
    *
@@ -730,21 +742,31 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
   };
 
   /**
-   * Drop the `pending` writes the subject hold was keeping off the wire,
-   * returning them so the caller can revert their optimistic overlays.
-   * Each row is deleted from the store before it leaves memory, so a
-   * failed delete leaves the row pending rather than live in one place
-   * only. An `acknowledged` row is already on the server and never
-   * dropped.
+   * The `pending` writes the current subject hold is keeping off the wire,
+   * snapshotted before a verb moves the conflicted rows.
    */
-  const dropHeld = async (subjects: readonly string[]): Promise<readonly Action[]> => {
+  const heldPending = (subjects: readonly string[]): readonly OutboxEntry[] => {
     if (subjects.length === 0) return [];
-    await rehydrate();
     const wanted = new Set(subjects);
+    return entries.filter(
+      (entry) => entry.status === "pending" && writesHeld(entry.action, wanted),
+    );
+  };
+
+  /**
+   * Delete the named `pending` writes, returning them so the caller can
+   * revert their optimistic overlays. Each row is deleted from the store
+   * before it leaves memory, so a failed delete leaves the row pending
+   * rather than live in one place only. Rows whose status moved on are
+   * left alone.
+   */
+  const dropHeld = async (actionIds: readonly string[]): Promise<readonly Action[]> => {
+    if (actionIds.length === 0) return [];
+    await rehydrate();
+    const wanted = new Set(actionIds);
     const dropped: Action[] = [];
     for (const entry of entries) {
-      if (entry.status !== "pending") continue;
-      if (!writesHeld(entry.action, wanted)) continue;
+      if (entry.status !== "pending" || !wanted.has(entry.action.id)) continue;
       await deps.store.delete(entry.action.id);
       entries = entries.filter((candidate) => candidate.action.id !== entry.action.id);
       dropped.push(entry.action);
@@ -848,7 +870,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       const subjectStates: LoserSubject[] = [];
       const slots: ConflictSlot[] = [];
       const seen = new Set<string>();
-      let scope: ConflictScope = "field";
+      const scopes: ConflictScope[] = [];
       for (const [subjectId, pending] of actionWrites(entry.action)) {
         const inbound = folded.get(subjectId);
         if (inbound === undefined) continue;
@@ -902,7 +924,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
           });
           slots.push(...overlap);
           // The conflict is as coarse as its loosest losing subject.
-          if (declared === "entity") scope = "entity";
+          scopes.push(declared);
         }
       }
       if (subjects.length === 0) continue;
@@ -917,7 +939,14 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         reported.add(action.id);
         remoteActions.push({ actorId: action.actor_id, actionId: action.id, gsn: action.gsn });
       }
-      losers.push({ id: entry.action.id, subjects, subjectStates, slots, scope, remoteActions });
+      losers.push({
+        id: entry.action.id,
+        subjects,
+        subjectStates,
+        slots,
+        scope: coarsestScope(scopes),
+        remoteActions,
+      });
     }
     if (losers.length === 0) return [];
 
@@ -959,6 +988,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
     rehydrate,
     pending: () => flushableEntries(),
     errors: () => entries.filter((entry) => entry.status === "error"),
+    heldPending,
     unrejected: () => entries.filter((entry) => entry.status !== "error"),
     conflicts: () => entries.filter(isConflicted),
     size: (status: OutboxStatus = "pending") => counts()[status],

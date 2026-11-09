@@ -50,9 +50,6 @@ export interface ConflictSlot {
   readonly remote: ConflictSide;
 }
 
-/** Conflict granularity a subject's entity declares. */
-export type ConflictScope = "field" | "entity";
-
 /** One missed Action that out-dated a buffered write and made it a conflict. */
 export interface ConflictRemoteAction {
   readonly actorId: string;
@@ -101,9 +98,10 @@ export interface OutboxConflict {
   readonly slots: readonly ConflictSlot[];
   /**
    * The looser of the losing subjects' declared scopes: `"entity"` when
-   * any losing subject declared entity scope, else `"field"`.
+   * any losing subject declared entity scope, else `"field"`. The union is
+   * spelled inline so storage stays independent of the schema package.
    */
-  readonly scope: ConflictScope;
+  readonly scope: "field" | "entity";
   /**
    * The concurrent missed Actions that touched the losing subjects,
    * deduped by action id, in window order. The remote half of the

@@ -93,7 +93,7 @@ interface Conflict {
 interface ConflictEntry {
   readonly action: Action; // the losing local Action, verbatim
   readonly subjects: readonly string[]; // subjects that actually lost
-  readonly slots?: readonly ConflictSlotView[]; // absent at entity scope
+  readonly slots?: readonly ConflictSlotView[]; // absent when this entry's scope is entity
   readonly scope: "field" | "entity";
   readonly remoteActions: readonly ConflictRemoteAction[];
   readonly basedOnGsn: number;
@@ -137,7 +137,7 @@ interface EntityDiff {
 - `scope` is declared on the entity, not guessed per position. `"entity"` means any concurrent touch surfaced the subject; `"field"` means an overlapping position did.
 - `subjects` scopes the entity-level group. A create-plus-update write names only the entity that lost, so a freshly created entity is not dragged in.
 - `subjectStates` is one state per losing subject, in `subjects` order: the client's row before the sync, the server's row after it, and the positions that differ.
-- `slots` is the overlapping positions, in detection order, and is **absent** at entity scope — there is no position-level verdict to misread. Read the diff instead.
+- `slots` is the overlapping positions, in detection order, and is **absent** for an entity-scope entry — there is no position-level verdict to misread. Read the diff instead. `Conflict.scope` is the coarsest of its entries, so a mixed group reports `"entity"` while its field-scope entries still carry slots.
 - `remoteActions` is the concurrent missed Actions that made this a conflict: actor, action id, and server GSN. Deduped by action id in window order.
 - `conflictId` is stamped at detection, one per connected set of losing subjects in a catch-up pass, so grouping survives a reload and a partial resolution.
 - The stored rows stay plain; the conflicts view rebuilds the method-carrying objects.
@@ -158,7 +158,7 @@ The `diff` is a **projection**, computed in the conflicts view, not stored. It u
 - `kind` is a pure function of the two projected values: an absent `before` is `added`, an absent `after` is `removed`, both present is `changed`. A `before: null` therefore reads as `added` — nothing was materialized at capture;
 - a nested map entry that projects to `null` is a tombstone, read as absent rather than as a changed position.
 
-`subjectStates` lives on `Conflict` only; `ConflictEntry` is unchanged. It dedupes by `subjectId` alone, taking the earliest `before` and the latest `after` — a no-op today, since every entry in a conflict comes from one catch-up pass.
+`subjectStates` lives on `Conflict` only; each `ConflictEntry` carries its own `slots`, `scope`, and `remoteActions`. `subjectStates` dedupes by `subjectId` alone, taking the earliest `before` and the latest `after` — a no-op today, since every entry in a conflict comes from one catch-up pass.
 
 An entity-scoped application reads `subjectStates` / the diff, not the slots.
 
@@ -185,7 +185,7 @@ client.conflicts.onChange((conflicts) => {
 The verbs name the mechanism, not a policy:
 
 - `sendLocalActions(conflictId)` clears the hold and submits the held Actions **unchanged** — same action id, same Update ids, same field HLCs. Re-stamping would rewrite provenance on an append-only log and fabricate ordering. An application that wants its scalar value to win writes it again through `defineAction` with a fresh clock.
-- `clearLocalActions(conflictId)` drops the held Actions, drops any later local writes to the same subjects, and converges those subjects on the server's view.
+- `clearLocalActions(conflictId)` drops the held Actions, drops the local writes the hold was keeping off the wire, and converges those subjects on the server's view. A write made after the hold lifts is never dropped; a pass with a failed entry drops nothing so the still-conflicted subject keeps its writes.
 
 Both return per-entry results and do **not** roll back:
 
@@ -196,7 +196,7 @@ interface ResolveResult {
 }
 ```
 
-A failed entry stays `conflicted` under the same `conflictId` and can be resolved again.
+A failed entry stays `conflicted` under the same `conflictId` and can be resolved again. A durable-store fault in the pass's final drop or flush rejects instead: the rows already moved stay moved, and the outbox surfaces the fault.
 
 There is no `retry`, `discard`, `accept`, `backup`, or `merge` verb. Policy — copy a backup, pick a winner, do nothing — is application code over the report.
 

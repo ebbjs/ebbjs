@@ -44,10 +44,13 @@ import type { IndexRows } from "../internal/reverse-index";
  * immutable run cells plus additive cut cells and declare a `version` leaf.
  * The encoding changed incompatibly, so there is no migration from a lower
  * version — an existing database below 9 is discarded at open and rebuilt
- * empty. Bump this when adding or changing object stores, or when a
+ * empty. Version 10 adds `scope` and `remoteActions` to the persisted
+ * conflict payload (issue #781). It is additive and has no reset: a row
+ * written before it reads as a field-scope conflict with no recorded remote
+ * context. Bump this when adding or changing object stores, or when a
  * persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 9;
+export const EBB_SCHEMA_VERSION = 10;
 
 /**
  * The version at which the collaborative-text cell format changed

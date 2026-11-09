@@ -2104,7 +2104,7 @@ describe("createOutbox subject hold", () => {
   });
 });
 
-describe("createOutbox dropHeld", () => {
+describe("createOutbox heldPending + dropHeld", () => {
   /** A peer `patch` concurrent with a base-0 `todo_1` write. */
   const peer = (): Action =>
     mkFieldAction({
@@ -2137,18 +2137,25 @@ describe("createOutbox dropHeld", () => {
     return { deps, outbox };
   };
 
-  it("drops only the pending writes to the held subject", async () => {
+  it("snapshots the pending writes the hold excludes, then drops only the named ids", async () => {
     const { deps, outbox } = await seed();
     const heldWrite = writeTo("a_held", "todo_1");
     await outbox.enqueue(heldWrite);
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    const dropped = await outbox.dropHeld(["todo_1"]);
+    const held = outbox.heldPending(["todo_1"]);
+    expect(held.map((entry) => entry.action.id)).toEqual(["a_held"]);
+
+    // A write made after the snapshot was never held; even though it names
+    // the subject, dropping the snapshot must leave it alone.
+    await outbox.enqueue(writeTo("a_later", "todo_1"));
+    const dropped = await outbox.dropHeld(held.map((entry) => entry.action.id));
 
     expect(dropped).toEqual([heldWrite]);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);
     expect(await deps.store.get("a_held")).toBeNull();
     expect((await deps.store.get("a_free"))?.status).toBe("pending");
+    expect((await deps.store.get("a_later"))?.status).toBe("pending");
     // Already on the server, so never dropped.
     expect(outbox.size("acknowledged")).toBe(1);
     expect(await deps.store.get("a_ack")).toMatchObject({ status: "acknowledged" });
@@ -2156,7 +2163,7 @@ describe("createOutbox dropHeld", () => {
     expect(outbox.conflicts().map((entry) => entry.action.id)).toEqual(["a_local"]);
   });
 
-  it("drops a row whole when it writes the held subject and another", async () => {
+  it("drops an Action whole when it writes the held subject and another", async () => {
     const { outbox } = await seed();
     const both: Action = {
       ...writeTo("a_both", "todo_2"),
@@ -2167,17 +2174,20 @@ describe("createOutbox dropHeld", () => {
     };
     await outbox.enqueue(both);
 
-    const dropped = await outbox.dropHeld(["todo_1"]);
+    const held = outbox.heldPending(["todo_1"]);
+    expect(held.map((entry) => entry.action.id)).toEqual(["a_both"]);
+    const dropped = await outbox.dropHeld(held.map((entry) => entry.action.id));
 
     expect(dropped).toEqual([both]);
     expect(outbox.pending()).toEqual([]);
   });
 
-  it("no-ops for an unheld subject", async () => {
+  it("no-ops for an unheld subject and for an unknown id", async () => {
     const { deps, outbox } = await seed();
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    await expect(outbox.dropHeld(["todo_4"])).resolves.toEqual([]);
+    expect(outbox.heldPending(["todo_4"])).toEqual([]);
+    await expect(outbox.dropHeld(["a_missing"])).resolves.toEqual([]);
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);
     expect((await deps.store.get("a_free"))?.status).toBe("pending");

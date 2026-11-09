@@ -28,7 +28,6 @@ export type {
 } from "../replica/types";
 export type {
   ConflictRemoteAction,
-  ConflictScope,
   OutboxEntry,
   OutboxStatus,
   OutboxStore,

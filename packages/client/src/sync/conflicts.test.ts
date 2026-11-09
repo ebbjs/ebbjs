@@ -17,7 +17,7 @@ import type {
   OutboxConflict,
 } from "@ebbjs/storage/types";
 
-import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
+import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createConflicts, findPreSyncRow, type ConflictsDependencies } from "./conflicts";
 
 const LOCAL_HLC = makeHlc(1_711_036_800_000);
@@ -134,10 +134,12 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
     rows = rows.filter((row) => row.action.id !== actionId);
     emit();
   });
-  const dropHeld = vi.fn(async (_subjects: readonly string[]): Promise<readonly Action[]> => []);
+  const heldPending = vi.fn((_subjects: readonly string[]): readonly OutboxEntry[] => []);
+  const dropHeld = vi.fn(async (_actionIds: readonly string[]): Promise<readonly Action[]> => []);
 
   return {
     releaseConflict,
+    heldPending,
     dropHeld,
     get rows(): readonly ConflictedOutboxEntry[] {
       return rows;
@@ -151,10 +153,10 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
       return () => listeners.delete(listener);
     },
     rehydrate: async (): Promise<void> => {},
-    clearConflict: async (actionId: string): Promise<void> => {
+    clearConflict: vi.fn(async (actionId: string): Promise<void> => {
       rows = rows.filter((row) => row.action.id !== actionId);
       emit();
-    },
+    }),
     /** Simulate a detection landing on the outbox. */
     put(row: ConflictedOutboxEntry): void {
       rows = [...rows.filter((candidate) => candidate.action.id !== row.action.id), row];
@@ -168,6 +170,7 @@ interface Harness {
   outbox: ReturnType<typeof mkOutbox>;
   reMaterialize: Mock;
   flush: Mock;
+  heldPending: Mock;
   dropHeld: Mock;
 }
 
@@ -179,6 +182,7 @@ const mkDeps = (initial: readonly ConflictedOutboxEntry[] = []): Harness => {
     outbox,
     reMaterialize,
     flush,
+    heldPending: outbox.heldPending as Mock,
     dropHeld: outbox.dropHeld as Mock,
     deps: { outbox, reMaterialize, flush },
   };
@@ -278,25 +282,57 @@ describe("createConflicts", () => {
     expect(harness.outbox.released).toEqual(["act_local"]);
   });
 
-  it("clearLocalActions re-materializes each held Action, drops held writes, then converges", async () => {
+  it("clearLocalActions drops exactly the writes snapshotted under the hold, then converges", async () => {
     const row = mkRow("act_local", "5");
     const harness = mkDeps([row]);
-    const later = mkAction("act_later");
-    harness.dropHeld.mockResolvedValueOnce([later]);
+    const later: OutboxEntry = {
+      action: mkAction("act_later"),
+      status: "pending",
+      enqueuedAtHlc: "6",
+      basedOnGsn: 0,
+    };
+    harness.heldPending.mockReturnValueOnce([later]);
+    harness.dropHeld.mockResolvedValueOnce([later.action]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
 
     const result = await conflicts.clearLocalActions("c_act_local");
 
     expect(result).toEqual({ resolved: ["act_local"], failed: [] });
-    expect(harness.reMaterialize.mock.calls.map((call) => call[0])).toEqual([row.action, later]);
-    // The pending writes the hold was blocking are dropped, so the subject
-    // converges instead of re-dirtying itself.
-    expect(harness.dropHeld).toHaveBeenCalledWith(["todo_1"]);
+    // Snapshot first, while the conflicted row still holds the subject; a
+    // write made after the hold lifts is never named and so never dropped.
+    expect(harness.heldPending).toHaveBeenCalledWith(["todo_1"]);
+    expect(harness.dropHeld).toHaveBeenCalledWith(["act_later"]);
+    expect(harness.reMaterialize.mock.calls.map((call) => call[0])).toEqual([
+      row.action,
+      later.action,
+    ]);
     expect(harness.outbox.releaseConflict).not.toHaveBeenCalled();
     expect(harness.flush).not.toHaveBeenCalled();
     expect(harness.outbox.rows).toEqual([]);
     expect(conflicts.count()).toBe(0);
+  });
+
+  it("clearLocalActions drops nothing when an entry fails, so the held subject keeps its writes", async () => {
+    const harness = mkDeps([mkRow("act_local", "5")]);
+    harness.heldPending.mockReturnValueOnce([
+      {
+        action: mkAction("act_later"),
+        status: "pending",
+        enqueuedAtHlc: "6",
+        basedOnGsn: 0,
+      },
+    ]);
+    harness.outbox.clearConflict.mockRejectedValueOnce(new Error("store unavailable"));
+    const { conflicts } = createConflicts(harness.deps);
+    await conflicts.rehydrate();
+
+    const result = await conflicts.clearLocalActions("c_act_local");
+
+    expect(result.resolved).toEqual([]);
+    expect(result.failed.map((failure) => failure.entryId)).toEqual(["act_local"]);
+    expect(harness.dropHeld).not.toHaveBeenCalled();
+    expect(harness.outbox.rows.map((row) => row.action.id)).toEqual(["act_local"]);
   });
 
   it("a verb on an unknown conflict id is an empty no-op with no flush", async () => {
@@ -308,6 +344,7 @@ describe("createConflicts", () => {
     expect(await conflicts.clearLocalActions("c_missing")).toEqual({ resolved: [], failed: [] });
 
     expect(harness.outbox.releaseConflict).not.toHaveBeenCalled();
+    expect(harness.heldPending).not.toHaveBeenCalled();
     expect(harness.dropHeld).not.toHaveBeenCalled();
     expect(harness.reMaterialize).not.toHaveBeenCalled();
     expect(harness.flush).not.toHaveBeenCalled();

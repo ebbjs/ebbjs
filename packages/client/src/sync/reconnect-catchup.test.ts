@@ -235,8 +235,8 @@ describe("SyncClient rebase phase (#309)", () => {
       conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
     ).toEqual(["act_local"]);
     expect(conflicts[0]?.entries[0]?.basedOnGsn).toBe(1);
-    expect(conflicts[0]?.entries[0]?.slots.map((slot) => slot.path)).toEqual([[]]);
-    expect(conflicts[0]?.entries[0]?.slots[0]?.remote).toMatchObject({ value: "Page two" });
+    expect(conflicts[0]?.entries[0]?.slots?.map((slot) => slot.path)).toEqual([[]]);
+    expect(conflicts[0]?.entries[0]?.slots?.[0]?.remote).toMatchObject({ value: "Page two" });
 
     unsubscribe();
   });

@@ -180,3 +180,42 @@ describe("IndexedDB v7/v8 → v9 reset", () => {
     expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(0);
   });
 });
+
+describe("IndexedDB v9 → v10 additive upgrade", () => {
+  it("keeps rows and leaves a pre-v10 conflict payload readable", async () => {
+    const dbName = legacyDbName();
+    const action = buildPutAction();
+    // A v9 payload carries neither field added at v10.
+    const v9Conflict = {
+      subjects: ["todo_1"],
+      subjectStates: [],
+      slots: [],
+      catchUpId: "cu_1",
+      conflictId: "c_1",
+      detectedAtHlc: action.hlc,
+    };
+
+    const v9 = await openDB<EbbDBSchema>(dbName, 9, { upgrade: createEbbStores });
+    await v9.put("actions", { ...action, subject_ids: ["todo_1"], position: 1 });
+    await v9.put("sequence", { id: ACTION_POSITION_SEQUENCE_ID, value: 1 });
+    await v9.put("outbox", {
+      action,
+      status: "conflicted",
+      enqueuedAtHlc: action.hlc,
+      basedOnGsn: 0,
+      conflict: v9Conflict as never,
+    });
+    v9.close();
+
+    const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
+      upgrade: createEbbStores,
+    });
+
+    // Additive version: no reset, no data loss.
+    expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(1);
+    const entry = await upgraded.get("outbox", action.id);
+    expect(entry?.status).toBe("conflicted");
+    expect(entry?.conflict?.conflictId).toBe("c_1");
+    expect(upgraded.objectStoreNames.contains("replica")).toBe(true);
+  });
+});

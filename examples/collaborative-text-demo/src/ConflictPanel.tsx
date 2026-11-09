@@ -47,12 +47,18 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
     };
   }, [client, docId]);
 
+  // A durable-store fault in the verb's final flush/drop rejects; the demo
+  // has no recovery UI, so surface it rather than leaving it unhandled.
+  const run = (verb: () => Promise<unknown>): void => {
+    void verb().catch((error: unknown) => console.error("[conflict]", error));
+  };
+
   const send = (conflictId: string): void => {
-    void client.conflicts.sendLocalActions(conflictId);
+    run(() => client.conflicts.sendLocalActions(conflictId));
   };
 
   const clear = (conflictId: string): void => {
-    void client.conflicts.clearLocalActions(conflictId);
+    run(() => client.conflicts.clearLocalActions(conflictId));
   };
 
   return (

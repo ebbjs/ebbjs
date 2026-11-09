@@ -18,15 +18,16 @@
  */
 
 import { compare, type Action, type Entity } from "@ebbjs/core";
+import type { ConflictScope } from "@ebbjs/schema";
 import type {
   ConflictRemoteAction,
-  ConflictScope,
   ConflictSide,
   ConflictSlot,
   ConflictSubjectState,
 } from "@ebbjs/storage/types";
 import { diffEntity, type EntityDiff } from "@ebbjs/write";
-import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
+import { coarsestScope } from "./conflict-slots";
+import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
 /**
@@ -66,9 +67,11 @@ export interface ConflictEntry {
   readonly subjects: readonly string[];
   /**
    * Overlapping contested positions, in detection order. Present only for
-   * `"field"` scope: the slots and their {@link ConflictSlotView.remoteWins}
-   * verdicts answer the position-level question. Absent when the conflict's
-   * scope is `"entity"` — read {@link ConflictSubjectStateView.diff} there.
+   * an entry whose own scope is `"field"`: the slots and their
+   * {@link ConflictSlotView.remoteWins} verdicts answer the position-level
+   * question. Absent for an entity-scope entry — read
+   * {@link ConflictSubjectStateView.diff} there. A group's
+   * {@link Conflict.scope} is the coarsest of its entries.
    */
   readonly slots?: readonly ConflictSlotView[];
   /** Scope detection classified this losing Action under. */
@@ -118,10 +121,10 @@ export interface Conflict {
   readonly entries: readonly ConflictEntry[];
   /**
    * The concurrent missed Actions that made this a conflict: actor, action
-   * id, and server GSN. Deduped by action id in window order, across the
-   * conflict's entries. The rest of the remote context rides each entry's
-   * {@link ConflictEntry.action} and
-   * {@link ConflictEntry.basedOnGsn}.
+   * id, and server GSN. Deduped by action id, first-seen across the
+   * conflict's entries (each entry's own list is in window order). The
+   * rest of the remote context rides each entry's
+   * {@link ConflictEntry.action} and {@link ConflictEntry.basedOnGsn}.
    */
   readonly remoteActions: readonly ConflictRemoteAction[];
 }
@@ -185,15 +188,24 @@ export interface Conflicts {
    * provenance on an append-only log. An application that wants its scalar
    * value to win writes it again through `defineAction` with a fresh clock.
    *
+   * Per-entry failures are returned in {@link ResolveResult.failed}. A
+   * durable-store fault in the pass's final flush rejects instead: the rows
+   * already moved stay moved, and the fault surfaces through the outbox.
    * Unknown ids are a no-op.
    */
   sendLocalActions(conflictId: string): Promise<ResolveResult>;
   /**
    * Clear every held Action in one conflict: drop its optimistic writes and
-   * converge the affected subjects on the remote view. New local writes to
-   * those subjects, which the hold was keeping off the wire, are dropped
-   * with it — otherwise the subject could not converge. Pending writes to
-   * unaffected subjects are untouched. Unknown ids are a no-op.
+   * converge the affected subjects on the remote view. The local writes the
+   * hold was keeping off the wire are dropped with it — otherwise the
+   * subject could not converge. Pending writes to unaffected subjects and
+   * writes made after the hold lifted are untouched. A pass with a failed
+   * entry drops nothing, so the still-conflicted subject keeps its held
+   * writes; retry the clear. Unknown ids are a no-op.
+   *
+   * Per-entry failures are returned in {@link ResolveResult.failed}. A
+   * durable-store fault in the pass's final drop or re-materialize rejects
+   * instead: the rows already moved stay moved.
    */
   clearLocalActions(conflictId: string): Promise<ResolveResult>;
   /**
@@ -227,12 +239,17 @@ export interface ConflictOutbox {
    */
   releaseConflict(actionId: string): Promise<void>;
   /**
-   * Delete every `pending` row whose Action writes one of `subjects` — the
-   * local writes the subject hold was keeping off the wire — and return
-   * their Actions so the caller can revert their optimistic overlays.
-   * `acknowledged` rows are already on the server and are never dropped.
+   * Snapshot the `pending` writes the current subject hold excludes, so a
+   * clear can drop exactly those and never a write made after the hold
+   * lifted.
    */
-  dropHeld(subjects: readonly string[]): Promise<readonly Action[]>;
+  heldPending(subjects: readonly string[]): readonly OutboxEntry[];
+  /**
+   * Delete the named `pending` writes and return their Actions so the
+   * caller can revert their optimistic overlays. `acknowledged` rows are
+   * already on the server and are never dropped.
+   */
+  dropHeld(actionIds: readonly string[]): Promise<readonly Action[]>;
   /** Delete a conflicted row. A no-op for an unknown or non-conflicted id. */
   clearConflict(actionId: string): Promise<void>;
 }
@@ -395,7 +412,7 @@ const groupConflicts = (
     }
     conflicts.push({
       id,
-      scope: ordered.some((entry) => entry.scope === "entity") ? "entity" : "field",
+      scope: coarsestScope(ordered.map((entry) => entry.scope)),
       subjects,
       subjectStates: aggregateSubjectStates(ordered, subjects, statesByAction),
       entries: ordered,
@@ -471,11 +488,14 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
    * Apply one verb to every entry of a conflict. A per-entry failure is
    * recorded and the rest still run. Sending flushes once after the whole
    * group left the hold, so a grouped conflict's Actions leave together;
-   * clearing also drops the pending writes the hold was blocking and
+   * clearing also drops the writes the hold was blocking and
    * re-materializes each, so every affected subject converges.
    */
   const applyVerb = async (conflict: Conflict, verb: Verb): Promise<ResolveResult> => {
     await rehydrate();
+    // Snapshot the held writes before the conflicted rows move. A write
+    // enqueued after this point was never held, so a clear must not drop it.
+    const held = verb === "clear" ? deps.outbox.heldPending(conflict.subjects) : [];
     const resolved: string[] = [];
     const failed: FailedResolution[] = [];
     for (const entry of conflict.entries) {
@@ -490,11 +510,12 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       }
     }
     if (verb === "clear") {
-      // Clearing the conflict's rows releases the hold; any local write the
-      // hold was keeping off the wire would otherwise re-diverge the
-      // subject. Dropping it is what makes "converge on remote" true.
-      const dropped = await deps.outbox.dropHeld(conflict.subjects);
-      for (const action of dropped) await deps.reMaterialize(action);
+      // A failed entry keeps its subject held; dropping that subject's
+      // writes would discard an edit the remaining conflict still owns.
+      if (failed.length === 0) {
+        const dropped = await deps.outbox.dropHeld(held.map((entry) => entry.action.id));
+        for (const action of dropped) await deps.reMaterialize(action);
+      }
     } else if (resolved.length > 0) {
       await deps.flush();
     }
