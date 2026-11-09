@@ -4,6 +4,8 @@
 
 > **Superseded in part by [#764](https://github.com/ebbjs/ebbjs/issues/764).** Runs are now immutable and deletes are additive cuts, so the same-run rewrite model, its split/tombstone encodings, and the same-run conflict slot described below are historical. The current model is `packages/schema/src/collaborative-text/`.
 
+> **Superseded in part by [#776](https://github.com/ebbjs/ebbjs/issues/776).** `e.collaborativeText()` is gone: a document is an entity the app declares and a relationship it declares, so every mention of the field sugar below is historical.
+
 A CodeMirror-based causal-tree POC exists in [`experiment/collaborative-text/`](../../../experiment/collaborative-text/) using `BroadcastChannel` as a stand-in for the server. This document describes the architecture and slice plan for shipping a working browser-based collaborative text prototype against `mix dev`, replacing the BroadcastChannel relay with the real Action / SSE / catch-up stack.
 
 ## Goal
