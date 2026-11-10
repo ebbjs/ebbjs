@@ -486,13 +486,19 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
 - [x] #813's empty-scope delivery hole: the Writer's `fan_out_preference` now reads the row shape
       earlier Actions of the same flush left behind (`:flush_rows`), so a `groupMember`/`entityGroup`
       or `relationship` write that names only one component still carries its group/source. It is no
-      longer committed undeliverable.
+      longer committed undeliverable, and the stored `update_scopes` / `cf_group_actions` row are
+      what catch-up and fan-out read. The issue's second clause — reject an Action whose scope is
+      still `[]` — is **not** taken: a row that genuinely belongs to no group (an unshared user row)
+      is legal today, and rejecting would change authorization rather than delivery. A system row
+      that cannot name its group/source now falls back to the flush row before it can reach `[]`.
 
 **Acceptance.** The k = 2/4/8 table is recorded in the epic and the resulting write cost is
 accepted or the design is amended. An existence query touches one index range per component named
-(`ComponentEntityIndex.component_ids/2` on RocksDB, `SQLite.query_component_ids/2` on the read
-model). No path reads `type` to find an entity's rows: `iterate` reads `modelIndex`, and the server's
-model entries are existence/committed-model lookups, not row scans.
+and filters the row-level tombstone: `ComponentEntityIndex.component_entry_ids/2` is the raw range
+on RocksDB (a delete leaves its entries as candidates), and `SQLite.query_component_ids/2` joins
+`deleted_hlc IS NULL` on the read model. No path reads `type` to find an entity's rows: `iterate`
+reads `modelIndex`, and the server's model entries are existence/committed-model lookups, not row
+scans.
 
 **Depends on.** 4, 5.
 
@@ -501,13 +507,18 @@ model entries are existence/committed-model lookups, not row scans.
 a `multiEntry` component index that `EntityStore.queryByComponent` reads; the schema bump to 11
 resets rather than migrating. On the server, `cf_component_entities` replaces `cf_type_entities` with
 a model entry plus a component entry per component, `SystemCache` boot and the one-time backfill
-rebuild both, and a drop deletes its component entry while a delete leaves the model entry (and
-stale component entries) in place. SQLite mirrors components into `entity_components` and answers
+rebuild both, and a drop deletes its component entry while a delete leaves the model entry and the
+row's component entries in place (the entries are existence candidates; the row tombstone is the
+liveness filter). SQLite mirrors components into `entity_components` and answers
 `query_component_ids/2` from `idx_entity_components_component`. The k = 2/4/8 Writer measurement is
-recorded below and the cost is accepted. Four things are recorded rather than resolved:
+recorded below and the cost is accepted. The server read seam is exercised by tests but is not yet a
+wire query: `has`/`hasNot` remain builder-only (#798's limit) until a slice owns the component
+predicate; the client replica's `has` already reads its component index. Five things are recorded
+rather than resolved:
 `ReplicaChange.type` stays until #800; `archetypeIndex` is out until a plan can name an exact
-component set; the server indexes every component because #803 forbids it a schema; and the SQLite
-expression index is the normalized mirror because `json_each` cannot be indexed.
+component set; the server indexes every component because #803 forbids it a schema; the SQLite
+expression index is the normalized mirror because `json_each` cannot be indexed; and a row `delete`
+leaves its component entries as existence candidates, with the row tombstone the liveness filter.
 
 ---
 
@@ -852,9 +863,10 @@ longer evicts. These are the real performance wins and they are all latency, not
 and, at the hot write path, −28% accepted Actions/s with +70% p95 (slice 4). A single-field write is
 unchanged; creates and multi-component edits pay. The same per-Update cost is why atomic system
 components matter: one Update for a whole membership or edge instead of two or four. Slice 6 adds
-`k + 1` index entries per row against one before — ~15% of accepted Actions at every k — and the
-schema-free server indexes every component rather than an `indexed` subset, because it has no schema
-to read the flag from (decision 8's opt-in stays a client-side intent).
+`k + 1` index entries per row against one before — 11–21% of accepted Actions as k goes 2 → 8,
+rising with the component count — and the schema-free server indexes every component rather than an
+`indexed` subset, because it has no schema to read the flag from (decision 8's opt-in stays a
+client-side intent).
 
 **Costs — replica persistence complexity, and it is not optional.** `toRecord` persists held rows on
 one rule; partial rows mean a second store keyed by `(entity, component)`. Slice 9 owns this and it
@@ -915,9 +927,8 @@ rather than by how much data it carries.
 `mix bench.component_index` writes a fixed 20,000-Action workload through the real `Writer` (sync
 durability, no HTTP, eight concurrent callers, 25 Actions per call) on a fresh database after a
 2,000-Action warm-up. Each Action creates a k-component `todo` row plus its `entityGroup` row. The
-three arms are interleaved inside every run, and the added cost is the median of the per-run
-`1 - (model + components) / (model only)` pairs, so a slow pass cancels out of its own pair. Five
-runs per k; medians, with the range in brackets. Host: 4 vCPU, 15 GB, Elixir 1.17.3 / OTP 27.
+three arms are interleaved inside every run. Five runs per k; medians, with the range in brackets.
+`Added cost` is the ratio of the two displayed medians. Host: 4 vCPU, 15 GB, Elixir 1.17.3 / OTP 27.
 
 | Measure                                      |               k = 2 |               k = 4 |               k = 8 |
 | -------------------------------------------- | ------------------: | ------------------: | ------------------: |
@@ -925,19 +936,18 @@ runs per k; medians, with the range in brackets. Host: 4 vCPU, 15 GB, Elixir 1.1
 | Index key bytes added per entity             |                  68 |                 136 |                 272 |
 | Actions/s, model entry only (before)         | 4,769 (4,452–5,241) | 3,857 (3,377–4,092) | 3,120 (2,821–3,496) |
 | Actions/s, model + component entries (after) | 4,237 (3,853–4,649) | 3,281 (2,819–3,593) | 2,466 (2,295–2,713) |
-| Added commit cost                            |               13.2% |               14.9% |               14.8% |
+| Added commit cost                            |               11.2% |               14.9% |               21.0% |
 | Actions/s, no index (context only)           |               5,016 |               4,344 |               3,390 |
 
-**What it says.** The component index costs about 13–15% of accepted Actions at every k; it does not
-compound with the component count. That is the shape the design predicted: each entry is its own
-RocksDB op with an empty value, so the price is per key, and the measured share stays flat because
-the Action's Update payload grows with k alongside the index. A row with k components now writes
-k + 1 index entries — k component entries plus the model entry that keeps the row's existence and
-committed model — against one before. At k = 8 that is nine times the index rows for the same row,
-and still the throughput share is the one an extra index-op group costs. The cost is accepted: a
-~15% write-path share sits inside the 12–25% the `entity_index` ablation priced for the old
-single-entry column family, and the common single-field edit adds exactly one component entry over
-the old shape.
+**What it says.** The added cost rises with k: 11.2% at k = 2, 14.9% at k = 4, 21.0% at k = 8.
+That is the price of the index rows, and it is linear in components: each entry is its own RocksDB
+op with an empty value, so a row with k components writes k + 1 entries — k component entries plus
+the model entry that keeps the row's existence and committed model — against one before. At k = 8
+that is nine times the index rows for the same row. The cost is accepted for the measured range:
+21% at the largest set still leaves the write path dominated by the log and the payload, and the
+common single-field edit adds exactly one component entry over the old shape. The share is not
+flat, though — a model that puts many components on one row pays proportionally, which is the case
+#815's "index only declared components" candidate exists for.
 
 **What it does not say.** Absolute rates are this host's and will not reproduce elsewhere. The
 no-index arm is context only: it removes the model entry as well, so it is not the pre-#799 shape,

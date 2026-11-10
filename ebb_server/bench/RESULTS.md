@@ -336,17 +336,19 @@ same subject, and `hot` is where the index cost was measured.
 
 ### The index split apart, after
 
-`cf_entity_actions` and `cf_type_entities` are separately ablatable now
-(`:entity_actions`, `:type_entities`; `:entity_index` remains the combined
-alias, so the published commands keep their meaning). Medians of three 20 s
-passes on the changed build:
+`cf_entity_actions` and `cf_component_entities` are separately ablatable now
+(`:entity_actions`, `:component_entities`; `:entity_index` remains the combined
+alias, so the published commands keep their meaning). The phase was called
+`:type_entities` when the rows below were measured; [#799](https://github.com/ebbjs/ebbjs/issues/799)
+renamed it to `:component_entities` along with the column family. Medians of
+three 20 s passes on the changed build:
 
-| `t5` K=8 op set         | puts / 100-Action batch | Actions/s | vs full |
-| ----------------------- | ----------------------: | --------: | ------: |
-| full                    |                     304 |   102,775 |       — |
-| − `entity_actions`      |                     302 |   102,305 |   −0.5% |
-| − `type_entities`       |                     302 |   105,560 |   +2.7% |
-| − both (`entity_index`) |                     300 |   106,595 |   +3.7% |
+| `t5` K=8 op set                              | puts / 100-Action batch | Actions/s | vs full |
+| -------------------------------------------- | ----------------------: | --------: | ------: |
+| full                                         |                     304 |   102,775 |       — |
+| − `entity_actions`                           |                     302 |   102,305 |   −0.5% |
+| − `type_entities` (now `component_entities`) |                     302 |   105,560 |   +2.7% |
+| − both (`entity_index`)                      |                     300 |   106,595 |   +3.7% |
 
 The combined ablation's marginal cost was **+25.0%** before the change and
 **+3.7%** after it — inside the host's run-to-run spread, which is what "the
@@ -1901,9 +1903,11 @@ the flush critical path is the durable log append versus the
 **two-store-only** bookkeeping a collapsed materialized store would
 remove. The `--ablate <phases>` seam (#510) skips named
 phases of the write path — `dedup, group_resolution, build, encode,
-entity_actions, type_entities, entity_index, group_index, dirty, cache,
-watermark, fanout` (comma-separated; `entity_index` is the combined alias for
-`entity_actions` + `type_entities`). `build` and `encode` were added by
+entity_actions, component_entries, component_entities, entity_index,
+group_index, dirty, cache, watermark, fanout` (comma-separated;
+`entity_index` is the combined alias for `entity_actions` +
+`component_entities`). The rows below were measured before #799 renamed
+`type_entities` to `component_entities`; the old name no longer parses. `build` and `encode` were added by
 [#532](https://github.com/ebbjs/ebbjs/issues/532) to price the pre-claim
 payload work; the tables below predate those phases and were measured
 before they existed.
