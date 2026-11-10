@@ -26,7 +26,7 @@ defmodule Mix.Tasks.Bench.Components do
     Mix.shell().info("""
     Component envelope payload cost (#797)
 
-      One logical edit writing #{report.edits} component(s): #{inspect(Components.components())}
+      One logical edit touching #{report.new_updates} components: #{inspect(Components.components())}
 
       | Measure                | Row record (before) | Components (after) | Delta |
       | ---------------------- | ------------------: | -----------------: | ----: |
