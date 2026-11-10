@@ -13,6 +13,20 @@ const wall = defineModel("wall", {
   title: e.string(),
 });
 
+describe("where field values", () => {
+  it("types an object predicate as the declared nested shape", () => {
+    const builder = buildQueryBuilder([], wall.shape);
+    builder.where("anchor", { x: 1, y: 2 });
+    builder.where("tags", ["a", "b"]);
+
+    const invoke = () => {
+      // @ts-expect-error — a predicate must match the declared shape
+      builder.where("anchor", { x: "one", y: 2 });
+    };
+    void invoke;
+  });
+});
+
 describe("orderBy field keys", () => {
   it("accepts scalar, enum, and defaulted field keys", () => {
     const builder = buildQueryBuilder([], wall.shape);

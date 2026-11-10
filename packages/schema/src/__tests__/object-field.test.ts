@@ -165,16 +165,21 @@ describe("nested values in non-map fields", () => {
     expect(validatePayload(board.shape, { marks: { a: unset } }, "board", true)).toEqual([]);
   });
 
-  it("reports a nested null inside a map entry with its path", () => {
-    const violations = validatePayload(
-      board.shape,
-      { marks: { a: { x: 1, y: null } } },
-      "board",
-      true,
-    );
+  it("honours the definition-time carve-out for a nullable map entry value", () => {
+    const document = defineModel("document", {
+      cells: e.map(
+        Type.Object({
+          value: Type.String(),
+          y: Type.Union([Type.String(), Type.Null()]),
+        }),
+      ),
+    });
 
-    expect(violations).toHaveLength(1);
-    expect(violations[0]?.message).toContain("marks.a.y: null is not a value");
+    // A map's entries are positions, not parts of one atomic value, so the
+    // nullable property the definition allows must stay writable.
+    expect(
+      validatePayload(document.shape, { cells: { a: { value: "x", y: null } } }, "document", true),
+    ).toEqual([]);
   });
 
   it("reports a nested unset on a full create as well", () => {

@@ -478,8 +478,12 @@ export const validatePayload = <T extends TSchema>(
  * Only a map field's top-level entries are positions: `unset` there compiles
  * to a tombstone leaf. Anywhere else — inside an object, an array item, or a
  * map entry's own value — `unset` has no envelope, so it is reported once at
- * its path rather than stripped into a shape error. A literal `null` is the
- * same mistake at every depth and reports the same way.
+ * its path rather than stripped into a shape error.
+ *
+ * A literal `null` is that same mistake inside an atomic value, but not inside
+ * a map entry: a map's entries are positions, and a schema that admits a null
+ * there declares it as the position's own value. That is the definition-time
+ * carve-out; validation has to honour it or the two disagree again.
  */
 const sanitizeFieldValue = (
   value: unknown,
@@ -497,11 +501,11 @@ const sanitizeFieldValue = (
         violations.push(nullIsNotUnset(entityName, path));
         continue;
       }
-      out[key] = sanitizeNestedValue(entry, entityName, path, violations);
+      out[key] = sanitizeNestedValue(entry, entityName, path, violations, true);
     }
     return out;
   }
-  return sanitizeNestedValue(value, entityName, field, violations);
+  return sanitizeNestedValue(value, entityName, field, violations, false);
 };
 
 const sanitizeNestedValue = (
@@ -509,24 +513,31 @@ const sanitizeNestedValue = (
   entityName: string,
   path: string,
   violations: ValidationViolation[],
+  nullIsPositionValue: boolean,
 ): unknown => {
   if (isUnset(value)) {
     violations.push(nestedUnset(entityName, path));
     return undefined;
   }
   if (value === null) {
-    violations.push(nullIsNotUnset(entityName, path));
-    return undefined;
+    if (!nullIsPositionValue) violations.push(nullIsNotUnset(entityName, path));
+    return null;
   }
   if (Array.isArray(value)) {
     return value.map((entry, index) =>
-      sanitizeNestedValue(entry, entityName, `${path}[${index}]`, violations),
+      sanitizeNestedValue(entry, entityName, `${path}[${index}]`, violations, nullIsPositionValue),
     );
   }
   if (isPlainObject(value)) {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = sanitizeNestedValue(entry, entityName, `${path}.${key}`, violations);
+      out[key] = sanitizeNestedValue(
+        entry,
+        entityName,
+        `${path}.${key}`,
+        violations,
+        nullIsPositionValue,
+      );
     }
     return out;
   }
