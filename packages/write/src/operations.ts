@@ -469,6 +469,8 @@ export const dropEntity: Operation<DropEntityInput> = (ctx, input) => {
       },
     ]);
   }
+  // Unlike a patch's empty-payload check, this is not behind `validate`:
+  // a no-op drop is a caller bug whether or not validation ran.
   if (input.fields.length === 0) {
     throw new EntityValidationError([
       { entityName: input.entity, message: `drop: must name at least one component` },

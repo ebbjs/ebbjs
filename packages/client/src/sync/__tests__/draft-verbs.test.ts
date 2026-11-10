@@ -68,6 +68,10 @@ const dropNoteDraft = defineAction(schema, ({ note: notes }, params: { id: strin
   notes.drop(params.id, ["draft"]);
 });
 
+const dropNoteTitle = defineAction(schema, ({ note: notes }, params: { id: string }): void => {
+  notes.drop(params.id, ["title"]);
+});
+
 const duplicateTodo = defineAction(
   schema,
   (
@@ -156,6 +160,7 @@ const actions = {
   patchTodo,
   deleteTodo,
   dropNoteDraft,
+  dropNoteTitle,
   duplicateTodo,
   linkTodoList,
   unlinkTodoList,
@@ -378,6 +383,31 @@ describe("drafts — drop", () => {
     expect(after.deleted_hlc).toBeNull();
     expect(after.exists).toBe(true);
     expect(after.data.fields).toEqual({});
+  });
+
+  it("drops a mandatory component and keeps the row", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(
+      mkEntity("note_1", "note", { title: "Ship", draft: { text: "hello" } }),
+    );
+    await storage.entities.set(mkMembership("eg_note_1", "note_1", "g_1"));
+
+    await client.actions.dropNoteTitle({ id: "note_1" });
+
+    const updates = updatesOf(seen);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      subject_id: "note_1",
+      component: "note/title",
+      method: "drop",
+      data: null,
+    });
+
+    const after = applyUpdate((await storage.entities.get("note_1"))!, updates[0]!, 1, makeHlc(9))!;
+    expect(after.exists).toBe(true);
+    expect(after.deleted_hlc).toBeNull();
+    expect(after.data.fields).not.toHaveProperty("title");
+    expect(after.data.fields.draft).toBeDefined();
   });
 
   it("refuses a drop of a row the replica cannot see", async () => {

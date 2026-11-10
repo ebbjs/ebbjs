@@ -203,6 +203,11 @@ export function createBackfill(opts: BackfillOptions): Backfill {
 
   const pending = createObservable<readonly string[]>([]);
   const waiters: (() => void)[] = [];
+  // Ids whose fetched base carried no component: the log cannot record an
+  // empty row, so the placeholder stays `exists: false` and would be a
+  // candidate on every pass. A later component write makes the row worth
+  // fetching again, so a pass that sees one clears the guard.
+  const fetchedEmpty = new Set<string>();
   let running = false;
   let queued = false;
 
@@ -228,6 +233,11 @@ export function createBackfill(opts: BackfillOptions): Backfill {
     const inFlight = new Set([...pending.get(), ...candidates]);
 
     for (const entityId of candidates) {
+      if (fetchedEmpty.has(entityId)) {
+        const row = await storage.entities.get(entityId);
+        if (row === null || Object.keys(row.data.fields).length === 0) continue;
+        fetchedEmpty.delete(entityId);
+      }
       publish(inFlight);
       const entity = await readOne(entityId);
       // An optimistic local write can land while the read is in flight.
@@ -238,8 +248,9 @@ export function createBackfill(opts: BackfillOptions): Backfill {
       if (entity !== null && needsBase) {
         const snapshot = snapshotAction(entity);
         // A zero-component base carries no Update, so the log cannot record
-        // it. The row stays a candidate rather than appending an empty Action.
+        // it. Remember the id so this pass does not re-fetch it forever.
         if (snapshot.updates.length === 0) {
+          fetchedEmpty.add(entityId);
           inFlight.delete(entityId);
           continue;
         }

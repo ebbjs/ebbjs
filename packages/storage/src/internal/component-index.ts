@@ -38,6 +38,7 @@ export const componentDelta = (
   previous: Entity | undefined,
   next: Entity | undefined,
 ): ComponentDelta | null => {
+  if (previous === next) return null;
   if (previous === undefined && next === undefined) return null;
   const before = previous === undefined ? [] : componentsOf(previous);
   const after = next === undefined ? [] : componentsOf(next);
@@ -59,6 +60,7 @@ export const applyComponentDelta = (
   index: ComponentIndex,
   delta: ComponentDelta,
 ): ComponentIndex => {
+  if (delta.add.length === 0 && delta.remove.length === 0) return index;
   const next = new Map(index);
   for (const component of delta.remove) {
     const ids = next.get(component);

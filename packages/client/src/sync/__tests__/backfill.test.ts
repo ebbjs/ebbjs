@@ -227,18 +227,24 @@ describe("collectBackfillCandidates", () => {
 });
 
 describe("createBackfill", () => {
-  it("does not append an empty Action for a zero-component base", async () => {
+  it("does not append an empty Action or re-fetch a zero-component base", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
       mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
     );
+    let fetches = 0;
     const backfill = createBackfill({
       storage,
-      fetchEntity: async () => asResponse(mkEntity("post_1", "blog_post", {})),
+      fetchEntity: async () => {
+        fetches += 1;
+        return asResponse(mkEntity("post_1", "blog_post", {}));
+      },
     });
 
     await backfill.run();
+    await backfill.run();
 
+    expect(fetches).toBe(1);
     expect(await storage.actions.getForEntity("post_1")).toEqual([]);
     expect(backfill.pending.get()).toEqual([]);
   });
