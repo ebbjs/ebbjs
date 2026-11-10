@@ -26,13 +26,13 @@ export type Predicate =
   | { readonly kind: "membership"; readonly anyOf: readonly string[] | null }
   | {
       /**
-       * Component presence: `component` is always `<source>/<field>`, because
+       * Component existence: `component` is always `<source>/<field>`, because
        * the builder resolves the field against the source model. `present:
        * true` is `has`, `false` is `hasNot`. Builder-only: no wire `Filter`
        * lowers to it, because the server grows no component index before
        * #799.
        */
-      readonly kind: "presence";
+      readonly kind: "existence";
       readonly component: string;
       readonly present: boolean;
     };

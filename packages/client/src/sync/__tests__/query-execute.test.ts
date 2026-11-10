@@ -445,7 +445,9 @@ describe("executePlan", () => {
     const iterate = vi.spyOn(replica, "iterate");
 
     const rows = executePlan(
-      planQuery(query({ groups: [[{ kind: "presence", component: "todo/note", present: true }]] })),
+      planQuery(
+        query({ groups: [[{ kind: "existence", component: "todo/note", present: true }]] }),
+      ),
       createReplicaExecutor(replica),
     );
 
@@ -466,7 +468,7 @@ describe("executePlan", () => {
 
     const rows = executePlan(
       planQuery(
-        query({ groups: [[{ kind: "presence", component: "todo/note", present: false }]] }),
+        query({ groups: [[{ kind: "existence", component: "todo/note", present: false }]] }),
       ),
       createReplicaExecutor(replica),
     );
@@ -493,7 +495,7 @@ describe("executePlan", () => {
           groups: [
             [
               { kind: "membership", anyOf: ["group_1"] },
-              { kind: "presence", component: "todo/note", present: false },
+              { kind: "existence", component: "todo/note", present: false },
             ],
           ],
         }),
@@ -505,7 +507,7 @@ describe("executePlan", () => {
     expect(iterate).not.toHaveBeenCalled();
   });
 
-  it("matches nothing for a component of another model, either polarity", () => {
+  it("treats a component of another model as present nowhere", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
       put(2, "user_1", "user", { name: "Ada" }),
@@ -513,18 +515,21 @@ describe("executePlan", () => {
     const executor = createReplicaExecutor(replica);
 
     const present = executePlan(
-      planQuery(query({ groups: [[{ kind: "presence", component: "user/name", present: true }]] })),
+      planQuery(
+        query({ groups: [[{ kind: "existence", component: "user/name", present: true }]] }),
+      ),
       executor,
     );
     const absent = executePlan(
       planQuery(
-        query({ groups: [[{ kind: "presence", component: "user/name", present: false }]] }),
+        query({ groups: [[{ kind: "existence", component: "user/name", present: false }]] }),
       ),
       executor,
     );
 
     expect(present).toEqual([]);
-    expect(absent).toEqual([]);
+    // No todo row carries a user component, so `hasNot` excludes nothing.
+    expect(absent.map((row) => row.id)).toEqual(["todo_1"]);
   });
 
   it("executes a candidate-only chain and rejects an indexed predicate there", () => {

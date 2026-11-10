@@ -450,7 +450,7 @@ export interface QueryBuilder<
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Keep the rows currently carrying the component declared under `field`.
-   * Presence is a fact about the row — a cleared component is still present —
+   * Existence is a fact about the row — a cleared component is still present —
    * so `has(field)` and `where(field, null)` answer different questions.
    * Reads the replica's component index, one lookup per named component.
    * Refused on a chain over already-materialized rows, which has no index.
@@ -458,7 +458,7 @@ export interface QueryBuilder<
   has(field: keyof TFields & string): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
    * Keep the rows the component declared under `field` is absent from.
-   * Presence is a complement, so this is a set difference against the group's
+   * Existence is a complement, so this is a set difference against the group's
    * other index hits — or against the model's rows when the group names
    * nothing positive. It therefore costs the model scan, unlike `has`.
    * Refused on a chain over already-materialized rows, which has no index.
@@ -876,10 +876,10 @@ function buildChain<
       return make({ ...query, groups: [...query.groups, [predicate]] });
     },
     has(field) {
-      return make(withConjunct(query, buildPresence(field, true, context)));
+      return make(withConjunct(query, buildExistence(field, true, context)));
     },
     hasNot(field) {
-      return make(withConjunct(query, buildPresence(field, false, context)));
+      return make(withConjunct(query, buildExistence(field, false, context)));
     },
     orderBy(field, direction) {
       assertOrderableField(shape, field, context?.entityName ?? "(unknown)");
@@ -946,12 +946,12 @@ function buildChain<
 }
 
 /**
- * Turn one `has` / `hasNot` argument into a presence predicate. The field is
+ * Turn one `has` / `hasNot` argument into an existence predicate. The field is
  * resolved against the source model's declared components, so the predicate
  * always names `<source>/<field>`; a full component name, or a field the
  * model does not declare, is refused.
  */
-function buildPresence(
+function buildExistence(
   field: string,
   present: boolean,
   context: QueryContext | undefined,
@@ -976,7 +976,7 @@ function buildPresence(
       },
     ]);
   }
-  return { kind: "presence", component: component.name, present };
+  return { kind: "existence", component: component.name, present };
 }
 
 /**

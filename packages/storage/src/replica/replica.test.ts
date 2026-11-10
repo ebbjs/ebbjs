@@ -1601,7 +1601,7 @@ describe("replica: on-demand residency (#500)", () => {
   });
 });
 
-describe("replica: presence index (#798)", () => {
+describe("replica: component index (#798)", () => {
   it("indexes each present component as <type>/<field>, ascending", () => {
     const replica = createReplica();
     ingest(

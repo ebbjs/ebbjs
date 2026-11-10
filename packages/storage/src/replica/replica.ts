@@ -8,11 +8,12 @@ import {
   withWireMapFields,
 } from "../internal/materialize";
 import {
-  applyPresenceDelta,
-  presenceDelta,
-  presenceIds,
-  type PresenceIndex,
-} from "../internal/presence-index";
+  applyComponentDelta,
+  buildComponentIndex,
+  componentDelta,
+  componentIds,
+  type ComponentIndex,
+} from "../internal/component-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
 import {
   applyIndexDelta,
@@ -112,7 +113,7 @@ interface OrphanUpdate {
  * optimistic writes over it, and `effective` caches the composed view for
  * overlaid ids so a read never recomposes.
  * `typeIndex` indexes the base; `iterate` layers the overlay's type overrides
- * on top of it. `presenceIndex` tracks the composed view's component set
+ * on top of it. `componentIndex` tracks the composed view's component set
  * alongside the adjacency indices, and is likewise derived rather than
  * persisted.
  */
@@ -122,7 +123,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const entities = new Map<string, Entity>();
   const typeIndex = new Map<string, Set<string>>();
-  const presenceIndex: PresenceIndex = new Map();
+  let componentIndex: ComponentIndex = new Map();
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
@@ -357,7 +358,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const after = next ?? undefined;
     reverseIndex = applyIndexDelta(reverseIndex, reverseIndexDelta(before, after));
     forwardIndex = applyIndexDelta(forwardIndex, forwardIndexDelta(before, after));
-    applyPresenceDelta(presenceIndex, presenceDelta(before, after));
+    const delta = componentDelta(before, after);
+    if (delta !== null) componentIndex = applyComponentDelta(componentIndex, delta);
   };
 
   /**
@@ -491,7 +493,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (!isValidReplicaRecord(record)) return revision;
     entities.clear();
     typeIndex.clear();
-    presenceIndex.clear();
     orphans.clear();
     overlay.clear();
     effective.clear();
@@ -502,7 +503,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     journal.length = 0;
     journalStart = 0;
     // One linear pass rebuilds the base, both adjacency directions, and
-    // presence; the derived indices are not persisted. Mutating the local
+    // component existence; the derived indices are not persisted. Mutating the local
     // row maps keeps the rebuild linear where folding `applyIndexDelta` per
     // row would copy the whole key space each time.
     const reverse: Record<string, Record<string, string>> = {};
@@ -517,12 +518,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const row = withAdoptedMapFields(entity);
       entities.set(row.id, row);
       addToType(row.type, row.id);
-      applyPresenceDelta(presenceIndex, presenceDelta(undefined, row));
       const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
       const forwardEntry = forwardIndexEntryFor(row);
       if (forwardEntry !== null) add(forward, forwardEntry);
     }
+    componentIndex = buildComponentIndex(entities.values());
     reverseIndex = reverse;
     forwardIndex = forward;
     // A load replaces the journal wholesale. When it advances the revision,
@@ -687,7 +688,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       return [];
     },
-    components: (component) => presenceIds(presenceIndex, component),
+    components: (component) => componentIds(componentIndex, component),
     memberships: (query: MembershipQuery): readonly string[] => {
       if (query.groupId !== undefined) {
         return liveSourceIds(reverseIndex[membershipIndexKey(query.groupId)]);

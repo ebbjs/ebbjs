@@ -2504,9 +2504,9 @@ const note = defineModel("note", {
   draft: noteDraft,
 });
 
-const schemaForPresence = defineSchema({ models: { note }, version: 1 });
+const schemaForExistence = defineSchema({ models: { note }, version: 1 });
 
-describe("client.<entity>.query().has() / hasNot() — component presence", () => {
+describe("client.<entity>.query().has() / hasNot() — component existence", () => {
   const buildClient = async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -2514,7 +2514,7 @@ describe("client.<entity>.query().has() / hasNot() — component presence", () =
       serverUrl: "http://x",
       actorId: "a",
       storage,
-      schema: schemaForPresence,
+      schema: schemaForExistence,
     });
     const seed = (id: string, fields: Record<string, unknown>) =>
       seedQueryRow(storage, client.replica, mkEntity(id, "note", fields));
@@ -2578,14 +2578,14 @@ describe("client.<entity>.query().has() / hasNot() — component presence", () =
     expect(componentsSpy).toHaveBeenCalledWith("note/draft");
   });
 
-  it("records presence in the serializable query", async () => {
+  it("records existence in the serializable query", async () => {
     const { client } = await buildClient();
     const chain = client.note.query().has("draft").hasNot("title");
 
     expect(chain.toQuery().groups).toEqual([
       [
-        { kind: "presence", component: "note/draft", present: true },
-        { kind: "presence", component: "note/title", present: false },
+        { kind: "existence", component: "note/draft", present: true },
+        { kind: "existence", component: "note/title", present: false },
       ],
     ]);
   });

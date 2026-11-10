@@ -471,7 +471,7 @@ export const dropEntity: Operation<DropEntityInput> = (ctx, input) => {
   }
   if (input.fields.length === 0) {
     throw new EntityValidationError([
-      { entityName: input.entity, message: `update: drop must name at least one component` },
+      { entityName: input.entity, message: `drop: must name at least one component` },
     ]);
   }
   const def = ctx.registry.get(input.entity);

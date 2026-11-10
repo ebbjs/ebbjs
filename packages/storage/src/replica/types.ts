@@ -160,7 +160,7 @@ export interface Replica {
   relationships(query: RelationshipQuery): readonly string[];
   /**
    * Ids currently carrying `component` (`<type>/<field>`) in the composed
-   * view, ascending. Component presence is the set of present fields on a
+   * view, ascending. Component existence is the set of present fields on a
    * row, so a query reading it costs its index rather than a row filter.
    */
   components(component: string): readonly string[];

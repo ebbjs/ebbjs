@@ -6,23 +6,23 @@
  * never re-scans storage per accessor. A select group that names an
  * indexed predicate seeds from that index — the source type is read one
  * row at a time by id — so a reverse traversal costs its degree, not the
- * size of the type. Component presence is an index too: `has` intersects
+ * size of the type. Component existence is an index too: `has` intersects
  * its component's ids with the group's other hits, while `hasNot` is a set
  * difference and so can never be cheaper than the model's row count. The
  * plan is the whole story: the executor knows nothing about the schema,
  * the registry, or the builder.
  */
 
-import { isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
+import { componentModel, isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
 import type { MembershipQuery, Replica, RelationshipQuery } from "@ebbjs/storage/replica";
 
 import type { Plan, PlanPredicate } from "./query-plan";
 
 /**
  * The read seam a plan executes against: a whole-type scan, a by-id
- * read, the adjacency indices, and component presence. The scan is only
+ * read, the adjacency indices, and component existence. The scan is only
  * materialized for a group that has nothing but field filters and
- * negative presence; an indexed group reaches its rows through
+ * negative existence; an indexed group reaches its rows through
  * {@link PlanExecutor.get}. A candidate-only chain supplies the rows and
  * nothing else, because it can never plan an indexed predicate.
  */
@@ -53,7 +53,7 @@ const candidateOnlyError = (): never => {
 /**
  * Execute against a fixed candidate list — the relationship accessor
  * chain's rows. `scan` and `get` read that list; the adjacency and
- * presence reads have no index to consult and fail loudly rather than
+ * existence reads have no index to consult and fail loudly rather than
  * silently matching nothing.
  */
 export const createRowsExecutor = (rows: readonly Entity[]): PlanExecutor => ({
@@ -68,7 +68,7 @@ type Direction = "asc" | "desc";
 
 type IndexPredicate = Exclude<PlanPredicate, { kind: "filter" }>;
 type FilterPredicate = Extract<PlanPredicate, { kind: "filter" }>;
-type PresencePredicate = Extract<PlanPredicate, { kind: "presence" }>;
+type ExistencePredicate = Extract<PlanPredicate, { kind: "existence" }>;
 
 const isIndexPredicate = (predicate: PlanPredicate): predicate is IndexPredicate =>
   predicate.kind !== "filter";
@@ -76,9 +76,9 @@ const isIndexPredicate = (predicate: PlanPredicate): predicate is IndexPredicate
 const isFilterPredicate = (predicate: PlanPredicate): predicate is FilterPredicate =>
   predicate.kind === "filter";
 
-/** `hasNot`: a presence predicate that excludes rather than seeds. */
-const isNegativePresence = (predicate: PlanPredicate): predicate is PresencePredicate =>
-  predicate.kind === "presence" && !predicate.present;
+/** `hasNot`: an existence predicate that excludes rather than seeds. */
+const isNegativeExistence = (predicate: PlanPredicate): predicate is ExistencePredicate =>
+  predicate.kind === "existence" && !predicate.present;
 
 const fieldValue = (entity: Entity, field: string): FieldValue["value"] | undefined =>
   entity.data?.fields?.[field]?.value;
@@ -209,16 +209,6 @@ const indexHits = (
   return ids;
 };
 
-/**
- * The model a component belongs to: its `<model>` prefix. A component
- * names no live thing on another model, so a presence predicate about it
- * matches nothing rather than everything.
- */
-const componentModel = (component: string): string => {
-  const slash = component.lastIndexOf("/");
-  return slash === -1 ? "" : component.slice(0, slash);
-};
-
 /** The ids one indexed predicate contributes, read from its index. */
 const predicateHits = (
   predicate: IndexPredicate,
@@ -232,7 +222,9 @@ const predicateHits = (
     }
     case "membership":
       return indexHits(predicate.anyOf, (groupId) => executor.memberships({ groupId }));
-    case "presence":
+    case "existence":
+      // A component outside this scan's model names nothing the scan can
+      // carry, so a positive predicate matches nothing.
       return componentModel(predicate.component) === sourceType
         ? new Set(executor.components(predicate.component))
         : new Set();
@@ -289,8 +281,8 @@ const selectGroup = (
   executor: PlanExecutor,
 ): readonly Entity[] => {
   const indexed = predicates.filter(isIndexPredicate);
-  const seeds = indexed.filter((predicate) => !isNegativePresence(predicate));
-  const negatives = indexed.filter(isNegativePresence);
+  const seeds = indexed.filter((predicate) => !isNegativeExistence(predicate));
+  const negatives = indexed.filter(isNegativeExistence);
 
   let rows =
     seeds.length === 0
@@ -298,9 +290,9 @@ const selectGroup = (
       : rowsForIds(intersectHits(seeds, sourceType, executor), sourceType, executor);
 
   for (const negative of negatives) {
-    // A foreign component names nothing live on the scan type: it excludes
-    // the whole model rather than nothing.
-    if (componentModel(negative.component) !== sourceType) return [];
+    // A foreign component is carried by no row of this model, so `hasNot`
+    // excludes nothing.
+    if (componentModel(negative.component) !== sourceType) continue;
     const excluded = new Set(executor.components(negative.component));
     rows = rows.filter((row) => !excluded.has(row.id));
   }
