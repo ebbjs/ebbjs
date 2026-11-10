@@ -46,6 +46,33 @@ default when it has one, and to `undefined` when it does not. Ordering compares
 a field as it reads, so a list sorted by `priority` never scatters rows whose
 cell says "normal".
 
+### Nested properties in an object field
+
+`e.object({...})` stores exactly the shape it declares. A nested property has no
+per-row absence slot: the object either carries the property or the value is
+rejected.
+
+```ts
+import { Type } from "@sinclair/typebox";
+
+const wall = defineModel("wall", {
+  anchor: e.object({ x: e.number(), y: Type.Optional(Type.Number()) }),
+});
+```
+
+The object field itself follows the table above — without a default it reads as
+`{ x: number; y?: number } | undefined` — while `x` is required and `y` is
+optional because it was declared `Type.Optional`. Declared-ness wins at every
+nesting level: adding a required nested property to a live model is a
+schema-evolution question, not a silent read change.
+
+A nested `.default()` is a JSON annotation, not a read-time fill. It is part of
+the schema hash and available to tooling, but reading an object does not add a
+missing property. Put the default on the object field when absence has a value.
+`unset` follows the same rule: it clears a whole field, so a nested `unset` is
+refused with a message naming `e.map`. Declare a map when one key must be
+cleared on its own.
+
 ## Clearing a field
 
 A field can be asserted absent. `unset` is the one spelling:

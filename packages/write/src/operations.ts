@@ -21,7 +21,10 @@ import {
 } from "@ebbjs/core";
 import {
   EntityValidationError,
+  findNestedUnsetPath,
   GROUPS_ACCESSOR,
+  isPlainObject,
+  nestedUnsetMessage,
   SYSTEM_ENTITY_NAMES,
   validatePayload,
   type ModelRegistry,
@@ -750,28 +753,33 @@ export const wrapFields = (
       out[key] = { value: null, update_id: updateId, hlc };
       continue;
     }
-    out[key] =
-      markers?.[key]?.map === true && isPlainObject(value)
-        ? wrapMapValue(value, updateId, hlc)
-        : { value, update_id: updateId, hlc };
+    if (markers?.[key]?.map === true && isPlainObject(value)) {
+      out[key] = wrapMapValue(value, key, updateId, hlc);
+      continue;
+    }
+    // An object leaf's properties are parts of one value, not positions, so
+    // `unset` inside one has no envelope. Refusing here keeps the sentinel off
+    // the wire instead of letting it compile to an empty object.
+    const nested = findNestedUnsetPath(value, key);
+    if (nested !== undefined) throw new Error(nestedUnsetMessage(nested));
+    out[key] = { value, update_id: updateId, hlc };
   }
   return out;
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
 const wrapMapValue = (
   entries: Record<string, unknown>,
+  field: string,
   updateId: string,
   hlc: string,
 ): FieldValue => ({
   map: Object.fromEntries(
-    Object.entries(entries).map(([key, value]) => [
-      key,
-      isUnset(value)
-        ? { value: null, update_id: updateId, hlc }
-        : { value, update_id: updateId, hlc },
-    ]),
+    Object.entries(entries).map(([key, value]) => {
+      if (isUnset(value)) return [key, { value: null, update_id: updateId, hlc }];
+      // A tombstone is the last permitted depth: one level below the map.
+      const nested = findNestedUnsetPath(value, `${field}.${key}`);
+      if (nested !== undefined) throw new Error(nestedUnsetMessage(nested));
+      return [key, { value, update_id: updateId, hlc }];
+    }),
   ),
 });

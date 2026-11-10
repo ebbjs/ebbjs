@@ -10,6 +10,11 @@ const task = defineModel("task", {
   tags: e.map(e.string()).default({}),
 });
 
+const plan = defineModel("plan", {
+  anchor: e.object({ x: e.number(), y: e.number() }),
+  tags: e.map(e.string()),
+});
+
 describe("unset — the wire envelope", () => {
   it("compiles a leaf unset to a tombstone with the write's HLC", () => {
     const fields = wrapFields({ dueDate: unset }, "u1", "h1", task.markers as never);
@@ -35,6 +40,38 @@ describe("unset — the wire envelope", () => {
     const fields = wrapFields({ dueDate: unset }, "u1", "h1");
     expect(JSON.stringify(fields)).not.toContain("unset");
     expect(isUnset(fields.dueDate)).toBe(false);
+  });
+});
+
+describe("unset — nested in an object leaf", () => {
+  it("keeps a whole-object leaf in one value envelope", () => {
+    const fields = wrapFields({ anchor: { x: 1, y: 2 } }, "u1", "h1", plan.markers as never);
+
+    expect(fields.anchor).toEqual({ value: { x: 1, y: 2 }, update_id: "u1", hlc: "h1" });
+  });
+
+  it("throws for an unset nested in an object leaf, naming the path and e.map", () => {
+    expect(() =>
+      wrapFields({ anchor: { x: 1, y: unset } }, "u1", "h1", plan.markers as never),
+    ).toThrow(/anchor\.y.*e\.map/);
+  });
+
+  it("throws for an unset nested in an array leaf", () => {
+    expect(() => wrapFields({ title: [unset] }, "u1", "h1", plan.markers as never)).toThrow(
+      /title\[0\].*e\.map/,
+    );
+  });
+
+  it("still compiles a map field's top-level unset entry to a tombstone", () => {
+    const fields = wrapFields({ tags: { a: unset } }, "u1", "h1", plan.markers as never);
+
+    expect(fields.tags).toEqual({ map: { a: { value: null, update_id: "u1", hlc: "h1" } } });
+  });
+
+  it("throws for an unset deeper than a map field's entries", () => {
+    expect(() =>
+      wrapFields({ tags: { a: { x: unset } } }, "u1", "h1", plan.markers as never),
+    ).toThrow(/tags\.a\.x.*e\.map/);
   });
 });
 

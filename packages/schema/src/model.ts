@@ -12,6 +12,7 @@ import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import type {
   TSchema,
+  TObject,
   TOptional,
   TArray,
   TRecord,
@@ -104,6 +105,16 @@ export interface ArrayField<V extends TSchema> extends TArray<V> {
 /** A map field builder: `.default()` takes the map's projected value. */
 export interface MapField<V extends TSchema> extends MapSchema<V> {
   default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
+}
+
+/**
+ * A nested-object field builder: one atomic value on the wire, so a write
+ * replaces the whole object. `.default()` takes the whole object.
+ */
+export interface ObjectField<TFields extends Record<string, TSchema>> extends TObject<TFields> {
+  default(
+    value: Static<TObject<TFields>>,
+  ): DefaultedSchema<TObject<TFields>, Static<TObject<TFields>>>;
 }
 
 /** A value a closed-set field admits: the primitives TypeBox can make a literal of. */
@@ -215,9 +226,75 @@ export const e = {
    */
   map: <V extends TSchema>(value: V): MapField<V> =>
     withFieldChain(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
+  /**
+   * A nested-object field: one atomic value whose properties are closed by
+   * default. Declared exactly as authored — a nested property is optional
+   * only when written as `Type.Optional(...)` — and replaced whole by a
+   * write, so it travels together rather than merging per key.
+   */
+  object: <TFields extends Record<string, TSchema>>(fields: TFields): ObjectField<TFields> => {
+    for (const [key, field] of Object.entries(fields)) {
+      const mapPath = findNestedMap(field, key);
+      if (mapPath !== undefined) throw new NestedMapError(mapPath);
+    }
+    const schema = Type.Object(fields, { additionalProperties: false });
+    return withFieldChain(schema) as ObjectField<TFields>;
+  },
 } as const;
 
-const isMapSchema = (schema: TSchema): boolean => "patternProperties" in schema;
+export const isMapSchema = (schema: TSchema): boolean => "patternProperties" in schema;
+
+/** Raised when a map is nested inside an `e.object` property. */
+export class NestedMapError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(
+      `e.object() cannot contain a map at "${path}": a map nested inside an atomic value ` +
+        `loses its per-key merge. Declare the map at the top level with e.map (a key space ` +
+        `that merges per key), or use e.object for a value that travels together.`,
+    );
+    this.name = "NestedMapError";
+    this.path = path;
+  }
+}
+
+/**
+ * The path of the first map nested under `schema`, or `undefined`. A map's
+ * own entries are not searched: the map itself is the refusal.
+ */
+const findNestedMap = (schema: TSchema, path: string): string | undefined => {
+  if (isMapSchema(schema)) return path;
+  const candidate = schema as {
+    properties?: Record<string, TSchema>;
+    items?: TSchema | readonly TSchema[];
+    anyOf?: readonly TSchema[];
+    oneOf?: readonly TSchema[];
+  };
+  if (candidate.properties !== undefined && typeof candidate.properties === "object") {
+    for (const [key, property] of Object.entries(candidate.properties)) {
+      const found = findNestedMap(property, `${path}.${key}`);
+      if (found !== undefined) return found;
+    }
+  }
+  if (Array.isArray(candidate.items)) {
+    for (const [index, item] of candidate.items.entries()) {
+      const found = findNestedMap(item, `${path}[${index}]`);
+      if (found !== undefined) return found;
+    }
+  } else if (candidate.items !== undefined && typeof candidate.items === "object") {
+    const found = findNestedMap(candidate.items as TSchema, `${path}[]`);
+    if (found !== undefined) return found;
+  }
+  for (const branches of [candidate.anyOf, candidate.oneOf]) {
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) {
+      const found = findNestedMap(branch, path);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+};
 
 const deriveMarker = (schema: TSchema): FieldMarker =>
   isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
@@ -519,6 +596,8 @@ export const admitsNull = (schema: TSchema): boolean => {
     oneOf?: readonly TSchema[];
     const?: unknown;
     enum?: readonly unknown[];
+    properties?: Record<string, TSchema>;
+    items?: TSchema | readonly TSchema[];
   };
   if (candidate.type === "null") return true;
   if (Array.isArray(candidate.type) && candidate.type.includes("null")) return true;
@@ -527,9 +606,18 @@ export const admitsNull = (schema: TSchema): boolean => {
   for (const branches of [candidate.anyOf, candidate.oneOf]) {
     if (Array.isArray(branches) && branches.some(admitsNull)) return true;
   }
-  // Deliberately not recursive: a map entry's null is a run tombstone in the
-  // collaborative-text document schema, and this rule is about the field's
-  // own value, not the entries inside it.
+  // An object is a value on the wire, so a nullable property is the same
+  // mistake as a nullable field. A map's entries are positions rather than
+  // parts of one value, so `patternProperties` is deliberately not searched:
+  // a run tombstone inside a map stays spellable.
+  if (candidate.properties !== undefined && typeof candidate.properties === "object") {
+    if (Object.values(candidate.properties).some(admitsNull)) return true;
+  }
+  if (Array.isArray(candidate.items)) {
+    if (candidate.items.some(admitsNull)) return true;
+  } else if (candidate.items !== undefined && typeof candidate.items === "object") {
+    if (admitsNull(candidate.items as TSchema)) return true;
+  }
   try {
     // Covers `Type.Any()` / `Type.Unknown()` / an empty schema, which accept
     // `null` without naming it structurally.

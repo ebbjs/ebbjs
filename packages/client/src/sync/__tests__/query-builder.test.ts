@@ -599,12 +599,11 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
       title: e.string(),
       tags: e.array(e.string()),
     });
-    // Field equality is strict (see `eqField`), so the row and the
-    // predicate must share the array reference; the point is that a
-    // schema-valid array reaches the field filter rather than throwing.
-    const tags = ["a", "b"];
-    const rows: Entity[] = [mkEntity("1", { title: "x", tags })];
-    const out = await buildQueryBuilder(rows, tagged.shape).where("tags", tags);
+    // Field equality is structural (see `valuesEqual`), so a fresh array
+    // with the same elements matches. The point here is that a schema-valid
+    // array reaches the field filter rather than throwing.
+    const rows: Entity[] = [mkEntity("1", { title: "x", tags: ["a", "b"] })];
+    const out = await buildQueryBuilder(rows, tagged.shape).where("tags", ["a", "b"]);
     expect(out.map((r) => r.title)).toEqual(["x"]);
   });
 
