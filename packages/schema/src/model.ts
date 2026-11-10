@@ -75,6 +75,44 @@ export type DefaultedSchema<T extends TSchema, V = unknown> = T & {
 };
 
 /**
+ * The key identifying a component declared `optional: true`. It serves as both
+ * the runtime stamp and its type brand.
+ *
+ * The stamp sits on the component's *shape*, not on its declaration:
+ * `ComponentFields` extracts shapes out of component declarations before the
+ * model's read and create shapes are derived, so a brand on the declaration
+ * would be erased before any of them see it.
+ */
+const ABSENT_BRAND: unique symbol = Symbol("ebbjs.schema.absentable");
+
+/** A component shape declared `optional: true`: an entity may not carry it. */
+export type AbsentableSchema<T extends TSchema> = T & {
+  readonly [ABSENT_BRAND]: true;
+};
+
+/** True at the type level when a component shape was declared `optional: true`. */
+export type IsAbsentable<T extends TSchema> = [T] extends [{ readonly [ABSENT_BRAND]: true }]
+  ? true
+  : false;
+
+/**
+ * Stamp a declared `optional: true` onto a component shape. Mutates in place
+ * for the same reason {@link stampDefault} does: each `e.*()` builder allocates
+ * a fresh schema, and a spread would drop the non-enumerable builder chain.
+ * The stamp is a symbol, so `Value.Check`, the schema hash, and
+ * `stableStringify` never see it.
+ */
+const stampAbsentable = <T extends TSchema>(schema: T): AbsentableSchema<T> => {
+  Object.defineProperty(schema, ABSENT_BRAND, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return schema as AbsentableSchema<T>;
+};
+
+/**
  * Field builders are declared as interfaces extending their TypeBox
  * schema rather than as intersections: `SchemaOptions` declares
  * `default?: any` for the JSON Schema annotation, and an intersection
@@ -329,14 +367,19 @@ type StripOptional<T extends TSchema> = T extends TOptional<infer S> ? S : T;
 
 /**
  * The create-validation shape of a field map. `Value.Check` treats an
- * unwrapped property as required, so `create()` may omit a field exactly
- * when it has a default: the validation wrap is optional iff defaulted.
+ * unwrapped property as required, so `create()` may omit a component exactly
+ * when the declaration says absence is allowed: it carries a default or is
+ * declared `optional: true`.
  *
  * This is the inverse of {@link ShapeFields}, which is why the two are
  * separate shapes rather than one type doing double duty.
  */
 export type CreateShapeFields<TFields extends Record<string, TSchema>> = {
-  [K in keyof TFields]: HasDefault<TFields[K]> extends true ? TOptional<TFields[K]> : TFields[K];
+  [K in keyof TFields]: HasDefault<TFields[K]> extends true
+    ? TOptional<TFields[K]>
+    : IsAbsentable<TFields[K]> extends true
+      ? TOptional<TFields[K]>
+      : TFields[K];
 };
 
 /**
@@ -493,6 +536,42 @@ const normalizeComponentCreateShape = (shape: ComponentShapeInput): TSchema => {
   return Type.Object(withCreateOptional(shape as Record<string, TSchema>));
 };
 
+/**
+ * Raised when an `optional` component also declares a default. `optional`
+ * says absence is absence; `.default()` says absence has a value. Projection
+ * resolves a default only when the component is not optional, so the pair
+ * would otherwise declare a value no reader ever sees.
+ */
+export class OptionalDefaultConflictError extends Error {
+  readonly componentName: string;
+  /** Field carrying the default; `undefined` when the component is one value. */
+  readonly defaultedField: string | undefined;
+
+  constructor(componentName: string, defaultedField: string | undefined) {
+    super(
+      `Component "${componentName}" declares optional: true together with a default on ` +
+        `${defaultedField === undefined ? "its value" : `field "${defaultedField}"`}. An ` +
+        `optional component's absence is absence, so it never resolves a default: remove ` +
+        `the default, or remove optional: true.`,
+    );
+    this.name = "OptionalDefaultConflictError";
+    this.componentName = componentName;
+    this.defaultedField = defaultedField;
+  }
+}
+
+/**
+ * The property directly under a component shape that carries a declared
+ * default, or `undefined` when none does. A bare builder carries its own
+ * default; a field-map component's shape is an object schema, so its fields'
+ * defaults sit one level down.
+ */
+const defaultedFieldOf = (shape: TSchema): string | undefined => {
+  const properties = (shape as { properties?: Record<string, TSchema> }).properties;
+  if (properties === undefined || typeof properties !== "object") return undefined;
+  return Object.entries(properties).find(([, property]) => hasDefault(property))?.[0];
+};
+
 /** Build a frozen component declaration. Shared by `defineComponent` and anonymous fields. */
 export function buildComponentDef<TShape extends TSchema, TName extends string>(
   name: TName,
@@ -500,6 +579,12 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
   options: ComponentOptions = {},
   createShape: TSchema = shape,
 ): ComponentDef<TShape, TName> {
+  if (options.optional === true) {
+    if (hasDefault(shape)) throw new OptionalDefaultConflictError(name, undefined);
+    const field = defaultedFieldOf(shape);
+    if (field !== undefined) throw new OptionalDefaultConflictError(name, field);
+  }
+
   return Object.freeze({
     kind: "component",
     name,
@@ -516,21 +601,42 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
 }
 
 /**
+ * The shape type a component declaration carries. `optional: true` brands the
+ * shape so the model's create shape can read the fact back out.
+ */
+type DeclaredComponentShape<
+  TShape extends ComponentShapeInput,
+  TOptions extends ComponentOptions,
+> = TOptions extends { readonly optional: true }
+  ? AbsentableSchema<ComponentShapeOf<TShape>>
+  : ComponentShapeOf<TShape>;
+
+/**
  * Declare a component under `<model>/<leaf>`. The result is frozen and
  * carries the policy later slices read: existence, loading, conflict
  * scope, indexing, permission, and version.
+ *
+ * Throws {@link OptionalDefaultConflictError} when `optional: true` is
+ * combined with a declared `.default()`.
  */
 export function defineComponent<
   const TShape extends ComponentShapeInput,
   const TName extends string,
+  const TOptions extends ComponentOptions = ComponentOptions,
 >(
   name: TName,
   shape: TShape,
-  options: ComponentOptions = {},
-): ComponentDef<ComponentShapeOf<TShape>, TName> {
+  options: TOptions = {} as TOptions,
+): ComponentDef<DeclaredComponentShape<TShape, TOptions>, TName> {
   assertComponentName(name);
   const normalized = normalizeComponentShape(shape) as ComponentShapeOf<TShape>;
-  return buildComponentDef(name, normalized, options, normalizeComponentCreateShape(shape));
+  const stamped = options.optional === true ? stampAbsentable(normalized) : normalized;
+  return buildComponentDef(
+    name,
+    stamped,
+    options,
+    normalizeComponentCreateShape(shape),
+  ) as ComponentDef<DeclaredComponentShape<TShape, TOptions>, TName>;
 }
 
 /**
@@ -561,9 +667,10 @@ export interface ModelDef<TFields extends Record<string, TSchema>, TName extends
    */
   readonly shape: EntityShape<TFields>;
   /**
-   * Create-validation shape: a defaulted field is optional (the default
-   * fills it), a field without one is required. Only `Value.Check` for a
-   * full `create()` payload reads this.
+   * Create-validation shape: a component is optional here exactly when
+   * `create()` may omit it — it has a default or is declared optional. Any
+   * other component is required. Only `Value.Check` for a full `create()`
+   * payload reads this.
    */
   readonly createShape: EntityCreateShape<TFields>;
   /** Component declarations keyed by the field they attach under. */
@@ -668,6 +775,8 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
   const modelScope = options.conflictScope ?? "field";
   const modelMaterialization = options.materialization ?? "held";
   for (const [key, input] of Object.entries(inputs)) {
+    // Optionality changes when a component may be absent, not what it may
+    // hold: a null-admitting shape is refused whether or not it is optional.
     if (admitsNull(isComponentDef(input) ? input.shape : (input as TSchema))) {
       throw new NullFieldError(name, key);
     }
@@ -683,7 +792,7 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
           conflictScope: modelScope,
         });
     readFields[key] = component.shape;
-    createFields[key] = component.createShape;
+    createFields[key] = createFieldSchema(component);
     components[key] = component;
   }
 
@@ -695,9 +804,7 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
     conflictScope: modelScope,
     materialization: modelMaterialization,
     shape: Type.Object(withReadOptional(readFields)) as EntityShape<ComponentFields<TInputs>>,
-    createShape: Type.Object(withCreateOptional(createFields)) as EntityCreateShape<
-      ComponentFields<TInputs>
-    >,
+    createShape: Type.Object(createFields) as EntityCreateShape<ComponentFields<TInputs>>,
     components: Object.freeze(components) as ModelComponents<ComponentFields<TInputs>>,
     markers: Object.freeze(markers),
   });
@@ -721,8 +828,20 @@ function withReadOptional<TFields extends Record<string, TSchema>>(
 }
 
 /**
- * The create-validation wrap: a defaulted field is optional because the
- * default fills it, while a field without one is required.
+ * The create-validation schema of one component: optional exactly when the
+ * component may be omitted from a payload, i.e. when it has a default or is
+ * itself optional.
+ */
+const createFieldSchema = (component: ComponentDef): TSchema =>
+  component.optional || hasDefault(component.createShape)
+    ? Type.Optional(component.createShape as Parameters<typeof Type.Optional>[0])
+    : component.createShape;
+
+/**
+ * The create-validation wrap for a declared field map: a defaulted property
+ * is optional because the default fills it, while a property without one is
+ * required. Component optionality is applied one level up, in
+ * {@link createFieldSchema}.
  */
 function withCreateOptional<TFields extends Record<string, TSchema>>(
   fields: TFields,

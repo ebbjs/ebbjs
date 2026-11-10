@@ -5,10 +5,12 @@ import {
   ComponentOutsideModelError,
   InvalidComponentNameError,
   ModelRegistry,
+  OptionalDefaultConflictError,
   defineComponent,
   defineModel,
   defineSchema,
   e,
+  validatePayload,
 } from "../index";
 
 describe("defineComponent", () => {
@@ -112,6 +114,65 @@ describe("defineModel", () => {
     expect(note.shape.type).toBe("object");
     expect(note.shape.properties.title).toMatchObject({ type: "string" });
     expect(note.shape.properties.body).toMatchObject({ type: "object" });
+  });
+});
+
+describe("optional components", () => {
+  it("refuses optional together with a default on a bare builder, naming both facts", () => {
+    let caught: unknown;
+    try {
+      defineComponent("note/draft", e.string().default("untitled"), { optional: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(OptionalDefaultConflictError);
+    expect((caught as OptionalDefaultConflictError).componentName).toBe("note/draft");
+    expect((caught as OptionalDefaultConflictError).defaultedField).toBeUndefined();
+    expect((caught as Error).message).toContain("note/draft");
+    expect((caught as Error).message).toContain("optional: true");
+    expect((caught as Error).message).toContain("default");
+  });
+
+  it("refuses a default carried by one field of a multi-field optional component", () => {
+    let caught: unknown;
+    try {
+      defineComponent(
+        "note/draft",
+        { text: e.string().default(""), savedAt: e.integer() },
+        { optional: true },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(OptionalDefaultConflictError);
+    expect((caught as OptionalDefaultConflictError).defaultedField).toBe("text");
+    expect((caught as Error).message).toContain("note/draft");
+    expect((caught as Error).message).toContain('"text"');
+  });
+
+  it("declares an optional component with no default as before", () => {
+    const draft = defineComponent("note/draft", { text: e.string() }, { optional: true });
+
+    expect(draft.optional).toBe(true);
+    expect(draft.name).toBe("note/draft");
+  });
+
+  it("lets create() omit an optional component that declares no default", () => {
+    const draft = defineComponent("note/draft", { text: e.string() }, { optional: true });
+    const note = defineModel("note", { title: e.string(), draft });
+
+    expect(validatePayload(note.createShape, { title: "first" }, "note", false)).toEqual([]);
+    expect(
+      validatePayload(note.createShape, { title: "first", draft: { text: "hi" } }, "note", false),
+    ).toEqual([]);
+  });
+
+  it("still requires a non-optional component at create()", () => {
+    const note = defineModel("note", { title: e.string() });
+
+    expect(validatePayload(note.createShape, {}, "note", false)).not.toEqual([]);
   });
 });
 
