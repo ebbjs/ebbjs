@@ -533,16 +533,43 @@ const sanitizeNestedValue = (
   return value;
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+/**
+ * True for a non-array object. Validation and the wire envelope both read a
+ * plain object as either one leaf value or a map payload.
+ */
+export const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * The path of the first `unset` at or below `value`, or `undefined`. A path
+ * is the field's dotted position: `anchor.y`, `tags[0]`.
+ */
+export const findNestedUnsetPath = (value: unknown, path: string): string | undefined => {
+  if (isUnset(value)) return path;
+  if (!isPlainObject(value) && !Array.isArray(value)) return undefined;
+  const entries = Array.isArray(value)
+    ? value.map((entry, index) => [`${path}[${index}]`, entry] as const)
+    : Object.entries(value).map(([key, entry]) => [`${path}.${key}`, entry] as const);
+  for (const [entryPath, entry] of entries) {
+    const found = findNestedUnsetPath(entry, entryPath);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+/**
+ * The one message for an `unset` that landed below the position that can
+ * carry it. Naming the escape keeps the refusal actionable: a map merges per
+ * key, so it is how one position is cleared.
+ */
+export const nestedUnsetMessage = (path: string): string =>
+  `unset at "${path}" has no envelope: \`unset\` clears a whole field; declare the field as e.map to clear one key.`;
 
 /** One violation for an `unset` that landed deeper than a map field's entries. */
 const nestedUnset = (entityName: string, path: string): ValidationViolation => ({
   entityName,
   field: path,
-  message:
-    `${path}: \`unset\` clears a whole field, not a nested property; ` +
-    `declare the field as \`e.map\` to clear one key`,
+  message: nestedUnsetMessage(path),
 });
 
 /** One violation for a payload that used `null` where only `unset` asserts absence. */

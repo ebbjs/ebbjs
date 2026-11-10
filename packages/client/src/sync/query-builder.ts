@@ -59,7 +59,7 @@ import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "@ebbjs/schema";
-import { EntityValidationError, readDefault, type ModelRegistry } from "@ebbjs/schema";
+import { EntityValidationError, isMapSchema, readDefault, type ModelRegistry } from "@ebbjs/schema";
 import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
 import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
 import type {
@@ -369,7 +369,7 @@ const assertOrderableField = <TFields extends Record<string, TSchema>>(
 ): void => {
   const property = shape.properties[field];
   if (property === undefined) return;
-  if ("properties" in property || "patternProperties" in property || "items" in property) {
+  if ("properties" in property || isMapSchema(property) || "items" in property) {
     throw new EntityValidationError([
       {
         entityName,

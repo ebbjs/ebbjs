@@ -144,7 +144,7 @@ const compareFieldValues = (
   if (isNonScalar(av) || isNonScalar(bv)) {
     throw new Error(
       `orderBy("${field}"): only scalar fields are orderable; an object or array value ` +
-        `has no total order and is not orderable (object field values, such as an e.object value)`,
+        `has no total order and is not orderable`,
     );
   }
   if (av === bv) return 0;
