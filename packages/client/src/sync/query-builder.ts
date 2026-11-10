@@ -8,12 +8,13 @@
  * {@link ProjectedRow} (fields plus `id`). The injected keys are not
  * envelope access. Raw wire access stays on `.toRaw()` (collections)
  * and the `EntitySnapshot` passed to `subscribe` (single rows).
- * The chain mutators (`where` / `or` / `orderBy` / `limit`) are typed
- * against the field map: a field key narrows to `keyof TFields` and
- * its value to the field's TypeBox static type. A key that names a
- * registered relationship on the entity filters that edge instead —
- * see {@link QueryContext}. The reserved `groups` key filters built-in
- * membership.
+ * The chain mutators (`where` / `or` / `orderBy` / `limit` / `has` /
+ * `hasNot`) are typed against the field map: a field key narrows to
+ * `keyof TFields` and its value to the field's TypeBox static type. A key
+ * that names a registered relationship on the entity filters that edge
+ * instead — see {@link QueryContext}. The reserved `groups` key filters
+ * built-in membership. `has` / `hasNot` ask whether the row carries a
+ * declared component, which is an index read rather than a value filter.
  *
  * The chain accumulates a serializable {@link Query} (epic decision 13)
  * exposed through {@link QueryBuilder.toQuery}. Predicates are a
@@ -109,11 +110,16 @@ export { projectFieldValue } from "@ebbjs/write";
  * as read-only.
  *
  * Projection states per field:
- * - `data.fields[K]` absent              → the field's default, else `undefined`
+ * - `data.fields[K]` absent              → the field's declared default, else `undefined`
  * - leaf `data.fields[K].value = V`      → `V`
- * - leaf `data.fields[K].value = null`   → the field's default, else `undefined`
+ * - leaf `data.fields[K].value = null`   → the field's declared default, else `undefined`
  * - map `data.fields[K].map`             → each entry projected,
  *   tombstoned entries omitted
+ *
+ * An `optional` component may not declare a default, so for one of those
+ * the absent and cleared states both read `undefined`: existence is the
+ * only thing that separates them, and projection never answers it. A
+ * non-optional component keeps resolving its default.
  *
  * A default is read off the property schema, so this takes the shape and
  * never the entity definition. A tombstone is absence with an HLC, not a
@@ -133,8 +139,9 @@ export function projectEntity<TFields extends Record<string, TSchema>>(
 
 /**
  * One field's read value: the stored projection, or the property schema's
- * declared default when the leaf is absent or tombstoned. Projection and
- * ordering both go through here so the two cannot drift.
+ * declared default when the leaf is absent or tombstoned. An `optional`
+ * component declares no default, so for it both states read `undefined`.
+ * Projection and ordering both go through here so the two cannot drift.
  */
 const resolveFieldValue = (
   entity: Entity,
@@ -441,6 +448,22 @@ export interface QueryBuilder<
     field: K,
     direction: "asc" | "desc",
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
+  /**
+   * Keep the rows currently carrying the component declared under `field`.
+   * Presence is a fact about the row — a cleared component is still present —
+   * so `has(field)` and `where(field, null)` answer different questions.
+   * Reads the replica's component index, one lookup per named component.
+   * Refused on a chain over already-materialized rows, which has no index.
+   */
+  has(field: keyof TFields & string): QueryBuilder<TFields, TJoins, TJoined, TRow>;
+  /**
+   * Keep the rows the component declared under `field` is absent from.
+   * Presence is a complement, so this is a set difference against the group's
+   * other index hits — or against the model's rows when the group names
+   * nothing positive. It therefore costs the model scan, unlike `has`.
+   * Refused on a chain over already-materialized rows, which has no index.
+   */
+  hasNot(field: keyof TFields & string): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /** Maximum number of rows. */
   limit(n: number): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
@@ -846,17 +869,17 @@ function buildChain<
   };
   const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined, TRow> => ({
     where(key: string, target: unknown) {
-      const predicate = buildPredicate(key, target, shape, context, "where");
-      const current = query.groups[query.groups.length - 1];
-      const groups =
-        current === undefined
-          ? [[predicate]]
-          : [...query.groups.slice(0, -1), [...current, predicate]];
-      return make({ ...query, groups });
+      return make(withConjunct(query, buildPredicate(key, target, shape, context, "where")));
     },
     or(key: string, target: unknown) {
       const predicate = buildPredicate(key, target, shape, context, "or");
       return make({ ...query, groups: [...query.groups, [predicate]] });
+    },
+    has(field) {
+      return make(withConjunct(query, buildPresence(field, true, context)));
+    },
+    hasNot(field) {
+      return make(withConjunct(query, buildPresence(field, false, context)));
     },
     orderBy(field, direction) {
       assertOrderableField(shape, field, context?.entityName ?? "(unknown)");
@@ -921,6 +944,51 @@ function buildChain<
   });
   return make(initial);
 }
+
+/**
+ * Turn one `has` / `hasNot` argument into a presence predicate. The field is
+ * resolved against the source model's declared components, so the predicate
+ * always names `<source>/<field>`; a full component name, or a field the
+ * model does not declare, is refused.
+ */
+function buildPresence(
+  field: string,
+  present: boolean,
+  context: QueryContext | undefined,
+): Predicate {
+  const method = present ? "has" : "hasNot";
+  if (context === undefined) {
+    throw new EntityValidationError([
+      {
+        entityName: "(unknown)",
+        field,
+        message: `${method}("${field}"): a chain over already-materialized rows carries no component index`,
+      },
+    ]);
+  }
+  const component = context.registry.get(context.entityName)?.components[field];
+  if (component === undefined) {
+    throw new EntityValidationError([
+      {
+        entityName: context.entityName,
+        field,
+        message: `${method}("${field}"): not a component on "${context.entityName}"`,
+      },
+    ]);
+  }
+  return { kind: "presence", component: component.name, present };
+}
+
+/**
+ * Append a conjunct to the chain's current AND-group, opening the first group
+ * when the chain has none yet.
+ */
+const withConjunct = (query: Query, predicate: Predicate): Query => {
+  const current = query.groups[query.groups.length - 1];
+  const groups =
+    current === undefined ? [[predicate]] : [...query.groups.slice(0, -1), [...current, predicate]];
+  return { ...query, groups };
+};
 
 /**
  * Turn one `where` / `or` argument into a predicate. A registered

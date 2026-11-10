@@ -435,6 +435,98 @@ describe("executePlan", () => {
     expect(rows.map((row) => row.id)).toEqual(["todo_a", "todo_b"]);
   });
 
+  it("answers a has-only query from the component index without scanning", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", note: "n" }),
+      put(2, "todo_2", "todo", { title: "Test" }),
+      put(3, "todo_3", "todo", { title: "Docs", note: "m" }),
+    ]);
+    const components = vi.spyOn(replica, "components");
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(query({ groups: [[{ kind: "presence", component: "todo/note", present: true }]] })),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_3"]);
+    expect(components).toHaveBeenCalledTimes(1);
+    expect(components).toHaveBeenCalledWith("todo/note");
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it("subtracts a hasNot from the model scan", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", note: "n" }),
+      put(2, "todo_2", "todo", { title: "Test" }),
+      put(3, "todo_3", "todo", { title: "Docs", note: "m" }),
+    ]);
+    const components = vi.spyOn(replica, "components");
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(
+        query({ groups: [[{ kind: "presence", component: "todo/note", present: false }]] }),
+      ),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_2"]);
+    expect(components).toHaveBeenCalledTimes(1);
+    expect(iterate).toHaveBeenCalledTimes(1);
+  });
+
+  it("subtracts a hasNot from the group's positive index hits", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship", note: "n" }),
+      put(2, "todo_2", "todo", { title: "Test", note: "m" }),
+      put(3, "todo_3", "todo", { title: "Docs" }),
+      put(4, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
+      put(5, "eg_2", "entityGroup", { entity_id: "todo_2", group_id: "group_1" }),
+      put(6, "eg_3", "entityGroup", { entity_id: "todo_3", group_id: "group_1" }),
+    ]);
+    const iterate = vi.spyOn(replica, "iterate");
+
+    const rows = executePlan(
+      planQuery(
+        query({
+          groups: [
+            [
+              { kind: "membership", anyOf: ["group_1"] },
+              { kind: "presence", component: "todo/note", present: false },
+            ],
+          ],
+        }),
+      ),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_3"]);
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it("matches nothing for a component of another model, either polarity", () => {
+    const replica = seed([
+      put(1, "todo_1", "todo", { title: "Ship" }),
+      put(2, "user_1", "user", { name: "Ada" }),
+    ]);
+    const executor = createReplicaExecutor(replica);
+
+    const present = executePlan(
+      planQuery(query({ groups: [[{ kind: "presence", component: "user/name", present: true }]] })),
+      executor,
+    );
+    const absent = executePlan(
+      planQuery(
+        query({ groups: [[{ kind: "presence", component: "user/name", present: false }]] }),
+      ),
+      executor,
+    );
+
+    expect(present).toEqual([]);
+    expect(absent).toEqual([]);
+  });
+
   it("executes a candidate-only chain and rejects an indexed predicate there", () => {
     const rows: readonly Entity[] = [
       row("todo_1", { title: "Ship" }),
@@ -453,6 +545,7 @@ describe("executePlan", () => {
       /candidate-only/,
     );
     expect(() => executor.memberships({ groupId: "group_1" })).toThrow(/candidate-only/);
+    expect(() => executor.components("todo/note")).toThrow(/candidate-only/);
     expect(() =>
       executePlan(
         planQuery(

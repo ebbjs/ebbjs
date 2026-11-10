@@ -1600,3 +1600,136 @@ describe("replica: on-demand residency (#500)", () => {
     });
   });
 });
+
+describe("replica: presence index (#798)", () => {
+  it("indexes each present component as <type>/<field>, ascending", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "e_2",
+        gsn: 1,
+        ms: 10,
+        fields: { title: leaf("B", "u_1", 10), completed: leaf(true, "u_1", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      put({
+        actionId: "a_2",
+        updateId: "u_2",
+        entityId: "e_1",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("A", "u_2", 20) },
+      }),
+      2,
+    );
+
+    expect(replica.components("todo/title")).toEqual(["e_1", "e_2"]);
+    expect(replica.components("todo/completed")).toEqual(["e_2"]);
+    expect(replica.components("todo/note")).toEqual([]);
+    expect(replica.components("user/title")).toEqual([]);
+  });
+
+  it("follows an optimistic write and its discard", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Base", "u_1", 10) },
+      }),
+      1,
+    );
+    const local = patch({
+      actionId: "a_local",
+      updateId: "u_local",
+      gsn: 0,
+      ms: 20,
+      fields: { note: leaf("Local", "u_local", 20) },
+    });
+
+    replica.optimistic(local);
+    expect(replica.components("todo/note")).toEqual(["e_1"]);
+
+    replica.discard("a_local");
+    expect(replica.components("todo/note")).toEqual([]);
+    expect(replica.components("todo/title")).toEqual(["e_1"]);
+  });
+
+  it("forgets a component the composed view drops, keeping the row", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Base", "u_1", 10), note: leaf("note", "u_1", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      drop({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 20,
+        fields: { note: leaf(null, "u_2", 20) },
+      }),
+      2,
+    );
+
+    expect(replica.components("todo/note")).toEqual([]);
+    expect(replica.components("todo/title")).toEqual(["e_1"]);
+    expect(replica.get("e_1")?.data.fields).toEqual({ title: leaf("Base", "u_1", 10) });
+  });
+
+  it("forgets every component of an evicted row", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Base", "u_1", 10), note: leaf("note", "u_1", 10) },
+      }),
+      1,
+    );
+
+    replica.evict(["e_1"]);
+
+    expect(replica.components("todo/title")).toEqual([]);
+    expect(replica.components("todo/note")).toEqual([]);
+  });
+
+  it("rebuilds from a loaded record, which never persists it", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Base", "u_1", 10), note: leaf("note", "u_1", 10) },
+      }),
+      1,
+    );
+    const record = replica.toRecord();
+    expect(record).not.toHaveProperty("components");
+
+    const hydrated = createReplica();
+    hydrated.load(record);
+
+    expect(hydrated.components("todo/title")).toEqual(["e_1"]);
+    expect(hydrated.components("todo/note")).toEqual(["e_1"]);
+  });
+});

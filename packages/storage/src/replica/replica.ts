@@ -7,6 +7,12 @@ import {
   withAdoptedMapFields,
   withWireMapFields,
 } from "../internal/materialize";
+import {
+  applyPresenceDelta,
+  presenceDelta,
+  presenceIds,
+  type PresenceIndex,
+} from "../internal/presence-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
 import {
   applyIndexDelta,
@@ -106,7 +112,9 @@ interface OrphanUpdate {
  * optimistic writes over it, and `effective` caches the composed view for
  * overlaid ids so a read never recomposes.
  * `typeIndex` indexes the base; `iterate` layers the overlay's type overrides
- * on top of it.
+ * on top of it. `presenceIndex` tracks the composed view's component set
+ * alongside the adjacency indices, and is likewise derived rather than
+ * persisted.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const policy = options?.materialization ?? holdAll;
@@ -114,6 +122,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const entities = new Map<string, Entity>();
   const typeIndex = new Map<string, Set<string>>();
+  const presenceIndex: PresenceIndex = new Map();
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
@@ -338,9 +347,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Both indices track the composed view, so they must be reconciled
+   * Every derived index tracks the composed view, so they must be reconciled
    * wherever that view changes — which is why this hangs off `resync`, the
-   * one place every base, overlay, and tombstone write already funnels
+   * one place every base, overlay, drop and tombstone write already funnels
    * through.
    */
   const reconcileIndex = (previous: Entity | null, next: Entity | null): void => {
@@ -348,6 +357,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const after = next ?? undefined;
     reverseIndex = applyIndexDelta(reverseIndex, reverseIndexDelta(before, after));
     forwardIndex = applyIndexDelta(forwardIndex, forwardIndexDelta(before, after));
+    applyPresenceDelta(presenceIndex, presenceDelta(before, after));
   };
 
   /**
@@ -481,6 +491,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (!isValidReplicaRecord(record)) return revision;
     entities.clear();
     typeIndex.clear();
+    presenceIndex.clear();
     orphans.clear();
     overlay.clear();
     effective.clear();
@@ -490,10 +501,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     for (const id of pins.keys()) releasePin(id);
     journal.length = 0;
     journalStart = 0;
-    // One linear pass rebuilds the base and both adjacency directions; the
-    // typed indices are not persisted. Mutating the local row maps keeps the
-    // rebuild linear where folding `applyIndexDelta` per row would copy the
-    // whole key space each time.
+    // One linear pass rebuilds the base, both adjacency directions, and
+    // presence; the derived indices are not persisted. Mutating the local
+    // row maps keeps the rebuild linear where folding `applyIndexDelta` per
+    // row would copy the whole key space each time.
     const reverse: Record<string, Record<string, string>> = {};
     const forward: Record<string, Record<string, string>> = {};
     const add = (index: Record<string, Record<string, string>>, entry: IndexEntry): void => {
@@ -506,6 +517,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const row = withAdoptedMapFields(entity);
       entities.set(row.id, row);
       addToType(row.type, row.id);
+      applyPresenceDelta(presenceIndex, presenceDelta(undefined, row));
       const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
       const forwardEntry = forwardIndexEntryFor(row);
@@ -675,6 +687,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       return [];
     },
+    components: (component) => presenceIds(presenceIndex, component),
     memberships: (query: MembershipQuery): readonly string[] => {
       if (query.groupId !== undefined) {
         return liveSourceIds(reverseIndex[membershipIndexKey(query.groupId)]);

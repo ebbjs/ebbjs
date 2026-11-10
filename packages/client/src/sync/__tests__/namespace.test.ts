@@ -8,7 +8,7 @@ import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
-import { defineModel, e } from "@ebbjs/schema";
+import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { groupSystemEntity } from "@ebbjs/schema";
@@ -2494,5 +2494,111 @@ describe("draft delete", () => {
     const { client } = await mkClient(captureActions(captured));
     const result: Promise<void> = client.actions.deleteTodo({ id: "todo_1" });
     await expect(result).resolves.toBeUndefined();
+  });
+});
+
+const noteDraft = defineComponent("note/draft", e.string(), { optional: true });
+
+const note = defineModel("note", {
+  title: e.string(),
+  draft: noteDraft,
+});
+
+const schemaForPresence = defineSchema({ models: { note }, version: 1 });
+
+describe("client.<entity>.query().has() / hasNot() — component presence", () => {
+  const buildClient = async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: schemaForPresence,
+    });
+    const seed = (id: string, fields: Record<string, unknown>) =>
+      seedQueryRow(storage, client.replica, mkEntity(id, "note", fields));
+    return { storage, client, seed };
+  };
+
+  const ids = async (chain: PromiseLike<readonly { readonly id: string }[]>) =>
+    (await chain).map((row) => row.id).sort();
+
+  it("keeps the rows carrying the component", async () => {
+    const { client, seed } = await buildClient();
+    await seed("n1", { title: "a", draft: "draft a" });
+    await seed("n2", { title: "b" });
+    await seed("n3", { title: "c", draft: "draft c" });
+
+    expect(await ids(client.note.query().has("draft"))).toEqual(["n1", "n3"]);
+  });
+
+  it("keeps the rows the component is absent from", async () => {
+    const { client, seed } = await buildClient();
+    await seed("n1", { title: "a", draft: "draft a" });
+    await seed("n2", { title: "b" });
+    await seed("n3", { title: "c", draft: "draft c" });
+
+    expect(await ids(client.note.query().hasNot("draft"))).toEqual(["n2"]);
+  });
+
+  it("counts a cleared component as present, though it projects undefined", async () => {
+    const { client, seed } = await buildClient();
+    await seed("n1", { title: "a", draft: null });
+    await seed("n2", { title: "b" });
+
+    const present = await client.note.query().has("draft");
+    expect(present.map((row) => row.id)).toEqual(["n1"]);
+    expect(present[0]?.draft).toBeUndefined();
+  });
+
+  it("composes with where() in the same AND-group", async () => {
+    const { client, seed } = await buildClient();
+    await seed("n1", { title: "a", draft: "x" });
+    await seed("n2", { title: "a" });
+    await seed("n3", { title: "b", draft: "y" });
+
+    const rows = await client.note.query().where("title", "a").has("draft");
+    expect(rows.map((row) => row.id)).toEqual(["n1"]);
+  });
+
+  it("reads the component index, never the entity store", async () => {
+    const { storage, client, seed } = await buildClient();
+    await seed("n1", { title: "a", draft: "x" });
+    const querySpy = vi.spyOn(storage.entities, "query");
+    const componentsSpy = vi.spyOn(client.replica, "components");
+
+    await client.note.query().has("draft");
+    expect(componentsSpy).toHaveBeenCalledWith("note/draft");
+    expect(querySpy).not.toHaveBeenCalled();
+
+    componentsSpy.mockClear();
+    await client.note.query().hasNot("draft");
+    expect(componentsSpy).toHaveBeenCalledTimes(1);
+    expect(componentsSpy).toHaveBeenCalledWith("note/draft");
+  });
+
+  it("records presence in the serializable query", async () => {
+    const { client } = await buildClient();
+    const chain = client.note.query().has("draft").hasNot("title");
+
+    expect(chain.toQuery().groups).toEqual([
+      [
+        { kind: "presence", component: "note/draft", present: true },
+        { kind: "presence", component: "note/title", present: false },
+      ],
+    ]);
+  });
+
+  it("refuses a field the source model does not declare", async () => {
+    const { client } = await buildClient();
+    expect(() => client.note.query().has("drafting" as never)).toThrow(/not a component on "note"/);
+  });
+
+  it("refuses a full component name where a field key is expected", async () => {
+    const { client } = await buildClient();
+    expect(() => client.note.query().has("note/draft" as never)).toThrow(
+      /not a component on "note"/,
+    );
   });
 });
