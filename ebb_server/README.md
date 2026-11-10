@@ -294,8 +294,8 @@ A dual-store CQRS pattern:
 
 Dirty marks are in-memory, so a restart makes every not-yet-materialized
 row look clean. The boot rebuild repairs that: it re-marks every
-`cf_type_entities` row dirty, so the first `get` or per-type `query`
-replays that row's delta from RocksDB. The eagerly materialized system
+`cf_component_entities` model entry dirty, so the first `get` or per-type
+`query` replays that row's delta from RocksDB. The eagerly materialized system
 types (`groupMember`, `entityGroup`, `relationship`) clear their marks
 during boot; `group` and user types stay marked until first read
 ([#564](https://github.com/ebbjs/ebbjs/issues/564)). The replay reads the
@@ -631,7 +631,7 @@ flowchart LR
     A1["cf_actions: GSN to payload ETF + update_scopes"]
     A2["cf_group_actions: group, GSN to action id"]
     A3["cf_entity_actions: entity, GSN to action id"]
-    A4["cf_type_entities: type, entity to presence"]
+    A4["cf_component_entities: model or component, entity to presence"]
     A5["cf_action_dedup: action id to GSN"]
   end
 
@@ -912,8 +912,8 @@ catch-ups. Peer-replication cursor and lag metrics are out of scope until
 server-to-server replication exists.
 
 `ebb.system_cache.populated` is emitted once per startup cache rebuild. Counts
-are the entities materialized into each cache plus the `cf_type_entities` keys
-repaired by the one-time backfill migration, and `outcome` is `:ok` or
+are the entities materialized into each cache plus the `cf_component_entities`
+entries repaired by the one-time backfill migration, and `outcome` is `:ok` or
 `:error`. On failure the counts reached before the raise are still reported,
 which is how a partial rebuild becomes visible; the node then refuses to start
 serving rather than run against the half-populated caches. `reason` is the

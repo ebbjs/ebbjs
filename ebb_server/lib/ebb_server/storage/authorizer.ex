@@ -935,11 +935,11 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # A committed id can reach here unmodeled: the entity-type index is a
-  # projection that an ablation (`EBB_ABLATE=type_entities`) or an unfinished
-  # rebuild can omit an entry from. A membership row proves the id is not new
-  # and nothing models it, so a component prefix cannot stand in for a
-  # committed model (#624). An id nothing records is new, and the model the
+  # A committed id can reach here unmodeled: the entity-type cache is a
+  # projection that an ablation (`EBB_ABLATE=component_entities`) or an
+  # unfinished rebuild can omit an entry from. A membership row proves the id
+  # is not new and nothing models it, so a component prefix cannot stand in
+  # for a committed model (#624). An id nothing records is new, and the model the
   # request gave it — an earlier Action's create or this Action's own first
   # write — is the only one there is.
   defp check_unresolved_model(update, authz) do

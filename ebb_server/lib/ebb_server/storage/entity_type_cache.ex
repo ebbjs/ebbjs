@@ -6,8 +6,9 @@ defmodule EbbServer.Storage.EntityTypeCache do
   membership mutations by `<model>.create` / `<model>.update` (#264). The
   model is the `entityGroup` row's own model, carried by no component of a
   sibling write, and a same-Action first write only covers creates, so the
-  resolved model lives here: populated from the RocksDB `cf_type_entities`
-  index on startup and maintained by the Writer for every committed row.
+  resolved model lives here: populated from the model entries of the RocksDB
+  `cf_component_entities` index on startup and maintained by the Writer for
+  every committed row.
 
   A plain `:set` keyed by entity id. The GenServer exists solely to own
   the table lifetime and publish its name; every read is a lock-free
