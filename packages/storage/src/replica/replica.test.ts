@@ -142,6 +142,7 @@ const entity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "e_1",
   type: "todo",
   data: { fields: {} },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,
@@ -163,9 +164,11 @@ describe("contentChanged", () => {
     expect(contentChanged(row, { ...row, last_gsn: 99 })).toBe(false);
   });
 
-  it("detects type, updated_hlc, deleted_hlc and field changes", () => {
+  it("detects type, exists, created_hlc, updated_hlc, deleted_hlc and field changes", () => {
     const row = entity();
     expect(contentChanged(row, { ...row, type: "note" })).toBe(true);
+    expect(contentChanged(row, { ...row, exists: false })).toBe(true);
+    expect(contentChanged(row, { ...row, created_hlc: null })).toBe(true);
     expect(contentChanged(row, { ...row, updated_hlc: makeHlc(9) })).toBe(true);
     expect(contentChanged(row, { ...row, deleted_hlc: makeHlc(9) })).toBe(true);
     expect(contentChanged(row, { ...row, data: { fields: { title: leaf("x", "u_x", 1) } } })).toBe(
@@ -1486,6 +1489,7 @@ describe("replica: on-demand residency (#500)", () => {
         id: "e_1",
         type: "todo",
         data: { fields: { title: leaf("Todo", "u_1", 10) } },
+        exists: true,
         created_hlc: makeHlc(10),
         updated_hlc: makeHlc(10),
         last_gsn: 1,

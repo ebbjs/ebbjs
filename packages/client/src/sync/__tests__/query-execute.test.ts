@@ -56,6 +56,7 @@ const row = (id: string, fields: Record<string, unknown>): Entity => ({
       Object.entries(fields).map(([key, value]) => [key, field(value, `u_${id}`)]),
     ),
   },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,

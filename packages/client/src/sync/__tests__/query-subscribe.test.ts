@@ -162,6 +162,7 @@ describe("QueryBuilder.subscribe", () => {
           completed: { value: false, update_id: "u", hlc: makeHlc(1) },
         },
       },
+      exists: true,
       created_hlc: "1",
       updated_hlc: "1",
       deleted_hlc: null,

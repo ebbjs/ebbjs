@@ -88,6 +88,7 @@ async function seedTodo(client: Client, id: string, title: string): Promise<void
     id,
     type: "todo",
     data: { fields },
+    exists: true,
     created_hlc: "1",
     updated_hlc: "1",
     deleted_hlc: null,

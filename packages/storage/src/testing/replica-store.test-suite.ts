@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc } from "@ebbjs/core";
 import type { ReplicaRecord, ReplicaStore } from "../types/replica-store";
+import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import { buildTodoEntity, HLC_BASE } from "./fixtures";
 
 export interface ReplicaStoreTestSuiteOptions {
@@ -9,7 +10,7 @@ export interface ReplicaStoreTestSuiteOptions {
 }
 
 const buildRecord = (overrides: Partial<ReplicaRecord> = {}): ReplicaRecord => ({
-  format: 1,
+  format: REPLICA_RECORD_FORMAT,
   position: 7,
   revision: 3,
   entities: [

@@ -16,6 +16,7 @@ const entity = (): Entity => ({
       content: { map: { a: leaf("a", "1", "u_a"), b: leaf("b", "1", "u_b") } },
     },
   },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "5",
   deleted_hlc: null,
@@ -151,6 +152,7 @@ describe("foldEntityAction", () => {
       data: {
         fields: { title: leaf("t", "9", "u_t"), content: leaf("c", "10", "u_c") },
       },
+      exists: true,
       created_hlc: "12",
       updated_hlc: "12",
       deleted_hlc: null,
@@ -179,6 +181,7 @@ describe("foldEntityAction", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: { title: leaf("second", "7", "u_patch") } },
+      exists: true,
       created_hlc: "3",
       updated_hlc: "9",
       deleted_hlc: "9",
@@ -186,7 +189,7 @@ describe("foldEntityAction", () => {
     });
   });
 
-  it("creates the row from a merge with no base row and leaves created_hlc unset", () => {
+  it("creates a placeholder from a merge with no base row", () => {
     const folded = foldEntityAction(
       null,
       "doc_1",
@@ -197,7 +200,8 @@ describe("foldEntityAction", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: { title: leaf("late", "5", "u_late") } },
-      created_hlc: "",
+      exists: false,
+      created_hlc: null,
       updated_hlc: "5",
       deleted_hlc: null,
       last_gsn: 5,
@@ -222,6 +226,7 @@ describe("foldEntityAction", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: {} },
+      exists: true,
       created_hlc: "3",
       updated_hlc: "4",
       deleted_hlc: null,
@@ -250,6 +255,7 @@ describe("foldEntityAction", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: {} },
+      exists: true,
       created_hlc: "3",
       updated_hlc: "5",
       deleted_hlc: "4",
@@ -286,6 +292,7 @@ describe("foldEntityActions", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: { title: leaf("third", "7", "u_patch") } },
+      exists: true,
       created_hlc: "3",
       updated_hlc: "7",
       deleted_hlc: null,

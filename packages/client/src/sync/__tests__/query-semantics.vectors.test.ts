@@ -63,6 +63,7 @@ const toEntity = (row: VectorRow): Entity => ({
       ),
     },
   },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,

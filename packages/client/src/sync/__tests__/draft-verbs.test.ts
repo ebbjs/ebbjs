@@ -273,6 +273,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
       ]),
     ),
   },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,

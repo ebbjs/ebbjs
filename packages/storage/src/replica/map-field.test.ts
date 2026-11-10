@@ -164,6 +164,7 @@ describe("replica map fields over the flip point", () => {
       id: "doc_1",
       type: "doc",
       data: { fields: { title: leaf("Doc"), content: { map: content(600) } } },
+      exists: true,
       created_hlc: makeHlc(1),
       updated_hlc: makeHlc(1),
       deleted_hlc: null,

@@ -1325,7 +1325,9 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
   if (stored.length === 0) {
     throw new Error("findCreatedTodoId: no todo entity found in storage");
   }
-  const sorted = [...stored].sort((a, b) => (a.created_hlc < b.created_hlc ? 1 : -1));
+  const sorted = [...stored].sort((a, b) =>
+    (a.created_hlc ?? "") < (b.created_hlc ?? "") ? 1 : -1,
+  );
   return sorted[0]!.id;
 }
 

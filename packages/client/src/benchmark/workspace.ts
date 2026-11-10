@@ -157,6 +157,7 @@ const row = (id: string, type: string, fields: Record<string, FieldValue>): Enti
   id,
   type,
   data: { fields },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,

@@ -129,6 +129,7 @@ const mkEntity = (id: string, title: string): Entity => ({
   id,
   type: "todo",
   data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: "1" } } },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,

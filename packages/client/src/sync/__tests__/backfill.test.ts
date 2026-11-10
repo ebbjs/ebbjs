@@ -12,6 +12,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { componentName, makeHlc, type Action, type Entity } from "@ebbjs/core";
 
 import { createClient } from "../client";
+import type { EntityResponse } from "../types";
 import {
   collectBackfillCandidates,
   createBackfill,
@@ -28,6 +29,12 @@ import {
 
 const HLC = makeHlc(1711036800000);
 
+/** The entity endpoint's shape: a row without the local `exists` bit. */
+const asResponse = (entity: Entity): EntityResponse => {
+  const { exists: _exists, ...rest } = entity;
+  return { ...rest, created_hlc: rest.created_hlc ?? 0 };
+};
+
 const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
   id,
   type,
@@ -39,6 +46,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
       ]),
     ),
   },
+  exists: true,
   created_hlc: HLC,
   updated_hlc: HLC,
   deleted_hlc: null,
@@ -202,9 +210,39 @@ describe("collectBackfillCandidates", () => {
 
     expect(await collectBackfillCandidates(storage)).toEqual(["post_1"]);
   });
+
+  it("names a present placeholder whose create has not been seen", async () => {
+    const storage = createMemoryAdapter();
+    await storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+    );
+    // A later component write materialized the row without its base.
+    await storage.entities.set({
+      ...mkEntity("post_1", "blog_post", { title: "late" }),
+      exists: false,
+    });
+
+    expect(await collectBackfillCandidates(storage)).toEqual(["post_1"]);
+  });
 });
 
 describe("createBackfill", () => {
+  it("does not append an empty Action for a zero-component base", async () => {
+    const storage = createMemoryAdapter();
+    await storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+    );
+    const backfill = createBackfill({
+      storage,
+      fetchEntity: async () => asResponse(mkEntity("post_1", "blog_post", {})),
+    });
+
+    await backfill.run();
+
+    expect(await storage.actions.getForEntity("post_1")).toEqual([]);
+    expect(backfill.pending.get()).toEqual([]);
+  });
+
   it("writes a fetched entity as a snapshot that survives a log replay", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
@@ -215,7 +253,7 @@ describe("createBackfill", () => {
       storage,
       fetchEntity: async (entityId) => {
         fetches.push(entityId);
-        return mkEntity("post_1", "blog_post", { title: "Hello" });
+        return asResponse(mkEntity("post_1", "blog_post", { title: "Hello" }));
       },
     });
 
@@ -250,11 +288,11 @@ describe("createBackfill", () => {
     await storage.entities.set(
       mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
     );
-    let release: ((entity: Entity) => void) | undefined;
+    let release: ((entity: EntityResponse) => void) | undefined;
     const backfill = createBackfill({
       storage,
       fetchEntity: () =>
-        new Promise<Entity>((resolve) => {
+        new Promise<EntityResponse>((resolve) => {
           release = resolve;
         }),
     });
@@ -262,7 +300,7 @@ describe("createBackfill", () => {
     const run = backfill.run();
     await waitFor(() => backfill.pending.get().includes("post_1"));
     await storage.entities.set(mkEntity("post_1", "blog_post", { title: "Local" }));
-    release?.(mkEntity("post_1", "blog_post", { title: "Server" }));
+    release?.(asResponse(mkEntity("post_1", "blog_post", { title: "Server" })));
     await run;
 
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Local");
@@ -276,7 +314,8 @@ describe("createBackfill", () => {
     );
     const backfill = createBackfill({
       storage,
-      fetchEntity: async () => ({ ...mkEntity("post_1", "blog_post", {}), deleted_hlc: HLC }),
+      fetchEntity: async () =>
+        asResponse({ ...mkEntity("post_1", "blog_post", {}), deleted_hlc: HLC }),
     });
 
     await backfill.run();
@@ -290,18 +329,18 @@ describe("createBackfill", () => {
     await storage.entities.set(
       mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
     );
-    let release: ((entity: Entity) => void) | undefined;
+    let release: ((entity: EntityResponse) => void) | undefined;
     const backfill = createBackfill({
       storage,
       fetchEntity: () =>
-        new Promise<Entity>((resolve) => {
+        new Promise<EntityResponse>((resolve) => {
           release = resolve;
         }),
     });
 
     const run = backfill.run();
     await waitFor(() => backfill.pending.get().includes("post_1"));
-    release?.(mkEntity("post_1", "blog_post", { title: "Hello" }));
+    release?.(asResponse(mkEntity("post_1", "blog_post", { title: "Hello" })));
     await run;
 
     expect(backfill.pending.get()).toEqual([]);
@@ -481,7 +520,7 @@ describe("snapshot content merges under later writes", () => {
     );
     const backfill = createBackfill({
       storage,
-      fetchEntity: async () => mkEntity("post_1", "blog_post", { title: "Base" }),
+      fetchEntity: async () => asResponse(mkEntity("post_1", "blog_post", { title: "Base" })),
     });
     await backfill.run();
 
