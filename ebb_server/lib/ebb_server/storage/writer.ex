@@ -313,12 +313,15 @@ defmodule EbbServer.Storage.Writer do
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
   write path — `:dedup`, `:group_resolution`, `:build`, `:encode`,
-  `:entity_actions`, `:component_entities`, `:group_index`, `:dirty`,
-  `:cache`, `:watermark`, `:fanout` — so `mix bench.actions --ablate` can
-  price each one. `:entity_index` remains the combined alias that drops both
-  entity index halves. `:dedup` also skips the in-flight claim, which is dedup work.
-  It is never set in production, and an empty list emits exactly the same ops
-  as before. See `EbbServer.Bench.Options`.
+  `:entity_actions`, `:component_entries`, `:component_entities`,
+  `:group_index`, `:dirty`, `:cache`, `:watermark`, `:fanout` — so
+  `mix bench.actions --ablate` can price each one. `:component_entries`
+  drops only the per-component half of `cf_component_entities`, leaving the
+  model entry that is today's one row per row; `:component_entities` drops
+  the whole column family. `:entity_index` remains the combined alias that
+  drops both entity index halves. `:dedup` also skips the in-flight claim,
+  which is dedup work. It is never set in production, and an empty list
+  emits exactly the same ops as before. See `EbbServer.Bench.Options`.
 
   ## cf_group_actions index and intra-action context
 
@@ -2022,23 +2025,30 @@ defmodule EbbServer.Storage.Writer do
   # created. Without that, a second write to a row whose create is still in
   # this flush folds as `:put`, which the cache planner reads as "replace the
   # whole row" instead of "patch the components this Action carries".
+  #
+  # `flush_rows` carries the same idea one step further: the fields those
+  # earlier Actions wrote, so a system row's fan-out scope can still read the
+  # `group_id` / `source_id` its create carried when the by-id caches have not
+  # seen it yet (#813).
   defp prepare(fresh, gsn_start, state, incoming_overlay) do
     resolve_opts =
       state
       |> resolve_cache_opts()
       |> Keyword.put(:overlay, incoming_overlay)
 
-    {prepared, {groups_by_gsn, mutations, _created, _memo}} =
+    {prepared, {groups_by_gsn, mutations, _created, _flush_rows, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, [], MapSet.new(), %{}}, fn {{action, payload_etf}, gsn},
-                                                          {groups, mutations, created, memo} ->
+      |> Enum.map_reduce({%{}, [], MapSet.new(), %{}, %{}}, fn {{action, payload_etf}, gsn},
+                                                               {groups, mutations, created,
+                                                                flush_rows, memo} ->
         {prepared_action, action_mutations, memo} =
-          prepare_action(action, payload_etf, state, resolve_opts, created, memo)
+          prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo)
 
         {prepared_action,
          {Map.put(groups, gsn, prepared_action.groups), Enum.reverse(action_mutations, mutations),
-          fold_subjects(action_mutations, created), memo}}
+          fold_subjects(action_mutations, created),
+          remember_flush_rows(flush_rows, action.updates), memo}}
       end)
 
     {prepared, groups_by_gsn,
@@ -2054,6 +2064,46 @@ defmodule EbbServer.Storage.Writer do
   # change the plan today.
   defp fold_subjects(mutations, created) do
     Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
+  end
+
+  # The row shape an earlier Action of this flush left behind, for the scope
+  # fields an `entityGroup` / `groupMember` / `relationship` row may have
+  # written there. Built from the raw Updates, not the folded mutation, so a
+  # `drop` removes a field and a `delete` removes the row.
+  defp remember_flush_rows(rows, updates) do
+    Enum.reduce(updates, rows, fn update, rows ->
+      case update.method do
+        :delete ->
+          Map.delete(rows, update.subject_id)
+
+        :drop ->
+          drop_flush_field(rows, update)
+
+        method when method in [:merge, :replace] ->
+          put_flush_field(rows, update)
+      end
+    end)
+  end
+
+  defp put_flush_field(rows, update) do
+    existing = Map.get(rows, update.subject_id, %{"model" => update.model, "fields" => %{}})
+    fields = Map.put(existing["fields"], update.field, update.data)
+
+    Map.put(rows, update.subject_id, %{
+      "model" => existing["model"] || update.model,
+      "fields" => fields
+    })
+  end
+
+  defp drop_flush_field(rows, update) do
+    case Map.fetch(rows, update.subject_id) do
+      {:ok, row} ->
+        row = %{row | "fields" => Map.delete(row["fields"], update.field)}
+        Map.put(rows, update.subject_id, row)
+
+      :error ->
+        rows
+    end
   end
 
   # Plan before the commit so a successor can resolve against this batch's
@@ -2078,7 +2128,7 @@ defmodule EbbServer.Storage.Writer do
   defp overlay_before(state, ref),
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
-  defp prepare_action(action, payload_etf, state, resolve_opts, created, memo) do
+  defp prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo) do
     # Scope is a per-subject decision, never a per-component one: an
     # `entityGroup` row's `group_id` and a relationship row's `source_id` each
     # arrive in one component Update while their siblings carry none, so the
@@ -2088,6 +2138,7 @@ defmodule EbbServer.Storage.Writer do
 
     resolve_opts =
       resolve_opts
+      |> Keyword.put(:flush_rows, flush_rows)
       |> Keyword.put(:intra_action, intra_action_context)
       |> Keyword.put(
         :intra_relationship_sources,
@@ -2140,7 +2191,12 @@ defmodule EbbServer.Storage.Writer do
     if component_entities_ablated?(state) do
       []
     else
-      ComponentEntityIndex.update_ops(updates) ++
+      component_ops =
+        if ablate?(:component_entries, state),
+          do: [],
+          else: ComponentEntityIndex.update_ops(updates)
+
+      component_ops ++
         ComponentEntityIndex.model_ops(Enum.map(mutations, &{&1.model, &1.subject_id}))
     end
   end

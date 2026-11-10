@@ -99,4 +99,23 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
       {:delete, key} -> {:delete, cf, key}
     end)
   end
+
+  @doc """
+  The live ids carrying `component`, ascending.
+
+  One prefix range of the index answers existence, so a query naming several
+  components costs one range per component rather than a row scan. The value
+  is empty, so the ids come straight out of the keys.
+  """
+  @spec component_ids(String.t(), keyword()) :: [String.t()]
+  def component_ids(component, opts \\ []) do
+    name = Keyword.get(opts, :name, RocksDB)
+    prefix = component <> <<0>>
+    offset = byte_size(prefix)
+
+    name
+    |> RocksDB.cf_component_entities()
+    |> RocksDB.prefix_iterator(prefix, name: name)
+    |> Enum.map(fn {key, _value} -> binary_part(key, offset, byte_size(key) - offset) end)
+  end
 end

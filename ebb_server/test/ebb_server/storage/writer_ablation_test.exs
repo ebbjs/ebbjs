@@ -54,6 +54,19 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 2
     end
 
+    test ":component_entries drops only the per-component entries", ctx do
+      writer = start_capturing_writer(ctx, [:component_entries])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+
+      # The model entry is the pre-#799 one-row-per-row shape; only the
+      # component entry is gone.
+      assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 1
+      assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
+    end
+
     test ":component_entities drops only cf_component_entities", ctx do
       writer = start_capturing_writer(ctx, [:component_entities])
 

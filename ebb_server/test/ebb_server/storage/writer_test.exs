@@ -28,6 +28,7 @@ defmodule EbbServer.Storage.WriterTest do
   alias EbbServer.Storage.{
     ActionFormat,
     ActionLog,
+    ComponentEntityIndex,
     DirtyTracker,
     EntityGroupCache,
     EntityTypeCache,
@@ -215,6 +216,78 @@ defmodule EbbServer.Storage.WriterTest do
 
         assert action_id == action.id
       end
+    end
+
+    test "scopes a later write to a row its create committed in the same flush (#813)", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      # The create and the permissions-only write are two Actions of one
+      # flush. The by-id cache only holds committed rows, so the second
+      # Action's scope must come from the row the flush already folded — not
+      # from a cache miss, which would commit it undeliverably.
+      create =
+        validated_action(%{
+          id: "act_813_create",
+          updates: [
+            validated_component("eg_813", "entityGroup/entity_id", %{"value" => "todo_813"}),
+            validated_component("eg_813", "entityGroup/group_id", %{"value" => "group_813"})
+          ]
+        })
+
+      permissions =
+        validated_action(%{
+          id: "act_813_permissions",
+          updates: [
+            validated_component("eg_813", "entityGroup/permissions", %{
+              "value" => ["todo.*"]
+            })
+          ]
+        })
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([create, permissions], writer_name)
+
+      {:ok, binary} =
+        RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2), name: rocks_name)
+
+      assert %{"update_scopes" => [["group_813"]]} = ActionFormat.decode(binary, 2)
+
+      key = RocksDB.encode_group_action_key("group_813", 2)
+
+      assert {:ok, "act_813_permissions"} =
+               RocksDB.get(RocksDB.cf_group_actions(rocks_name), key, name: rocks_name)
+    end
+
+    test "reads the rows carrying a component in one index range", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      write =
+        validated_action(%{
+          id: "act_component_read",
+          updates: [
+            validated_component("todo_read_a", "todo/title", %{"value" => "a"}),
+            validated_component("todo_read_b", "todo/title", %{"value" => "b"}),
+            validated_component("todo_read_b", "todo/status", %{"value" => "open"})
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
+
+      assert ComponentEntityIndex.component_ids("todo/title", name: rocks_name) == [
+               "todo_read_a",
+               "todo_read_b"
+             ]
+
+      drop =
+        validated_action(%{
+          id: "act_component_drop",
+          updates: [validated_component("todo_read_a", "todo/title", nil, method: :drop)]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
+
+      assert ComponentEntityIndex.component_ids("todo/title", name: rocks_name) == [
+               "todo_read_b"
+             ]
     end
 
     test "dedups repeated index puts across the flush", ctx do
