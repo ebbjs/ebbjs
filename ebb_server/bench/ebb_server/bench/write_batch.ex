@@ -6,7 +6,9 @@ defmodule EbbServer.Bench.WriteBatch do
   per Action a `cf_actions` record plus its dedup and group-index rows, then
   one coalesced `cf_entity_actions` row per subject across the whole batch
   (keyed at that subject's highest GSN, holding its sorted GSN list), then
-  one `cf_type_entities` row per distinct subject across the whole batch.
+  the `cf_component_entities` ops: one model entry per distinct subject plus
+  one put per `merge`/`replace` Update and one delete per `drop` Update,
+  reduced last-wins per key across the whole batch.
 
   Everything is bench-only. There is no Writer, no cache mutation, no
   watermark advance, and no fan-out; only the NIF call is measured.
@@ -17,16 +19,16 @@ defmodule EbbServer.Bench.WriteBatch do
 
   `--ablate` narrows the op set to the phases that name an op group —
   `:dedup` (drop `cf_action_dedup`), `:entity_actions` (drop
-  `cf_entity_actions`), `:type_entities` (drop `cf_type_entities`),
-  `:group_index` (drop `cf_group_actions`), and `:entity_index` as the
-  combined alias that drops both entity-index halves. Ablating every group
-  leaves a `cf_actions`-only batch, which is the cheapest durable write an
-  Action can have; the report prints the ablated phases so a narrowed run is
+  `cf_entity_actions`), `:component_entities` (drop
+  `cf_component_entities`), `:group_index` (drop `cf_group_actions`), and
+  `:entity_index` as the combined alias that drops both entity-index halves.
+  Ablating every group leaves a `cf_actions`-only batch, which is the cheapest
+  durable write an Action can have; the report prints the ablated phases so a narrowed run is
   never mistaken for the full shape.
   """
 
   alias EbbServer.Bench.{Options, Workbook}
-  alias EbbServer.Storage.{ActionFormat, ActionValidator, RocksDB}
+  alias EbbServer.Storage.{ActionFormat, ActionValidator, ComponentEntityIndex, RocksDB}
 
   # Each caller owns a disjoint GSN space far above the seeded Actions' GSNs.
   # Nothing claims from it and nothing scans across it, so a caller can never
@@ -89,9 +91,9 @@ defmodule EbbServer.Bench.WriteBatch do
           (map(), non_neg_integer() -> [{:put, term(), binary(), binary()}])
         ) :: [{:put, term(), binary(), binary()}]
   def build_ops(%Options{} = config, ctx, caller_id, seq, gsn_start, stored) do
-    {action_ops, {type_keys, subject_gsns}} =
+    {action_ops, {index_ops, subject_gsns}} =
       0..(config.batch_size - 1)
-      |> Enum.map_reduce({MapSet.new(), %{}}, fn offset, indexes ->
+      |> Enum.map_reduce({[], %{}}, fn offset, indexes ->
         action =
           config
           |> Workbook.build_action(ctx, caller_id, seq + offset)
@@ -105,14 +107,14 @@ defmodule EbbServer.Bench.WriteBatch do
 
     :lists.append(action_ops) ++
       entity_ops(subject_gsns, config.ablate) ++
-      type_entity_ops(type_keys, config.ablate)
+      component_entity_ops(index_ops, config.ablate)
   end
 
-  defp accumulate_index(action, gsn, {type_keys, subject_gsns}, ablate) do
-    type_keys =
-      if type_entities_ablated?(ablate),
-        do: type_keys,
-        else: MapSet.union(type_keys, action_type_keys(action))
+  defp accumulate_index(action, gsn, {index_ops, subject_gsns}, ablate) do
+    index_ops =
+      if component_entities_ablated?(ablate),
+        do: index_ops,
+        else: [action_index_ops(action) | index_ops]
 
     subject_gsns =
       if entity_actions_ablated?(ablate) do
@@ -123,7 +125,7 @@ defmodule EbbServer.Bench.WriteBatch do
         end)
       end
 
-    {type_keys, subject_gsns}
+    {index_ops, subject_gsns}
   end
 
   @doc """
@@ -203,28 +205,28 @@ defmodule EbbServer.Bench.WriteBatch do
     end
   end
 
-  defp action_type_keys(action) do
-    action.updates
-    |> Enum.reject(&is_nil(&1.model))
-    |> Enum.map(&RocksDB.encode_type_entity_key(&1.model, &1.subject_id))
-    |> MapSet.new()
+  defp action_index_ops(action) do
+    ComponentEntityIndex.update_ops(action.updates) ++
+      ComponentEntityIndex.model_ops(Enum.map(action.updates, &{&1.model, &1.subject_id}))
   end
 
-  # One put per unique key per batch, sorted for reproducible batches, like
-  # the Writer's flush.
-  defp type_entity_ops(type_keys, ablate) do
-    if type_entities_ablated?(ablate) do
+  # One op per unique key per batch, sorted for reproducible batches, like the
+  # Writer's flush.
+  defp component_entity_ops(index_ops, ablate) do
+    if component_entities_ablated?(ablate) do
       []
     else
-      type_keys
-      |> Enum.sort()
-      |> Enum.map(fn key -> {:put, RocksDB.cf_type_entities(), key, <<>>} end)
+      index_ops
+      |> Enum.reverse()
+      |> :lists.append()
+      |> ComponentEntityIndex.reduce_ops()
+      |> ComponentEntityIndex.batch_ops(RocksDB.cf_component_entities())
     end
   end
 
   defp entity_actions_ablated?(ablate),
     do: :entity_actions in ablate or :entity_index in ablate
 
-  defp type_entities_ablated?(ablate),
-    do: :type_entities in ablate or :entity_index in ablate
+  defp component_entities_ablated?(ablate),
+    do: :component_entities in ablate or :entity_index in ablate
 end

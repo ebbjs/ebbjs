@@ -99,7 +99,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "entity_actions"
         ])
 
-      {:ok, no_type_entities} =
+      {:ok, no_component_entities} =
         Options.parse([
           "--tier",
           "t5",
@@ -108,7 +108,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "--distribution",
           "hot",
           "--ablate",
-          "type_entities"
+          "component_entities"
         ])
 
       {:ok, no_group_index} =
@@ -134,14 +134,14 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       # Both components of a hot Action are the shared membership row's, so
       # the coalesced entity index is one row, not one per Update, and the hot
-      # batch has one (entityGroup, membership) type key.
+      # batch has one model entry plus one entry per component.
       assert count.(full, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_actions, RocksDB.cf_entity_actions()) == 0
-      assert count.(no_entity_actions, RocksDB.cf_type_entities()) == 1
-      assert count.(no_type_entities, RocksDB.cf_type_entities()) == 0
-      assert count.(no_type_entities, RocksDB.cf_entity_actions()) == 1
+      assert count.(no_entity_actions, RocksDB.cf_component_entities()) == 3
+      assert count.(no_component_entities, RocksDB.cf_component_entities()) == 0
+      assert count.(no_component_entities, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_index, RocksDB.cf_entity_actions()) == 0
-      assert count.(no_entity_index, RocksDB.cf_type_entities()) == 0
+      assert count.(no_entity_index, RocksDB.cf_component_entities()) == 0
 
       assert count.(full, RocksDB.cf_group_actions()) == 10
       assert count.(no_group_index, RocksDB.cf_group_actions()) == 0
@@ -151,7 +151,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
             full,
             no_dedup,
             no_entity_actions,
-            no_type_entities,
+            no_component_entities,
             no_entity_index,
             no_group_index
           ] do
@@ -168,20 +168,22 @@ defmodule EbbServer.Bench.WriteBatchTest do
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
       # 100 Actions x (cf_actions + dedup + group) = 300, plus one coalesced
-      # entity row for the one hot membership subject and the one type key
-      # every hot Action shares.
-      assert length(ops) == 302
+      # entity row for the one hot membership subject and three component-index
+      # ops every hot Action shares: one model entry and two component entries.
+      assert length(ops) == 304
     end
 
-    test "a spread batch writes one entity index row and one type key per Action", context do
+    test "a spread batch writes one entity index row and three component-index ops per Action",
+         context do
       {:ok, config} =
         Options.parse(["--tier", "t5", "--batch-size", "100", "--distribution", "spread"])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
       # 100 Actions x (cf_actions + dedup + group) = 300, plus one entity index
-      # row for each Action's unique membership and one type key for it.
-      assert length(ops) == 500
+      # row per Action and, for each Action's unique membership row, its model
+      # entry and its two component entries.
+      assert length(ops) == 700
     end
 
     test "cf_actions holds one contiguous GSN range per call, in order", context do
@@ -251,7 +253,8 @@ defmodule EbbServer.Bench.WriteBatchTest do
              ]
     end
 
-    test "type entity keys are unique and one per distinct entity/type pair", context do
+    test "component-entity keys are unique: one model entry per subject plus one per component",
+         context do
       {:ok, config} =
         Options.parse([
           "--tier",
@@ -266,12 +269,16 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
-      keys = ops |> cf_ops(RocksDB.cf_type_entities()) |> Enum.map(&elem(&1, 0))
+      keys = ops |> cf_ops(RocksDB.cf_component_entities()) |> Enum.map(&elem(&1, 0))
 
-      assert length(keys) == 40
-      assert length(Enum.uniq(keys)) == 40
+      # 20 Actions x (2 model entries + 10 component entries) = 240 keys, all
+      # unique because every Action targets fresh ids.
+      assert length(keys) == 240
+      assert length(Enum.uniq(keys)) == 240
       assert Enum.count(keys, &String.starts_with?(&1, "todo\x00")) == 20
       assert Enum.count(keys, &String.starts_with?(&1, "entityGroup\x00")) == 20
+      assert Enum.count(keys, &String.starts_with?(&1, "todo/")) == 160
+      assert Enum.count(keys, &String.starts_with?(&1, "entityGroup/")) == 40
     end
   end
 

@@ -17,7 +17,7 @@ defmodule EbbServer.Bench.OptionsTest do
     :build,
     :encode,
     :entity_actions,
-    :type_entities,
+    :component_entities,
     :entity_index,
     :group_index,
     :dirty,
@@ -457,10 +457,10 @@ defmodule EbbServer.Bench.OptionsTest do
                  "--tier",
                  "t5",
                  "--ablate",
-                 "dedup,entity_actions,type_entities,group_index"
+                 "dedup,entity_actions,component_entities,group_index"
                ])
 
-      assert split.ablate == [:dedup, :entity_actions, :type_entities, :group_index]
+      assert split.ablate == [:dedup, :entity_actions, :component_entities, :group_index]
 
       assert {:ok, combined} =
                Options.parse(["--tier", "t5", "--ablate", "entity_index"])
