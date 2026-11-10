@@ -14,7 +14,8 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
-import { defineModel, e, EntityValidationError } from "@ebbjs/schema";
+import { defineModel, e, EntityValidationError, validatePayload } from "@ebbjs/schema";
+import { wrapFields } from "@ebbjs/write";
 
 import { buildQueryBuilder } from "../query-builder";
 import { createRowsExecutor, executePlan } from "../query-execute";
@@ -167,5 +168,45 @@ describe("ordering a non-scalar field", () => {
       "wall_b",
       "wall_c",
     ]);
+  });
+});
+
+describe("e.object end to end", () => {
+  const plan = defineModel("plan", {
+    anchor: e.object({ x: e.number(), y: e.number(), kind: e.enum(["door", "window"]) }),
+  });
+
+  const planRow = (id: string, anchor: Record<string, unknown>): Entity => ({
+    id,
+    type: "plan",
+    data: { fields: wrapFields({ anchor }, `u_${id}`, makeHlc(1), plan.markers) },
+    created_hlc: makeHlc(1),
+    updated_hlc: makeHlc(1),
+    deleted_hlc: null,
+    last_gsn: 0,
+  });
+
+  it("writes the object as one leaf and matches it structurally", async () => {
+    const rows = [
+      planRow("plan_1", { x: 1, y: 2, kind: "door" }),
+      planRow("plan_2", { x: 1, y: 2, kind: "window" }),
+    ];
+
+    expect(rows[0]?.data?.fields?.anchor).toMatchObject({ value: { x: 1, y: 2, kind: "door" } });
+    expect(
+      ids(await buildQueryBuilder(rows, plan.shape).where("anchor", { kind: "door", y: 2, x: 1 })),
+    ).toEqual(["plan_1"]);
+  });
+
+  it("rejects an undeclared nested property at write validation", () => {
+    const violations = validatePayload(
+      plan.shape,
+      { anchor: { x: 1, y: 2, kind: "door", why: 3 } },
+      "plan",
+      true,
+    );
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.message).toContain("why");
   });
 });
