@@ -34,7 +34,8 @@ defmodule EbbServer.Storage.EntityViewTest do
       assert {:ok, entity} = EntityStore.get(entity_id, "a_member", store_opts(ctx))
       assert view["id"] == entity.id
       assert view["type"] == entity.type
-      assert view["data"] == entity.data
+      assert view["data"] == %{"fields" => entity.data["fields"]}
+      refute Map.has_key?(view["data"], "components")
       assert view["created_hlc"] == entity.created_hlc
       assert view["updated_hlc"] == entity.updated_hlc
       assert view["deleted_hlc"] == entity.deleted_hlc
