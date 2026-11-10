@@ -27,9 +27,10 @@ defmodule EbbServer.Bench.Options do
 
   `:entity_index` is kept as the combined alias for the two halves of the
   entity index: it ablates both `cf_entity_actions` and
-  `cf_component_entities`, so the earlier published reproduction commands keep
-  meaning what they did. Use `:entity_actions` and `:component_entities` to
-  price the halves apart.
+  `cf_component_entities`, so commands that used it keep meaning what they did.
+  The `:type_entities` half is not aliased: #799 renamed it to
+  `:component_entities`, so a command that names the old phase must be updated.
+  Use `:entity_actions` and `:component_entities` to price the halves apart.
 
   ## Pipeline depth
 

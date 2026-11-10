@@ -207,13 +207,11 @@ defmodule EbbServer.Bench.WriteBatch do
   end
 
   defp action_index_ops(action, ablate) do
-    component_ops =
-      if :component_entries in ablate,
-        do: [],
-        else: ComponentEntityIndex.update_ops(action.updates)
-
-    component_ops ++
-      ComponentEntityIndex.model_ops(Enum.map(action.updates, &{&1.model, &1.subject_id}))
+    ComponentEntityIndex.action_ops(
+      action.updates,
+      Enum.map(action.updates, &{&1.model, &1.subject_id}),
+      components: :component_entries not in ablate
+    )
   end
 
   # One op per unique key per batch, sorted for reproducible batches, like the
@@ -222,11 +220,7 @@ defmodule EbbServer.Bench.WriteBatch do
     if component_entities_ablated?(ablate) do
       []
     else
-      index_ops
-      |> Enum.reverse()
-      |> :lists.append()
-      |> ComponentEntityIndex.reduce_ops()
-      |> ComponentEntityIndex.batch_ops(RocksDB.cf_component_entities())
+      ComponentEntityIndex.reduce_batch_ops(index_ops, RocksDB.cf_component_entities())
     end
   end
 

@@ -230,17 +230,16 @@ defmodule EbbServer.Storage.Committer do
   # One op per key for the whole flush. Reversal restores the Actions' order
   # before the reduction, so a key put by one Action and dropped by a later
   # one is deleted rather than left behind.
+  defp component_entity_ops([], _state), do: []
+
   defp component_entity_ops(index_ops, state) do
     if component_entities_ablated?(state) do
       []
     else
-      case index_ops |> Enum.reverse() |> :lists.append() |> ComponentEntityIndex.reduce_ops() do
-        [] ->
-          []
-
-        ops ->
-          ComponentEntityIndex.batch_ops(ops, RocksDB.cf_component_entities(state.rocks_name))
-      end
+      ComponentEntityIndex.reduce_batch_ops(
+        index_ops,
+        RocksDB.cf_component_entities(state.rocks_name)
+      )
     end
   end
 

@@ -457,7 +457,17 @@ defmodule EbbServer.Storage.EntityStore do
       last_gsn: max_gsn
     }
 
-    components = components_of(merged_data, type)
+    # Every apply maintains `data.components` from the fields it leaves
+    # behind; a pre-#799 cache row is the only one that arrives without it.
+    components =
+      case merged_data do
+        %{"components" => components} when is_list(components) ->
+          components
+
+        _ ->
+          component_names(fields_of(merged_data), type)
+      end
+
     merged_data = Map.put(merged_data, "components", components)
 
     # The write — whole-blob or per-key — persists the tombstone columns;
@@ -650,25 +660,17 @@ defmodule EbbServer.Storage.EntityStore do
   # converged on the same fields must agree on the canonical JSON byte for
   # byte.
   defp row_data(fields, model) do
-    %{"fields" => fields, "components" => components_for(fields, model)}
+    %{"fields" => fields, "components" => component_names(fields, model)}
   end
 
-  defp components_of(data, model) when is_binary(model),
-    do: components_for(fields_of(data), model)
-
-  defp components_of(%{"components" => components}, _model) when is_list(components),
-    do: components
-
-  defp components_of(_data, _model), do: []
-
-  defp components_for(fields, model) when is_binary(model) do
+  defp component_names(fields, model) when is_binary(model) do
     fields
     |> Map.keys()
     |> Enum.sort()
     |> Enum.map(fn field -> model <> "/" <> field end)
   end
 
-  defp components_for(_fields, _model), do: []
+  defp component_names(_fields, _model), do: []
 
   # A write changes the keys it carries, so the JSON paths that need writing
   # are exactly the leaves of the incoming value: a leaf contributes its field

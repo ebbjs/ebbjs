@@ -434,17 +434,10 @@ defmodule EbbServer.Storage.EntityIndex do
   # wins, because that is the value the authorizer bound (#624).
   defp flush_field(subject_id, field, opts) do
     case Keyword.get(opts, :flush_rows) do
-      %{} = rows -> rows |> Map.get(subject_id) |> flush_row_field(field)
+      %{} = rows -> Fields.get(Map.get(rows, subject_id), field)
       _ -> nil
     end
   end
-
-  defp flush_row_field(nil, _field), do: nil
-
-  defp flush_row_field(%{"fields" => fields}, field) when is_map(fields),
-    do: Fields.get(%{"fields" => fields}, field)
-
-  defp flush_row_field(_row, _field), do: nil
 
   # A planned row shadows the cache for its id; a tombstone means the
   # successor batch must resolve as if the predecessor had already applied.

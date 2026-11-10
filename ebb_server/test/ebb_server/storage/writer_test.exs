@@ -28,6 +28,7 @@ defmodule EbbServer.Storage.WriterTest do
   alias EbbServer.Storage.{
     ActionFormat,
     ActionLog,
+    ActionScope,
     ComponentEntityIndex,
     DirtyTracker,
     EntityGroupCache,
@@ -249,7 +250,12 @@ defmodule EbbServer.Storage.WriterTest do
       {:ok, binary} =
         RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2), name: rocks_name)
 
-      assert %{"update_scopes" => [["group_813"]]} = ActionFormat.decode(binary, 2)
+      decoded = ActionFormat.decode(binary, 2)
+      assert %{"update_scopes" => [["group_813"]]} = decoded
+
+      # The same scope catch-up and live fan-out filter on.
+      assert [%{"component" => "entityGroup/permissions"}] =
+               ActionScope.updates_for_group(decoded, "group_813")
 
       key = RocksDB.encode_group_action_key("group_813", 2)
 
@@ -257,7 +263,7 @@ defmodule EbbServer.Storage.WriterTest do
                RocksDB.get(RocksDB.cf_group_actions(rocks_name), key, name: rocks_name)
     end
 
-    test "reads the rows carrying a component in one index range", ctx do
+    test "reads the candidate rows carrying a component in one index range", ctx do
       %{rocks_name: rocks_name, writer_name: writer_name} = ctx
 
       write =
@@ -272,7 +278,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
 
-      assert ComponentEntityIndex.component_ids("todo/title", name: rocks_name) == [
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
                "todo_read_a",
                "todo_read_b"
              ]
@@ -285,7 +291,21 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
 
-      assert ComponentEntityIndex.component_ids("todo/title", name: rocks_name) == [
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+               "todo_read_b"
+             ]
+
+      # A delete names the row and cannot name the components to detach, so
+      # its entries stay as candidates; the tombstone is the liveness filter.
+      delete =
+        validated_action(%{
+          id: "act_component_delete",
+          updates: [validated_update(%{subject_id: "todo_read_b", method: :delete})]
+        })
+
+      assert {:ok, {3, 3}, []} = Writer.write_actions([delete], writer_name)
+
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
                "todo_read_b"
              ]
     end

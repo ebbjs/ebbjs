@@ -48,22 +48,11 @@ defmodule Mix.Tasks.Bench.ComponentIndex do
     {baseline_median, baseline_range} = median(baseline)
     {indexed_median, indexed_range} = median(indexed)
     {ablated_median, ablated_range} = median(ablated)
-    cost = paired_cost(baseline, indexed)
+    cost = 1 - indexed_median / baseline_median
 
     "| #{k} | #{index.ops} | #{index.bytes} | #{rate(baseline_median)} #{baseline_range} | " <>
       "#{rate(indexed_median)} #{indexed_range} | #{Float.round(cost * 100, 1)}% | " <>
       "#{rate(ablated_median)} #{ablated_range} |"
-  end
-
-  # Paired per run, not the ratio of medians: the arms are interleaved inside
-  # each run so a slow pass cancels out of its own pair.
-  defp paired_cost(baseline, indexed) do
-    costs =
-      Enum.zip(baseline, indexed)
-      |> Enum.map(fn {base, with_index} -> 1 - with_index.actions_per_s / base.actions_per_s end)
-      |> Enum.sort()
-
-    Enum.at(costs, div(length(costs), 2))
   end
 
   defp median(measurements) do

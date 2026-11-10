@@ -41,7 +41,10 @@ defmodule EbbServer.Storage.SQLite do
   `entity_components` mirrors that list one row per `(entity, component)` so
   "which live rows hold component X" is an index lookup rather than a JSON
   scan. Tombstoned rows keep their component rows; the reader joins
-  `entities` and filters `deleted_hlc IS NULL`.
+  `entities` and filters `deleted_hlc IS NULL`. The mirror is replaced in the
+  same GenServer call as the row write, on the lazy materialization path — not
+  on the Writer's commit path — so the component-index write measurement does
+  not include it.
 
   The obvious single-table form — an expression index over
   `json_each(data, '$.components')` — is not implementable: `json_each` is a
@@ -602,16 +605,18 @@ defmodule EbbServer.Storage.SQLite do
       |> Enum.sort_by(fn {name, _json} -> name end)
       |> Enum.map(fn {name, json} -> {"$.fields." <> name, json} end)
 
+    components_set = "'$.components', json(?)"
+
     {data_clause, data_params} =
       case pairs do
         [] ->
-          {"data = json_set(data, '$.components', json(?)), ", []}
+          {"data = json_set(data, " <> components_set <> "), ", []}
 
         _ ->
           placeholders = Enum.map_join(pairs, "", fn _ -> ", ?, json(?)" end)
           params = Enum.flat_map(pairs, fn {path, json} -> [path, json] end)
 
-          {"data = json_set(data" <> placeholders <> ", '$.components', json(?)), ", params}
+          {"data = json_set(data" <> placeholders <> ", " <> components_set <> "), ", params}
       end
 
     sql =

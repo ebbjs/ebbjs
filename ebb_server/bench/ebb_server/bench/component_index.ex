@@ -61,9 +61,9 @@ defmodule EbbServer.Bench.ComponentIndex do
       runs =
         for _ <- 1..@runs do
           %{
-            baseline: measure(k, [:component_entries], warmup, actions),
-            indexed: measure(k, [], warmup, actions),
-            ablated: measure(k, [:component_entities], warmup, actions)
+            baseline: measure([:component_entries], warmup, actions),
+            indexed: measure([], warmup, actions),
+            ablated: measure([:component_entities], warmup, actions)
           }
         end
 
@@ -78,34 +78,20 @@ defmodule EbbServer.Bench.ComponentIndex do
   end
 
   @doc """
-  Runs `@runs` measured windows for one k and one ablation arm.
-  """
-  @spec measure_runs(pos_integer(), [atom()]) :: [measurement()]
-  def measure_runs(k, ablate) do
-    warmup = build_actions(k, @warmup_actions)
-    actions = build_actions(k, @action_budget, @warmup_actions)
-
-    for _ <- 1..@runs do
-      measure(k, ablate, warmup, actions)
-    end
-  end
-
-  @doc """
   One measured window: boot, warm the path with `warmup`, then time writing
   `actions` through the `Writer` at `@concurrency` callers.
   """
   @spec measure(pos_integer(), [atom()]) :: measurement()
   def measure(k, ablate) do
     measure(
-      k,
       ablate,
       build_actions(k, @warmup_actions),
       build_actions(k, @action_budget, @warmup_actions)
     )
   end
 
-  @spec measure(pos_integer(), [atom()], [map()], [map()]) :: measurement()
-  def measure(_k, ablate, warmup, actions) do
+  @spec measure([atom()], [map()], [map()]) :: measurement()
+  def measure(ablate, warmup, actions) do
     config = %Options{
       tier: :t0,
       duration: 1,
@@ -167,7 +153,7 @@ defmodule EbbServer.Bench.ComponentIndex do
 
     todo =
       for field <- 1..k do
-        component("u_ci_#{seq}_#{field}", entity_id, "todo/f#{field}", "replace", %{
+        component("u_ci_#{seq}_#{field}", entity_id, "todo/f#{field}", :replace, %{
           "value" => "#{seq}-#{field}"
         })
       end
@@ -190,13 +176,15 @@ defmodule EbbServer.Bench.ComponentIndex do
   end
 
   defp component(id, subject_id, component, method, data) do
+    [model, field] = String.split(component, "/", parts: 2)
+
     %{
       id: id,
       subject_id: subject_id,
       component: component,
-      model: component |> String.split("/") |> hd(),
-      field: component |> String.split("/") |> List.last(),
-      method: String.to_atom(method),
+      model: model,
+      field: field,
+      method: method,
       data: data
     }
   end

@@ -2036,23 +2036,46 @@ defmodule EbbServer.Storage.Writer do
       |> resolve_cache_opts()
       |> Keyword.put(:overlay, incoming_overlay)
 
-    {prepared, {groups_by_gsn, mutations, _created, _flush_rows, _memo}} =
+    {prepared, acc} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, [], MapSet.new(), %{}, %{}}, fn {{action, payload_etf}, gsn},
-                                                               {groups, mutations, created,
-                                                                flush_rows, memo} ->
+      |> Enum.map_reduce(flush_acc(), fn {{action, payload_etf}, gsn}, acc ->
         {prepared_action, action_mutations, memo} =
-          prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo)
+          prepare_action(
+            action,
+            payload_etf,
+            state,
+            resolve_opts,
+            acc.created,
+            acc.flush_rows,
+            acc.memo
+          )
 
         {prepared_action,
-         {Map.put(groups, gsn, prepared_action.groups), Enum.reverse(action_mutations, mutations),
-          fold_subjects(action_mutations, created),
-          remember_flush_rows(flush_rows, action.updates), memo}}
+         %{
+           groups: Map.put(acc.groups, gsn, prepared_action.groups),
+           mutations: Enum.reverse(action_mutations, acc.mutations),
+           created: fold_subjects(action_mutations, acc.created),
+           flush_rows: remember_flush_rows(acc.flush_rows, action.updates),
+           memo: memo
+         }}
       end)
 
-    {prepared, groups_by_gsn,
-     plan_cache_mutations(Enum.reverse(mutations), state, incoming_overlay)}
+    {prepared, acc.groups,
+     plan_cache_mutations(Enum.reverse(acc.mutations), state, incoming_overlay)}
+  end
+
+  # The fold's state across one flush: the per-GSN scopes already computed, the
+  # mutations to plan, the subjects earlier Actions created, the fields they
+  # left behind for scope resolution, and the group-resolution memo.
+  defp flush_acc do
+    %{
+      groups: %{},
+      mutations: [],
+      created: MapSet.new(),
+      flush_rows: %{},
+      memo: %{}
+    }
   end
 
   # Every subject this Action folded is a row the flush has already written,
@@ -2086,20 +2109,17 @@ defmodule EbbServer.Storage.Writer do
   end
 
   defp put_flush_field(rows, update) do
-    existing = Map.get(rows, update.subject_id, %{"model" => update.model, "fields" => %{}})
-    fields = Map.put(existing["fields"], update.field, update.data)
-
-    Map.put(rows, update.subject_id, %{
-      "model" => existing["model"] || update.model,
-      "fields" => fields
-    })
+    row = Map.get(rows, update.subject_id, %{"fields" => %{}})
+    fields = Map.put(row["fields"], update.field, update.data)
+    Map.put(rows, update.subject_id, %{"fields" => fields})
   end
 
   defp drop_flush_field(rows, update) do
     case Map.fetch(rows, update.subject_id) do
       {:ok, row} ->
-        row = %{row | "fields" => Map.delete(row["fields"], update.field)}
-        Map.put(rows, update.subject_id, row)
+        Map.put(rows, update.subject_id, %{
+          "fields" => Map.delete(row["fields"], update.field)
+        })
 
       :error ->
         rows
@@ -2191,13 +2211,11 @@ defmodule EbbServer.Storage.Writer do
     if component_entities_ablated?(state) do
       []
     else
-      component_ops =
-        if ablate?(:component_entries, state),
-          do: [],
-          else: ComponentEntityIndex.update_ops(updates)
-
-      component_ops ++
-        ComponentEntityIndex.model_ops(Enum.map(mutations, &{&1.model, &1.subject_id}))
+      ComponentEntityIndex.action_ops(
+        updates,
+        Enum.map(mutations, &{&1.model, &1.subject_id}),
+        components: not ablate?(:component_entries, state)
+      )
     end
   end
 
