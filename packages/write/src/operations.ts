@@ -24,7 +24,7 @@ import {
   GROUPS_ACCESSOR,
   SYSTEM_ENTITY_NAMES,
   validatePayload,
-  type EntityRegistry,
+  type ModelRegistry,
   type FieldMarker,
 } from "@ebbjs/schema";
 
@@ -118,7 +118,7 @@ export interface OperationIds {
  * runs.
  */
 export interface OpContext {
-  readonly registry: EntityRegistry;
+  readonly registry: ModelRegistry;
   readonly ids: OperationIds;
   /** Local actor id; collaborative-text run ids embed it. */
   readonly actorId: string;
@@ -216,7 +216,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.markers) },
   });
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
 
@@ -276,7 +276,7 @@ export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, inpu
     subject_id: input.id,
     subject_type: input.entity,
     method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc, def?.fields) },
+    data: { fields: wrapFields(input.fields, updateId, hlc, def?.markers) },
   };
   return {
     updates: [update],
@@ -335,8 +335,8 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
  * or `<type>.*`, so the actor's own membership carries one wildcard per
  * entity name rather than a global `*` that grants nothing.
  */
-export const fullGroupPermissions = (registry: EntityRegistry): readonly string[] =>
-  [...registry.entityNames()].sort().map((name) => `${name}.*`);
+export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] =>
+  [...registry.modelNames()].sort().map((name) => `${name}.*`);
 
 /** The ids and call the group bootstrap shares across both authoring surfaces. */
 export interface GroupBootstrap {
@@ -351,7 +351,7 @@ export interface GroupBootstrap {
  * Action.
  */
 export const groupBootstrap = (
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   name: string,
   validate?: boolean,
   appId?: string,
@@ -409,7 +409,7 @@ export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
         subject_id: input.id,
         subject_type: input.entity,
         method: "patch",
-        data: { fields: wrapFields(input.payload, updateId, hlc, def?.fields) },
+        data: { fields: wrapFields(input.payload, updateId, hlc, def?.markers) },
       },
     ],
     groups: [...input.groups],
@@ -627,7 +627,7 @@ export interface WriteRelationshipInput {
 }
 
 /** A relationship definition resolved through the registry. */
-export type DeclaredRelationship = NonNullable<ReturnType<EntityRegistry["getRelationship"]>>;
+export type DeclaredRelationship = NonNullable<ReturnType<ModelRegistry["getRelationship"]>>;
 
 /**
  * Resolve a declared relationship, refusing the built-in membership
@@ -636,7 +636,7 @@ export type DeclaredRelationship = NonNullable<ReturnType<EntityRegistry["getRel
  * refusals and their messages have one definition.
  */
 export const requireRelationship = (
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   entity: string,
   as: string,
 ): DeclaredRelationship => {

@@ -6,15 +6,15 @@
 
 import { describe, expect, it } from "vitest";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { ActionDefinitionError, defineAction, RUN, type ActionDef } from "./action";
 import { createClient } from "../sync/client";
 
-const todo = defineEntity("todo", { title: e.string() });
-const list = defineEntity("list", { name: e.string() });
-const schema = defineSchema({ entities: { todo, list }, version: 1 });
-const otherSchema = defineSchema({ entities: { todo, list }, version: 2 });
+const todo = defineModel("todo", { title: e.string() });
+const list = defineModel("list", { name: e.string() });
+const schema = defineSchema({ models: { todo, list }, version: 1 });
+const otherSchema = defineSchema({ models: { todo, list }, version: 2 });
 
 /** Definition never reaches the network, so any fetch here is a bug. */
 const neverFetch: typeof fetch = () => {

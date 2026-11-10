@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { isUnset, unset } from "@ebbjs/core";
-import { defineEntity, e, validatePayload } from "@ebbjs/schema";
+import { defineModel, e, validatePayload } from "@ebbjs/schema";
 
 import { patchEntity, wrapFields } from "../index";
 
-const task = defineEntity("task", {
+const task = defineModel("task", {
   title: e.string(),
   dueDate: e.string(),
   tags: e.map(e.string()).default({}),
@@ -12,12 +12,12 @@ const task = defineEntity("task", {
 
 describe("unset — the wire envelope", () => {
   it("compiles a leaf unset to a tombstone with the write's HLC", () => {
-    const fields = wrapFields({ dueDate: unset }, "u1", "h1", task.fields as never);
+    const fields = wrapFields({ dueDate: unset }, "u1", "h1", task.markers as never);
     expect(fields.dueDate).toEqual({ value: null, update_id: "u1", hlc: "h1" });
   });
 
   it("compiles an unset map entry to a tombstone and keeps its siblings", () => {
-    const fields = wrapFields({ tags: { a: unset, b: "kept" } }, "u1", "h1", task.fields as never);
+    const fields = wrapFields({ tags: { a: unset, b: "kept" } }, "u1", "h1", task.markers as never);
     expect(fields.tags).toEqual({
       map: {
         a: { value: null, update_id: "u1", hlc: "h1" },
@@ -27,7 +27,7 @@ describe("unset — the wire envelope", () => {
   });
 
   it("still passes a literal null through: other producers send tombstones", () => {
-    const fields = wrapFields({ title: null }, "u1", "h1", task.fields as never);
+    const fields = wrapFields({ title: null }, "u1", "h1", task.markers as never);
     expect(fields.title).toEqual({ value: null, update_id: "u1", hlc: "h1" });
   });
 

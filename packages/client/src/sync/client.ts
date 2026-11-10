@@ -81,7 +81,7 @@ import {
   appendOnlyRewrites,
   AppendOnlyViolationError,
   DOC_CONTENT_FIELD,
-  EntityRegistry,
+  ModelRegistry,
   parseContentField,
   readUpdateFields,
   type CellFieldValue,
@@ -89,7 +89,7 @@ import {
   TextDocument,
   TextDocumentRegistry,
   seedRegistry,
-  type EntityDef,
+  type ModelDef,
   type Filter,
   type RelationshipDef,
   type Schema,
@@ -140,10 +140,10 @@ import { generateId } from "@ebbjs/core";
 import { assertSeedAccepted, buildSeedAction, type SeedData } from "@ebbjs/core/seed";
 import type { TSchema } from "@sinclair/typebox/type";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 type AnySchema = Schema<
-  Record<string, AnyEntityDef>,
+  Record<string, AnyModelDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
 import type {
@@ -256,7 +256,7 @@ export class SyncClient<
    * disconnected client cannot know its peer set.
    */
   private readonly presenceRuntime: PresenceRuntime;
-  readonly registry: EntityRegistry;
+  readonly registry: ModelRegistry;
   readonly schema?: AnySchema;
   /**
    * Local write buffer. Every locally-authored Action passes through
@@ -977,7 +977,7 @@ export class SyncClient<
    * `POST /sync/actions` — submit a batch of locally-produced Actions
    * via the {@link Outbox}.
    *
-   * Validates each action against the local `EntityRegistry`, then
+   * Validates each action against the local `ModelRegistry`, then
    * enqueues it (optimistically applying its Updates to the local
    * cache) and flushes the buffer. Returns the server's response; the
    * server may reject some actions (permissions, HLC drift) and the
@@ -2314,7 +2314,7 @@ const logReplicaSaveError = (thrown: unknown): void => {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a fresh per-client `EntityRegistry` from a `Schema`. We
+ * Build a fresh per-client `ModelRegistry` from a `Schema`. We
  * re-register every entity and relationship on a new registry rather
  * than sharing `schema._registry` so a client can mutate its own
  * registry at runtime without bleeding across clients that share
@@ -2322,10 +2322,10 @@ const logReplicaSaveError = (thrown: unknown): void => {
  * seeded so the public relationship-write path (`link` / `unlink` /
  * `setLinks`) can submit Relationship Updates.
  */
-const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry => {
-  const registry = new EntityRegistry();
+const buildRegistryFromSchema = (schema: AnySchema | undefined): ModelRegistry => {
+  const registry = new ModelRegistry();
   if (schema === undefined) return registry;
-  seedRegistry(registry, schema.entities, schema.relationships);
+  seedRegistry(registry, schema.models, schema.relationships);
   return registry;
 };
 
@@ -2334,7 +2334,7 @@ const buildRegistryFromSchema = (schema: AnySchema | undefined): EntityRegistry 
  * `on-demand` is materialized only while open; anything else — including a
  * type the registry does not declare — stays held.
  */
-const residencyFromRegistry = (registry: EntityRegistry): MaterializationPolicy => ({
+const residencyFromRegistry = (registry: ModelRegistry): MaterializationPolicy => ({
   holds: (type) => registry.get(type)?.materialization !== "on-demand",
 });
 
@@ -2386,7 +2386,7 @@ const fnv1a64 = (input: string): string => {
  */
 const collectViolations = (
   actions: readonly Action[],
-  registry: EntityRegistry,
+  registry: ModelRegistry,
 ): ValidationViolation[] => {
   const out: ValidationViolation[] = [];
   for (const action of actions) {
@@ -2413,7 +2413,7 @@ const emitRegistryViolations = (
     if (context.direction === "inbound") {
       for (const v of violations) {
         // eslint-disable-next-line no-console
-        console.warn("[EntityRegistry] incoming action violation:", v);
+        console.warn("[ModelRegistry] incoming action violation:", v);
       }
     }
     return;
@@ -2514,7 +2514,7 @@ export type ActionNamespaces<
   S,
   TActions extends Record<string, AnyActionDef> = Record<string, never>,
 > =
-  S extends Schema<Record<string, AnyEntityDef>, unknown>
+  S extends Schema<Record<string, AnyModelDef>, unknown>
     ? {
         readonly actions: {
           [K in keyof TActions]: BoundAction<S, ParamsOf<TActions[K]>, ResultOf<TActions[K]>>;

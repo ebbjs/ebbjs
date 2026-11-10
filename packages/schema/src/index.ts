@@ -1,13 +1,13 @@
 /**
- * `@ebbjs/schema` — pure entity, relationship, and schema definitions.
+ * `@ebbjs/schema` — pure model, component, relationship, and schema definitions.
  *
  * The registry and validation the write planner and the sync client both
  * consume, plus the cell schemas a collaborative-text document entity
  * declares. No storage, no network, no client.
  */
 
-export * from "./entity";
-export * from "./entity-registry";
+export * from "./model";
+export * from "./model-registry";
 export * from "./relationship";
 export * from "./reserved";
 export * from "./schema";

@@ -8,14 +8,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { FetchAuditFields, FunctionLimits } from "@ebbjs/functions-protocol";
 import type { LogEntry } from "@ebbjs/functions-runtime";
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineSchema, e } from "@ebbjs/schema";
 
 import { LOG_TRUNCATION_NOTICE } from "./logging.ts";
 import { runInvocation, schemaRegistryOf } from "./index.ts";
 import type { RunnerTransport } from "./transport.ts";
 
-const issue = defineEntity("issue", { title: e.string() });
-const schema = defineSchema({ entities: { issue }, version: 1 });
+const issue = defineModel("issue", { title: e.string() });
+const schema = defineSchema({ models: { issue }, version: 1 });
 
 interface Journal {
   readonly transport: RunnerTransport;

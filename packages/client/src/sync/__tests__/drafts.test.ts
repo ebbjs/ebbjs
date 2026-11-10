@@ -16,8 +16,8 @@ import { Type } from "@sinclair/typebox";
 import { decodeSync, type Action } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { defineEntity, e } from "@ebbjs/schema";
-import type { EntityDef } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
+import type { ModelDef } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import type { RelationshipDef } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
@@ -28,10 +28,10 @@ import type { Rejection } from "../types";
 import { createClient } from "../client";
 import { testActions } from "./test-actions";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 type AnySchema = Schema<
-  Record<string, AnyEntityDef>,
+  Record<string, AnyModelDef>,
   Record<string, AnyRelationshipDef> | undefined
 >;
 
@@ -95,11 +95,11 @@ const mkRecordingFetch = (seen: RecordedRequest[], opts: StubWriteOptions = {}):
   }) as unknown as typeof fetch;
 };
 
-const list = defineEntity("list", { name: e.string() });
-const todo = defineEntity("todo", { title: e.string() });
+const list = defineModel("list", { name: e.string() });
+const todo = defineModel("todo", { title: e.string() });
 
 const schema = defineSchema({
-  entities: { todo, list },
+  models: { todo, list },
   relationships: {
     todo_list: defineRelationship({ source: todo, target: list, as: "list" }),
   },
@@ -234,11 +234,11 @@ describe("drafts — one Action, forward references", () => {
   });
 
   it("resolves nested references at arbitrary depth", async () => {
-    const a = defineEntity("a", { name: e.string() });
-    const b = defineEntity("b", { label: e.string() });
-    const c = defineEntity("c", { tag: e.string() });
+    const a = defineModel("a", { name: e.string() });
+    const b = defineModel("b", { label: e.string() });
+    const c = defineModel("c", { tag: e.string() });
     const deepSchema = defineSchema({
-      entities: { a, b, c },
+      models: { a, b, c },
       relationships: {
         b_a: defineRelationship({ source: b, target: a, as: "a" }),
         c_b: defineRelationship({ source: c, target: b, as: "b" }),
@@ -289,13 +289,13 @@ describe("drafts — one Action, forward references", () => {
   });
 
   it("emits N Relationship Updates for a many-cardinality pointer and carries the FK set", async () => {
-    const taggedTodo = defineEntity("todo", {
+    const taggedTodo = defineModel("todo", {
       title: e.string(),
       tags: Type.Array(Type.String()),
     });
-    const label = defineEntity("label", { name: e.string() });
+    const label = defineModel("label", { name: e.string() });
     const manySchema = defineSchema({
-      entities: { todo: taggedTodo, label },
+      models: { todo: taggedTodo, label },
       relationships: {
         todo_tags: defineRelationship({
           source: taggedTodo,
@@ -370,10 +370,10 @@ describe("drafts — one Action, forward references", () => {
 describe("drafts — per-Update delivery (#473)", () => {
   // Group sets come from the required per-create `groups` option (#244),
   // which also emits the `entityGroup` rows.
-  const deliveryTodo = defineEntity("todo", { title: e.string() });
-  const deliveryList = defineEntity("list", { name: e.string() });
+  const deliveryTodo = defineModel("todo", { title: e.string() });
+  const deliveryList = defineModel("list", { name: e.string() });
   const deliverySchema = defineSchema({
-    entities: { todo: deliveryTodo, list: deliveryList },
+    models: { todo: deliveryTodo, list: deliveryList },
     version: 1,
   });
 

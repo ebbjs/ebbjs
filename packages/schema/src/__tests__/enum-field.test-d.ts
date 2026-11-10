@@ -1,9 +1,9 @@
 import type { Static } from "@sinclair/typebox/type";
 import { describe, expectTypeOf, it } from "vitest";
 
-import { defineEntity, e } from "../index";
+import { defineModel, e } from "../index";
 
-const wall = defineEntity("wall", {
+const wall = defineModel("wall", {
   kind: e.enum(["exterior", "interior", "railing"]).default("interior"),
   rating: e.enum([1, 2, 3]),
 });

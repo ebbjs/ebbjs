@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 import { decodeSync, type Action } from "@ebbjs/core";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
@@ -58,10 +58,10 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch => {
   }) as unknown as typeof fetch;
 };
 
-const list = defineEntity("list", { name: e.string() });
-const todo = defineEntity("todo", { title: e.string() });
+const list = defineModel("list", { name: e.string() });
+const todo = defineModel("todo", { title: e.string() });
 const schema = defineSchema({
-  entities: { todo, list },
+  models: { todo, list },
   relationships: {
     todo_list: defineRelationship({ source: todo, target: list, as: "list" }),
   },

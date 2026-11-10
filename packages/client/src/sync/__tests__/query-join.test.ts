@@ -13,7 +13,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { GroupFields } from "@ebbjs/schema";
@@ -24,11 +24,11 @@ import { planQuery } from "../query-plan";
 import type { ProjectedRow, QueryRow } from "../query-builder";
 import { callApplyAction } from "../test-utils";
 
-const issue = defineEntity("issue", { title: e.string(), status: e.string() });
-const user = defineEntity("user", { name: e.string() });
-const label = defineEntity("label", { name: e.string() });
-const page = defineEntity("page", { title: e.string() });
-const reference = defineEntity("reference", { label: e.string() });
+const issue = defineModel("issue", { title: e.string(), status: e.string() });
+const user = defineModel("user", { name: e.string() });
+const label = defineModel("label", { name: e.string() });
+const page = defineModel("page", { title: e.string() });
+const reference = defineModel("reference", { label: e.string() });
 
 const issueAssignee = defineRelationship({
   source: issue,
@@ -69,7 +69,7 @@ const pageBacklinks = defineRelationship({
 });
 
 const schema = defineSchema({
-  entities: { issue, user, label, page, reference },
+  models: { issue, user, label, page, reference },
   relationships: {
     issueAssignee,
     issueTags,

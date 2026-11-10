@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { TSchema } from "@sinclair/typebox";
 
 import type { Update } from "@ebbjs/core";
-import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 import type { OperationIds, WriteVerb } from "@ebbjs/write";
 
 const FIXTURE_DIR = fileURLToPath(new URL("../../../fixtures/functions/planner/", import.meta.url));
@@ -73,9 +73,9 @@ const field = (spec: string): TSchema => {
 
 /** Build the registry a fixture's schema spec describes. */
 export const registryFrom = (spec: SchemaSpec) => {
-  const entities: Record<string, ReturnType<typeof defineEntity>> = {};
+  const entities: Record<string, ReturnType<typeof defineModel>> = {};
   for (const [name, def] of Object.entries(spec.entities)) {
-    entities[name] = defineEntity(
+    entities[name] = defineModel(
       name,
       Object.fromEntries(
         Object.entries(def.fields).map(([key, type]) => [key, field(type)]),
@@ -93,7 +93,7 @@ export const registryFrom = (spec: SchemaSpec) => {
       }),
     ]),
   );
-  return defineSchema({ entities, relationships, version: spec.version })._registry;
+  return defineSchema({ models: entities, relationships, version: spec.version })._registry;
 };
 
 /** The ordered id seam a fixture pins; `u` also feeds `updateId()`. */

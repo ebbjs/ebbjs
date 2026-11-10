@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
 import { ReservedNameError } from "@ebbjs/schema";
-import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import {
   buildRelationshipUpdate,
   normalizeManyPointers,
@@ -11,11 +11,11 @@ import {
 import { createClient } from "../sync/client";
 import type { Update } from "@ebbjs/core";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
-const list = defineEntity("list", { name: e.string() });
+const list = defineModel("list", { name: e.string() });
 
 describe("defineRelationship", () => {
   it("returns a frozen value with source, target, as, sourceCardinality, type", () => {
@@ -66,9 +66,9 @@ describe("defineRelationship", () => {
   });
 });
 
-describe("EntityRegistry.registerRelationship", () => {
+describe("ModelRegistry.registerRelationship", () => {
   it("returns a relationship by (sourceName, as)", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     const rel = defineRelationship({ source: todo, target: list, as: "list" });
     r.registerRelationship(rel);
     // The registry returns a wire-level view reconstructed from the
@@ -86,7 +86,7 @@ describe("EntityRegistry.registerRelationship", () => {
   });
 
   it("lists relationships for a source", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     const a = defineRelationship({ source: todo, target: list, as: "list" });
     const b = defineRelationship({
       source: todo,
@@ -102,7 +102,7 @@ describe("EntityRegistry.registerRelationship", () => {
   });
 
   it("lists relationships for a target", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     const a = defineRelationship({ source: todo, target: list, as: "list" });
     const b = defineRelationship({
       source: todo,
@@ -117,7 +117,7 @@ describe("EntityRegistry.registerRelationship", () => {
   });
 
   it("re-registering the same (source, as) overwrites and reports overwritten:true", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     const v1 = defineRelationship({ source: todo, target: list, as: "list" });
     const v2 = defineRelationship({
       source: todo,
@@ -133,20 +133,20 @@ describe("EntityRegistry.registerRelationship", () => {
   });
 });
 
-describe("EntityRegistry.isEmpty", () => {
+describe("ModelRegistry.isEmpty", () => {
   it("is true for a fresh registry", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     expect(r.isEmpty()).toBe(true);
   });
 
   it("is false after registering an entity", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     r.register(todo);
     expect(r.isEmpty()).toBe(false);
   });
 
   it("is false after registering a relationship", () => {
-    const r = new EntityRegistry();
+    const r = new ModelRegistry();
     r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
     expect(r.isEmpty()).toBe(false);
   });
@@ -258,7 +258,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -292,7 +292,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -318,7 +318,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -344,7 +344,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -368,7 +368,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         // Only `list` is registered — `todo` is not.
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -402,7 +402,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         // `list` not registered on purpose.
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -426,7 +426,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(
@@ -486,7 +486,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       actorId: "actor_1",
       fetchImpl,
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -535,7 +535,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       actorId: "actor_1",
       fetchImpl,
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -579,7 +579,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       actorId: "actor_1",
       fetchImpl,
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
@@ -606,7 +606,7 @@ describe("buildRelationshipWrite: registry cardinality lookup", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       registry: (() => {
-        const r = new EntityRegistry();
+        const r = new ModelRegistry();
         r.register(todo);
         r.register(list);
         r.registerRelationship(

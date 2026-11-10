@@ -98,15 +98,15 @@ The root `@ebbjs/storage` entry is types-only; adapter constructors live on per-
 Local-first sync SDK — handshake, catch-up, live SSE, and a local query engine over a materialized replica. Reads are typed queries through `client.<entity>.query()`; writes are actions mounted as `client.actions.<name>`. 1119 unit tests pass, plus integration tests that round-trip against a live `ebb_server`.
 
 ```ts
-import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
+import { createClient, defineAction, defineModel, defineSchema, e } from "@ebbjs/client";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
   // Read-time only: absence reads as "normal"; no write fills it.
   priority: e.string().default("normal"),
 });
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 // Declared at module scope; the client mounts it as `client.actions.*`.
 const createTodo = defineAction(

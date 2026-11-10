@@ -2,13 +2,13 @@ import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 import { describe, expect, it } from "vitest";
 
-import { defineEntity, e, readDefault, validatePayload } from "../index";
+import { defineModel, e, readDefault, validatePayload } from "../index";
 
-const fieldOf = (entity: ReturnType<typeof defineEntity>, key: string): TSchema =>
+const fieldOf = (entity: ReturnType<typeof defineModel>, key: string): TSchema =>
   (entity.shape.properties as Record<string, TSchema>)[key] as TSchema;
 
 describe("e.enum", () => {
-  const wall = defineEntity("wall", {
+  const wall = defineModel("wall", {
     kind: e.enum(["exterior", "interior", "railing"]),
     height: e.enum(["low", "high"]).default("low"),
   });

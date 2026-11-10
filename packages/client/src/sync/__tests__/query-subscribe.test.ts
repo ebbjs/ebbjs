@@ -13,24 +13,24 @@
 
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action, type Entity } from "@ebbjs/core";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { buildQueryBuilder } from "../query-builder";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { callApplyAction } from "../test-utils";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const note = defineEntity("note", {
+const note = defineModel("note", {
   body: e.string(),
 });
 
 const schema = defineSchema({
-  entities: { todo, note },
+  models: { todo, note },
   version: 1,
 });
 

@@ -17,16 +17,16 @@
  * See #441 for the membership side.
  */
 
-import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/client";
+import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/client";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "./issue-options";
 
-export const workspace = defineEntity("workspace", {
+export const workspace = defineModel("workspace", {
   name: e.string(),
   slug: e.string(),
   description: e.string(),
 });
 
-export const profile = defineEntity("profile", {
+export const profile = defineModel("profile", {
   actor_id: e.string(),
   // A profile is always rendered; empty is the honest absence for the two
   // presentation fields.
@@ -34,7 +34,7 @@ export const profile = defineEntity("profile", {
   avatar_url: e.string().default(""),
 });
 
-export const issue = defineEntity("issue", {
+export const issue = defineModel("issue", {
   title: e.string(),
   // The board groups on status and every card prints a priority, so absence
   // would scatter a row: both declare the value the UI shows when unset.
@@ -56,7 +56,7 @@ export const issueAssignee = defineRelationship({
 });
 
 export const schema = defineSchema({
-  entities: { workspace, profile, issue },
+  models: { workspace, profile, issue },
   relationships: { issueAssignee },
   version: 2,
 });

@@ -347,7 +347,7 @@ import { createIndexedDBAdapter } from "@ebbjs/storage/indexeddb";
 import { createReplica, holdAll } from "@ebbjs/storage/replica";
 import type { Replica } from "@ebbjs/storage/types";
 import type { Replica as ReplicaEntry } from "@ebbjs/storage/replica";
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { commit } from "@ebbjs/write";
 import { createClient } from "@ebbjs/client";
 import { EbbProvider } from "@ebbjs/react";
@@ -360,7 +360,7 @@ export const publicApi = {
   createIndexedDBAdapter,
   createReplica,
   holdAll,
-  defineEntity,
+  defineModel,
   defineSchema,
   e,
   commit,

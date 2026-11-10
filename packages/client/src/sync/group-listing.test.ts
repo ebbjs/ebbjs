@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { defineEntity, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
+import { defineModel, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
@@ -1010,14 +1010,14 @@ describe("SyncClient group listing", () => {
   });
 
   it("resolves a seeded relationship row through the join, the index, and the document link", async () => {
-    const blogPost = defineEntity("blog_post", { title: e.string() });
-    const textDocument = defineEntity(
+    const blogPost = defineModel("blog_post", { title: e.string() });
+    const textDocument = defineModel(
       "text_document",
       { content: e.map(TextCellSchema), version: e.number() },
       { materialization: "on-demand" },
     );
     const schema = defineSchema({
-      entities: { blog_post: blogPost, text_document: textDocument },
+      models: { blog_post: blogPost, text_document: textDocument },
       relationships: {
         body: defineRelationship({
           source: blogPost,

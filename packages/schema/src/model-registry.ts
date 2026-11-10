@@ -1,5 +1,5 @@
 /**
- * `EntityRegistry` — runtime container for declared entity and
+ * `ModelRegistry` — runtime container for declared model and
  * relationship definitions.
  *
  * Validates field-name membership only. Field-shape validation is not
@@ -11,7 +11,14 @@ import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { hasDefault, type ConflictScope, type EntityDef, type FieldMarker } from "./entity";
+import {
+  hasDefault,
+  type ComponentDef,
+  type ConflictScope,
+  type FieldMarker,
+  type Loading,
+  type ModelDef,
+} from "./model";
 import type { RelationshipDef, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
@@ -64,8 +71,8 @@ export type Filter = readonly FilterGroup[];
 /** Placeholder `entityName` when the offending subject_type wasn't registered. */
 const UNKNOWN_ENTITY = "(unknown)";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 
 /**
  * Wire-level fields the registry needs at lookup time. The full
@@ -88,39 +95,89 @@ const relationshipKey = (sourceName: string, as: string): string => `${sourceNam
  * `defineRelationship` reference.
  */
 const toRelationshipDef = (r: RegisteredRelationship): AnyRelationshipDef => ({
-  source: { name: r.sourceName, fields: {} as Record<string, FieldMarker> } as AnyEntityDef,
-  target: { name: r.targetName, fields: {} as Record<string, FieldMarker> } as AnyEntityDef,
+  source: { name: r.sourceName } as AnyModelDef,
+  target: { name: r.targetName } as AnyModelDef,
   as: r.as,
   sourceCardinality: r.sourceCardinality,
   type: r.type,
 });
 
-export class EntityRegistry {
-  private readonly entities = new Map<string, AnyEntityDef>();
+const modelNameOf = (model: string | ModelDef<Record<string, TSchema>>): string =>
+  typeof model === "string" ? model : model.name;
+
+export class ModelRegistry {
+  private readonly models = new Map<string, AnyModelDef>();
   private readonly relationships = new Map<string, RegisteredRelationship>();
 
-  /** Register an entity. Re-registering the same name overwrites. */
-  register<TFields extends Record<string, TSchema>>(entity: EntityDef<TFields>): void {
-    this.entities.set(entity.name, entity as AnyEntityDef);
+  /** Register a model. Re-registering the same name overwrites. */
+  register<TFields extends Record<string, TSchema>>(model: ModelDef<TFields>): void {
+    this.models.set(model.name, model as AnyModelDef);
   }
 
-  /** Look up an entity by name. */
-  get(name: string): AnyEntityDef | undefined {
-    return this.entities.get(name);
+  /** Look up a model by name. */
+  get(name: string): AnyModelDef | undefined {
+    return this.models.get(name);
   }
 
-  /** Every registered entity name, in registration order. */
-  entityNames(): readonly string[] {
-    return [...this.entities.keys()];
+  /** Every registered model name, in registration order. */
+  modelNames(): readonly string[] {
+    return [...this.models.keys()];
   }
 
   has(name: string): boolean {
-    return this.entities.has(name);
+    return this.models.has(name);
   }
 
-  /** True when no entities and no relationships have been registered. */
+  /** True when no models and no relationships have been registered. */
   isEmpty(): boolean {
-    return this.entities.size === 0 && this.relationships.size === 0;
+    return this.models.size === 0 && this.relationships.size === 0;
+  }
+
+  /** Components declared by `model`, keyed by field. Unknown models declare none. */
+  componentsOf(model: string | ModelDef<Record<string, TSchema>>): readonly ComponentDef[] {
+    const def = this.models.get(modelNameOf(model));
+    return def === undefined ? [] : Object.values(def.components);
+  }
+
+  /** One declared component, looked up by field key or full `<model>/<leaf>` name. */
+  componentOf(
+    model: string | ModelDef<Record<string, TSchema>>,
+    name: string,
+  ): ComponentDef | undefined {
+    const def = this.models.get(modelNameOf(model));
+    if (def === undefined) return undefined;
+    const byField = def.components[name];
+    if (byField !== undefined) return byField;
+    return Object.values(def.components).find((component) => component.name === name);
+  }
+
+  /** Whether a declared component may be absent. Unknown components are not optional. */
+  isOptional(model: string | ModelDef<Record<string, TSchema>>, name: string): boolean {
+    return this.componentOf(model, name)?.optional ?? false;
+  }
+
+  /** Loading declared by a component. Unknown components default to eager. */
+  loadingOf(model: string | ModelDef<Record<string, TSchema>>, name: string): Loading {
+    return this.componentOf(model, name)?.loading ?? "eager";
+  }
+
+  /** Conflict scope declared by a component, falling back to the model's default. */
+  conflictScopeOf(model: string | ModelDef<Record<string, TSchema>>, name: string): ConflictScope {
+    return (
+      this.componentOf(model, name)?.conflictScope ??
+      this.models.get(modelNameOf(model))?.conflictScope ??
+      "field"
+    );
+  }
+
+  /**
+   * Permission subject for a component: its own `<model>/<leaf>` when it
+   * opts in, otherwise the model's `<model>` subject.
+   */
+  permissionOf(model: string | ModelDef<Record<string, TSchema>>, name?: string): string {
+    const modelName = modelNameOf(model);
+    const component = name === undefined ? undefined : this.componentOf(modelName, name);
+    return component?.permission === "own" ? component.name : modelName;
   }
 
   /**
@@ -131,9 +188,9 @@ export class EntityRegistry {
    * no markers, and a forward-compat field is safer flagged than not.
    */
   isLwwField(subjectType: string, field: string): boolean {
-    const entity = this.entities.get(subjectType);
-    if (entity === undefined) return true;
-    const marker = entity.fields[field] as FieldMarker | undefined;
+    const model = this.models.get(subjectType);
+    if (model === undefined) return true;
+    const marker = model.components[field]?.marker as FieldMarker | undefined;
     return marker === undefined || marker.type === "lww";
   }
 
@@ -142,7 +199,7 @@ export class EntityRegistry {
    * default to `"field"`, matching a client without a schema.
    */
   getConflictScope(subjectType: string): ConflictScope {
-    return this.entities.get(subjectType)?.conflictScope ?? "field";
+    return this.models.get(subjectType)?.conflictScope ?? "field";
   }
 
   /**
@@ -151,8 +208,8 @@ export class EntityRegistry {
    * detect the overwrite.
    */
   registerRelationship<
-    S extends EntityDef<Record<string, TSchema>>,
-    T extends EntityDef<Record<string, TSchema>>,
+    S extends ModelDef<Record<string, TSchema>>,
+    T extends ModelDef<Record<string, TSchema>>,
   >(def: RelationshipDef<S, T>): { overwritten: boolean; previousCardinality?: SourceCardinality } {
     const key = relationshipKey(def.source.name, def.as);
     const prev = this.relationships.get(key);
@@ -202,12 +259,12 @@ export class EntityRegistry {
    * Updates with `data === null` (delete method) skip the fields check.
    */
   validateAction(action: Action): ValidationViolation[] {
-    if (this.entities.size === 0 && this.relationships.size === 0) return [];
+    if (this.models.size === 0 && this.relationships.size === 0) return [];
     const violations: ValidationViolation[] = [];
     for (let i = 0; i < action.updates.length; i++) {
       const update = action.updates[i];
       if (update === undefined) continue;
-      const entity = this.entities.get(update.subject_type);
+      const entity = this.models.get(update.subject_type);
       if (entity === undefined) {
         violations.push({
           entityName: UNKNOWN_ENTITY,
@@ -219,7 +276,7 @@ export class EntityRegistry {
       if (update.data === null) continue;
       const fieldNames = Object.keys(update.data.fields);
       for (const fieldName of fieldNames) {
-        if (!(fieldName in entity.fields)) {
+        if (!(fieldName in entity.components)) {
           violations.push({
             entityName: entity.name,
             updateIndex: i,
@@ -239,8 +296,8 @@ export class EntityRegistry {
    * where a group is expected is reported as malformed.
    */
   validateFilter(type: string, filter: Filter | null): ValidationViolation[] {
-    if (this.entities.size === 0) return [];
-    const entity = this.entities.get(type);
+    if (this.models.size === 0) return [];
+    const entity = this.models.get(type);
     if (entity === undefined) {
       return [
         {
@@ -268,7 +325,7 @@ export class EntityRegistry {
         continue;
       }
       for (const fieldName of Object.keys(group as FilterGroup)) {
-        if (!(fieldName in entity.fields)) {
+        if (!(fieldName in entity.components)) {
           violations.push({
             entityName: entity.name,
             field: fieldName,
@@ -288,8 +345,8 @@ export class EntityRegistry {
    * whether to surface it.
    */
   filterWarnings(type: string, filter: Filter | null): ValidationViolation[] {
-    if (this.entities.size === 0 || filter === null || !Array.isArray(filter)) return [];
-    const entity = this.entities.get(type);
+    if (this.models.size === 0 || filter === null || !Array.isArray(filter)) return [];
+    const entity = this.models.get(type);
     if (entity === undefined) return [];
     const compared = new Set<string>();
     const hasNullTerm = new Set<string>();

@@ -12,18 +12,18 @@ import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
 
-const issue = defineEntity("issue", { title: e.string(), status: e.string() });
-const note = defineEntity("note", { body: e.string() });
-const user = defineEntity("user", { name: e.string() });
+const issue = defineModel("issue", { title: e.string(), status: e.string() });
+const note = defineModel("note", { body: e.string() });
+const user = defineModel("user", { name: e.string() });
 
 const schema = defineSchema({
-  entities: { issue, note, user },
+  models: { issue, note, user },
   relationships: {
     issue_assignee: defineRelationship({
       source: issue,

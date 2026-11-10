@@ -1,14 +1,14 @@
 /**
- * `defineSchema` — composes per-entity and per-relationship definitions
+ * `defineSchema` — composes per-model and per-relationship definitions
  * into a single `Schema` value the rest of the SDK consumes.
  *
  * The builder is pure: no I/O, no side effects beyond constructing
- * the runtime `EntityRegistry` and freezing the result. It's safe to
+ * the runtime `ModelRegistry` and freezing the result. It's safe to
  * call at module top level and share the value across clients.
  */
 
-import type { EntityDef } from "./entity";
-import { EntityRegistry } from "./entity-registry";
+import type { ModelDef } from "./model";
+import { ModelRegistry } from "./model-registry";
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
 import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
@@ -19,43 +19,74 @@ import {
   relationshipSystemEntity,
 } from "./system-entities";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
-type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
+type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
 
 /**
- * Raised when the key an entity is registered under differs from the
+ * Raised when the key a model is registered under differs from the
  * definition's own `name`. Namespaces are keyed by the map key but
  * built from `def.name`, so a mismatched key would address another
- * entity type — and therefore another permission string — under the
- * name the app reads.
+ * model — and therefore another permission string — under the name
+ * the app reads.
  */
-export class EntityKeyMismatchError extends Error {
-  /** The key the entity map registered. */
+export class ModelKeyMismatchError extends Error {
+  /** The key the model map registered. */
   readonly key: string;
   /** The name the definition carries. */
-  readonly entityName: string;
+  readonly modelName: string;
 
-  constructor(key: string, entityName: string) {
+  constructor(key: string, modelName: string) {
     super(
-      `Entity map key "${key}" does not match the definition's name "${entityName}". ` +
-        `A preset keyed under another name could address another entity type and ` +
-        `permission string. Key it under its own name: entities: { ${entityName} }.`,
+      `Model map key "${key}" does not match the definition's name "${modelName}". ` +
+        `A preset keyed under another name could address another model and ` +
+        `permission string. Key it under its own name: models: { ${modelName} }.`,
     );
-    this.name = "EntityKeyMismatchError";
+    this.name = "ModelKeyMismatchError";
     this.key = key;
-    this.entityName = entityName;
+    this.modelName = modelName;
   }
 }
 
 /**
+ * Raised when a model's component map names a component that is not
+ * `<model>/<leaf>` for that model. Such a declaration would attach a
+ * foreign component to the model, borrowing another model's policy.
+ */
+export class ComponentOutsideModelError extends Error {
+  readonly modelName: string;
+  readonly componentName: string;
+
+  constructor(modelName: string, componentName: string) {
+    super(
+      `Model "${modelName}" declares component "${componentName}", which does not belong to ` +
+        `it. A component attached to model "${modelName}" must be named ` +
+        `"${modelName}/<leaf>" with the leaf matching its field key.`,
+    );
+    this.name = "ComponentOutsideModelError";
+    this.modelName = modelName;
+    this.componentName = componentName;
+  }
+}
+
+const assertComponentsBelongToModel = (model: AnyModelDef): void => {
+  for (const [field, component] of Object.entries(model.components)) {
+    const segments = component.name.split("/");
+    const [owner, leaf] = segments;
+    if (segments.length !== 2 || owner !== model.name || leaf !== field) {
+      throw new ComponentOutsideModelError(model.name, component.name);
+    }
+  }
+};
+
+/**
  * Raised when `defineSchema` sees a relationship whose source or
- * target entity was never registered. Without this check the row type
+ * target model was never registered. Without this check the row type
  * promises an accessor the runtime cannot build, so the omission
  * surfaces later as an `undefined` at the call site rather than as a
  * schema-authoring error here.
  */
 export class UnregisteredRelationshipEndpointError extends Error {
-  /** Name of the missing entity — the one to add to `entities`. */
+  /** Name of the missing model — the one to add to `models`. */
   readonly entityName: string;
   /** Which end of the relationship `entityName` occupies. */
   readonly role: "source" | "target";
@@ -75,7 +106,7 @@ export class UnregisteredRelationshipEndpointError extends Error {
           `target entity "${info.entityName}"`;
     super(
       `Schema ${reference}, which is not registered. Add "${info.entityName}" to the ` +
-        `"entities" map passed to defineSchema.`,
+        `"models" map passed to defineSchema.`,
     );
     this.name = "UnregisteredRelationshipEndpointError";
     this.entityName = info.entityName;
@@ -86,14 +117,14 @@ export class UnregisteredRelationshipEndpointError extends Error {
 
 /**
  * Assert that both endpoints of `rel` are registered. Called after
- * every entity (system and user) is registered, so `registry` mirrors
+ * every model (system and user) is registered, so `registry` mirrors
  * the full set `defineSchema` will expose. A dangling endpoint is a
  * schema-authoring bug: `buildRowAccessors` would otherwise type-check
  * the accessor but drop it at runtime.
  */
 function assertRelationshipEndpointsRegistered(
   rel: AnyRelationshipDef,
-  registry: EntityRegistry,
+  registry: ModelRegistry,
 ): void {
   const endpoints = [
     ["source", rel.source.name],
@@ -112,20 +143,17 @@ function assertRelationshipEndpointsRegistered(
 
 /**
  * The compiled schema handed to `createClient({ schema })`. The
- * `TEntities` / `TRelationships` generics are inferred from the
- * inputs so callers see typed entity and relationship shapes without
- * an explicit annotation.
+ * `TModels` / `TRelationships` generics are inferred from the inputs so
+ * callers see typed model and relationship shapes without an explicit
+ * annotation.
  *
  * `TRelationships` defaults to `undefined` so callers that omit the
  * `relationships` slot get a clean `s.relationships === undefined`
  * at the type level. Passing `relationships` narrows it to the
  * specific Record type.
  */
-export interface Schema<
-  TEntities extends Record<string, AnyEntityDef>,
-  TRelationships = undefined,
-> {
-  readonly entities: TEntities;
+export interface Schema<TModels extends Record<string, AnyModelDef>, TRelationships = undefined> {
+  readonly models: TModels;
   /**
    * Relationship map. `undefined` when no `relationships` input was
    * passed to `defineSchema`; a populated Record otherwise. Empty
@@ -143,7 +171,7 @@ export interface Schema<
    */
   readonly minSupportedVersion?: number;
   /** Runtime registry seeded by `defineSchema`. */
-  readonly _registry: EntityRegistry;
+  readonly _registry: ModelRegistry;
 }
 
 /**
@@ -151,72 +179,72 @@ export interface Schema<
  * `relationships` and `minSupportedVersion` optional.
  */
 export interface DefineSchemaInput<
-  TEntities extends Record<string, AnyEntityDef>,
+  TModels extends Record<string, AnyModelDef>,
   TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
 > {
-  readonly entities: TEntities;
+  readonly models: TModels;
   readonly relationships?: TRelationships;
   readonly version: number;
   readonly minSupportedVersion?: number;
 }
 
 /**
- * Compose per-entity and per-relationship definitions into a single
+ * Compose per-model and per-relationship definitions into a single
  * `Schema` value. The result is frozen so accidental mutation is a
  * hard error rather than a silent failure.
  *
- * Entities are registered with `EntityRegistry.register` and
- * relationships with `EntityRegistry.registerRelationship`. The
- * system entities (`relationship`, `group`, `groupMember`,
- * `entityGroup`) are registered alongside user entities so the
- * public relationship-write path (`link` / `unlink` / `setLinks`)
- * can submit Relationship Updates and the membership write path can
- * submit `entityGroup` Updates. Membership is a dedicated
- * `entityGroup` row, not an injected relationship. The registry owns
- * the cardinality / overwrite rules; this builder delegates without
- * adding its own. A relationship whose source or target is neither a
- * system entity nor a member of `entities` throws
+ * Models are registered with `ModelRegistry.register` and relationships
+ * with `ModelRegistry.registerRelationship`. The system models
+ * (`relationship`, `group`, `groupMember`, `entityGroup`) are registered
+ * alongside user models so the public relationship-write path (`link` /
+ * `unlink` / `setLinks`) can submit Relationship Updates and the
+ * membership write path can submit `entityGroup` Updates. Membership is
+ * a dedicated `entityGroup` row, not an injected relationship. The
+ * registry owns the cardinality / overwrite rules; this builder delegates
+ * without adding its own. A relationship whose source or target is
+ * neither a system model nor a member of `models` throws
  * `UnregisteredRelationshipEndpointError` before the schema is frozen.
- * An entity registered under a map key other than its own name throws
- * `EntityKeyMismatchError`: the map key is what a namespace is exposed
+ * A model registered under a map key other than its own name throws
+ * `ModelKeyMismatchError`: the map key is what a namespace is exposed
  * as, so the two must agree.
  */
 export function defineSchema<
-  TEntities extends Record<string, AnyEntityDef>,
+  TModels extends Record<string, AnyModelDef>,
   TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
->(input: DefineSchemaInput<TEntities, TRelationships>): Schema<TEntities, TRelationships> {
-  const registry = new EntityRegistry();
-  seedRegistry(registry, input.entities, input.relationships);
+>(input: DefineSchemaInput<TModels, TRelationships>): Schema<TModels, TRelationships> {
+  const registry = new ModelRegistry();
+  seedRegistry(registry, input.models, input.relationships);
   return Object.freeze({
-    entities: input.entities,
+    models: input.models,
     relationships: input.relationships,
     version: input.version,
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,
-  }) as unknown as Schema<TEntities, TRelationships>;
+  }) as unknown as Schema<TModels, TRelationships>;
 }
 
 /**
- * Register the system entities and the user entities/relationships
- * onto `registry`. Shared by `defineSchema` and the per-client
- * registry builder so the two can't drift. Rejects app-authored
- * names that collide with the reserved system / membership names,
- * entity map keys that differ from the definition's name, and
- * relationships whose source or target entity is not registered.
+ * Register the system models and the user models/relationships onto
+ * `registry`. Shared by `defineSchema` and the per-client registry builder
+ * so the two can't drift. Rejects app-authored names that collide with the
+ * reserved system / membership names, model map keys that differ from the
+ * definition's name, components that name another model, and relationships
+ * whose source or target model is not registered.
  */
 export function seedRegistry(
-  registry: EntityRegistry,
-  entities: Record<string, AnyEntityDef>,
+  registry: ModelRegistry,
+  models: Record<string, AnyModelDef>,
   relationships: Record<string, AnyRelationshipDef> | undefined,
 ): void {
   registry.register(relationshipSystemEntity);
   registry.register(groupSystemEntity);
   registry.register(groupMemberSystemEntity);
   registry.register(entityGroupSystemEntity);
-  for (const [key, entity] of Object.entries(entities)) {
-    if (key !== entity.name) throw new EntityKeyMismatchError(key, entity.name);
-    assertEntityNameAvailable(entity.name);
-    registry.register(entity);
+  for (const [key, model] of Object.entries(models)) {
+    if (key !== model.name) throw new ModelKeyMismatchError(key, model.name);
+    assertComponentsBelongToModel(model);
+    assertEntityNameAvailable(model.name);
+    registry.register(model);
   }
   if (relationships !== undefined) {
     for (const rel of Object.values(relationships)) {

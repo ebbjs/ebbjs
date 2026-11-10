@@ -19,7 +19,7 @@ import {
   type Update,
 } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
-import { EntityValidationError, type EntityRegistry } from "@ebbjs/schema";
+import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 import {
   createHandle,
   normalizeGroupIds,
@@ -78,7 +78,7 @@ export interface WriteSurfaceOptions {
   readonly invocationId: string;
   readonly actorId: string;
   readonly ids: OperationIds;
-  readonly registry?: EntityRegistry;
+  readonly registry?: ModelRegistry;
 }
 
 export interface WriteSurface extends PreflightView {
@@ -156,7 +156,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
 
   let sealed = false;
 
-  const requireRegistry = (): EntityRegistry => {
+  const requireRegistry = (): ModelRegistry => {
     if (registry === undefined) throw new MissingSchemaError();
     return registry;
   };
@@ -262,7 +262,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   };
 
   const opContext: OpContext = {
-    registry: registry as EntityRegistry,
+    registry: registry as ModelRegistry,
     ids,
     actorId,
   };

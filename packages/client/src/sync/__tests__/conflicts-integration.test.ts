@@ -18,19 +18,19 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
 import { testActions } from "./test-actions";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { Conflict, ConflictEntry } from "../conflicts";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 interface StubFetch {
   fn: typeof fetch;
@@ -610,12 +610,12 @@ describe("client.conflicts (#781)", () => {
   it("entity-scope loss with no position overlap reports the diff and keeps the envelope", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
-    const entityScopeDoc = defineEntity(
+    const entityScopeDoc = defineModel(
       "doc",
       { content: Type.Record(Type.String(), Type.String()) },
       { conflictScope: "entity" },
     );
-    const entityScopeSchema = defineSchema({ entities: { doc: entityScopeDoc }, version: 3 });
+    const entityScopeSchema = defineSchema({ models: { doc: entityScopeDoc }, version: 3 });
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: ACTOR_ID,

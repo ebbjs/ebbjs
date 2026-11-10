@@ -9,20 +9,20 @@
 
 import { describe, it, expect as globalExpect } from "vitest";
 import { makeHlc, type Action, type Entity } from "@ebbjs/core";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 import { callApplyAction, seedReplicaRow } from "../test-utils";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
 const schema = defineSchema({
-  entities: { todo },
+  models: { todo },
   version: 1,
 });
 

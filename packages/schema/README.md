@@ -1,9 +1,9 @@
 # @ebbjs/schema
 
-Entity, relationship, and schema definitions for ebbjs: the registry,
-validation, system entities, reserved names, and the collaborative-text cell
-schemas a document entity declares. Pure values only — no storage, no
-network, no client.
+Model, component, relationship, and schema definitions for ebbjs: the registry,
+validation, system models, reserved names, and the collaborative-text cell
+schemas a document entity declares. Pure values only — no storage, no network,
+no client.
 
 `@ebbjs/client` re-exports this package, so the client API is unchanged.
 
@@ -18,38 +18,45 @@ Node `>=22.8.0`.
 ## Usage
 
 ```ts
-import { defineEntity, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
+import { defineComponent, defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
 
-const issue = defineEntity("issue", { title: e.string() });
-
-const project = defineEntity("project", { name: e.string() });
-
-const body = defineEntity(
-  "text_document",
-  { content: e.map(TextCellSchema), version: e.number() },
-  { materialization: "on-demand" },
+const body = defineComponent(
+  "issue/body",
+  { text: e.string() },
+  { optional: true, loading: "lazy" },
 );
 
-const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
-const hasBody = defineRelationship({
-  source: issue,
-  target: body,
-  as: "body",
-  sourceCardinality: "one",
+const issue = defineModel("issue", {
+  title: e.string(),
+  body,
 });
 
+const project = defineModel("project", { name: e.string() });
+
+const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
+
 const schema = defineSchema({
-  entities: { issue, project, text_document: body },
-  relationships: { belongsTo, hasBody },
+  models: { issue, project },
+  relationships: { belongsTo },
   version: 1,
 });
 
 schema._registry.get("issue");
 ```
 
-An entity map key must equal the definition's own `name`; `defineSchema` throws
-`EntityKeyMismatchError` otherwise, since the key is the name the app's
-namespaces and permission strings are addressed by.
+A bare field builder is an **anonymous component** named `<model>/<field>`.
+`defineComponent` declares a named one when it needs its own policy. The
+registry answers the component questions later layers ask:
+
+```ts
+const registry = schema._registry;
+registry.componentsOf("issue"); // every component the model declares
+registry.componentOf("issue", "issue/body"); // by full name, or by field key
+registry.isOptional("issue", "body");
+registry.loadingOf("issue", "body"); // "lazy"
+registry.conflictScopeOf("issue", "body");
+registry.permissionOf("issue", "body"); // "issue" unless the component opts in
+```
 
 A field declares a read-time default with `.default(v)`; `create()` may then
 omit it, and it reads as `T`. A field without one reads as `T | undefined`,
@@ -60,7 +67,9 @@ live value" (absent or cleared) — see the
 ## Fields
 
 `e` ships the builders below. A field's type flows to `EntityValues`, local
-write validation, and `where` / `orderBy`.
+write validation, and `where` / `orderBy`. A builder used directly in a model
+is an anonymous component; a component declared with `defineComponent` wraps
+one value schema or a field map.
 
 | Builder          | Reads as                      | Notes                                           |
 | ---------------- | ----------------------------- | ----------------------------------------------- |
@@ -77,7 +86,7 @@ write validation, and `where` / `orderBy`.
 `e.enum([...])` declares a closed set of values:
 
 ```ts
-const wall = defineEntity("wall", {
+const wall = defineModel("wall", {
   kind: e.enum(["exterior", "interior", "railing"]).default("interior"),
 });
 ```
@@ -100,13 +109,13 @@ prove none outside the set was ever written.
 
 ## Anything else is TypeBox
 
-`defineEntity` accepts any TypeBox schema as a field, so a shape `e` does not
+`defineModel` accepts any TypeBox schema as a field, so a shape `e` does not
 cover is the schema itself:
 
 ```ts
 import { Type } from "@sinclair/typebox";
 
-const wall = defineEntity("wall", {
+const wall = defineModel("wall", {
   kind: Type.Union([Type.Literal("exterior"), Type.Literal("interior"), Type.Literal("railing")]),
 });
 ```
@@ -115,7 +124,7 @@ That is also the way to give a map a nested-object value, which `e.map` takes
 as its value schema:
 
 ```ts
-const plan = defineEntity("plan", {
+const plan = defineModel("plan", {
   openings: e.map(
     Type.Object({
       kind: Type.Union([Type.Literal("door"), Type.Literal("window")]),
@@ -132,12 +141,12 @@ builders do.
 
 ## Module map
 
-| Module                    | What it ships                                                          |
-| ------------------------- | ---------------------------------------------------------------------- |
-| `src/entity.ts`           | `defineEntity`, `e`, field markers, entity types.                      |
-| `src/entity-registry.ts`  | `EntityRegistry`, `validatePayload`, `EntityValidationError`.          |
-| `src/relationship.ts`     | `defineRelationship` and relationship types.                           |
-| `src/schema.ts`           | `defineSchema`, schema errors.                                         |
-| `src/system-entities.ts`  | `group`, `groupMember`, `entityGroup`, `relationship` system entities. |
-| `src/reserved.ts`         | Reserved entity and membership names.                                  |
-| `src/collaborative-text/` | Cell schemas, wire adapters, tree, and `TextDocument`.                 |
+| Module                    | What it ships                                                        |
+| ------------------------- | -------------------------------------------------------------------- |
+| `src/model.ts`            | `defineComponent`, `defineModel`, `e`, field markers, model types.   |
+| `src/model-registry.ts`   | `ModelRegistry`, `validatePayload`, `EntityValidationError`.         |
+| `src/relationship.ts`     | `defineRelationship` and relationship types.                         |
+| `src/schema.ts`           | `defineSchema`, schema errors.                                       |
+| `src/system-entities.ts`  | `group`, `groupMember`, `entityGroup`, `relationship` system models. |
+| `src/reserved.ts`         | Reserved entity and membership names.                                |
+| `src/collaborative-text/` | Cell schemas, wire adapters, tree, and `TextDocument`.               |

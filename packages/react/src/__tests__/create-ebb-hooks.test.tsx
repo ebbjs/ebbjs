@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import {
   createClient,
-  defineEntity,
+  defineModel,
   defineSchema,
   e,
   type NamespacedClient,
@@ -16,9 +16,9 @@ import {
 } from "@ebbjs/client";
 import { EbbProvider, createEbbHooks } from "../index";
 
-const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
+const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
 
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 type Schema = typeof schema;
 type Client = NamespacedClient<Schema>;

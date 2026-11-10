@@ -37,7 +37,7 @@ import { EbbProvider, useClient, useConnection, usePresence, useQuery } from "@e
 ## Usage
 
 ```tsx
-import { createClient, defineAction, defineEntity, defineSchema, e } from "@ebbjs/client";
+import { createClient, defineAction, defineModel, defineSchema, e } from "@ebbjs/client";
 import {
   EbbProvider,
   useClient,
@@ -47,8 +47,8 @@ import {
   type QueryRoot,
 } from "@ebbjs/react";
 
-const todo = defineEntity("todo", { title: e.string(), completed: e.boolean() });
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 type Schema = typeof schema;
 

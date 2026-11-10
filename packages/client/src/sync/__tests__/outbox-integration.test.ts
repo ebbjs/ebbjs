@@ -23,18 +23,18 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createClient } from "../client";
 import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
-const schema = defineSchema({ entities: { todo }, version: 1 });
+const schema = defineSchema({ models: { todo }, version: 1 });
 
 const mkAction = (): Action => ({
   id: "act_1",

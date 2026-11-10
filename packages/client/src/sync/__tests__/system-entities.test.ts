@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { decodeSync, type Action, type Entity } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { groupSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
@@ -67,9 +67,9 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch =>
     return jsonResponse({});
   }) as unknown as typeof fetch;
 
-const profile = defineEntity("profile", { name: e.string() });
+const profile = defineModel("profile", { name: e.string() });
 const schema = defineSchema({
-  entities: { profile },
+  models: { profile },
   // A system entity can own a relationship. Without one the system
   // namespaces' link / unlink verbs would have nothing to point at.
   relationships: {

@@ -14,7 +14,7 @@ import {
   FunctionCallError,
   createClient,
   defineAction,
-  defineEntity,
+  defineModel,
   defineSchema,
   e,
   functionContract,
@@ -237,8 +237,8 @@ describe("client.functions", () => {
   });
 
   it("sits alongside entity namespaces and actions", async () => {
-    const todo = defineEntity("todo", { title: e.string() });
-    const schema = defineSchema({ entities: { todo }, version: 1 });
+    const todo = defineModel("todo", { title: e.string() });
+    const schema = defineSchema({ models: { todo }, version: 1 });
     const createTodo = defineAction(schema, ({ todo: t }, params: { title: string }) =>
       t.create({ title: params.title }, { groups: ["g_1"] }),
     );

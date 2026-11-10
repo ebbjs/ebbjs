@@ -1,11 +1,11 @@
 /**
- * `defineEntity` — pure factory returning a frozen entity definition.
+ * `defineModel` — pure factory returning a frozen model definition.
  *
- * `defineEntity(name, fields)` accepts a bare field map and wraps it
- * internally in `Type.Object(fields)` so callers never write the wrapper
- * themselves. The wrapped schema is stored as `EntityDef.shape`; the
- * unwrapped field map, with its merge-marker projection, is stored as
- * `EntityDef.fields`. Marker and shape are independent axes.
+ * `defineComponent(name, shape, options)` declares a named component with
+ * its own policy. `defineModel(name, inputs)` accepts components and bare
+ * field builders in one map; a bare builder normalises to an anonymous
+ * component named `<model>/<field>`. The model's `shape` is derived from
+ * its attached components and `components` records the declarations.
  */
 
 import { Type } from "@sinclair/typebox";
@@ -38,11 +38,12 @@ export type FieldMarker = {
 };
 
 /**
- * Granularity at which a concurrent write to the entity is surfaced as a
- * conflict. `"field"` scopes detection to a shared map position;
- * `"entity"` surfaces any touch of an entity with offline writes.
+ * Granularity at which a concurrent write is surfaced as a conflict.
+ * `"field"` scopes detection to a shared map position; `"component"` holds
+ * one component; `"entity"` surfaces any touch of an entity with offline
+ * writes.
  */
-export type ConflictScope = "field" | "entity";
+export type ConflictScope = "field" | "component" | "entity";
 
 /**
  * Client-side residency of an entity type. `"held"` keeps every row in
@@ -50,6 +51,13 @@ export type ConflictScope = "field" | "entity";
  * Purely a read-path concern — the wire payload is identical either way.
  */
 export type Materialization = "held" | "on-demand";
+
+/**
+ * How a component is loaded into the replica. `"eager"` keeps it held;
+ * `"lazy"` loads it only once opened. Purely a read-path concern — the wire
+ * payload is identical either way.
+ */
+export type Loading = "eager" | "lazy";
 
 /**
  * Type-level stamp identifying a field schema that went through
@@ -255,7 +263,7 @@ export type CreateShapeFields<TFields extends Record<string, TSchema>> = {
 };
 
 /**
- * The TypeBox object schema wrapping a field map. `EntityDef.shape` is the
+ * The TypeBox object schema wrapping a field map. `ModelDef.shape` is the
  * read shape; field-value types flow through `Static<TObject<...>>`, or
  * `Static<typeof def["shape"]>` for explicit extraction.
  */
@@ -268,25 +276,182 @@ export type EntityCreateShape<TFields extends Record<string, TSchema>> = ReturnT
   typeof Type.Object<CreateShapeFields<TFields>>
 >;
 
+/** A component shape: either a field builder/schema or a map of them. */
+export type ComponentShapeInput = TSchema | Record<string, TSchema>;
+
+/** The read shape a component declaration carries. */
+export type ComponentShapeOf<T> = T extends TSchema
+  ? T
+  : T extends Record<string, TSchema>
+    ? EntityShape<T>
+    : never;
+
+/** Policy declared on one component. Defaults match an anonymous field. */
+export interface ComponentOptions {
+  /** Whether an entity may exist without this component. Defaults to `false`. */
+  readonly optional?: boolean;
+  /** Replica loading. Defaults to `"eager"`, which keeps the component held. */
+  readonly loading?: Loading;
+  /** Conflict granularity. Defaults to `"field"`. */
+  readonly conflictScope?: ConflictScope;
+  /** Whether this component participates in existence indexes. Defaults to `false`. */
+  readonly indexed?: boolean;
+  /** Opt in to `<model>/<component>.<verb>` permissions. Defaults to the model. */
+  readonly permission?: "own";
+  /** Component version for read migrations. Defaults to `1`. */
+  readonly version?: number;
+}
+
+/** A frozen component declaration. A bare field builder is one, anonymously. */
+export interface ComponentDef<TShape extends TSchema = TSchema, TName extends string = string> {
+  readonly kind: "component";
+  /** Full declaration name, `<model>/<leaf>`. */
+  readonly name: TName;
+  readonly shape: TShape;
+  readonly createShape: TSchema;
+  readonly marker: FieldMarker;
+  readonly optional: boolean;
+  readonly loading: Loading;
+  readonly conflictScope: ConflictScope;
+  readonly indexed: boolean;
+  readonly permission: "own" | undefined;
+  readonly version: number;
+}
+
+/** Anything `defineModel` can attach under a field name. */
+export type ComponentInput = TSchema | ComponentDef;
+
+/** One input's field schema: a component contributes its shape, a builder itself. */
+type ComponentSchema<T> = T extends { readonly kind: "component"; readonly shape: infer S }
+  ? S extends TSchema
+    ? S
+    : never
+  : T extends TSchema
+    ? T
+    : never;
+
+/** The field schemas contributed by a model's component inputs. */
+export type ComponentFields<TInputs extends Record<string, ComponentInput>> = {
+  [K in keyof TInputs]: ComponentSchema<TInputs[K]>;
+};
+
+/** A model's component declarations, keyed by the field they attach under. */
+export type ModelComponents<TFields extends Record<string, TSchema>> = {
+  [K in keyof ComponentFields<TFields>]: ComponentDef<ComponentFields<TFields>[K], string>;
+};
+
+/** Raised when a component name is not `<model>/<leaf>`. */
+export class InvalidComponentNameError extends Error {
+  readonly componentName: string;
+
+  constructor(componentName: string) {
+    super(
+      `Component name "${componentName}" must be "<model>/<leaf>", with exactly one "/" ` +
+        `and non-empty segments.`,
+    );
+    this.name = "InvalidComponentNameError";
+    this.componentName = componentName;
+  }
+}
+
+const COMPONENT_NAME_PATTERN = /^[^/]+\/[^/]+$/;
+
+/** True when `name` is shaped `<model>/<leaf>`. */
+export const isComponentName = (name: string): boolean => COMPONENT_NAME_PATTERN.test(name);
+
+/** Reject a component name that is not `<model>/<leaf>`-shaped. */
+export const assertComponentName = (name: string): void => {
+  if (!isComponentName(name)) throw new InvalidComponentNameError(name);
+};
+
+/** True when a value is a component declaration rather than a bare schema. */
+const isComponentDef = (value: ComponentInput): value is ComponentDef =>
+  typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "component";
+
+/**
+ * A plain field map is not a TypeBox schema. Detect a schema structurally
+ * so a component may be declared as `{ title: e.string() }` or as one
+ * builder such as `e.object(...)`.
+ */
+const isSchemaLike = (value: ComponentShapeInput): value is TSchema => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const type = candidate["type"];
+  if (typeof type === "string" || Array.isArray(type)) return true;
+  return ["anyOf", "oneOf", "allOf", "const", "enum", "$ref", "not"].some(
+    (key) => key in candidate,
+  );
+};
+
+const normalizeComponentShape = (shape: ComponentShapeInput): TSchema => {
+  if (isSchemaLike(shape)) return shape;
+  return Type.Object(withReadOptional(shape as Record<string, TSchema>));
+};
+
+const normalizeComponentCreateShape = (shape: ComponentShapeInput): TSchema => {
+  if (isSchemaLike(shape)) return shape;
+  return Type.Object(withCreateOptional(shape as Record<string, TSchema>));
+};
+
+/** Build a frozen component declaration. Shared by `defineComponent` and anonymous fields. */
+export function buildComponentDef<TShape extends TSchema, TName extends string>(
+  name: TName,
+  shape: TShape,
+  options: ComponentOptions = {},
+  createShape: TSchema = shape,
+): ComponentDef<TShape, TName> {
+  return Object.freeze({
+    kind: "component",
+    name,
+    shape,
+    createShape,
+    marker: deriveMarker(shape),
+    optional: options.optional ?? false,
+    loading: options.loading ?? "eager",
+    conflictScope: options.conflictScope ?? "field",
+    indexed: options.indexed ?? false,
+    permission: options.permission,
+    version: options.version ?? 1,
+  });
+}
+
+/**
+ * Declare a component under `<model>/<leaf>`. The result is frozen and
+ * carries the policy later slices read: existence, loading, conflict
+ * scope, indexing, permission, and version.
+ */
+export function defineComponent<
+  const TShape extends ComponentShapeInput,
+  const TName extends string,
+>(
+  name: TName,
+  shape: TShape,
+  options: ComponentOptions = {},
+): ComponentDef<ComponentShapeOf<TShape>, TName> {
+  assertComponentName(name);
+  const normalized = normalizeComponentShape(shape) as ComponentShapeOf<TShape>;
+  return buildComponentDef(name, normalized, options, normalizeComponentCreateShape(shape));
+}
+
 /**
  * Passive entity definition value. The runtime registry consumes it.
  *
- * `TName` carries the literal name passed to `defineEntity` so
+ * `TName` carries the literal name passed to `defineModel` so
  * downstream type-level walkers (e.g. the per-accessor row type) can
- * match a relationship's `source` / `target` back to an entity. The
- * default `string` keeps erased usages (`EntityDef<...>`, the runtime
+ * match a relationship's `source` / `target` back to a model. The
+ * default `string` keeps erased usages (`ModelDef<...>`, the runtime
  * registry) compiling without a name argument.
  */
-export interface EntityDef<TFields extends Record<string, TSchema>, TName extends string = string> {
+export interface ModelDef<TFields extends Record<string, TSchema>, TName extends string = string> {
   readonly name: TName;
   /**
-   * Granularity at which concurrent writes to this entity surface as
-   * conflicts. Defaults to `"field"`.
+   * Default conflict granularity for this model's components. A component
+   * may declare its own. Defaults to `"field"`.
    */
   readonly conflictScope: ConflictScope;
   /**
-   * Whether the replica holds every row of this type or materializes a
-   * row only while it is open. Defaults to `"held"`.
+   * Default replica residency for this model's components. A component may
+   * declare its own. Defaults to `"held"`.
    */
   readonly materialization: Materialization;
   /**
@@ -301,31 +466,33 @@ export interface EntityDef<TFields extends Record<string, TSchema>, TName extend
    * full `create()` payload reads this.
    */
   readonly createShape: EntityCreateShape<TFields>;
+  /** Component declarations keyed by the field they attach under. */
+  readonly components: ModelComponents<TFields>;
   /** Merge-semantics markers for the declared fields. */
-  readonly fields: { [K in keyof TFields]: FieldMarker };
+  readonly markers: { [K in keyof TFields]: FieldMarker };
 }
 
-/** Options accepted by `defineEntity`. */
-export interface EntityOptions {
-  /** Conflict granularity the entity declares. Defaults to `"field"`. */
+/** Options accepted by `defineModel`. */
+export interface ModelOptions {
+  /** Default conflict granularity for the model's components. Defaults to `"field"`. */
   readonly conflictScope?: ConflictScope;
-  /** Replica residency the entity declares. Defaults to `"held"`. */
+  /** Default replica residency for the model's components. Defaults to `"held"`. */
   readonly materialization?: Materialization;
 }
 
 /**
- * Define an entity by name and field map. The result is frozen.
+ * Define a model by name and component map. The result is frozen.
  * Throws {@link ReservedNameError} when the name is a system entity,
- * or the field map declares the injected `groups` accessor.
+ * or the component map declares the injected `groups` accessor.
  */
-export function defineEntity<TFields extends Record<string, TSchema>, TName extends string>(
+export function defineModel<TInputs extends Record<string, ComponentInput>, TName extends string>(
   name: TName,
-  fields: TFields,
-  options: EntityOptions = {},
-): EntityDef<TFields, TName> {
+  components: TInputs,
+  options: ModelOptions = {},
+): ModelDef<ComponentFields<TInputs>, TName> {
   assertEntityNameAvailable(name);
-  assertFieldNamesAvailable(name, fields);
-  return buildEntityDef(name, fields, options);
+  assertFieldNamesAvailable(name, components);
+  return buildModelDef(name, components, options);
 }
 
 /** Raised when a field schema admits `null`. */
@@ -375,29 +542,49 @@ export const admitsNull = (schema: TSchema): boolean => {
 };
 
 /**
- * Unchecked entity factory. `defineEntity` validates reserved names
- * first; the SDK's own system entities (`group`, `groupMember`,
- * `relationship`) build through here.
+ * Unchecked model factory. `defineModel` validates reserved names first;
+ * the SDK's own system models (`group`, `groupMember`, `relationship`)
+ * build through here.
  */
-export function buildEntityDef<TFields extends Record<string, TSchema>, TName extends string>(
+export function buildModelDef<TInputs extends Record<string, ComponentInput>, TName extends string>(
   name: TName,
-  fields: TFields,
-  options: EntityOptions = {},
-): EntityDef<TFields, TName> {
-  const markers = {} as { [K in keyof TFields]: FieldMarker };
-  for (const [key, schema] of Object.entries(fields)) {
-    if (admitsNull(schema as TSchema)) {
+  inputs: TInputs,
+  options: ModelOptions = {},
+): ModelDef<ComponentFields<TInputs>, TName> {
+  const readFields: Record<string, TSchema> = {};
+  const createFields: Record<string, TSchema> = {};
+  const components: Record<string, ComponentDef> = {};
+  const modelScope = options.conflictScope ?? "field";
+  const modelMaterialization = options.materialization ?? "held";
+  for (const [key, input] of Object.entries(inputs)) {
+    if (admitsNull(isComponentDef(input) ? input.shape : (input as TSchema))) {
       throw new NullFieldError(name, key);
     }
-    markers[key as keyof TFields] = deriveMarker(schema as TSchema);
+
+    const component = isComponentDef(input)
+      ? input
+      : buildComponentDef(`${name}/${key}`, input as TSchema, {
+          loading: modelMaterialization === "on-demand" ? "lazy" : "eager",
+          conflictScope: modelScope,
+        });
+    readFields[key] = component.shape;
+    createFields[key] = component.createShape;
+    components[key] = component;
   }
+
+  const markers = Object.fromEntries(
+    Object.entries(components).map(([key, component]) => [key, component.marker]),
+  ) as { [K in keyof ComponentFields<TInputs>]: FieldMarker };
   return Object.freeze({
     name,
-    conflictScope: options.conflictScope ?? "field",
-    materialization: options.materialization ?? "held",
-    shape: Type.Object(withReadOptional(fields)) as EntityShape<TFields>,
-    createShape: Type.Object(withCreateOptional(fields)) as EntityCreateShape<TFields>,
-    fields: markers,
+    conflictScope: modelScope,
+    materialization: modelMaterialization,
+    shape: Type.Object(withReadOptional(readFields)) as EntityShape<ComponentFields<TInputs>>,
+    createShape: Type.Object(withCreateOptional(createFields)) as EntityCreateShape<
+      ComponentFields<TInputs>
+    >,
+    components: Object.freeze(components) as ModelComponents<ComponentFields<TInputs>>,
+    markers: Object.freeze(markers),
   });
 }
 
@@ -406,9 +593,9 @@ export function buildEntityDef<TFields extends Record<string, TSchema>, TName ex
  * reads as `T | undefined`. A defaulted field stays required — its value
  * always resolves.
  */
-const withReadOptional = <TFields extends Record<string, TSchema>>(
+function withReadOptional<TFields extends Record<string, TSchema>>(
   fields: TFields,
-): Record<string, TSchema> => {
+): Record<string, TSchema> {
   const out: Record<string, TSchema> = {};
   for (const [key, schema] of Object.entries(fields)) {
     out[key] = hasDefault(schema)
@@ -416,15 +603,15 @@ const withReadOptional = <TFields extends Record<string, TSchema>>(
       : Type.Optional(schema as Parameters<typeof Type.Optional>[0]);
   }
   return out;
-};
+}
 
 /**
  * The create-validation wrap: a defaulted field is optional because the
  * default fills it, while a field without one is required.
  */
-const withCreateOptional = <TFields extends Record<string, TSchema>>(
+function withCreateOptional<TFields extends Record<string, TSchema>>(
   fields: TFields,
-): Record<string, TSchema> => {
+): Record<string, TSchema> {
   const out: Record<string, TSchema> = {};
   for (const [key, schema] of Object.entries(fields)) {
     out[key] = hasDefault(schema)
@@ -432,6 +619,6 @@ const withCreateOptional = <TFields extends Record<string, TSchema>>(
       : schema;
   }
   return out;
-};
+}
 
 export type { TSchema };

@@ -18,7 +18,7 @@ import { makeHlc, type Action, type Entity, type FieldValue, type Update } from 
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
@@ -28,13 +28,13 @@ import { testActions } from "./test-actions";
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
 
-const todo = defineEntity("todo", { title: e.string() });
-const user = defineEntity("user", { name: e.string() });
-const label = defineEntity("label", { name: e.string() });
-const list = defineEntity("list", { name: e.string() });
+const todo = defineModel("todo", { title: e.string() });
+const user = defineModel("user", { name: e.string() });
+const label = defineModel("label", { name: e.string() });
+const list = defineModel("list", { name: e.string() });
 
 const schema = defineSchema({
-  entities: { todo, user, label, list },
+  models: { todo, user, label, list },
   relationships: {
     todo_owner: defineRelationship({ source: todo, target: user, as: "owner" }),
     todo_tags: defineRelationship({

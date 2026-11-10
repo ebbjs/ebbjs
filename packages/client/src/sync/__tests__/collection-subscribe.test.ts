@@ -12,7 +12,7 @@
 
 import { describe, it, expect as globalExpect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { defineEntity, e } from "@ebbjs/schema";
+import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
@@ -21,13 +21,13 @@ import { callApplyAction } from "../test-utils";
 /** Let the async subscribe hydration settle before mutating storage. */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-const todo = defineEntity("todo", {
+const todo = defineModel("todo", {
   title: e.string(),
   completed: e.boolean(),
 });
 
 const schema = defineSchema({
-  entities: { todo },
+  models: { todo },
   version: 1,
 });
 

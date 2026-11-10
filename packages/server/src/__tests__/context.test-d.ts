@@ -1,17 +1,17 @@
 import { describe, expectTypeOf, it } from "vitest";
 
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineModel, defineSchema, e } from "@ebbjs/schema";
 
 import type { CommitOutcome } from "../context";
 import { defineFunction } from "../function";
 import { p } from "../schema";
 
-const ticket = defineEntity("ticket", { title: e.string() });
-const comment = defineEntity("comment", { body: e.string() });
-const schema = defineSchema({ entities: { ticket, comment }, version: 1 });
+const ticket = defineModel("ticket", { title: e.string() });
+const comment = defineModel("comment", { body: e.string() });
+const schema = defineSchema({ models: { ticket, comment }, version: 1 });
 
 describe("Context types", () => {
-  it("accepts the schema's entity names on every write verb", () => {
+  it("accepts the schema's model names on every write verb", () => {
     defineFunction(schema, p.object({ title: p.string() }), async (ctx, params) => {
       const created = ctx.create("ticket", { title: params.title }, { groups: ["g_1"] });
 
@@ -41,14 +41,14 @@ describe("Context types", () => {
     });
   });
 
-  it("rejects an entity name the schema does not declare", () => {
+  it("rejects a model name the schema does not declare", () => {
     defineFunction(schema, (ctx) => {
-      // @ts-expect-error "tickets" is not an entity in this schema
+      // @ts-expect-error "tickets" is not a model in this schema
       ctx.create("tickets", {}, { groups: ["g_1"] });
     });
   });
 
-  it("falls back to any entity name when the schema has no entities map", () => {
+  it("falls back to any entity name when the schema has no models map", () => {
     defineFunction({ tables: {} }, (ctx) => {
       ctx.create("anything", {}, { groups: ["g_1"] });
     });

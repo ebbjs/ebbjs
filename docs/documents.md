@@ -48,16 +48,16 @@ handles typed arrays. Until then a Yjs log stores base64 strings.
 
 ## The presets
 
-An engine package exports an `EntityDef` factory and a codec. The app names the
+An engine package exports an `ModelDef` factory and a codec. The app names the
 entity and declares the relationship, so it owns the permission string,
 cardinality, and group structure.
 
 ```ts
 import { plainTextDocument } from "@ebbjs/text";
 
-const body = plainTextDocument("note_body"); // EntityDef
+const body = plainTextDocument("note_body"); // ModelDef
 const schema = defineSchema({
-  entities: { note, note_body: body },
+  models: { note, note_body: body },
   relationships: {
     body: defineRelationship({
       source: note,
@@ -73,7 +73,7 @@ const schema = defineSchema({
 Preset shape:
 
 ```ts
-defineEntity(
+defineModel(
   "note_body",
   {
     engine: e.string().default("ebb.cells.v1"), // written once at create

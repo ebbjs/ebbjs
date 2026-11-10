@@ -7,11 +7,11 @@ const files = [
     name: "model.ts",
     html: `<span class="text-stone-400">import</span> {
   <span class="text-stone-200">e</span>,
-  <span class="text-stone-200">defineEntity</span>,
+  <span class="text-stone-200">defineModel</span>,
   <span class="text-stone-200">defineSchema</span>,
 } <span class="text-stone-400">from</span> <span class="text-stone-400">"@ebbjs/client"</span>;
 
-<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineEntity</span>(<span class="text-stone-400">"todo"</span>, {
+<span class="text-stone-400">const</span> <span class="text-stone-200">todo</span> = <span class="text-stone-300">defineModel</span>(<span class="text-stone-400">"todo"</span>, {
   <span class="text-stone-300">title</span>: e.<span class="text-stone-300">string</span>(),
   <span class="text-stone-300">completed</span>: e.<span class="text-stone-300">boolean</span>(),
 });

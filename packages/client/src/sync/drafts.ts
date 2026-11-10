@@ -16,9 +16,9 @@
 import { generateId, type Entity, type FieldValue } from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
-import type { EntityDef, ShapeFields } from "@ebbjs/schema";
+import type { ModelDef, ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
-import type { EntityRegistry } from "@ebbjs/schema";
+import type { ModelRegistry } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
 import {
   GROUPS_ACCESSOR,
@@ -64,7 +64,7 @@ import type { ManyPointerValue } from "./relationship";
 
 export { ActionRejectedError, type ActionRejection } from "@ebbjs/write";
 
-type AnyEntityDef = EntityDef<Record<string, TSchema>>;
+type AnyModelDef = ModelDef<Record<string, TSchema>>;
 
 const DRAFT_HANDLE = Symbol.for("@ebbjs/action-draft-handle");
 
@@ -205,7 +205,7 @@ const resolveSingleGroupId = (group: GroupRef, entityName: string, operation: st
  * supplies the row id, or reports that there is nothing to delete.
  */
 async function resolveUnlinkTarget(
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   entityName: string,
   sourceId: string,
   as: string,
@@ -520,7 +520,7 @@ const resolvePointerTargets = (
   return out;
 };
 
-const declaresField = (def: AnyEntityDef, key: string): boolean =>
+const declaresField = (def: AnyModelDef, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(def.shape.properties ?? {}, key);
 
 const record = (collector: DraftCollector, operationCall: OperationCall): void => {
@@ -540,7 +540,7 @@ const createDraftNamespace = <
   TCreateExtras extends object = Record<never, never>,
 >(
   entityName: string,
-  def: AnyEntityDef,
+  def: AnyModelDef,
   cap: ActionCapability,
   collector: DraftCollector,
 ): DraftNamespace<TFields, TCreateExtras> => ({
@@ -752,7 +752,7 @@ const createSystemDrafts = (
 };
 
 const buildDrafts = (
-  entityDefs: Record<string, AnyEntityDef>,
+  entityDefs: Record<string, AnyModelDef>,
   cap: ActionCapability,
   collector: DraftCollector,
 ): Record<string, DraftNamespace<Record<string, TSchema>>> => {
@@ -1057,11 +1057,11 @@ const resolveSteps = async (
  * callback's return value. A server rejection of the submitted Action
  * becomes an {@link ActionRejectedError}.
  */
-export function createActionRuntime<S extends Schema<Record<string, AnyEntityDef>, unknown>>(
+export function createActionRuntime<S extends Schema<Record<string, AnyModelDef>, unknown>>(
   schema: S,
   cap: ActionCapability,
 ): <T>(build: (drafts: ActionDrafts<S>) => T) => Promise<T> {
-  const entityDefs = schema.entities as Record<string, AnyEntityDef>;
+  const entityDefs = schema.models as Record<string, AnyModelDef>;
   return async function run<T>(build: (drafts: ActionDrafts<S>) => T): Promise<T> {
     const collector: DraftCollector = { steps: [], batching: new Map() };
     const drafts = buildDrafts(entityDefs, cap, collector);

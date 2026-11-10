@@ -5,7 +5,7 @@
 
 import { generateId, type Update } from "@ebbjs/core";
 
-import { EntityValidationError, type EntityRegistry } from "@ebbjs/schema";
+import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
 import { entityGroupId } from "./membership";
 import { normalizePointer, type PointerValue } from "./pointer";
@@ -107,7 +107,7 @@ export type { PointerValue } from "./pointer";
  * up the registry.
  */
 export function resolveCardinality(
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   sourceName: string,
   as: string,
   explicit: "one" | "many" | undefined,
@@ -288,7 +288,7 @@ export function collectManyTargetIds(patch: ManyPointerValue): readonly string[]
  * server is the authority in that case.
  */
 function checkEntityRegistered(
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   name: string,
   role: "source" | "target",
 ): void {
@@ -297,7 +297,7 @@ function checkEntityRegistered(
   throw new EntityValidationError([
     {
       entityName: name,
-      message: `buildRelationshipWrite: ${role} entity "${name}" is not registered in the EntityRegistry`,
+      message: `buildRelationshipWrite: ${role} entity "${name}" is not registered in the ModelRegistry`,
     },
   ]);
 }
@@ -307,7 +307,7 @@ function checkEntityRegistered(
  * registry's stored `type` override; fall back to the source entity
  * name. Matches `defineRelationship`'s default.
  */
-function wireTypeFor(registry: EntityRegistry, sourceName: string, as: string): string {
+function wireTypeFor(registry: ModelRegistry, sourceName: string, as: string): string {
   const rel = registry.getRelationship(sourceName, as);
   return rel?.type ?? sourceName;
 }
@@ -375,7 +375,7 @@ function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): U
  * else is rejected with `EntityValidationError`.
  */
 export function buildRelationshipWrite(
-  registry: EntityRegistry,
+  registry: ModelRegistry,
   opts: BuildRelationshipWriteOptions,
 ): BuildRelationshipWriteResult {
   const { source, as } = opts;
