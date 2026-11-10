@@ -451,43 +451,63 @@ model's rows spread across up to 2^n archetypes (n = its optional components). S
 only**, plus the model column SQLite already indexes. SQLite keeps one row per entity with
 `data.components`, plus an expression index over the component-name set.
 
+**Two parts of that scope were amended in the implementation.**
+
+- **The server is schema-free (#803), so "indexed components only" is not enforceable there.**
+  `cf_component_entities` carries a **model entry** `(model, id)` once per row — the existence signal
+  `EntityTypeCache` resolves and the row's committed model, which must survive a row dropping its
+  last component — plus a **component entry** `(<model>/<field>, id)` for every component a write
+  names. A component entry is deleted by `drop`; a row `delete` leaves stale ones (fail-closed, the
+  model entry is what remains). The `indexed` flag stays a schema-level intent; enforcing it
+  server-side would require the declared set the server must not grow.
+- **SQLite cannot index `json_each`.** It is a table-valued function, and SQLite refuses it in an
+  index expression (`no such function: json_each`). The row keeps the derived `data.components`
+  list — `EntityView` projects it away before the wire — and a normalized
+  `entity_components(entity_id, component)` table with `idx_entity_components_component` is the
+  indexable form. `idx_entities_type` stays for the model, permission and listing paths.
+
 **Work.**
 
-- [ ] `Replica`: `modelIndex` and `componentIndex` are required; `iterate(model)` reads
+- [x] `Replica`: `modelIndex` and `componentIndex` are required; `iterate(model)` reads
       `modelIndex`, and `has` reads `componentIndex`.
-- [ ] `archetypeIndex` is optional: add it only if the measurement shows set intersection dominates a
-      plan. Measure intersection against an archetype lookup at n = 2, 4, 8 named components and keep
-      the loser out. Do not add it speculatively — a model with 4 optional components spans 16
-      archetypes, so the index can grow faster than the rows.
-- [ ] `ReplicaChange.components` maintained from the composed view, in `resync`.
-- [ ] `cf_component_entities` written once per `(component, entity)`; `cf_type_entities` deleted.
-- [ ] SQLite: `json_each(data, '$.components')` expression index; keep `idx_entities_type` on the
-      model column for permission and listing paths.
-- [ ] IndexedDB: `multiEntry` index on the component-name array; version bump; reset, no migration.
-- [ ] **Measure write amplification at k = 2, 4, 8 components per entity** through the real Writer
-      pipeline. The `entity_index` ablation in `575-entity-actions.md` puts that column family at
-      12–25% of commit cost, so this is the number that decides whether the epic proceeds as
-      specified.
+- [x] `archetypeIndex` is **kept out**. No plan names an exact component set yet: `has` predicates
+      intersect the component ranges they name, so there is no archetype lookup to price against
+      today. Open question 1 stays open; adding the index speculatively would take the growth risk
+      the issue warned about with no reader to pay it back.
+- [x] `ReplicaChange.components` maintained from the composed view, in `resync`. It carries the
+      components the change touched (present-and-differing fields, plus all of them on a tombstone
+      transition), which is what #800 invalidates on.
+- [x] `cf_component_entities` written once per `(component, entity)`; `cf_type_entities` deleted.
+- [x] SQLite: `data.components` plus the normalized `entity_components` mirror (see the amendment
+      above); `idx_entities_type` kept.
+- [x] IndexedDB: `multiEntry` index on the component-name array; version 11; reset, no migration.
+- [x] **Measure write amplification at k = 2, 4, 8 components per entity** through the real Writer
+      pipeline (`mix bench.component_index`). Table below; the cost is accepted.
+- [x] #813's empty-scope delivery hole: the Writer's `fan_out_preference` now reads the row shape
+      earlier Actions of the same flush left behind (`:flush_rows`), so a `groupMember`/`entityGroup`
+      or `relationship` write that names only one component still carries its group/source. It is no
+      longer committed undeliverable.
 
 **Acceptance.** The k = 2/4/8 table is recorded in the epic and the resulting write cost is
-accepted or the design is amended. An existence query touches one index range per component named.
-No path reads `type` to find an entity's rows.
+accepted or the design is amended. An existence query touches one index range per component named
+(`ComponentEntityIndex.component_ids/2` on RocksDB, `SQLite.query_component_ids/2` on the read
+model). No path reads `type` to find an entity's rows: `iterate` reads `modelIndex`, and the server's
+model entries are existence/committed-model lookups, not row scans.
 
 **Depends on.** 4, 5.
 
-**Current state.** The client and storage half shipped in [#799](https://github.com/ebbjs/ebbjs/issues/799):
-`typeIndex` is `modelIndex` in the replica, `ReplicaChange` carries the components a change touched
-(computed from the composed view, so a `title` write invalidates `note/title` only), and the
-IndexedDB `entities` store carries a `multiEntry` index over a denormalized component-name array
-that `EntityStore.queryByComponent` reads after materializing the component's model. Four
-commitments are recorded rather than resolved: `ReplicaChange.type` stays until #800 removes it;
-**`archetypeIndex` is not added** — open question 1 is still unmeasured, and a speculative index
-that can grow faster than the rows is exactly what the issue warned against; the schema bump to 11
-**resets** rather than migrating (decision 9, gated like the v9 cell-format reset so a later bump
-declares its own migration); and a tombstoned row keeps its index entries, so existence reads filter
-on liveness at read time. Still owned by this slice: `cf_component_entities` and deleting
-`cf_type_entities`, the SQLite expression index, the k = 2/4/8 write-amplification measurement that
-decides open question 1, and #813's empty-scope delivery.
+**Current state.** Shipped in [#799](https://github.com/ebbjs/ebbjs/issues/799). The client replica's
+`typeIndex` is `modelIndex`; `ReplicaChange` carries `components`; the IndexedDB `entities` store has
+a `multiEntry` component index that `EntityStore.queryByComponent` reads; the schema bump to 11
+resets rather than migrating. On the server, `cf_component_entities` replaces `cf_type_entities` with
+a model entry plus a component entry per component, `SystemCache` boot and the one-time backfill
+rebuild both, and a drop deletes its component entry while a delete leaves the model entry (and
+stale component entries) in place. SQLite mirrors components into `entity_components` and answers
+`query_component_ids/2` from `idx_entity_components_component`. The k = 2/4/8 Writer measurement is
+recorded below and the cost is accepted. Four things are recorded rather than resolved:
+`ReplicaChange.type` stays until #800; `archetypeIndex` is out until a plan can name an exact
+component set; the server indexes every component because #803 forbids it a schema; and the SQLite
+expression index is the normalized mirror because `json_each` cannot be indexed.
 
 ---
 
@@ -831,8 +851,10 @@ longer evicts. These are the real performance wins and they are all latency, not
 **Costs — throughput, measured, and not slight.** Five components per edit is +50% Action payload
 and, at the hot write path, −28% accepted Actions/s with +70% p95 (slice 4). A single-field write is
 unchanged; creates and multi-component edits pay. The same per-Update cost is why atomic system
-components matter: one Update for a whole membership or edge instead of two or four. The k-rows-per-
-indexed-component cost is the other half, and slice 6 measures it at k = 2/4/8.
+components matter: one Update for a whole membership or edge instead of two or four. Slice 6 adds
+`k + 1` index entries per row against one before — ~15% of accepted Actions at every k — and the
+schema-free server indexes every component rather than an `indexed` subset, because it has no schema
+to read the flag from (decision 8's opt-in stays a client-side intent).
 
 **Costs — replica persistence complexity, and it is not optional.** `toRecord` persists held rows on
 one rule; partial rows mean a second store keyed by `(entity, component)`. Slice 9 owns this and it
@@ -888,6 +910,41 @@ payload growth. It does not dominate payload — payload is sublinear in fields 
 measure that matters for throughput, and it is bounded by how many components a write touches
 rather than by how much data it carries.
 
+## Measurement: the component index (slice 6, #799)
+
+`mix bench.component_index` writes a fixed 20,000-Action workload through the real `Writer` (sync
+durability, no HTTP, eight concurrent callers, 25 Actions per call) on a fresh database after a
+2,000-Action warm-up. Each Action creates a k-component `todo` row plus its `entityGroup` row. The
+three arms are interleaved inside every run, and the added cost is the median of the per-run
+`1 - (model + components) / (model only)` pairs, so a slow pass cancels out of its own pair. Five
+runs per k; medians, with the range in brackets. Host: 4 vCPU, 15 GB, Elixir 1.17.3 / OTP 27.
+
+| Measure                                      |               k = 2 |               k = 4 |               k = 8 |
+| -------------------------------------------- | ------------------: | ------------------: | ------------------: |
+| Index entries added per entity               |                   2 |                   4 |                   8 |
+| Index key bytes added per entity             |                  68 |                 136 |                 272 |
+| Actions/s, model entry only (before)         | 4,769 (4,452–5,241) | 3,857 (3,377–4,092) | 3,120 (2,821–3,496) |
+| Actions/s, model + component entries (after) | 4,237 (3,853–4,649) | 3,281 (2,819–3,593) | 2,466 (2,295–2,713) |
+| Added commit cost                            |               13.2% |               14.9% |               14.8% |
+| Actions/s, no index (context only)           |               5,016 |               4,344 |               3,390 |
+
+**What it says.** The component index costs about 13–15% of accepted Actions at every k; it does not
+compound with the component count. That is the shape the design predicted: each entry is its own
+RocksDB op with an empty value, so the price is per key, and the measured share stays flat because
+the Action's Update payload grows with k alongside the index. A row with k components now writes
+k + 1 index entries — k component entries plus the model entry that keeps the row's existence and
+committed model — against one before. At k = 8 that is nine times the index rows for the same row,
+and still the throughput share is the one an extra index-op group costs. The cost is accepted: a
+~15% write-path share sits inside the 12–25% the `entity_index` ablation priced for the old
+single-entry column family, and the common single-field edit adds exactly one component entry over
+the old shape.
+
+**What it does not say.** Absolute rates are this host's and will not reproduce elsewhere. The
+no-index arm is context only: it removes the model entry as well, so it is not the pre-#799 shape,
+and its ranges are wider. It does not answer open question 1: no client plan names an exact component
+set, so there is still no archetype lookup to price against intersection, and `archetypeIndex` stays
+out.
+
 ## Non-goals
 
 - **Archetype/chunk storage.** The locality payoff needs dense POD arrays; ebb's rows are
@@ -907,13 +964,16 @@ rather than by how much data it carries.
 
 ## Open questions
 
-1. Does the archetype index earn its keep over intersecting component sets? Slice 6 measures.
+1. Does the archetype index earn its keep over intersecting component sets? **Not measured, and
+   kept out.** No client plan names an exact component set today — `has` predicates intersect the
+   component ranges they name — so there is no archetype lookup to price. Revisit when a plan can
+   supply its exact set; slice 6's structural write cost is measured below.
 2. Is `data: FieldValue` (one component per Update) the right envelope, or does Update-count growth
    dominate payload growth? **Measured in slice 4** (see [Measurement](#measurement-the-envelopes-cost-slice-4-797)):
    payload grows 50% for a five-field edit, Updates/s rises 79% while logical edits/s falls 28% at
    the hot write path. The cost is per Update, so a single-field write is unchanged and a create is
-   where it lands. The envelope stands; slice 6 must keep `indexed: false` the default for the same
-   reason.
+   where it lands. The envelope stands; slice 6's component index adds ~15% at every k, and the
+   schema-free server indexes every component rather than an `indexed` subset.
 3. Should `replace` exist at all, or is `merge` plus an explicit `drop` sufficient? `replace` is
    the only method a keyspace component must refuse, so removing it removes a rule.
 4. Does `optional` belong on the component or on the model (a model-level "all components
