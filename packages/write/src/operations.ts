@@ -750,10 +750,16 @@ export const wrapFields = (
       out[key] = { value: null, update_id: updateId, hlc };
       continue;
     }
-    out[key] =
-      markers?.[key]?.map === true && isPlainObject(value)
-        ? wrapMapValue(value, updateId, hlc)
-        : { value, update_id: updateId, hlc };
+    if (markers?.[key]?.map === true && isPlainObject(value)) {
+      out[key] = wrapMapValue(value, key, updateId, hlc);
+      continue;
+    }
+    // An object leaf's properties are parts of one value, not positions, so
+    // `unset` inside one has no envelope. Refusing here keeps the sentinel off
+    // the wire instead of letting it compile to an empty object.
+    const nested = findUnsetPath(value, key);
+    if (nested !== undefined) throw nestedUnsetError(nested);
+    out[key] = { value, update_id: updateId, hlc };
   }
   return out;
 };
@@ -761,17 +767,39 @@ export const wrapFields = (
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** The path of the first `unset` anywhere inside `value`, or `undefined`. */
+const findUnsetPath = (value: unknown, path: string): string | undefined => {
+  if (isUnset(value)) return path;
+  if (value === null || typeof value !== "object") return undefined;
+  const entries = Array.isArray(value)
+    ? value.map((entry, index) => [`${path}[${index}]`, entry] as const)
+    : Object.entries(value).map(([key, entry]) => [`${path}.${key}`, entry] as const);
+  for (const [entryPath, entry] of entries) {
+    const found = findUnsetPath(entry, entryPath);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+const nestedUnsetError = (path: string): Error =>
+  new Error(
+    `unset at "${path}" has no envelope: \`unset\` clears a whole field; declare the field ` +
+      `as e.map to clear one key.`,
+  );
+
 const wrapMapValue = (
   entries: Record<string, unknown>,
+  field: string,
   updateId: string,
   hlc: string,
 ): FieldValue => ({
   map: Object.fromEntries(
-    Object.entries(entries).map(([key, value]) => [
-      key,
-      isUnset(value)
-        ? { value: null, update_id: updateId, hlc }
-        : { value, update_id: updateId, hlc },
-    ]),
+    Object.entries(entries).map(([key, value]) => {
+      if (isUnset(value)) return [key, { value: null, update_id: updateId, hlc }];
+      // A tombstone is the last permitted depth: one level below the map.
+      const nested = findUnsetPath(value, `${field}.${key}`);
+      if (nested !== undefined) throw nestedUnsetError(nested);
+      return [key, { value, update_id: updateId, hlc }];
+    }),
   ),
 });

@@ -13,6 +13,7 @@ import type { TSchema } from "@sinclair/typebox/type";
 
 import {
   hasDefault,
+  isMapSchema,
   type ComponentDef,
   type ConflictScope,
   type FieldMarker,
@@ -425,9 +426,14 @@ export const validatePayload = <T extends TSchema>(
         continue;
       }
       const fieldSchema = properties[key];
-      if (fieldSchema === undefined) continue;
-      const checked = stripUnsetEntries(value, entityName, key, violations);
-      collectFieldTypeErrors(violations, fieldSchema, checked, entityName, key);
+      const before = violations.length;
+      const checked = sanitizeFieldValue(value, fieldSchema, entityName, key, violations);
+      // A nested `unset` is reported where it was authored; type-checking the
+      // stripped value would only add a shape error the caller cannot act on.
+      if (violations.length > before) continue;
+      if (fieldSchema !== undefined) {
+        collectFieldTypeErrors(violations, fieldSchema, checked, entityName, key);
+      }
     }
   } else {
     // `unset` is not a value: drop it from the payload, and treat the key as
@@ -446,7 +452,16 @@ export const validatePayload = <T extends TSchema>(
         violations.push(nullIsNotUnset(entityName, key));
         continue;
       }
-      cleaned[key] = stripUnsetEntries(value, entityName, key, violations);
+      const before = violations.length;
+      const sanitized = sanitizeFieldValue(value, properties?.[key], entityName, key, violations);
+      // A field with an `unset`/null violation is reported where it was
+      // authored; removing it keeps the shape check from adding a second
+      // error about the value it no longer carries.
+      if (violations.length > before) {
+        skippedKeys.push(key);
+        continue;
+      }
+      cleaned[key] = sanitized;
     }
     const shapeForCheck =
       skippedKeys.length > 0 && properties !== undefined
@@ -458,28 +473,77 @@ export const validatePayload = <T extends TSchema>(
 };
 
 /**
- * A map field's payload carries one marker per key. `unset` entries are not
- * values, so drop them before `Value.Check`; a literal null entry is the same
- * mistake as a null leaf and is rejected here.
+ * Drop the `unset` markers a payload is allowed to carry and reject the rest.
+ *
+ * Only a map field's top-level entries are positions: `unset` there compiles
+ * to a tombstone leaf. Anywhere else — inside an object, an array item, or a
+ * map entry's own value — `unset` has no envelope, so it is reported once at
+ * its path rather than stripped into a shape error. A literal `null` is the
+ * same mistake at every depth and reports the same way.
  */
-const stripUnsetEntries = (
+const sanitizeFieldValue = (
   value: unknown,
+  fieldSchema: TSchema | undefined,
   entityName: string,
   field: string,
   violations: ValidationViolation[],
 ): unknown => {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (isUnset(entry)) continue;
-    if (entry === null) {
-      violations.push(nullIsNotUnset(entityName, `${field}.${key}`));
-      continue;
+  if (fieldSchema !== undefined && isMapSchema(fieldSchema) && isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (isUnset(entry)) continue;
+      const path = `${field}.${key}`;
+      if (entry === null) {
+        violations.push(nullIsNotUnset(entityName, path));
+        continue;
+      }
+      out[key] = sanitizeNestedValue(entry, entityName, path, violations);
     }
-    out[key] = entry;
+    return out;
   }
-  return out;
+  return sanitizeNestedValue(value, entityName, field, violations);
 };
+
+const sanitizeNestedValue = (
+  value: unknown,
+  entityName: string,
+  path: string,
+  violations: ValidationViolation[],
+): unknown => {
+  if (isUnset(value)) {
+    violations.push(nestedUnset(entityName, path));
+    return undefined;
+  }
+  if (value === null) {
+    violations.push(nullIsNotUnset(entityName, path));
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) =>
+      sanitizeNestedValue(entry, entityName, `${path}[${index}]`, violations),
+    );
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = sanitizeNestedValue(entry, entityName, `${path}.${key}`, violations);
+    }
+    return out;
+  }
+  return value;
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** One violation for an `unset` that landed deeper than a map field's entries. */
+const nestedUnset = (entityName: string, path: string): ValidationViolation => ({
+  entityName,
+  field: path,
+  message:
+    `${path}: \`unset\` clears a whole field, not a nested property; ` +
+    `declare the field as \`e.map\` to clear one key`,
+});
 
 /** One violation for a payload that used `null` where only `unset` asserts absence. */
 const nullIsNotUnset = (entityName: string, field: string): ValidationViolation => ({
@@ -545,7 +609,7 @@ const collectFieldTypeErrors = (
     out.push({
       entityName,
       field: fieldName,
-      message: `${fieldName}: ${error.message}`,
+      message: `${formatFieldPath(fieldName, error.path)}: ${error.message}`,
     });
   }
 };
@@ -558,9 +622,9 @@ const describeSchema = (schema: TSchema): string => {
   return "value";
 };
 
-/** Map one TypeBox `ValueError` to a `ValidationViolation`; the leading `/` on the path is stripped. */
+/** Map one TypeBox `ValueError` to a `ValidationViolation`; the path is dotted. */
 const toViolation = (error: ValueError, entityName: string): ValidationViolation => {
-  const field = stripLeadingSlash(error.path);
+  const field = formatPath(error.path);
   const message = field === "" ? error.message : `${field}: ${error.message}`;
   return {
     entityName,
@@ -569,5 +633,19 @@ const toViolation = (error: ValueError, entityName: string): ValidationViolation
   };
 };
 
-/** TypeBox prepends `/` to error paths; empty path stays empty. */
-const stripLeadingSlash = (path: string): string => (path.startsWith("/") ? path.slice(1) : path);
+/** A TypeBox error path (`/a/0/b`) as a dotted path (`a[0].b`); empty stays empty. */
+const formatPath = (path: string): string => {
+  const segments = path.split("/").slice(1);
+  return segments.reduce(
+    (acc, segment) =>
+      /^\d+$/.test(segment) ? `${acc}[${segment}]` : acc === "" ? segment : `${acc}.${segment}`,
+    "",
+  );
+};
+
+/** A field name plus the error's path below it: `anchor` + `/y` -> `anchor.y`. */
+const formatFieldPath = (field: string, path: string): string => {
+  const below = formatPath(path);
+  if (below === "") return field;
+  return below.startsWith("[") ? `${field}${below}` : `${field}.${below}`;
+};
