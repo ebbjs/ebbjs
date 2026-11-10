@@ -29,9 +29,6 @@ export interface ComponentDelta {
   readonly add: readonly string[];
 }
 
-/** Component names in first-seen order, without duplicates. */
-const distinct = (components: readonly string[]): readonly string[] => [...new Set(components)];
-
 const tombstoned = (entity: Entity): boolean => entity.deleted_hlc !== null;
 
 /**
@@ -55,12 +52,14 @@ export const touchedComponents = (
   }
   if (next === null || next === undefined) return componentsOf(previous);
   if (previous.type !== next.type || tombstoned(previous) !== tombstoned(next)) {
-    return distinct([...componentsOf(previous), ...componentsOf(next)]);
+    return [...new Set([...componentsOf(previous), ...componentsOf(next)])];
   }
+  const previousFields = previous.data?.fields ?? {};
+  const nextFields = next.data?.fields ?? {};
   const touched: string[] = [];
-  const fields = new Set([...Object.keys(previous.data.fields), ...Object.keys(next.data.fields)]);
+  const fields = new Set([...Object.keys(previousFields), ...Object.keys(nextFields)]);
   for (const field of fields) {
-    if (previous.data.fields[field] === next.data.fields[field]) continue;
+    if (previousFields[field] === nextFields[field]) continue;
     touched.push(componentName(next.type, field));
   }
   return touched;

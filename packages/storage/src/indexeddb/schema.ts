@@ -226,9 +226,8 @@ export const createEbbStores = (
   // text cell format (v9) and the denormalized component names (v11). Each gate
   // is declared explicitly, so a later version bump must decide its own
   // migration rather than inheriting one of these resets.
-  const resetTextCells = oldVersion > 0 && oldVersion < TEXT_CELL_FORMAT_RESET_VERSION;
-  const resetComponentIndex = oldVersion > 0 && oldVersion < COMPONENT_INDEX_RESET_VERSION;
-  const reset = resetTextCells || resetComponentIndex;
+  const resetVersions = [TEXT_CELL_FORMAT_RESET_VERSION, COMPONENT_INDEX_RESET_VERSION];
+  const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {
     // `objectStoreNames` is live while stores are deleted, so iterate a copy.
     for (const name of Array.from(database.objectStoreNames)) {
