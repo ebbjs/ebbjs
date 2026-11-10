@@ -1,8 +1,9 @@
 # @ebbjs/schema
 
 Entity, relationship, and schema definitions for ebbjs: the registry,
-validation, system entities, reserved names, and the collaborative-text field
-type. Pure values only — no storage, no network, no client.
+validation, system entities, reserved names, and the collaborative-text cell
+schemas a document entity declares. Pure values only — no storage, no
+network, no client.
 
 `@ebbjs/client` re-exports this package, so the client API is unchanged.
 
@@ -17,25 +18,38 @@ Node `>=22.8.0`.
 ## Usage
 
 ```ts
-import { defineEntity, defineRelationship, defineSchema, e } from "@ebbjs/schema";
+import { defineEntity, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 
-const issue = defineEntity("issue", {
-  title: e.string(),
-  body: e.collaborativeText(),
-});
+const issue = defineEntity("issue", { title: e.string() });
 
 const project = defineEntity("project", { name: e.string() });
 
+const body = defineEntity(
+  "text_document",
+  { content: e.map(TextCellSchema), version: e.number() },
+  { materialization: "on-demand" },
+);
+
 const belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
+const hasBody = defineRelationship({
+  source: issue,
+  target: body,
+  as: "body",
+  sourceCardinality: "one",
+});
 
 const schema = defineSchema({
-  entities: { issue, project },
-  relationships: { belongsTo },
+  entities: { issue, project, text_document: body },
+  relationships: { belongsTo, hasBody },
   version: 1,
 });
 
 schema._registry.get("issue");
 ```
+
+An entity map key must equal the definition's own `name`; `defineSchema` throws
+`EntityKeyMismatchError` otherwise, since the key is the name the app's
+namespaces and permission strings are addressed by.
 
 A field declares a read-time default with `.default(v)`; `create()` may then
 omit it, and it reads as `T`. A field without one reads as `T | undefined`,
@@ -48,16 +62,15 @@ live value" (absent or cleared) — see the
 `e` ships the builders below. A field's type flows to `EntityValues`, local
 write validation, and `where` / `orderBy`.
 
-| Builder                 | Reads as                      | Notes                                           |
-| ----------------------- | ----------------------------- | ----------------------------------------------- |
-| `e.string()`            | `string`                      |                                                 |
-| `e.number()`            | `number`                      |                                                 |
-| `e.integer()`           | `number`                      |                                                 |
-| `e.boolean()`           | `boolean`                     |                                                 |
-| `e.enum(values)`        | the members' literal union    | closed set; a write outside it fails validation |
-| `e.array(value)`        | `Static<typeof value>[]`      |                                                 |
-| `e.map(value)`          | `Record<string, Static<...>>` | entries merge key by key, not the whole field   |
-| `e.collaborativeText()` | none — derived body           | row accessor is `Promise<TextDocument \| null>` |
+| Builder          | Reads as                      | Notes                                           |
+| ---------------- | ----------------------------- | ----------------------------------------------- |
+| `e.string()`     | `string`                      |                                                 |
+| `e.number()`     | `number`                      |                                                 |
+| `e.integer()`    | `number`                      |                                                 |
+| `e.boolean()`    | `boolean`                     |                                                 |
+| `e.enum(values)` | the members' literal union    | closed set; a write outside it fails validation |
+| `e.array(value)` | `Static<typeof value>[]`      |                                                 |
+| `e.map(value)`   | `Record<string, Static<...>>` | entries merge key by key, not the whole field   |
 
 ### Enums
 
@@ -124,7 +137,7 @@ builders do.
 | `src/entity.ts`           | `defineEntity`, `e`, field markers, entity types.                      |
 | `src/entity-registry.ts`  | `EntityRegistry`, `validatePayload`, `EntityValidationError`.          |
 | `src/relationship.ts`     | `defineRelationship` and relationship types.                           |
-| `src/schema.ts`           | `defineSchema`, derived-field expansion, schema errors.                |
+| `src/schema.ts`           | `defineSchema`, schema errors.                                         |
 | `src/system-entities.ts`  | `group`, `groupMember`, `entityGroup`, `relationship` system entities. |
-| `src/reserved.ts`         | Reserved entity, membership, and generated-document names.             |
-| `src/collaborative-text/` | Document schema, wire adapters, derived ids, tree, and `TextDocument`. |
+| `src/reserved.ts`         | Reserved entity and membership names.                                  |
+| `src/collaborative-text/` | Cell schemas, wire adapters, tree, and `TextDocument`.                 |

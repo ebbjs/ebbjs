@@ -26,12 +26,20 @@ Granularity is declared on the entity, not guessed:
 ```ts
 const post = defineEntity(
   "blog_post",
-  {
-    title: e.string(),
-    body: e.collaborativeText({ conflictScope: "entity" }),
-  },
+  { title: e.string() },
   { conflictScope: "field" }, // the default
 );
+const body = defineEntity(
+  "text_document",
+  { content: e.map(TextCellSchema), version: e.number() },
+  { conflictScope: "entity", materialization: "on-demand" },
+);
+const schema = defineSchema({
+  entities: { blog_post: post, text_document: body },
+  relationships: {
+    body: defineRelationship({ source: post, target: body, as: "body", sourceCardinality: "one" }),
+  },
+});
 ```
 
 - `"field"` surfaces a same-position race, and a concurrent `put` / `delete` that omitted a field the local write holds (the field is reverted on the server).
@@ -39,7 +47,7 @@ const post = defineEntity(
 - Unknown entity types default to `"field"`.
 - Structural edge subject types (`relationship`, `entityGroup`, `groupMember`) are never surfaced: concurrent writes to edges are not field conflicts.
 
-`e.collaborativeText({ conflictScope })` stamps the generated document entity, so each derived body declares its own scope. Every derived body is its own document entity ([#398](https://github.com/ebbjs/ebbjs/issues/398)), so the old blanket `text_document.*` grant becomes one grant per body.
+`conflictScope` is declared on the document entity, so each document declares its own scope. Every document is its own entity ([#398](https://github.com/ebbjs/ebbjs/issues/398)), so a blanket `text_document.*` grant becomes one grant per document entity.
 
 ## Positions
 
@@ -246,5 +254,5 @@ The convergence/detection boundary is deliberate:
 ## References
 
 - Epic [#389](https://github.com/ebbjs/ebbjs/issues/389) — offline conflict surfacing
-- [#390](https://github.com/ebbjs/ebbjs/issues/390) detection with declared scope · [#392](https://github.com/ebbjs/ebbjs/issues/392) entity-level surface and resolution · [#395](https://github.com/ebbjs/ebbjs/issues/395) pre-sync capture · [#397](https://github.com/ebbjs/ebbjs/issues/397) duplicate at a point · [#398](https://github.com/ebbjs/ebbjs/issues/398) one document entity per derived field · [#408](https://github.com/ebbjs/ebbjs/issues/408) before/after rows on the payload · [#409](https://github.com/ebbjs/ebbjs/issues/409) entity-level before/after and diff · [#410](https://github.com/ebbjs/ebbjs/issues/410) retirement of `client.snapshots`
+- [#390](https://github.com/ebbjs/ebbjs/issues/390) detection with declared scope · [#392](https://github.com/ebbjs/ebbjs/issues/392) entity-level surface and resolution · [#395](https://github.com/ebbjs/ebbjs/issues/395) pre-sync capture · [#397](https://github.com/ebbjs/ebbjs/issues/397) duplicate at a point · [#398](https://github.com/ebbjs/ebbjs/issues/398) one document entity per document · [#408](https://github.com/ebbjs/ebbjs/issues/408) before/after rows on the payload · [#409](https://github.com/ebbjs/ebbjs/issues/409) entity-level before/after and diff · [#410](https://github.com/ebbjs/ebbjs/issues/410) retirement of `client.snapshots`
 - `packages/client/src/sync/conflicts.ts`, `packages/client/src/sync/conflict-slots.ts`, `packages/client/src/sync/outbox.ts`

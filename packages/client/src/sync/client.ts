@@ -103,7 +103,6 @@ import {
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { groupMembersOf } from "@ebbjs/write";
-import { readGeneratedParts } from "./generated-parts";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
 import {
@@ -1628,25 +1627,24 @@ export class SyncClient<
    * ```
    *
    * `docType` is the document entity's wire `subject_type`. Omit it for a
-   * raw document (`text_document`); pass the generated name when opening a
-   * schema-derived body by hand. The derived-body accessor resolves it for
-   * you.
+   * raw document (`text_document`); pass the declared document entity's name
+   * when opening a schema-declared document by hand.
    */
   textDocument(docId: string, docType?: string): TextDocument {
     return this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
   }
 
   /**
-   * Open (or get) the TextDocument for a derived body, bound to the
-   * client's write path so local edits self-flush. `docType` is the
-   * generated document entity's name; the derived-body accessor passes
-   * the type it resolved from the relationship so a custom `entity`
-   * option works.
+   * Return the `TextDocument` for a schema-declared document entity, bound
+   * to the client's write path so local edits self-flush. `docType` is the
+   * document entity's wire `subject_type`; pass the name the schema registers
+   * the entity under. Does not read or pin the row: hydrate it from the
+   * document's `content` / `version`.
    *
    * Deliberately separate from {@link textDocument}: the low-level API
    * keeps its manual `client.write(doc.pendingActions())` contract
    * (which also leaves the 250ms pending window the conflict sweep
-   * needs), while a derived body flushes itself.
+   * needs), while this opener flushes itself.
    */
   openDerivedTextDocument(docId: string, docType: string): TextDocument {
     const doc = this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
@@ -2587,13 +2585,8 @@ export function createClient<
     return client as NamespacedClient<S, TActions, TFunctions, R>;
   }
   // The read path's capability: the registry its accessors resolve
-  // against and the document opener a collaborative-text body hydrates
-  // through. Writes do not run through here.
-  const readCap = {
-    registry: client.registry,
-    openTextDocument: (docId: string, docType: string) =>
-      client.openDerivedTextDocument(docId, docType),
-  };
+  // against. Writes do not run through here.
+  const readCap = { registry: client.registry };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
     queries: client.queries,
@@ -2619,10 +2612,6 @@ export function createClient<
       // The draft membership verbs resolve against the local cache after
       // the synchronous callback returns.
       memberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
-      // A membership change carries the entity's generated documents and
-      // their edges, resolved from the local cache after the callback.
-      generatedParts: (entityType: string, entityId: string) =>
-        readGeneratedParts(client.storage, client.registry, entityType, entityId),
       // A `duplicate` copy source, and the groupMember the membership
       // guard reads. A wrong-type row reads as absent, like a missing one.
       entity: async (entityType: string, entityId: string) => {

@@ -277,7 +277,6 @@ export {
   RunCellSchema,
   TextCellSchema,
   DOC_CONTENT_FIELD,
-  generatedDocEntityName,
 } from "@ebbjs/schema";
 
 export {
@@ -338,19 +337,12 @@ export {
   type ConflictScope,
   type Materialization,
   type MapSchema,
-  type CollaborativeTextSchema,
-  type CollaborativeTextOptions,
-  type DerivedFieldDef,
-  type DerivedAccessors,
-  type DerivedKeys,
-  type WireFields,
   type TSchema,
 } from "@ebbjs/schema";
 
 export {
   defineRelationship,
   type RelationshipDef,
-  type RelationshipKind,
   type SourceCardinality,
   type DefineRelationshipInput,
 } from "@ebbjs/schema";
@@ -365,21 +357,13 @@ export {
 
 export {
   defineSchema,
+  EntityKeyMismatchError,
   UnregisteredRelationshipEndpointError,
-  DerivedFieldCollisionError,
-  DerivedDocNameCollisionError,
-  ConflictScopeMismatchError,
   type DefineSchemaInput,
-  type ExpandedEntities,
   type Schema,
 } from "@ebbjs/schema";
 
-export {
-  ReservedNameError,
-  RESERVED_ENTITY_NAMES,
-  RESERVED_MEMBERSHIP_NAMES,
-  DERIVED_DOC_ENTITY_PREFIX,
-} from "@ebbjs/schema";
+export { ReservedNameError, RESERVED_ENTITY_NAMES, RESERVED_MEMBERSHIP_NAMES } from "@ebbjs/schema";
 
 export {
   relationshipSystemEntity,

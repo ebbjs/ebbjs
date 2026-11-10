@@ -12,7 +12,7 @@ import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import { hasDefault, type ConflictScope, type EntityDef, type FieldMarker } from "./entity";
-import type { RelationshipDef, RelationshipKind, SourceCardinality } from "./relationship";
+import type { RelationshipDef, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
 export interface ValidationViolation {
@@ -77,7 +77,6 @@ interface RegisteredRelationship {
   as: string;
   sourceCardinality: SourceCardinality;
   type: string;
-  kind: RelationshipKind | undefined;
 }
 
 const relationshipKey = (sourceName: string, as: string): string => `${sourceName}::${as}`;
@@ -94,7 +93,6 @@ const toRelationshipDef = (r: RegisteredRelationship): AnyRelationshipDef => ({
   as: r.as,
   sourceCardinality: r.sourceCardinality,
   type: r.type,
-  kind: r.kind,
 });
 
 export class EntityRegistry {
@@ -164,7 +162,6 @@ export class EntityRegistry {
       as: def.as,
       sourceCardinality: def.sourceCardinality,
       type: def.type,
-      kind: def.kind,
     };
     this.relationships.set(key, entry);
     if (prev === undefined) {

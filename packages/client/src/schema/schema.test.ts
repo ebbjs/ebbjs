@@ -237,9 +237,9 @@ describe("defineSchema materialization", () => {
   );
 
   it("keeps each entity's declared materialization", () => {
-    const schema = defineSchema({ entities: { page, pageContent }, version: 1 });
+    const schema = defineSchema({ entities: { page, page_content: pageContent }, version: 1 });
     expect(schema.entities.page.materialization).toBe("held");
-    expect(schema.entities.pageContent.materialization).toBe("on-demand");
+    expect(schema.entities.page_content.materialization).toBe("on-demand");
   });
 
   it("leaves system entities held", () => {

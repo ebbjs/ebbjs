@@ -41,7 +41,7 @@ description of `create` / `update` / `delete` / `relate` / `unrelate` that both
 the client's draft planner and the functions runtime resolve into operations.
 `operationCallFor(registry, verb, resolution)` maps one verb to its
 `OperationCall`, and `createEntityInput` interprets a create's field map
-(pointers, collapsed handles, derived bodies). A caller supplies a
+(pointers, collapsed handles). A caller supplies a
 `VerbResolution` for the state the verb needs but the caller owns — the acting
 entity's groups, a one-cardinality edge's row id, a many-cardinality FK set —
 which is a materialized cache on the client and an invocation's write buffer
@@ -62,7 +62,6 @@ its own sequence.
 | `src/verbs.ts`            | `WriteVerb` / `operationCallFor` / `createEntityInput` — semantic verbs to planner calls.                  |
 | `src/relationship.ts`     | Wire builders for relationship and `entityGroup` Updates.                                                  |
 | `src/membership.ts`       | Group-scope resolution and the membership refusals.                                                        |
-| `src/generated-parts.ts`  | Types for the document entities and edges a membership change carries.                                     |
 | `src/pointer.ts`          | `PointerValue` / `normalizePointer`.                                                                       |
 | `src/field-projection.ts` | `projectFieldValue` — wire field to application value.                                                     |
 | `src/rejection.ts`        | `Rejection` / `WriteResponse` wire shapes.                                                                 |

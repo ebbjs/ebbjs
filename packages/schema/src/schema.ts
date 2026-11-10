@@ -7,22 +7,11 @@
  * call at module top level and share the value across clients.
  */
 
-import type { ConflictScope, EntityDef } from "./entity";
+import type { EntityDef } from "./entity";
 import { EntityRegistry } from "./entity-registry";
-import { defineRelationship, type RelationshipDef } from "./relationship";
-import type { CollaborativeTextSchema } from "./entity";
+import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
-import {
-  assertAccessorNameAvailable,
-  assertEntityNameAvailable,
-  DERIVED_DOC_ENTITY_PREFIX,
-  hasDerivedDocPrefix,
-} from "./reserved";
-import {
-  buildTextDocumentEntity,
-  generatedDocEntityName,
-  isCollaborativeText,
-} from "./collaborative-text/schema";
+import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
 import {
   entityGroupSystemEntity,
   groupMemberSystemEntity,
@@ -34,86 +23,29 @@ type AnyEntityDef = EntityDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyEntityDef, AnyEntityDef>;
 
 /**
- * Raised when an entity declares a derived field whose accessor name
- * collides with a user-declared relationship on the same source. The
- * registry would otherwise overwrite the user's relationship silently.
+ * Raised when the key an entity is registered under differs from the
+ * definition's own `name`. Namespaces are keyed by the map key but
+ * built from `def.name`, so a mismatched key would address another
+ * entity type — and therefore another permission string — under the
+ * name the app reads.
  */
-export class DerivedFieldCollisionError extends Error {
-  constructor(sourceName: string, field: string) {
+export class EntityKeyMismatchError extends Error {
+  /** The key the entity map registered. */
+  readonly key: string;
+  /** The name the definition carries. */
+  readonly entityName: string;
+
+  constructor(key: string, entityName: string) {
     super(
-      `Entity "${sourceName}" declares the derived field "${field}" and also a ` +
-        `relationship with the same accessor; rename one of them.`,
+      `Entity map key "${key}" does not match the definition's name "${entityName}". ` +
+        `A preset keyed under another name could address another entity type and ` +
+        `permission string. Key it under its own name: entities: { ${entityName} }.`,
     );
-    this.name = "DerivedFieldCollisionError";
+    this.name = "EntityKeyMismatchError";
+    this.key = key;
+    this.entityName = entityName;
   }
 }
-
-/**
- * Raised when two derived fields expand to the same generated document
- * entity name. The scheme `text_document__<parent>__<field>` is
- * ambiguous when an entity or field name itself contains `__`.
- */
-export class DerivedDocNameCollisionError extends Error {
-  constructor(parent: string, field: string) {
-    super(
-      `Derived field "${parent}.${field}" generates document entity ` +
-        `"${generatedDocEntityName(parent, field)}", which another derived field ` +
-        `already claims. Rename the entity or field so generated names stay distinct.`,
-    );
-    this.name = "DerivedDocNameCollisionError";
-  }
-}
-
-/**
- * Raised when two derived fields share one explicit document entity but
- * declare different conflict scopes. The entity carries one scope, so
- * fields that share it must agree.
- */
-export class ConflictScopeMismatchError extends Error {
-  /** Name of the shared document entity. */
-  readonly docName: string;
-  /** Scope already stamped on the shared entity. */
-  readonly existing: ConflictScope;
-  /** Scope the newly-expanded field declares. */
-  readonly incoming: ConflictScope;
-
-  constructor(docName: string, existing: ConflictScope, incoming: ConflictScope) {
-    super(
-      `Document entity "${docName}" carries conflictScope "${existing}" but is ` +
-        `reached by a field declaring "${incoming}"; fields that share a ` +
-        `document must declare the same scope.`,
-    );
-    this.name = "ConflictScopeMismatchError";
-    this.docName = docName;
-    this.existing = existing;
-    this.incoming = incoming;
-  }
-}
-
-/** Document entity name a derived field expands to. */
-type ExpandedDocName<P extends string, Fld extends string, S> =
-  S extends CollaborativeTextSchema<infer E>
-    ? [E] extends [string]
-      ? E
-      : `${typeof DERIVED_DOC_ENTITY_PREFIX}${P}__${Fld}`
-    : never;
-
-/** Every document entity name contributed by `TEntities`' derived fields. */
-type DerivedDocNames<TEntities> = {
-  [K in keyof TEntities]: TEntities[K] extends EntityDef<infer F, infer N>
-    ? { [Fld in keyof F & string]: ExpandedDocName<N & string, Fld, F[Fld]> }[keyof F & string]
-    : never;
-}[keyof TEntities];
-
-/**
- * The entity map `defineSchema` exposes: the user's entities plus one
- * generated document entity per derived body (keyed by its document
- * name). The generated entities are erased to `AnyEntityDef`; the
- * per-field typing that matters lives on the parent's derived
- * accessors.
- */
-export type ExpandedEntities<TEntities extends Record<string, AnyEntityDef>> = TEntities &
-  Record<DerivedDocNames<TEntities> & string, AnyEntityDef>;
 
 /**
  * Raised when `defineSchema` sees a relationship whose source or
@@ -215,9 +147,8 @@ export interface Schema<
 }
 
 /**
- * Inputs accepted by `defineSchema`. Mirrors {@link Schema} but
- * without the derived `_registry` and with `relationships` and
- * `minSupportedVersion` optional.
+ * Inputs accepted by `defineSchema`. Mirrors {@link Schema} but with
+ * `relationships` and `minSupportedVersion` optional.
  */
 export interface DefineSchemaInput<
   TEntities extends Record<string, AnyEntityDef>,
@@ -246,98 +177,23 @@ export interface DefineSchemaInput<
  * adding its own. A relationship whose source or target is neither a
  * system entity nor a member of `entities` throws
  * `UnregisteredRelationshipEndpointError` before the schema is frozen.
+ * An entity registered under a map key other than its own name throws
+ * `EntityKeyMismatchError`: the map key is what a namespace is exposed
+ * as, so the two must agree.
  */
 export function defineSchema<
   TEntities extends Record<string, AnyEntityDef>,
   TRelationships extends Record<string, AnyRelationshipDef> = Record<string, never>,
->(
-  input: DefineSchemaInput<TEntities, TRelationships>,
-): Schema<ExpandedEntities<TEntities>, TRelationships> {
-  const expanded = expandDerivedFields(input.entities, input.relationships);
+>(input: DefineSchemaInput<TEntities, TRelationships>): Schema<TEntities, TRelationships> {
   const registry = new EntityRegistry();
-  seedRegistry(registry, expanded.entities, expanded.relationships);
+  seedRegistry(registry, input.entities, input.relationships);
   return Object.freeze({
-    entities: expanded.entities,
-    // Runtime relationships include the generated collaborative-text
-    // edges; the static `TRelationships` stays the caller's map so the
-    // typed row accessors are derived from declared relationships only
-    // (the derived accessors supply the body's own type).
-    relationships: expanded.relationships,
+    entities: input.entities,
+    relationships: input.relationships,
     version: input.version,
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,
-  }) as unknown as Schema<ExpandedEntities<TEntities>, TRelationships>;
-}
-
-/**
- * Expand each entity's derived fields into a document entity plus a
- * `collaborative-text` relationship. The generated document entity is
- * merged into the returned entity map so it is a first-class registered
- * entity (a `client.<doc>` namespace and a draft namespace), which is
- * also what lets `defineSchema`'s endpoint assertion accept the
- * generated relationship.
- */
-export function expandDerivedFields(
-  entities: Record<string, AnyEntityDef>,
-  relationships: Record<string, AnyRelationshipDef> | undefined,
-): {
-  entities: Record<string, AnyEntityDef>;
-  relationships: Record<string, AnyRelationshipDef> | undefined;
-} {
-  const expandedEntities: Record<string, AnyEntityDef> = { ...entities };
-  let expandedRelationships: Record<string, AnyRelationshipDef> | undefined =
-    relationships === undefined ? undefined : { ...relationships };
-  // Generated names are a function of `(parent, field)`, so an entity or
-  // field name containing `__` can alias another pair's name. Track the
-  // owners to fail at schema authoring rather than silently sharing.
-  const generatedOwners = new Map<string, string>();
-
-  for (const entity of Object.values(entities)) {
-    const derived = entity.derived as
-      | Record<string, { kind: string; entity?: string; conflictScope?: ConflictScope }>
-      | undefined;
-    if (derived === undefined) continue;
-    for (const [field, marker] of Object.entries(derived)) {
-      if (!isCollaborativeText(marker)) continue;
-      const table = (expandedRelationships ??= {});
-      const collision = Object.values(table).some(
-        (rel) => rel.source.name === entity.name && rel.as === field,
-      );
-      if (collision) throw new DerivedFieldCollisionError(entity.name, field);
-
-      const scope = marker.conflictScope ?? "field";
-      let docName: string;
-      if (marker.entity !== undefined) {
-        assertEntityNameAvailable(marker.entity);
-        docName = marker.entity;
-      } else {
-        docName = generatedDocEntityName(entity.name, field);
-        const owner = `${entity.name}::${field}`;
-        const previous = generatedOwners.get(docName);
-        if (previous !== undefined && previous !== owner) {
-          throw new DerivedDocNameCollisionError(entity.name, field);
-        }
-        generatedOwners.set(docName, owner);
-      }
-
-      let docEntity = expandedEntities[docName];
-      if (docEntity === undefined) {
-        docEntity = buildTextDocumentEntity(docName, scope);
-        expandedEntities[docName] = docEntity;
-      } else if (docEntity.conflictScope !== scope) {
-        throw new ConflictScopeMismatchError(docName, docEntity.conflictScope, scope);
-      }
-      table[`${entity.name}::${field}`] = defineRelationship({
-        source: entity,
-        target: docEntity,
-        as: field,
-        sourceCardinality: "one",
-        kind: "collaborative-text",
-      });
-    }
-  }
-
-  return { entities: expandedEntities, relationships: expandedRelationships };
+  }) as unknown as Schema<TEntities, TRelationships>;
 }
 
 /**
@@ -345,7 +201,8 @@ export function expandDerivedFields(
  * onto `registry`. Shared by `defineSchema` and the per-client
  * registry builder so the two can't drift. Rejects app-authored
  * names that collide with the reserved system / membership names,
- * and relationships whose source or target entity is not registered.
+ * entity map keys that differ from the definition's name, and
+ * relationships whose source or target entity is not registered.
  */
 export function seedRegistry(
   registry: EntityRegistry,
@@ -356,13 +213,9 @@ export function seedRegistry(
   registry.register(groupSystemEntity);
   registry.register(groupMemberSystemEntity);
   registry.register(entityGroupSystemEntity);
-  for (const entity of Object.values(entities)) {
-    // Generated document entities carry the reserved prefix by
-    // construction; the prefix is exactly what `assertEntityNameAvailable`
-    // rejects, so the check is for app-authored names only.
-    if (!hasDerivedDocPrefix(entity.name)) {
-      assertEntityNameAvailable(entity.name);
-    }
+  for (const [key, entity] of Object.entries(entities)) {
+    if (key !== entity.name) throw new EntityKeyMismatchError(key, entity.name);
+    assertEntityNameAvailable(entity.name);
     registry.register(entity);
   }
   if (relationships !== undefined) {

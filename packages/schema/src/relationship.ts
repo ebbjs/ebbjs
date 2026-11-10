@@ -26,14 +26,6 @@ import { assertAccessorNameAvailable } from "./reserved";
 export type SourceCardinality = "one" | "many";
 
 /**
- * Semantic kind of a relationship. `undefined` is an ordinary typed
- * link. `"collaborative-text"` marks a generated relationship whose
- * forward-one accessor hydrates a `TextDocument` from the target's
- * `content` map instead of returning the raw target entity.
- */
-export type RelationshipKind = "collaborative-text";
-
-/**
  * Definition of one typed link between two entity definitions. Returned
  * by `defineRelationship`; consumed by `EntityRegistry.registerRelationship`
  * and the row accessors.
@@ -65,8 +57,6 @@ export interface RelationshipDef<
    * name. Override for descriptive wire debugging.
    */
   readonly type: string;
-  /** Semantic kind; absent for ordinary typed links. */
-  readonly kind?: RelationshipKind;
 }
 
 /**
@@ -85,7 +75,6 @@ export interface DefineRelationshipInput<
   as: A;
   sourceCardinality?: C;
   type?: string;
-  kind?: RelationshipKind;
 }
 
 /**
@@ -107,6 +96,5 @@ export function defineRelationship<
     as: opts.as,
     sourceCardinality,
     type,
-    kind: opts.kind,
   });
 }

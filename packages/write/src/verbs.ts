@@ -214,10 +214,9 @@ export const normalizeGroupIds = (
 
 /**
  * Resolve a create into the create operation's input: field values with
- * handles collapsed, declared relationships split into pointers (and, for a
- * many-cardinality accessor the entity declares as a field, a canonical FK
- * value), and derived collaborative-text bodies handed to the operation that
- * expands them.
+ * handles collapsed and declared relationships split into pointers (and, for
+ * a many-cardinality accessor the entity declares as a field, a canonical FK
+ * value).
  *
  * This is the only place the create shape is interpreted, so the runtime and
  * the fixtures cannot disagree about what a create field means.
@@ -228,26 +227,9 @@ export const createEntityInput = (
 ): CreateEntityInput => {
   const fields: Record<string, unknown> = {};
   const pointers: ResolvedPointer[] = [];
-  const bodies: Record<string, string> = {};
   const def = registry.get(verb.entity);
-  const derived = def?.derived as Record<string, unknown> | undefined;
 
   for (const [key, value] of Object.entries(verb.fields)) {
-    if (derived !== undefined && Object.prototype.hasOwnProperty.call(derived, key)) {
-      if (value === undefined || value === null) continue;
-      if (typeof value !== "string") {
-        throw new EntityValidationError([
-          {
-            entityName: verb.entity,
-            field: key,
-            message: `create: derived field "${key}" must be a string body`,
-          },
-        ]);
-      }
-      if (value.length > 0) bodies[key] = value;
-      continue;
-    }
-
     const rel = registry.getRelationship(verb.entity, key);
     if (rel === undefined) {
       fields[key] = collapseHandles(value);
@@ -283,7 +265,6 @@ export const createEntityInput = (
     id: verb.id,
     fields,
     pointers,
-    bodies,
     groups: [...verb.groups],
     validate: verb.validate,
   };

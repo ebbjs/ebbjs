@@ -6,7 +6,6 @@ import {
   hasDefault,
   readDefault,
   validatePayload,
-  DerivedFieldDefaultError,
   type EntityDef,
   NullFieldError,
 } from "@ebbjs/schema";
@@ -141,12 +140,6 @@ describe("defineEntity reserved names", () => {
     const todo = defineEntity("todo", { title: e.string(), grouping: e.string() });
     expect(todo.name).toBe("todo");
   });
-
-  it("rejects an entity name carrying the generated document prefix", () => {
-    expect(() => defineEntity("text_document__x__y", { name: e.string() })).toThrow(
-      ReservedNameError,
-    );
-  });
 });
 
 describe("e.* primitives", () => {
@@ -241,12 +234,6 @@ describe("declarative field defaults", () => {
   it("readDefault tolerates an unknown property schema", () => {
     expect(readDefault(undefined)).toBeUndefined();
     expect(hasDefault(undefined)).toBe(false);
-  });
-
-  it("rejects a default on a derived collaborative-text field", () => {
-    expect(() => defineEntity("doc", { body: e.collaborativeText().default("seed") })).toThrow(
-      DerivedFieldDefaultError,
-    );
   });
 });
 

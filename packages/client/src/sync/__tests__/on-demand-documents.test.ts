@@ -1,12 +1,13 @@
 /**
  * On-demand documents (#500) at the client seam.
  *
- * Metadata (page, relationship, membership) stays held in the replica while a
- * collaborative-text body is materialized only while it is open. The body is
- * reached through `get(id)` / `row.body`, pinned in an LRU window, released by
- * `close` or the TTL, and never persisted as replica rows. A query over an
- * on-demand source is refused; a held source may join an on-demand target,
- * with the cached result going `stale` while the joined row loads.
+ * Metadata (page, relationship, membership) stays held in the replica while an
+ * on-demand document entity is materialized only while it is open. A parent
+ * row reaches its document through `row.body`; the document itself is read
+ * through its own namespace's `get`, which pins it in an LRU window. `close`
+ * or the TTL releases it, and it is never persisted as a replica row. A query
+ * over an on-demand source is refused; a held source may join an on-demand
+ * target, with the cached result going `stale` while the joined row loads.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -14,10 +15,18 @@ import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
-import { e, defineEntity, type EntityDef } from "@ebbjs/schema";
+import {
+  CURRENT_TEXT_VERSION,
+  e,
+  defineEntity,
+  makeRunId,
+  ROOT_ANCHOR,
+  TextCellSchema,
+  type EntityDef,
+  type TextCell,
+} from "@ebbjs/schema";
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
 import { defineSchema, type Schema } from "@ebbjs/schema";
-import { generatedDocEntityName } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
@@ -69,27 +78,77 @@ function harness<S extends AnySchema>(
   return { client, storage, written };
 }
 
-const page = defineEntity("page", { title: e.string(), body: e.collaborativeText() });
-const pageSchema = defineSchema({ entities: { page }, version: 1 });
-const bodyDocType = generatedDocEntityName("page", "body");
+const page = defineEntity("page", { title: e.string() });
+const pageBody = defineEntity(
+  "page_body",
+  { content: e.map(TextCellSchema), version: e.number() },
+  { materialization: "on-demand" },
+);
+const pageSchema = defineSchema({
+  entities: { page, page_body: pageBody },
+  relationships: {
+    body: defineRelationship({
+      source: page,
+      target: pageBody,
+      as: "body",
+      sourceCardinality: "one",
+    }),
+  },
+  version: 1,
+});
+const bodyDocType = "page_body";
 
-/** Create a page with a body, optionally folding its echo so it is durable. */
+let seededDocument = 0;
+
+/** The initial run an app passes to the document entity's `create`. */
+const initialContent = (text: string): Record<string, TextCell> => {
+  seededDocument += 1;
+  const stamp = makeHlc(1_711_036_800_000 + seededDocument);
+  const run: TextCell = {
+    kind: "run",
+    id: makeRunId(stamp, "actor_1"),
+    text,
+    author: "actor_1",
+    stamp,
+    anchor: ROOT_ANCHOR,
+  };
+  return { [run.id]: run };
+};
+
+/** The run text of a projected document row. */
+const textOf = (content: Record<string, TextCell>): string =>
+  Object.values(content)
+    .flatMap((cell) => (cell.kind === "run" ? [cell.text] : []))
+    .join("");
+
+/**
+ * Create a page with its document in one Action, optionally folding the echo
+ * so the rows are durable.
+ */
 const createPage = async (
   client: MountedClient<typeof pageSchema>,
   written: readonly Action[],
   input: { title: string; body: string },
   gsn?: number,
-): Promise<{ pageId: string; docId: string }> => {
+): Promise<{ pageId: string; bodyId: string }> => {
   const before = written.length;
-  const { id } = await client.actions.create({ entity: "page", input, groups: ["g_1"] });
+  const { pageId } = await client.actions.run(({ page: pageDraft, page_body }) => {
+    const createdPage = pageDraft.create({ title: input.title }, { groups: ["g_1"] });
+    const createdBody = page_body.create(
+      { content: initialContent(input.body), version: CURRENT_TEXT_VERSION },
+      { groups: ["g_1"] },
+    );
+    pageDraft.link(createdPage.id, "body", createdBody.id);
+    return { pageId: createdPage.id };
+  });
   const created = written.slice(before);
   if (gsn !== undefined) {
     for (const action of created) await callApplyAction(client, { ...action, gsn });
   }
-  const docId = created[0]!.updates.find(
+  const bodyId = created[0]!.updates.find(
     (update) => update.subject_type === bodyDocType,
   )!.subject_id;
-  return { pageId: id, docId };
+  return { pageId, bodyId };
 };
 
 const field = (value: unknown, id: string): FieldValue => ({
@@ -128,7 +187,12 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
 describe("on-demand document residency", () => {
   it("holds page metadata and memberships while leaving the body out of the replica", async () => {
     const { client, written } = harness(pageSchema);
-    const { pageId, docId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
+    const { pageId, bodyId } = await createPage(
+      client,
+      written,
+      { title: "One", body: "hello" },
+      1,
+    );
 
     expect(client.replicaStats.byType).toMatchObject({
       page: 1,
@@ -136,51 +200,54 @@ describe("on-demand document residency", () => {
       entityGroup: 2,
     });
     expect(client.replicaStats.byType[bodyDocType]).toBeUndefined();
-    expect(client.replica.get(docId)).toBeUndefined();
+    expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replica.get(pageId)?.data.fields.title.value).toBe("One");
+
+    const parent = await client.page.get(pageId);
+    expect((await parent!.body)!.id).toBe(bodyId);
   });
 
-  it("opens a body through row.body, pinning it, and releases it on close", async () => {
+  it("opens a body through its namespace, pinning it, and releases it on close", async () => {
     const { client, written } = harness(pageSchema, { pinnedTtlMs: 0 });
-    const { pageId } = await createPage(client, written, { title: "One", body: "hello" });
+    const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
-    const doc = await (await client.page.get(pageId))!.body;
+    const body = await client.page_body.get(bodyId);
 
-    expect(doc!.text).toBe("hello");
-    expect(client.replica.isOpen(doc!.docId)).toBe(true);
-    expect(client.replica.get(doc!.docId)).toBeDefined();
+    expect(textOf(body!.content ?? {})).toBe("hello");
+    expect(client.replica.isOpen(bodyId)).toBe(true);
+    expect(client.replica.get(bodyId)).toBeDefined();
     expect(client.replicaStats.pinned).toBe(1);
 
-    client.replica.close(doc!.docId);
+    client.replica.close(bodyId);
 
-    expect(client.replica.isOpen(doc!.docId)).toBe(false);
-    expect(client.replica.get(doc!.docId)).toBeUndefined();
+    expect(client.replica.isOpen(bodyId)).toBe(false);
+    expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replicaStats.pinned).toBe(0);
   });
 
   it("keeps a closed body cached until its TTL, then releases it", async () => {
     const { client, written } = harness(pageSchema, { pinnedTtlMs: 10 });
-    const { pageId } = await createPage(client, written, { title: "One", body: "hello" });
+    const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
-    const doc = await (await client.page.get(pageId))!.body;
-    client.replica.close(doc!.docId);
+    await client.page_body.get(bodyId);
+    client.replica.close(bodyId);
 
-    expect(client.replica.isOpen(doc!.docId)).toBe(false);
-    expect(client.replica.get(doc!.docId)).toBeDefined();
+    expect(client.replica.isOpen(bodyId)).toBe(false);
+    expect(client.replica.get(bodyId)).toBeDefined();
 
-    await waitFor(() => client.replica.get(doc!.docId) === undefined);
+    await waitFor(() => client.replica.get(bodyId) === undefined);
     expect(client.replicaStats.pinned).toBe(0);
   });
 
   it("releases a closed body after the pinned TTL", async () => {
     const { client, written } = harness(pageSchema, { pinnedTtlMs: 10 });
-    const { pageId } = await createPage(client, written, { title: "One", body: "hello" });
+    const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
-    const doc = await (await client.page.get(pageId))!.body;
-    expect(client.replica.isOpen(doc!.docId)).toBe(true);
+    await client.page_body.get(bodyId);
+    expect(client.replica.isOpen(bodyId)).toBe(true);
 
-    client.replica.close(doc!.docId);
-    await waitFor(() => !client.replica.get(doc!.docId));
+    client.replica.close(bodyId);
+    await waitFor(() => !client.replica.get(bodyId));
 
     expect(client.replicaStats.pinned).toBe(0);
   });
@@ -190,22 +257,22 @@ describe("on-demand document residency", () => {
     const first = await createPage(client, written, { title: "One", body: "hello" });
     const second = await createPage(client, written, { title: "Two", body: "world" });
 
-    const firstDoc = await (await client.page.get(first.pageId))!.body;
-    expect(client.replica.isOpen(firstDoc!.docId)).toBe(true);
+    await client.page_body.get(first.bodyId);
+    expect(client.replica.isOpen(first.bodyId)).toBe(true);
 
-    const secondDoc = await (await client.page.get(second.pageId))!.body;
-    expect(secondDoc!.text).toBe("world");
-    expect(client.replica.isOpen(secondDoc!.docId)).toBe(true);
-    expect(client.replica.isOpen(firstDoc!.docId)).toBe(false);
-    expect(client.replica.get(firstDoc!.docId)).toBeUndefined();
+    const secondBody = await client.page_body.get(second.bodyId);
+    expect(textOf(secondBody!.content ?? {})).toBe("world");
+    expect(client.replica.isOpen(second.bodyId)).toBe(true);
+    expect(client.replica.isOpen(first.bodyId)).toBe(false);
+    expect(client.replica.get(first.bodyId)).toBeUndefined();
   });
 
   it("persists held rows only, never an opened body", async () => {
     const { client, storage, written } = harness(pageSchema);
-    const { pageId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
+    const { bodyId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
 
-    const doc = await (await client.page.get(pageId))!.body;
-    expect(client.replica.isOpen(doc!.docId)).toBe(true);
+    await client.page_body.get(bodyId);
+    expect(client.replica.isOpen(bodyId)).toBe(true);
 
     await client.persistReplica();
 
@@ -226,8 +293,8 @@ describe("querying on-demand types", () => {
   it("refuses a query whose source type is on demand", () => {
     const { client } = harness(pageSchema);
 
-    expect(() => client["text_document__page__body"].query()).toThrow(OnDemandQueryError);
-    expect(() => client["text_document__page__body"].query()).toThrow(/held-only/);
+    expect(() => client.page_body.query()).toThrow(OnDemandQueryError);
+    expect(() => client.page_body.query()).toThrow(/held-only/);
   });
 
   it("keeps a held-source query over held rows synchronous", async () => {

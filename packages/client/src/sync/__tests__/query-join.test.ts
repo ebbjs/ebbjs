@@ -13,7 +13,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import { defineEntity, e, type WireFields } from "@ebbjs/schema";
+import { defineEntity, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { GroupFields } from "@ebbjs/schema";
@@ -86,7 +86,7 @@ type IssueRow = QueryRow<EntityFields<typeof issue>>;
 type UserRow = ProjectedRow<EntityFields<typeof user>>;
 type LabelRow = ProjectedRow<EntityFields<typeof label>>;
 type PageRow = ProjectedRow<EntityFields<typeof page>>;
-type GroupRow = ProjectedRow<WireFields<GroupFields>>;
+type GroupRow = ProjectedRow<GroupFields>;
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 type JoinedIssue = Omit<IssueRow, "assignee"> & { readonly assignee: UserRow | null };

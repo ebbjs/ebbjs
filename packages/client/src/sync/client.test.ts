@@ -13,6 +13,7 @@ import {
 } from "./test-utils";
 import { EntityRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineEntity } from "@ebbjs/schema";
+import { defineRelationship, TextCellSchema } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { OutboxSnapshot } from "./outbox-observer";
 
@@ -312,7 +313,27 @@ describe("SyncClient schema option", () => {
     expect(bodyA.schema_hash).toBe(bodyB.schema_hash);
   });
 
-  it("produces the same schema_hash for equivalent schemas with a collaborativeText field", async () => {
+  it("produces the same schema_hash for equivalent schemas that declare a document entity", async () => {
+    const buildSchema = () => {
+      const blogPost = defineEntity("blog_post", { title: e.string() });
+      const textDocument = defineEntity(
+        "text_document",
+        { content: e.map(TextCellSchema), version: e.number() },
+        { materialization: "on-demand" },
+      );
+      return defineSchema({
+        entities: { blog_post: blogPost, text_document: textDocument },
+        relationships: {
+          body: defineRelationship({
+            source: blogPost,
+            target: textDocument,
+            as: "body",
+            sourceCardinality: "one",
+          }),
+        },
+        version: 1,
+      });
+    };
     const { fn: fnA } = makeFetchMock([
       { body: JSON.stringify({ actor_id: "a_test", groups: [] }) },
     ]);
@@ -320,12 +341,7 @@ describe("SyncClient schema option", () => {
       serverUrl: "http://localhost:4000",
       actorId: "a_test",
       fetchImpl: fnA,
-      schema: defineSchema({
-        entities: {
-          blog_post: defineEntity("blog_post", { title: e.string(), body: e.collaborativeText() }),
-        },
-        version: 1,
-      }),
+      schema: buildSchema(),
     });
     await a.handshake();
     const { fn: fnB } = makeFetchMock([
@@ -335,12 +351,7 @@ describe("SyncClient schema option", () => {
       serverUrl: "http://localhost:4000",
       actorId: "b_test",
       fetchImpl: fnB,
-      schema: defineSchema({
-        entities: {
-          blog_post: defineEntity("blog_post", { title: e.string(), body: e.collaborativeText() }),
-        },
-        version: 1,
-      }),
+      schema: buildSchema(),
     });
     await b.handshake();
     const bodyA = JSON.parse((fnA.mock.calls[0]?.[1] as RequestInit | undefined)?.body as string);

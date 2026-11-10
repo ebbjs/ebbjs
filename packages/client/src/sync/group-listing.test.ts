@@ -10,12 +10,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { defineEntity, defineSchema, e } from "@ebbjs/schema";
+import { defineEntity, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
-import { readGeneratedParts } from "./generated-parts";
 import { createGroupListing, listingSeedActionId, needsGroupListing } from "./group-listing";
 import {
   callApplyAction,
@@ -1010,19 +1009,28 @@ describe("SyncClient group listing", () => {
     client.close();
   });
 
-  it("resolves a seeded relationship row through the join, the index, and the derived parts", async () => {
+  it("resolves a seeded relationship row through the join, the index, and the document link", async () => {
+    const blogPost = defineEntity("blog_post", { title: e.string() });
+    const textDocument = defineEntity(
+      "text_document",
+      { content: e.map(TextCellSchema), version: e.number() },
+      { materialization: "on-demand" },
+    );
     const schema = defineSchema({
-      entities: {
-        blog_post: defineEntity("blog_post", {
-          title: e.string(),
-          body: e.collaborativeText(),
+      entities: { blog_post: blogPost, text_document: textDocument },
+      relationships: {
+        body: defineRelationship({
+          source: blogPost,
+          target: textDocument,
+          as: "body",
+          sourceCardinality: "one",
         }),
       },
       version: 1,
     });
     const body = schema._registry.getRelationship("blog_post", "body");
-    if (body === undefined) throw new Error("the derived body relationship is missing");
-    const documentId = `doc_${body.target.name}_1`;
+    if (body === undefined) throw new Error("the declared body relationship is missing");
+    const documentId = "doc_1";
 
     const server = mkServer({
       listing: () =>
@@ -1031,7 +1039,12 @@ describe("SyncClient group listing", () => {
           entities: [
             membership("eg_1", "post_1", "g_1", 4),
             wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
-            wire({ id: documentId, type: body.target.name, fields: { text: "" }, lastGsn: 5 }),
+            wire({
+              id: documentId,
+              type: "text_document",
+              fields: { content: {}, version: 1 },
+              lastGsn: 5,
+            }),
             relationshipRow("rel_body_1", "post_1", documentId, 6, {
               field: "body",
               type: body.type,
@@ -1050,9 +1063,9 @@ describe("SyncClient group listing", () => {
     await waitFor(async () => (await client.readLocalEntity("post_1")) !== null);
     await tick();
 
-    // The three reads a missing relationship row broke on a cold replica: the
-    // join a derived read plans, the adjacency index an accessor traverses,
-    // and the document `readGeneratedParts` only finds through its link.
+    // The reads a missing relationship row breaks on a cold replica: the
+    // join the accessor plans, the adjacency index it traverses, and the
+    // document row it resolves the link to.
     const links = await client.storage.entities.queryByRelationshipSource({
       as: "body",
       type: body.type,
@@ -1064,11 +1077,8 @@ describe("SyncClient group listing", () => {
       client.replica.relationships({ as: "body", type: body.type, sourceId: "post_1" }),
     ).toEqual([documentId]);
 
-    const parts = await readGeneratedParts(client.storage, client.registry, "blog_post", "post_1");
-    expect(parts.edges.map((link) => ({ field: link.field, targetId: link.targetId }))).toEqual([
-      { field: "body", targetId: documentId },
-    ]);
-    expect(parts.documents.map((document) => document.id)).toEqual([documentId]);
+    const parent = await client.blog_post.get("post_1");
+    expect((await parent!.body)!.id).toBe(documentId);
     expect(await client.readLocalEntity(documentId)).not.toBeNull();
 
     unsubscribe();
