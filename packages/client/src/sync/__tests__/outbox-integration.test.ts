@@ -743,6 +743,10 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]?.entries[0]?.action.id).toBe("act_local");
     expect(conflicts[0]?.subjects).toEqual(["todo_1"]);
+    expect(conflicts[0]?.scope).toBe("field");
+    expect(conflicts[0]?.remoteActions).toEqual([
+      { actorId: ACTOR_ID, actionId: "act_peer", gsn: 9 },
+    ]);
     expect(conflicts[0]?.entries[0]?.basedOnGsn).toBe(0);
     expect(conflicts[0]?.entries[0]?.catchUpId).toMatch(/^cu_/);
     expect(conflicts[0]?.id).toMatch(/^c_/);
@@ -955,9 +959,9 @@ describe("catch-up conflict detection (#308, #390)", () => {
       conflicts.flatMap((conflict) => conflict.entries.map((entry) => entry.action.id)),
     ).toEqual(["act_local_same"]);
     expect(conflicts[0]?.subjects).toEqual(["doc_1"]);
-    expect(conflicts[0]?.entries[0]?.slots.map((slot) => slot.path)).toEqual([["run:r3"]]);
-    expect(conflicts[0]?.entries[0]?.slots[0]?.local).toMatchObject({ value: "mine-same" });
-    expect(conflicts[0]?.entries[0]?.slots[0]?.remote).toMatchObject({ value: "peer-same" });
+    expect(conflicts[0]?.entries[0]?.slots?.map((slot) => slot.path)).toEqual([["run:r3"]]);
+    expect(conflicts[0]?.entries[0]?.slots?.[0]?.local).toMatchObject({ value: "mine-same" });
+    expect(conflicts[0]?.entries[0]?.slots?.[0]?.remote).toMatchObject({ value: "peer-same" });
   });
 
   it("treats a server rejection as an Outbox error, not a conflict", async () => {

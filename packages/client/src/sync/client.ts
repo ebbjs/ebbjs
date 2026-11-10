@@ -26,7 +26,6 @@
 import {
   encodeSync,
   type Action,
-  createAction,
   createClock,
   type Entity,
   type HLCState,
@@ -483,16 +482,16 @@ export class SyncClient<
         this.preSyncCaptures.get(catchUpId)?.get(subjectId) ?? null,
       readEntity: (subjectId) => this.storage.entities.get(subjectId),
     });
-    // The view projects the outbox's conflicted rows; resolution moves
-    // them back through the same outbox transition it reads.
+    // The view projects the outbox's conflicted rows; the two mechanism
+    // verbs move them through the same outbox transition it reads.
     const { conflicts, observable: conflictsObservable } = createConflicts({
       outbox: this.outbox,
-      retry: (originalId, action) => this.retryConflicted(originalId, action),
       reMaterialize: (action) => this.reMaterializeFromLog(action),
-      stampAction: (updates) =>
-        createAction({ actorId: this.actorId, updates: [...updates], clock: this.clock }).action,
-      hlc: () => this.freshHlc(),
-      generateUpdateId: () => this.generateUpdateId(),
+      flush: async () => {
+        // The scheduler owns timing and background retry; an offline send
+        // leaves the entry durable and pending.
+        await this.flushScheduler.schedule();
+      },
     });
     this.conflicts = conflicts;
     // The retry loop reuses the SSE reconnect bounds but keeps its own
@@ -2254,20 +2253,6 @@ export class SyncClient<
       await this.storage.dirtyTracker.clear(update.subject_id);
       await this.storage.entities.set(row);
     }
-  }
-
-  /**
-   * Replace a losing Action's conflicted row with its freshly-stamped
-   * re-assert in one durable store write, then schedule the flush.
-   * Validation is skipped — the Action was already accepted into the
-   * Outbox before detection, so a schema drift since then is not a reason
-   * to refuse the application's explicit retry. An `unreachable` first
-   * attempt is not surfaced: the entry is durable, and the scheduler owns
-   * the retry.
-   */
-  private async retryConflicted(originalId: string, action: Action): Promise<void> {
-    await this.outbox.retryConflicted(originalId, action);
-    await this.flushScheduler.schedule();
   }
 
   /**

@@ -1,13 +1,15 @@
 /**
- * Conflicts — the application-facing read/resolve view over the outbox's
- * `conflicted` rows.
+ * Conflicts — the application-facing view over the outbox's `conflicted`
+ * rows.
  *
  * A detected loser is a status plus payload on its own outbox entry
  * (#390), so there is no second durable store to cache, seed, or keep in
  * step. This module projects those rows into the entity-level
  * {@link Conflict} the application reads, publishes the set as a
- * synchronous observable for #125, and turns the application's `retry` /
- * `discard` decision into the outbox transitions that decision implies.
+ * synchronous observable for #125, and turns the application's choice into
+ * one of the two mechanism verbs: send the held Actions unchanged, or clear
+ * them and converge on the remote view. Policy — a backup, a merge, doing
+ * nothing — is application code built on the report.
  *
  * Grouping is durable, not recomputed: every losing Action in one
  * connected set of subjects shares the `conflictId` detection stamped on
@@ -15,21 +17,18 @@
  * without the view holding a private map.
  */
 
-import {
-  compare,
-  isFieldMap,
-  type Action,
-  type Entity,
-  type FieldValue,
-  type Update,
-} from "@ebbjs/core";
-import type { ConflictSide, ConflictSlot, ConflictSubjectState } from "@ebbjs/storage/types";
+import { compare, type Action, type Entity } from "@ebbjs/core";
+import type { ConflictScope } from "@ebbjs/schema";
+import type {
+  ConflictRemoteAction,
+  ConflictSide,
+  ConflictSlot,
+  ConflictSubjectState,
+} from "@ebbjs/storage/types";
 import { diffEntity, type EntityDiff } from "@ebbjs/write";
-import type { ConflictedOutboxEntry, OutboxCounts } from "./outbox";
+import { coarsestScope } from "./conflict-slots";
+import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
-
-/** The application's decision for one conflict. */
-export type ConflictResolution = "retry" | "discard";
 
 /**
  * A contested position with the merge's verdict at that position. The
@@ -48,7 +47,7 @@ export interface ConflictSlotView extends ConflictSlot {
 /**
  * The full before/after rows for one losing subject, plus the projection
  * of the positions that differ. An entity-scoped application reads this
- * rather than {@link Conflict.remoteWins}.
+ * rather than the position-level slots.
  */
 export interface ConflictSubjectStateView extends ConflictSubjectState {
   readonly diff: readonly EntityDiff[];
@@ -67,11 +66,18 @@ export interface ConflictEntry {
    */
   readonly subjects: readonly string[];
   /**
-   * Overlapping contested positions, in detection order. Empty when the
-   * entity-level scope surfaced a subject with no position overlap; an
-   * application reads that as "nothing of mine would be lost".
+   * Overlapping contested positions, in detection order. Present only for
+   * an entry whose own scope is `"field"`: the slots and their
+   * {@link ConflictSlotView.remoteWins} verdicts answer the position-level
+   * question. Absent for an entity-scope entry — read
+   * {@link ConflictSubjectStateView.diff} there. A group's
+   * {@link Conflict.scope} is the coarsest of its entries.
    */
-  readonly slots: readonly ConflictSlotView[];
+  readonly slots?: readonly ConflictSlotView[];
+  /** Scope detection classified this losing Action under. */
+  readonly scope: ConflictScope;
+  /** The concurrent missed Actions that touched this entry's losing subjects. */
+  readonly remoteActions: readonly ConflictRemoteAction[];
   /** Highest server GSN the client had applied when the Action was authored. */
   readonly basedOnGsn: number;
   /** The catch-up pass that produced this entry. */
@@ -94,6 +100,13 @@ export interface ConflictEntry {
 export interface Conflict {
   /** The persisted `conflictId` shared by every entry. */
   readonly id: string;
+  /**
+   * How detection classified this conflict. `"field"` surfaced an
+   * overlapping position; `"entity"` surfaced any concurrent touch of a
+   * subject. An entity-scope conflict has no slots — read the per-subject
+   * diff.
+   */
+  readonly scope: ConflictScope;
   /** Union of the entries' losing subjects, first-seen order. */
   readonly subjects: readonly string[];
   /**
@@ -101,22 +114,19 @@ export interface Conflict {
    * {@link subjects}: the client's row before the sync, the server's row
    * after it, and the positions that differ. An entity-scoped
    * application reads this — the diff answers an entity-level question,
-   * while {@link remoteWins} only reports whether the merge would lose at
-   * an overlapping position.
+   * while the slots only report overlapping positions.
    */
   readonly subjectStates: readonly ConflictSubjectStateView[];
   /** The losing Actions, oldest detection first. */
   readonly entries: readonly ConflictEntry[];
   /**
-   * `true` when any position's server value wins the merge, `false` for
-   * a conflict with no slots. An application opts into "only when my
-   * value would lose" by reading this.
-   *
-   * This answers a position-level question: with no overlapping position
-   * it is `false` by construction. Entity scope asks a different one —
-   * read {@link subjectStates} / the diff instead.
+   * The concurrent missed Actions that made this a conflict: actor, action
+   * id, and server GSN. Deduped by action id, first-seen across the
+   * conflict's entries (each entry's own list is in window order). The
+   * rest of the remote context rides each entry's
+   * {@link ConflictEntry.action} and {@link ConflictEntry.basedOnGsn}.
    */
-  remoteWins(): boolean;
+  readonly remoteActions: readonly ConflictRemoteAction[];
 }
 
 /** One entry a resolution pass could not resolve. */
@@ -128,9 +138,9 @@ export interface FailedResolution {
 }
 
 /**
- * Per-entry results of a resolution pass. A partial failure does not
- * roll back the entries that resolved; a failed entry stays conflicted
- * and resolvable.
+ * Per-entry results of a verb pass. A partial failure does not roll back
+ * the entries that resolved; a failed entry stays conflicted and
+ * resolvable.
  */
 export interface ResolveResult {
   /** Ids of the entries that resolved and left the conflict set. */
@@ -172,25 +182,32 @@ export interface Conflicts {
    */
   count(): number;
   /**
-   * Resolve every entry in one conflict, in authoring order. Unknown ids
-   * are a no-op.
+   * Send every held Action in one conflict: clear the subject hold and
+   * submit the held Actions unchanged, in authoring order. Their ids,
+   * Update ids, and field HLCs are untouched — re-stamping would rewrite
+   * provenance on an append-only log. An application that wants its scalar
+   * value to win writes it again through `defineAction` with a fresh clock.
    *
-   * - `retry` re-asserts each whole losing Action, freshly stamped, and
-   *   re-enqueues it as pending, so non-colliding fields travel with it.
-   * - `discard` drops each losing Action's optimistic writes and replays
-   *   the action log, converging the affected entities on the server's
-   *   view.
+   * Per-entry failures are returned in {@link ResolveResult.failed}. A
+   * durable-store fault in the pass's final flush rejects instead: the rows
+   * already moved stay moved, and the fault surfaces through the outbox.
+   * Unknown ids are a no-op.
    */
-  resolve(conflictId: string, resolution: ConflictResolution): Promise<ResolveResult>;
+  sendLocalActions(conflictId: string): Promise<ResolveResult>;
   /**
-   * Resolve specific entries by local Action id — the per-entry
-   * primitive `resolve` fans out to. Unknown ids are skipped. A failed
-   * entry stays conflicted under its `conflictId`.
+   * Clear every held Action in one conflict: drop its optimistic writes and
+   * converge the affected subjects on the remote view. The local writes the
+   * hold was keeping off the wire are dropped with it — otherwise the
+   * subject could not converge. Pending writes to unaffected subjects and
+   * writes made after the hold lifted are untouched. A subject still named
+   * by a failed entry stays held and keeps its writes; retry the clear for
+   * it. Unknown ids are a no-op.
+   *
+   * Per-entry failures are returned in {@link ResolveResult.failed}. A
+   * durable-store fault in the pass's final drop or re-materialize rejects
+   * instead: the rows already moved stay moved.
    */
-  resolveEntries(
-    entryIds: readonly string[],
-    resolution: ConflictResolution,
-  ): Promise<ResolveResult>;
+  clearLocalActions(conflictId: string): Promise<ResolveResult>;
   /**
    * Subscribe to conflict-set changes: a detection, a resolution, or the
    * initial durable load. Returns an unsubscribe function. Listeners are
@@ -216,6 +233,23 @@ export interface ConflictOutbox {
   onChange(listener: (counts: OutboxCounts) => void): () => void;
   /** Await the buffer's durable load. */
   rehydrate(): Promise<void>;
+  /**
+   * Clear a conflicted row's hold, returning it to `pending` with its
+   * Action unchanged. A no-op for an unknown or non-conflicted id.
+   */
+  releaseConflict(actionId: string): Promise<void>;
+  /**
+   * Snapshot the `pending` writes the current subject hold excludes, so a
+   * clear can drop exactly those and never a write made after the hold
+   * lifted.
+   */
+  heldPending(subjects: readonly string[]): readonly OutboxEntry[];
+  /**
+   * Delete the named `pending` writes and return their Actions so the
+   * caller can revert their optimistic overlays. `acknowledged` rows are
+   * already on the server and are never dropped.
+   */
+  dropHeld(actionIds: readonly string[]): Promise<readonly Action[]>;
   /** Delete a conflicted row. A no-op for an unknown or non-conflicted id. */
   clearConflict(actionId: string): Promise<void>;
 }
@@ -228,25 +262,15 @@ export interface ConflictsDependencies {
   /** The outbox whose conflicted rows this view projects. */
   outbox: ConflictOutbox;
   /**
-   * Replace a conflicted outbox row with its freshly-stamped re-assert in
-   * one durable write: durable, optimistically applied, and scheduled to
-   * flush.
-   */
-  retry(originalId: string, action: Action): Promise<void>;
-  /**
    * Drop a losing Action's optimistic writes and re-materialize every
    * entity it touched from the action log.
    */
   reMaterialize(action: Action): Promise<void>;
   /**
-   * Wrap re-stamped Updates in a fresh Action (new action id, advanced
-   * clock). The Action's HLC is minted here.
+   * Send the flushable queue after a verb pass: the released held Actions,
+   * and any pending writes to those subjects that the hold was blocking.
    */
-  stampAction(updates: readonly Update[]): Action;
-  /** Fresh field HLC for a re-stamped Update. */
-  hlc(): string;
-  /** Fresh Update / FieldValue id. */
-  generateUpdateId(): string;
+  flush(): Promise<void>;
 }
 
 /** The view plus the observable it publishes. */
@@ -278,14 +302,6 @@ export const findPreSyncRow = async (
   return null;
 };
 
-/** The stamping collaborators {@link restampAction} needs. */
-type Restamper = Pick<ConflictsDependencies, "stampAction" | "hlc" | "generateUpdateId">;
-
-/**
- * Whether a side is a merge leaf (it carries an `update_id`). A map side
- * and an absent side do not; either means the position's kind diverged
- * or the server holds nothing, so the remote side takes the merge.
- */
 const isLeafSide = (side: ConflictSide): boolean => side.update_id !== undefined;
 
 /**
@@ -312,15 +328,23 @@ const toSlotView = (slot: ConflictSlot): ConflictSlotView => ({
 });
 
 /** Project a conflicted outbox row into the entry the application reads. */
-const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => ({
-  action: entry.action,
-  subjects: entry.conflict.subjects,
-  slots: entry.conflict.slots.map(toSlotView),
-  basedOnGsn: entry.basedOnGsn,
-  catchUpId: entry.conflict.catchUpId,
-  conflictId: entry.conflict.conflictId,
-  detectedAtHlc: entry.conflict.detectedAtHlc,
-});
+const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => {
+  // A row written before IndexedDB schema v10 carries neither field. It is
+  // still a field-scope conflict with no recorded remote context, not a
+  // reason to make the whole view unreachable.
+  const scope = entry.conflict.scope ?? "field";
+  return {
+    action: entry.action,
+    subjects: entry.conflict.subjects,
+    slots: scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
+    scope,
+    remoteActions: entry.conflict.remoteActions ?? [],
+    basedOnGsn: entry.basedOnGsn,
+    catchUpId: entry.conflict.catchUpId,
+    conflictId: entry.conflict.conflictId,
+    detectedAtHlc: entry.conflict.detectedAtHlc,
+  };
+};
 
 /**
  * Aggregate one group's subject states, in `subjects` order. Deduped by
@@ -383,50 +407,27 @@ const groupConflicts = (
         subjects.push(subject);
       }
     }
+    const remoteActions: ConflictRemoteAction[] = [];
+    const remoteSeen = new Set<string>();
+    for (const entry of ordered) {
+      for (const remote of entry.remoteActions) {
+        if (remoteSeen.has(remote.actionId)) continue;
+        remoteSeen.add(remote.actionId);
+        remoteActions.push(remote);
+      }
+    }
     conflicts.push({
       id,
+      scope: coarsestScope(ordered.map((entry) => entry.scope)),
       subjects,
       subjectStates: aggregateSubjectStates(ordered, subjects, statesByAction),
       entries: ordered,
-      remoteWins: () => ordered.some((e) => e.slots.some((s) => s.remoteWins())),
+      remoteActions,
     });
   }
   conflicts.sort((a, b) => compare(earliestHlc(a), earliestHlc(b)));
   return conflicts;
 };
-
-/** Re-stamp one leaf with a fresh `update_id` + HLC. */
-const restampField = (field: FieldValue, updateId: string, hlc: string): FieldValue => {
-  if (!isFieldMap(field)) return { value: field.value, update_id: updateId, hlc };
-  const map: Record<string, FieldValue> = {};
-  for (const [key, child] of Object.entries(field.map)) {
-    map[key] = restampField(child, updateId, hlc);
-  }
-  return { map };
-};
-
-/** Re-stamp every leaf the Update carries, keeping its subject and method. */
-const restampUpdate = (update: Update, deps: Restamper): Update => {
-  const updateId = deps.generateUpdateId();
-  const hlc = deps.hlc();
-  const fields = update.data?.fields;
-  if (fields === undefined) return { ...update, id: updateId };
-  const restamped: Record<string, FieldValue> = {};
-  for (const [field, value] of Object.entries(fields)) {
-    restamped[field] = restampField(value, updateId, hlc);
-  }
-  return { ...update, id: updateId, data: { fields: restamped } };
-};
-
-/**
- * Rebuild a losing Action freshly: every Update keeps its subject and
- * method, but every leaf is re-stamped with a fresh `update_id` + HLC and
- * the Action gets a new id + clock. Re-asserting the whole Action is what
- * carries its non-colliding fields, and what lets an entity-scope loss
- * (no overlapping slots) be rebuilt at all.
- */
-const restampAction = (action: Action, deps: Restamper): Action =>
-  deps.stampAction(action.updates.map((update) => restampUpdate(update, deps)));
 
 /**
  * Build the conflict view over the outbox.
@@ -440,7 +441,6 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
   let entries: readonly ConflictEntry[] = [];
   let conflicts: readonly Conflict[] = [];
   let byConflictId = new Map<string, Conflict>();
-  let byEntryId = new Map<string, ConflictEntry>();
   let rehydration: Promise<void> | null = null;
   const observable = createObservable<ConflictSnapshot>({ count: 0, conflicts: [] });
 
@@ -455,7 +455,6 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     const statesByAction = new Map(rows.map((row) => [row.action.id, row.conflict.subjectStates]));
     conflicts = groupConflicts(entries, statesByAction);
     byConflictId = new Map(conflicts.map((conflict) => [conflict.id, conflict]));
-    byEntryId = new Map(entries.map((entry) => [entry.action.id, entry]));
     emit();
   };
 
@@ -472,35 +471,43 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     return rehydration;
   };
 
-  // Detection and resolution both move rows through the outbox, whose
+  // Detection and a verb pass both move rows through the outbox, whose
   // change stream fires after each transition; refresh keeps the view
   // current without a poll.
   deps.outbox.onChange(refresh);
 
-  const applyOne = async (entry: ConflictEntry, resolution: ConflictResolution): Promise<void> => {
-    if (resolution === "retry") {
-      // The outbox replaces the conflicted row with the fresh re-assert in
-      // one durable write, so a failure leaves the conflict resolvable
-      // rather than enqueuing a duplicate the next attempt would repeat.
-      await deps.retry(entry.action.id, restampAction(entry.action, deps));
-    } else {
-      await deps.reMaterialize(entry.action);
-      await deps.outbox.clearConflict(entry.action.id);
+  /** Which of the two mechanism verbs a pass applies. */
+  type Verb = "send" | "clear";
+
+  const applyOne = async (entry: ConflictEntry, verb: Verb): Promise<void> => {
+    if (verb === "send") {
+      // The Action is submitted verbatim; the outbox keeps the entry's
+      // action id, Update ids, and field HLCs untouched.
+      await deps.outbox.releaseConflict(entry.action.id);
+      return;
     }
+    await deps.reMaterialize(entry.action);
+    await deps.outbox.clearConflict(entry.action.id);
   };
 
-  const resolveEntries = async (
-    entryIds: readonly string[],
-    resolution: ConflictResolution,
-  ): Promise<ResolveResult> => {
+  /**
+   * Apply one verb to every entry of a conflict. A per-entry failure is
+   * recorded and the rest still run. Sending flushes once after the whole
+   * group left the hold, so a grouped conflict's Actions leave together;
+   * clearing also drops the writes the hold was blocking and
+   * re-materializes each, so every affected subject converges.
+   */
+  const applyVerb = async (conflict: Conflict, verb: Verb): Promise<ResolveResult> => {
     await rehydrate();
+    // Snapshot the held writes before the conflicted rows move. A write
+    // enqueued after this point was never held, so a clear must not drop it.
+    const held = verb === "clear" ? deps.outbox.heldPending(conflict.subjects) : [];
     const resolved: string[] = [];
     const failed: FailedResolution[] = [];
-    for (const entryId of entryIds) {
-      const entry = byEntryId.get(entryId);
-      if (entry === undefined) continue;
+    for (const entry of conflict.entries) {
+      const entryId = entry.action.id;
       try {
-        await applyOne(entry, resolution);
+        await applyOne(entry, verb);
         resolved.push(entryId);
       } catch (error) {
         // No rollback: a later entry still resolves, and the failed entry
@@ -508,20 +515,39 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
         failed.push({ entryId, error });
       }
     }
+    if (verb === "clear") {
+      // Drop the snapshot rows for subjects this pass actually released. A
+      // subject a failed entry still names stays held, so its writes stay.
+      const stillHeld = new Set<string>();
+      for (const row of deps.outbox.conflicts()) {
+        for (const subject of row.conflict.subjects) stillHeld.add(subject);
+      }
+      const released = new Set(conflict.subjects.filter((subject) => !stillHeld.has(subject)));
+      const toDrop = held.filter((entry) =>
+        entry.action.updates.some((update) => released.has(update.subject_id)),
+      );
+      if (toDrop.length > 0) {
+        const dropped = await deps.outbox.dropHeld(toDrop.map((entry) => entry.action.id));
+        for (const action of dropped) await deps.reMaterialize(action);
+      }
+    } else if (resolved.length > 0) {
+      await deps.flush();
+    }
     return { resolved, failed };
   };
 
-  const resolve = async (
-    conflictId: string,
-    resolution: ConflictResolution,
-  ): Promise<ResolveResult> => {
+  const sendLocalActions = async (conflictId: string): Promise<ResolveResult> => {
     await rehydrate();
     const conflict = byConflictId.get(conflictId);
     if (conflict === undefined) return { resolved: [], failed: [] };
-    return resolveEntries(
-      conflict.entries.map((entry) => entry.action.id),
-      resolution,
-    );
+    return applyVerb(conflict, "send");
+  };
+
+  const clearLocalActions = async (conflictId: string): Promise<ResolveResult> => {
+    await rehydrate();
+    const conflict = byConflictId.get(conflictId);
+    if (conflict === undefined) return { resolved: [], failed: [] };
+    return applyVerb(conflict, "clear");
   };
 
   void rehydrate().catch(() => {});
@@ -532,8 +558,8 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       return conflicts;
     },
     count: () => conflicts.length,
-    resolve,
-    resolveEntries,
+    sendLocalActions,
+    clearLocalActions,
     onChange: (listener) => observable.subscribe((snapshot) => listener(snapshot.conflicts)),
     rehydrate,
   };

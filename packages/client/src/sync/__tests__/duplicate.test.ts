@@ -318,6 +318,7 @@ describe("duplicate — memberships", () => {
 /** A conflict carrying one subject's `before` row, as detection writes it. */
 const mkConflict = (before: Entity): Conflict => ({
   id: "c_1",
+  scope: "field",
   subjects: [before.id],
   subjectStates: [
     {
@@ -329,7 +330,7 @@ const mkConflict = (before: Entity): Conflict => ({
     },
   ],
   entries: [],
-  remoteWins: () => true,
+  remoteActions: [],
 });
 
 describe("duplicate — at: preSync", () => {

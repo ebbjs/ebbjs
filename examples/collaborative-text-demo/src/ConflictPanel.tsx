@@ -3,8 +3,9 @@
  * conflicts the client surfaced. A conflict is the set of losing
  * buffered Actions detected together for one connected set of subjects;
  * each subject carries the row the client had before the sync, the
- * server's row after it, and the positions that differ. The panel lets
- * the user retry or discard the whole conflict.
+ * server's row after it, and the positions that differ. The panel offers the
+ * two mechanism verbs: send the held Actions unchanged, or clear them and
+ * converge on the server's view.
  *
  * Grouping is durable: every losing Action in one connected set shares
  * the `conflictId` detection stamped on its outbox row, so the panel
@@ -46,8 +47,18 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
     };
   }, [client, docId]);
 
-  const resolve = (conflictId: string, resolution: "retry" | "discard"): void => {
-    void client.conflicts.resolve(conflictId, resolution);
+  // A durable-store fault in the verb's final flush/drop rejects; the demo
+  // has no recovery UI, so surface it rather than leaving it unhandled.
+  const run = (verb: () => Promise<unknown>): void => {
+    void verb().catch((error: unknown) => console.error("[conflict]", error));
+  };
+
+  const send = (conflictId: string): void => {
+    run(() => client.conflicts.sendLocalActions(conflictId));
+  };
+
+  const clear = (conflictId: string): void => {
+    run(() => client.conflicts.clearLocalActions(conflictId));
   };
 
   return (
@@ -73,7 +84,13 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
               <div className="flex items-baseline justify-between mb-2">
                 <span className="font-mono text-amber-400">{conflict.id}</span>
                 <span className="text-stone-500">
-                  {conflict.remoteWins() ? "server wins" : "your write wins"}
+                  {conflict.scope === "entity"
+                    ? "entity scope"
+                    : conflict.entries.some((entry) =>
+                          entry.slots?.some((slot) => slot.remoteWins()),
+                        )
+                      ? "server wins"
+                      : "your write wins"}
                 </span>
               </div>
               <div className="flex flex-col gap-2">
@@ -97,16 +114,16 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
               </div>
               <div className="mt-2 flex gap-3">
                 <button
-                  onClick={() => resolve(conflict.id, "retry")}
+                  onClick={() => send(conflict.id)}
                   className="text-emerald-400 hover:text-emerald-200"
                 >
-                  retry
+                  send my edits
                 </button>
                 <button
-                  onClick={() => resolve(conflict.id, "discard")}
+                  onClick={() => clear(conflict.id)}
                   className="text-stone-500 hover:text-stone-200"
                 >
-                  discard
+                  use server version
                 </button>
               </div>
               {/* groupId is unused today — kept in the panel signature for

@@ -12,8 +12,8 @@ import { useSyncObservable } from "./use-sync-observable";
  * arrive that way — so a held edit renders without a refetch. An unrelated
  * write can republish an equal snapshot, so a consumer may re-render without
  * its data changing. Read-only by design: resolving stays on `client.conflicts`
- * (`list()` then `resolve(id, "retry" | "discard")`), keeping the decision and
- * its durable write outside React's render pass.
+ * (`list()` then `sendLocalActions(id)` or `clearLocalActions(id)`), keeping
+ * the decision and its durable write outside React's render pass.
  */
 export function useConflicts(): ConflictSnapshot {
   const client = useClient();
