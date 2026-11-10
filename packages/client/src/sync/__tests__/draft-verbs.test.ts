@@ -11,15 +11,16 @@ import { describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { decodeSync, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
+import { applyUpdate } from "@ebbjs/storage/replica";
 
-import { defineModel, e } from "@ebbjs/schema";
+import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
 import { EntityValidationError } from "@ebbjs/schema";
 import { entityGroupId } from "@ebbjs/write";
 import { ActionRejectedError } from "@ebbjs/write";
-import type { ActionDrafts } from "../drafts";
+import { ActionResolutionError, type ActionDrafts } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
 import type { Rejection } from "../types";
@@ -33,9 +34,13 @@ const todo = defineModel("todo", {
   tags: Type.Array(Type.String()),
 });
 const profile = defineModel("profile", { name: e.string() });
+const note = defineModel("note", {
+  title: e.string(),
+  draft: defineComponent("note/draft", { text: e.string() }, { optional: true }),
+});
 
 const schema = defineSchema({
-  models: { todo, list, label, profile },
+  models: { todo, list, label, profile, note },
   relationships: {
     todo_list: defineRelationship({ source: todo, target: list, as: "list" }),
     todo_tags: defineRelationship({
@@ -57,6 +62,10 @@ const patchTodo = defineAction(
 
 const deleteTodo = defineAction(schema, ({ todo: todos }, params: { id: string }): void => {
   todos.delete(params.id);
+});
+
+const dropNoteDraft = defineAction(schema, ({ note: notes }, params: { id: string }): void => {
+  notes.drop(params.id, ["draft"]);
 });
 
 const duplicateTodo = defineAction(
@@ -146,6 +155,7 @@ const removeMember = defineAction(schema, ({ membership }, params: { memberId: s
 const actions = {
   patchTodo,
   deleteTodo,
+  dropNoteDraft,
   duplicateTodo,
   linkTodoList,
   unlinkTodoList,
@@ -170,7 +180,15 @@ interface StubWriteOptions {
   readonly rejectFor?: (submitted: readonly Action[]) => readonly Rejection[];
 }
 
-const PERMISSIONS = ["todo.*", "list.*", "label.*", "profile.*", "groupMember.*", "relationship.*"];
+const PERMISSIONS = [
+  "todo.*",
+  "list.*",
+  "label.*",
+  "profile.*",
+  "note.*",
+  "groupMember.*",
+  "relationship.*",
+];
 
 const jsonResponse = (body: unknown): Response =>
   new Response(JSON.stringify(body), {
@@ -335,6 +353,43 @@ describe("drafts — update / delete", () => {
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ subject_id: "todo_1", method: "delete", data: null });
+  });
+});
+
+describe("drafts — drop", () => {
+  it("emits one drop Update and leaves a row that lost its last component alive", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(mkEntity("note_1", "note", { draft: { text: "hello" } }));
+    await storage.entities.set(mkMembership("eg_note_1", "note_1", "g_1"));
+
+    await client.actions.dropNoteDraft({ id: "note_1" });
+
+    const updates = updatesOf(seen);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      subject_id: "note_1",
+      component: "note/draft",
+      method: "drop",
+      data: null,
+    });
+
+    const before = (await storage.entities.get("note_1"))!;
+    const after = applyUpdate(before, updates[0]!, 1, makeHlc(9))!;
+    expect(after.deleted_hlc).toBeNull();
+    expect(after.exists).toBe(true);
+    expect(after.data.fields).toEqual({});
+  });
+
+  it("refuses a drop of a row the replica cannot see", async () => {
+    const { client, seen } = await mkClient();
+
+    const error = await client.actions
+      .dropNoteDraft({ id: "note_missing" })
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ActionResolutionError);
+    expect((error as Error).message).toContain("note_missing");
+    expect(actionCalls(seen)).toHaveLength(0);
   });
 });
 
@@ -642,6 +697,25 @@ describe("drafts — typed create input", () => {
     };
     expect(typecheck).toBeTypeOf("function");
   });
+  it("accepts only declared components for drop", () => {
+    const typecheck: () => void = () => {
+      const drafts = null as unknown as ActionDrafts<typeof schema>;
+      void drafts.note.drop("note_1", ["draft"]);
+      // @ts-expect-error — `body` is not a component of `note`.
+      void drafts.note.drop("note_1", ["body"]);
+    };
+    expect(typecheck).toBeTypeOf("function");
+  });
+
+  it("keeps drop off the system namespaces", () => {
+    const typecheck: () => void = () => {
+      const drafts = null as unknown as ActionDrafts<typeof schema>;
+      // @ts-expect-error — a system component is a torn edge or membership (#805/#803).
+      void drafts.group.drop("g_1", ["name"]);
+    };
+    expect(typecheck).toBeTypeOf("function");
+  });
+
   it("keeps the membership verbs off the system namespaces", () => {
     const typecheck: () => void = () => {
       const drafts = null as unknown as ActionDrafts<typeof schema>;

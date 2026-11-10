@@ -49,6 +49,7 @@ import {
   createEntity,
   createSystemEntity,
   deleteEntity,
+  dropEntity,
   duplicateEntity,
   groupBootstrap,
   lastGroupMemberError,
@@ -303,6 +304,12 @@ type DraftIntent =
     }
   | { readonly kind: "delete"; readonly entity: string; readonly id: string }
   | {
+      readonly kind: "drop";
+      readonly entity: string;
+      readonly id: string;
+      readonly fields: readonly string[];
+    }
+  | {
       readonly kind: "duplicate";
       readonly entity: string;
       readonly subjectId: string;
@@ -393,6 +400,13 @@ export interface DraftNamespace<
   /** Soft-delete an existing entity: one `delete` Update whose `data` is `null`. */
   delete(id: string): void;
   /**
+   * Detach components from an existing row: one `drop` Update per field. The
+   * row survives — dropping the last component is not a delete. A row the
+   * replica cannot see is refused locally, and a system component is not
+   * droppable.
+   */
+  drop(id: string, fields: readonly (keyof TFields & string)[]): void;
+  /**
    * Copy an existing row to a fresh id, carrying its field values
    * verbatim and landing in `opts.groups` (the source's live groups when
    * omitted). Returns the new id so a later verb can point at the copy.
@@ -418,7 +432,7 @@ export interface DraftNamespace<
  */
 export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit<
   DraftNamespace<TFields>,
-  "create" | "addToGroup" | "removeFromGroup" | "setGroups"
+  "create" | "drop" | "addToGroup" | "removeFromGroup" | "setGroups"
 > & {
   create(input: WireCreateStatic<TFields>, opts?: EntityWriteOptions): CreatedEntity<TFields>;
 };
@@ -612,6 +626,9 @@ const createDraftNamespace = <
   },
   delete(id) {
     recordIntent(collector, { kind: "delete", entity: entityName, id });
+  },
+  drop(id, fields) {
+    recordIntent(collector, { kind: "drop", entity: entityName, id, fields });
   },
   duplicate(id, opts) {
     const subjectId = generateId("e");
@@ -863,6 +880,31 @@ const resolveEntityWrite = async (
   return [call(deleteEntity, { entity: intent.entity, id: intent.id, groups })];
 };
 
+/**
+ * `drop`: a component detach lands on the row's membership scope and needs a
+ * row the replica can actually see — an Update for an invisible row would lose
+ * its intent on the way to the server, so it is refused here instead.
+ */
+const resolveDrop = async (
+  intent: Extract<DraftIntent, { kind: "drop" }>,
+  ctx: ResolveContext,
+): Promise<readonly OperationCall[]> => {
+  const row = await ctx.cap.read.entity(intent.entity, intent.id);
+  if (row === null || row.type !== intent.entity) {
+    throw new ActionResolutionError(
+      `drop: no ${intent.entity} row for id "${intent.id}" is visible to this action`,
+    );
+  }
+  return [
+    call(dropEntity, {
+      entity: intent.entity,
+      id: intent.id,
+      fields: intent.fields,
+      groups: await readGroups(ctx, intent.id),
+    }),
+  ];
+};
+
 /** The copy's groups default to the source's live set. */
 const resolveDuplicate = async (
   intent: Extract<DraftIntent, { kind: "duplicate" }>,
@@ -1018,6 +1060,8 @@ const resolveIntent = async (
     case "patch":
     case "delete":
       return resolveEntityWrite(intent, ctx);
+    case "drop":
+      return resolveDrop(intent, ctx);
     case "duplicate":
       return resolveDuplicate(intent, ctx);
     case "relationship":
