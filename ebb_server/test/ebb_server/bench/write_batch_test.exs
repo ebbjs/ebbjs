@@ -111,6 +111,18 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "component_entities"
         ])
 
+      {:ok, model_only} =
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "10",
+          "--distribution",
+          "hot",
+          "--ablate",
+          "component_entries"
+        ])
+
       {:ok, no_group_index} =
         Options.parse([
           "--tier",
@@ -138,6 +150,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
       assert count.(full, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_actions, RocksDB.cf_entity_actions()) == 0
       assert count.(no_entity_actions, RocksDB.cf_component_entities()) == 3
+      assert count.(model_only, RocksDB.cf_component_entities()) == 1
       assert count.(no_component_entities, RocksDB.cf_component_entities()) == 0
       assert count.(no_component_entities, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_index, RocksDB.cf_entity_actions()) == 0
@@ -151,6 +164,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
             full,
             no_dedup,
             no_entity_actions,
+            model_only,
             no_component_entities,
             no_entity_index,
             no_group_index

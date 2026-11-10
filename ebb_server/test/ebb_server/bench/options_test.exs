@@ -17,6 +17,7 @@ defmodule EbbServer.Bench.OptionsTest do
     :build,
     :encode,
     :entity_actions,
+    :component_entries,
     :component_entities,
     :entity_index,
     :group_index,

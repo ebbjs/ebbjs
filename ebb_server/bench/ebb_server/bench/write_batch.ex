@@ -19,8 +19,9 @@ defmodule EbbServer.Bench.WriteBatch do
 
   `--ablate` narrows the op set to the phases that name an op group —
   `:dedup` (drop `cf_action_dedup`), `:entity_actions` (drop
-  `cf_entity_actions`), `:component_entities` (drop
-  `cf_component_entities`), `:group_index` (drop `cf_group_actions`), and
+  `cf_entity_actions`), `:component_entries` (drop only the per-component
+  entries of `cf_component_entities`), `:component_entities` (drop that whole
+  column family), `:group_index` (drop `cf_group_actions`), and
   `:entity_index` as the combined alias that drops both entity-index halves.
   Ablating every group leaves a `cf_actions`-only batch, which is the cheapest
   durable write an Action can have; the report prints the ablated phases so a narrowed run is
@@ -114,7 +115,7 @@ defmodule EbbServer.Bench.WriteBatch do
     index_ops =
       if component_entities_ablated?(ablate),
         do: index_ops,
-        else: [action_index_ops(action) | index_ops]
+        else: [action_index_ops(action, ablate) | index_ops]
 
     subject_gsns =
       if entity_actions_ablated?(ablate) do
@@ -205,8 +206,13 @@ defmodule EbbServer.Bench.WriteBatch do
     end
   end
 
-  defp action_index_ops(action) do
-    ComponentEntityIndex.update_ops(action.updates) ++
+  defp action_index_ops(action, ablate) do
+    component_ops =
+      if :component_entries in ablate,
+        do: [],
+        else: ComponentEntityIndex.update_ops(action.updates)
+
+    component_ops ++
       ComponentEntityIndex.model_ops(Enum.map(action.updates, &{&1.model, &1.subject_id}))
   end
 
