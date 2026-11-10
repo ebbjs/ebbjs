@@ -34,7 +34,7 @@ export const UPDATED_AT_BASE = 1_700_000_000_000;
  * Not exported from the package, and `load` ignores a record with any other
  * value, so the fixture has to state it.
  */
-const REPLICA_RECORD_FORMAT = 1;
+const REPLICA_RECORD_FORMAT = 2;
 
 /**
  * Distinct bodies the store materializes so the windowed read path is real.

@@ -140,6 +140,21 @@ the committed type string", and it is what
 [#803](https://github.com/ebbjs/ebbjs/issues/803) implements. `CONTEXT.md` records it as **Committed
 model**.
 
+### Amendments from slice 5 ([#798](https://github.com/ebbjs/ebbjs/issues/798))
+
+- **`optional` and `.default()` are mutually exclusive.** `optional` says absence is absence;
+  `.default()` says absence has a value. Refusing the pair is what makes an optional component's
+  projection collapse to two states (absent → `undefined`, present → the stored projection) without
+  threading optionality through every projection call.
+- **Row existence is a separate word from component existence.** A row exists while it is committed
+  and not tombstoned, even with zero components; _Existence_ in `CONTEXT.md` stays component
+  presence. The replica's `exists` bit answers the different local question "has this replica seen
+  the row's base", and `created_hlc` is the server's first-write stamp, never a predicate.
+- **Creating a zero-component row is a wire change.** Dropping the last component leaves a legal
+  zero-component row, but every non-`delete` Update names a component, so there is no way to bring an
+  id into existence with nothing attached. A row-scoped create method (or a separate endpoint) is a
+  later slice's decision; the testing seed keeps its one-component workaround until then.
+
 ### What this does not decide
 
 - Whether links become components of their source. [#790](https://github.com/ebbjs/ebbjs/issues/790)

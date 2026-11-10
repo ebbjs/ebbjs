@@ -134,6 +134,19 @@ leaf holding a tombstone still exists, and an absent component has no value at
 all. Never the ephemeral Presence primitive.
 _Avoid_: presence, attachment, membership
 
+**Row existence**:
+Whether an id's row is committed and not tombstoned, independent of how many
+components it carries. A row with zero components exists; only `delete` removes
+it. Distinct from _Existence_ (component presence) and from _Materialize_ (a
+tombstoned row can be materialized in a cache and still not exist).
+_Avoid_: create bit, row presence
+
+**Placeholder**:
+A replica row materialized from a component write whose create it has not seen.
+Its `exists` bit is false, so content backfill fetches the base; the server's
+row itself exists. Distinct from _Row existence_, which the server answers.
+_Avoid_: partial row, stub, pending entity
+
 **Tombstone**:
 A present leaf whose `value` is `null`: it records that the position was cleared
 and keeps an HLC so a later write can still win. A tombstone is a value, not an
@@ -159,8 +172,10 @@ _Avoid_: conflict level, conflict granularity
 
 **Project**:
 Derive the value a reader sees from a component's stored leaves — resolve
-declared defaults, hide tombstones. Distinct from _Materialize_, which derives a
-row from the Action log.
+declared defaults, hide tombstones. An `optional` component declares no default,
+so absence and a cleared leaf both project as `undefined`; only a present value
+projects as a value. Distinct from _Materialize_, which derives a row from the
+Action log.
 _Avoid_: hydrate, denormalize, resolve
 
 **System component**:

@@ -417,6 +417,16 @@ state table has two states per optional component instead of four.
 
 **Depends on.** 3, 4. **Blocks** 6, 9.
 
+**Current state.** Shipped in [#798](https://github.com/ebbjs/ebbjs/issues/798): `optional` components
+refuse a declared default (so absence and a cleared leaf both project as `undefined`), `drop` is an
+ordinary client write, and `has`/`hasNot` are presence predicates backed by an in-memory replica
+component index and planned ahead of filters. The replica row carries an explicit `exists` bit;
+`created_hlc` is the server's first-write stamp and is never a predicate. Two limits are recorded,
+not silently resolved: `has`/`hasNot` stay builder-only because the wire `Filter` has no component
+predicate until slice 6 owns the server index; and creating a row with zero components needs a wire
+`create` (a row-scoped method or a separate endpoint), so the testing seed keeps its `version`
+write until a slice changes the envelope.
+
 ---
 
 ### 6. `feat(storage)`: component existence index and archetype index

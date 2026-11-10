@@ -15,8 +15,11 @@ export function buildSingleEntitySeed(): SeedData {
       {
         id: "ent_001",
         type: "text_document",
-        // A document row needs at least one component on the wire; the cell
-        // map stays absent, which reads as an empty document.
+        // A row with zero components cannot be created on the pinned wire
+        // (every non-delete Update names a component), so the seed writes one
+        // harmless component. The cell map stays absent, which reads as an
+        // empty document. Restore `patches: []` when a wire create lands, not
+        // before (#798).
         patches: [{ fields: { version: 1 } }],
       },
     ],
