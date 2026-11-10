@@ -41,6 +41,7 @@ const mkEntity = (
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
     ),
   },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: deletedHlc,

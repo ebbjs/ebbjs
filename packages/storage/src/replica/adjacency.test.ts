@@ -323,6 +323,7 @@ const relationshipRow = (
       target_id: leaf(targetId, `u_${id}`, 1),
     },
   },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,
@@ -335,6 +336,7 @@ const membershipRow = (id: string, groupId: string, entityId: string): Entity =>
   data: {
     fields: { group_id: leaf(groupId, `u_${id}`, 1), entity_id: leaf(entityId, `u_${id}`, 1) },
   },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,

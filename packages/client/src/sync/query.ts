@@ -23,7 +23,19 @@ export type Predicate =
       readonly type: string;
       readonly anyOf: readonly string[] | null;
     }
-  | { readonly kind: "membership"; readonly anyOf: readonly string[] | null };
+  | { readonly kind: "membership"; readonly anyOf: readonly string[] | null }
+  | {
+      /**
+       * Component existence: `component` is always `<source>/<field>`, because
+       * the builder resolves the field against the source model. `present:
+       * true` is `has`, `false` is `hasNot`. Builder-only: no wire `Filter`
+       * lowers to it, because the server grows no component index before
+       * #799.
+       */
+      readonly kind: "existence";
+      readonly component: string;
+      readonly present: boolean;
+    };
 
 /** Ordering descriptor. `field` names a data field of the source type. */
 export interface QueryOrder {

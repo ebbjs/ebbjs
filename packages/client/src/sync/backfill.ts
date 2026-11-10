@@ -132,7 +132,11 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
       Object.entries(response.data.fields).map(([key, value]) => [key, normalizeField(value)]),
     ),
   },
-  created_hlc: hlcToString(response.created_hlc) ?? "",
+  // The entity endpoint returns a row the server holds, so its create has
+  // been seen. The wire carries no existence bit; this adapter is the one
+  // place the fact is derived, and only because a fetched row is a base.
+  exists: true,
+  created_hlc: hlcToString(response.created_hlc),
   updated_hlc: hlcToString(response.updated_hlc) ?? "",
   deleted_hlc: hlcToString(response.deleted_hlc),
   last_gsn: response.last_gsn,
@@ -140,11 +144,10 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
 
 /**
  * Entity ids referenced by a live `entityGroup` row whose base the local
- * cache does not hold, ascending. A row created by a `merge` (no
- * `created_hlc`) has not seen its create, so it is a candidate too: the
- * replica received a later component write without the base. A tombstone
- * counts as held: the client knows the entity and the delete is its current
- * state, so it is not a candidate.
+ * cache does not hold, ascending. A row materialized from a later component
+ * write has `exists: false` because its create has not been seen, so it is a
+ * candidate too. A tombstone counts as held: the client knows the entity and
+ * the delete is its current state, so it is not a candidate.
  */
 export async function collectBackfillCandidates(
   storage: StorageAdapter,
@@ -155,7 +158,7 @@ export async function collectBackfillCandidates(
   const missing: string[] = [];
   for (const entityId of [...referenced].sort()) {
     const row = await storage.entities.get(entityId);
-    if (row === null || row.created_hlc === "") missing.push(entityId);
+    if (row === null || !row.exists) missing.push(entityId);
   }
   return missing;
 }
@@ -200,6 +203,11 @@ export function createBackfill(opts: BackfillOptions): Backfill {
 
   const pending = createObservable<readonly string[]>([]);
   const waiters: (() => void)[] = [];
+  // Ids whose fetched base carried no component: the log cannot record an
+  // empty row, so the placeholder stays `exists: false` and would be a
+  // candidate on every pass. A later component write makes the row worth
+  // fetching again, so a pass that sees one clears the guard.
+  const fetchedEmpty = new Set<string>();
   let running = false;
   let queued = false;
 
@@ -225,15 +233,28 @@ export function createBackfill(opts: BackfillOptions): Backfill {
     const inFlight = new Set([...pending.get(), ...candidates]);
 
     for (const entityId of candidates) {
+      if (fetchedEmpty.has(entityId)) {
+        const row = await storage.entities.get(entityId);
+        if (row === null || Object.keys(row.data.fields).length === 0) continue;
+        fetchedEmpty.delete(entityId);
+      }
       publish(inFlight);
       const entity = await readOne(entityId);
       // An optimistic local write can land while the read is in flight.
       // It owns the cache until its echo arrives, so it wins over the
       // fetched base rather than being overwritten by the replay.
       const current = await storage.entities.get(entityId);
-      const needsBase = current === null || current.created_hlc === "";
+      const needsBase = current === null || !current.exists;
       if (entity !== null && needsBase) {
-        const entry = await storage.actions.append(snapshotAction(entity));
+        const snapshot = snapshotAction(entity);
+        // A zero-component base carries no Update, so the log cannot record
+        // it. Remember the id so this pass does not re-fetch it forever.
+        if (snapshot.updates.length === 0) {
+          fetchedEmpty.add(entityId);
+          inFlight.delete(entityId);
+          continue;
+        }
+        const entry = await storage.actions.append(snapshot);
         onAppended?.(entry);
         // Force materialization so subscribers observe the fetched row.
         await storage.entities.get(entityId);

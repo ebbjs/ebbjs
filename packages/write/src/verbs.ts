@@ -1,7 +1,7 @@
 /**
  * The semantic write verbs: one declaration of what `create` / `update` /
- * `delete` / `relate` / `unrelate` mean, and the planner calls that build
- * their Updates.
+ * `delete` / `drop` / `relate` / `unrelate` mean, and the planner calls that
+ * build their Updates.
  *
  * The functions runtime's `ctx` and the reference fixtures resolve through here,
  * so the same verb produces the same Updates on both paths by construction.
@@ -19,6 +19,7 @@ import {
   call,
   createEntity,
   deleteEntity,
+  dropEntity,
   patchEntity,
   requireRelationship,
   writeRelationship,
@@ -82,6 +83,20 @@ export interface DeleteVerb {
 }
 
 /**
+ * Detach components from a row, one `drop` Update per named field. A drop
+ * needs no read — the row survives, so `UNRESOLVED` is a faithful resolution.
+ * `unset` in an update patch is a different write: it clears the position and
+ * leaves a tombstone; `drop` removes the component.
+ */
+export interface DropVerb {
+  readonly verb: "drop";
+  readonly entity: string;
+  readonly id: string;
+  readonly fields: readonly string[];
+  readonly groups?: readonly string[];
+}
+
+/**
  * Link a relationship. One-cardinality relationships take a single
  * `target`; a many-cardinality relationship's canonical FK set lives on the
  * source row, so `targets` is the whole set the write carries (the client's
@@ -112,7 +127,7 @@ export interface UnrelateVerb {
   readonly groups?: readonly string[];
 }
 
-export type WriteVerb = CreateVerb | UpdateVerb | DeleteVerb | RelateVerb | UnrelateVerb;
+export type WriteVerb = CreateVerb | UpdateVerb | DeleteVerb | DropVerb | RelateVerb | UnrelateVerb;
 
 /**
  * What a verb needs resolved before it can become a planner call. The
@@ -140,8 +155,10 @@ export const UNRESOLVED: VerbResolution = {
   fkTargetsOf: () => undefined,
 };
 
-const groupsOf = (verb: UpdateVerb | DeleteVerb | RelateVerb | UnrelateVerb, res: VerbResolution) =>
-  verb.groups ?? res.groupsOf(verb.id);
+const groupsOf = (
+  verb: UpdateVerb | DeleteVerb | DropVerb | RelateVerb | UnrelateVerb,
+  res: VerbResolution,
+) => verb.groups ?? res.groupsOf(verb.id);
 
 const pointerId = (value: PointerTarget, label: string): string => {
   const id = normalizePointer(value, label);
@@ -308,6 +325,13 @@ export const operationCallFor = (
       return call(deleteEntity, {
         entity: verb.entity,
         id: verb.id,
+        groups: groupsOf(verb, resolution),
+      });
+    case "drop":
+      return call(dropEntity, {
+        entity: verb.entity,
+        id: verb.id,
+        fields: verb.fields,
         groups: groupsOf(verb, resolution),
       });
     case "relate": {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defineReplicaStoreTests } from "../testing/replica-store.test-suite";
 import { createIndexedDBReplicaStore } from "./replica-store.indexeddb";
+import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import { REPLICA_CURSOR_ID, type EbbDBSchema } from "./schema";
 import { openTestDb } from "./test-db";
 
@@ -41,7 +42,12 @@ describe("IndexedDB ReplicaStore corruption", () => {
   it("reads a row with a non-string id as null", async () => {
     const db = await openTestDb("replica-corrupt-entity");
     const store = createIndexedDBReplicaStore(db);
-    await db.put("replicaCursor", { id: REPLICA_CURSOR_ID, format: 1, position: 0, revision: 0 });
+    await db.put("replicaCursor", {
+      id: REPLICA_CURSOR_ID,
+      format: REPLICA_RECORD_FORMAT,
+      position: 0,
+      revision: 0,
+    });
     // The composite key accepts a numeric id, but the row shape does not.
     await db.put("replica", {
       type: "todo",

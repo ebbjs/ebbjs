@@ -91,6 +91,7 @@ const shimIssue = (id: string, title: string): Entity => ({
   id,
   type: "issue",
   data: { fields: { title: field(title, `u_${id}`), status: field("open", `u_${id}`) } },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,

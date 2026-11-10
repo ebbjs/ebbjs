@@ -234,6 +234,22 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert result.last_gsn == 1
     end
 
+    test "a row cannot be written without a created_hlc", context do
+      dir = tmp_dir(context)
+      %{name: _name} = start_sqlite(dir)
+
+      db = open_writable(dir)
+
+      assert {:error, message} =
+               Sqlite3.execute(
+                 db,
+                 "INSERT INTO entities (id, type, data, created_hlc, updated_hlc, last_gsn) " <>
+                   "VALUES ('todo_no_create', 'todo', '{\"fields\":{}}', NULL, 1, 1)"
+               )
+
+      assert message =~ "NOT NULL constraint failed: entities.created_hlc"
+    end
+
     test "returns :not_found for nonexistent entity", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
@@ -521,6 +537,35 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert row.deleted_hlc == 7000
       assert row.deleted_by == "actor_1"
       assert Jason.decode!(row.data)["fields"]["title"]["value"] == "kept"
+    end
+
+    test "a zero-component row keeps its creation stamp through a metadata-only patch", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(name, "doc_1", ~s({"fields":{}}), 1)
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 7000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 7
+          },
+          name
+        )
+
+      assert {:ok, row} = SQLite.get_entity("doc_1", name)
+      assert row.created_hlc == 1000
+      assert row.updated_hlc == 7000
+      assert row.deleted_hlc == nil
+      assert row.last_gsn == 7
+      assert Jason.decode!(row.data) == %{"fields" => %{}}
     end
 
     test "a patched nested map key survives alongside its siblings", context do

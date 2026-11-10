@@ -84,6 +84,31 @@ describe("planQuery", () => {
     expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
   });
 
+  it("plans a existence predicate as an index op ahead of filters", () => {
+    const plan = planQuery(
+      query({
+        groups: [
+          [
+            { kind: "field", field: "title", value: "Ship" },
+            { kind: "existence", component: "todo/draft", present: true },
+            { kind: "existence", component: "todo/body", present: false },
+          ],
+        ],
+      }),
+    );
+
+    expect(plan.ops[1]).toEqual({
+      kind: "select",
+      predicates: [
+        { kind: "existence", component: "todo/draft", present: true },
+        { kind: "existence", component: "todo/body", present: false },
+        { kind: "filter", field: "title", value: "Ship" },
+      ],
+    });
+    // A existence predicate reads only the source type, which the scan names.
+    expect(plan.readTypes).toEqual(["todo", "entityGroup"]);
+  });
+
   it("plans an unfiltered query as scan and the default id ordering", () => {
     expect(planQuery(emptyQuery("todo")).ops).toEqual([
       { kind: "scan", type: "todo" },

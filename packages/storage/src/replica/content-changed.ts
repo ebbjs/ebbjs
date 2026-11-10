@@ -51,6 +51,8 @@ export const contentChanged = (
 ): boolean => {
   if (absent(prev) || absent(next)) return absent(prev) !== absent(next);
   if (prev.type !== next.type) return true;
+  if (prev.exists !== next.exists) return true;
+  if (prev.created_hlc !== next.created_hlc) return true;
   if (prev.updated_hlc !== next.updated_hlc) return true;
   if (prev.deleted_hlc !== next.deleted_hlc) return true;
   return !fieldsEqual(prev.data.fields, next.data.fields);

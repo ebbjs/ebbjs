@@ -214,6 +214,58 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     assert field(queried_stale, "title") == "Patched"
   end
 
+  test "a cold replay rebuilds a row whose only component was dropped", ctx do
+    %{cache: %{dirty_set: dirty_set}, writer_name: writer_name} = ctx
+
+    actor_id = "a_zero_restart_#{System.unique_integer([:positive])}"
+    todo_id = "todo_zero_restart_#{System.unique_integer([:positive])}"
+    base_hlc = System.os_time(:millisecond)
+
+    assert {:ok, {1, 1}, []} =
+             write(
+               writer_name,
+               actor_id,
+               :replace,
+               todo_id,
+               "todo",
+               %{"title" => lww("Only", base_hlc, 0)},
+               base_hlc,
+               0
+             )
+
+    assert {:ok, {2, 2}, []} =
+             write(
+               writer_name,
+               actor_id,
+               :drop,
+               todo_id,
+               "todo",
+               %{"title" => nil},
+               base_hlc,
+               1
+             )
+
+    # Never materialized before the restart, so the replay starts at GSN 0
+    # with no cached row and has to apply the create and the drop in one pass.
+    restarted = restart_stores(ctx)
+    DirtyTracker.reset(dirty_set)
+
+    create_hlc = TestHelpers.hlc_from(base_hlc, 0)
+
+    assert {:ok, row} = EntityStore.materialize(todo_id, store_opts(ctx, restarted))
+    assert row.type == "todo"
+    assert row.created_hlc == create_hlc
+    assert row.deleted_hlc == nil
+    assert row.data == %{"fields" => %{}}
+    assert row.last_gsn == 2
+
+    assert {:ok, cached} = SQLite.get_entity(todo_id, restarted.sqlite_name)
+    assert cached.created_hlc == create_hlc
+    assert cached.deleted_hlc == nil
+    assert cached.last_gsn == 2
+    assert Jason.decode!(cached.data) == %{"fields" => %{}}
+  end
+
   defp write(writer_name, actor_id, method, subject_id, model, fields, base_hlc, counter) do
     hlc = TestHelpers.hlc_from(base_hlc, counter)
 

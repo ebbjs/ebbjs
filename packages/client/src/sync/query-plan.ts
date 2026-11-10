@@ -7,8 +7,8 @@
  * intersects with the replica's revision journal.
  *
  * Pure by construction: no registry, no storage, no replica. Indexed
- * predicates (adjacency, membership) are placed ahead of field filters
- * within a select so the pipeline documents the pushdown into the
+ * predicates (existence, adjacency, membership) are placed ahead of field
+ * filters within a select so the pipeline documents the pushdown into the
  * replica's indices; field predicates scan the materialized rows (epic
  * decision 12).
  */
@@ -27,6 +27,7 @@ export type PlanPredicate =
       readonly anyOf: readonly string[] | null;
     }
   | { readonly kind: "membership"; readonly anyOf: readonly string[] | null }
+  | { readonly kind: "existence"; readonly component: string; readonly present: boolean }
   | { readonly kind: "filter"; readonly field: string; readonly value: unknown };
 
 export type PlanOp =
@@ -55,6 +56,8 @@ const toPlanPredicate = (predicate: Predicate): PlanPredicate => {
       };
     case "membership":
       return { kind: "membership", anyOf: predicate.anyOf };
+    case "existence":
+      return { kind: "existence", component: predicate.component, present: predicate.present };
   }
 };
 
@@ -79,7 +82,8 @@ const isReplicaBacked = (query: Query): boolean => query.source !== "";
  * row carries its live group ids. Those are the subject types the
  * replica's journal reports, so #512 can intersect them with a revision
  * window. A relationship's `type` is the adjacency index key, not a row
- * type, so it never belongs here.
+ * type, so it never belongs here. A existence predicate names a component of
+ * the source type, which the scan already covers.
  */
 const readTypesFor = (query: Query): readonly string[] => {
   const types = new Set<string>([query.source]);

@@ -48,4 +48,20 @@ describe("isValidReplicaRecord", () => {
     expect(isValidReplicaRecord(withEntities([{ id: "todo_1" }]))).toBe(false);
     expect(isValidReplicaRecord(withEntities([{ id: 123, type: "todo" }]))).toBe(false);
   });
+
+  it("rejects a record from the previous format", () => {
+    expect(isValidReplicaRecord({ ...(validRecord() as object), format: 1 })).toBe(false);
+  });
+
+  it("requires the row's existence bit and accepts a null creation time", () => {
+    const withRow = (row: unknown): unknown => ({
+      ...(validRecord() as object),
+      entities: [row],
+    });
+    const row = buildTodoEntity("todo_1", "Hello", makeHlc(HLC_BASE));
+    const { exists: _exists, ...withoutExists } = row;
+    expect(isValidReplicaRecord(withRow(withoutExists))).toBe(false);
+    expect(isValidReplicaRecord(withRow({ ...row, created_hlc: null }))).toBe(true);
+    expect(isValidReplicaRecord(withRow({ ...row, created_hlc: 7 }))).toBe(false);
+  });
 });

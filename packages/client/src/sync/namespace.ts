@@ -167,18 +167,23 @@ export type WireCreateStatic<TFields extends Record<string, TSchema>> = Static<
 export type EntityValues<TEntityDef> = WireStatic<EntityFields<TEntityDef>>;
 
 /**
- * What an update patch accepts: each field's value, or `unset` to assert it
- * absent. `unset` is a value-shaped marker, not row data; it compiles to the
- * tombstone the merge rule already understands.
+ * What an update patch accepts: each field's value, or `unset` to clear that
+ * field. `unset` is a value-shaped marker, not row data; it compiles to a
+ * tombstone ("present, no value"), which is a different write from detaching
+ * the component — use a draft `drop` for that.
  */
 export type EntityPatch<TFields extends Record<string, TSchema>> = Partial<{
   [K in keyof TFields]: PatchValue<TFields[K]>;
 }>;
 
 /**
- * One field's patch value: the declared value or `unset`, and for a map
- * field each entry may be `unset` on its own so one key can be cleared
- * without touching its siblings.
+ * One field's patch value: the declared value or `unset`.
+ *
+ * `unset` clears the position: it writes a tombstone, so the component is
+ * still present and a reader projects no value. It does **not** drop the
+ * component — that is the draft namespace's `drop`, which removes the
+ * component from the row. For a map field each entry may be `unset` on its
+ * own, so one key can be cleared without touching its siblings.
  */
 export type PatchValue<T extends TSchema> =
   T extends TRecord<TString, infer V>

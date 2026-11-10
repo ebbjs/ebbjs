@@ -67,6 +67,7 @@ type ReplicaRow = {
       { readonly value: unknown; readonly update_id: string; readonly hlc: string }
     >;
   };
+  readonly exists: boolean;
   readonly created_hlc: string;
   readonly updated_hlc: string;
   readonly deleted_hlc: string | null;
@@ -84,6 +85,7 @@ const mkRow = (id: string, type: string, fields: Record<string, unknown>): Repli
       ]),
     ),
   },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,

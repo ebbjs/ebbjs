@@ -284,6 +284,7 @@ export const buildTodoEntity = (id: string, title: string, hlc: string): Entity 
   id,
   type: "todo",
   data: { fields: { title: { value: title, update_id: `u_${id}`, hlc } } },
+  exists: true,
   created_hlc: hlc,
   updated_hlc: hlc,
   deleted_hlc: null,

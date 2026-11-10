@@ -103,13 +103,15 @@ const createRow = (
   options: MaterializeOptions | undefined,
 ): Entity => {
   const fields: Record<string, FieldValue> = { [write.field]: write.value };
+  const created = write.method === "replace";
   return {
     id: update.subject_id,
     type: componentModel(update.component),
     data: { fields: options?.residentMapFields ? adoptMapFields(fields) : fields },
-    // A `merge` that creates the row has not seen its create, so the row's
-    // creation time stays unset and a backfill fetches the base.
-    created_hlc: write.method === "replace" ? hlc : "",
+    // A `replace` is the row's create; a `merge` arrives first only when the
+    // replica has not seen that create, so the placeholder waits for the base.
+    exists: created,
+    created_hlc: created ? hlc : null,
     updated_hlc: hlc,
     deleted_hlc: null,
     last_gsn: gsn,
@@ -121,13 +123,16 @@ const createRow = (
  *
  * - `merge` / `replace`: apply the component's value at its field under the
  *   leaf-level LWW compare. The first such write on a row that does not exist
- *   creates it; `replace` stamps `created_hlc`, `merge` leaves it unset because
- *   the row's create has not been seen.
- * - `drop`: remove the field from an existing row; the row survives, and a
- *   tombstone stays a tombstone — detaching a component is not a resurrection.
- * - `delete`: tombstone the row, keeping its type. A delete for a row that was
- *   never materialized is a no-op, so a per-Update delivery (#473) cannot break
- *   the drain.
+ *   creates it; `replace` is the row's create, while `merge` leaves
+ *   `exists: false` and `created_hlc: null` because the create has not been
+ *   seen, so the row is a backfill candidate.
+ * - `drop`: remove the field from an existing row; the row survives with its
+ *   existence and creation time, even when the last component is detached.
+ *   A tombstone stays a tombstone — detaching a component is not a
+ *   resurrection.
+ * - `delete`: tombstone the row, keeping its type and existence bit. A delete
+ *   for a row that was never materialized is a no-op, so a per-Update delivery
+ *   (#473) cannot break the drain.
  *
  * A component write to a tombstoned row resurrects it, exactly as the server's
  * materialization does.
@@ -166,15 +171,15 @@ export const applyUpdate = (
   }
   if (!entity) return createRow(update, write, gsn, hlc, options);
 
-  const created_hlc =
-    write.method === "replace" && entity.created_hlc === "" ? hlc : entity.created_hlc;
+  const created = write.method === "replace" && !entity.exists;
   return {
     ...entity,
     type: componentModel(update.component),
     // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
     // rule: an out-of-order base snapshot must not clobber a newer write.
     data: mergeFields(entity.data, write, options),
-    created_hlc,
+    exists: entity.exists || write.method === "replace",
+    created_hlc: created ? hlc : entity.created_hlc,
     updated_hlc: latestHlc(entity.updated_hlc, hlc),
     deleted_hlc: null,
     last_gsn: Math.max(entity.last_gsn, gsn),

@@ -39,6 +39,7 @@ const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "todo_2",
   type: "todo",
   data: { fields: { title: { value: "Direct", update_id: "u_direct", hlc: makeHlc(1) } } },
+  exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
   deleted_hlc: null,
@@ -137,6 +138,7 @@ const makeRelationshipEntity = (
         field: field(overrides.field ?? "list"),
       },
     },
+    exists: true,
     created_hlc: makeHlc(1),
     updated_hlc: makeHlc(1),
     deleted_hlc: overrides.deleted ?? null,
@@ -166,6 +168,7 @@ const makeEntityGroupEntity = (
         group_id: field(overrides.groupId ?? "group_1"),
       },
     },
+    exists: true,
     created_hlc: makeHlc(1),
     updated_hlc: makeHlc(1),
     deleted_hlc: overrides.deleted ?? null,
@@ -269,23 +272,27 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(after!.data.fields).not.toHaveProperty("fields");
       });
 
-      it("creates the row from a merge with no base row, leaving created_hlc unset", async () => {
+      it("creates a placeholder from a merge with no base row", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         // Per-Update delivery (#473) can hand a group a component write whose
         // row's create stayed in another group. A merge is the only way to
-        // create a model whose components are all keyed, so it creates the row.
+        // create a model whose components are all keyed, so it materializes a
+        // placeholder that waits for the base.
         await actionLog.append(buildPatchAction());
         await dirtyTracker.mark("todo_1", "todo");
 
         const created = await entityStore.get("todo_1");
         expect(created!.type).toBe("todo");
         expect((created!.data.fields.title as { value: unknown }).value).toBe("Updated");
-        expect(created!.created_hlc).toBe("");
+        expect(created!.exists).toBe(false);
+        expect(created!.created_hlc).toBe(null);
 
         await actionLog.append(buildPutAction());
         await dirtyTracker.mark("todo_1", "todo");
         const entity = await entityStore.get("todo_1");
         expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
+        expect(entity!.exists).toBe(true);
+        expect(entity!.created_hlc).not.toBe(null);
       });
     });
 

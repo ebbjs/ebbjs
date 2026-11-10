@@ -438,6 +438,67 @@ export const deleteEntity: Operation<DeleteEntityInput> = (ctx, input) => ({
   subject: { id: input.id, type: input.entity },
 });
 
+/** Input for {@link dropEntity}. */
+export interface DropEntityInput {
+  readonly entity: string;
+  readonly id: string;
+  /** Components to detach, by the row field each attaches under. */
+  readonly fields: readonly string[];
+  /** Membership set the write fans out to; empty when locally unknown. */
+  readonly groups: readonly string[];
+}
+
+/**
+ * Detach one or more components from a row: one `drop` Update per named field.
+ *
+ * Dropping the last component is **not** a delete — the row keeps its id, its
+ * type and its existence, and simply carries nothing. A drop takes no value,
+ * so it names components rather than a patch payload; `unset` in a patch
+ * still means "clear the position" (a tombstone), which is a different write.
+ *
+ * Refused before any Update exists: an empty field list, a component the model
+ * does not declare, and a system model's component (dropping a system
+ * component is a torn edge or membership, which #805/#803 own).
+ */
+export const dropEntity: Operation<DropEntityInput> = (ctx, input) => {
+  if (SYSTEM_ENTITY_NAMES.has(input.entity)) {
+    throw new EntityValidationError([
+      {
+        entityName: input.entity,
+        message: `drop: "${input.entity}" is a system entity; dropping one of its components is a torn edge or membership and is not available here`,
+      },
+    ]);
+  }
+  // Unlike a patch's empty-payload check, this is not behind `validate`:
+  // a no-op drop is a caller bug whether or not validation ran.
+  if (input.fields.length === 0) {
+    throw new EntityValidationError([
+      { entityName: input.entity, message: `drop: must name at least one component` },
+    ]);
+  }
+  const def = ctx.registry.get(input.entity);
+  if (def !== undefined) {
+    for (const field of input.fields) {
+      if (def.components[field] === undefined) {
+        throw new EntityValidationError([
+          {
+            entityName: input.entity,
+            field,
+            message: `drop: component "${field}" is not declared on entity "${input.entity}"`,
+          },
+        ]);
+      }
+    }
+  }
+  return {
+    updates: dropComponents(input.id, input.entity, input.fields, {
+      updateId: () => ctx.ids.updateId(),
+    }),
+    groups: [...input.groups],
+    subject: { id: input.id, type: input.entity },
+  };
+};
+
 /** Input for {@link duplicateEntity}. */
 export interface DuplicateEntityInput {
   readonly entity: string;
@@ -720,6 +781,31 @@ export interface ComponentUpdateIds {
   updateId(): string;
   hlc: string;
 }
+
+/** The ids one drop's component Updates consume. */
+export interface ComponentDropIds {
+  updateId(): string;
+}
+
+/**
+ * Compile component names into one `drop` Update each, addressed by the
+ * `<model>/<field>` leaf rule every other component write uses. A drop
+ * carries no value, so `data` is `null` and the field list is the whole
+ * payload.
+ */
+export const dropComponents = (
+  subjectId: string,
+  model: string,
+  fields: readonly string[],
+  ids: ComponentDropIds,
+): Update[] =>
+  fields.map((field) => ({
+    id: ids.updateId(),
+    subject_id: subjectId,
+    component: componentName(model, field),
+    method: "drop",
+    data: null,
+  }));
 
 /**
  * Compile a plain payload into one component Update per field: a keyed

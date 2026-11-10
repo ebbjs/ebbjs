@@ -18,6 +18,7 @@ const entity = (type: string, fields: Record<string, unknown>): Entity => ({
       Object.entries(fields).map(([key, value]) => [key, { value, update_id: "u", hlc: "1-0" }]),
     ),
   },
+  exists: true,
   created_hlc: "1-0",
   updated_hlc: "1-0",
   deleted_hlc: null,

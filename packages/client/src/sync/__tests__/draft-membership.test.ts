@@ -31,6 +31,7 @@ const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
       group_id: { value: groupId, update_id: "u" },
     },
   },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,

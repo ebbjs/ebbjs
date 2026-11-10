@@ -64,9 +64,8 @@
                 {
                   "created_hlc":
                     {
-                      "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                      "description": "The HLC of the row's first write, whatever its method",
                       "format": "int64",
-                      "nullable": true,
                       "type": "integer",
                     },
                   "data":
@@ -1073,9 +1072,8 @@
                                         {
                                           "created_hlc":
                                             {
-                                              "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                              "description": "The HLC of the row's first write, whatever its method",
                                               "format": "int64",
-                                              "nullable": true,
                                               "type": "integer",
                                             },
                                           "data":
@@ -1257,9 +1255,8 @@
                                     {
                                       "created_hlc":
                                         {
-                                          "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                          "description": "The HLC of the row's first write, whatever its method",
                                           "format": "int64",
-                                          "nullable": true,
                                           "type": "integer",
                                         },
                                       "data":
@@ -4182,9 +4179,8 @@
                                                 {
                                                   "created_hlc":
                                                     {
-                                                      "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                                      "description": "The HLC of the row's first write, whatever its method",
                                                       "format": "int64",
-                                                      "nullable": true,
                                                       "type": "integer",
                                                     },
                                                   "data":

@@ -1,5 +1,11 @@
 import type { Update } from "@ebbjs/core";
-import { defineModel, defineRelationship, defineSchema, e } from "@ebbjs/schema";
+import {
+  EntityValidationError,
+  defineModel,
+  defineRelationship,
+  defineSchema,
+  e,
+} from "@ebbjs/schema";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,7 +13,9 @@ import {
   call,
   commit,
   createEntity,
+  dropEntity,
   groupBootstrap,
+  operationCallFor,
   patchEntity,
   writeRelationship,
   type CommitCapability,
@@ -189,6 +197,99 @@ describe("@ebbjs/write", () => {
       "relationship/type",
     ]);
     for (const update of updates) expect(update).toMatchObject({ method: "replace" });
+  });
+
+  it("drops one component per named field and never a delete", async () => {
+    const registry = buildRegistry();
+
+    const updates = await commitUpdates(registry, [
+      call(dropEntity, {
+        entity: "issue",
+        id: "e_issue",
+        fields: ["title", "project"],
+        groups: ["g_project"],
+      }),
+    ]);
+
+    expect(updates).toEqual([
+      { id: "u_1", subject_id: "e_issue", component: "issue/title", method: "drop", data: null },
+      {
+        id: "u_2",
+        subject_id: "e_issue",
+        component: "issue/project",
+        method: "drop",
+        data: null,
+      },
+    ]);
+  });
+
+  it("refuses a drop naming no component", () => {
+    const registry = buildRegistry();
+
+    let caught: unknown;
+    try {
+      dropEntity(
+        { registry, ids: ids("u_"), actorId: "a_actor" },
+        { entity: "issue", id: "e_issue", fields: [], groups: ["g_project"] },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(EntityValidationError);
+    expect((caught as Error).message).toContain("at least one");
+  });
+
+  it("refuses a component the model does not declare, naming it", () => {
+    const registry = buildRegistry();
+
+    let caught: unknown;
+    try {
+      dropEntity(
+        { registry, ids: ids("u_"), actorId: "a_actor" },
+        { entity: "issue", id: "e_issue", fields: ["draft"], groups: ["g_project"] },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(EntityValidationError);
+    expect((caught as Error).message).toContain("issue");
+    expect((caught as Error).message).toContain('"draft"');
+  });
+
+  it("refuses a system model's component, naming the model", () => {
+    const registry = buildRegistry();
+
+    let caught: unknown;
+    try {
+      dropEntity(
+        { registry, ids: ids("u_"), actorId: "a_actor" },
+        { entity: "relationship", id: "rel_1", fields: ["target_id"], groups: ["g_project"] },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(EntityValidationError);
+    expect((caught as Error).message).toContain("relationship");
+    expect((caught as Error).message).toContain("system");
+  });
+
+  it("resolves a drop verb without any read", async () => {
+    const registry = buildRegistry();
+
+    const entry = operationCallFor(registry, {
+      verb: "drop",
+      entity: "issue",
+      id: "e_issue",
+      fields: ["title"],
+    });
+    const updates = await commitUpdates(registry, [entry!]);
+
+    expect(updates).toEqual([
+      { id: "u_1", subject_id: "e_issue", component: "issue/title", method: "drop", data: null },
+    ]);
   });
 
   it("keeps a relationship write pure under a shared OpContext", () => {

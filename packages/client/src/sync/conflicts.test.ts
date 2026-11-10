@@ -51,6 +51,7 @@ const mkEntity = (id: string, fields: Record<string, FieldValue>): Entity => ({
   id,
   type: "todo",
   data: { fields },
+  exists: true,
   created_hlc: LOCAL_HLC,
   updated_hlc: LOCAL_HLC,
   deleted_hlc: null,

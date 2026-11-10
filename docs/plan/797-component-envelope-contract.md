@@ -62,13 +62,13 @@ Ordering is unchanged: per leaf, HLC then `update_id`.
 
 `replace` on a **new** row is the row's first write, and a create writes one `replace` per
 component (a keyed component's create writes `merge`, because `replace` is refused for it).
-So **a `merge` on a row that does not exist yet creates the row** — it is the only way to
-create a model whose components are all keyed. Existence of `created_hlc` distinguishes the
-two: a `replace` on an absent row stamps `created_hlc` with the Action's HLC; a `merge` that
-creates the row leaves `created_hlc` unset, because the row's create has not been seen. The
-server's `apply_patch` already behaves this way; the client adopts it, and the client's
-content backfill additionally fetches a row whose `created_hlc` is unset, so a replica that
-received a later component write without the create still gets the base.
+So a `merge` that arrives before the row's create still materializes the row — it is the only
+way to create a model whose components are all keyed. What it must not do is imply _and this
+is the row's first write_: slice 5 (#798) replaced the `created_hlc`-unset signal with the
+client row's explicit `exists` bit, false for a row materialized before its create was seen.
+The client's content backfill fetches a row whose `exists` is false, so a replica that
+received a later component write without the create still gets the base. `created_hlc` is the
+row's creation time and nothing else: the server stamps it on the first write of any method.
 
 ### Refusals, and their messages
 
@@ -154,12 +154,12 @@ component)` keying is slice 8/9's.
 - **Materialization** (`EntityStore`) applies a stored per-component Update to the row:
   `merge` → `FieldMerge.merge(existing_field, data)`, `replace` → the same leaf compare, at
   the component's slot (its whole value, which is one leaf; stamping the update id), `drop` →
-  remove the field, `delete` → tombstone. The two differ only in `created_hlc`: a `replace` on a
-  row that has none stamps it, a `merge` that creates a row leaves it unset. Both sides must
-  apply the same rule — a `replace` that skipped the leaf compare would let an older write
-  clobber a newer one on the server while every replica rejected it. A `merge` that arrives
-  first for an unknown row creates the row (today's `apply_patch` already does), with
-  `created_hlc` unset until a `replace` arrives. A delta replay seeds `type`, `created_hlc`,
+  remove the field, `delete` → tombstone. Both sides must apply the same rule — a `replace` that
+  skipped the leaf compare would let an older write clobber a newer one on the server while every
+  replica rejected it. A `merge` that arrives first for an unknown row creates the row too, and
+  the server stamps `created_hlc` on that first write whatever its method; row existence is the
+  stored row with a null `deleted_hlc`, never inferred from the method, the field count, or the
+  creation stamp. A delta replay seeds `type`, `created_hlc`,
   and the tombstone columns from the materialized row, so a `drop` or `delete` that is the
   only Update in the delta rewrites the row with its own metadata. `last_gsn` and
   `update_id` stamping follow today's rules.
@@ -194,12 +194,14 @@ large component can be excluded without a second read path (ADR "component-scope
 - **Client materializer** (`@ebbjs/storage/internal/materialize.ts`): the row is still
   `{id, type, data: {fields}}`; `readFields` becomes `componentUpdate(update)` →
   `{ field, method, value }`, and `applyUpdate` applies it. A `replace` for a row that does
-  not exist is a create (and sets `created_hlc`); a `merge` for a row that does not exist
-  also creates the row, but leaves `created_hlc` unset, because that is a base the replica
-  has not seen (see §1); a `replace`/`merge` for an existing row applies to that field;
-  `drop` removes the field on an existing row, `delete` tombstones. `type` comes from the
-  component prefix; a `delete` keeps the existing row's type. `collectBackfillCandidates`
-  also treats a row with no `created_hlc` as missing, so the base is fetched.
+  not exist is a create (`exists: true`, `created_hlc` set); a `merge` for a row that does not
+  exist also materializes the row, but as a placeholder with `exists: false` and
+  `created_hlc: null` because that is a base the replica has not seen; a `replace`/`merge`
+  for an existing row applies to that field; `drop` removes the field on an existing row and
+  keeps the row and its existence bit even when the last component is detached; `delete`
+  tombstones. `type` comes from the component prefix; a `delete` keeps the existing row's
+  type. `collectBackfillCandidates` treats a row with `exists: false` as missing, so the base
+  is fetched.
 - **Outbox / conflict slots / history**: `InboundSubject` and `PendingWrite` carry
   **components**, not field maps: a component is the slot key, and a component value's map
   keys are the paths inside it. `STRUCTURAL_SUBJECT_TYPES` becomes a check on the model
@@ -232,11 +234,15 @@ pinned here because reversing them later costs a wire or data-format change:
   validation. Declared-set authorization (slice 10) and the system-component rename (slice 12) both
   depend on it holding.
 
-These are scaffolding that slice 5 (#798) deletes, listed there so they are not rediscovered: a
-`merge` on an absent row creating the row; `created_hlc` unset meaning "the base has not been seen"
-(and the backfill trigger that reads it); "a row with zero components cannot be created". Nothing
-may build an API on them — no `has()`-style predicate, no documentation that describes them as
-semantics.
+These were scaffolding that slice 5 (#798) deletes, listed there so they are not rediscovered:
+a `merge` that arrives before a create no longer implies _and this is the row's first write_;
+`created_hlc` unset no longer means "the base has not been seen" (the replica's `exists` bit
+does, and the server always stamps the creation time); and nothing may infer existence from
+`data.fields` being empty. One item on that list is **not** deliverable on this envelope: a row
+with zero components cannot be _created_, because every non-`delete` Update names a component.
+A zero-component row is reachable by dropping the last component and is a legal stored row, but
+creating one from nothing needs a wire create (a row-scoped method or a separate endpoint),
+which a later slice owns. The testing seed keeps its `version` write until then.
 
 One delivery question this slice does not decide is tracked as #813: an Action whose resolved group
 scope is `[]` is committed but delivered to nobody. Slice 6 (#799) owns it, because the scope index

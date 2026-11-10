@@ -11,7 +11,7 @@ import { Type, type Static } from "@sinclair/typebox";
 
 import type { Entity, FieldValue } from "@ebbjs/core";
 
-import { defineModel, e } from "@ebbjs/schema";
+import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import {
   buildQueryBuilder,
@@ -39,6 +39,7 @@ const mkEntity = (id: string, fields: Record<string, unknown>): Entity => ({
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
     ),
   },
+  exists: true,
   created_hlc: "1",
   updated_hlc: "1",
   deleted_hlc: null,
@@ -72,6 +73,7 @@ describe("projectEntity — map fields", () => {
     id: "d1",
     type: "doc",
     data: { fields: { content } },
+    exists: true,
     created_hlc: "1",
     updated_hlc: "1",
     deleted_hlc: null,
@@ -220,6 +222,12 @@ describe("buildQueryBuilder — chain mutators", () => {
     ];
     const out = await buildQueryBuilder(rows, todo.shape).where("completed", false);
     expect(out.map((r) => r.title)).toEqual(["a", "c"]);
+  });
+
+  it("has / hasNot refuse a chain over already-materialized rows", () => {
+    const chain = buildQueryBuilder([mkEntity("1", { title: "a" })], todo.shape);
+    expect(() => chain.has("title")).toThrow(/carries no component index/);
+    expect(() => chain.hasNot("title")).toThrow(/carries no component index/);
   });
 
   it("orderBy sorts by field", async () => {
@@ -868,7 +876,7 @@ describe("projectFieldValue caching", () => {
   });
 });
 
-describe("projectEntity — declarative defaults", () => {
+describe("projectEntity — declarative defaults (non-optional)", () => {
   const task = defineModel("task", {
     priority: e.string().default("normal"),
     title: e.string(),
@@ -936,5 +944,28 @@ describe("ordering — declarative defaults", () => {
     const descending = await buildQueryBuilder(rows, task.shape).orderBy("title", "desc");
     expect(ascending.map((row) => row.id)).toEqual(["c", "a", "b"]);
     expect(descending.map((row) => row.id)).toEqual(["a", "c", "b"]);
+  });
+});
+
+describe("projectEntity — optional components", () => {
+  const note = defineModel("note", {
+    title: e.string(),
+    draft: defineComponent("note/draft", e.string(), { optional: true }),
+  });
+
+  it("reads an absent component as undefined, with no default to resolve", () => {
+    expect(projectEntity(mkEntity("1", { title: "Ship" }), note.shape).draft).toBeUndefined();
+  });
+
+  it("reads a cleared component as undefined too: only existence separates them", () => {
+    expect(projectEntity(mkEntity("1", { title: "Ship", draft: null }), note.shape).draft).toBe(
+      undefined,
+    );
+  });
+
+  it("reads a present leaf as its stored value", () => {
+    expect(projectEntity(mkEntity("1", { title: "Ship", draft: "v1" }), note.shape).draft).toBe(
+      "v1",
+    );
   });
 });
