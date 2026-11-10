@@ -75,7 +75,7 @@ defmodule EbbServer.Storage.SQLite do
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     data TEXT,
-    created_hlc INTEGER,
+    created_hlc INTEGER NOT NULL,
     updated_hlc INTEGER NOT NULL,
     deleted_hlc INTEGER,
     deleted_by TEXT,
@@ -229,6 +229,9 @@ defmodule EbbServer.Storage.SQLite do
 
   `entity_row` must be a map with keys: `:id`, `:type`, `:data`,
   `:created_hlc`, `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, `:last_gsn`.
+  `created_hlc` is the row's creation time and the schema refuses a row
+  without one, so a materializer that loses the stamp fails here instead of
+  storing a null the client has to interpret.
   """
   @spec upsert_entity(map(), GenServer.server()) :: :ok
   def upsert_entity(entity_row, server \\ __MODULE__) do
@@ -250,9 +253,10 @@ defmodule EbbServer.Storage.SQLite do
   `meta` carries the row's non-JSON columns — `:type`, `:created_hlc`,
   `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, and `:last_gsn` — and each
   is written as given. The materializer replays a delta from the row it
-  already holds, so `created_hlc` is only ever restated or stamped by the
-  first `replace` whose create it has now seen. An empty `fields` map
-  performs a metadata-only update.
+  already holds, so `created_hlc` is the value that row was created with and
+  a later patch restates it rather than moving the stamp. An empty `fields`
+  map performs a metadata-only update, which is also the write form a
+  zero-component row takes.
 
   Like `upsert_entity/2`, the write is monotonic in `last_gsn`: the row is
   only updated when its current `last_gsn` is less than or equal to the
@@ -724,9 +728,9 @@ defmodule EbbServer.Storage.SQLite do
       AND e.deleted_hlc IS NULL
     """
 
-    # Offset pagination needs a total order, so `id` breaks `created_hlc` ties
-    # within a millisecond. DISTINCT collapses the membership join's one row per
-    # shared group.
+    # Offset pagination needs a total order. `created_hlc` is the row's
+    # creation time and is never NULL, so `id` only breaks same-millisecond
+    # ties. DISTINCT collapses the membership join's one row per shared group.
     # The page is always bounded: `LIMIT -1` is valid SQLite for "no limit", so
     # a missing bound must never reach the SQL.
     sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id LIMIT ?"

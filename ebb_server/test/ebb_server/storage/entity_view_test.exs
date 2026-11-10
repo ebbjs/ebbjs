@@ -41,6 +41,29 @@ defmodule EbbServer.Storage.EntityViewTest do
       assert view["last_gsn"] == entity.last_gsn
     end
 
+    test "returns a zero-component row's empty fields map to a member", ctx do
+      entity_id = "todo_view_empty"
+      write_todo(ctx, entity_id)
+      put_membership(ctx.cache, entity_id, "g_1", "a_member")
+
+      drop =
+        validated_action(%{
+          actor_id: "a_member",
+          hlc: generate_hlc(),
+          updates: [validated_component(entity_id, "todo/title", nil, method: :drop)]
+        })
+
+      assert {:ok, _gsn_range, []} = Writer.write_actions([drop], ctx.writer_name)
+
+      assert {:ok, view} = EntityView.for_actor(entity_id, "a_member", store_opts(ctx))
+      assert view["data"] == %{"fields" => %{}}
+      assert view["deleted_hlc"] == nil
+      assert is_integer(view["created_hlc"])
+
+      assert EntityView.filter_components(view, MapSet.new(["todo/title"]))["data"] ==
+               %{"fields" => %{}}
+    end
+
     test "returns :not_found to a non-member", ctx do
       entity_id = "todo_view"
       write_todo(ctx, entity_id)

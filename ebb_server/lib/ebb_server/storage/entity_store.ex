@@ -48,6 +48,21 @@ defmodule EbbServer.Storage.EntityStore do
   (for the source-of-truth reads during materialization), plus ETS reads
   from `DirtyTracker` and `EbbServer.Storage.EntityStore.GsnTracker`.
 
+  ## Row existence
+
+  A row exists when its row record has `deleted_hlc IS NULL`. That is the
+  whole definition: every read filters on it and no other fact decides it.
+  The method that first wrote the row, the number of components it holds, its
+  `created_hlc`, and an empty `data.fields` map are **not** existence signals.
+  A row that drops its last component keeps its row record, its model, its
+  creation time and its `last_gsn`, and stays readable — a zero-component row
+  is a legal row.
+
+  A row record is *materialized* when a cache row is present in SQLite,
+  tombstone or not. That is a weaker, different fact: a `drop` or a `delete`
+  needs one, so neither can invent a row for an id that was never written,
+  while a tombstoned row is materialized and does not exist.
+
   ## Applying a component Update
 
   The wire names one `(entity, component)` per Update, while the materialized
@@ -64,14 +79,14 @@ defmodule EbbServer.Storage.EntityStore do
       the leaf-level LWW compare, exactly like a `merge`: it may be refused
       for a keyed component but it never overwrites a newer leaf, so the two
       materializers converge on an out-of-order base snapshot;
-    - `replace` stamps `created_hlc` with the Action's HLC when the row had
-      none, which is its only effect a `merge` does not have. A `merge` that
-      arrives first for an unknown row creates it too, but leaves
-      `created_hlc` unset: the row's create has not been seen, and a client
-      can tell the two apart;
+    - the first write of a row stamps `created_hlc` with the Action's HLC,
+      whichever of `merge` or `replace` it is. The column is the row's
+      creation time and nothing else; no path may read it as a signal, and a
+      later write never restates it;
     - `drop` removes the field; the row survives, keeps its type and its
-      `created_hlc`, and is not tombstoned. A `drop` for a row that was never
-      materialized is a no-op, exactly as it is on the client;
+      `created_hlc`, and is not tombstoned. `drop` and `delete` never stamp
+      `created_hlc`. A `drop` for a row that was never materialized is a
+      no-op, exactly as it is on the client;
     - `delete` tombstones the row. A delete for a row that was never created
       writes nothing, for the same reason a `drop` there is a no-op.
 
@@ -383,7 +398,7 @@ defmodule EbbServer.Storage.EntityStore do
       end
 
     case materialized do
-      {:ok, %{exists?: false}} ->
+      {:ok, %{materialized?: false}} ->
         # Nothing replayed created or touched a row, and SQLite had none: a
         # `drop` or `delete` for an id that was never materialized leaves no
         # row behind, rather than upserting an empty one under an unknown
@@ -493,8 +508,8 @@ defmodule EbbServer.Storage.EntityStore do
   # delta that touches one field must not restate — or blank — the model,
   # `created_hlc` or tombstone columns an earlier Action established, and a
   # delta that touches nothing must not regress `last_gsn`. Each method
-  # overrides what it changes, and `exists?` is the row's presence: a `drop`
-  # needs one.
+  # overrides what it changes, and `materialized?` is the row's presence in
+  # the cache: a `drop` needs one.
   defp replay(data, actions, entity_id, existing_row) do
     initial_data = if is_map(data), do: data, else: %{"fields" => %{}}
 
@@ -510,7 +525,7 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: existing_meta(existing_row, :last_gsn) || 0,
         data_mode: :patch,
         changed: MapSet.new(),
-        exists?: existing_row != nil
+        materialized?: existing_row != nil
       },
       fn {gsn, action}, acc ->
         relevant_updates =
@@ -526,11 +541,8 @@ defmodule EbbServer.Storage.EntityStore do
   defp apply_action(action, updates, gsn, acc) do
     Enum.reduce(updates, acc, fn update, inner_acc ->
       case update["method"] do
-        "merge" ->
-          apply_component(action, update, gsn, inner_acc, :merge)
-
-        "replace" ->
-          apply_component(action, update, gsn, inner_acc, :replace)
+        method when method in ["merge", "replace"] ->
+          apply_component(action, update, gsn, inner_acc)
 
         "drop" ->
           apply_drop(action, update, gsn, inner_acc)
@@ -544,7 +556,7 @@ defmodule EbbServer.Storage.EntityStore do
     end)
   end
 
-  defp apply_component(action, update, gsn, acc, method) do
+  defp apply_component(action, update, gsn, acc) do
     {model, field} = Component.split(update["component"])
     incoming = FieldMerge.stamp(update["data"], update["id"])
     existing_fields = fields_of(acc.data)
@@ -556,27 +568,27 @@ defmodule EbbServer.Storage.EntityStore do
         # The model is fixed at the row's first write; a later component's
         # prefix must agree with it (the authorizer refuses a relabel).
         type: acc.type || model,
-        created_hlc: created_hlc(acc.created_hlc, action, method),
+        created_hlc: created_hlc(acc.created_hlc, action),
         updated_hlc: action["hlc"],
         max_gsn: max(acc.max_gsn, gsn),
         deleted_hlc: nil,
         deleted_by: nil,
         changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
-        exists?: true
+        materialized?: true
     }
   end
 
-  # Only a `replace` stamps the row's creation time; a `merge` that creates a
-  # row leaves it unset, because the row's create has not been seen.
-  defp created_hlc(nil, action, :replace), do: action["hlc"]
-  defp created_hlc(created_hlc, _action, _method), do: created_hlc
+  # `created_hlc` is the row's creation time: the first write stamps it,
+  # whatever its method, and nothing restates it afterwards.
+  defp created_hlc(nil, action), do: action["hlc"]
+  defp created_hlc(created_hlc, _action), do: created_hlc
 
   # Detaching a component removes the key, which a `json_set` patch cannot do;
   # it rewrites the whole `fields` blob instead. A drop for a row that does
   # not exist is a no-op — there is nothing to detach — and a drop leaves the
   # tombstone columns alone: detaching a component is not a resurrection.
   defp apply_drop(action, update, gsn, acc) do
-    if acc.exists? do
+    if acc.materialized? do
       %{
         acc
         | data: %{
@@ -600,14 +612,14 @@ defmodule EbbServer.Storage.EntityStore do
   # suppress. A row the delta does create is still tombstoned, so a later
   # clean read cannot resurrect it.
   defp apply_delete(action, gsn, acc) do
-    if acc.exists? do
+    if acc.materialized? do
       %{
         acc
         | deleted_hlc: action["hlc"],
           deleted_by: action["actor_id"],
           updated_hlc: action["hlc"],
           max_gsn: max(acc.max_gsn, gsn),
-          exists?: true
+          materialized?: true
       }
     else
       acc

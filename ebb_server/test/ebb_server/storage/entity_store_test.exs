@@ -1958,27 +1958,28 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert entity.data["fields"]["title"]["value"] == "newer"
     end
 
-    test "a replace stamps created_hlc on a row a merge created", ctx do
-      entity_id = "todo_replace_created"
+    test "the first write stamps created_hlc, whatever its method", ctx do
+      entity_id = "todo_first_write_created"
       opts = store_opts(ctx)
+      merge_hlc = hlc_from(1_000)
       replace_hlc = hlc_from(2_000)
 
-      # A `merge` is the only way to create a row whose components are all
-      # keyed, and it leaves `created_hlc` unset: the row's create has not
-      # been seen. The first `replace` is what stamps it.
+      # Writing a component is what creates the row, so a `merge` stamps the
+      # creation time exactly as a `replace` does.
       created =
         patch_action(
           "act_merge",
           entity_id,
-          %{"title" => leaf("draft", hlc_from(1_000))},
-          hlc_from(1_000)
+          %{"title" => leaf("draft", merge_hlc)},
+          merge_hlc
         )
 
       Writer.write_actions([created], ctx.writer_name)
 
       assert {:ok, merged} = EntityStore.get(entity_id, "a_test", opts)
-      assert is_nil(merged.created_hlc)
+      assert merged.created_hlc == merge_hlc
 
+      # A later `replace` is a later write, not a create: the stamp stands.
       replace =
         put_action(
           "act_replace",
@@ -1990,13 +1991,91 @@ defmodule EbbServer.Storage.EntityStoreTest do
       Writer.write_actions([replace], ctx.writer_name)
 
       assert {:ok, replaced} = EntityStore.get(entity_id, "a_test", opts)
-      assert replaced.created_hlc == replace_hlc
+      assert replaced.created_hlc == merge_hlc
+      assert replaced.updated_hlc == replace_hlc
       assert replaced.data["fields"]["title"]["value"] == "final"
 
       # The stamp has to reach SQLite, not just this read's snapshot: the
       # replay takes the per-key patch path for an existing row.
       assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
-      assert cached.created_hlc == replace_hlc
+      assert cached.created_hlc == merge_hlc
+    end
+
+    test "a row survives dropping its only component", ctx do
+      entity_id = "todo_zero_component"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+      drop_hlc = hlc_from(2_000)
+
+      created =
+        put_action("act_create", entity_id, %{"title" => leaf("only", create_hlc)}, create_hlc)
+
+      Writer.write_actions([created], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions(
+        [drop_action("act_drop_last", entity_id, "todo/title", drop_hlc)],
+        ctx.writer_name
+      )
+
+      # Dirty read: the drop replays over the row SQLite already holds.
+      assert {:ok, dropped} = EntityStore.get(entity_id, "a_test", opts)
+      assert dropped.type == "todo"
+      assert dropped.created_hlc == create_hlc
+      assert dropped.updated_hlc == drop_hlc
+      assert dropped.deleted_hlc == nil
+      assert dropped.data == %{"fields" => %{}}
+      assert dropped.last_gsn == 2
+      refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+
+      # Clean read: the same answer comes back from the decoded blob.
+      assert {:ok, clean} = EntityStore.get(entity_id, "a_test", opts)
+      assert clean.data == %{"fields" => %{}}
+      assert clean.created_hlc == create_hlc
+      assert clean.last_gsn == 2
+
+      # The row record itself, not only the returned snapshot.
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.deleted_hlc == nil
+      assert cached.created_hlc == create_hlc
+      assert cached.last_gsn == 2
+      assert Jason.decode!(cached.data) == %{"fields" => %{}}
+    end
+
+    test "a later drop of an already-dropped component keeps the empty row", ctx do
+      entity_id = "todo_zero_component_twice"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      created =
+        put_action("act_create", entity_id, %{"title" => leaf("only", create_hlc)}, create_hlc)
+
+      Writer.write_actions([created], ctx.writer_name)
+
+      Writer.write_actions(
+        [drop_action("act_drop_first", entity_id, "todo/title", hlc_from(2_000))],
+        ctx.writer_name
+      )
+
+      assert {:ok, %{data: %{"fields" => %{}}, last_gsn: 2}} =
+               EntityStore.get(entity_id, "a_test", opts)
+
+      # Dropping nothing is still an Action that touched the row: the row is
+      # not regressed to a field-count check and `last_gsn` advances.
+      Writer.write_actions(
+        [drop_action("act_drop_again", entity_id, "todo/title", hlc_from(3_000))],
+        ctx.writer_name
+      )
+
+      assert {:ok, again} = EntityStore.get(entity_id, "a_test", opts)
+      assert again.data == %{"fields" => %{}}
+      assert again.created_hlc == create_hlc
+      assert again.deleted_hlc == nil
+      assert again.last_gsn == 3
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.last_gsn == 3
+      assert Jason.decode!(cached.data) == %{"fields" => %{}}
     end
 
     test "a drop removes the field and keeps the row's metadata", ctx do

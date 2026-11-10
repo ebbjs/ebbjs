@@ -1124,10 +1124,7 @@ defmodule EbbServer.Sync.Router.OperationSchema do
         created_hlc: %OpenApiSpex.Schema{
           type: :integer,
           format: :int64,
-          nullable: true,
-          description:
-            "The HLC of the row's first replace. Null while the row was only ever merge-created, " <>
-              "because its create has not been seen"
+          description: "The HLC of the row's first write, whatever its method"
         },
         updated_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
         deleted_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64, nullable: true},

@@ -175,6 +175,40 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert hd(posts).type == "post"
     end
 
+    test "a row whose only component was dropped is still returned", %{
+      rocks_name: rocks_name,
+      sqlite_name: sqlite_name,
+      writer_name: writer_name,
+      dirty_set: dirty_set
+    } do
+      group_id = "g_query_empty_#{System.unique_integer([:positive])}"
+      actor_id = "a_query_empty_#{System.unique_integer([:positive])}"
+      todo_id = "todo_query_empty_#{System.unique_integer([:positive])}"
+      opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
+
+      bootstrap_group(group_id, actor_id, writer_name)
+      write_todo(todo_id, group_id, actor_id, writer_name, fields: %{"title" => "Only"})
+
+      # Materialize the row, then drop its only component: the query has to
+      # replay the drop and still list the row it leaves behind.
+      assert {:ok, _row} = EntityStore.get(todo_id, actor_id, opts)
+
+      drop =
+        validated_action(%{
+          actor_id: actor_id,
+          hlc: generate_hlc(),
+          updates: [validated_component(todo_id, "todo/title", nil, method: :drop)]
+        })
+
+      assert {:ok, _gsns, []} = Writer.write_actions([drop], writer_name)
+
+      assert {:ok, [row]} = EntityStore.query("todo", nil, actor_id, opts)
+      assert row.id == todo_id
+      assert row.type == "todo"
+      assert row.deleted_hlc == nil
+      assert row.data == %{"fields" => %{}}
+    end
+
     test "query emits one decode sample with the row count and summed blob size", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
