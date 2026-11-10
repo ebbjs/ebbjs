@@ -229,6 +229,34 @@ describe("foldEntityAction", () => {
     });
   });
 
+  it("a drop after a delete leaves the tombstone alone", () => {
+    const folded = fold([
+      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+      action(4, [remove()]),
+      action(5, [
+        {
+          id: "upd_drop",
+          subject_id: "doc_1",
+          component: componentName("doc", "title"),
+          method: "drop",
+          data: null,
+        },
+      ]),
+    ]);
+
+    // Detaching a component is not a resurrection: the row stays tombstoned,
+    // which is what the server's materialization does too.
+    expect(folded).toEqual({
+      id: "doc_1",
+      type: "doc",
+      data: { fields: {} },
+      created_hlc: "3",
+      updated_hlc: "5",
+      deleted_hlc: "4",
+      last_gsn: 5,
+    });
+  });
+
   it("keeps the existing row's type on a delete", () => {
     const folded = fold([
       action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),

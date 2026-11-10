@@ -32,11 +32,12 @@ defmodule EbbServer.Storage.RowMutations do
 
   The model is the component's prefix. A `delete` names no component, so its
   model is the committed one, resolved through the `:model_resolver` option
-  (the entity-type index by default). A resolver that answers `nil` for an id
-  nothing knows keeps the delete's model `nil` rather than inventing one.
+  (the entity-type index widened with the by-id caches, by default). A
+  resolver that answers `nil` for an id nothing knows keeps the delete's
+  model `nil` rather than inventing one.
   """
 
-  alias EbbServer.Storage.{EntityIndex, FieldMerge}
+  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge}
 
   @typedoc """
   One whole-row projection of an Action's component Updates.
@@ -71,7 +72,7 @@ defmodule EbbServer.Storage.RowMutations do
       component: component,
       model: model,
       field: field,
-      method: String.to_existing_atom(update["method"]),
+      method: Component.to_method(update["method"]),
       data: update["data"]
     }
   end
@@ -88,16 +89,21 @@ defmodule EbbServer.Storage.RowMutations do
     signals the index can lag (the authorizer's by-id caches) passes its own
     predicate, so the verb keeps meaning what that caller's rules mean.
   - `:model_resolver` — `(entity_id -> model | nil)` used for a delete, whose
-    Update names no component. Defaults to `EntityIndex.model/2` against
-    `:entity_types` in the same options.
+    Update names no component. Defaults to `EntityIndex.committed_model/2`
+    against `:entity_types` and the by-id caches in the same options.
   - `:entity_types`, `:overlay` — the existence and committed-model reads,
     passed through to `EntityIndex`.
+
+  One of `:entity_types`, or both predicates, is required: without an
+  existence signal every row would fold to `:put`, which the rule engine
+  reads as `<model>.create`, and without a committed-model signal a delete
+  would forget the model it was authorized under.
   """
   @spec fold([map()], keyword()) :: [mutation()]
   def fold(updates, opts \\ []) do
     created = Keyword.get(opts, :created, MapSet.new())
-    resolve_model = Keyword.get(opts, :model_resolver, &committed_model(&1, opts))
-    exists? = Keyword.get(opts, :exists?, &exists?(&1, opts))
+    exists? = exists_fun!(opts)
+    resolve_model = model_resolver!(opts)
 
     {order, by_subject} =
       Enum.reduce(updates, {[], %{}}, fn update, {order, acc} ->
@@ -115,12 +121,9 @@ defmodule EbbServer.Storage.RowMutations do
     |> Enum.map(&finish(by_subject[&1], created, exists?, resolve_model))
   end
 
+  # A delete names the row and carries no component.
+  defp split_component(component) when is_binary(component), do: Component.split(component)
   defp split_component(nil), do: {nil, nil}
-
-  defp split_component(component) do
-    [model, field] = :binary.split(component, "/")
-    {model, field}
-  end
 
   defp new_entry(update) do
     %{
@@ -177,18 +180,47 @@ defmodule EbbServer.Storage.RowMutations do
     not created?(subject_id, created) and not exists?.(subject_id)
   end
 
-  defp exists?(subject_id, opts) do
-    if Keyword.has_key?(opts, :entity_types) do
-      EntityIndex.exists?(subject_id, opts)
-    else
-      false
+  defp exists_fun!(opts) do
+    case Keyword.get(opts, :exists?) do
+      fun when is_function(fun, 1) ->
+        fun
+
+      nil ->
+        require_read!(opts, "an existence signal", ":entity_types or :exists?")
+        fn subject_id -> EntityIndex.exists?(subject_id, opts) end
+
+      other ->
+        raise ArgumentError,
+              "RowMutations.fold/2 :exists? must be a 1-arity function, " <>
+                "got: #{inspect(other, limit: 4)}"
     end
   end
 
-  defp committed_model(subject_id, opts) do
-    if Keyword.has_key?(opts, :entity_types) do
-      EntityIndex.model(subject_id, opts)
+  defp model_resolver!(opts) do
+    case Keyword.get(opts, :model_resolver) do
+      fun when is_function(fun, 1) ->
+        fun
+
+      nil ->
+        require_read!(opts, "a committed-model signal", ":entity_types or :model_resolver")
+        fn subject_id -> EntityIndex.committed_model(subject_id, opts) end
+
+      other ->
+        raise ArgumentError,
+              "RowMutations.fold/2 :model_resolver must be a 1-arity function, " <>
+                "got: #{inspect(other, limit: 4)}"
     end
+  end
+
+  # A fold without the reads its two derivations need cannot answer `:put` vs
+  # `:patch` or a delete's model, and guessing either silently changes what
+  # the rule engine authorizes. The caller says which reads it has.
+  defp require_read!(opts, what, expected) do
+    unless Keyword.has_key?(opts, :entity_types) do
+      raise ArgumentError, "RowMutations.fold/2 needs #{what}: pass #{expected}"
+    end
+
+    :ok
   end
 
   defp created?(subject_id, %MapSet{} = created), do: MapSet.member?(created, subject_id)

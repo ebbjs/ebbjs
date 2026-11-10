@@ -152,11 +152,17 @@ component)` keying is slice 8/9's.
 - **`DirtyTracker`** marks `{entity_id, model}`; all of one row's Updates carry one model,
   so a flush returns one mark per entity.
 - **Materialization** (`EntityStore`) applies a stored per-component Update to the row:
-  `merge` → `FieldMerge.merge(existing_field, data)`, `replace` → the data value whole
-  (stamping the update id), `drop` → remove the field, `delete` → tombstone. A `merge` that
-  arrives first for an unknown row creates the row (today's `apply_patch` already does); a
-  `replace`-created row stamps `created_hlc`, a merge-created row leaves it unset until a
-  `replace` arrives. `last_gsn` and `update_id` stamping follow today's rules.
+  `merge` → `FieldMerge.merge(existing_field, data)`, `replace` → the same leaf compare, at
+  the component's slot (its whole value, which is one leaf; stamping the update id), `drop` →
+  remove the field, `delete` → tombstone. The two differ only in `created_hlc`: a `replace` on a
+  row that has none stamps it, a `merge` that creates a row leaves it unset. Both sides must
+  apply the same rule — a `replace` that skipped the leaf compare would let an older write
+  clobber a newer one on the server while every replica rejected it. A `merge` that arrives
+  first for an unknown row creates the row (today's `apply_patch` already does), with
+  `created_hlc` unset until a `replace` arrives. A delta replay seeds `type`, `created_hlc`,
+  and the tombstone columns from the materialized row, so a `drop` or `delete` that is the
+  only Update in the delta rewrites the row with its own metadata. `last_gsn` and
+  `update_id` stamping follow today's rules.
 - **`CacheMutationPlanner`** consumes the folded row mutations.
 - **Export, telemetry, OpenAPI, group listing, fan-out** replace the wire type with the
   derived model/component. `ActionExport`'s type exclusion becomes a model exclusion.

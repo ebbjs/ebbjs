@@ -10,7 +10,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionFormat, EntityGroupCache, RocksDB, Writer}
+  alias EbbServer.Storage.{ActionFormat, DirtyTracker, EntityGroupCache, RocksDB, Writer}
 
   import EbbServer.TestHelpers
 
@@ -60,6 +60,33 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
            ]
 
     assert stored["update_scopes"] == [["g_1"], ["g_1"]]
+  end
+
+  # A delete names no component, so its model is the committed one — the
+  # entity-type index first, then the by-id caches that a lagging index can
+  # disagree with. Reading the index alone folds a `model: nil` row: it fans
+  # out to nothing, skips the system-cache projection, and records a dirty
+  # mark with no model, which hides the row from
+  # `dirty_entity_ids_for_model/2`.
+  test "an entityGroup delete with no type-index entry still fans out and keeps its model", ctx do
+    EntityGroupCache.put_entity_group(
+      %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
+      entity_groups: ctx.entity_groups,
+      entity_groups_by_id: ctx.entity_groups_by_id,
+      entity_groups_by_group: ctx.entity_groups_by_group
+    )
+
+    # The row's own type-index entry is missing — the lagging-index shape the
+    # by-id caches exist for. Only the entity it names is indexed.
+    :ets.insert(ctx.entity_types, {"todo_1", "todo"})
+
+    action =
+      validated_action(%{updates: [validated_update(%{subject_id: "eg_1", method: :delete})]})
+
+    assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+
+    assert stored_action(1, ctx.rocks_name)["update_scopes"] == [["g_1"]]
+    assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", ctx.dirty_set) == ["eg_1"]
   end
 
   test "every component Update of a relationship create is scoped to its source's groups", ctx do

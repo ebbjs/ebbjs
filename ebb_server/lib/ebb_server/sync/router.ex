@@ -1051,6 +1051,8 @@ end
 defmodule EbbServer.Sync.Router.OperationSchema do
   @moduledoc "Shared schema definitions for OpenAPI operations"
 
+  alias EbbServer.Storage.Component
+
   def action do
     %OpenApiSpex.Schema{
       type: :object,
@@ -1090,7 +1092,7 @@ defmodule EbbServer.Sync.Router.OperationSchema do
         },
         method: %OpenApiSpex.Schema{
           type: :string,
-          enum: ["merge", "replace", "drop", "delete"],
+          enum: Component.method_names(),
           description:
             "merge folds the value into the component under last-writer-wins; replace sets it " <>
               "whole (refused for a keyed component); drop detaches the component; delete " <>

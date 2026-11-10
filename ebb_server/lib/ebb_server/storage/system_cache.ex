@@ -114,6 +114,7 @@ defmodule EbbServer.Storage.SystemCache do
   alias EbbServer.Storage.{
     ActionFormat,
     CacheTables,
+    Component,
     DirtyTracker,
     EntityGroupCache,
     EntityStore,
@@ -697,12 +698,11 @@ defmodule EbbServer.Storage.SystemCache do
     end
   end
 
-  # A component Names the model in its prefix. A delete names none, so the
+  # A component names the model in its prefix. A delete names none, so the
   # recorded model is the only one there is.
   defp update_model(%{"component" => component}, _entity_types_table)
        when is_binary(component) do
-    [model, _field] = :binary.split(component, "/")
-    model
+    Component.model(component)
   end
 
   defp update_model(update, entity_types_table) do

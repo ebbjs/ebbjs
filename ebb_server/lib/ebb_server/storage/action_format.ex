@@ -58,6 +58,8 @@ defmodule EbbServer.Storage.ActionFormat do
   cannot drift.
   """
 
+  alias EbbServer.Storage.Component
+
   @etf_magic 131
 
   @type payload :: map()
@@ -184,7 +186,7 @@ defmodule EbbServer.Storage.ActionFormat do
     %{
       "id" => update.id,
       "subject_id" => update.subject_id,
-      "method" => method_string(update.method),
+      "method" => Component.method_string(update.method),
       "data" => update.data
     }
     |> put_component(update.component)
@@ -192,12 +194,6 @@ defmodule EbbServer.Storage.ActionFormat do
 
   defp put_component(stored, nil), do: stored
   defp put_component(stored, component), do: Map.put(stored, "component", component)
-
-  defp method_string(method) when is_atom(method), do: Atom.to_string(method)
-  defp method_string(method), do: method
-
-  @update_keys ["id", "subject_id", "component", "method", "data"]
-  @methods ["merge", "replace", "drop", "delete"]
 
   defp validate_payload!(%{"updates" => updates} = payload) when is_list(updates) do
     Enum.each(updates, &validate_update!/1)
@@ -216,24 +212,27 @@ defmodule EbbServer.Storage.ActionFormat do
     method = update["method"]
 
     cond do
-      Map.keys(update) -- @update_keys != [] ->
+      Map.keys(update) -- Component.update_keys() != [] ->
         reject_update(update, "unknown keys")
 
       not is_binary(update["id"]) or not is_binary(update["subject_id"]) ->
         reject_update(update, "missing id or subject_id")
 
-      method not in @methods ->
+      not Component.method?(method) ->
         reject_update(update, "unknown method")
 
       method == "delete" ->
-        if Map.has_key?(update, "component") or not is_nil(update["data"]),
-          do: reject_update(update, "a delete names the row and carries no component")
+        if Map.has_key?(update, "component") or not is_nil(update["data"]) do
+          reject_update(update, "a delete names the row and carries no component")
+        else
+          :ok
+        end
 
-      not component?(update["component"]) ->
+      not Component.valid?(update["component"]) ->
         reject_update(update, "component is not <model>/<field>")
 
-      method in ["drop", "delete"] and not is_nil(update["data"]) ->
-        reject_update(update, "#{method} carries no value")
+      method == "drop" and not is_nil(update["data"]) ->
+        reject_update(update, "drop carries no value")
 
       true ->
         :ok
@@ -243,15 +242,6 @@ defmodule EbbServer.Storage.ActionFormat do
   defp validate_update!(update) do
     raise ArgumentError, "cf_actions Update is not a map: #{inspect(update, limit: 4)}"
   end
-
-  defp component?(component) when is_binary(component) do
-    case :binary.split(component, "/") do
-      [model, field] -> model != "" and field != "" and :binary.match(field, "/") == :nomatch
-      _ -> false
-    end
-  end
-
-  defp component?(_component), do: false
 
   defp reject_update(update, reason) do
     raise ArgumentError,

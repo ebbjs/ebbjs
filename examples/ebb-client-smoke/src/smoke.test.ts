@@ -122,20 +122,15 @@ maybeDescribe("ebb client smoke (against running server)", () => {
         {
           id: "upd_followup",
           subject_id: SMOKE_ENTITY_ID,
-          subject_type: "todo",
-          method: "patch",
-          // User-entity updates must nest fields under `data.fields`
-          // (mirrors ActionValidator.well_formed_data?/1 in ebb_server and
-          // extractPatchFields in @ebbjs/storage). Without the wrapper, the
-          // patch silently no-ops in the client materializer.
+          // One Update names one component (`<model>/<field>`) and `data`
+          // is that component's own value, so a whole-row edit is one
+          // Update per field rather than a row of fields under one Update.
+          component: "todo/title",
+          method: "merge",
           data: {
-            fields: {
-              title: {
-                value: "Updated via SSE",
-                update_id: "upd_followup",
-                hlc: localEvent(clock),
-              },
-            },
+            value: "Updated via SSE",
+            update_id: "upd_followup",
+            hlc: localEvent(clock),
           },
         },
       ],

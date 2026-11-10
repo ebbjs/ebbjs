@@ -2135,6 +2135,52 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
+    # #623: an existing membership row's write folds to `:patch`, so the row
+    # identity check has to cover both verbs. Otherwise a caller holding
+    # `<model>.create` and `<model>.update` in their own group can merge a
+    # victim's row id onto another entity and steal the membership, silently
+    # stripping the victim of its last group.
+    test "a merge cannot re-point a live membership row at another entity", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The attacker is fully authorized for their own pair, so a rejection
+      # here can only come from the row-identity check.
+      put_group_member(tables, "g_atk", ["todo.create", "todo.update"], "gm_atk")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_attacker", "todo_attacker", "g_atk")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      re_point =
+        component_updates("eg_victim_merge", "eg_victim", "entityGroup", :merge, %{
+          "entity_id" => "todo_attacker",
+          "group_id" => "g_atk"
+        })
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([re_point])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details == "a membership row cannot be re-pointed at another entity"
+
+      # The same merge naming the row's own entity is an ordinary write: the
+      # check is identity, not a refusal of membership merges.
+      put_group_member(tables, "g_victim", ["todo.create"], "gm_victim")
+
+      keep =
+        component_updates("eg_victim_merge_2", "eg_victim", "entityGroup", :merge, %{
+          "entity_id" => "todo_victim",
+          "group_id" => "g_victim"
+        })
+
+      assert_accepted(Authorizer.authorize([build_action([keep])], "a_1", ctx))
+    end
+
     test "a put may move a membership row it names to another group", %{tables: tables, ctx: ctx} do
       put_group_member(tables, "g_2", ["todo.create"], "gm_2")
       put_group_member(tables, "g_1", ["todo.update"], "gm_g1")

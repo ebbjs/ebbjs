@@ -37,7 +37,12 @@ defmodule EbbServer.Storage.DirtyTracker do
 
   @default_dirty_set_name :ebb_dirty_set
 
-  @type entity_mark :: {entity_id :: String.t(), model :: String.t()}
+  # The model is the row's committed model as the Writer's fold resolved it,
+  # or `nil` when nothing could: a delete whose id no index, cache, or earlier
+  # Action models. A `nil` model is "nothing known", never an identity claim,
+  # and it never replaces a model an earlier mark recorded — a query finds a
+  # model's dirty rows by the model in the mark.
+  @type entity_mark :: {entity_id :: String.t(), model :: String.t() | nil}
   @type t :: %__MODULE__{
           dirty_set: atom()
         }
@@ -111,8 +116,11 @@ defmodule EbbServer.Storage.DirtyTracker do
   # No default for `dirty_set`: a two-arity call must not silently pass a
   # table where a generation is expected.
   def clear_pending_batch(entities, generation, dirty_set) when is_list(entities) do
-    Enum.each(entities, fn {id, model} ->
-      :ets.delete_object(dirty_set, {id, model, {:pending, generation}})
+    # Matched on the id and this batch's generation, not on the model: a
+    # `nil` model in the batch never replaced the model the mark preserved,
+    # so the mark's model is not the batch's to predict.
+    Enum.each(entities, fn {id, _model} ->
+      :ets.match_delete(dirty_set, {id, :_, {:pending, generation}})
     end)
 
     :ok
@@ -303,9 +311,27 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   defp insert_marks(entities, dirty_set, mark) do
-    Enum.each(entities, fn {id, model} ->
-      :ets.insert(dirty_set, {id, model, mark})
-    end)
+    Enum.each(entities, fn {id, model} -> insert_mark(dirty_set, id, model, mark) end)
+  end
+
+  defp insert_mark(dirty_set, id, nil, mark) do
+    # A mark is one row per id, so a `nil` model would overwrite — and hide —
+    # the model an earlier mark recorded, leaving the entity invisible to
+    # `dirty_entity_ids_for_model/2`. Update the mark alone and keep whatever
+    # model the row already carries; `insert_new` covers an id with no mark
+    # yet, and losing that race re-runs the model-preserving update.
+    unless :ets.update_element(dirty_set, id, {3, mark}) do
+      unless :ets.insert_new(dirty_set, {id, nil, mark}) do
+        :ets.update_element(dirty_set, id, {3, mark})
+      end
+    end
+
+    :ok
+  end
+
+  defp insert_mark(dirty_set, id, model, mark) do
+    :ets.insert(dirty_set, {id, model, mark})
+    :ok
   end
 
   @impl true

@@ -70,6 +70,7 @@ defmodule EbbServer.ActionExport do
   require Logger
 
   alias EbbServer.Storage.ActionLog
+  alias EbbServer.Storage.Component
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Storage.SQLite
   alias EbbServer.Storage.WatermarkTracker
@@ -229,8 +230,7 @@ defmodule EbbServer.ActionExport do
 
   # A delete names the row and no component, so it has no model to exclude.
   defp update_model(%{"component" => component}) when is_binary(component) do
-    [model, _field] = :binary.split(component, "/")
-    model
+    Component.model(component)
   end
 
   defp update_model(_update), do: nil

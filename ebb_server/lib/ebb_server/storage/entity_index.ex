@@ -38,7 +38,9 @@ defmodule EbbServer.Storage.EntityIndex do
   Auxiliary lookups live here as well: `model/2` resolves an existing
   entity's committed model from the entity-type index (the authorizer uses
   it to gate membership mutations, #264, and every entity write, whose
-  component prefix must match the committed model, #624), `exists?/2`
+  component prefix must match the committed model, #624),
+  `committed_model/2` is the same answer widened with the by-id caches so a
+  lagging index still models a system row, `exists?/2`
   exposes the same index as an existence signal (used by the authorizer to
   gate the bootstrap self-grant, #289), `membership/2` resolves an
   `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
@@ -215,6 +217,56 @@ defmodule EbbServer.Storage.EntityIndex do
     cached_row(opts, :entity_types, entity_id, fn ->
       EntityTypeCache.get_type(entity_id, table)
     end)
+  end
+
+  @doc """
+  Resolves the model an entity id was **committed** under.
+
+  The entity-type index wins whenever it has an entry; failing that, a
+  by-id cache row carries its system model by construction (a
+  `groupMember`, `entityGroup` or `relationship` row is a row of that
+  system model wherever else it is indexed). Both signals matter because
+  the entity-type index is rebuilt asynchronously and can lag the caches: a
+  caller that gates a write on this must not read a committed system row
+  as new.
+
+  Returns `nil` when nothing knows the id. For by-id caches the caller's
+  options do not carry, the corresponding lookup is skipped; the authorizer
+  and the Writer both pass all three.
+  """
+  @spec committed_model(subject_id(), keyword()) :: model() | nil
+  def committed_model(entity_id, opts) do
+    model(entity_id, opts) || system_model_by_id(entity_id, opts)
+  end
+
+  # A membership or edge row is its own model's row by construction; there is
+  # no other model it could have been committed under.
+  defp system_model_by_id(entity_id, opts) do
+    cond do
+      cached_by_id?(entity_id, opts, :group_members_by_id, &GroupCache.get_group_member/2) ->
+        "groupMember"
+
+      cached_by_id?(entity_id, opts, :entity_groups_by_id, &EntityGroupCache.get_entity_group/2) ->
+        "entityGroup"
+
+      cached_by_id?(entity_id, opts, :relationships_by_id, &RelationshipCache.get_relationship/2) ->
+        "relationship"
+
+      true ->
+        nil
+    end
+  end
+
+  # A cache the caller's options do not carry is no answer, not a negative
+  # one: the authorizer and the Writer both pass all three.
+  defp cached_by_id?(entity_id, opts, cache, fetch) do
+    case Keyword.fetch(opts, cache) do
+      {:ok, table} ->
+        cached_row(opts, cache, entity_id, fn -> fetch.(entity_id, table) end) != nil
+
+      :error ->
+        false
+    end
   end
 
   @doc """

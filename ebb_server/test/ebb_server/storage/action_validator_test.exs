@@ -130,6 +130,38 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       end
     end
 
+    # A row has one model: the fold keeps the first component's prefix, so a
+    # mixed Action would authorize and materialize a `note` row carrying a
+    # `group_id` field.
+    test "one subject cannot mix model prefixes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "note_1",
+              "component" => "note/title",
+              "method" => "merge",
+              "data" => %{"value" => "x"}
+            },
+            %{
+              "id" => "upd_2",
+              "subject_id" => "note_1",
+              "component" => "entityGroup/group_id",
+              "method" => "merge",
+              "data" => %{"value" => "g_1"}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(action)
+      assert details =~ "one model"
+
+      # Two subjects, each with its own model, are two rows.
+      split = put_in(action, ["updates", Access.at(1), "subject_id"], "eg_1")
+      assert ActionValidator.validate_structure(split) == :ok
+    end
+
     test "a row-shaped data record is rejected" do
       action =
         sample_action(%{

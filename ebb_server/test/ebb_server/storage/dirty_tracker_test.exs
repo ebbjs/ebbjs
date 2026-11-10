@@ -44,6 +44,28 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       refute first == second
     end
 
+    # A delete of an id nothing models folds to a `nil` model. A mark is one
+    # row per id, so writing `nil` would erase the model an earlier mark
+    # recorded and hide the entity from `dirty_entity_ids_for_model/2`.
+    test "a nil model never replaces a model an earlier mark recorded" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch([{"eg_1", "entityGroup"}], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch([{"eg_1", nil}], dirty_set)
+
+      assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", dirty_set) == ["eg_1"]
+      assert DirtyTracker.dirty?("eg_1", dirty_set)
+    end
+
+    test "a nil model is recorded for an id with no earlier mark" do
+      %{dirty_set: dirty_set} = with_isolated_tracker()
+
+      :ok = DirtyTracker.mark_dirty_batch([{"unknown_1", nil}], dirty_set)
+
+      assert DirtyTracker.dirty?("unknown_1", dirty_set)
+      assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", dirty_set) == []
+    end
+
     test "ids in one batch share the batch generation" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
@@ -131,15 +153,17 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
     end
 
-    test "clear_pending_batch/3 does not clear a different model with the same id" do
+    # One mark per id, so the id and the batch's generation identify it: the
+    # model a mark carries is not part of that identity, and a batch that
+    # could not resolve one must still be able to clear what it placed.
+    test "clear_pending_batch/3 clears by id and generation, not by model" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       generation = DirtyTracker.mark_pending_batch([{"todo_abc", "todo"}], dirty_set)
 
-      :ok = DirtyTracker.clear_pending_batch([{"todo_abc", "post"}], generation, dirty_set)
+      :ok = DirtyTracker.clear_pending_batch([{"todo_abc", nil}], generation, dirty_set)
 
-      assert DirtyTracker.dirty?("todo_abc", dirty_set)
-      assert DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
+      refute DirtyTracker.dirty?("todo_abc", dirty_set)
     end
 
     test "settle_all_pending/1 converts surviving provisional marks without touching settled ones" do

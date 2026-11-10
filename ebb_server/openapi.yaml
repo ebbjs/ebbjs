@@ -21,9 +21,14 @@
                         {
                           "properties":
                             {
+                              "component":
+                                {
+                                  "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                  "type": "string",
+                                },
                               "data":
                                 {
-                                  "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                  "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                   "nullable": true,
                                   "type": "object",
                                 },
@@ -34,8 +39,8 @@
                                 },
                               "method":
                                 {
-                                  "description": "Update method",
-                                  "enum": ["put", "patch", "delete"],
+                                  "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                  "enum": ["merge", "replace", "drop", "delete"],
                                   "type": "string",
                                 },
                               "subject_id":
@@ -43,13 +48,8 @@
                                   "description": "ID of the entity being updated",
                                   "type": "string",
                                 },
-                              "subject_type":
-                                {
-                                  "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
-                                  "type": "string",
-                                },
                             },
-                          "required": ["id", "subject_id", "subject_type", "method"],
+                          "required": ["id", "subject_id", "method"],
                           "type": "object",
                         },
                       "type": "array",
@@ -62,7 +62,13 @@
             {
               "properties":
                 {
-                  "created_hlc": { "format": "int64", "type": "integer" },
+                  "created_hlc":
+                    {
+                      "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                      "format": "int64",
+                      "nullable": true,
+                      "type": "integer",
+                    },
                   "data":
                     {
                       "description": "Contains `fields` map of FieldValue entries",
@@ -127,28 +133,28 @@
             {
               "properties":
                 {
+                  "component":
+                    {
+                      "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                      "type": "string",
+                    },
                   "data":
                     {
-                      "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
+                      "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                       "nullable": true,
                       "type": "object",
                     },
                   "id": { "description": "Unique update ID within the action", "type": "string" },
                   "method":
                     {
-                      "description": "Update method",
-                      "enum": ["put", "patch", "delete"],
+                      "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                      "enum": ["merge", "replace", "drop", "delete"],
                       "type": "string",
                     },
                   "subject_id":
                     { "description": "ID of the entity being updated", "type": "string" },
-                  "subject_type":
-                    {
-                      "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
-                      "type": "string",
-                    },
                 },
-              "required": ["id", "subject_id", "subject_type", "method"],
+              "required": ["id", "subject_id", "method"],
               "type": "object",
             },
         },
@@ -1065,7 +1071,13 @@
                                     {
                                       "properties":
                                         {
-                                          "created_hlc": { "format": "int64", "type": "integer" },
+                                          "created_hlc":
+                                            {
+                                              "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                              "format": "int64",
+                                              "nullable": true,
+                                              "type": "integer",
+                                            },
                                           "data":
                                             {
                                               "description": "Contains `fields` map of FieldValue entries",
@@ -1223,6 +1235,13 @@
                     "required": true,
                     "schema": { "type": "string" },
                   },
+                  {
+                    "description": "Comma-separated components (`<model>/<field>`). When present, `data.fields` is filtered to those components' fields; unknown names are ignored. Omit for the whole row.",
+                    "in": "query",
+                    "name": "components",
+                    "required": false,
+                    "schema": { "type": "string" },
+                  },
                 ],
               "responses":
                 {
@@ -1236,7 +1255,13 @@
                                 {
                                   "properties":
                                     {
-                                      "created_hlc": { "format": "int64", "type": "integer" },
+                                      "created_hlc":
+                                        {
+                                          "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                          "format": "int64",
+                                          "nullable": true,
+                                          "type": "integer",
+                                        },
                                       "data":
                                         {
                                           "description": "Contains `fields` map of FieldValue entries",
@@ -3701,9 +3726,14 @@
                                                     {
                                                       "properties":
                                                         {
+                                                          "component":
+                                                            {
+                                                              "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                                              "type": "string",
+                                                            },
                                                           "data":
                                                             {
-                                                              "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                                              "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                               "nullable": true,
                                                               "type": "object",
                                                             },
@@ -3714,8 +3744,14 @@
                                                             },
                                                           "method":
                                                             {
-                                                              "description": "Update method",
-                                                              "enum": ["put", "patch", "delete"],
+                                                              "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                                              "enum":
+                                                                [
+                                                                  "merge",
+                                                                  "replace",
+                                                                  "drop",
+                                                                  "delete",
+                                                                ],
                                                               "type": "string",
                                                             },
                                                           "subject_id":
@@ -3723,19 +3759,8 @@
                                                               "description": "ID of the entity being updated",
                                                               "type": "string",
                                                             },
-                                                          "subject_type":
-                                                            {
-                                                              "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
-                                                              "type": "string",
-                                                            },
                                                         },
-                                                      "required":
-                                                        [
-                                                          "id",
-                                                          "subject_id",
-                                                          "subject_type",
-                                                          "method",
-                                                        ],
+                                                      "required": ["id", "subject_id", "method"],
                                                       "type": "object",
                                                     },
                                                   "type": "array",
@@ -3987,9 +4012,14 @@
                                                 {
                                                   "properties":
                                                     {
+                                                      "component":
+                                                        {
+                                                          "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                                          "type": "string",
+                                                        },
                                                       "data":
                                                         {
-                                                          "description": "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                                          "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                           "nullable": true,
                                                           "type": "object",
                                                         },
@@ -4000,8 +4030,9 @@
                                                         },
                                                       "method":
                                                         {
-                                                          "description": "Update method",
-                                                          "enum": ["put", "patch", "delete"],
+                                                          "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                                          "enum":
+                                                            ["merge", "replace", "drop", "delete"],
                                                           "type": "string",
                                                         },
                                                       "subject_id":
@@ -4009,14 +4040,8 @@
                                                           "description": "ID of the entity being updated",
                                                           "type": "string",
                                                         },
-                                                      "subject_type":
-                                                        {
-                                                          "description": "Type of the entity: the type an id nothing has committed yet is created under, and the type the entity was committed under for an existing id, which may not change",
-                                                          "type": "string",
-                                                        },
                                                     },
-                                                  "required":
-                                                    ["id", "subject_id", "subject_type", "method"],
+                                                  "required": ["id", "subject_id", "method"],
                                                   "type": "object",
                                                 },
                                               "type": "array",
@@ -4156,7 +4181,12 @@
                                               "properties":
                                                 {
                                                   "created_hlc":
-                                                    { "format": "int64", "type": "integer" },
+                                                    {
+                                                      "description": "The HLC of the row's first replace. Null while the row was only ever merge-created, because its create has not been seen",
+                                                      "format": "int64",
+                                                      "nullable": true,
+                                                      "type": "integer",
+                                                    },
                                                   "data":
                                                     {
                                                       "description": "Contains `fields` map of FieldValue entries",

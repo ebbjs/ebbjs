@@ -147,6 +147,55 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert from_sibling.model == "relationship"
   end
 
+  # A fold with no existence signal would derive `:put` for every row, which
+  # the rule engine reads as `<model>.create`; a fold with no committed-model
+  # signal would forget the model a delete was authorized under. Both are the
+  # caller's to provide, so neither may default silently.
+  test "a fold without an existence signal raises" do
+    assert_raise ArgumentError, ~r/needs an existence signal/, fn ->
+      RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))])
+    end
+  end
+
+  test "a fold without a committed-model signal raises" do
+    assert_raise ArgumentError, ~r/needs a committed-model signal/, fn ->
+      RowMutations.fold([delete("u1", "note_1")], exists?: fn _id -> true end)
+    end
+  end
+
+  test "explicit predicates stand in for the index" do
+    [mutation] =
+      RowMutations.fold(
+        [component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
+        exists?: fn _id -> true end,
+        model_resolver: fn _id -> nil end
+      )
+
+    assert mutation.method == :patch
+  end
+
+  test "a delete's default model falls back to the by-id caches" do
+    table = unknown_type_index()
+    by_id = :"row_mutations_eg_by_id_#{System.unique_integer([:positive])}"
+    :ets.new(by_id, [:set, :public, :named_table])
+
+    :ets.insert(
+      by_id,
+      {"eg_1", %{id: "eg_1", entity_id: "note_1", group_id: "g_1"}}
+    )
+
+    # The type index knows nothing about the row — the lagging shape the
+    # by-id caches exist for.
+    [mutation] =
+      RowMutations.fold([delete("u1", "eg_1")],
+        entity_types: table,
+        entity_groups_by_id: by_id
+      )
+
+    assert mutation.model == "entityGroup"
+    assert mutation.method == :delete
+  end
+
   test "the entity-type index is the default existence signal" do
     table = unknown_type_index()
 

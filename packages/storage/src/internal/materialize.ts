@@ -97,13 +97,12 @@ export const withWireMapFields = (entity: Entity): Entity =>
 /** A fresh row created by the first component write. */
 const createRow = (
   update: Exclude<Update, { method: "delete" }>,
-  write: ComponentUpdate,
+  write: Extract<ComponentUpdate, { method: "merge" | "replace" }>,
   gsn: number,
   hlc: HLCTimestamp,
   options: MaterializeOptions | undefined,
 ): Entity => {
-  const fields: Record<string, FieldValue> =
-    write.method === "drop" ? {} : { [write.field]: write.value };
+  const fields: Record<string, FieldValue> = { [write.field]: write.value };
   return {
     id: update.subject_id,
     type: componentModel(update.component),
@@ -124,7 +123,8 @@ const createRow = (
  *   leaf-level LWW compare. The first such write on a row that does not exist
  *   creates it; `replace` stamps `created_hlc`, `merge` leaves it unset because
  *   the row's create has not been seen.
- * - `drop`: remove the field from an existing row; the row survives.
+ * - `drop`: remove the field from an existing row; the row survives, and a
+ *   tombstone stays a tombstone — detaching a component is not a resurrection.
  * - `delete`: tombstone the row, keeping its type. A delete for a row that was
  *   never materialized is a no-op, so a per-Update delivery (#473) cannot break
  *   the drain.
@@ -161,7 +161,6 @@ export const applyUpdate = (
       ...entity,
       data: { fields },
       updated_hlc: latestHlc(entity.updated_hlc, hlc),
-      deleted_hlc: null,
       last_gsn: Math.max(entity.last_gsn, gsn),
     };
   }

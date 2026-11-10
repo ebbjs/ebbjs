@@ -391,7 +391,14 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"new","hlc":2})},
-          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 2000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 2
+          },
           name
         )
 
@@ -403,7 +410,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert data["meta"] == %{"v" => 1}
     end
 
-    test "updates the metadata columns without touching created_hlc", context do
+    test "writes every metadata column, including created_hlc", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
 
@@ -415,6 +422,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"title" => ~s({"value":"new","hlc":2})},
           %{
             type: "todo",
+            created_hlc: 7000,
             updated_hlc: 3000,
             deleted_hlc: 4000,
             deleted_by: "actor_9",
@@ -425,7 +433,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       assert {:ok, row} = SQLite.get_entity("doc_1", name)
       assert row.type == "todo"
-      assert row.created_hlc == 1000
+      assert row.created_hlc == 7000
       assert row.updated_hlc == 3000
       assert row.deleted_hlc == 4000
       assert row.deleted_by == "actor_9"
@@ -442,7 +450,14 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"stale","hlc":9})},
-          %{type: "doc", updated_hlc: 1000, deleted_hlc: nil, deleted_by: nil, last_gsn: 3},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 1000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 3
+          },
           name
         )
 
@@ -462,7 +477,14 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"second","hlc":6})},
-          %{type: "doc", updated_hlc: 6000, deleted_hlc: nil, deleted_by: nil, last_gsn: 5},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 6000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 5
+          },
           name
         )
 
@@ -484,6 +506,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{},
           %{
             type: "doc",
+            created_hlc: 1000,
             updated_hlc: 7000,
             deleted_hlc: 7000,
             deleted_by: "actor_1",
@@ -514,7 +537,14 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"content.map.\"b\"" => ~s({"value":9,"hlc":2})},
-          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 2000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 2
+          },
           name
         )
 
@@ -542,7 +572,14 @@ defmodule EbbServer.Storage.SQLiteTest do
             "content" => ~s({"map":{"run_1":{"value":"z","hlc":9}}}),
             "source_id" => ~s({"value":"src_new","hlc":2})
           },
-          %{type: "doc", updated_hlc: 2000, deleted_hlc: nil, deleted_by: nil, last_gsn: 2},
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 2000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 2
+          },
           name
         )
 

@@ -415,16 +415,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "methods/0" do
-    test "returns the wire method mapping" do
-      methods = PermissionHelper.methods()
-      assert methods["merge"] == :merge
-      assert methods["replace"] == :replace
-      assert methods["drop"] == :drop
-      assert methods["delete"] == :delete
-    end
-  end
-
   defp mutation(subject_id, model, method, fields \\ %{}) do
     %{
       id: subject_id,

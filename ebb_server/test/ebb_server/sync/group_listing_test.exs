@@ -842,6 +842,7 @@ defmodule EbbServer.Sync.GroupListingTest do
 
     meta = %{
       type: row.type,
+      created_hlc: row.created_hlc,
       updated_hlc: row.updated_hlc,
       deleted_hlc: row.deleted_hlc,
       deleted_by: row.deleted_by,

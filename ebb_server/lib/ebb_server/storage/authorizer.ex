@@ -16,7 +16,7 @@ defmodule EbbServer.Storage.Authorizer do
   `group` put and the actor's own `groupMember` put cannot be authorized
   by the table. Those two — plus the `entityGroup` edge filing an entity
   the same Action creates into the new group — are exempt
-  (`PermissionHelper.bootstrap_update?/4`). Everything else in the
+  (`PermissionHelper.bootstrap_update?/5`). Everything else in the
   Action is authorized normally, using the permissions the actor grants
   themselves in their own `groupMember` put: while the Action is being
   authorized the actor's new membership is not in the cache yet, so the
@@ -83,10 +83,9 @@ defmodule EbbServer.Storage.Authorizer do
     - `entityGroup` delete → the entity's `<model>.update` in any group of
       the entity's current set (union/any-match). The delete names no
       component, so the row is resolved from the membership index.
-    - `entityGroup` patch → refused. It is authorized against the group
-      named on the wire and mints a membership row when the row id is
-      unknown, so it can file an arbitrary entity into the caller's group
-      (#623). Express the same change as a delete plus a put.
+    - `entityGroup` put when the row exists → a `:patch` row mutation, and
+      the same rules: it may move the row to another group but not
+      re-point it at another entity (#623).
     - `relationship` put (always a domain edge; membership is
       `entityGroup`) → the source entity's `<model>.update` in the
       source's group set, where `<model>` is the source entity's true
@@ -181,7 +180,6 @@ defmodule EbbServer.Storage.Authorizer do
   alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionHelper
-  alias EbbServer.Storage.RelationshipCache
   alias EbbServer.Storage.RowMutations
 
   @typep validated_action :: %{
@@ -735,6 +733,7 @@ defmodule EbbServer.Storage.Authorizer do
   # stand in only for the membership the same Action creates, and this
   # update is exempt only when the entity is created by that same Action
   # (#289).
+  #
   # A membership row's write is a `:put` while the row is new and a `:patch`
   # once it exists. Both are authorized against the row's real identity — the
   # entity it names and the group it enters — so moving or re-filing a live
@@ -760,11 +759,6 @@ defmodule EbbServer.Storage.Authorizer do
       {entity_id, _group_id} ->
         authorize_membership_delete(entity_id, actor_id, authz)
     end
-  end
-
-  defp authorize_entity_group_update(update, _actor_id, _authz) do
-    {:error, "not_authorized",
-     "entityGroup #{update.method} is not supported: delete and re-put the membership instead"}
   end
 
   # A list or map here would be stored verbatim by the mutation planner and
@@ -847,8 +841,17 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
-  defp check_update_row_identity(%{model: "entityGroup", method: :put} = update, authz) do
-    check_membership_row_entity(update.subject_id, Fields.get(update.data, "entity_id"), authz)
+  # Both verbs reach here: a membership row's write is `:put` while the row
+  # is new and `:patch` once it exists, and the fold derives the verb from
+  # existence, so a check on `:put` alone would never run for a live row.
+  # A `:patch` that names no entity has nothing to check against the stored
+  # row, and `membership_identity/1` refuses it below.
+  defp check_update_row_identity(%{model: "entityGroup", method: method} = update, authz)
+       when method in [:put, :patch] do
+    case Fields.get(update.data, "entity_id") do
+      nil -> :ok
+      entity_id -> check_membership_row_entity(update.subject_id, entity_id, authz)
+    end
   end
 
   defp check_update_row_identity(%{model: "relationship", method: method} = update, authz)
@@ -958,29 +961,10 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # The entity-type index wins whenever it has an entry; failing that, a by-id
-  # cache row carries its system model by construction.
-  defp committed_model(entity_id, opts) do
-    EntityIndex.model(entity_id, opts) || cached_system_model(entity_id, opts)
-  end
-
-  # A membership row only says some entity owns the id and models nothing.
-  defp cached_system_model(entity_id, opts) do
-    cond do
-      GroupCache.get_group_member(entity_id, Keyword.fetch!(opts, :group_members_by_id)) != nil ->
-        "groupMember"
-
-      EntityGroupCache.get_entity_group(entity_id, Keyword.fetch!(opts, :entity_groups_by_id)) !=
-          nil ->
-        "entityGroup"
-
-      RelationshipCache.get_relationship(entity_id, Keyword.fetch!(opts, :relationships_by_id)) !=
-          nil ->
-        "relationship"
-
-      true ->
-        nil
-    end
-  end
+  # cache row carries its system model by construction. Shared with the
+  # Writer's fold, whose delete has the same question (see
+  # `EntityIndex.committed_model/2`).
+  defp committed_model(entity_id, opts), do: EntityIndex.committed_model(entity_id, opts)
 
   # A membership row names one `(entity, group)` pair. A re-put may move
   # the row to another group, but it must not re-point it at a different

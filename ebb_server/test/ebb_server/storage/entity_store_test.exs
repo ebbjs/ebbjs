@@ -52,6 +52,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
     })
   end
 
+  defp drop_action(id, entity_id, component, hlc) do
+    validated_action(%{
+      "id" => id,
+      "hlc" => hlc,
+      "updates" => [
+        validated_component(entity_id, component, nil, id: id, method: :drop)
+      ]
+    })
+  end
+
   defp component_updates(id, entity_id, fields, method) do
     fields
     |> Enum.with_index()
@@ -1013,7 +1023,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
              }
     end
 
-    test "put replaces a map field wholesale", %{
+    # A keyed component's create is one `merge` (replace is refused for it),
+    # and every later write touches only the keys it sends.
+    test "a keyed component's writes merge key by key", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       writer_name: writer_name,
@@ -1025,8 +1037,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       hlc_b = hlc_from(3_000)
       hlc_c = hlc_from(4_000)
 
-      put_1 =
-        put_action(
+      create =
+        patch_action(
           "act_put_1",
           entity_id,
           %{"content" => map_field(%{"a" => leaf(1, hlc_a)})},
@@ -1036,23 +1048,18 @@ defmodule EbbServer.Storage.EntityStoreTest do
       patch_b =
         patch_action("u_b", entity_id, %{"content" => map_field(%{"b" => leaf(2, hlc_b)})}, hlc_b)
 
-      put_2 =
-        put_action(
-          "act_put_2",
-          entity_id,
-          %{"content" => map_field(%{"c" => leaf(3, hlc_c)})},
-          hlc_c
-        )
+      patch_c =
+        patch_action("u_c", entity_id, %{"content" => map_field(%{"c" => leaf(3, hlc_c)})}, hlc_c)
 
-      Writer.write_actions([put_1], writer_name)
+      Writer.write_actions([create], writer_name)
       Writer.write_actions([patch_b], writer_name)
-      Writer.write_actions([put_2], writer_name)
+      Writer.write_actions([patch_c], writer_name)
 
       assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
 
-      assert entity.data["fields"]["content"] == %{
-               "map" => %{"c" => %{"value" => 3, "update_id" => "act_put_2", "hlc" => hlc_c}}
-             }
+      assert %{"map" => keys} = entity.data["fields"]["content"]
+      assert Map.keys(keys) |> Enum.sort() == ["a", "b", "c"]
+      assert keys["c"] == %{"value" => 3, "update_id" => "u_c", "hlc" => hlc_c}
     end
 
     test "nested map fields merge key by key", %{
@@ -1909,6 +1916,167 @@ defmodule EbbServer.Storage.EntityStoreTest do
       # Root cause: M1's stale upsert regressed last_gsn from 3 back to 2.
       assert {:ok, row_after} = SQLite.get_entity(entity_id, sqlite_name)
       assert row_after.last_gsn == 3
+    end
+  end
+
+  # The materialized row is the row the client materializes: the same leaf
+  # merge for `replace`, and a delta replay that starts from the row SQLite
+  # already holds instead of from an empty one.
+  describe "component materialization" do
+    test "an older replace arriving later does not clobber a newer stored leaf", ctx do
+      entity_id = "todo_replace_lww"
+      opts = store_opts(ctx)
+
+      newer =
+        put_action(
+          "act_newer",
+          entity_id,
+          %{"title" => leaf("newer", hlc_from(5_000))},
+          hlc_from(5_000)
+        )
+
+      # The Action is later than the stored one, but its leaf is older. The
+      # merge is per leaf, so the newer stored value stands; the client's
+      # materializer reaches the same answer.
+      older =
+        put_action(
+          "act_older",
+          entity_id,
+          %{"title" => leaf("older", hlc_from(2_000))},
+          hlc_from(6_000)
+        )
+
+      Writer.write_actions([newer], ctx.writer_name)
+      Writer.write_actions([older], ctx.writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["title"]["value"] == "newer"
+    end
+
+    test "a replace stamps created_hlc on a row a merge created", ctx do
+      entity_id = "todo_replace_created"
+      opts = store_opts(ctx)
+      replace_hlc = hlc_from(2_000)
+
+      # A `merge` is the only way to create a row whose components are all
+      # keyed, and it leaves `created_hlc` unset: the row's create has not
+      # been seen. The first `replace` is what stamps it.
+      created =
+        patch_action(
+          "act_merge",
+          entity_id,
+          %{"title" => leaf("draft", hlc_from(1_000))},
+          hlc_from(1_000)
+        )
+
+      Writer.write_actions([created], ctx.writer_name)
+
+      assert {:ok, merged} = EntityStore.get(entity_id, "a_test", opts)
+      assert is_nil(merged.created_hlc)
+
+      replace =
+        put_action(
+          "act_replace",
+          entity_id,
+          %{"title" => leaf("final", replace_hlc)},
+          replace_hlc
+        )
+
+      Writer.write_actions([replace], ctx.writer_name)
+
+      assert {:ok, replaced} = EntityStore.get(entity_id, "a_test", opts)
+      assert replaced.created_hlc == replace_hlc
+      assert replaced.data["fields"]["title"]["value"] == "final"
+
+      # The stamp has to reach SQLite, not just this read's snapshot: the
+      # replay takes the per-key patch path for an existing row.
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.created_hlc == replace_hlc
+    end
+
+    test "a drop removes the field and keeps the row's metadata", ctx do
+      entity_id = "todo_drop_live"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      created =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("kept", create_hlc), "body" => leaf("detached", create_hlc)},
+          create_hlc
+        )
+
+      Writer.write_actions([created], ctx.writer_name)
+      assert {:ok, before} = EntityStore.get(entity_id, "a_test", opts)
+      assert before.created_hlc == create_hlc
+
+      # The drop arrives as its own Action, so the read replays a delta over
+      # the row SQLite already holds.
+      Writer.write_actions(
+        [drop_action("act_drop", entity_id, "todo/body", hlc_from(2_000))],
+        ctx.writer_name
+      )
+
+      assert {:ok, after_drop} = EntityStore.get(entity_id, "a_test", opts)
+      assert after_drop.type == "todo"
+      assert after_drop.created_hlc == create_hlc
+      assert after_drop.deleted_hlc == nil
+      assert after_drop.data["fields"]["title"]["value"] == "kept"
+      refute Map.has_key?(after_drop.data["fields"], "body")
+    end
+
+    test "a drop for a row that was never materialized creates nothing", ctx do
+      entity_id = "todo_drop_absent"
+      opts = store_opts(ctx)
+
+      Writer.write_actions(
+        [drop_action("act_drop_absent", entity_id, "todo/body", hlc_from(1_000))],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert :not_found = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+    end
+
+    test "a drop leaves a tombstone untouched", ctx do
+      entity_id = "todo_drop_tombstone"
+      opts = store_opts(ctx)
+      deleted_hlc = hlc_from(2_000)
+
+      create =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("t", hlc_from(1_000))},
+          hlc_from(1_000)
+        )
+
+      Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions(
+        [
+          validated_action(%{
+            "id" => "act_delete",
+            "hlc" => deleted_hlc,
+            "updates" => [validated_update(%{"subject_id" => entity_id, "method" => "delete"})]
+          })
+        ],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions(
+        [drop_action("act_drop", entity_id, "todo/title", hlc_from(3_000))],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.deleted_hlc == deleted_hlc
     end
   end
 

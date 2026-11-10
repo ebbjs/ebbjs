@@ -42,24 +42,12 @@ defmodule EbbServer.Storage.PermissionHelper do
   alias EbbServer.Storage.Fields
 
   @system_models ["group", "groupMember", "relationship", "entityGroup"]
-  @methods %{
-    "merge" => :merge,
-    "replace" => :replace,
-    "drop" => :drop,
-    "delete" => :delete
-  }
 
   @doc """
   Returns the list of system model names.
   """
   @spec system_models() :: [String.t()]
   def system_models, do: @system_models
-
-  @doc """
-  Returns the map of wire method strings to their internal atoms.
-  """
-  @spec methods() :: %{String.t() => atom()}
-  def methods, do: @methods
 
   @doc """
   Converts an internal row-mutation method to its permission verb.

@@ -43,7 +43,7 @@ defmodule EbbServer.Storage.ActionValidator do
   """
 
   import Bitwise
-  alias EbbServer.Storage.PermissionHelper
+  alias EbbServer.Storage.Component
 
   @type raw_action :: %{String.t() => term()}
   @type raw_update :: %{String.t() => term()}
@@ -70,8 +70,6 @@ defmodule EbbServer.Storage.ActionValidator do
           reason: String.t(),
           details: String.t() | nil
         }
-
-  @methods PermissionHelper.methods()
 
   @future_drift_limit_ms 120_000
   @max_action_bytes 1_048_576
@@ -181,9 +179,46 @@ defmodule EbbServer.Storage.ActionValidator do
         {:error, "invalid_structure", "action updates must be a non-empty list"}
 
       true ->
-        validate_updates_structure(action["updates"])
+        with :ok <- validate_updates_structure(action["updates"]) do
+          validate_subject_models(action["updates"])
+        end
     end
   end
+
+  # A row has one model. Every component Update for one subject in an Action
+  # must name the same prefix, or the fold would keep the first and
+  # materialize, say, a `note` row carrying a `group_id` field. A delete names
+  # no component, so it constrains nothing.
+  #
+  # Runs after the per-Update checks, so each component here is well formed
+  # and `Component.split/1` cannot raise.
+  defp validate_subject_models(updates) do
+    case Enum.reduce_while(updates, %{}, &check_subject_model/2) do
+      {:error, _reason, _details} = error -> error
+      _models -> :ok
+    end
+  end
+
+  defp check_subject_model(%{"component" => component, "subject_id" => subject_id}, models)
+       when is_binary(component) do
+    model = Component.model(component)
+
+    case Map.fetch(models, subject_id) do
+      :error ->
+        {:cont, Map.put(models, subject_id, model)}
+
+      {:ok, ^model} ->
+        {:cont, models}
+
+      {:ok, other} ->
+        {:halt,
+         {:error, "invalid_structure",
+          "every component of a row must name one model: " <>
+            "#{inspect(subject_id)} names both #{inspect(other)} and #{inspect(model)}"}}
+    end
+  end
+
+  defp check_subject_model(_update, models), do: {:cont, models}
 
   defp validate_updates_structure(updates) do
     Enum.reduce_while(updates, :ok, fn update, _acc ->
@@ -208,10 +243,8 @@ defmodule EbbServer.Storage.ActionValidator do
   # The envelope has exactly five keys. A per-Update type name or a row's
   # field record cannot ride along unrecognised: the pre-component wire is
   # refused here, and a stored frame in that shape raises on decode.
-  @update_keys ["id", "subject_id", "component", "method", "data"]
-
   defp validate_update_keys(update) do
-    case Map.keys(update) -- @update_keys do
+    case Map.keys(update) -- Component.update_keys() do
       [] ->
         :ok
 
@@ -234,11 +267,11 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp validate_update_method(method) do
-    if method in ["merge", "replace", "drop", "delete"],
+    if Component.method?(method),
       do: :ok,
       else:
         {:error, "invalid_structure",
-         "update method must be one of: merge, replace, drop, delete"}
+         "update method must be one of: " <> Enum.join(Component.method_names(), ", ")}
   end
 
   defp validate_update_component(%{"method" => "delete"} = update) do
@@ -250,20 +283,10 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp validate_update_component(update) do
-    case update["component"] do
-      component when is_binary(component) ->
-        case :binary.split(component, "/") do
-          [model, field] when model != "" and field != "" ->
-            if :binary.match(field, "/") == :nomatch,
-              do: :ok,
-              else: component_error(component)
-
-          _ ->
-            component_error(component)
-        end
-
-      _ ->
-        component_error(update["component"])
+    if Component.valid?(update["component"]) do
+      :ok
+    else
+      component_error(update["component"])
     end
   end
 
@@ -383,7 +406,7 @@ defmodule EbbServer.Storage.ActionValidator do
   defp update_leaf_hlc_error(update, now_ms) do
     data = update["data"]
 
-    if update["method"] in ["merge", "replace"] and is_map(data) do
+    if Component.value_method?(update["method"]) and is_map(data) do
       field_leaf_hlc_error(data, [update["component"]], now_ms)
     else
       :ok
@@ -480,17 +503,14 @@ defmodule EbbServer.Storage.ActionValidator do
       component: update["component"],
       model: model,
       field: field,
-      method: Map.fetch!(@methods, update["method"]),
+      method: Component.to_method(update["method"]),
       data: update["data"]
     }
   end
 
+  # A delete names the row and carries no component.
+  defp split_component(component) when is_binary(component), do: Component.split(component)
   defp split_component(nil), do: {nil, nil}
-
-  defp split_component(component) do
-    [model, field] = :binary.split(component, "/")
-    {model, field}
-  end
 
   # `replace` sets a component's value whole, so it is refused for a keyed
   # component: the client's key set is not this writer's to discard.
