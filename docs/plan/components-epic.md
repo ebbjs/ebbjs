@@ -475,6 +475,20 @@ No path reads `type` to find an entity's rows.
 
 **Depends on.** 4, 5.
 
+**Current state.** The client and storage half shipped in [#799](https://github.com/ebbjs/ebbjs/issues/799):
+`typeIndex` is `modelIndex` in the replica, `ReplicaChange` carries the components a change touched
+(computed from the composed view, so a `title` write invalidates `note/title` only), and the
+IndexedDB `entities` store carries a `multiEntry` index over a denormalized component-name array
+that `EntityStore.queryByComponent` reads after materializing the component's model. Four
+commitments are recorded rather than resolved: `ReplicaChange.type` stays until #800 removes it;
+**`archetypeIndex` is not added** — open question 1 is still unmeasured, and a speculative index
+that can grow faster than the rows is exactly what the issue warned against; the schema bump to 11
+**resets** rather than migrating (decision 9, gated like the v9 cell-format reset so a later bump
+declares its own migration); and a tombstoned row keeps its index entries, so existence reads filter
+on liveness at read time. Still owned by this slice: `cf_component_entities` and deleting
+`cf_type_entities`, the SQLite expression index, the k = 2/4/8 write-amplification measurement that
+decides open question 1, and #813's empty-scope delivery.
+
 ---
 
 ### 7. `feat(client)`: component-granular invalidation
