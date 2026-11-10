@@ -934,13 +934,15 @@ three arms are interleaved inside every run. Five runs per k; medians, with the 
 | -------------------------------------------- | ------------------: | ------------------: | ------------------: |
 | Index entries added per entity               |                   2 |                   4 |                   8 |
 | Index key bytes added per entity             |                  68 |                 136 |                 272 |
-| Actions/s, model entry only (before)         | 4,769 (4,452–5,241) | 3,857 (3,377–4,092) | 3,120 (2,821–3,496) |
-| Actions/s, model + component entries (after) | 4,237 (3,853–4,649) | 3,281 (2,819–3,593) | 2,466 (2,295–2,713) |
-| Added commit cost                            |               11.2% |               14.9% |               21.0% |
-| Actions/s, no index (context only)           |               5,016 |               4,344 |               3,390 |
+| Actions/s, model entry only (before)         | 4,853 (4,651–5,045) | 3,783 (3,621–4,099) | 3,080 (2,855–3,272) |
+| Actions/s, model + component entries (after) | 4,166 (3,754–4,511) | 3,383 (2,325–3,769) | 2,433 (2,276–2,673) |
+| Added commit cost                            |               14.2% |               10.6% |               21.0% |
+| Actions/s, no index (context only)           |               5,270 |               4,340 |               3,222 |
 
-**What it says.** The added cost rises with k: 11.2% at k = 2, 14.9% at k = 4, 21.0% at k = 8.
-That is the price of the index rows, and it is linear in components: each entry is its own RocksDB
+**What it says.** The added cost is noisy across passes — two independent five-run passes put k = 2
+at 11–14%, k = 4 at 11–15%, and k = 8 at 21% both times — so read it as roughly 10–15% through
+k = 4 and 21% at k = 8. The table above is the pass the tree produces. That is the price of the
+index rows, and it is linear in components: each entry is its own RocksDB
 op with an empty value, so a row with k components writes k + 1 entries — k component entries plus
 the model entry that keeps the row's existence and committed model — against one before. At k = 8
 that is nine times the index rows for the same row. The cost is accepted for the measured range:

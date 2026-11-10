@@ -159,10 +159,10 @@ defmodule EbbServer.Bench.ComponentIndex do
       end
 
     membership = [
-      component("u_eg_ci_e_#{seq}", membership_id, "entityGroup/entity_id", "replace", %{
+      component("u_eg_ci_e_#{seq}", membership_id, "entityGroup/entity_id", :replace, %{
         "value" => entity_id
       }),
-      component("u_eg_ci_g_#{seq}", membership_id, "entityGroup/group_id", "replace", %{
+      component("u_eg_ci_g_#{seq}", membership_id, "entityGroup/group_id", :replace, %{
         "value" => "g_bench"
       })
     ]
