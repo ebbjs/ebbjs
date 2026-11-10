@@ -229,9 +229,10 @@ defmodule EbbServer.Storage.SQLite do
 
   `entity_row` must be a map with keys: `:id`, `:type`, `:data`,
   `:created_hlc`, `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, `:last_gsn`.
-  `created_hlc` is the row's creation time and the schema refuses a row
-  without one, so a materializer that loses the stamp fails here instead of
-  storing a null the client has to interpret.
+  `created_hlc` is the row's creation time. A fresh data directory's schema
+  refuses a row without one, and the repo discards old data rather than
+  migrating it (#793 decision 9), so a materializer that loses the stamp
+  fails there instead of storing a null the client has to interpret.
   """
   @spec upsert_entity(map(), GenServer.server()) :: :ok
   def upsert_entity(entity_row, server \\ __MODULE__) do

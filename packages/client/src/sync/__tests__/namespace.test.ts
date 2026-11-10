@@ -2552,6 +2552,19 @@ describe("client.<entity>.query().has() / hasNot() — component existence", () 
     expect(present[0]?.draft).toBeUndefined();
   });
 
+  it("projects a row that lost its last component as absent", async () => {
+    const { client, seed } = await buildClient();
+    // The row shape a `drop` of the last component leaves: alive, nothing
+    // attached. An optional component has no default to fall back to.
+    await seed("n1", {});
+
+    const row = await client.note.get("n1");
+    expect(row).not.toBeNull();
+    expect(row?.draft).toBeUndefined();
+    expect(row?.title).toBeUndefined();
+    expect(await client.note.query().has("draft")).toEqual([]);
+  });
+
   it("composes with where() in the same AND-group", async () => {
     const { client, seed } = await buildClient();
     await seed("n1", { title: "a", draft: "x" });
