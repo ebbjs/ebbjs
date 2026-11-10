@@ -166,13 +166,13 @@ defmodule EbbServer.Storage.Writer do
   `groups_changed` control event that it causes is pushed only after the
   membership is visible.
 
-  Redundant index writes are dropped during op construction: the
-  `cf_type_entities` key has no GSN component, so it is collected as a
-  per-flush set and written once per unique `(model, subject_id)`.
-  `cf_entity_actions` is coalesced per subject across the whole flush: one
-  row keyed at the subject's highest GSN, holding that subject's sorted GSN
-  list, however many Updates or Actions touched it. `cf_group_actions` is
-  emitted once per Action from the union of resolved group ids.
+  Redundant index writes are dropped during op construction: a
+  `cf_component_entities` key has no GSN component, so the Action's ordered
+  put/delete ops are reduced last-wins per key across the flush and written
+  once. `cf_entity_actions` is coalesced per subject across the whole flush:
+  one row keyed at the subject's highest GSN, holding that subject's sorted
+  GSN list, however many Updates or Actions touched it. `cf_group_actions`
+  is emitted once per Action from the union of resolved group ids.
 
   Every resolved per-Update scope is also persisted as the scopes half of
   the stored `cf_actions` frame: one group list per Update,
@@ -313,10 +313,10 @@ defmodule EbbServer.Storage.Writer do
 
   A bench-only `:ablate` option (default `[]`) skips named phases of the
   write path — `:dedup`, `:group_resolution`, `:build`, `:encode`,
-  `:entity_actions`, `:type_entities`, `:group_index`, `:dirty`, `:cache`,
-  `:watermark`, `:fanout` — so `mix bench.actions --ablate` can price each
-  one. `:entity_index` remains the combined alias that drops both entity
-  index halves. `:dedup` also skips the in-flight claim, which is dedup work.
+  `:entity_actions`, `:component_entities`, `:group_index`, `:dirty`,
+  `:cache`, `:watermark`, `:fanout` — so `mix bench.actions --ablate` can
+  price each one. `:entity_index` remains the combined alias that drops both
+  entity index halves. `:dedup` also skips the in-flight claim, which is dedup work.
   It is never set in production, and an empty list emits exactly the same ops
   as before. See `EbbServer.Bench.Options`.
 
@@ -361,6 +361,7 @@ defmodule EbbServer.Storage.Writer do
     CommitPipeline,
     Committer,
     CommitterPool,
+    ComponentEntityIndex,
     DirtyTracker,
     EntityGroupCache,
     EntityIndex,
@@ -922,7 +923,8 @@ defmodule EbbServer.Storage.Writer do
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, max GSN in this flush) → the
        subject's sorted GSN list for the flush (materialization index)
-     - cf_type_entities: (model, subject_id) → <<>> (model index)
+     - cf_component_entities: (name, subject_id) → <<>>, one model entry per
+       row plus one component entry per component the row carries
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
 
      Updates are stored once, inside the `cf_actions` value.
@@ -2092,8 +2094,8 @@ defmodule EbbServer.Storage.Writer do
         PermissionHelper.build_intra_relationship_sources(action.updates)
       )
 
-    {scopes, {type_entity_keys, memo}} =
-      Enum.map_reduce(mutations, {[], memo}, fn mutation, {keys, memo} ->
+    {scopes, memo} =
+      Enum.map_reduce(mutations, memo, fn mutation, memo ->
         {group_ids, memo} =
           if ablate?(:group_resolution, state) do
             {[], memo}
@@ -2101,12 +2103,7 @@ defmodule EbbServer.Storage.Writer do
             group_ids_for_mutation(mutation, resolve_opts, memo)
           end
 
-        key =
-          if type_entities_ablated?(state) or is_nil(mutation.model),
-            do: nil,
-            else: RocksDB.encode_type_entity_key(mutation.model, mutation.subject_id)
-
-        {{mutation.subject_id, group_ids}, {[key | keys], memo}}
+        {{mutation.subject_id, group_ids}, memo}
       end)
 
     # Index-aligned with `action.updates`: the durable record of which
@@ -2116,7 +2113,6 @@ defmodule EbbServer.Storage.Writer do
     # relationship/entityGroup delete are gone by fan-out time.
     scope_by_subject = Map.new(scopes)
     update_scopes = Enum.map(action.updates, &Map.fetch!(scope_by_subject, &1.subject_id))
-    type_entity_keys = type_entity_keys |> Enum.reverse() |> Enum.reject(&is_nil/1)
 
     prepared = %PreparedAction{
       id: action.id,
@@ -2129,11 +2125,24 @@ defmodule EbbServer.Storage.Writer do
       # per Update, so repeated memberships cannot write the same
       # `{group_id, gsn}` row twice.
       groups: update_scopes |> :lists.append() |> Enum.uniq(),
-      type_entity_keys: type_entity_keys,
+      component_entity_ops: component_entity_ops(action.updates, mutations, state),
       affected_entities: affected_entities(mutations)
     }
 
     {prepared, mutations, memo}
+  end
+
+  # Component entries follow the wire order, so a drop and a re-write of the
+  # same component in one Action reduce to the last write. The model entry is
+  # per folded subject, exists for a delete, and is put after the components
+  # because the two key kinds cannot collide.
+  defp component_entity_ops(updates, mutations, state) do
+    if component_entities_ablated?(state) do
+      []
+    else
+      ComponentEntityIndex.update_ops(updates) ++
+        ComponentEntityIndex.model_ops(Enum.map(mutations, &{&1.model, &1.subject_id}))
+    end
   end
 
   # The provisional marks are placed before the batch leaves for the
@@ -2497,8 +2506,8 @@ defmodule EbbServer.Storage.Writer do
   defp ablate(state), do: Keyword.get(state.commit_opts, :ablate, [])
 
   # `:entity_index` is the combined alias the published bench commands use.
-  defp type_entities_ablated?(state),
-    do: ablate?(:type_entities, state) or ablate?(:entity_index, state)
+  defp component_entities_ablated?(state),
+    do: ablate?(:component_entities, state) or ablate?(:entity_index, state)
 
   defp group_ids_for_mutation(mutation, resolve_opts, memo) do
     case Keyword.get(resolve_opts, :entity_groups) do

@@ -3,8 +3,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
   Tests for SystemCache — specifically the startup `populate_system_caches`
   logic that rebuilds `GroupCache`, `EntityGroupCache`, and
   `RelationshipCache` from the persistent index, plus the
-  `backfill_type_entities` step that reconciles the type-entities index
-  against the action log.
+  `backfill_component_entities` step that reconciles the component-entities
+  index against the action log.
   """
 
   use ExUnit.Case, async: false
@@ -94,12 +94,12 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
   describe "populate_system_caches/0" do
     # This is the regression test for the user-reported bug: when
-    # cf_type_entities entries are missing (e.g. written by an older
+    # cf_component_entities model entries are missing (e.g. written by an older
     # version of the Writer, or wiped by a manual data fix-up), the
     # startup rebuild must still populate the membership cache so
     # subsequent writes to that entity index into the right group's
     # action stream.
-    test "re-populates membership and relationship caches after cf_type_entities is wiped", %{
+    test "re-populates membership and relationship caches after the model entries are wiped", %{
       dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
@@ -170,18 +170,18 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      cf_type = RocksDB.cf_type_entities(rocks_name)
+      cf = RocksDB.cf_component_entities(rocks_name)
       db_ref = RocksDB.db_ref(rocks_name)
 
-      # Confirm writer populated cf_type_entities.
-      assert RocksDB.get(cf_type, "relationship\0rel_test", name: rocks_name) == {:ok, <<>>}
+      # Confirm writer populated cf_component_entities.
+      assert RocksDB.get(cf, "relationship\0rel_test", name: rocks_name) == {:ok, <<>>}
 
-      # Simulate the broken state: cf_type_entities entries for the
-      # groupMember, entityGroup, and relationship have been wiped, but
-      # the action log still contains them.
-      :ok = :rocksdb.delete(db_ref, cf_type, "groupMember\0gm_test", [])
-      :ok = :rocksdb.delete(db_ref, cf_type, "entityGroup\0eg_test", [])
-      :ok = :rocksdb.delete(db_ref, cf_type, "relationship\0rel_test", [])
+      # Simulate the broken state: the model entries for the groupMember,
+      # entityGroup, and relationship have been wiped, but the action log
+      # still contains them.
+      :ok = :rocksdb.delete(db_ref, cf, "groupMember\0gm_test", [])
+      :ok = :rocksdb.delete(db_ref, cf, "entityGroup\0eg_test", [])
+      :ok = :rocksdb.delete(db_ref, cf, "relationship\0rel_test", [])
 
       # Caches should also be empty now (simulating a fresh server start).
       RelationshipCache.reset(relationships: rel_table, relationships_by_id: rbi_table)
@@ -213,12 +213,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
       # And the relationship must be back too.
       assert RelationshipCache.get_relationship("rel_test", rbi_table).target_id == "author_1"
 
-      # And the cf_type_entities index must be repaired too, so a
-      # second restart (without further writes) still rebuilds
-      # correctly.
-      assert RocksDB.get(cf_type, "relationship\0rel_test", name: rocks_name) == {:ok, <<>>}
-      assert RocksDB.get(cf_type, "groupMember\0gm_test", name: rocks_name) == {:ok, <<>>}
-      assert RocksDB.get(cf_type, "entityGroup\0eg_test", name: rocks_name) == {:ok, <<>>}
+      # And the index must be repaired too, so a second restart (without
+      # further writes) still rebuilds correctly.
+      assert RocksDB.get(cf, "relationship\0rel_test", name: rocks_name) == {:ok, <<>>}
+      assert RocksDB.get(cf, "groupMember\0gm_test", name: rocks_name) == {:ok, <<>>}
+      assert RocksDB.get(cf, "entityGroup\0eg_test", name: rocks_name) == {:ok, <<>>}
     end
 
     test "fills GroupAppsCache from the group rows on boot",
@@ -264,7 +263,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert measurements.group_apps == 1
     end
 
-    test "is a no-op when cf_type_entities is already in sync", %{
+    test "is a no-op when cf_component_entities is already in sync", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       gm_table: gm_table,
@@ -274,7 +273,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       rel_table: rel_table,
       rbi_table: rbi_table
     } do
-      # No actions written; cf_actions and cf_type_entities are both
+      # No actions written; cf_actions and cf_component_entities are both
       # empty. populate_system_caches should write nothing.
       :ok =
         SystemCache.populate_system_caches(
@@ -291,14 +290,14 @@ defmodule EbbServer.Storage.SystemCacheTest do
         )
 
       keys =
-        RocksDB.cf_type_entities(rocks_name)
+        RocksDB.cf_component_entities(rocks_name)
         |> RocksDB.full_iterator(name: rocks_name)
         |> Enum.map(fn {k, _v} -> k end)
 
       assert keys == []
     end
 
-    test "rebuilds the caches from cf_type_entities", %{
+    test "rebuilds the caches from cf_component_entities", %{
       dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
@@ -377,7 +376,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
     # #264 Option A: every existing entity's type must be resolvable after
     # a restart, otherwise the authorizer fails closed on membership adds.
-    test "repopulates the entity-type index from cf_type_entities", %{
+    test "repopulates the entity-type cache from the model entries", %{
       dirty_set: dirty_set,
       writer_name: writer_name,
       rocks_name: rocks_name,
@@ -441,6 +440,60 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert EntityTypeCache.get_type("todo_typed", entity_types_table) == "todo"
       assert EntityTypeCache.get_type("eg_typed", entity_types_table) == "entityGroup"
     end
+
+    test "the boot walk reads model entries and ignores component entries",
+         %{
+           writer_name: writer_name,
+           rocks_name: rocks_name,
+           entity_types_table: entity_types_table
+         } = ctx do
+      subject_id = "todo_component_entry_#{System.unique_integer([:positive])}"
+
+      action =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_component(subject_id, "todo/title", %{"value" => "Title"}),
+            TestHelpers.validated_component(subject_id, "todo/body", %{"value" => "Body"})
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      # The first boot completes the migration, so the second boot only walks
+      # the index and cannot fall back to the action log.
+      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+      EntityTypeCache.reset(entity_types: entity_types_table)
+
+      :ok =
+        :rocksdb.delete(
+          RocksDB.db_ref(rocks_name),
+          RocksDB.cf_component_entities(rocks_name),
+          RocksDB.encode_component_entity_key("todo", subject_id),
+          []
+        )
+
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      # The row's component entries are still there; only a model entry names
+      # the committed model, so nothing is indexed from them.
+      assert EntityTypeCache.get_type(subject_id, entity_types_table) == nil
+
+      for field <- ["title", "body"] do
+        assert {:ok, <<>>} =
+                 RocksDB.get(
+                   RocksDB.cf_component_entities(rocks_name),
+                   RocksDB.encode_component_entity_key("todo/#{field}", subject_id),
+                   name: rocks_name
+                 )
+      end
+
+      assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
+               TestHelpers.telemetry_events(ref)
+
+      assert measurements.entity_types == 0
+      assert measurements.backfilled == 0
+    end
   end
 
   describe "startup telemetry" do
@@ -471,8 +524,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
       :ok =
         :rocksdb.put(
           RocksDB.db_ref(ctx.rocks_name),
-          RocksDB.cf_type_entities(ctx.rocks_name),
-          RocksDB.encode_type_entity_key("todo", "todo_partial"),
+          RocksDB.cf_component_entities(ctx.rocks_name),
+          RocksDB.encode_component_entity_key("todo", "todo_partial"),
           <<>>,
           []
         )
@@ -504,7 +557,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
     test "reports the failing phase's progress, not just completed phases", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
-      cf_type = RocksDB.cf_type_entities(ctx.rocks_name)
+      cf = RocksDB.cf_component_entities(ctx.rocks_name)
       db = RocksDB.db_ref(ctx.rocks_name)
 
       valid_data =
@@ -524,7 +577,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       for id <- ["gm_partial_aaa_valid", "gm_partial_zzz_bad"] do
         :ok =
-          :rocksdb.put(db, cf_type, RocksDB.encode_type_entity_key("groupMember", id), <<>>, [])
+          :rocksdb.put(db, cf, RocksDB.encode_component_entity_key("groupMember", id), <<>>, [])
       end
 
       assert_raise FunctionClauseError, fn ->
@@ -567,8 +620,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
       :ok =
         :rocksdb.put(
           RocksDB.db_ref(ctx.rocks_name),
-          RocksDB.cf_type_entities(ctx.rocks_name),
-          RocksDB.encode_type_entity_key("groupMember", "gm_exit"),
+          RocksDB.cf_component_entities(ctx.rocks_name),
+          RocksDB.encode_component_entity_key("groupMember", "gm_exit"),
           <<>>,
           []
         )
@@ -586,9 +639,9 @@ defmodule EbbServer.Storage.SystemCacheTest do
     end
   end
 
-  describe "type-entities backfill migration" do
-    # #564: the backfill can add index keys the earlier type walk never saw, so
-    # those pairs must be marked dirty too — otherwise the migration boot
+  describe "component-entities backfill migration" do
+    # #564: the backfill can add index keys the earlier walk never saw, so
+    # those rows must be marked dirty too — otherwise the migration boot
     # re-indexes the entity but still serves it as missing.
     test "marks a backfill-added index key dirty so its row is served", ctx do
       entity_id = "todo_backfill_#{System.unique_integer([:positive])}"
@@ -607,13 +660,13 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
 
-      # Simulate an index entry the Writer never wrote: the type walk cannot see
+      # Simulate an index entry the Writer never wrote: the walk cannot see
       # it, only the backfill can restore it.
       :ok =
         :rocksdb.delete(
           RocksDB.db_ref(ctx.rocks_name),
-          RocksDB.cf_type_entities(ctx.rocks_name),
-          RocksDB.encode_type_entity_key("todo", entity_id),
+          RocksDB.cf_component_entities(ctx.rocks_name),
+          RocksDB.encode_component_entity_key("todo", entity_id),
           []
         )
 
@@ -625,8 +678,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert {:ok, <<>>} =
                RocksDB.get(
-                 RocksDB.cf_type_entities(ctx.rocks_name),
-                 RocksDB.encode_type_entity_key("todo", entity_id),
+                 RocksDB.cf_component_entities(ctx.rocks_name),
+                 RocksDB.encode_component_entity_key("todo", entity_id),
                  name: ctx.rocks_name
                )
 
@@ -635,6 +688,110 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert {:ok, entity} = EntityStore.get(entity_id, "a_test", entity_store_opts(ctx))
       assert entity.last_gsn == 1
       assert entity.data["fields"]["title"]["value"] == "Backfilled"
+    end
+
+    test "reconstructs both model and component entries from cf_actions", ctx do
+      entity_id = "todo_rebuild_#{System.unique_integer([:positive])}"
+      hlc = TestHelpers.generate_hlc()
+
+      action =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_component(entity_id, "todo/title", %{
+              "value" => "Title",
+              "hlc" => hlc
+            }),
+            TestHelpers.validated_component(entity_id, "todo/body", %{
+              "value" => "Body",
+              "hlc" => hlc
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+
+      cf = RocksDB.cf_component_entities(ctx.rocks_name)
+
+      # Simulate an index written before components were indexed: the model
+      # entry and every component entry are missing.
+      for name <- ["todo", "todo/title", "todo/body"] do
+        :ok =
+          :rocksdb.delete(
+            RocksDB.db_ref(ctx.rocks_name),
+            cf,
+            RocksDB.encode_component_entity_key(name, entity_id),
+            []
+          )
+      end
+
+      EntityTypeCache.reset(entity_types: ctx.entity_types_table)
+
+      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      for name <- ["todo", "todo/title", "todo/body"] do
+        assert {:ok, <<>>} =
+                 RocksDB.get(cf, RocksDB.encode_component_entity_key(name, entity_id),
+                   name: ctx.rocks_name
+                 )
+      end
+
+      assert EntityTypeCache.get_type(entity_id, ctx.entity_types_table) == "todo"
+
+      assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
+               TestHelpers.telemetry_events(ref)
+
+      assert measurements.backfilled == 3
+    end
+
+    test "does not restore a component the log dropped", ctx do
+      entity_id = "todo_dropped_backfill_#{System.unique_integer([:positive])}"
+      hlc = TestHelpers.generate_hlc()
+
+      write =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_component(entity_id, "todo/title", %{
+              "value" => "Title",
+              "hlc" => hlc
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([write], ctx.writer_name)
+
+      drop =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_update(%{subject_id: entity_id, method: :drop, data: nil})
+          ]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([drop], ctx.writer_name)
+
+      cf = RocksDB.cf_component_entities(ctx.rocks_name)
+
+      :ok =
+        :rocksdb.delete(
+          RocksDB.db_ref(ctx.rocks_name),
+          cf,
+          RocksDB.encode_component_entity_key("todo", entity_id),
+          []
+        )
+
+      EntityTypeCache.reset(entity_types: ctx.entity_types_table)
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      # The model entry is existence; the dropped component stays absent.
+      assert {:ok, <<>>} =
+               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", entity_id),
+                 name: ctx.rocks_name
+               )
+
+      assert :not_found =
+               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo/title", entity_id),
+                 name: ctx.rocks_name
+               )
     end
 
     test "backfills from an Action stored in a frame", ctx do
@@ -670,8 +827,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert {:ok, <<>>} =
                RocksDB.get(
-                 RocksDB.cf_type_entities(ctx.rocks_name),
-                 RocksDB.encode_type_entity_key("todo", entity_id),
+                 RocksDB.cf_component_entities(ctx.rocks_name),
+                 RocksDB.encode_component_entity_key("todo", entity_id),
                  name: ctx.rocks_name
                )
 
@@ -681,10 +838,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "writes a durable marker and skips the action-log scan on later boots", ctx do
       :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
-      assert {:ok, "v1"} =
+      assert {:ok, "v2"} =
                RocksDB.get(
                  RocksDB.cf_default(ctx.rocks_name),
-                 "system_cache:type_entities_backfill",
+                 "system_cache:component_entities_backfill",
                  name: ctx.rocks_name
                )
 
@@ -707,8 +864,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
         :rocksdb.put(
           RocksDB.db_ref(ctx.rocks_name),
           RocksDB.cf_default(ctx.rocks_name),
-          "system_cache:type_entities_backfill",
-          "v0",
+          "system_cache:component_entities_backfill",
+          "v1",
           []
         )
 

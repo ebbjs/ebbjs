@@ -56,7 +56,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
 
   alias EbbServer.TestHelpers
 
-  @marker_key "system_cache:type_entities_backfill"
+  @marker_key "system_cache:component_entities_backfill"
 
   # Mirrors `RocksDB.@handle_keys`. The read-only database below has to
   # publish handles the module's accessors can read, and `RocksDB` only opens
@@ -66,7 +66,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     default: :ebb_cf_default,
     actions: :ebb_cf_actions,
     entity_actions: :ebb_cf_entity_actions,
-    type_entities: :ebb_cf_type_entities,
+    component_entities: :ebb_cf_component_entities,
     action_dedup: :ebb_cf_action_dedup,
     group_actions: :ebb_cf_group_actions
   }
@@ -85,8 +85,8 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an entity the action log cannot produce is skipped, not fatal", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_type_entity(ctx, "groupMember", "gm_present")
-      seed_type_entity(ctx, "groupMember", "gm_absent")
+      seed_model_entry(ctx, "groupMember", "gm_present")
+      seed_model_entry(ctx, "groupMember", "gm_absent")
 
       :ok =
         SQLite.upsert_entity(
@@ -113,21 +113,32 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     end
   end
 
-  describe "type-entities index walking" do
-    test "a key without a type separator is dropped, not indexed", ctx do
+  describe "component-entities index walking" do
+    test "a key without a model separator is dropped, and a component entry is not a model",
+         ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
       db = RocksDB.db_ref(ctx.rocks.name)
-      cf_type = RocksDB.cf_type_entities(ctx.rocks.name)
+      cf = RocksDB.cf_component_entities(ctx.rocks.name)
 
-      # A half-written pair: `cf_type_entities` keys are `type <> 0 <> id`.
-      :ok = :rocksdb.put(db, cf_type, "groupMembe", <<>>, [])
-      seed_type_entity(ctx, "todo", "todo_well_formed")
+      # A half-written key: `cf_component_entities` keys are `name <> 0 <> id`.
+      :ok = :rocksdb.put(db, cf, "groupMembe", <<>>, [])
+      seed_model_entry(ctx, "todo", "todo_well_formed")
+
+      :ok =
+        :rocksdb.put(
+          db,
+          cf,
+          RocksDB.encode_component_entity_key("todo/title", "todo_component_only"),
+          <<>>,
+          []
+        )
 
       assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
       assert EntityTypeCache.get_type("todo_well_formed", ctx.tables.entity_types) == "todo"
       assert EntityTypeCache.get_type("groupMembe", ctx.tables.entity_types) == nil
+      assert EntityTypeCache.get_type("todo_component_only", ctx.tables.entity_types) == nil
 
       assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
                TestHelpers.telemetry_events(ref)
@@ -143,7 +154,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
       seed_action(ctx, "todo_backfill_unwritable")
       reopen_read_only(ctx)
 
-      assert_raise RuntimeError, ~r/cf_type_entities backfill write failed/, fn ->
+      assert_raise RuntimeError, ~r/cf_component_entities backfill write failed/, fn ->
         SystemCache.populate_system_caches(populate_opts(ctx))
       end
 
@@ -183,7 +194,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an exception raised inside a dependency call is reported by class", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_type_entity(ctx, "groupMember", "gm_raises")
+      seed_model_entry(ctx, "groupMember", "gm_raises")
 
       name = :"raising_store_#{System.unique_integer([:positive])}"
       start_supervised!({RaisingStore, name: name})
@@ -212,7 +223,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an atom carried by an exit is reported as that atom", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_type_entity(ctx, "groupMember", "gm_exits")
+      seed_model_entry(ctx, "groupMember", "gm_exits")
 
       name = {:via, FailingRegistry, {:exits, :store_unavailable}}
 
@@ -247,12 +258,12 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     )
   end
 
-  defp seed_type_entity(ctx, type, entity_id) do
+  defp seed_model_entry(ctx, model, entity_id) do
     :ok =
       :rocksdb.put(
         RocksDB.db_ref(ctx.rocks.name),
-        RocksDB.cf_type_entities(ctx.rocks.name),
-        RocksDB.encode_type_entity_key(type, entity_id),
+        RocksDB.cf_component_entities(ctx.rocks.name),
+        RocksDB.encode_component_entity_key(model, entity_id),
         <<>>,
         []
       )
@@ -336,7 +347,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
       default: handles["default"],
       actions: handles["cf_actions"],
       entity_actions: handles["cf_entity_actions"],
-      type_entities: handles["cf_type_entities"],
+      component_entities: handles["cf_component_entities"],
       action_dedup: handles["cf_action_dedup"],
       group_actions: handles["cf_group_actions"]
     }

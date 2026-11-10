@@ -45,13 +45,17 @@ defmodule EbbServer.Storage.RocksDB do
     cf_entity_actions - (entity_id, max_gsn_in_flush) -> the subject's GSNs
                         in that flush, sorted ascending and unique, each as
                         an 8-byte big-endian integer (see `encode_gsn_list/1`)
-    cf_type_entities  - (type, 0x00, entity_id) -> <<>> (presence index)
+    cf_component_entities - (name, 0x00, entity_id) -> <<>> (existence
+                        index). A model entry names the row's committed
+                        model; a component entry names one component the row
+                        carries (`<model>/<field>`). See
+                        `EbbServer.Storage.ComponentEntityIndex`.
     cf_action_dedup   - action_id -> GSN (duplicate detection)
     cf_group_actions  - (group_id, GSN) -> action_id binary
 
   Composite keys use a `0x00` byte as a separator. Callers must never
-  include null bytes in their `type` or `entity_id` components (enforced
-  by `encode_type_entity_key/2`).
+  include null bytes in their `name` or `entity_id` components (enforced
+  by `encode_component_entity_key/2`).
 
   ## Isolated instances
 
@@ -79,7 +83,7 @@ defmodule EbbServer.Storage.RocksDB do
     {~c"default", []},
     {~c"cf_actions", []},
     {~c"cf_entity_actions", []},
-    {~c"cf_type_entities", []},
+    {~c"cf_component_entities", []},
     {~c"cf_action_dedup", []},
     {~c"cf_group_actions", []}
   ]
@@ -97,7 +101,7 @@ defmodule EbbServer.Storage.RocksDB do
     default: :ebb_cf_default,
     actions: :ebb_cf_actions,
     entity_actions: :ebb_cf_entity_actions,
-    type_entities: :ebb_cf_type_entities,
+    component_entities: :ebb_cf_component_entities,
     action_dedup: :ebb_cf_action_dedup,
     group_actions: :ebb_cf_group_actions
   }
@@ -158,8 +162,8 @@ defmodule EbbServer.Storage.RocksDB do
   @spec cf_entity_actions(name()) :: cf_ref()
   def cf_entity_actions(name \\ __MODULE__), do: handle(:entity_actions, name)
 
-  @spec cf_type_entities(name()) :: cf_ref()
-  def cf_type_entities(name \\ __MODULE__), do: handle(:type_entities, name)
+  @spec cf_component_entities(name()) :: cf_ref()
+  def cf_component_entities(name \\ __MODULE__), do: handle(:component_entities, name)
 
   @spec cf_action_dedup(name()) :: cf_ref()
   def cf_action_dedup(name \\ __MODULE__), do: handle(:action_dedup, name)
@@ -322,22 +326,24 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   @doc """
-  Encodes a composite key for the type-entities column family.
+  Encodes a composite key for the component-entities column family.
 
-  Uses a `0x00` null byte as the separator between `type` and `entity_id`.
-  Callers must ensure `type` never contains a `0x00` byte, otherwise the
-  key boundary becomes ambiguous and lookups/prefix scans will silently break.
+  `name` is either a model or a `<model>/<field>` component name; the two
+  cannot collide because a model name never contains `/`. Uses a `0x00` null
+  byte as the separator between `name` and `entity_id`. Callers must ensure
+  `name` never contains a `0x00` byte, otherwise the key boundary becomes
+  ambiguous and lookups/prefix scans will silently break.
   """
-  @spec encode_type_entity_key(binary(), binary()) :: binary()
-  def encode_type_entity_key(type, entity_id) do
-    type = validate_key_component(type, "type")
+  @spec encode_component_entity_key(binary(), binary()) :: binary()
+  def encode_component_entity_key(name, entity_id) do
+    name = validate_key_component(name, "name")
     entity_id = validate_key_component(entity_id, "entity_id")
 
-    if :binary.match(type, <<0>>) != :nomatch do
-      raise ArgumentError, "type must not contain null bytes (0x00)"
+    if :binary.match(name, <<0>>) != :nomatch do
+      raise ArgumentError, "name must not contain null bytes (0x00)"
     end
 
-    <<type::binary, 0, entity_id::binary>>
+    <<name::binary, 0, entity_id::binary>>
   end
 
   @spec validate_key_component(binary(), String.t()) :: binary()
@@ -401,15 +407,18 @@ defmodule EbbServer.Storage.RocksDB do
     end
   end
 
-  @spec write_batch([{:put, cf_ref(), binary(), binary()}], keyword()) ::
-          :ok | {:error, term()}
+  @spec write_batch(
+          [{:put, cf_ref(), binary(), binary()} | {:delete, cf_ref(), binary()}],
+          keyword()
+        ) :: :ok | {:error, term()}
   def write_batch(operations, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     {:ok, batch} = :rocksdb.batch()
 
     try do
-      Enum.each(operations, fn {:put, cf_ref, key, value} ->
-        :ok = :rocksdb.batch_put(batch, cf_ref, key, value)
+      Enum.each(operations, fn
+        {:put, cf_ref, key, value} -> :ok = :rocksdb.batch_put(batch, cf_ref, key, value)
+        {:delete, cf_ref, key} -> :ok = :rocksdb.batch_delete(batch, cf_ref, key)
       end)
 
       :rocksdb.write_batch(db_ref(name), batch, sync: true)
@@ -598,7 +607,7 @@ defmodule EbbServer.Storage.RocksDB do
          default_cf,
          cf_actions,
          cf_entity_actions,
-         cf_type_entities,
+         cf_component_entities,
          cf_action_dedup,
          cf_group_actions
        ]} ->
@@ -607,7 +616,7 @@ defmodule EbbServer.Storage.RocksDB do
           default: default_cf,
           actions: cf_actions,
           entity_actions: cf_entity_actions,
-          type_entities: cf_type_entities,
+          component_entities: cf_component_entities,
           action_dedup: cf_action_dedup,
           group_actions: cf_group_actions
         })
