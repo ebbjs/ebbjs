@@ -12,6 +12,8 @@ import {
   buildComponentIndex,
   componentDelta,
   componentIds,
+  componentsOf,
+  touchedComponents,
   type ComponentIndex,
 } from "../internal/component-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
@@ -112,9 +114,9 @@ interface OrphanUpdate {
  * persists, once pinned on-demand rows are filtered out), `overlay` composes
  * optimistic writes over it, and `effective` caches the composed view for
  * overlaid ids so a read never recomposes.
- * `typeIndex` indexes the base; `iterate` layers the overlay's type overrides
- * on top of it. `componentIndex` tracks the composed view's component set
- * alongside the adjacency indices, and is likewise derived rather than
+ * `modelIndex` indexes the base by model; `iterate` layers the overlay's model
+ * overrides on top of it. `componentIndex` tracks the composed view's component
+ * set alongside the adjacency indices, and is likewise derived rather than
  * persisted.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
@@ -122,7 +124,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const holds = (type: string): boolean => policy.holds(type);
 
   const entities = new Map<string, Entity>();
-  const typeIndex = new Map<string, Set<string>>();
+  const modelIndex = new Map<string, Set<string>>();
   let componentIndex: ComponentIndex = new Map();
   const overlay = new Map<string, OptimisticWrite[]>();
   const effective = new Map<string, Entity | null>();
@@ -167,17 +169,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
-  const addToType = (type: string, id: string): void => {
-    const ids = typeIndex.get(type);
-    if (ids === undefined) typeIndex.set(type, new Set([id]));
+  const addToModel = (model: string, id: string): void => {
+    const ids = modelIndex.get(model);
+    if (ids === undefined) modelIndex.set(model, new Set([id]));
     else ids.add(id);
   };
 
-  const removeFromType = (type: string, id: string): void => {
-    const ids = typeIndex.get(type);
+  const removeFromModel = (model: string, id: string): void => {
+    const ids = modelIndex.get(model);
     if (ids === undefined) return;
     ids.delete(id);
-    if (ids.size === 0) typeIndex.delete(type);
+    if (ids.size === 0) modelIndex.delete(model);
   };
 
   /**
@@ -231,9 +233,18 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const isOpen = (id: string): boolean => pins.get(id)?.open === true;
 
-  const bump = (id: string, type: string, deleted: boolean): void => {
+  /**
+   * Append one observable change. `components` is what the change touched in the
+   * composed view, which is what a derived reader invalidates against.
+   */
+  const bump = (
+    id: string,
+    type: string,
+    deleted: boolean,
+    components: readonly string[],
+  ): void => {
     revision += 1;
-    journal.push({ revision, id, type, deleted });
+    journal.push({ revision, id, type, deleted, components });
     trimJournal();
   };
 
@@ -263,10 +274,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return entities.get(id);
   };
 
-  const iterate = (type: string): readonly Entity[] => {
-    const ids = new Set(typeIndex.get(type) ?? []);
+  const iterate = (model: string): readonly Entity[] => {
+    // The base index answers for every composed row, and the overlay can move a
+    // row between models without touching the base, so its overrides win.
+    const ids = new Set(modelIndex.get(model) ?? []);
     for (const [id, row] of effective) {
-      if (row !== null && row.type === type) ids.add(id);
+      if (row !== null && row.type === model) ids.add(id);
       else ids.delete(id);
     }
     const rows: Entity[] = [];
@@ -313,15 +326,15 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       // `resync` journals that removal from the composed-view comparison.
       if (previous !== null) {
         entities.delete(id);
-        removeFromType(previous.type, id);
+        removeFromModel(previous.type, id);
       }
       if (previous === null) orphans.delete(id);
       return;
     }
 
     entities.set(id, next);
-    if (previous !== null && previous.type !== next.type) removeFromType(previous.type, id);
-    addToType(next.type, id);
+    if (previous !== null && previous.type !== next.type) removeFromModel(previous.type, id);
+    addToModel(next.type, id);
 
     if (previous === null) {
       const pending = orphans.get(id);
@@ -339,8 +352,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         if (row !== next) {
           entities.set(id, row);
           if (next.type !== row.type) {
-            removeFromType(next.type, id);
-            addToType(row.type, id);
+            removeFromModel(next.type, id);
+            addToModel(row.type, id);
           }
         }
       }
@@ -387,12 +400,16 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
     reconcileIndex(previous, retained);
 
+    const journalChange = (model: string, deleted: boolean): void =>
+      bump(id, model, deleted, touchedComponents(previous, retained));
     if (retained === null) {
-      if (next !== null) bump(id, next.type, next.deleted_hlc !== null);
-      else if (previous !== null) bump(id, previous.type, true);
+      if (next !== null) journalChange(next.type, next.deleted_hlc !== null);
+      else if (previous !== null) journalChange(previous.type, true);
       return;
     }
-    if (contentChanged(previous, retained)) bump(id, retained.type, retained.deleted_hlc !== null);
+    if (contentChanged(previous, retained)) {
+      journalChange(retained.type, retained.deleted_hlc !== null);
+    }
   };
 
   const rememberView = (before: Map<string, Entity | null>, id: string): void => {
@@ -478,12 +495,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       overlay.delete(id);
       effective.delete(id);
       orphans.delete(id);
-      if (base !== undefined) removeFromType(base.type, id);
+      if (base !== undefined) removeFromModel(base.type, id);
       reconcileIndex(previous, null);
       const row = previous ?? base ?? null;
       if (row === null) continue;
       removed = true;
-      bump(id, row.type, true);
+      bump(id, row.type, true, componentsOf(row));
     }
     if (removed) notify();
     return revision;
@@ -492,7 +509,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const load = (record: ReplicaRecord): Revision => {
     if (!isValidReplicaRecord(record)) return revision;
     entities.clear();
-    typeIndex.clear();
+    modelIndex.clear();
     orphans.clear();
     overlay.clear();
     effective.clear();
@@ -517,7 +534,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (!holds(entity.type)) continue;
       const row = withAdoptedMapFields(entity);
       entities.set(row.id, row);
-      addToType(row.type, row.id);
+      addToModel(row.type, row.id);
       const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
       const forwardEntry = forwardIndexEntryFor(row);
@@ -562,19 +579,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const stats = (): ReplicaStats => {
     const byType: Record<string, number> = {};
     const heldByType: Record<string, number> = {};
-    const types = new Set(typeIndex.keys());
+    const models = new Set(modelIndex.keys());
     for (const row of effective.values()) {
-      if (row !== null) types.add(row.type);
+      if (row !== null) models.add(row.type);
     }
     let total = 0;
     let heldTotal = 0;
-    for (const type of types) {
-      const count = iterate(type).length;
+    for (const model of models) {
+      const count = iterate(model).length;
       if (count === 0) continue;
-      byType[type] = count;
+      byType[model] = count;
       total += count;
-      if (holds(type)) {
-        heldByType[type] = count;
+      if (holds(model)) {
+        heldByType[model] = count;
         heldTotal += count;
       }
     }
@@ -609,7 +626,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const install = (id: string, row: Entity, buffered: readonly OrphanUpdate[]): void => {
     const previous = viewOf(id);
     entities.set(id, row);
-    addToType(row.type, id);
+    addToModel(row.type, id);
     openPin(id);
     for (const entry of buffered) foldBase(entry.update, entry.gsn, entry.hlc, entry.position);
     resync(id, previous);

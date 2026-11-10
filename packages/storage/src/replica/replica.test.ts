@@ -382,13 +382,160 @@ describe("replica: durable fold", () => {
     );
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "e_1", type: "todo", deleted: false },
-      { revision: 2, id: "e_1", type: "todo", deleted: false },
+      { revision: 1, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "todo", deleted: false },
+      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(2)).toEqual([]);
+  });
+
+  it("journals the touched component and not its siblings", () => {
+    const replica = createReplica();
+    const status = leaf("open", "u_status", 10);
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_title",
+        type: "note",
+        ms: 10,
+        fields: { title: leaf("First", "u_title", 10), status },
+      }),
+      1,
+    );
+    expect(replica.changesSince(0)).toEqual([
+      {
+        revision: 1,
+        id: "e_1",
+        type: "note",
+        deleted: false,
+        components: ["note/title", "note/status"],
+      },
+    ]);
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_2",
+        type: "note",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Second", "u_2", 20) },
+      }),
+      2,
+    );
+
+    // The plan component's leaf is untouched, so only the title changes.
+    expect(replica.changesSince(1)).toEqual([
+      { revision: 2, id: "e_1", type: "note", deleted: false, components: ["note/title"] },
+    ]);
+  });
+
+  it("journals the component a drop detached", () => {
+    const replica = createReplica();
+    const title = leaf("Kept", "u_1", 10);
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title, draft: leaf("d", "u_draft", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      drop({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 20,
+        fields: { draft: leaf("", "u_2", 20) },
+      }),
+      2,
+    );
+
+    expect(replica.get("e_1")?.data.fields.title).toBe(title);
+    expect(replica.changesSince(1)).toEqual([
+      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/draft"] },
+    ]);
+  });
+
+  it("journals every component of a row a delete tombstoned", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Hello", "u_1", 10), status: leaf("open", "u_status", 10) },
+      }),
+      1,
+    );
+    ingest(replica, remove({ actionId: "a_2", updateId: "u_2", gsn: 2, ms: 20 }), 2);
+
+    expect(replica.changesSince(1)).toEqual([
+      {
+        revision: 2,
+        id: "e_1",
+        type: "todo",
+        deleted: true,
+        components: ["todo/title", "todo/status"],
+      },
+    ]);
+  });
+
+  it("serves iterate from the model index across an optimistic model change", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "note_1",
+        type: "note",
+        ms: 10,
+        fields: { title: leaf("Note", "u_1", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      put({
+        actionId: "a_2",
+        updateId: "u_2",
+        entityId: "note_2",
+        type: "note",
+        ms: 10,
+        fields: { title: leaf("Other", "u_2", 10) },
+      }),
+      2,
+    );
+    expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_1", "note_2"]);
+
+    // The optimistic write moves a row out of its model without touching the
+    // base, so `iterate` must honour the overlay's model override.
+    replica.optimistic(
+      put({
+        actionId: "a_local",
+        updateId: "u_local",
+        entityId: "note_1",
+        type: "page",
+        ms: 20,
+        fields: { title: leaf("Promoted", "u_local", 20) },
+      }),
+    );
+    expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_2"]);
+    expect(replica.iterate("page").map((row) => row.id)).toEqual(["note_1"]);
+
+    replica.discard("a_local");
+    expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_1", "note_2"]);
+    expect(replica.iterate("page")).toEqual([]);
   });
 
   it("moves an id between type indices when a put changes its type", () => {
@@ -802,7 +949,7 @@ describe("replica: materialization policy", () => {
     expect(replica.iterate("todo")).toEqual([]);
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "todo", deleted: true },
+      { revision: 2, id: "e_1", type: "todo", deleted: true, components: ["todo/title"] },
     ]);
   });
 });
@@ -915,8 +1062,25 @@ describe("replica: evict (#499)", () => {
     expect(replica.membershipLinks("e_1")).toEqual([]);
     expect(fired).toBe(1);
     expect(replica.changesSince(2)).toEqual([
-      { revision: 3, id: "r_1", type: "relationship", deleted: true },
-      { revision: 4, id: "m_1", type: "entityGroup", deleted: true },
+      {
+        revision: 3,
+        id: "r_1",
+        type: "relationship",
+        deleted: true,
+        components: [
+          "relationship/field",
+          "relationship/type",
+          "relationship/source_id",
+          "relationship/target_id",
+        ],
+      },
+      {
+        revision: 4,
+        id: "m_1",
+        type: "entityGroup",
+        deleted: true,
+        components: ["entityGroup/group_id", "entityGroup/entity_id"],
+      },
     ]);
 
     // A repeat eviction removes nothing, so it neither bumps nor notifies.
@@ -969,9 +1133,9 @@ describe("replica: journal capacity (#499)", () => {
     expect(replica.changesSince(0)).toEqual([]);
     expect(replica.changesSince(2)).toEqual([]);
     expect(replica.changesSince(replica.changeFloor)).toEqual([
-      { revision: 4, id: "e_4", type: "todo", deleted: false },
-      { revision: 5, id: "e_5", type: "todo", deleted: false },
-      { revision: 6, id: "e_6", type: "todo", deleted: false },
+      { revision: 4, id: "e_4", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 5, id: "e_5", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 6, id: "e_6", type: "todo", deleted: false, components: ["todo/title"] },
     ]);
   });
 
@@ -1137,7 +1301,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(fired).toBe(1);
     // A derived reader must see the row arrive.
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "doc_1", type: "document", deleted: false },
+      { revision: 1, id: "doc_1", type: "document", deleted: false, components: ["document/text"] },
     ]);
   });
 
@@ -1372,7 +1536,13 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.isOpen("doc_1")).toBe(false);
     expect(replica.stats().pinned).toBe(0);
     expect(replica.changesSince(openRevision)).toEqual([
-      { revision: openRevision + 1, id: "doc_1", type: "document", deleted: true },
+      {
+        revision: openRevision + 1,
+        id: "doc_1",
+        type: "document",
+        deleted: true,
+        components: ["document/text"],
+      },
     ]);
 
     replica.close("e_1");
