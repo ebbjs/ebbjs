@@ -3,6 +3,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
   alias EbbServer.Storage.PermissionHelper
 
+  import EbbServer.TestHelpers, only: [validated_component: 3, validated_component: 4]
+
   describe "method_to_permission/1" do
     test "put maps to create" do
       assert PermissionHelper.method_to_permission(:put) == "create"
@@ -402,6 +404,47 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
     test "handles empty mutations" do
       assert PermissionHelper.build_intra_action_context([]) == %{}
+    end
+  end
+
+  describe "build_intra_relationship_sources/1" do
+    test "reads the source from the component Update that carries it" do
+      updates = [
+        validated_component("rel_1", "relationship/source_id", %{"value" => "todo_1"}),
+        validated_component("rel_1", "relationship/target_id", %{"value" => "project_1"}),
+        validated_component("rel_1", "relationship/type", %{"value" => "project"}),
+        validated_component("rel_1", "relationship/field", %{"value" => "project"})
+      ]
+
+      assert PermissionHelper.build_intra_relationship_sources(updates) == %{
+               "rel_1" => "todo_1"
+             }
+    end
+
+    test "a sibling component does not stand in for the source" do
+      updates = [
+        validated_component("rel_1", "relationship/target_id", %{"value" => "project_1"})
+      ]
+
+      assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
+    end
+
+    test "maps one source per relationship row" do
+      updates = [
+        validated_component("rel_1", "relationship/source_id", %{"value" => "todo_1"}),
+        validated_component("rel_2", "relationship/source_id", %{"value" => "todo_2"})
+      ]
+
+      assert PermissionHelper.build_intra_relationship_sources(updates) == %{
+               "rel_1" => "todo_1",
+               "rel_2" => "todo_2"
+             }
+    end
+
+    test "ignores a delete, which names no component" do
+      updates = [validated_component("rel_1", nil, nil, method: :delete)]
+
+      assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
     end
   end
 

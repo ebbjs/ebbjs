@@ -37,11 +37,7 @@ defmodule Mix.Tasks.Bench.Components do
   end
 
   defp delta(from, to) do
-    change =
-      cond do
-        from == 0 -> "n/a"
-        true -> "#{Float.round((to - from) / from * 100, 1)}%"
-      end
+    change = if from == 0, do: "n/a", else: "#{Float.round((to - from) / from * 100, 1)}%"
 
     "#{to - from} (#{change})"
   end

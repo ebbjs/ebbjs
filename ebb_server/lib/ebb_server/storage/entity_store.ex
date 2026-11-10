@@ -269,8 +269,6 @@ defmodule EbbServer.Storage.EntityStore do
     {current_data, last_gsn, existing_row, byte_size} =
       fetch_current_state(entity_id, sqlite_name)
 
-    base_present? = existing_row != nil
-
     gsns =
       timed(:entries_scan, fn -> fetch_relevant_gsns(entity_id, rocks_name, last_gsn) end)
 
@@ -288,8 +286,7 @@ defmodule EbbServer.Storage.EntityStore do
           observed_generation,
           dirty_set,
           sqlite_name,
-          existing_row,
-          base_present?
+          existing_row
         )
       end
 
@@ -374,8 +371,7 @@ defmodule EbbServer.Storage.EntityStore do
          observed_generation,
          dirty_set,
          sqlite_name,
-         existing_row,
-         base_present?
+         existing_row
        ) do
     materialized =
       try do
@@ -402,7 +398,7 @@ defmodule EbbServer.Storage.EntityStore do
           observed_generation,
           dirty_set,
           sqlite_name,
-          base_present?,
+          existing_row != nil,
           current_data
         )
 

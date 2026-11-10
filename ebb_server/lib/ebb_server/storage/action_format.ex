@@ -221,17 +221,31 @@ defmodule EbbServer.Storage.ActionFormat do
       not Component.method?(method) ->
         reject_update(update, "unknown method")
 
-      method == "delete" ->
-        if Map.has_key?(update, "component") or not is_nil(update["data"]) do
-          reject_update(update, "a delete names the row and carries no component")
-        else
-          :ok
-        end
+      true ->
+        validate_method_shape!(update, method)
+    end
+  end
 
+  defp validate_update!(update) do
+    raise ArgumentError, "cf_actions Update is not a map: #{inspect(update, limit: 4)}"
+  end
+
+  # A delete names the row; every value method names one `<model>/<field>`
+  # component, and a drop carries no value.
+  defp validate_method_shape!(update, "delete") do
+    if Map.has_key?(update, "component") or not is_nil(update["data"]) do
+      reject_update(update, "a delete names the row and carries no component")
+    else
+      :ok
+    end
+  end
+
+  defp validate_method_shape!(update, "drop") do
+    cond do
       not Component.valid?(update["component"]) ->
         reject_update(update, "component is not <model>/<field>")
 
-      method == "drop" and not is_nil(update["data"]) ->
+      not is_nil(update["data"]) ->
         reject_update(update, "drop carries no value")
 
       true ->
@@ -239,8 +253,12 @@ defmodule EbbServer.Storage.ActionFormat do
     end
   end
 
-  defp validate_update!(update) do
-    raise ArgumentError, "cf_actions Update is not a map: #{inspect(update, limit: 4)}"
+  defp validate_method_shape!(update, _method) do
+    if Component.valid?(update["component"]) do
+      :ok
+    else
+      reject_update(update, "component is not <model>/<field>")
+    end
   end
 
   defp reject_update(update, reason) do

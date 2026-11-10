@@ -59,13 +59,7 @@ describe("unset — the wire envelope", () => {
   });
 
   it("still passes a literal null through: other producers send tombstones", () => {
-    const [write] = componentUpdates(
-      "t1",
-      "task",
-      { title: null },
-      ids(),
-      task.markers as never,
-    );
+    const [write] = componentUpdates("t1", "task", { title: null }, ids(), task.markers as never);
     expect(write!.data).toEqual({ value: null, update_id: "u1", hlc: "h1" });
   });
 

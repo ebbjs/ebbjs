@@ -383,7 +383,16 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
 
     assert Enum.count(live_relationship_updates, &(&1["method"] == "replace")) == 4
     assert Enum.count(live_relationship_updates, &(&1["method"] == "delete")) == 1
-    refute Enum.any?(event["updates"], &(&1["subject_id"] == created_id))
+
+    # The one relationship row is the only relationship subject the event
+    # carries; the todo the row links is its own subject.
+    assert Enum.all?(
+             Enum.filter(
+               event["updates"],
+               &String.starts_with?(&1["component"] || "", "relationship/")
+             ),
+             &(&1["subject_id"] == relationship_id)
+           )
 
     Task.shutdown(stream, :brutal_kill)
   end

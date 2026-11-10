@@ -239,7 +239,9 @@ defmodule EbbServer.Storage.PermissionHelper do
     updates
     |> Enum.filter(&relationship_source_update?/1)
     |> Enum.reduce(%{}, fn update, acc ->
-      case {update.subject_id, Fields.get(update.data, "source_id")} do
+      # A raw component Update carries its own field name, so the source is
+      # the `relationship/source_id` Update's value rather than a row record.
+      case {update.subject_id, Fields.component_value(update, "source_id")} do
         {rel_id, source_id} when is_binary(rel_id) and is_binary(source_id) ->
           Map.put(acc, rel_id, source_id)
 

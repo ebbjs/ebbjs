@@ -264,33 +264,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
     case update.method do
       method when method in [:put, :patch] ->
-        data = update.data || %{}
-
-        existing =
-          patch_existing(
-            update,
-            overlay,
-            :relationships_by_id,
-            tables.relationships_by_id,
-            &RelationshipCache.get_relationship/2
-          )
-
-        source_id = Fields.get(data, "source_id") || row_field(existing, :source_id)
-        target_id = Fields.get(data, "target_id") || row_field(existing, :target_id)
-
-        if is_nil(source_id) or is_nil(target_id) do
-          {mutations, overlay}
-        else
-          row = %{
-            id: update.subject_id,
-            source_id: source_id,
-            target_id: target_id,
-            type: Fields.get(data, "type") || row_field(existing, :type),
-            field: Fields.get(data, "field") || row_field(existing, :field)
-          }
-
-          {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
-        end
+        plan_relationship_put(update, tables, mutations, overlay, key)
 
       :delete ->
         {[{:relationship_delete, update.subject_id} | mutations],
@@ -299,6 +273,45 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   end
 
   defp plan_system_mutation(_update, _tables, mutations, overlay), do: {mutations, overlay}
+
+  defp plan_relationship_put(update, tables, mutations, overlay, key) do
+    existing =
+      patch_existing(
+        update,
+        overlay,
+        :relationships_by_id,
+        tables.relationships_by_id,
+        &RelationshipCache.get_relationship/2
+      )
+
+    row = relationship_row(update, existing)
+
+    if row == nil do
+      {mutations, overlay}
+    else
+      {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
+    end
+  end
+
+  # A relationship row names a source and a target; a row still missing
+  # either cannot be projected into the by-id cache.
+  defp relationship_row(update, existing) do
+    data = update.data || %{}
+    source_id = Fields.get(data, "source_id") || row_field(existing, :source_id)
+    target_id = Fields.get(data, "target_id") || row_field(existing, :target_id)
+
+    if is_nil(source_id) or is_nil(target_id) do
+      nil
+    else
+      %{
+        id: update.subject_id,
+        source_id: source_id,
+        target_id: target_id,
+        type: Fields.get(data, "type") || row_field(existing, :type),
+        field: Fields.get(data, "field") || row_field(existing, :field)
+      }
+    end
+  end
 
   # Only a patch consults a pre-existing row. The overlay is the plan's own
   # prior effect, so a delete in the same plan means there is nothing left
