@@ -168,7 +168,7 @@ defmodule EbbServer.Storage.Writer do
 
   Redundant index writes are dropped during op construction: the
   `cf_type_entities` key has no GSN component, so it is collected as a
-  per-flush set and written once per unique `(subject_type, subject_id)`.
+  per-flush set and written once per unique `(model, subject_id)`.
   `cf_entity_actions` is coalesced per subject across the whole flush: one
   row keyed at the subject's highest GSN, holding that subject's sorted GSN
   list, however many Updates or Actions touched it. `cf_group_actions` is
@@ -373,7 +373,8 @@ defmodule EbbServer.Storage.Writer do
     PreparePool,
     Preparer,
     RelationshipCache,
-    RocksDB
+    RocksDB,
+    RowMutations
   }
 
   alias EbbServer.Storage.CommitPipeline.Batch
@@ -921,7 +922,7 @@ defmodule EbbServer.Storage.Writer do
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, max GSN in this flush) → the
        subject's sorted GSN list for the flush (materialization index)
-     - cf_type_entities: (subject_type, subject_id) → <<>> (type index)
+     - cf_type_entities: (model, subject_id) → <<>> (model index)
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
 
      Updates are stored once, inside the `cf_actions` value.
@@ -2019,30 +2020,33 @@ defmodule EbbServer.Storage.Writer do
       |> resolve_cache_opts()
       |> Keyword.put(:overlay, incoming_overlay)
 
-    {prepared, {groups_by_gsn, _memo}} =
+    {prepared, {groups_by_gsn, mutations, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, %{}}, fn {{action, payload_etf}, gsn}, {groups, memo} ->
-        {prepared_action, memo} =
+      |> Enum.map_reduce({%{}, [], %{}}, fn {{action, payload_etf}, gsn},
+                                            {groups, mutations, memo} ->
+        {prepared_action, action_mutations, memo} =
           prepare_action(action, payload_etf, state, resolve_opts, memo)
 
-        {prepared_action, {Map.put(groups, gsn, prepared_action.groups), memo}}
+        {prepared_action,
+         {Map.put(groups, gsn, prepared_action.groups), mutations ++ action_mutations, memo}}
       end)
 
-    {prepared, groups_by_gsn, plan_cache_mutations(fresh, state, incoming_overlay)}
+    {prepared, groups_by_gsn, plan_cache_mutations(mutations, state, incoming_overlay)}
   end
 
   # Plan before the commit so a successor can resolve against this batch's
   # rows while it is still unapplied. The batch keeps its own slice; the
-  # cumulative overlay is only an intermediate for the next plan.
-  defp plan_cache_mutations(fresh, state, incoming_overlay) do
+  # cumulative overlay is only an intermediate for the next plan. The planner
+  # takes the same folded rows the scopes were resolved from, not raw
+  # component Updates: a row's `group_id` or `source_id` may arrive in one
+  # component while its siblings carry none.
+  defp plan_cache_mutations(mutations, state, incoming_overlay) do
     if ablate?(:cache, state) do
       {[], nil}
     else
       {mutations, cumulative} =
-        fresh
-        |> Enum.flat_map(fn {action, _payload_etf} -> action.updates end)
-        |> CacheMutationPlanner.plan(plan_tables(state), incoming_overlay)
+        CacheMutationPlanner.plan(mutations, plan_tables(state), incoming_overlay)
 
       {mutations, CacheMutationPlanner.slice(cumulative, mutations)}
     end
@@ -2054,7 +2058,12 @@ defmodule EbbServer.Storage.Writer do
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
   defp prepare_action(action, payload_etf, state, resolve_opts, memo) do
-    intra_action_context = PermissionHelper.build_intra_action_context(action.updates)
+    # Scope is a per-subject decision, never a per-component one: an
+    # `entityGroup` row's `group_id` and a relationship row's `source_id` each
+    # arrive in one component Update while their siblings carry none, so the
+    # folded row decides for every Update of that row.
+    mutations = RowMutations.fold(action.updates, resolve_opts)
+    intra_action_context = PermissionHelper.build_intra_action_context(mutations)
 
     resolve_opts =
       resolve_opts
@@ -2064,28 +2073,30 @@ defmodule EbbServer.Storage.Writer do
         PermissionHelper.build_intra_relationship_sources(action.updates)
       )
 
-    {_group_ids, {scopes, type_entity_keys, memo}} =
-      Enum.map_reduce(action.updates, {[], [], memo}, fn update, {scopes, keys, memo} ->
+    {scopes, {type_entity_keys, memo}} =
+      Enum.map_reduce(mutations, {[], memo}, fn mutation, {keys, memo} ->
         {group_ids, memo} =
           if ablate?(:group_resolution, state) do
             {[], memo}
           else
-            group_ids_for_update(update, resolve_opts, memo)
+            group_ids_for_mutation(mutation, resolve_opts, memo)
           end
 
         key =
-          if type_entities_ablated?(state),
+          if type_entities_ablated?(state) or is_nil(mutation.model),
             do: nil,
-            else: RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
+            else: RocksDB.encode_type_entity_key(mutation.model, mutation.subject_id)
 
-        {group_ids, {[group_ids | scopes], [key | keys], memo}}
+        {{mutation.subject_id, group_ids}, {[key | keys], memo}}
       end)
 
     # Index-aligned with `action.updates`: the durable record of which
-    # groups each Update is delivered to. Computed here, from the same
-    # snapshot `cf_group_actions` is built from, because the by-id caches
-    # for a relationship/entityGroup delete are gone by fan-out time.
-    update_scopes = Enum.reverse(scopes)
+    # groups each Update is delivered to. Every component Update of a row gets
+    # the row's scope. Computed here, from the same snapshot
+    # `cf_group_actions` is built from, because the by-id caches for a
+    # relationship/entityGroup delete are gone by fan-out time.
+    scope_by_subject = Map.new(scopes)
+    update_scopes = Enum.map(action.updates, &Map.fetch!(scope_by_subject, &1.subject_id))
     type_entity_keys = type_entity_keys |> Enum.reverse() |> Enum.reject(&is_nil/1)
 
     prepared = %PreparedAction{
@@ -2100,10 +2111,10 @@ defmodule EbbServer.Storage.Writer do
       # `{group_id, gsn}` row twice.
       groups: update_scopes |> :lists.append() |> Enum.uniq(),
       type_entity_keys: type_entity_keys,
-      affected_entities: affected_entities(action.updates)
+      affected_entities: affected_entities(mutations)
     }
 
-    {prepared, memo}
+    {prepared, mutations, memo}
   end
 
   # The provisional marks are placed before the batch leaves for the
@@ -2191,6 +2202,7 @@ defmodule EbbServer.Storage.Writer do
     %{
       group_members_by_id: state.group_members_by_id,
       entity_groups_by_id: state.entity_groups_by_id,
+      relationships_by_id: state.relationships_by_id,
       group_apps: state.group_apps
     }
   end
@@ -2246,14 +2258,12 @@ defmodule EbbServer.Storage.Writer do
     GroupAppsCache.delete_group_apps(id, group_apps: state.group_apps)
   end
 
-  # The dirty mark records the subject type so a query can find the dirty
-  # entities of a type without inferring the type from the ID. The first
-  # update for an ID wins: all updates in a flush for one entity carry the
-  # same type.
-  defp affected_entities(updates) do
-    updates
-    |> Enum.map(&{&1.subject_id, &1.subject_type})
-    |> Enum.uniq_by(&elem(&1, 0))
+  # The dirty mark records the row's model so a query can find the dirty
+  # entities of a model without inferring it from the ID. The fold emits one
+  # mutation per subject, with the model every component Update of that row
+  # carries.
+  defp affected_entities(mutations) do
+    Enum.map(mutations, &{&1.subject_id, &1.model})
   end
 
   # The batch is durable, so the reply contract is success; the caches are
@@ -2471,14 +2481,14 @@ defmodule EbbServer.Storage.Writer do
   defp type_entities_ablated?(state),
     do: ablate?(:type_entities, state) or ablate?(:entity_index, state)
 
-  defp group_ids_for_update(update, resolve_opts, memo) do
+  defp group_ids_for_mutation(mutation, resolve_opts, memo) do
     case Keyword.get(resolve_opts, :entity_groups) do
       nil -> {[], memo}
-      _table -> resolve_update_groups(update, resolve_opts, memo)
+      _table -> resolve_mutation_groups(mutation, resolve_opts, memo)
     end
   end
 
-  defp resolve_update_groups(update, resolve_opts, memo) do
+  defp resolve_mutation_groups(update, resolve_opts, memo) do
     case EntityIndex.fan_out_preference(update, resolve_opts) do
       {:wire, group_ids} ->
         {group_ids, memo}
@@ -2488,14 +2498,14 @@ defmodule EbbServer.Storage.Writer do
           {EntityIndex.source_groups_cached(source_id, resolve_opts), source_id}
         end)
 
-      {:by_id, subject_type} ->
-        resolve_memo_groups(memo, subject_type, update.subject_id, resolve_opts)
+      {:by_id, model} ->
+        resolve_memo_groups(memo, model, update.subject_id, resolve_opts)
     end
   end
 
-  defp resolve_memo_groups(memo, subject_type, subject_id, resolve_opts) do
-    resolve_memo(memo, {subject_type, subject_id}, resolve_opts, fn ->
-      EntityIndex.resolve_groups_cached(subject_type, subject_id, resolve_opts)
+  defp resolve_memo_groups(memo, model, subject_id, resolve_opts) do
+    resolve_memo(memo, {model, subject_id}, resolve_opts, fn ->
+      EntityIndex.resolve_groups_cached(model, subject_id, resolve_opts)
     end)
   end
 

@@ -362,14 +362,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       first_action =
         validated_action(%{
           id: "act_531_committed_first",
-          updates: [
-            validated_update(%{
-              subject_type: "group",
-              subject_id: "g_531_first",
-              method: :put,
-              data: %{"fields" => %{}}
-            })
-          ]
+          updates: [validated_component("g_531_first", "group/name", %{"value" => "first"})]
         })
 
       spawn(fn ->

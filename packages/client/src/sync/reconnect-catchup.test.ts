@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { componentName, makeHlc, type Action } from "@ebbjs/core";
 
 import { createClient } from "./client";
 import type { SSEEvent } from "./types";
@@ -38,15 +38,11 @@ const putAction = (opts: {
   gsn: opts.gsn,
   updates: [
     {
-      id: opts.updateId,
+      id: `${opts.updateId}_0`,
       subject_id: opts.subjectId ?? "todo_1",
-      subject_type: opts.subjectType ?? "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: opts.title, update_id: opts.updateId, hlc: opts.hlc },
-        },
-      },
+      component: componentName(opts.subjectType ?? "todo", "title"),
+      method: "replace",
+      data: { value: opts.title, update_id: opts.updateId, hlc: opts.hlc },
     },
   ],
 });

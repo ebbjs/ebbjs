@@ -5,11 +5,10 @@ import { HLCTimestampSchema } from "./hlc";
 import {
   ActionSchema,
   UpdateSchema,
-  SubjectTypeSchema,
+  UpdateInputSchema,
+  ComponentNameSchema,
   UpdateMethodSchema,
   FieldValueSchema,
-  PutDataSchema,
-  PatchDataSchema,
 } from "./action";
 
 describe("NanoId", () => {
@@ -41,30 +40,34 @@ describe("HLCTimestamp", () => {
   });
 });
 
-describe("SubjectType", () => {
-  it("accepts valid subject types", () => {
-    expect(Value.Check(SubjectTypeSchema, "group")).toBe(true);
-    expect(Value.Check(SubjectTypeSchema, "groupMember")).toBe(true);
-    expect(Value.Check(SubjectTypeSchema, "relationship")).toBe(true);
-    expect(Value.Check(SubjectTypeSchema, "customType")).toBe(true);
-    expect(Value.Check(SubjectTypeSchema, "entity1")).toBe(true);
+describe("ComponentName", () => {
+  it("accepts <model>/<field> names", () => {
+    expect(Value.Check(ComponentNameSchema, "note/title")).toBe(true);
+    expect(Value.Check(ComponentNameSchema, "group/apps")).toBe(true);
+    expect(Value.Check(ComponentNameSchema, "a/b_c")).toBe(true);
   });
 
-  it("rejects empty string", () => {
-    expect(Value.Check(SubjectTypeSchema, "")).toBe(false);
+  it("rejects a name without exactly one slash", () => {
+    expect(Value.Check(ComponentNameSchema, "")).toBe(false);
+    expect(Value.Check(ComponentNameSchema, "note")).toBe(false);
+    expect(Value.Check(ComponentNameSchema, "/title")).toBe(false);
+    expect(Value.Check(ComponentNameSchema, "note/")).toBe(false);
+    expect(Value.Check(ComponentNameSchema, "note/body/title")).toBe(false);
   });
 });
 
 describe("UpdateMethod", () => {
   it("accepts valid update methods", () => {
-    expect(Value.Check(UpdateMethodSchema, "put")).toBe(true);
-    expect(Value.Check(UpdateMethodSchema, "patch")).toBe(true);
+    expect(Value.Check(UpdateMethodSchema, "merge")).toBe(true);
+    expect(Value.Check(UpdateMethodSchema, "replace")).toBe(true);
+    expect(Value.Check(UpdateMethodSchema, "drop")).toBe(true);
     expect(Value.Check(UpdateMethodSchema, "delete")).toBe(true);
   });
 
-  it("rejects invalid update methods", () => {
+  it("rejects the superseded methods", () => {
+    expect(Value.Check(UpdateMethodSchema, "put")).toBe(false);
+    expect(Value.Check(UpdateMethodSchema, "patch")).toBe(false);
     expect(Value.Check(UpdateMethodSchema, "post")).toBe(false);
-    expect(Value.Check(UpdateMethodSchema, "putt")).toBe(false);
     expect(Value.Check(UpdateMethodSchema, "")).toBe(false);
   });
 });
@@ -119,115 +122,140 @@ describe("FieldValue", () => {
   });
 });
 
-describe("PutData", () => {
-  it("accepts an empty fields envelope", () => {
-    expect(Value.Check(PutDataSchema, { fields: {} })).toBe(true);
-  });
-
-  it("accepts a fields envelope with FieldValue entries", () => {
-    expect(
-      Value.Check(PutDataSchema, {
-        fields: { name: { value: "test", update_id: "a_test" } },
-      }),
-    ).toBe(true);
-    expect(
-      Value.Check(PutDataSchema, {
-        fields: {
-          field1: { value: "a", update_id: "a_test" },
-          field2: { value: 1, update_id: "a_test2" },
-        },
-      }),
-    ).toBe(true);
-  });
-
-  it("accepts a map field in the envelope", () => {
-    expect(
-      Value.Check(PutDataSchema, {
-        fields: { content: { map: { a: { value: "x", update_id: "a_test" } } } },
-      }),
-    ).toBe(true);
-  });
-
-  it("rejects a flat record (no fields envelope)", () => {
-    expect(Value.Check(PutDataSchema, { name: { value: "test", update_id: "a_test" } })).toBe(
-      false,
-    );
-  });
-});
-
-describe("PatchData", () => {
-  it("accepts an empty fields envelope", () => {
-    expect(Value.Check(PatchDataSchema, { fields: {} })).toBe(true);
-  });
-
-  it("accepts a fields envelope with FieldValue entries", () => {
-    expect(
-      Value.Check(PatchDataSchema, {
-        fields: { name: { value: "test", update_id: "a_test" } },
-      }),
-    ).toBe(true);
-  });
-
-  it("rejects a flat record (no fields envelope)", () => {
-    expect(Value.Check(PatchDataSchema, { name: { value: "test", update_id: "a_test" } })).toBe(
-      false,
-    );
-  });
-});
+const leaf = { value: "test", update_id: "u_upd1" };
 
 describe("Update", () => {
-  it("accepts valid put update", () => {
-    const update = {
-      id: "u_testid",
-      subject_id: "a_actor",
-      subject_type: "group",
-      method: "put",
-      data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
-    };
-    expect(Value.Check(UpdateSchema, update)).toBe(true);
+  it("accepts merge and replace carrying a component value", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "merge",
+        data: leaf,
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/apps",
+        method: "replace",
+        data: { map: { app: leaf } },
+      }),
+    ).toBe(true);
   });
 
-  it("accepts valid patch update", () => {
-    const update = {
-      id: "u_testid",
-      subject_id: "a_actor",
-      subject_type: "group",
-      method: "patch",
-      data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
-    };
-    expect(Value.Check(UpdateSchema, update)).toBe(true);
+  it("accepts drop with null data", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "drop",
+        data: null,
+      }),
+    ).toBe(true);
   });
 
-  it("accepts valid delete update", () => {
-    const update = {
-      id: "u_testid",
-      subject_id: "a_actor",
-      subject_type: "group",
-      method: "delete",
-      data: null,
-    };
-    expect(Value.Check(UpdateSchema, update)).toBe(true);
+  it("accepts delete with no component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "delete",
+        data: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a delete that names a component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "delete",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a component method with no component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "merge",
+        data: leaf,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a component whose name is not <model>/<field>", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group",
+        method: "merge",
+        data: leaf,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects the superseded row-field envelope", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "merge",
+        data: { fields: { name: leaf } },
+      }),
+    ).toBe(false);
   });
 
   it("rejects update missing id", () => {
-    const update = {
-      subject_id: "a_actor",
-      subject_type: "group",
-      method: "put",
-      data: null,
-    };
-    expect(Value.Check(UpdateSchema, update)).toBe(false);
+    expect(Value.Check(UpdateSchema, { subject_id: "a_actor", method: "delete", data: null })).toBe(
+      false,
+    );
   });
 
   it("rejects update with invalid method", () => {
-    const update = {
-      id: "u_testid",
-      subject_id: "a_actor",
-      subject_type: "group",
-      method: "post",
-      data: null,
-    };
-    expect(Value.Check(UpdateSchema, update)).toBe(false);
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "post",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("UpdateInput", () => {
+  it("accepts an unstamped update", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        subject_id: "a_actor",
+        component: "group/name",
+        method: "replace",
+        data: leaf,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts a stamped delete", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "delete",
+        data: null,
+      }),
+    ).toBe(true);
   });
 });
 
@@ -242,16 +270,16 @@ describe("Action", () => {
         {
           id: "u_updid",
           subject_id: "a_actor",
-          subject_type: "group",
-          method: "put",
-          data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
+          component: "group/name",
+          method: "replace",
+          data: leaf,
         },
       ],
     };
     expect(Value.Check(ActionSchema, action)).toBe(true);
   });
 
-  it("accepts action with multiple updates", () => {
+  it("accepts action with multiple component updates", () => {
     const action = {
       id: "a_testid",
       actor_id: "a_actorid",
@@ -261,16 +289,16 @@ describe("Action", () => {
         {
           id: "u_upd1",
           subject_id: "a_actor",
-          subject_type: "group",
-          method: "put",
-          data: { fields: { name: { value: "test", update_id: "u_upd1" } } },
+          component: "group/name",
+          method: "replace",
+          data: leaf,
         },
         {
           id: "u_upd2",
           subject_id: "a_actor",
-          subject_type: "group",
-          method: "patch",
-          data: { fields: { desc: { value: "changed", update_id: "u_upd2" } } },
+          component: "group/apps",
+          method: "merge",
+          data: { map: { app: leaf } },
         },
       ],
     };

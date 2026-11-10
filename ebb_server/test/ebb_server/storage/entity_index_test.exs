@@ -290,9 +290,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       update = %{
         subject_id: "eg_1",
-        subject_type: "entityGroup",
+        model: "entityGroup",
         method: :put,
-        data: %{"fields" => %{"group_id" => %{"value" => "g_wire"}}}
+        data: %{"fields" => %{"group_id" => "g_wire"}}
       }
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:wire, ["g_wire"]}
@@ -303,7 +303,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = %{subject_id: "eg_1", subject_type: "entityGroup", method: :delete, data: nil}
+      update = %{subject_id: "eg_1", model: "entityGroup", method: :delete, data: nil}
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, "entityGroup"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -315,9 +315,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       update = %{
         subject_id: "rel_1",
-        subject_type: "relationship",
+        model: "relationship",
         method: :put,
-        data: %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
+        data: %{"fields" => %{"source_id" => "todo_1"}}
       }
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
@@ -329,7 +329,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
-      update = %{subject_id: "rel_1", subject_type: "relationship", method: :delete, data: nil}
+      update = %{subject_id: "rel_1", model: "relationship", method: :delete, data: nil}
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -344,11 +344,13 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
       :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
 
+      # A folded delete carries no data; the wire source is supplied here to
+      # pin that fan-out ignores it even if one reaches this function.
       update = %{
         subject_id: "rel_victim",
-        subject_type: "relationship",
+        model: "relationship",
         method: :delete,
-        data: %{"fields" => %{"source_id" => %{"value" => "todo_attacker"}}}
+        data: %{"fields" => %{"source_id" => "todo_attacker"}}
       }
 
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
@@ -361,9 +363,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       update = %{
         subject_id: "rel_victim",
-        subject_type: "relationship",
+        model: "relationship",
         method: :patch,
-        data: %{"fields" => %{"target_id" => %{"value" => "col_2"}}}
+        data: %{"fields" => %{"target_id" => "col_2"}}
       }
 
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
@@ -373,7 +375,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = %{subject_id: "todo_1", subject_type: "todo", method: :put, data: %{}}
+      update = %{subject_id: "todo_1", model: "todo", method: :put, data: %{"fields" => %{}}}
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, "todo"}
 
@@ -382,19 +384,19 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
-  describe "subject_type/2" do
-    test "returns the indexed type for an entity" do
+  describe "model/2" do
+    test "returns the indexed model for an entity" do
       t = tables()
 
       :ok = EntityTypeCache.put_type("todo_1", "todo", entity_types: t.entity_types)
 
-      assert EntityIndex.subject_type("todo_1", opts(t)) == "todo"
+      assert EntityIndex.model("todo_1", opts(t)) == "todo"
     end
 
-    test "reads a predecessor batch's planned entity type from the overlay" do
+    test "reads a predecessor batch's planned entity model from the overlay" do
       t = tables()
 
-      update = %{subject_id: "todo_1", subject_type: "todo", method: :put, data: %{}}
+      update = %{subject_id: "todo_1", model: "todo", method: :put, data: %{"fields" => %{}}}
 
       {_mutations, overlay} =
         CacheMutationPlanner.plan([update], %{
@@ -404,20 +406,20 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       opts = Keyword.put(opts(t), :overlay, overlay)
 
-      assert EntityIndex.subject_type("todo_1", opts) == "todo"
+      assert EntityIndex.model("todo_1", opts) == "todo"
       assert EntityIndex.exists?("todo_1", opts)
     end
 
     test "returns nil for an unknown entity" do
       t = tables()
 
-      assert EntityIndex.subject_type("todo_unknown", opts(t)) == nil
+      assert EntityIndex.model("todo_unknown", opts(t)) == nil
     end
 
     test "raises when the entity_types table is missing from opts" do
       _t = tables()
 
-      assert_raise KeyError, fn -> EntityIndex.subject_type("todo_1", []) end
+      assert_raise KeyError, fn -> EntityIndex.model("todo_1", []) end
     end
   end
 

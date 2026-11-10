@@ -20,7 +20,35 @@ import type { EntityFields } from "../namespace";
 import type { PointerValue, QueryBuilder } from "../query-builder";
 import type { ManyPointerValue } from "../relationship";
 import { createClient } from "../client";
-import { seedReplicaRow } from "../test-utils";
+import { seedReplicaRow, updateModel } from "../test-utils";
+
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (
+  updates: readonly Action["updates"][number][],
+  model: string,
+): readonly (readonly Action["updates"][number][])[] => {
+  const bySubject = new Map<string, Action["updates"][number][]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** One component's value on a row. */
+const valueOf = (row: readonly Action["updates"][number][], field: string): unknown => {
+  const update = row.find(
+    (candidate) =>
+      candidate.method !== "drop" &&
+      candidate.method !== "delete" &&
+      candidate.component.endsWith(`/${field}`),
+  );
+  return update === undefined || update.method === "drop" || update.method === "delete"
+    ? undefined
+    : update.data.value;
+};
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -546,7 +574,7 @@ const seedQueryRow = async (
 const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise<void> => {
   for (const type of ["relationship", "entityGroup"]) {
     for (const row of await storage.entities.query(type)) {
-      if (row.deleted_hlc === null) seedReplicaRow(replica, row, "put");
+      if (row.deleted_hlc === null) seedReplicaRow(replica, row, "replace");
     }
   }
 };
@@ -775,16 +803,18 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "eg1",
-          subject_type: "entityGroup",
-          method: "put",
-          data: {
-            fields: {
-              entity_id: { value: "d1", update_id: "u_1", hlc },
-              group_id: { value: "g1", update_id: "u_1", hlc },
-            },
-          },
+          component: "entityGroup/entity_id",
+          method: "replace",
+          data: { value: "d1", update_id: "u_1", hlc },
+        },
+        {
+          id: "u_1_1",
+          subject_id: "eg1",
+          component: "entityGroup/group_id",
+          method: "replace",
+          data: { value: "g1", update_id: "u_1", hlc },
         },
       ],
     };
@@ -1744,9 +1774,6 @@ describe("draft addToGroup / removeFromGroup / setGroups", () => {
     return { client, storage, actions };
   };
 
-  const groupIdOf = (update: Action["updates"][number]): unknown =>
-    update.data?.fields?.["group_id"]?.value;
-
   const membershipUpdates = (actions: readonly Action[][]): Action["updates"] =>
     actions.flatMap((batch) => batch.flatMap((action) => action.updates));
 
@@ -1757,20 +1784,19 @@ describe("draft addToGroup / removeFromGroup / setGroups", () => {
     ).resolves.toBeUndefined();
     expect(actions).toHaveLength(1);
     expect(actions[0]).toHaveLength(1);
-    const updates = actions[0]![0]!.updates;
-    expect(updates).toHaveLength(1);
-    const update = updates[0]!;
-    expect(update.subject_type).toBe("entityGroup");
-    expect(update.method).toBe("put");
-    expect(update.subject_id).toMatch(/^eg_/);
-    expect(update.data?.fields?.["entity_id"]?.value).toBe("todo_1");
-    expect(groupIdOf(update)).toBe("g_1");
+    const [row] = rowsOf(actions[0]![0]!.updates, "entityGroup");
+    expect(row).toHaveLength(2);
+    expect(row!.every((update) => update.method === "replace")).toBe(true);
+    expect(row![0]!.subject_id).toMatch(/^eg_/);
+    expect(valueOf(row!, "entity_id")).toBe("todo_1");
+    expect(valueOf(row!, "group_id")).toBe("g_1");
   });
 
   it("addToGroup() accepts an entity-shape group ref", async () => {
     const { client, actions } = await mkMembershipClient();
     await client.actions.addTodoToGroup({ id: "todo_1", group: { id: "g_9" } });
-    expect(groupIdOf(membershipUpdates(actions)[0]!)).toBe("g_9");
+    const [row] = rowsOf(membershipUpdates(actions), "entityGroup");
+    expect(valueOf(row!, "group_id")).toBe("g_9");
   });
 
   it("addToGroup() on an existing local membership is a no-op with no network", async () => {
@@ -1792,7 +1818,6 @@ describe("draft addToGroup / removeFromGroup / setGroups", () => {
     const updates = membershipUpdates(actions);
     expect(updates).toHaveLength(1);
     expect(updates[0]!.subject_id).toBe("eg_1");
-    expect(updates[0]!.subject_type).toBe("entityGroup");
     expect(updates[0]!.method).toBe("delete");
     expect(updates[0]!.data).toBeNull();
   });
@@ -1826,10 +1851,18 @@ describe("draft addToGroup / removeFromGroup / setGroups", () => {
     ).resolves.toBeUndefined();
     expect(actions).toHaveLength(1);
     const updates = actions[0]![0]!.updates;
-    expect(updates.map((u) => u.method)).toEqual(["put", "put", "delete"]);
-    expect(updates.slice(0, 2).map(groupIdOf).sort()).toEqual(["g_2", "g_3"]);
-    expect(updates[2]!.subject_id).toBe("eg_1");
-    expect(updates[2]!.data).toBeNull();
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(2);
+    expect(updates.map((u) => u.method)).toEqual([
+      "replace",
+      "replace",
+      "replace",
+      "replace",
+      "delete",
+    ]);
+    const added = rowsOf(updates, "entityGroup").map((row) => valueOf(row, "group_id"));
+    expect(added.sort()).toEqual(["g_2", "g_3"]);
+    expect(updates.at(-1)!.subject_id).toBe("eg_1");
+    expect(updates.at(-1)!.data).toBeNull();
   });
 
   it("setGroups() swap emits exactly one put and one delete", async () => {
@@ -1837,10 +1870,10 @@ describe("draft addToGroup / removeFromGroup / setGroups", () => {
     await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
     await client.actions.setTodoGroups({ id: "todo_1", groups: ["g_2"] });
     const updates = membershipUpdates(actions);
-    expect(updates).toHaveLength(2);
-    expect(updates.filter((u) => u.method === "put")).toHaveLength(1);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
+    expect(updates.filter((u) => u.method === "replace")).toHaveLength(2);
     expect(updates.filter((u) => u.method === "delete")).toHaveLength(1);
-    expect(updates[1]!.subject_id).toBe("eg_1");
+    expect(updates.at(-1)!.subject_id).toBe("eg_1");
   });
 
   it("setGroups([]) throws EntityValidationError before any network call", async () => {
@@ -2296,21 +2329,18 @@ describe("draft create — entityGroup rows", () => {
     const actions = actionRequests(seen);
     expect(actions).toHaveLength(1);
     const updates = decodeFirstAction(actions[0]!).updates;
-    // 1 entity put + 2 membership rows.
-    expect(updates).toHaveLength(3);
+    // 1 entity row (one component per field) + 2 membership rows.
+    const [entityRow] = rowsOf(updates, "todo");
+    expect(entityRow![0]!.method).toBe("replace");
+    expect(valueOf(entityRow!, "title")).toBe("Ship");
 
-    const entityUpdate = updates.find((u) => u.subject_type === "todo")!;
-    expect(entityUpdate.method).toBe("put");
-    expect(entityUpdate.data?.fields?.["title"]?.value).toBe("Ship");
-
-    const memberships = updates.filter((u) => u.subject_type === "entityGroup");
+    const memberships = rowsOf(updates, "entityGroup");
     expect(memberships).toHaveLength(2);
-    for (const membership of memberships) {
-      expect(membership.method).toBe("put");
-      expect(membership.data?.fields?.["entity_id"]?.value).toBe(entityUpdate.subject_id);
+    for (const row of memberships) {
+      expect(row[0]!.method).toBe("replace");
+      expect(valueOf(row, "entity_id")).toBe(entityRow![0]!.subject_id);
     }
-    const targets = memberships.map((m) => m.data?.fields?.["group_id"]?.value).sort();
-    expect(targets).toEqual(["g_1", "g_2"]);
+    expect(memberships.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("accepts entity-shape group refs and de-duplicates ids", async () => {
@@ -2320,11 +2350,8 @@ describe("draft create — entityGroup rows", () => {
       groups: ["g_1", { id: "g_1" }, { id: "g_2" }],
     });
     const updates = decodeFirstAction(actionRequests(seen)[0]!).updates;
-    const memberships = updates.filter((u) => u.subject_type === "entityGroup");
-    expect(memberships.map((m) => m.data?.fields?.["group_id"]?.value).sort()).toEqual([
-      "g_1",
-      "g_2",
-    ]);
+    const memberships = rowsOf(updates, "entityGroup");
+    expect(memberships.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("rejects a missing or empty groups option before any network call", async () => {
@@ -2432,7 +2459,6 @@ describe("draft delete", () => {
     expect(updates).toHaveLength(1);
     const update = updates[0]!;
     expect(update.subject_id).toBe("todo_1");
-    expect(update.subject_type).toBe("todo");
     expect(update.method).toBe("delete");
     expect(update.data).toBeNull();
   });

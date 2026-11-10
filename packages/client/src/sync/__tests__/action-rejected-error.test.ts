@@ -11,7 +11,7 @@ import { ActionRejectedError, type ActionRejection } from "../drafts";
 
 const membershipRejection: ActionRejection = {
   id: "e_todo1",
-  subjectType: "todo",
+  model: "todo",
   reason: "last_membership",
   details: "removing this membership would leave the entity with no owning group",
 };
@@ -36,7 +36,7 @@ describe("ActionRejectedError", () => {
     ]);
   });
 
-  it("omits the subject type and details when the rejection has neither", () => {
+  it("omits the model and details when the rejection has neither", () => {
     const error = new ActionRejectedError([{ id: "act_2", reason: "duplicate" }]);
 
     expect(error.message).toBe("ActionRejectedError: 1 rejected update(s)\n  - act_2: duplicate");

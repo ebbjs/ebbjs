@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import type { ReplicaRecord } from "../types/replica-store";
@@ -25,11 +33,33 @@ interface WriteSpec {
   readonly fields: Record<string, FieldValue>;
 }
 
-const action = (
-  method: "put" | "patch" | "delete",
-  spec: WriteSpec,
-  data: Update["data"],
-): Action => ({
+/** One component Update per fixture field; a keyed component always merges. */
+const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[] =>
+  Object.entries(spec.fields).map(([field, value]) => ({
+    id: `${spec.updateId}_${field}`,
+    subject_id: spec.entityId ?? "e_1",
+    component: componentName(spec.type ?? "todo", field),
+    method: isFieldMap(value) ? "merge" : method,
+    data: value,
+  }));
+
+const put = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: componentUpdates(spec, "replace"),
+});
+
+const patch = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: componentUpdates(spec, "merge"),
+});
+
+const remove = (spec: Omit<WriteSpec, "fields">): Action => ({
   id: spec.actionId,
   actor_id: "user_1",
   hlc: makeHlc(spec.ms ?? 1),
@@ -38,17 +68,26 @@ const action = (
     {
       id: spec.updateId,
       subject_id: spec.entityId ?? "e_1",
-      subject_type: spec.type ?? "todo",
-      method,
-      data,
+      method: "delete",
+      data: null,
     },
   ],
 });
 
-const put = (spec: WriteSpec): Action => action("put", spec, { fields: spec.fields });
-const patch = (spec: WriteSpec): Action => action("patch", spec, { fields: spec.fields });
-const remove = (spec: Omit<WriteSpec, "fields">): Action =>
-  action("delete", { ...spec, fields: {} }, null);
+/** One `drop` per fixture field. A drop for a row with no base is an orphan. */
+const drop = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: Object.keys(spec.fields).map((field) => ({
+    id: `${spec.updateId}_${field}`,
+    subject_id: spec.entityId ?? "e_1",
+    component: componentName(spec.type ?? "todo", field),
+    method: "drop" as const,
+    data: null,
+  })),
+});
 
 /** A materialized relationship row: `sourceId` —author/wrote→ `targetId`. */
 const relationship = (
@@ -248,7 +287,7 @@ describe("replica: durable fold", () => {
     expect(replica.iterate("todo")).toHaveLength(1);
   });
 
-  it("ignores a patch on a tombstone", () => {
+  it("resurrects a tombstone on a component write", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -273,9 +312,9 @@ describe("replica: durable fold", () => {
         }),
         3,
       ),
-    ).toBe(2);
-    expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Hello", "u_1", 20));
-    expect(replica.get("e_1")?.deleted_hlc).toBe(makeHlc(30));
+    ).toBe(3);
+    expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Zombie", "u_3", 40));
+    expect(replica.get("e_1")?.deleted_hlc).toBeNull();
   });
 
   it("breaks an equal-HLC tie toward the greater update_id, win and lose", () => {
@@ -476,7 +515,7 @@ describe("replica: optimistic overlay", () => {
     expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Local", "u_1", 20));
   });
 
-  it("keeps an optimistic patch with no base absent", () => {
+  it("creates the row from an optimistic write with no base", () => {
     const replica = createReplica();
     expect(
       replica.optimistic(
@@ -487,9 +526,9 @@ describe("replica: optimistic overlay", () => {
           fields: { title: leaf("Ghost", "u_1", 20) },
         }),
       ),
-    ).toBe(0);
-    expect(replica.get("e_1")).toBeUndefined();
-    expect(replica.iterate("todo")).toEqual([]);
+    ).toBe(1);
+    expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Ghost", "u_1", 20));
+    expect(replica.iterate("todo").map((row) => row.id)).toEqual(["e_1"]);
   });
 
   it("reverts the composed view when an optimistic action is discarded", () => {
@@ -557,7 +596,7 @@ describe("replica: optimistic overlay", () => {
 });
 
 describe("replica: orphan reconciliation (#475)", () => {
-  it("retains a patch that arrives before its base and reconciles on a later put", () => {
+  it("creates the row from a component write that arrives before its base", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -570,7 +609,7 @@ describe("replica: orphan reconciliation (#475)", () => {
       }),
       1,
     );
-    expect(replica.get("e_1")).toBeUndefined();
+    expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Patched", "u_patch", 50));
     ingest(
       replica,
       put({
@@ -582,6 +621,8 @@ describe("replica: orphan reconciliation (#475)", () => {
       }),
       2,
     );
+    // The newer leaf keeps the position: a late backfill is the leaf-level
+    // LWW compare, not a clobber.
     expect(replica.get("e_1")?.data.fields.title).toEqual(leaf("Patched", "u_patch", 50));
     expect(replica.get("e_1")?.last_gsn).toBe(5);
   });
@@ -627,13 +668,13 @@ describe("replica: orphan reconciliation (#475)", () => {
     );
     ingest(
       replica,
-      patch({
-        actionId: "a_patch",
-        updateId: "u_patch",
+      drop({
+        actionId: "a_drop",
+        updateId: "u_drop",
         entityId: "e_orphan",
         gsn: 5,
         ms: 50,
-        fields: { title: leaf("Patched", "u_patch", 50) },
+        fields: { title: leaf("Dropped", "u_drop", 50) },
       }),
       2,
     );

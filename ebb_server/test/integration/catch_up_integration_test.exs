@@ -58,7 +58,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       entity_id = "todo_#{Nanoid.generate()}"
@@ -107,7 +108,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       entity_id = "todo_#{Nanoid.generate()}"
@@ -197,7 +199,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       Process.sleep(100)
@@ -221,7 +224,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       entity_id = "todo_#{Nanoid.generate()}"
@@ -273,7 +277,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       entity_id = "todo_#{Nanoid.generate()}"
@@ -335,7 +340,8 @@ defmodule EbbServer.CatchUpIntegrationTest do
       bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
-        "todo.create"
+        "todo.create",
+        "todo.update"
       ])
 
       Process.sleep(100)

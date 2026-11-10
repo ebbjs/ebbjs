@@ -124,16 +124,18 @@ describe("defineSchema", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              typo: { value: "oops", update_id: "u_1", hlc },
-              title: { value: "Hello", update_id: "u_1", hlc },
-            },
-          },
+          component: "todo/typo",
+          method: "replace",
+          data: { value: "oops", update_id: "u_1", hlc },
+        },
+        {
+          id: "u_1_1",
+          subject_id: "todo_1",
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_1", hlc },
         },
       ],
     };
@@ -159,34 +161,32 @@ describe("defineSchema", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              title: { value: "Hi", update_id: "u_1", hlc },
-              completed: { value: false, update_id: "u_1", hlc },
-            },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hi", update_id: "u_1", hlc },
         },
         {
-          id: "u_2",
+          id: "u_1_1",
+          subject_id: "todo_1",
+          component: "todo/completed",
+          method: "replace",
+          data: { value: false, update_id: "u_1", hlc },
+        },
+        {
+          id: "u_2_0",
           subject_id: "user_1",
-          subject_type: "user",
-          method: "put",
-          data: {
-            fields: {
-              name: { value: "Ada", update_id: "u_2", hlc },
-            },
-          },
+          component: "user/name",
+          method: "replace",
+          data: { value: "Ada", update_id: "u_2", hlc },
         },
       ],
     };
     expect(schema._registry.validateAction(action)).toEqual([]);
   });
 
-  it("flags updates whose subject_type isn't in the registry", () => {
+  it("flags components whose model isn't in the registry", () => {
     const schema = defineSchema({
       models: { todo },
       version: 1,
@@ -199,20 +199,18 @@ describe("defineSchema", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "missing_1",
-          subject_type: "missing_entity",
-          method: "put",
-          data: {
-            fields: { foo: { value: 1, update_id: "u_1", hlc } },
-          },
+          component: "missing_entity/foo",
+          method: "replace",
+          data: { value: 1, update_id: "u_1", hlc },
         },
       ],
     };
     const violations = schema._registry.validateAction(action);
     expect(violations).toHaveLength(1);
     expect(violations[0]?.entityName).toBe("(unknown)");
-    expect(violations[0]?.message).toMatch(/Unknown subject_type/);
+    expect(violations[0]?.message).toMatch(/Unknown model/);
   });
 
   it("two schemas share entities but build independent registries", () => {

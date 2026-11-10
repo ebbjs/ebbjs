@@ -26,6 +26,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       ActionHelpers.bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
+        "todo.update",
         "todo.create"
       ])
 
@@ -53,6 +54,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       ActionHelpers.bootstrap_group(a_id, g_id, [
         "todo.read",
         "todo.write",
+        "todo.update",
         "todo.create"
       ])
 
@@ -85,6 +87,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       ActionHelpers.bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
+        "todo.update",
         "todo.create"
       ])
 
@@ -143,18 +146,16 @@ defmodule EbbServer.Sync.CatchUpTest do
             %{
               id: update_id,
               subject_id: "todo_frame",
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
-              }
+              component: "todo/title",
+              method: :replace,
+              data: %{"type" => "lww", "value" => "x", "hlc" => hlc}
             },
             %{
               id: "upd_other_#{:erlang.unique_integer([:positive])}",
               subject_id: "todo_other",
-              subject_type: "todo",
-              method: :put,
-              data: %{}
+              component: "todo/title",
+              method: :replace,
+              data: %{"type" => "lww", "value" => "y", "hlc" => hlc}
             }
           ]
         }
@@ -360,6 +361,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       ActionHelpers.bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
+        "todo.update",
         "todo.create"
       ])
 
@@ -399,6 +401,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       ActionHelpers.bootstrap_group(actor_id, group_id, [
         "todo.read",
         "todo.write",
+        "todo.update",
         "todo.create"
       ])
 
@@ -498,11 +501,9 @@ defmodule EbbServer.Sync.CatchUpTest do
           %{
             id: "upd_#{action_id}",
             subject_id: "todo_seed",
-            subject_type: "todo",
-            method: :put,
-            data: %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => action_id, "hlc" => hlc}}
-            }
+            component: "todo/title",
+            method: :replace,
+            data: %{"type" => "lww", "value" => action_id, "hlc" => hlc}
           }
         ]
       }

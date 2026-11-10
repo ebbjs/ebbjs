@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  componentName,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import {
   MAP_FIELD_FLIP_POINT,
@@ -18,32 +25,39 @@ const leaf = (value: unknown, ms = 1, updateId = `u_${ms}`): FieldValue => ({
 const content = (n: number): Record<string, FieldValue> =>
   Object.fromEntries(Array.from({ length: n }, (_, i) => [`run_${i}`, leaf(`v${i}`, 1, `u_${i}`)]));
 
-const action = (
-  method: "put" | "patch",
+const updates = (
   fields: Record<string, FieldValue>,
+  method: "merge" | "replace",
   gsn: number,
-  ms: number,
-): Action => ({
+): Update[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `upd_${gsn}_${field}`,
+    subject_id: "doc_1",
+    component: componentName("doc", field),
+    method,
+    data: value,
+  }));
+
+const action = (updatesFor: readonly Update[], gsn: number, ms: number): Action => ({
   id: `act_${gsn}`,
   actor_id: "user_1",
   hlc: makeHlc(ms),
   gsn,
-  updates: [
-    {
-      id: `upd_${gsn}`,
-      subject_id: "doc_1",
-      subject_type: "doc",
-      method,
-      data: { fields },
-    },
-  ],
+  updates: [...updatesFor],
 });
 
 const putDoc = (n: number): Action =>
-  action("put", { title: leaf("Doc"), content: { map: content(n) } }, 1, 1);
+  action(
+    [
+      ...updates({ title: leaf("Doc") }, "replace", 1),
+      ...updates({ content: { map: content(n) } }, "merge", 1),
+    ],
+    1,
+    1,
+  );
 
 const patchRun = (key: string, value: string, gsn: number, ms: number): Action =>
-  action("patch", { content: { map: { [key]: leaf(value, ms) } } }, gsn, ms);
+  action(updates({ content: { map: { [key]: leaf(value, ms) } } }, "merge", gsn), gsn, ms);
 
 const contentOf = (entity: Entity | undefined): FieldValue | undefined =>
   entity?.data.fields.content;
@@ -106,7 +120,11 @@ describe("replica map fields over the flip point", () => {
     replica.ingest(put, put.updates, 1);
     const revision = replica.revision;
 
-    const patch = action("patch", { content: { map: { run_0: leaf("tie", 1, "u_zzz") } } }, 2, 1);
+    const patch = action(
+      updates({ content: { map: { run_0: leaf("tie", 1, "u_zzz") } } }, "merge", 2),
+      2,
+      1,
+    );
     replica.ingest(patch, patch.updates, 2);
 
     const content = contentOf(replica.get("doc_1")) as { map: Record<string, FieldValue> };

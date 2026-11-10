@@ -1,11 +1,19 @@
 {
   "name": "create",
-  "description": "one create: the entity put, its membership row, and one relationship put per pointer",
+  "description": "one create: one Update per component of the row, its membership row, and one relationship row per pointer",
   "schema": "schema",
   "invocation_id": "inv_goldenCreate",
   "actor_id": "a_golden",
   "ids": {
-    "u": ["u_gcreate1", "u_gcreate2", "u_gcreate3", "u_gcreate4", "u_gcreate5"],
+    "u": [
+      "u_gcreate1",
+      "u_gcreate2",
+      "u_gcreate3",
+      "u_gcreate4",
+      "u_gcreate5",
+      "u_gcreate6",
+      "u_gcreate7"
+    ],
     "rel": ["rel_gcreate1", "rel_gcreate2", "rel_gcreate3"],
     "hlc": ["111690000000000001", "111690000000000002"]
   },
@@ -32,122 +40,174 @@
       {
         "id": "u_gcreate1",
         "subject_id": "e_gcreate1",
-        "subject_type": "issue",
-        "method": "put",
+        "component": "issue/title",
+        "method": "replace",
         "data": {
-          "fields": {
-            "title": {
-              "value": "Ship it",
-              "update_id": "u_gcreate1",
-              "hlc": "111690000000000001"
-            },
-            "done": {
-              "value": false,
-              "update_id": "u_gcreate1",
-              "hlc": "111690000000000001"
-            },
-            "labels": {
-              "value": ["e_glabel1", "e_glabel2"],
-              "update_id": "u_gcreate1",
-              "hlc": "111690000000000001"
-            }
-          }
+          "value": "Ship it",
+          "update_id": "u_gcreate1",
+          "hlc": "111690000000000001"
         }
       },
       {
         "id": "u_gcreate2",
-        "subject_id": "eg_10_e_gcreate1g_gship",
-        "subject_type": "entityGroup",
-        "method": "put",
+        "subject_id": "e_gcreate1",
+        "component": "issue/done",
+        "method": "replace",
         "data": {
-          "fields": {
-            "entity_id": {
-              "value": "e_gcreate1",
-              "update_id": "u_gcreate2"
-            },
-            "group_id": {
-              "value": "g_gship",
-              "update_id": "u_gcreate2"
-            }
-          }
+          "value": false,
+          "update_id": "u_gcreate2",
+          "hlc": "111690000000000001"
         }
       },
       {
         "id": "u_gcreate3",
+        "subject_id": "e_gcreate1",
+        "component": "issue/labels",
+        "method": "replace",
+        "data": {
+          "value": ["e_glabel1", "e_glabel2"],
+          "update_id": "u_gcreate3",
+          "hlc": "111690000000000001"
+        }
+      },
+      {
+        "id": "u_gcreate4_entity_id",
+        "subject_id": "eg_10_e_gcreate1g_gship",
+        "component": "entityGroup/entity_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gcreate1",
+          "update_id": "u_gcreate4_entity_id"
+        }
+      },
+      {
+        "id": "u_gcreate4_group_id",
+        "subject_id": "eg_10_e_gcreate1g_gship",
+        "component": "entityGroup/group_id",
+        "method": "replace",
+        "data": {
+          "value": "g_gship",
+          "update_id": "u_gcreate4_group_id"
+        }
+      },
+      {
+        "id": "u_gcreate5_source_id",
         "subject_id": "rel_gcreate1",
-        "subject_type": "relationship",
-        "method": "put",
+        "component": "relationship/source_id",
+        "method": "replace",
         "data": {
-          "fields": {
-            "source_id": {
-              "value": "e_gcreate1",
-              "update_id": "u_gcreate3"
-            },
-            "target_id": {
-              "value": "e_gproject1",
-              "update_id": "u_gcreate3"
-            },
-            "type": {
-              "value": "issue",
-              "update_id": "u_gcreate3"
-            },
-            "field": {
-              "value": "project",
-              "update_id": "u_gcreate3"
-            }
-          }
+          "value": "e_gcreate1",
+          "update_id": "u_gcreate5_source_id"
         }
       },
       {
-        "id": "u_gcreate4",
+        "id": "u_gcreate5_target_id",
+        "subject_id": "rel_gcreate1",
+        "component": "relationship/target_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gproject1",
+          "update_id": "u_gcreate5_target_id"
+        }
+      },
+      {
+        "id": "u_gcreate5_type",
+        "subject_id": "rel_gcreate1",
+        "component": "relationship/type",
+        "method": "replace",
+        "data": {
+          "value": "issue",
+          "update_id": "u_gcreate5_type"
+        }
+      },
+      {
+        "id": "u_gcreate5_field",
+        "subject_id": "rel_gcreate1",
+        "component": "relationship/field",
+        "method": "replace",
+        "data": {
+          "value": "project",
+          "update_id": "u_gcreate5_field"
+        }
+      },
+      {
+        "id": "u_gcreate6_source_id",
         "subject_id": "rel_gcreate2",
-        "subject_type": "relationship",
-        "method": "put",
+        "component": "relationship/source_id",
+        "method": "replace",
         "data": {
-          "fields": {
-            "source_id": {
-              "value": "e_gcreate1",
-              "update_id": "u_gcreate4"
-            },
-            "target_id": {
-              "value": "e_glabel1",
-              "update_id": "u_gcreate4"
-            },
-            "type": {
-              "value": "issue",
-              "update_id": "u_gcreate4"
-            },
-            "field": {
-              "value": "labels",
-              "update_id": "u_gcreate4"
-            }
-          }
+          "value": "e_gcreate1",
+          "update_id": "u_gcreate6_source_id"
         }
       },
       {
-        "id": "u_gcreate5",
-        "subject_id": "rel_gcreate3",
-        "subject_type": "relationship",
-        "method": "put",
+        "id": "u_gcreate6_target_id",
+        "subject_id": "rel_gcreate2",
+        "component": "relationship/target_id",
+        "method": "replace",
         "data": {
-          "fields": {
-            "source_id": {
-              "value": "e_gcreate1",
-              "update_id": "u_gcreate5"
-            },
-            "target_id": {
-              "value": "e_glabel2",
-              "update_id": "u_gcreate5"
-            },
-            "type": {
-              "value": "issue",
-              "update_id": "u_gcreate5"
-            },
-            "field": {
-              "value": "labels",
-              "update_id": "u_gcreate5"
-            }
-          }
+          "value": "e_glabel1",
+          "update_id": "u_gcreate6_target_id"
+        }
+      },
+      {
+        "id": "u_gcreate6_type",
+        "subject_id": "rel_gcreate2",
+        "component": "relationship/type",
+        "method": "replace",
+        "data": {
+          "value": "issue",
+          "update_id": "u_gcreate6_type"
+        }
+      },
+      {
+        "id": "u_gcreate6_field",
+        "subject_id": "rel_gcreate2",
+        "component": "relationship/field",
+        "method": "replace",
+        "data": {
+          "value": "labels",
+          "update_id": "u_gcreate6_field"
+        }
+      },
+      {
+        "id": "u_gcreate7_source_id",
+        "subject_id": "rel_gcreate3",
+        "component": "relationship/source_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gcreate1",
+          "update_id": "u_gcreate7_source_id"
+        }
+      },
+      {
+        "id": "u_gcreate7_target_id",
+        "subject_id": "rel_gcreate3",
+        "component": "relationship/target_id",
+        "method": "replace",
+        "data": {
+          "value": "e_glabel2",
+          "update_id": "u_gcreate7_target_id"
+        }
+      },
+      {
+        "id": "u_gcreate7_type",
+        "subject_id": "rel_gcreate3",
+        "component": "relationship/type",
+        "method": "replace",
+        "data": {
+          "value": "issue",
+          "update_id": "u_gcreate7_type"
+        }
+      },
+      {
+        "id": "u_gcreate7_field",
+        "subject_id": "rel_gcreate3",
+        "component": "relationship/field",
+        "method": "replace",
+        "data": {
+          "value": "labels",
+          "update_id": "u_gcreate7_field"
         }
       }
     ]

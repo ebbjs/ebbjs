@@ -48,11 +48,27 @@ defmodule EbbServer.Storage.EntityStore do
   (for the source-of-truth reads during materialization), plus ETS reads
   from `DirtyTracker` and `EbbServer.Storage.EntityStore.GsnTracker`.
 
-  ## Merge rules
+  ## Applying a component Update
 
-  Per-field materialization follows the wire's last-writer-wins rule:
-  see `EbbServer.Storage.FieldMerge`, which hand-mirrors
-  `packages/core/src/types/action.ts`'s `mergeFieldValue`.
+  The wire names one `(entity, component)` per Update, while the materialized
+  row stays field-keyed: `data` is `%{"fields" => %{field => value}}`, and
+  `EntityView` is the only thing that turns a row into a wire shape.
+
+  A stored Update applies at `data["fields"][field]`, where `field` is the
+  component's leaf:
+
+    - `merge` merges the incoming value over the stored field under the
+      wire's last-writer-wins rule — `EbbServer.Storage.FieldMerge`, which
+      hand-mirrors `packages/core/src/types/action.ts`'s `mergeFieldValue`;
+    - `replace` sets the field whole and stamps `created_hlc` with the
+      Action's HLC when the row had none. A `merge` that arrives first for an
+      unknown row creates it too, but leaves `created_hlc` unset: the row's
+      create has not been seen, and a client can tell the two apart;
+    - `drop` removes the field; the row survives and is not tombstoned;
+    - `delete` tombstones the row.
+
+  The row's `type` is the component's model. A `delete` names no component
+  and keeps the committed model.
 
   ## Hot path
 
@@ -214,16 +230,16 @@ defmodule EbbServer.Storage.EntityStore do
     started_at = System.monotonic_time()
     {result, byte_size} = do_materialize(entity_id, opts)
 
-    subject_type =
+    model =
       case result do
-        {:ok, %{type: type}} -> type
+        {:ok, %{type: model}} -> model
         _ -> nil
       end
 
     Telemetry.execute(
       [:entity_store, :materialize_latency_ms],
       %{duration: System.monotonic_time() - started_at, byte_size: byte_size},
-      %{subject_id: entity_id, subject_type: subject_type, path: :dirty_materialize}
+      %{subject_id: entity_id, model: model, path: :dirty_materialize}
     )
 
     result
@@ -396,7 +412,7 @@ defmodule EbbServer.Storage.EntityStore do
     entity_row = %{
       id: entity_id,
       type: type || "unknown",
-      created_hlc: created_hlc || updated_hlc,
+      created_hlc: created_hlc,
       updated_hlc: updated_hlc,
       deleted_hlc: deleted_hlc,
       deleted_by: deleted_by,
@@ -475,14 +491,17 @@ defmodule EbbServer.Storage.EntityStore do
   defp apply_action(action, updates, gsn, acc) do
     Enum.reduce(updates, acc, fn update, inner_acc ->
       case update["method"] do
-        "put" ->
-          apply_put(action, update, gsn, inner_acc)
+        "merge" ->
+          apply_component(action, update, gsn, inner_acc, :merge)
 
-        "patch" ->
-          apply_patch(action, update, gsn, inner_acc)
+        "replace" ->
+          apply_component(action, update, gsn, inner_acc, :replace)
+
+        "drop" ->
+          apply_drop(action, update, gsn, inner_acc)
 
         "delete" ->
-          apply_delete(action, update, gsn, inner_acc)
+          apply_delete(action, gsn, inner_acc)
 
         _ ->
           inner_acc
@@ -490,63 +509,57 @@ defmodule EbbServer.Storage.EntityStore do
     end)
   end
 
-  defp apply_put(action, update, gsn, acc) do
-    hlc = action["hlc"]
-    subject_type = update["subject_type"]
+  defp apply_component(action, update, gsn, acc, method) do
+    field = component_field(update["component"])
+    model = component_model(update["component"])
+    incoming = FieldMerge.stamp(update["data"], update["id"])
+    existing_fields = fields_of(acc.data)
 
-    fields_with_update_id =
-      Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-        {field_name, FieldMerge.stamp(field_value, update["id"])}
-      end)
+    {fields, created_hlc} =
+      case method do
+        :merge ->
+          {Map.put(
+             existing_fields,
+             field,
+             FieldMerge.merge(Map.get(existing_fields, field), incoming)
+           ), acc.created_hlc}
+
+        :replace ->
+          {Map.put(existing_fields, field, incoming), acc.created_hlc || action["hlc"]}
+      end
 
     %{
       acc
-      | data: %{"fields" => fields_with_update_id},
-        type: subject_type,
-        created_hlc: if(acc.created_hlc == nil, do: hlc, else: acc.created_hlc),
-        updated_hlc: hlc,
+      | data: %{"fields" => fields},
+        # The model is fixed at the row's first write; a later component's
+        # prefix must agree with it (the authorizer refuses a relabel).
+        type: acc.type || model,
+        created_hlc: created_hlc,
+        updated_hlc: action["hlc"],
         max_gsn: max(acc.max_gsn, gsn),
+        deleted_hlc: nil,
+        deleted_by: nil,
+        changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming)))
+    }
+  end
+
+  # Detaching a component removes the key, which a `json_set` patch cannot do;
+  # it rewrites the whole `fields` blob instead.
+  defp apply_drop(action, update, gsn, acc) do
+    field = component_field(update["component"])
+
+    %{
+      acc
+      | data: %{"fields" => Map.delete(fields_of(acc.data), field)},
+        updated_hlc: action["hlc"],
+        max_gsn: max(acc.max_gsn, gsn),
+        deleted_hlc: nil,
+        deleted_by: nil,
         data_mode: :replace
     }
   end
 
-  defp apply_patch(action, update, gsn, acc) do
-    hlc = action["hlc"]
-
-    stamped_fields =
-      Enum.map(update["data"]["fields"] || %{}, fn {field_name, new_field} ->
-        {field_name, FieldMerge.stamp(new_field, update["id"])}
-      end)
-
-    existing_fields =
-      if is_map(acc.data) and Map.has_key?(acc.data, "fields"),
-        do: acc.data["fields"],
-        else: %{}
-
-    merged_fields =
-      Enum.reduce(stamped_fields, existing_fields, fn {field_name, incoming}, fields ->
-        Map.put(fields, field_name, FieldMerge.merge(Map.get(fields, field_name), incoming))
-      end)
-
-    changed_paths =
-      Enum.flat_map(stamped_fields, fn {field_name, incoming} ->
-        leaf_paths([field_name], incoming)
-      end)
-
-    %{
-      acc
-      | data: %{"fields" => merged_fields},
-        type: acc.type || update["subject_type"],
-        created_hlc: acc.created_hlc,
-        updated_hlc: hlc,
-        max_gsn: max(acc.max_gsn, gsn),
-        deleted_hlc: nil,
-        deleted_by: nil,
-        changed: MapSet.union(acc.changed, MapSet.new(changed_paths))
-    }
-  end
-
-  defp apply_delete(action, _update, gsn, acc) do
+  defp apply_delete(action, gsn, acc) do
     %{
       acc
       | deleted_hlc: action["hlc"],
@@ -556,11 +569,25 @@ defmodule EbbServer.Storage.EntityStore do
     }
   end
 
-  # A patch can only change the keys it carries, so the JSON paths that need
-  # writing are exactly the leaves of the incoming field value: a leaf
-  # contributes its field name, a map field one path per touched map key. This
-  # is what lets write-back touch only the changed key instead of re-encoding a
-  # large map field.
+  defp fields_of(%{"fields" => fields}) when is_map(fields), do: fields
+  defp fields_of(_data), do: %{}
+
+  defp component_field(component) do
+    [_, field] = :binary.split(component, "/")
+    field
+  end
+
+  defp component_model(component) do
+    [model, _] = :binary.split(component, "/")
+    model
+  end
+
+  # A write changes the keys it carries, so the JSON paths that need writing
+  # are exactly the leaves of the incoming value: a leaf contributes its field
+  # name, a keyed value one path per touched key. This is what lets write-back
+  # touch only the changed key instead of re-encoding a large field.
+  defp changed_paths(field, incoming), do: leaf_paths([field], incoming)
+
   defp leaf_paths(prefix, %{"map" => entries}) when is_map(entries) do
     case Map.to_list(entries) do
       [] -> [prefix]
@@ -760,7 +787,7 @@ defmodule EbbServer.Storage.EntityStore do
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    dirty_ids = DirtyTracker.dirty_entity_ids_for_type(type, dirty_set)
+    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(type, dirty_set)
 
     if dirty_ids != [] do
       Enum.each(dirty_ids, fn id ->
@@ -797,7 +824,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
     dirty_ids =
-      DirtyTracker.dirty_entity_ids_for_types(PermissionHelper.system_entity_types(), dirty_set)
+      DirtyTracker.dirty_entity_ids_for_models(PermissionHelper.system_models(), dirty_set)
 
     Enum.each(dirty_ids, fn id ->
       materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)

@@ -82,15 +82,11 @@ const putAction = (opts: { id: string; gsn: number; entityId: string; title: str
     gsn: opts.gsn,
     updates: [
       {
-        id: `u_${opts.id}`,
+        id: `${`u_${opts.id}`}_0`,
         subject_id: opts.entityId,
-        subject_type: "blog_post",
-        method: "put",
-        data: {
-          fields: {
-            title: { value: opts.title, update_id: `u_${opts.id}_title`, hlc },
-          },
-        },
+        component: "blog_post/title",
+        method: "replace",
+        data: { value: opts.title, update_id: `u_${opts.id}_title`, hlc },
       },
     ],
   };

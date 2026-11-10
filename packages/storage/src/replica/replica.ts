@@ -3,6 +3,7 @@ import type { Action, Entity, Update } from "@ebbjs/core";
 import {
   applyUpdate,
   RESIDENT_MAP_FIELDS,
+  updateModel,
   withAdoptedMapFields,
   withWireMapFields,
 } from "../internal/materialize";
@@ -276,21 +277,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   const foldBase = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
+    const previous = entities.get(id) ?? null;
+    const model = updateModel(update, previous);
     // The local store row is read asynchronously; keep updates that land while
     // that read is in flight so the install replays them instead of hiding
     // them behind a snapshot taken before they arrived.
-    if (!holds(update.subject_type) && !pins.has(id) && inFlightOpens.has(id)) {
+    if (!holds(model) && !pins.has(id) && inFlightOpens.has(id)) {
       bufferUpdate(pendingOpens, { update, gsn, hlc, position });
       return;
     }
-    const previous = entities.get(id) ?? null;
     const next = applyUpdate(previous, update, gsn, hlc, RESIDENT_MAP_FIELDS);
 
     if (next === null) {
       // An unopened on-demand row has no base here by design; the local store
-      // owns the base, so keeping the patch would retain body data the replica
+      // owns the base, so keeping the update would retain body data the replica
       // is deliberately not holding.
-      if (!holds(update.subject_type) && !pins.has(id)) return;
+      if (!holds(model) && !pins.has(id)) return;
       bufferUpdate(orphans, { update, gsn, hlc, position });
       return;
     }
@@ -303,7 +305,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         entities.delete(id);
         removeFromType(previous.type, id);
       }
-      if (update.method === "put") orphans.delete(id);
+      if (previous === null) orphans.delete(id);
       return;
     }
 
@@ -311,12 +313,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (previous !== null && previous.type !== next.type) removeFromType(previous.type, id);
     addToType(next.type, id);
 
-    if (update.method === "put") {
+    if (previous === null) {
       const pending = orphans.get(id);
       if (pending !== undefined) {
         orphans.delete(id);
         // Replay what the store's gsn-ordered replay would: only Updates newer
-        // than the put survive; older ones are subsumed by the full put.
+        // than the row's first write survive; older ones are subsumed by it.
         const survivors = pending
           .filter((orphan) => orphan.gsn > gsn)
           .sort((a, b) => a.gsn - b.gsn);

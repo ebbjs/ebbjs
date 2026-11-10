@@ -11,7 +11,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  decodeSync,
+  makeHlc,
+  type Action,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -30,7 +37,7 @@ import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
+import { callApplyAction, jsonResponse, updateModel, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
@@ -146,7 +153,7 @@ const createPage = async (
     for (const action of created) await callApplyAction(client, { ...action, gsn });
   }
   const bodyId = created[0]!.updates.find(
-    (update) => update.subject_type === bodyDocType,
+    (update) => updateModel(update) === bodyDocType,
   )!.subject_id;
   return { pageId, bodyId };
 };
@@ -166,19 +173,16 @@ const seedAction = (gsn: number, updates: Update[]): Action => ({
 });
 
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
-  seedAction(gsn, [
-    {
-      id: `u_${gsn}`,
+  seedAction(
+    gsn,
+    Object.entries(fields).map(([key, value]) => ({
+      id: `u_${gsn}_${key}`,
       subject_id: id,
-      subject_type: type,
-      method: "put",
-      data: {
-        fields: Object.fromEntries(
-          Object.entries(fields).map(([key, value]) => [key, field(value, `u_${gsn}`)]),
-        ),
-      },
-    },
-  ]);
+      component: componentName(type, key),
+      method: "replace" as const,
+      data: field(value, `u_${gsn}_${key}`),
+    })),
+  );
 
 // ---------------------------------------------------------------------------
 // Residency

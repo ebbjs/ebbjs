@@ -21,62 +21,32 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
         "id" => "act_q1_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc_1,
-        "updates" => [
-          %{
-            "id" => "upd_q1_" <> Nanoid.generate(),
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Todo 1", "hlc" => hlc_1}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_q1_" <> Nanoid.generate(),
+              "subject_id" => "todo_1",
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Todo 1", "hlc" => hlc_1}
             }
-          },
-          %{
-            "id" => "eg_q1_" <> Nanoid.generate(),
-            "subject_id" => "eg_q1_" <> Nanoid.generate(),
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => "todo_1", "hlc" => hlc_1},
-                "group_id" => %{"type" => "lww", "value" => "group_1", "hlc" => hlc_1}
-              }
-            }
-          }
-        ]
+          ] ++ entity_group_update("todo_1", "group_1", hlc_1)
       }
 
       action_2 = %{
         "id" => "act_q2_" <> Nanoid.generate(),
         "actor_id" => "actor_2",
         "hlc" => hlc_2,
-        "updates" => [
-          %{
-            "id" => "upd_q2_" <> Nanoid.generate(),
-            "subject_id" => "todo_2",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Todo 2", "hlc" => hlc_2}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_q2_" <> Nanoid.generate(),
+              "subject_id" => "todo_2",
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Todo 2", "hlc" => hlc_2}
             }
-          },
-          %{
-            "id" => "eg_q2_" <> Nanoid.generate(),
-            "subject_id" => "eg_q2_" <> Nanoid.generate(),
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => "todo_2", "hlc" => hlc_2},
-                "group_id" => %{"type" => "lww", "value" => "group_2", "hlc" => hlc_2}
-              }
-            }
-          }
-        ]
+          ] ++ entity_group_update("todo_2", "group_2", hlc_2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_1]}), "actor_1")

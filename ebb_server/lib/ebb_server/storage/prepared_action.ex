@@ -27,12 +27,12 @@ defmodule EbbServer.Storage.PreparedAction do
     contract.
   - `groups` — the union of `update_scopes`; each group is indexed once
     per Action in `cf_group_actions`.
-  - `type_entity_keys` — `cf_type_entities` keys for the Action's
-    Updates, empty when the bench-only `:type_entities` (or its combined
+  - `type_entity_keys` — `cf_type_entities` keys for the Action's rows,
+    empty when the bench-only `:type_entities` (or its combined
     `:entity_index` alias) phase is ablated.
-  - `affected_entities` — `{subject_id, subject_type}` pairs to mark
-    dirty, deduplicated within the Action. The sequencer unions them
-    across a batch for the provisional and settled marks.
+  - `affected_entities` — `{subject_id, model}` pairs to mark dirty, one per
+    row. The sequencer unions them across a batch for the provisional and
+    settled marks.
   """
 
   @enforce_keys [
@@ -55,7 +55,7 @@ defmodule EbbServer.Storage.PreparedAction do
     affected_entities: []
   ]
 
-  @type entity_mark :: {entity_id :: String.t(), subject_type :: String.t()}
+  @type entity_mark :: {entity_id :: String.t(), model :: String.t() | nil}
 
   @type t :: %__MODULE__{
           id: String.t(),

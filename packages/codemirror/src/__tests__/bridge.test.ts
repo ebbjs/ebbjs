@@ -117,23 +117,26 @@ function wireAction(actionId: string, cells: readonly TextCell[]): Action {
       {
         id: `${actionId}_update`,
         subject_id: "doc_test",
-        subject_type: "text_document",
-        method: "patch",
+        component: "text_document/content",
+        method: "merge",
         data: {
-          fields: {
-            content: {
-              map: Object.fromEntries(
-                cells.map((cell) => [
-                  cell.id,
-                  { value: cell, update_id: `${actionId}_update`, hlc: cell.stamp },
-                ]),
-              ),
-            },
-          },
+          map: Object.fromEntries(
+            cells.map((cell) => [
+              cell.id,
+              { value: cell, update_id: `${actionId}_update`, hlc: cell.stamp },
+            ]),
+          ),
         },
       },
+      {
+        id: `${actionId}_version`,
+        subject_id: "doc_test",
+        component: "text_document/version",
+        method: "merge",
+        data: { value: 1, update_id: `${actionId}_version`, hlc },
+      },
     ],
-  } as Action;
+  };
 }
 
 /**

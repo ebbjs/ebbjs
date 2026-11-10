@@ -12,6 +12,7 @@
  */
 
 import {
+  componentName,
   generateId,
   isFieldMap,
   isUnset,
@@ -49,11 +50,10 @@ import {
  * Refusal of an Action: a client-side membership failure
  * (`last_membership` / `missing_ownership` / `last_group_member`), or the
  * server's `rejected[]` for the submitted Action. Extends the wire
- * `Rejection` with the per-Update `subjectType` the client-side checks
- * can attribute, which the server's per-Action report does not carry
- * today.
+ * `Rejection` with the per-Update model the client-side checks can attribute,
+ * which the server's per-Action report does not carry today.
  */
-export type ActionRejection = Rejection & { readonly subjectType?: string };
+export type ActionRejection = Rejection & { readonly model?: string };
 
 /**
  * Aggregated refusal of an Action. Mirrors `EntityValidationError` —
@@ -80,9 +80,7 @@ export class ActionRejectedError extends Error {
  * permission list.
  */
 export const lastGroupMemberError = (id: string, details: string): ActionRejectedError =>
-  new ActionRejectedError([
-    { id, subjectType: "groupMember", reason: "last_group_member", details },
-  ]);
+  new ActionRejectedError([{ id, model: "groupMember", reason: "last_group_member", details }]);
 
 const formatRejections = (rejections: readonly ActionRejection[]): string => {
   if (rejections.length === 0) return "ActionRejectedError";
@@ -92,7 +90,7 @@ const formatRejections = (rejections: readonly ActionRejection[]): string => {
 
 const describeRejection = (rejection: ActionRejection): string => {
   const subject =
-    rejection.subjectType === undefined ? rejection.id : `${rejection.subjectType} ${rejection.id}`;
+    rejection.model === undefined ? rejection.id : `${rejection.model} ${rejection.id}`;
   const details =
     rejection.details === undefined || rejection.details === null ? "" : ` (${rejection.details})`;
   return `${subject}: ${rejection.reason}${details}`;
@@ -187,9 +185,10 @@ export interface CreateEntityInput {
 }
 
 /**
- * Create one entity: the entity `put`, one `entityGroup` row per group,
- * then one Relationship `put` per resolved pointer. Field validation runs
- * here (never partially) unless the caller opted out.
+ * Create one entity: one `replace` per leaf component (a keyed component
+ * merges, because `replace` is refused for a key space), one `entityGroup`
+ * row per group, then one Relationship row per resolved pointer. Field
+ * validation runs here (never partially) unless the caller opted out.
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
@@ -212,20 +211,21 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
     }
   }
 
-  const updateId = ctx.ids.updateId();
-  const hlc = ctx.ids.hlc();
-  updates.push({
-    id: updateId,
-    subject_id: input.id,
-    subject_type: input.entity,
-    method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc, def?.markers) },
-  });
+  updates.push(
+    ...componentUpdates(
+      input.id,
+      input.entity,
+      input.fields,
+      { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
+      def?.markers,
+      "replace",
+    ),
+  );
   updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
 
   for (const pointer of input.pointers ?? []) {
     updates.push(
-      buildRelationshipUpdate({
+      ...buildRelationshipUpdate({
         relationshipId: ctx.ids.newId("rel"),
         sourceId: input.id,
         targetId: pointer.targetId,
@@ -258,8 +258,8 @@ export interface CreateSystemEntityInput {
 }
 
 /**
- * Put one system entity row. The row's fan-out scope comes from the
- * wire itself (`group` is its own group; `groupMember` names its
+ * Create one system entity row, one component Update each. The row's fan-out
+ * scope comes from the wire itself (`group` is its own group; `groupMember` names its
  * `group_id`), so no cached membership view is consulted. Validation
  * is per-field like an update: a system row may legitimately be absent
  * for a field without a default (`group.apps` on an unscoped group).
@@ -272,18 +272,17 @@ export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, inpu
       throw new EntityValidationError(violations);
     }
   }
-  const updateId = ctx.ids.updateId();
-  const hlc = ctx.ids.hlc();
-  const update: Update = {
-    id: updateId,
-    subject_id: input.id,
-    subject_type: input.entity,
-    method: "put",
-    data: { fields: wrapFields(input.fields, updateId, hlc, def?.markers) },
-  };
+  const updates = componentUpdates(
+    input.id,
+    input.entity,
+    input.fields,
+    { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
+    def?.markers,
+    "replace",
+  );
   return {
-    updates: [update],
-    groups: membershipScope([update], EMPTY_MEMBERSHIP_VIEW),
+    updates,
+    groups: membershipScope(updates, EMPTY_MEMBERSHIP_VIEW),
     subject: { id: input.id, type: input.entity },
   };
 };
@@ -403,18 +402,15 @@ export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
       ]);
     }
   }
-  const hlc = ctx.ids.hlc();
-  const updateId = ctx.ids.updateId();
   return {
-    updates: [
-      {
-        id: updateId,
-        subject_id: input.id,
-        subject_type: input.entity,
-        method: "patch",
-        data: { fields: wrapFields(input.payload, updateId, hlc, def?.markers) },
-      },
-    ],
+    updates: componentUpdates(
+      input.id,
+      input.entity,
+      input.payload,
+      { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
+      def?.markers,
+      "merge",
+    ),
     groups: [...input.groups],
     subject: { id: input.id, type: input.entity },
   };
@@ -428,13 +424,12 @@ export interface DeleteEntityInput {
   readonly groups: readonly string[];
 }
 
-/** Soft-delete an entity: one `delete` Update whose `data` is `null`. */
+/** Soft-delete an entity: one `delete` Update, naming no component. */
 export const deleteEntity: Operation<DeleteEntityInput> = (ctx, input) => ({
   updates: [
     {
       id: ctx.ids.updateId(),
       subject_id: input.id,
-      subject_type: input.entity,
       method: "delete",
       data: null,
     },
@@ -455,11 +450,12 @@ export interface DuplicateEntityInput {
 }
 
 /**
- * Copy a source row onto a fresh id: one `put` Update carrying the field
- * values verbatim — leaf and nested `update_id` / `hlc` stamps included,
- * so a collaborative-text map survives as a reference snapshot rather
- * than a re-stamped write — plus one `entityGroup` row per group. The
- * copy is validated against the entity's shape like `create`.
+ * Copy a source row onto a fresh id: one Update per component carrying the
+ * values verbatim — leaf and nested `update_id` / `hlc` stamps included, so a
+ * collaborative-text map survives as a reference snapshot rather than a
+ * re-stamped write — plus one `entityGroup` row per group. A leaf component is
+ * a `replace`, a keyed one a `merge`. The copy is validated against the
+ * entity's shape like `create`.
  */
 export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => {
   const fields = input.source.data?.fields ?? {};
@@ -474,13 +470,16 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   }
   return {
     updates: [
-      {
-        id: ctx.ids.updateId(),
-        subject_id: input.subjectId,
-        subject_type: input.entity,
-        method: "put",
-        data: { fields: cloneFields(fields) },
-      },
+      ...Object.entries(fields).map(([field, value]): Update => {
+        const updateId = ctx.ids.updateId();
+        return {
+          id: updateId,
+          subject_id: input.subjectId,
+          component: componentName(input.entity, field),
+          method: isFieldMap(value) ? "merge" : "replace",
+          data: cloneFieldValue(value),
+        };
+      }),
       ...buildEntityGroupUpdates(input.subjectId, input.groups, () => ctx.ids.updateId()),
     ],
     groups: [...input.groups],
@@ -517,9 +516,6 @@ const cloneFieldValue = (field: FieldValue): FieldValue =>
         map: Object.fromEntries(Object.entries(field.map).map(([k, v]) => [k, cloneFieldValue(v)])),
       }
     : { ...field, value: cloneValue(field.value) };
-
-const cloneFields = (fields: Record<string, FieldValue>): Record<string, FieldValue> =>
-  Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, cloneFieldValue(v)]));
 
 /** One membership row to delete: its id and the group it scopes to. */
 export interface MembershipRemoval {
@@ -574,7 +570,7 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
     throw new ActionRejectedError([
       {
         id: input.entityId,
-        subjectType: input.entity,
+        model: input.entity,
         reason: "last_membership",
         details: violation,
       },
@@ -593,7 +589,7 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
     throw new ActionRejectedError([
       {
         id: input.entityId,
-        subjectType: input.entity,
+        model: input.entity,
         reason: "missing_ownership",
         details: `membership write for "${input.entityId}" resolves to no owning group`,
       },
@@ -667,9 +663,9 @@ export const requireRelationship = (
  * Link, unlink, or set the links of one relationship. The built-in
  * membership accessor is refused (membership verbs own it), and an
  * undeclared relationship is refused before any wire Update exists.
- * Many-cardinality emits the source's canonical-FK `patch` plus one
- * Relationship `put` per target; one-cardinality emits a single
- * Relationship `put` (or `delete`).
+ * Many-cardinality emits the source's canonical-FK component merge plus one
+ * Relationship row per target; one-cardinality emits one Relationship row (or
+ * a `delete`).
  */
 export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input) => {
   const { entity, sourceId, as } = input;
@@ -699,12 +695,9 @@ export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input)
     targetId: input.pointer.targetId,
     targetIds: input.pointer.targetIds,
   });
-  const relationshipUpdates = Array.isArray(result.relationshipUpdate)
-    ? result.relationshipUpdate
-    : [result.relationshipUpdate];
   const updates: Update[] = [];
   if (result.entityUpdate !== undefined) updates.push(result.entityUpdate);
-  for (const update of relationshipUpdates) updates.push(update);
+  updates.push(...result.relationshipUpdates);
 
   return {
     updates,
@@ -722,49 +715,68 @@ const isEmptyPayload = (payload: unknown): boolean => {
   return true;
 };
 
+/** The ids one payload's component writes consume. */
+export interface ComponentUpdateIds {
+  updateId(): string;
+  hlc: string;
+}
+
 /**
- * Flatten a payload into the wire envelope. `undefined` fields are
- * dropped (the wire envelope is absent, not explicitly undefined);
- * `unset` compiles to a tombstone leaf, the same `{ value: null }` a
- * clear has always used, so the merge rule and the Elixir side are
- * unchanged.
+ * Compile a plain payload into one component Update per field: a keyed
+ * component's plain object becomes a `map` value and always merges (a key
+ * space cannot be replaced), every other field stays a leaf written with
+ * `preferred`.
  *
- * A literal `null` is still passed through here: tombstones arrive from
- * other producers (listing seeds, the synthetic snapshot put, a peer's
- * patch), so the envelope layer must not refuse one. Rejecting `null` is
- * validation's job, where the intent is knowable.
+ * `undefined` fields are dropped (absence, not an explicitly undefined value)
+ * and `unset` compiles to a tombstone leaf, the same `{ value: null }` the
+ * merge rule has always understood. A literal `null` is passed through:
+ * tombstones arrive from other producers (seeding, a peer's write), so the
+ * envelope layer must not refuse one; rejecting `null` is validation's job.
  *
- * The registry supplies the merge marker per field: a map field's plain
- * object becomes a `map` envelope so its keys merge independently, and
- * every other field stays a leaf. Without a registry (a schema-less
- * client) every field is a leaf, as before.
+ * The registry supplies the merge marker per field. Without one (an
+ * unregistered model) every field is a leaf, and the component name is still
+ * `<model>/<field>`.
  */
-export const wrapFields = (
+export const componentUpdates = (
+  subjectId: string,
+  model: string,
   payload: unknown,
+  ids: ComponentUpdateIds,
+  markers?: { readonly [field: string]: FieldMarker },
+  preferred: "merge" | "replace" = "merge",
+): Update[] => {
+  const updates: Update[] = [];
+  if (payload === null || typeof payload !== "object") return updates;
+  for (const [field, value] of Object.entries(payload)) {
+    if (value === undefined) continue;
+    const updateId = ids.updateId();
+    const keyed = markers?.[field]?.map === true;
+    updates.push({
+      id: updateId,
+      subject_id: subjectId,
+      component: componentName(model, field),
+      method: keyed ? "merge" : preferred,
+      data: wrapComponentValue(value, field, updateId, ids.hlc, keyed),
+    });
+  }
+  return updates;
+};
+
+const wrapComponentValue = (
+  value: unknown,
+  field: string,
   updateId: string,
   hlc: string,
-  markers?: { readonly [field: string]: FieldMarker },
-): Record<string, FieldValue> => {
-  const out: Record<string, FieldValue> = {};
-  if (payload === null || typeof payload !== "object") return out;
-  for (const [key, value] of Object.entries(payload)) {
-    if (value === undefined) continue;
-    if (isUnset(value)) {
-      out[key] = { value: null, update_id: updateId, hlc };
-      continue;
-    }
-    if (markers?.[key]?.map === true && isPlainObject(value)) {
-      out[key] = wrapMapValue(value, key, updateId, hlc);
-      continue;
-    }
-    // An object leaf's properties are parts of one value, not positions, so
-    // `unset` inside one has no envelope. Refusing here keeps the sentinel off
-    // the wire instead of letting it compile to an empty object.
-    const nested = findNestedUnsetPath(value, key);
-    if (nested !== undefined) throw new Error(nestedUnsetMessage(nested));
-    out[key] = { value, update_id: updateId, hlc };
-  }
-  return out;
+  keyed: boolean,
+): FieldValue => {
+  if (isUnset(value)) return { value: null, update_id: updateId, hlc };
+  if (keyed && isPlainObject(value)) return wrapMapValue(value, field, updateId, hlc);
+  // An object leaf's properties are parts of one value, not positions, so
+  // `unset` inside one has no envelope. Refusing here keeps the sentinel off
+  // the wire instead of letting it compile to an empty object.
+  const nested = findNestedUnsetPath(value, field);
+  if (nested !== undefined) throw new Error(nestedUnsetMessage(nested));
+  return { value, update_id: updateId, hlc };
 };
 
 const wrapMapValue = (

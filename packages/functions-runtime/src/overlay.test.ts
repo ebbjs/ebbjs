@@ -126,12 +126,14 @@ describe("ctx.get overlay", () => {
     await expect(ctx.get("e_issue1")).resolves.toBeNull();
   });
 
-  it("keeps a row the host cannot see invisible", async () => {
+  it("creates the row from a merge the host cannot see, leaving created_hlc unset", async () => {
     const ctx = testContext(fakeHost());
 
     ctx.update("issue", "e_hidden", { title: "Invisible" });
 
-    await expect(ctx.get("e_hidden")).resolves.toBeNull();
+    const view = await ctx.get("e_hidden");
+    expect(view).toMatchObject({ id: "e_hidden", type: "issue", created_hlc: "" });
+    expect(projectFields(view?.data.fields ?? {})).toEqual({ title: "Invisible" });
   });
 
   it("refuses an empty entity id without calling the host", async () => {

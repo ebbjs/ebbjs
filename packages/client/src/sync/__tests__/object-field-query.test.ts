@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
 import { defineModel, e, EntityValidationError, validatePayload } from "@ebbjs/schema";
-import { wrapFields } from "@ebbjs/write";
+import { componentUpdates } from "@ebbjs/write";
 
 import { buildQueryBuilder } from "../query-builder";
 import { createRowsExecutor, executePlan } from "../query-execute";
@@ -176,15 +176,25 @@ describe("e.object end to end", () => {
     anchor: e.object({ x: e.number(), y: e.number(), kind: e.enum(["door", "window"]) }),
   });
 
-  const planRow = (id: string, anchor: Record<string, unknown>): Entity => ({
-    id,
-    type: "plan",
-    data: { fields: wrapFields({ anchor }, `u_${id}`, makeHlc(1), plan.markers) },
-    created_hlc: makeHlc(1),
-    updated_hlc: makeHlc(1),
-    deleted_hlc: null,
-    last_gsn: 0,
-  });
+  const planRow = (id: string, anchor: Record<string, unknown>): Entity => {
+    const [write] = componentUpdates(
+      id,
+      "plan",
+      { anchor },
+      { updateId: () => `u_${id}`, hlc: makeHlc(1) },
+      plan.markers,
+    );
+
+    return {
+      id,
+      type: "plan",
+      data: { fields: { anchor: write!.data as FieldValue } },
+      created_hlc: makeHlc(1),
+      updated_hlc: makeHlc(1),
+      deleted_hlc: null,
+      last_gsn: 0,
+    };
+  };
 
   it("writes the object as one leaf and matches it structurally", async () => {
     const rows = [

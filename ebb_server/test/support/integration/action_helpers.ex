@@ -8,7 +8,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   - `bootstrap_group/3` - Create a test group with permissions
   - `add_group_member/4` - Grant an actor permissions in an existing group
   - `write_entity_in_group/5` - Write an entity to a group
-  - `entity_group_update/3` - Build a same-Action `entityGroup` put
+  - `entity_group_update/3` - Build a same-Action `entityGroup` create
   - `msgpack_encode!/1` - Encode data as MessagePack binary
   """
 
@@ -57,9 +57,13 @@ defmodule EbbServer.Integration.ActionHelpers do
     Router.call(conn, [])
   end
 
+  # The production pipeline fetches query params before the router sees them
+  # (`GET /entities/:id` reads an optional `components` filter), so a direct
+  # router call has to do the same.
   def get_entity(id, actor_id \\ "a_test") do
     conn(:get, "/entities/#{id}")
     |> put_req_header("x-ebb-actor-id", actor_id)
+    |> fetch_query_params()
     |> Router.call([])
   end
 
@@ -90,31 +94,78 @@ defmodule EbbServer.Integration.ActionHelpers do
     gm_id = "gm_" <> Nanoid.generate()
     group_update_id = "upd_group_" <> Nanoid.generate()
 
-    fields = %{
-      "name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
-    }
-
-    fields =
-      if apps,
-        do: Map.put(fields, "apps", group_apps_field(apps, hlc, group_update_id)),
-        else: fields
+    group_updates =
+      [
+        component_update(
+          group_update_id,
+          group_id,
+          "group/name",
+          "replace",
+          %{"value" => "Test Group", "hlc" => hlc}
+        )
+        | group_apps_updates(group_id, apps, hlc, group_update_id)
+      ]
 
     %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => group_update_id,
-          "subject_id" => group_id,
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{"fields" => fields}
-        },
-        group_member_update(gm_id, actor_id, group_id, permissions, hlc)
-      ]
+      "updates" =>
+        group_updates ++ group_member_updates(gm_id, actor_id, group_id, permissions, hlc)
     }
   end
+
+  defp group_apps_updates(_group_id, nil, _hlc, _update_id), do: []
+
+  defp group_apps_updates(group_id, apps, hlc, update_id) do
+    [
+      component_update(
+        update_id <> "_apps",
+        group_id,
+        "group/apps",
+        "merge",
+        group_apps_field(apps, hlc, update_id)
+      )
+    ]
+  end
+
+  @doc """
+  Builds one component Update with the wire's string keys.
+  """
+  def component_update(id, subject_id, component, method, data) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => method,
+      "data" => data
+    }
+  end
+
+  @doc """
+  Builds one Update per row field.
+
+  A create writes one `replace` per leaf component and one `merge` per keyed
+  component, because `replace` is refused for a keyed value.
+  """
+  def component_updates(id_prefix, subject_id, model, fields) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      method = if keyed?(value), do: "merge", else: "replace"
+
+      component_update(
+        "#{id_prefix}_#{index}",
+        subject_id,
+        "#{model}/#{field}",
+        method,
+        value
+      )
+    end)
+  end
+
+  defp keyed?(%{"map" => entries}) when is_map(entries), do: true
+  defp keyed?(_value), do: false
 
   @doc """
   Builds a `group.apps` map field for the given app ids.
@@ -151,26 +202,18 @@ defmodule EbbServer.Integration.ActionHelpers do
       "id" => "act_gm_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [group_member_update(gm_id, member_actor_id, group_id, permissions, hlc)]
+      "updates" => group_member_updates(gm_id, member_actor_id, group_id, permissions, hlc)
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  defp group_member_update(gm_id, member_actor_id, group_id, permissions, hlc) do
-    %{
-      "id" => gm_id,
-      "subject_id" => gm_id,
-      "subject_type" => "groupMember",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "actor_id" => %{"type" => "lww", "value" => member_actor_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-          "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-        }
-      }
-    }
+  defp group_member_updates(gm_id, member_actor_id, group_id, permissions, hlc) do
+    component_updates("upd_#{gm_id}", gm_id, "groupMember", %{
+      "actor_id" => %{"value" => member_actor_id, "hlc" => hlc},
+      "group_id" => %{"value" => group_id, "hlc" => hlc},
+      "permissions" => %{"value" => permissions, "hlc" => hlc}
+    })
   end
 
   def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do
@@ -180,16 +223,9 @@ defmodule EbbServer.Integration.ActionHelpers do
       "id" => "act_write_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => "upd_entity_" <> Nanoid.generate(),
-          "subject_id" => entity_id,
-          "subject_type" => entity_type,
-          "method" => "put",
-          "data" => %{"fields" => fields}
-        },
-        entity_group_update(entity_id, group_id, hlc)
-      ]
+      "updates" =>
+        component_updates("upd_entity_" <> Nanoid.generate(), entity_id, entity_type, fields) ++
+          entity_group_update(entity_id, group_id, hlc)
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -198,31 +234,22 @@ defmodule EbbServer.Integration.ActionHelpers do
   def entity_group_update(entity_id, group_id, hlc, eg_id \\ nil) do
     eg_id = eg_id || membership_row_id(entity_id, group_id)
 
-    %{
-      "id" => eg_id,
-      "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        }
-      }
-    }
+    component_updates("upd_#{eg_id}", eg_id, "entityGroup", %{
+      "entity_id" => %{"value" => entity_id, "hlc" => hlc},
+      "group_id" => %{"value" => group_id, "hlc" => hlc}
+    })
   end
 
   @doc """
-  Builds a data-less `entityGroup` delete for an existing membership row.
+  Builds a component-less `entityGroup` delete for an existing membership row.
 
-  The wire form carries only the membership row id; the server recovers
-  the entity and group from its by-id cache.
+  The wire form names only the membership row id; the server recovers the
+  entity and group from its by-id cache.
   """
   def entity_group_delete(membership_id) do
     %{
       "id" => "upd_eg_delete_" <> Nanoid.generate(),
       "subject_id" => membership_id,
-      "subject_type" => "entityGroup",
       "method" => "delete",
       "data" => nil
     }

@@ -47,16 +47,11 @@
             {
               "id": "upd_fixture_commit",
               "subject_id": "e_doc",
-              "subject_type": "doc",
-              "method": "patch",
+              "component": "doc/title",
+              "method": "merge",
               "data": {
-                "fields": {
-                  "title": {
-                    "type": "lww",
-                    "value": "Proofread",
-                    "hlc": "111690000000000000"
-                  }
-                }
+                "value": "Proofread",
+                "hlc": "111690000000000000"
               }
             }
           ]

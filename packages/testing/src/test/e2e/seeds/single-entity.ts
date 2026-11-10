@@ -15,7 +15,9 @@ export function buildSingleEntitySeed(): SeedData {
       {
         id: "ent_001",
         type: "text_document",
-        patches: [{ fields: {} }],
+        // A document row needs at least one component on the wire; the cell
+        // map stays absent, which reads as an empty document.
+        patches: [{ fields: { version: 1 } }],
       },
     ],
     relationships: [],

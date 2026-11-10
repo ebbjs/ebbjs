@@ -18,7 +18,15 @@
  * mock object.
  */
 import { vi, type MockInstance } from "vitest";
-import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  componentModel,
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/types";
 import type { createClient } from "./client";
 
@@ -47,10 +55,10 @@ export const callApplyAction = (
   client: ReturnType<typeof createClient>,
   action: Action,
   groupId?: string,
-): Promise<{ entityId: string; entityType: string }[]> =>
+): Promise<{ entityId: string }[]> =>
   (
     client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
+      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string }[]>;
     }
   )._applyAction.call(client, action, groupId);
 
@@ -68,26 +76,27 @@ let seedPosition = 0;
 export const seedReplicaRow = (
   replica: Replica,
   row: Entity,
-  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
+  method: "replace" | "delete" = row.deleted_hlc === null ? "replace" : "delete",
 ): void => {
   seedPosition += 1;
   const hlc = makeHlc(seedPosition);
-  const update: Update =
-    method === "put"
-      ? {
-          id: `u_seed_${seedPosition}`,
+  const updates: Update[] =
+    method === "replace"
+      ? Object.entries(row.data.fields).map(([field, value], index) => ({
+          id: `u_seed_${seedPosition}_${index}`,
           subject_id: row.id,
-          subject_type: row.type,
-          method,
-          data: { fields: row.data?.fields ?? {} },
-        }
-      : {
-          id: `u_seed_${seedPosition}`,
-          subject_id: row.id,
-          subject_type: row.type,
-          method: "delete",
-          data: null,
-        };
+          component: componentName(row.type, field),
+          method: isFieldMap(value) ? "merge" : "replace",
+          data: value,
+        }))
+      : [
+          {
+            id: `u_seed_${seedPosition}`,
+            subject_id: row.id,
+            method: "delete",
+            data: null,
+          },
+        ];
   const action: Action = {
     id: `a_seed_${seedPosition}`,
     actor_id: "seed",
@@ -95,8 +104,12 @@ export const seedReplicaRow = (
     gsn: seedPosition,
     updates: [],
   };
-  replica.ingest(action, [update], seedPosition);
+  replica.ingest(action, updates, seedPosition);
 };
+
+/** The model an Update commits under; `undefined` for a delete, which names none. */
+export const updateModel = (update: Update): string | undefined =>
+  update.method === "delete" ? undefined : componentModel(update.component);
 
 /** A JSON `Response` carrying `body` and optional extra headers. */
 export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): Response =>

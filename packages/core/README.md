@@ -44,9 +44,10 @@ const { action, hlc } = createAction({
   updates: [
     {
       subject_id: "todo_abc",
-      subject_type: "todo",
-      method: "put",
-      data: { fields: { title: { value: "Buy milk", hlc: localEvent(clock) } } },
+      // One Update names one component: `<model>/<field>`.
+      component: "todo/title",
+      method: "replace",
+      data: { value: "Buy milk", update_id: "u_1", hlc: localEvent(clock) },
     },
   ],
 });

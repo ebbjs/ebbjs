@@ -24,16 +24,11 @@
             {
               "id": "upd_fixture_rejected",
               "subject_id": "e_other",
-              "subject_type": "doc",
-              "method": "patch",
+              "component": "doc/title",
+              "method": "merge",
               "data": {
-                "fields": {
-                  "title": {
-                    "type": "lww",
-                    "value": "Rejected",
-                    "hlc": "111690000000000000"
-                  }
-                }
+                "value": "Rejected",
+                "hlc": "111690000000000000"
               }
             }
           ]

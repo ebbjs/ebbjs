@@ -31,7 +31,7 @@ import {
 } from "@ebbjs/schema";
 import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
-import { callApplyAction, jsonResponse, waitFor } from "../sync/test-utils";
+import { callApplyAction, jsonResponse, updateModel, waitFor } from "../sync/test-utils";
 
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(
@@ -129,30 +129,51 @@ const cellPatch = (
   gsn: 0,
   updates: [
     {
-      id: updateId,
+      id: `${updateId}_0`,
       subject_id: docId,
-      subject_type: "text_document",
-      method: "patch",
-      data: {
-        fields: {
-          content: { map: cells },
-          version: { value: CURRENT_TEXT_VERSION, update_id: updateId, hlc },
-        },
-      },
+      component: "text_document/content",
+      method: "merge",
+      data: { map: cells },
+    },
+    {
+      id: `${updateId}_1`,
+      subject_id: docId,
+      component: "text_document/version",
+      method: "merge",
+      data: { value: CURRENT_TEXT_VERSION, update_id: updateId, hlc },
     },
   ],
 });
 
-const fieldsOf = (update: Update): Record<string, FieldValue> => {
-  if (update.data === null || update.data === undefined) {
-    throw new Error(`update "${update.id}" carries no fields`);
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
+  const bySubject = new Map<string, Update[]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
   }
-  return update.data.fields;
+  return [...bySubject.values()];
 };
 
-/** The cell map an update carries, or a failure naming the update. */
-const cellsOf = (update: Update): Record<string, CellEntry> => {
-  const content = fieldsOf(update)["content"]!;
+/** One component's value on a row, or a failure naming the field. */
+const componentOf = (row: readonly Update[], field: string): FieldValue => {
+  const update = row.find(
+    (candidate) =>
+      candidate.method !== "drop" &&
+      candidate.method !== "delete" &&
+      candidate.component === `text_document/${field}`,
+  );
+  if (update === undefined || update.method === "drop" || update.method === "delete") {
+    throw new Error(`row carries no "${field}" component`);
+  }
+  return update.data;
+};
+
+/** The cell map a row's content component carries. */
+const cellsOf = (row: readonly Update[]): Record<string, CellEntry> => {
+  const content = componentOf(row, "content");
   if (!isFieldMap(content)) throw new Error("document content is not a map field");
   return content.map as unknown as Record<string, CellEntry>;
 };
@@ -167,27 +188,29 @@ describe("a document the app declares", () => {
     expect(written).toHaveLength(1);
     const updates = written[0]!.updates;
 
-    expect([...new Set(updates.map((update) => update.subject_type))].sort()).toEqual([
+    expect([...new Set(updates.map((update) => updateModel(update)))].sort()).toEqual([
       "entityGroup",
       "note",
       "relationship",
       "text_document",
     ]);
 
-    const documentUpdate = updates.find((update) => update.subject_type === "text_document")!;
-    expect(documentUpdate.subject_id).toBe(created.documentId);
-    expect(documentUpdate.method).toBe("put");
-    const documentFields = fieldsOf(documentUpdate);
-    const content = documentFields["content"]!;
+    const [documentRow] = rowsOf(updates, "text_document");
+    expect(documentRow![0]!.subject_id).toBe(created.documentId);
+    const content = componentOf(documentRow!, "content");
     if (!isFieldMap(content)) throw new Error("document content is not a map field");
     expect(Object.keys(content.map)).toEqual([initialRun.id]);
     expect(content.map[initialRun.id]!.value).toEqual(initialRun);
-    expect(documentFields["version"]!.value).toBe(CURRENT_TEXT_VERSION);
+    expect(componentOf(documentRow!, "version").value).toBe(CURRENT_TEXT_VERSION);
 
-    const relationship = updates.find((update) => update.subject_type === "relationship")!;
-    const relationshipFields = fieldsOf(relationship);
-    expect(relationshipFields["source_id"]!.value).toBe(created.noteId);
-    expect(relationshipFields["target_id"]!.value).toBe(created.documentId);
+    const [relationshipUpdate] = updates.filter(
+      (update) => update.method !== "delete" && update.component === "relationship/source_id",
+    );
+    expect((relationshipUpdate!.data as { value: unknown } | null)?.value).toBe(created.noteId);
+    const [target] = updates.filter(
+      (update) => update.method !== "delete" && update.component === "relationship/target_id",
+    );
+    expect((target!.data as { value: unknown } | null)?.value).toBe(created.documentId);
 
     const row = await client.note.get(created.noteId);
     expect(row!.title).toBe("Greeting");
@@ -224,10 +247,8 @@ describe("a document the app declares", () => {
 
     expect(document.text).toBe("Hello world!");
     expect(written).toHaveLength(before + 1);
-    const edit = written[before]!.updates.find(
-      (update) => update.subject_type === "text_document",
-    )!;
-    const [[, appended]] = Object.entries(cellsOf(edit));
+    const [editRow] = rowsOf(written[before]!.updates, "text_document");
+    const [[, appended]] = Object.entries(cellsOf(editRow!));
     expect(appended!.value).toMatchObject({ kind: "run", text: "!" });
   });
 
@@ -238,10 +259,8 @@ describe("a document the app declares", () => {
     const created = await client.actions.createNote();
     await callApplyAction(client, written[0]!, "g_1");
 
-    const documentUpdate = written[0]!.updates.find(
-      (update) => update.subject_type === "text_document",
-    )!;
-    const content = cellsOf(documentUpdate);
+    const [documentRow] = rowsOf(written[0]!.updates, "text_document");
+    const content = cellsOf(documentRow!);
     const [cellId, entry] = Object.entries(content)[0]!;
     const rewriteHlc = (BigInt(entry.hlc) + 1_000n).toString();
 

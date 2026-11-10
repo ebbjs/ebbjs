@@ -22,7 +22,7 @@ defmodule EbbServer.Storage.SystemCache do
     - `GroupCache`        — per-group member sets; permission checks read this on every write.
     - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
     - `GroupAppsCache`    — each group's app scope, projected for the handshake.
-    - `EntityTypeCache`   — entity id → `subject_type`; the authorizer resolves an existing
+    - `EntityTypeCache`   — entity id → committed model; the authorizer resolves an existing
                             entity's type from here for membership permissions (#264).
     - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
 
@@ -632,7 +632,7 @@ defmodule EbbServer.Storage.SystemCache do
   defp put_existing_key(nil, _key), do: nil
   defp put_existing_key(%MapSet{} = keys, key), do: MapSet.put(keys, key)
 
-  # Walk every action in `cf_actions` and ensure each (type, entity_id)
+  # Walk every action in `cf_actions` and ensure each (model, entity_id)
   # pair has an entry in `cf_type_entities`. Runs once per database: the
   # marker written on success makes later boots skip the O(all Updates)
   # scan. A raise here is deliberately not rescued — a half-backfilled
@@ -654,19 +654,20 @@ defmodule EbbServer.Storage.SystemCache do
         ActionFormat.decode_payload(action_etf, RocksDB.decode_gsn_key(gsn_key))
       end)
       |> Stream.flat_map(fn action ->
-        # Each update contributes at most one (type, entity_id) pair.
+        # Each Update contributes at most one (model, entity_id) pair.
         # Tombstones (method == "delete") still imply a prior create,
         # so we index them too — the materialize path handles
         # deleted_hlc by returning :not_found and the cache populate
-        # gracefully no-ops on those.
+        # gracefully no-ops on those. A delete names no component, so its
+        # model is the one already recorded for the id; an id with no record
+        # has nothing to index.
         action["updates"] || []
       end)
       |> Stream.map(fn update ->
-        type = update["subject_type"]
-        id = update["subject_id"]
-        key = RocksDB.encode_type_entity_key(type, id)
-        {key, type, id}
+        {update["subject_id"], update_model(update, entity_types_table)}
       end)
+      |> Stream.reject(fn {_id, model} -> is_nil(model) end)
+      |> Stream.map(fn {id, model} -> {RocksDB.encode_type_entity_key(model, id), model, id} end)
       |> Stream.filter(fn {key, _type, _id} -> not MapSet.member?(existing_keys, key) end)
       |> Stream.uniq_by(fn {key, _, _} -> key end)
       |> Enum.map(fn {key, type, id} ->
@@ -694,6 +695,18 @@ defmodule EbbServer.Storage.SystemCache do
             raise "cf_type_entities backfill write failed: #{inspect(reason)}"
         end
     end
+  end
+
+  # A component Names the model in its prefix. A delete names none, so the
+  # recorded model is the only one there is.
+  defp update_model(%{"component" => component}, _entity_types_table)
+       when is_binary(component) do
+    [model, _field] = :binary.split(component, "/")
+    model
+  end
+
+  defp update_model(update, entity_types_table) do
+    EntityTypeCache.get_type(update["subject_id"], entity_types_table)
   end
 
   defp type_entities_backfilled?(rocks_name) do

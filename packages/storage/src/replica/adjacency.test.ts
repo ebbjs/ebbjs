@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import type { ReplicaRecord } from "../types/replica-store";
@@ -28,11 +36,25 @@ interface WriteSpec {
   readonly fields: Record<string, FieldValue>;
 }
 
-const build = (
-  method: "put" | "patch" | "delete",
-  spec: WriteSpec,
-  data: Update["data"],
-): Action => ({
+/** One component Update per fixture field; a keyed component always merges. */
+const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[] =>
+  Object.entries(spec.fields).map(([field, value]) => ({
+    id: `${spec.updateId}_${field}`,
+    subject_id: spec.entityId,
+    component: componentName(spec.type, field),
+    method: isFieldMap(value) ? "merge" : method,
+    data: value,
+  }));
+
+const put = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: componentUpdates(spec, "replace"),
+});
+
+const remove = (spec: Omit<WriteSpec, "fields">): Action => ({
   id: spec.actionId,
   actor_id: "user_1",
   hlc: makeHlc(spec.ms ?? 1),
@@ -41,16 +63,11 @@ const build = (
     {
       id: spec.updateId,
       subject_id: spec.entityId,
-      subject_type: spec.type,
-      method,
-      data,
+      method: "delete",
+      data: null,
     },
   ],
 });
-
-const put = (spec: WriteSpec): Action => build("put", spec, { fields: spec.fields });
-const remove = (spec: Omit<WriteSpec, "fields">): Action =>
-  build("delete", { ...spec, fields: {} }, null);
 
 /** A materialized relationship row: `source_id` —as/type→ `target_id`. */
 const edge = (

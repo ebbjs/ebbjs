@@ -26,8 +26,11 @@
 import {
   encodeSync,
   type Action,
+  componentField,
+  componentModel,
   createClock,
   type Entity,
+  type FieldValue,
   type HLCState,
   localEvent,
   receiveRemoteHLC,
@@ -80,10 +83,9 @@ import { backoffDelayMs } from "./backoff";
 import {
   appendOnlyRewrites,
   AppendOnlyViolationError,
-  DOC_CONTENT_FIELD,
+  isLogPosition,
   ModelRegistry,
   parseContentField,
-  readUpdateFields,
   type CellFieldValue,
   EntityValidationError,
   TextDocument,
@@ -470,10 +472,10 @@ export class SyncClient<
       // A document's `content` map merges per key, so concurrent edits to
       // different runs never conflict and a same-run race does — see the
       // outbox's recursive slot comparison.
-      isLwwField: (subjectType, field) => this.registry.isLwwField(subjectType, field),
-      // Scope is declared on the entity; an unknown entity defaults to
+      isLwwField: (model, component) => this.registry.isLwwField(model, component),
+      // Scope is declared on the model; an unknown model defaults to
       // `"field"`, matching a client without a schema.
-      conflictScope: (subjectType) => this.registry.getConflictScope(subjectType),
+      conflictScope: (model) => this.registry.getConflictScope(model),
       baseGsn: () => this.appliedBaseGsn(),
       hlc: () => this.freshHlc(),
       conflictId: () => generateId("c"),
@@ -1026,16 +1028,15 @@ export class SyncClient<
   }
 
   /**
-   * Refuse a text body rewrite before it is queued. A body's `content` map is
-   * append-only: a batch may add cell keys, never replace one. The field list
-   * is hardcoded to `content` here; #767 moves the declaration onto the body's
-   * definition and reads it from there.
+   * Refuse an append-only log rewrite before it is queued. A log position's
+   * entries may only be added, never replaced: a batch may add cell keys,
+   * never rewrite one.
    */
   private async refuseContentRewrites(actions: readonly Action[]): Promise<void> {
     for (const action of actions) {
       for (const update of action.updates) {
-        const incoming = readUpdateFields(update)?.[DOC_CONTENT_FIELD];
-        if (incoming === undefined) continue;
+        if (update.method === "drop" || update.method === "delete") continue;
+        if (!isLogPosition(update.component, [])) continue;
 
         // The replica is the read path, but an on-demand body may not be
         // materialized there yet. The open document is the other place the
@@ -1043,28 +1044,35 @@ export class SyncClient<
         // optimistic cell, or a re-delivery); only a different value under an
         // existing key is a rewrite. A key neither source knows may still be
         // durable, so only that residue pays for a storage read.
-        const incomingCells = parseContentField(incoming);
+        const incomingCells = parseContentField(update.data);
         const known = new Map<string, CellFieldValue>();
         const addCells = (field: unknown): void => {
           for (const [key, cell] of parseContentField(field)) known.set(key, cell);
         };
-        addCells(this.replica.get(update.subject_id)?.data?.fields?.[DOC_CONTENT_FIELD]);
+        addCells(this.logFieldOf(this.replica.get(update.subject_id), update.component));
         const open = this.textDocumentRegistry.get(update.subject_id);
         if (open !== undefined) for (const [key, cell] of open.docState.cells) known.set(key, cell);
 
         const violated = new Set(appendOnlyRewrites(incomingCells, known));
         const unknown = new Map([...incomingCells].filter(([key]) => !known.has(key)));
         if (unknown.size > 0) {
-          const stored = (await this.storage.entities.get(update.subject_id))?.data?.fields?.[
-            DOC_CONTENT_FIELD
-          ];
-          for (const key of appendOnlyRewrites(unknown, parseContentField(stored))) {
+          const stored = (await this.storage.entities.get(update.subject_id)) ?? undefined;
+          for (const key of appendOnlyRewrites(
+            unknown,
+            parseContentField(this.logFieldOf(stored, update.component)),
+          )) {
             violated.add(key);
           }
         }
         if (violated.size > 0) throw new AppendOnlyViolationError([...violated]);
       }
     }
+  }
+
+  /** The stored value of `component` on `row`, or `undefined`. */
+  private logFieldOf(row: Entity | undefined, component: string): FieldValue | undefined {
+    if (row === undefined) return undefined;
+    return row.data.fields[componentField(component)];
   }
 
   /**
@@ -1626,8 +1634,8 @@ export class SyncClient<
    * });
    * ```
    *
-   * `docType` is the document entity's wire `subject_type`. Omit it for a
-   * raw document (`text_document`); pass the declared document entity's name
+   * `docType` is the model the document is committed under. Omit it for a
+   * raw document (`text_document`); pass the declared document model's name
    * when opening a schema-declared document by hand.
    */
   textDocument(docId: string, docType?: string): TextDocument {
@@ -1637,8 +1645,8 @@ export class SyncClient<
   /**
    * Return the `TextDocument` for a schema-declared document entity, bound
    * to the client's write path so local edits self-flush. `docType` is the
-   * document entity's wire `subject_type`; pass the name the schema registers
-   * the entity under. Does not read or pin the row: hydrate it from the
+   * document model; pass the name the schema registers it under. Does not
+   * read or pin the row: hydrate it from the
    * document's `content` / `version`.
    *
    * Deliberately separate from {@link textDocument}: the low-level API
@@ -1659,9 +1667,9 @@ export class SyncClient<
    * supplies `sourceId` and `targetId` (string id or entity-shape;
    * `null` for unlink). The source's data fields don't carry the FK.
    *
-   * Many-cardinality: one entity Update + N Relationship Updates.
-   * The caller supplies `entityUpdate` (carrying the canonical FK
-   * set on `data.fields[as]`) and a `targetIds` patch.
+   * Many-cardinality: the source's FK component merge + N Relationship
+   * rows. The caller supplies `entityUpdate` (carrying the canonical FK
+   * set in the declared component) and a `targetIds` patch.
    *
    * Pointer values may be a string id or an entity-shape object
    * (anything with a string `.id`); both are normalized to the id at
@@ -2061,10 +2069,7 @@ export class SyncClient<
    * (#512). The `storage.entities` shim keeps its materialize-on-read
    * contract for the remaining internal readers.
    */
-  private async _applyAction(
-    action: Action,
-    groupId?: string,
-  ): Promise<{ entityId: string; entityType: string }[]> {
+  private async _applyAction(action: Action, groupId?: string): Promise<{ entityId: string }[]> {
     await this.hydrateReplica();
     const violations = this.registry.validateAction(action);
     if (violations.length > 0) {
@@ -2090,10 +2095,7 @@ export class SyncClient<
     if (action.gsn > 0) {
       this.statusController.markSynced();
     }
-    const affected = action.updates.map((u) => ({
-      entityId: u.subject_id,
-      entityType: u.subject_type,
-    }));
+    const affected = action.updates.map((u) => ({ entityId: u.subject_id }));
     if (groupId !== undefined && action.gsn > 0) {
       const prev = await this.storage.cursors.get(groupId);
       if (prev === null || action.gsn > prev) {
@@ -2132,10 +2134,10 @@ export class SyncClient<
 
     const kept: Action["updates"][number][] = [];
     for (const update of action.updates) {
-      // A patch merges field by field by HLC, so an older one cannot regress
-      // the row and can supply content another group's stream never carried
-      // (#473). A `put` is a full replacement, so it can.
-      if (update.method === "patch") {
+      // A merge or leaf replace compares by HLC, so an older one cannot
+      // regress the row and can supply content another group's stream never
+      // carried (#473). A `drop` or `delete` has no value to compare and can.
+      if (update.method === "merge" || update.method === "replace") {
         kept.push(update);
         continue;
       }
@@ -2233,7 +2235,11 @@ export class SyncClient<
   ): Promise<void> {
     for (const update of action.updates) {
       let row = this.replica.get(update.subject_id);
-      if (row === undefined && !this.replica.isHeld(update.subject_type)) {
+      const model =
+        update.method === "delete"
+          ? (this.replica.get(update.subject_id)?.type ?? "")
+          : componentModel(update.component);
+      if (row === undefined && !this.replica.isHeld(model)) {
         const base = await this.storage.entities.get(update.subject_id);
         row = applyUpdate(base, update, 0, action.hlc) ?? undefined;
       }
@@ -2477,7 +2483,9 @@ const errorMessage = (err: unknown): string => {
  * that can name an entity the client cannot materialize.
  */
 const isMembershipPut = (action: Action): boolean =>
-  action.updates.some((update) => update.subject_type === "entityGroup" && update.method === "put");
+  action.updates.some(
+    (update) => update.method !== "delete" && componentModel(update.component) === "entityGroup",
+  );
 
 /** Returned by {@link SyncClient.handshake}. */
 export interface HandshakeResult {

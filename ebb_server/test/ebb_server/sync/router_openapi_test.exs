@@ -131,7 +131,7 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
       assert Enum.sort(required) == ["actor_id", "hlc", "id", "updates"]
 
       assert %OpenApiSpex.Schema{type: :object, required: required} = OperationSchema.update()
-      assert Enum.sort(required) == ["id", "method", "subject_id", "subject_type"]
+      assert Enum.sort(required) == ["id", "method", "subject_id"]
 
       assert %OpenApiSpex.Schema{type: :object, required: required} = OperationSchema.entity()
 

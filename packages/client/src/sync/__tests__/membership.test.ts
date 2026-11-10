@@ -5,13 +5,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Update } from "@ebbjs/core";
+import { componentName, type Update } from "@ebbjs/core";
 
 import {
   lastGroupMemberViolation,
   lastMembershipViolation,
   membershipScope,
-  resolveUpdateGroups,
   resultingGroups,
   type LiveGroupMember,
   type MembershipView,
@@ -25,37 +24,41 @@ const view = (overrides: Partial<MembershipView> = {}): MembershipView => ({
 
 interface UpdateSpec {
   readonly subject_id: string;
-  readonly subject_type: string;
+  /** The model the row is committed under. */
+  readonly model: string;
   readonly method?: Update["method"];
   readonly fields?: Record<string, unknown>;
 }
 
-const update = (spec: UpdateSpec): Update => ({
-  id: "u_1",
-  subject_id: spec.subject_id,
-  subject_type: spec.subject_type,
-  method: spec.method ?? "put",
-  data:
-    spec.fields === undefined
-      ? null
-      : {
-          fields: Object.fromEntries(
-            Object.entries(spec.fields).map(([key, value]) => [key, { value, update_id: "u_1" }]),
-          ),
-        },
-});
+/** One Update per field; a delete names no component. */
+const update = (spec: UpdateSpec): Update[] => {
+  const method = spec.method ?? "replace";
+  if (method === "delete") {
+    return [{ id: "u_1", subject_id: spec.subject_id, method: "delete", data: null }];
+  }
+  return Object.entries(spec.fields ?? {}).map(([field, value]) => ({
+    id: `u_1_${field}`,
+    subject_id: spec.subject_id,
+    component: componentName(spec.model, field),
+    method: "replace",
+    data: { value, update_id: "u_1" },
+  }));
+};
 
 describe("membership checker — fan-out scope", () => {
   it("resolves a group to its own id", () => {
-    const scope = resolveUpdateGroups(update({ subject_id: "g_1", subject_type: "group" }), view());
+    const scope = membershipScope(
+      update({ subject_id: "g_1", model: "group", fields: { name: "Team" } }),
+      view(),
+    );
     expect(scope).toEqual(["g_1"]);
   });
 
   it("resolves a groupMember to its wired group_id", () => {
-    const scope = resolveUpdateGroups(
+    const scope = membershipScope(
       update({
         subject_id: "gm_1",
-        subject_type: "groupMember",
+        model: "groupMember",
         fields: { group_id: "g_2" },
       }),
       view(),
@@ -64,10 +67,10 @@ describe("membership checker — fan-out scope", () => {
   });
 
   it("resolves an entityGroup put to its wired group_id", () => {
-    const scope = resolveUpdateGroups(
+    const scope = membershipScope(
       update({
         subject_id: "eg_1",
-        subject_type: "entityGroup",
+        model: "entityGroup",
         fields: { entity_id: "todo_1", group_id: "g_3" },
       }),
       view(),
@@ -76,18 +79,18 @@ describe("membership checker — fan-out scope", () => {
   });
 
   it("resolves an entityGroup delete through the membership row's group", () => {
-    const scope = resolveUpdateGroups(
-      update({ subject_id: "eg_1", subject_type: "entityGroup", method: "delete" }),
+    const scope = membershipScope(
+      update({ subject_id: "eg_1", model: "entityGroup", method: "delete" }),
       view({ groupOfMembership: (id) => (id === "eg_1" ? "g_4" : undefined) }),
     );
     expect(scope).toEqual(["g_4"]);
   });
 
   it("resolves a relationship through its source's groups", () => {
-    const scope = resolveUpdateGroups(
+    const scope = membershipScope(
       update({
         subject_id: "rel_1",
-        subject_type: "relationship",
+        model: "relationship",
         fields: { source_id: "todo_1" },
       }),
       view({ groupsOf: (id) => (id === "todo_1" ? ["g_5", "g_6"] : []) }),
@@ -97,31 +100,29 @@ describe("membership checker — fan-out scope", () => {
 
   it("returns an empty scope when the subject cannot be resolved", () => {
     expect(
-      resolveUpdateGroups(
-        update({ subject_id: "eg_1", subject_type: "entityGroup", method: "delete" }),
+      membershipScope(
+        update({ subject_id: "eg_1", model: "entityGroup", method: "delete" }),
         view(),
       ),
     ).toEqual([]);
-    expect(
-      resolveUpdateGroups(update({ subject_id: "rel_1", subject_type: "relationship" }), view()),
-    ).toEqual([]);
-    expect(
-      resolveUpdateGroups(update({ subject_id: "todo_1", subject_type: "todo" }), view()),
-    ).toEqual([]);
+    expect(membershipScope(update({ subject_id: "rel_1", model: "relationship" }), view())).toEqual(
+      [],
+    );
+    expect(membershipScope(update({ subject_id: "todo_1", model: "todo" }), view())).toEqual([]);
   });
 
   it("unions a batch's scopes, sorted and de-duplicated", () => {
     const scope = membershipScope(
       [
-        update({
+        ...update({
           subject_id: "eg_1",
-          subject_type: "entityGroup",
+          model: "entityGroup",
           fields: { group_id: "g_2" },
         }),
-        update({ subject_id: "eg_2", subject_type: "entityGroup", method: "delete" }),
-        update({
+        ...update({ subject_id: "eg_2", model: "entityGroup", method: "delete" }),
+        ...update({
           subject_id: "eg_3",
-          subject_type: "entityGroup",
+          model: "entityGroup",
           fields: { group_id: "g_1" },
         }),
       ],

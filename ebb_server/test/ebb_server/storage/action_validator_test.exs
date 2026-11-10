@@ -78,23 +78,16 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
-    test "system entity without data.fields passes" do
+    test "a system component update passes" do
       action =
         sample_action(%{
           "updates" => [
             %{
               "id" => "rel_1",
               "subject_id" => "rel_1",
-              "subject_type" => "relationship",
-              "method" => "put",
-              "data" => %{
-                "fields" => %{
-                  "source_id" => %{"value" => "todo_1"},
-                  "target_id" => %{"value" => "g_1"},
-                  "type" => %{"value" => "todo"},
-                  "field" => %{"value" => "group"}
-                }
-              }
+              "component" => "relationship/source_id",
+              "method" => "merge",
+              "data" => %{"value" => "todo_1"}
             }
           ]
         })
@@ -102,16 +95,15 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert ActionValidator.validate_structure(action) == :ok
     end
 
-    test "user entity without data.fields rejected" do
+    test "a component update without a component is rejected" do
       action =
         sample_action(%{
           "updates" => [
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "put",
-              "data" => %{}
+              "method" => "merge",
+              "data" => %{"value" => "x"}
             }
           ]
         })
@@ -119,25 +111,65 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
-    test "user entity with a well-formed map field passes" do
+    test "a component that is not <model>/<field> is rejected" do
+      for component <- ["todo", "/title", "todo/", "todo/ti/tle", ""] do
+        action =
+          sample_action(%{
+            "updates" => [
+              %{
+                "id" => "upd_1",
+                "subject_id" => "todo_1",
+                "component" => component,
+                "method" => "merge",
+                "data" => %{"value" => "x"}
+              }
+            ]
+          })
+
+        assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+      end
+    end
+
+    test "a row-shaped data record is rejected" do
       action =
         sample_action(%{
           "updates" => [
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "patch",
+              "component" => "todo/title",
+              "method" => "merge",
+              "data" => %{"fields" => %{"title" => %{"value" => "x"}}}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(action)
+      assert details =~ "fields record"
+    end
+
+    test "a per-update identity key is rejected" do
+      update = sample_update() |> Map.put("subject_type", "todo")
+      action = sample_action(%{"updates" => [update]})
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "a user entity with a well-formed keyed value passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "component" => "todo/content",
+              "method" => "merge",
               "data" => %{
-                "fields" => %{
-                  "content" => %{
+                "map" => %{
+                  "a" => %{"value" => "hello", "update_id" => "u_a", "hlc" => "100"},
+                  "nested" => %{
                     "map" => %{
-                      "a" => %{"value" => "hello", "update_id" => "u_a", "hlc" => "100"},
-                      "nested" => %{
-                        "map" => %{
-                          "b" => %{"value" => 1, "update_id" => "u_b", "hlc" => "200"}
-                        }
-                      }
+                      "b" => %{"value" => 1, "update_id" => "u_b", "hlc" => "200"}
                     }
                   }
                 }
@@ -156,15 +188,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "content" => %{
-                    "map" => %{"a" => %{"value" => "hello", "hlc" => "100"}}
-                  }
-                }
-              }
+              "component" => "todo/content",
+              "method" => "merge",
+              "data" => %{"map" => %{"a" => %{"value" => "hello", "hlc" => "100"}}}
             }
           ]
         })
@@ -179,17 +205,11 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "patch",
+              "component" => "todo/content",
+              "method" => "merge",
               "data" => %{
-                "fields" => %{
-                  "content" => %{
-                    "map" => %{
-                      "outer" => %{
-                        "map" => %{"inner" => %{"value" => "hello", "hlc" => "100"}}
-                      }
-                    }
-                  }
+                "map" => %{
+                  "outer" => %{"map" => %{"inner" => %{"value" => "hello", "hlc" => "100"}}}
                 }
               }
             }
@@ -206,9 +226,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "patch",
-              "data" => %{"fields" => %{"content" => %{"map" => "not a map"}}}
+              "component" => "todo/content",
+              "method" => "merge",
+              "data" => %{"map" => "not a map"}
             }
           ]
         })
@@ -219,16 +239,16 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     # The server stamps `update_id` on leaves itself, so a bare leaf stays
     # accepted without one; only map entries, which the client stamps, are
     # required to carry it.
-    test "top-level leaf without update_id still passes" do
+    test "leaf without update_id still passes" do
       action =
         sample_action(%{
           "updates" => [
             %{
               "id" => "upd_1",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "put",
-              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"value" => "Test"}
             }
           ]
         })
@@ -236,69 +256,119 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert ActionValidator.validate_structure(action) == :ok
     end
 
-    # data: nil is valid for system entities (the update handler
-    # ignores `data` for them) and for any delete (the data fields
-    # are dropped on the wire).
-    test "relationship delete with nil data passes" do
+    test "replace with a keyed value is refused, naming the component" do
       action =
         sample_action(%{
           "updates" => [
             %{
-              "id" => "u_del",
-              "subject_id" => "rel_1",
-              "subject_type" => "relationship",
-              "method" => "delete",
-              "data" => nil
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "component" => "todo/content",
+              "method" => "replace",
+              "data" => %{"map" => %{"a" => %{"value" => 1, "update_id" => "u_a"}}}
             }
           ]
         })
 
-      assert ActionValidator.validate_structure(action) == :ok
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(action)
+      assert details =~ "todo/content"
+      assert details =~ "replace is refused"
     end
 
-    test "group delete with nil data passes" do
-      action =
-        sample_action(%{
-          "updates" => [
-            %{
-              "id" => "u_del",
-              "subject_id" => "grp_1",
-              "subject_type" => "group",
-              "method" => "delete",
-              "data" => nil
-            }
-          ]
-        })
-
-      assert ActionValidator.validate_structure(action) == :ok
-    end
-
-    test "groupMember delete with nil data passes" do
-      action =
-        sample_action(%{
-          "updates" => [
-            %{
-              "id" => "u_del",
-              "subject_id" => "gm_1",
-              "subject_type" => "groupMember",
-              "method" => "delete",
-              "data" => nil
-            }
-          ]
-        })
-
-      assert ActionValidator.validate_structure(action) == :ok
-    end
-
-    test "user entity delete with nil data passes" do
+    test "a delete carrying a component is rejected" do
       action =
         sample_action(%{
           "updates" => [
             %{
               "id" => "u_del",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
+              "component" => "todo/title",
               "method" => "delete",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "a delete carrying data is rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_del",
+              "subject_id" => "todo_1",
+              "method" => "delete",
+              "data" => %{"value" => "x"}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "a drop carrying data is rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_drop",
+              "subject_id" => "todo_1",
+              "component" => "todo/title",
+              "method" => "drop",
+              "data" => %{"value" => "x"}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "a merge carrying no data is rejected" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "todo_1",
+              "component" => "todo/title",
+              "method" => "merge",
+              "data" => nil
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
+    end
+
+    test "deletes name the row and pass" do
+      for subject_id <- ["rel_1", "grp_1", "gm_1", "todo_1"] do
+        action =
+          sample_action(%{
+            "updates" => [
+              %{
+                "id" => "u_del",
+                "subject_id" => subject_id,
+                "method" => "delete",
+                "data" => nil
+              }
+            ]
+          })
+
+        assert ActionValidator.validate_structure(action) == :ok
+      end
+    end
+
+    test "a drop names the row's component and passes" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "u_drop",
+              "subject_id" => "todo_1",
+              "component" => "todo/title",
+              "method" => "drop",
               "data" => nil
             }
           ]
@@ -322,8 +392,8 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
-    test "missing update subject_type rejected" do
-      action = sample_action(%{"updates" => [Map.delete(sample_update(), "subject_type")]})
+    test "missing update component rejected" do
+      action = sample_action(%{"updates" => [Map.delete(sample_update(), "component")]})
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
   end
@@ -391,17 +461,17 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       action_hlc: action_hlc
     } do
       leaf_hlc = hlc_from(now + 1_000_000_000, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}})
+      action = component_action(action_hlc, %{"value" => "pwned", "hlc" => leaf_hlc})
 
       assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
       assert rejection.action_id == action["id"]
       assert rejection.reason == "invalid_field_hlc"
-      assert rejection.details == "fields.title.hlc is more than 120s in the future"
+      assert rejection.details == "todo/title.hlc is more than 120s in the future"
     end
 
     test "a leaf at the drift boundary is accepted", %{now: now, action_hlc: action_hlc} do
       boundary = hlc_from(now + 120_000, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "edge", "hlc" => boundary}})
+      action = component_action(action_hlc, %{"value" => "edge", "hlc" => boundary})
 
       assert {[_], []} = ActionValidator.validate([action], "a_test", now_ms: now)
     end
@@ -411,7 +481,7 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       action_hlc: action_hlc
     } do
       past = hlc_from(now + 120_001, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => past}})
+      action = component_action(action_hlc, %{"value" => "pwned", "hlc" => past})
 
       assert {[], [rejection]} = ActionValidator.validate([action], "a_test", now_ms: now)
       assert rejection.reason == "invalid_field_hlc"
@@ -422,17 +492,20 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       action_hlc: action_hlc
     } do
       leaf_hlc = hlc_from(now + 121_000, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}})
+      action = component_action(action_hlc, %{"value" => "pwned", "hlc" => leaf_hlc})
 
       assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
       assert rejection.reason == "invalid_field_hlc"
     end
 
-    test "a put with a far-future leaf HLC is rejected", %{now: now, action_hlc: action_hlc} do
+    test "a replace with a far-future leaf HLC is rejected", %{
+      now: now,
+      action_hlc: action_hlc
+    } do
       leaf_hlc = hlc_from(now + 1_000_000_000, 0)
 
       action =
-        field_action(action_hlc, %{"title" => %{"value" => "pwned", "hlc" => leaf_hlc}}, "put")
+        component_action(action_hlc, %{"value" => "pwned", "hlc" => leaf_hlc}, "replace")
 
       assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
       assert rejection.reason == "invalid_field_hlc"
@@ -444,19 +517,22 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     } do
       leaf_hlc = hlc_from(now + 1_000_000_000, 0)
 
-      fields = %{
-        "content" => %{
-          "map" => %{
-            "run_1" => %{"value" => "pwned", "update_id" => "u_run_1", "hlc" => leaf_hlc}
-          }
+      value = %{
+        "map" => %{
+          "run_1" => %{"value" => "pwned", "update_id" => "u_run_1", "hlc" => leaf_hlc}
         }
       }
 
       assert {[], [rejection]} =
-               ActionValidator.validate([field_action(action_hlc, fields)], "a_test")
+               ActionValidator.validate(
+                 [component_action(action_hlc, value, "merge", "todo/content")],
+                 "a_test"
+               )
 
       assert rejection.reason == "invalid_field_hlc"
-      assert rejection.details == "fields.content.map.run_1.hlc is more than 120s in the future"
+
+      assert rejection.details ==
+               "todo/content.map.run_1.hlc is more than 120s in the future"
     end
 
     test "leaf HLC newer than the Action but inside the window is accepted", %{
@@ -464,58 +540,56 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       action_hlc: action_hlc
     } do
       leaf_hlc = hlc_from(now + 1_000, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "copy", "hlc" => leaf_hlc}})
+      action = component_action(action_hlc, %{"value" => "copy", "hlc" => leaf_hlc})
 
       assert {[_], []} = ActionValidator.validate([action], "a_test")
     end
 
     test "leaf HLC equal to the action HLC is accepted", %{action_hlc: action_hlc} do
-      action = field_action(action_hlc, %{"title" => %{"value" => "ok", "hlc" => action_hlc}})
+      action = component_action(action_hlc, %{"value" => "ok", "hlc" => action_hlc})
 
       assert {[_], []} = ActionValidator.validate([action], "a_test")
     end
 
     test "decimal-string leaf HLC equal to the action HLC is accepted", %{action_hlc: action_hlc} do
-      action =
-        field_action(action_hlc, %{"title" => %{"value" => "ok", "hlc" => "#{action_hlc}"}})
+      action = component_action(action_hlc, %{"value" => "ok", "hlc" => "#{action_hlc}"})
 
       assert {[_], []} = ActionValidator.validate([action], "a_test")
     end
 
     test "leaf HLC older than the action HLC is accepted", %{now: now, action_hlc: action_hlc} do
       leaf_hlc = hlc_from(now - 60_000, 0)
-      action = field_action(action_hlc, %{"title" => %{"value" => "stale", "hlc" => leaf_hlc}})
+      action = component_action(action_hlc, %{"value" => "stale", "hlc" => leaf_hlc})
 
       assert {[_], []} = ActionValidator.validate([action], "a_test")
     end
 
     test "leaf without an HLC is accepted", %{action_hlc: action_hlc} do
-      absent = field_action(action_hlc, %{"title" => %{"value" => "absent"}})
+      absent = component_action(action_hlc, %{"value" => "absent"})
 
-      explicit_nil =
-        field_action(action_hlc, %{"title" => %{"value" => "nil", "hlc" => nil}})
+      explicit_nil = component_action(action_hlc, %{"value" => "nil", "hlc" => nil})
 
       assert {[_, _], []} = ActionValidator.validate([absent, explicit_nil], "a_test")
     end
 
     test "unparseable leaf HLC is rejected", %{action_hlc: action_hlc} do
       action =
-        field_action(action_hlc, %{"title" => %{"value" => "bad", "hlc" => "not-a-number"}})
+        component_action(action_hlc, %{"value" => "bad", "hlc" => "not-a-number"})
 
       assert {[], [rejection]} = ActionValidator.validate([action], "a_test")
       assert rejection.reason == "invalid_field_hlc"
-      assert rejection.details == "fields.title.hlc must be a positive integer"
+      assert rejection.details == "todo/title.hlc must be a positive integer"
     end
 
     test "non-positive leaf HLC is rejected", %{action_hlc: action_hlc} do
-      zero = field_action(action_hlc, %{"title" => %{"value" => "zero", "hlc" => 0}})
-      negative = field_action(action_hlc, %{"title" => %{"value" => "negative", "hlc" => -1}})
+      zero = component_action(action_hlc, %{"value" => "zero", "hlc" => 0})
+      negative = component_action(action_hlc, %{"value" => "negative", "hlc" => -1})
 
       assert {[], rejections} = ActionValidator.validate([zero, negative], "a_test")
       assert Enum.map(rejections, & &1.reason) == ["invalid_field_hlc", "invalid_field_hlc"]
     end
 
-    test "system entity leaf HLC is validated", %{now: now, action_hlc: action_hlc} do
+    test "system component leaf HLC is validated", %{now: now, action_hlc: action_hlc} do
       action =
         sample_action(%{
           "hlc" => action_hlc,
@@ -523,13 +597,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "gm_1",
               "subject_id" => "gm_1",
-              "subject_type" => "groupMember",
-              "method" => "put",
-              "data" => %{
-                "fields" => %{
-                  "actor_id" => %{"value" => "a_test", "hlc" => hlc_from(now + 1_000_000_000, 0)}
-                }
-              }
+              "component" => "groupMember/actor_id",
+              "method" => "merge",
+              "data" => %{"value" => "a_test", "hlc" => hlc_from(now + 1_000_000_000, 0)}
             }
           ]
         })
@@ -538,19 +608,17 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert rejection.reason == "invalid_field_hlc"
     end
 
-    test "delete leaf HLC is not validated", %{action_hlc: action_hlc} do
+    test "a drop carries no leaf, so no HLC is validated", %{action_hlc: action_hlc} do
       action =
         sample_action(%{
           "hlc" => action_hlc,
           "updates" => [
             %{
-              "id" => "upd_del",
+              "id" => "upd_drop",
               "subject_id" => "todo_1",
-              "subject_type" => "todo",
-              "method" => "delete",
-              "data" => %{
-                "fields" => %{"title" => %{"value" => "gone", "hlc" => "garbage"}}
-              }
+              "component" => "todo/title",
+              "method" => "drop",
+              "data" => nil
             }
           ]
         })
@@ -682,25 +750,15 @@ defmodule EbbServer.Storage.ActionValidatorTest do
   end
 
   defp padded_update(payload_bytes) do
-    hlc = generate_hlc()
-
-    sample_update(%{
-      "data" => %{
-        "fields" => %{
-          "title" => %{
-            "type" => "lww",
-            "value" => String.duplicate("x", payload_bytes),
-            "hlc" => hlc
-          }
-        }
-      }
-    })
+    sample_update(%{"data" => %{"value" => String.duplicate("x", payload_bytes)}})
   end
 
-  defp field_action(action_hlc, fields, method \\ "patch") do
+  defp component_action(action_hlc, data, method \\ "merge", component \\ "todo/title") do
     sample_action(%{
       "hlc" => action_hlc,
-      "updates" => [sample_update(%{"method" => method, "data" => %{"fields" => fields}})]
+      "updates" => [
+        sample_update(%{"component" => component, "method" => method, "data" => data})
+      ]
     })
   end
 end

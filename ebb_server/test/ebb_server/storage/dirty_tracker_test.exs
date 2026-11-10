@@ -131,7 +131,7 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       refute DirtyTracker.pending?(DirtyTracker.dirty_generation("todo_abc", dirty_set))
     end
 
-    test "clear_pending_batch/3 does not clear a different type with the same id" do
+    test "clear_pending_batch/3 does not clear a different model with the same id" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       generation = DirtyTracker.mark_pending_batch([{"todo_abc", "todo"}], dirty_set)
@@ -156,16 +156,16 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert DirtyTracker.dirty_generation("todo_xyz", dirty_set) == settled_xyz
     end
 
-    test "settle_all_pending/1 preserves each mark's recorded type" do
+    test "settle_all_pending/1 preserves each mark's recorded model" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       DirtyTracker.mark_pending_batch([{"e_abc", "todo"}, {"gm_xyz", "groupMember"}], dirty_set)
 
       :ok = DirtyTracker.settle_all_pending(dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set) == ["e_abc"]
+      assert DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set) == ["e_abc"]
 
-      assert DirtyTracker.dirty_entity_ids_for_type("groupMember", dirty_set) == ["gm_xyz"]
+      assert DirtyTracker.dirty_entity_ids_for_model("groupMember", dirty_set) == ["gm_xyz"]
     end
   end
 
@@ -245,15 +245,15 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
     end
   end
 
-  describe "dirty_entity_ids_for_type/2" do
-    test "classifies an SDK-shaped entity by its recorded type, not its ID prefix" do
+  describe "dirty_entity_ids_for_model/2" do
+    test "classifies an SDK-shaped entity by its recorded model, not its ID prefix" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       # The client SDK generates user-entity IDs as `e_<nanoid>`, so the ID
-      # prefix carries no type information.
+      # prefix carries no model information.
       :ok = DirtyTracker.mark_dirty_batch([{"e_abc", "todo"}], dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set) == ["e_abc"]
+      assert DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set) == ["e_abc"]
     end
 
     test "does not classify by ID prefix" do
@@ -261,11 +261,11 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
 
       :ok = DirtyTracker.mark_dirty_batch([{"todo_1", "post"}], dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_type("post", dirty_set) == ["todo_1"]
-      assert DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set) == []
+      assert DirtyTracker.dirty_entity_ids_for_model("post", dirty_set) == ["todo_1"]
+      assert DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set) == []
     end
 
-    test "returns only the requested type" do
+    test "returns only the requested model" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
@@ -274,13 +274,13 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
           dirty_set
         )
 
-      todo_ids = DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set)
+      todo_ids = DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set)
       assert Enum.sort(todo_ids) == ["todo_abc", "todo_xyz"]
 
-      assert DirtyTracker.dirty_entity_ids_for_type("post", dirty_set) == ["post_123"]
+      assert DirtyTracker.dirty_entity_ids_for_model("post", dirty_set) == ["post_123"]
     end
 
-    test "handles groupMember type regardless of ID shape" do
+    test "handles groupMember model regardless of ID shape" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
@@ -289,11 +289,11 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
           dirty_set
         )
 
-      ids = DirtyTracker.dirty_entity_ids_for_type("groupMember", dirty_set)
+      ids = DirtyTracker.dirty_entity_ids_for_model("groupMember", dirty_set)
       assert Enum.sort(ids) == ["gm_abc", "groupMember_xyz"]
     end
 
-    test "handles relationship type regardless of ID shape" do
+    test "handles relationship model regardless of ID shape" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
@@ -302,13 +302,13 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
           dirty_set
         )
 
-      ids = DirtyTracker.dirty_entity_ids_for_type("relationship", dirty_set)
+      ids = DirtyTracker.dirty_entity_ids_for_model("relationship", dirty_set)
       assert Enum.sort(ids) == ["rel_abc", "relationship_xyz"]
     end
   end
 
-  describe "dirty_entity_ids_for_types/2" do
-    test "returns the dirty IDs recorded under any of the given types" do
+  describe "dirty_entity_ids_for_models/2" do
+    test "returns the dirty IDs recorded under any of the given models" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
@@ -324,7 +324,7 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
         )
 
       ids =
-        DirtyTracker.dirty_entity_ids_for_types(
+        DirtyTracker.dirty_entity_ids_for_models(
           ["group", "groupMember", "relationship", "entityGroup"],
           dirty_set
         )
@@ -332,20 +332,20 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert Enum.sort(ids) == ["eg_xyz", "gm_abc", "grp_1", "rel_1"]
     end
 
-    test "deduplicates repeated types" do
+    test "deduplicates repeated models" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok = DirtyTracker.mark_dirty_batch([{"todo_1", "todo"}], dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_types(["todo", "todo"], dirty_set) == ["todo_1"]
+      assert DirtyTracker.dirty_entity_ids_for_models(["todo", "todo"], dirty_set) == ["todo_1"]
     end
 
-    test "returns an empty list for no types" do
+    test "returns an empty list for no models" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok = DirtyTracker.mark_dirty_batch([{"todo_1", "todo"}], dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_types([], dirty_set) == []
+      assert DirtyTracker.dirty_entity_ids_for_models([], dirty_set) == []
     end
   end
 

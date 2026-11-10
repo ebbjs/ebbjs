@@ -11,13 +11,13 @@ defmodule EbbServer.Storage.EntityIndex do
   all ask the same question through this module and expect the same
   answer.
 
-  Resolution is dispatched by `subject_type`:
+  Resolution is dispatched by the row's `model`:
 
     - `"group"`        → the group is its own id
     - `"entityGroup"`  → the membership's `group_id`
     - `"groupMember"`  → the membership's `group_id`
     - `"relationship"` → the membership set of the edge's source
-    - user types       → the source's membership set
+    - user models      → the source's membership set
 
   A relationship resolves through its **source**, never its own
   `target_id`: an app may hold a domain link to a `group` entity, and
@@ -35,10 +35,10 @@ defmodule EbbServer.Storage.EntityIndex do
   back to globals, so a stale `:persistent_term` cannot reach a later
   caller's resolution path.
 
-  Auxiliary lookups live here as well: `subject_type/2` resolves an
-  existing entity's type from the entity-type index (the authorizer uses
+  Auxiliary lookups live here as well: `model/2` resolves an existing
+  entity's committed model from the entity-type index (the authorizer uses
   it to gate membership mutations, #264, and every entity write, whose
-  wire `subject_type` must match the committed type, #624), `exists?/2`
+  component prefix must match the committed model, #624), `exists?/2`
   exposes the same index as an existence signal (used by the authorizer to
   gate the bootstrap self-grant, #289), `membership/2` resolves an
   `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
@@ -57,7 +57,7 @@ defmodule EbbServer.Storage.EntityIndex do
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
 
-  @typep subject_type :: String.t()
+  @typep model :: String.t()
   @typep subject_id :: String.t()
 
   @doc """
@@ -79,11 +79,11 @@ defmodule EbbServer.Storage.EntityIndex do
   Missing required options raise `ArgumentError` rather than silently
   falling back to a global default.
   """
-  @spec resolve_groups(subject_type(), subject_id(), keyword()) :: [String.t()]
-  def resolve_groups(subject_type, subject_id, opts \\ [])
+  @spec resolve_groups(model(), subject_id(), keyword()) :: [String.t()]
+  def resolve_groups(model, subject_id, opts \\ [])
 
-  def resolve_groups(subject_type, subject_id, opts) do
-    {groups, source_id} = resolve_groups_cached(subject_type, subject_id, opts)
+  def resolve_groups(model, subject_id, opts) do
+    {groups, source_id} = resolve_groups_cached(model, subject_id, opts)
     apply_intra_action(groups, source_id, opts)
   end
 
@@ -92,17 +92,16 @@ defmodule EbbServer.Storage.EntityIndex do
   `:intra_action` membership.
 
   Returns the cached group set and the entity id whose intra-action
-  membership still has to be unioned on top, or `nil` for a subject type
-  that carries none (`"group"`, `"entityGroup"`, `"groupMember"`).
+  membership still has to be unioned on top, or `nil` for a model that
+  carries none (`"group"`, `"entityGroup"`, `"groupMember"`).
 
   The Writer builds every Action of a coalesced flush against one cache
   snapshot, so it memoizes this per resolution key and calls
   `apply_intra_action/3` once per Action. Keying the memo on the full
-  `{subject_type, subject_id}` keeps a `"relationship"` or
-  `"entityGroup"` lookup from being answered by an unrelated entry with
-  the same id.
+  `{model, subject_id}` keeps a `"relationship"` or `"entityGroup"`
+  lookup from being answered by an unrelated entry with the same id.
   """
-  @spec resolve_groups_cached(subject_type(), subject_id(), keyword()) ::
+  @spec resolve_groups_cached(model(), subject_id(), keyword()) ::
           {[String.t()], subject_id() | nil}
   def resolve_groups_cached("group", group_id, _opts), do: {[group_id], nil}
 
@@ -149,7 +148,7 @@ defmodule EbbServer.Storage.EntityIndex do
     end
   end
 
-  def resolve_groups_cached(_user_type, source_id, opts) do
+  def resolve_groups_cached(_user_model, source_id, opts) do
     {source_groups_cached(source_id, opts), source_id}
   end
 
@@ -200,16 +199,17 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Resolves the type of an existing entity id from the entity-type index.
+  Resolves the committed model of an existing entity id from the
+  entity-type index.
 
   Returns `nil` when the index has no entry for the id. That is not proof
   of a new id: the index is rebuilt from the caches and can lag them, so a
-  caller that gates a write on the resolved type must weigh its other
+  caller that gates a write on the resolved model must weigh its other
   existence signals before treating the id as new, and refuse when the id
-  exists but nothing types it.
+  exists but nothing records its model.
   """
-  @spec subject_type(subject_id(), keyword()) :: subject_type() | nil
-  def subject_type(entity_id, opts) do
+  @spec model(subject_id(), keyword()) :: model() | nil
+  def model(entity_id, opts) do
     table = Keyword.fetch!(opts, :entity_types)
 
     cached_row(opts, :entity_types, entity_id, fn ->
@@ -220,18 +220,18 @@ defmodule EbbServer.Storage.EntityIndex do
   @doc """
   Returns true when the entity-type index knows `entity_id`.
 
-  Existence only: the recorded type may be stale — a tombstoned entity
+  Existence only: the recorded model may be stale — a tombstoned entity
   keeps its entry — so callers treat this as a fail-closed existence
-  signal, never as a current-type assertion.
+  signal, never as a current-model assertion.
   """
   @spec exists?(subject_id(), keyword()) :: boolean()
-  def exists?(entity_id, opts), do: subject_type(entity_id, opts) != nil
+  def exists?(entity_id, opts), do: model(entity_id, opts) != nil
 
   @doc """
   Resolves an `entityGroup` membership row to its `{entity_id, group_id}`.
 
   The `entityGroup` delete wire form carries only the membership row id,
-  so the authorizer needs the row's entity and group to resolve the type
+  so the authorizer needs the row's entity and group to resolve the model
   and current membership set. Returns `nil` when the row is not cached.
   """
   @spec membership(subject_id(), keyword()) :: {String.t(), String.t()} | nil
@@ -267,15 +267,15 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns the group set for a `relationship` update.
+  Returns the group set for a `relationship` row mutation.
 
   The row is scoped through the source it is **bound** to, not the source
   the wire claims:
 
-    - `put` / `patch` follow the wire `source_id` (the authorizer refuses a
-      put or patch whose wire source differs from the stored row's, #624)
+    - `:put` / `:patch` follow the wire `source_id` (the authorizer refuses
+      a put or patch whose wire source differs from the stored row's, #624)
       and fall back to the stored row when the wire drops the source.
-    - Every other method — notably `delete` — follows the stored row's
+    - Every other method — notably `:delete` — follows the stored row's
       source, so a delete is scoped to the groups the row actually belongs
       to. The wire `source_id` is used only when no committed row exists: a
       row created earlier in the request, or one already tombstoned, has
@@ -308,26 +308,28 @@ defmodule EbbServer.Storage.EntityIndex do
     end
   end
 
-  defp put_or_patch?(method), do: to_string(method) in ["put", "patch"]
+  defp put_or_patch?(method), do: method in [:put, :patch]
 
   @doc """
-  Classifies how an Update's fan-out group set is resolved.
+  Classifies how a folded row mutation's fan-out group set is resolved.
 
   The Writer's `cf_group_actions` index and `fan_out_groups/2` both
   consume this decision, so the "wire value wins for a not-yet-cached
-  row" rule lives here once.
+  row" rule lives here once. The row is the unit: a system row's
+  `group_id` or `source_id` may be carried by one component Update while
+  its siblings carry none, so the folded row is what names the scope.
 
-  Returns `{:wire, group_ids}` when the Update carries the group on the
+  Returns `{:wire, group_ids}` when the row carries the group on the
   wire, `{:source, entity_id}` when its scope follows a resolved
-  relationship source, and `{:by_id, subject_type}` when the subject has
-  to be resolved from the caches. A relationship's source is resolved by
+  relationship source, and `{:by_id, model}` when the subject has to be
+  resolved from the caches. A relationship's source is resolved by
   method here — see `relationship_groups/4` — so fan-out cannot scope a
   delete more widely than its authorization did (#624).
   """
   @spec fan_out_preference(map(), keyword()) ::
-          {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, subject_type()}
+          {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, model()}
   def fan_out_preference(update, opts) do
-    case update.subject_type do
+    case update.model do
       "relationship" ->
         source_id = Fields.get(update.data, "source_id")
 
@@ -336,31 +338,31 @@ defmodule EbbServer.Storage.EntityIndex do
           source -> {:source, source}
         end
 
-      type when type in ["entityGroup", "groupMember"] ->
+      model when model in ["entityGroup", "groupMember"] ->
         case Fields.get(update.data, "group_id") do
-          nil -> {:by_id, type}
+          nil -> {:by_id, model}
           group_id -> {:wire, [group_id]}
         end
 
-      type ->
-        {:by_id, type}
+      model ->
+        {:by_id, model}
     end
   end
 
   @doc """
-  Returns the group set an Update fans out to, before the Writer commits.
+  Returns the group set a folded row fans out to, before the Writer commits.
 
   Resolves `fan_out_preference/2` against the caches unioned with the
   Action's `:intra_action` membership. The brand-new `entityGroup` and
   `groupMember` rows of the Action are not in the by-id caches yet, so
-  those Updates prefer the group on the wire.
+  those rows prefer the group on the wire.
   """
   @spec fan_out_groups(map(), keyword()) :: [String.t()]
   def fan_out_groups(update, opts) do
     case fan_out_preference(update, opts) do
       {:wire, group_ids} -> group_ids
       {:source, source_id} -> source_groups(source_id, opts)
-      {:by_id, subject_type} -> resolve_groups(subject_type, update.subject_id, opts)
+      {:by_id, model} -> resolve_groups(model, update.subject_id, opts)
     end
   end
 

@@ -65,11 +65,38 @@ defmodule EbbServer.Sync.HandshakeTest do
     gm_id = "gm_" <> Nanoid.generate()
     group_update_id = "upd_group_" <> Nanoid.generate()
 
-    fields = %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
+    action = %{
+      "id" => "act_bootstrap_" <> Nanoid.generate(),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" =>
+        [
+          %{
+            "id" => group_update_id,
+            "subject_id" => group_id,
+            "component" => "group/name",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
+          }
+        ] ++
+          group_apps_updates(group_id, group_update_id, apps, hlc) ++
+          group_member_updates(gm_id, actor_id, group_id, permissions, hlc)
+    }
 
-    fields =
-      if apps do
-        Map.put(fields, "apps", %{
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+    :ok
+  end
+
+  defp group_apps_updates(_group_id, _update_id, nil, _hlc), do: []
+
+  defp group_apps_updates(group_id, update_id, apps, hlc) do
+    [
+      %{
+        "id" => update_id <> "_apps",
+        "subject_id" => group_id,
+        "component" => "group/apps",
+        "method" => "merge",
+        "data" => %{
           "map" =>
             Map.new(apps, fn {app_id, value} ->
               {app_id,
@@ -77,44 +104,30 @@ defmodule EbbServer.Sync.HandshakeTest do
                  "type" => "lww",
                  "value" => value,
                  "hlc" => hlc,
-                 "update_id" => group_update_id
+                 "update_id" => update_id
                }}
             end)
-        })
-      else
-        fields
-      end
-
-    action = %{
-      "id" => "act_bootstrap_" <> Nanoid.generate(),
-      "actor_id" => actor_id,
-      "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => group_update_id,
-          "subject_id" => group_id,
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{"fields" => fields}
-        },
-        %{
-          "id" => gm_id,
-          "subject_id" => gm_id,
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-            }
-          }
         }
-      ]
-    }
+      }
+    ]
+  end
 
-    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
-    :ok
+  defp group_member_updates(gm_id, actor_id, group_id, permissions, hlc) do
+    [
+      {"actor_id", actor_id},
+      {"group_id", group_id},
+      {"permissions", permissions}
+    ]
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      %{
+        "id" => "#{gm_id}_#{index}",
+        "subject_id" => gm_id,
+        "component" => "groupMember/#{field}",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+      }
+    end)
   end
 
   describe "POST /sync/handshake" do

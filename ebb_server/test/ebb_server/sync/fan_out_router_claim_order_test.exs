@@ -234,11 +234,9 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
           %{
             id: "upd_#{action_id}",
             subject_id: "todo_#{action_id}",
-            subject_type: "todo",
-            method: :put,
-            data: %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => action_id, "hlc" => hlc}}
-            }
+            component: "todo/title",
+            method: :replace,
+            data: %{"type" => "lww", "value" => action_id, "hlc" => hlc}
           }
         ]
       }

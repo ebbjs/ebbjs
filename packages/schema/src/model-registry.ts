@@ -2,11 +2,12 @@
  * `ModelRegistry` — runtime container for declared model and
  * relationship definitions.
  *
- * Validates field-name membership only. Field-shape validation is not
- * done here because the wire envelope doesn't carry `type` tags.
+ * Validates component membership and the structural method rules. Field-shape
+ * validation is not done here because the wire envelope doesn't carry `type`
+ * tags.
  */
 
-import { isUnset, type Action } from "@ebbjs/core";
+import { componentField, componentModel, isFieldMap, isUnset, type Action } from "@ebbjs/core";
 import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
@@ -24,11 +25,11 @@ import type { RelationshipDef, SourceCardinality } from "./relationship";
 
 /** One validation failure against a registered entity. */
 export interface ValidationViolation {
-  /** Entity name; `"(unknown)"` if the offending update's subject_type wasn't registered. */
+  /** Model name; `"(unknown)"` if the offending component names an unregistered model. */
   entityName: string;
   /** Position of the offending Update in the action's `updates[]`. Omitted for filter violations. */
   updateIndex?: number;
-  /** Field name; omitted for violations about the subject_type itself. */
+  /** Field name; omitted for violations about the component itself. */
   field?: string;
   message: string;
 }
@@ -69,7 +70,7 @@ export type FilterGroup = Record<string, string | number | boolean | null>;
  */
 export type Filter = readonly FilterGroup[];
 
-/** Placeholder `entityName` when the offending subject_type wasn't registered. */
+/** Placeholder `entityName` when the offending component names no registered model. */
 const UNKNOWN_ENTITY = "(unknown)";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
@@ -182,25 +183,24 @@ export class ModelRegistry {
   }
 
   /**
-   * Field-kind query for conflict policy: `true` when `field` on
-   * `subjectType` merges last-writer-wins, so a concurrent inbound
-   * write can silently overwrite a local one. Unknown entities and
-   * undeclared fields default to LWW — a client without a schema has
-   * no markers, and a forward-compat field is safer flagged than not.
+   * Component-kind query for conflict policy: `true` when the component
+   * `name` merges last-writer-wins, so a concurrent inbound write can
+   * silently overwrite a local one. `name` is a field key or a full
+   * `<model>/<field>` component name. Unknown models and undeclared
+   * components default to LWW — a client without a schema has no markers,
+   * and a forward-compat component is safer flagged than not.
    */
-  isLwwField(subjectType: string, field: string): boolean {
-    const model = this.models.get(subjectType);
-    if (model === undefined) return true;
-    const marker = model.components[field]?.marker as FieldMarker | undefined;
+  isLwwField(model: string, name: string): boolean {
+    const marker = this.componentOf(model, name)?.marker as FieldMarker | undefined;
     return marker === undefined || marker.type === "lww";
   }
 
   /**
-   * Conflict granularity declared by `subjectType`. Unknown entities
-   * default to `"field"`, matching a client without a schema.
+   * Conflict granularity declared by `model`. Unknown models default to
+   * `"field"`, matching a client without a schema.
    */
-  getConflictScope(subjectType: string): ConflictScope {
-    return this.models.get(subjectType)?.conflictScope ?? "field";
+  getConflictScope(model: string): ConflictScope {
+    return this.models.get(model)?.conflictScope ?? "field";
   }
 
   /**
@@ -255,36 +255,48 @@ export class ModelRegistry {
   /**
    * Validate one action against the registry. Never throws; callers
    * decide whether to throw, warn, or aggregate. Returns `[]` when
-   * no entities are registered (validation is a no-op).
+   * no models and no relationships are registered, unless the action
+   * breaks a structural method rule that needs no schema.
    *
-   * Updates with `data === null` (delete method) skip the fields check.
+   * The model a write is committed under is the component's prefix, so a
+   * component the model does not declare is the whole membership question.
+   * A `delete` names no component and carries nothing to resolve.
    */
   validateAction(action: Action): ValidationViolation[] {
-    if (this.models.size === 0 && this.relationships.size === 0) return [];
+    const registered = this.models.size > 0 || this.relationships.size > 0;
     const violations: ValidationViolation[] = [];
     for (let i = 0; i < action.updates.length; i++) {
       const update = action.updates[i];
-      if (update === undefined) continue;
-      const entity = this.models.get(update.subject_type);
-      if (entity === undefined) {
+      if (update === undefined || update.method === "delete") continue;
+      const modelName = componentModel(update.component);
+      const field = componentField(update.component);
+      // A wholesale replace of a key space would discard a concurrent
+      // writer's siblings, so it is refused on the value's shape alone.
+      if (update.method === "replace" && isFieldMap(update.data)) {
+        violations.push({
+          entityName: modelName,
+          updateIndex: i,
+          field,
+          message: `Component "${update.component}" is a keyed component; replace is refused`,
+        });
+      }
+      if (!registered) continue;
+      const model = this.models.get(modelName);
+      if (model === undefined) {
         violations.push({
           entityName: UNKNOWN_ENTITY,
           updateIndex: i,
-          message: `Unknown subject_type: "${update.subject_type}"`,
+          message: `Unknown model "${modelName}" for component "${update.component}"`,
         });
         continue;
       }
-      if (update.data === null) continue;
-      const fieldNames = Object.keys(update.data.fields);
-      for (const fieldName of fieldNames) {
-        if (!(fieldName in entity.components)) {
-          violations.push({
-            entityName: entity.name,
-            updateIndex: i,
-            field: fieldName,
-            message: `Field "${fieldName}" is not declared on entity "${entity.name}"`,
-          });
-        }
+      if (!(field in model.components)) {
+        violations.push({
+          entityName: model.name,
+          updateIndex: i,
+          field,
+          message: `Component "${update.component}" is not declared on model "${model.name}"`,
+        });
       }
     }
     return violations;

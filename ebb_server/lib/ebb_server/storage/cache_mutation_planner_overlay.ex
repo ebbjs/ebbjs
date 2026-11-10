@@ -86,9 +86,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @doc """
   True when the overlay changes a cache group resolution reads.
 
-  Entity-type entries are carried for the next batch's `subject_type`
+  Entity-type entries are carried for the next batch's committed-model
   lookup, but they do not move an entity between groups, so a batch whose
-  predecessor only recorded types can still commit alongside it.
+  predecessor only recorded models can still commit alongside it.
   """
   @spec group_resolution_affected?(t()) :: boolean()
   def group_resolution_affected?(%Overlay{rows: rows}) do

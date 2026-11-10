@@ -29,11 +29,11 @@ const writeTitle = (id: string, value: string, hlc: string): WireAction => ({
   gsn: 0,
   updates: [
     {
-      id: `u_${id}`,
+      id: `${`u_${id}`}_0`,
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "put",
-      data: { fields: { title: { value, update_id: `u_${id}`, hlc } } },
+      component: "todo/title",
+      method: "replace",
+      data: { value, update_id: `u_${id}`, hlc },
     },
   ],
 });

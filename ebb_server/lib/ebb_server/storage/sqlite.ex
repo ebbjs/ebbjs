@@ -75,7 +75,7 @@ defmodule EbbServer.Storage.SQLite do
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     data TEXT,
-    created_hlc INTEGER NOT NULL,
+    created_hlc INTEGER,
     updated_hlc INTEGER NOT NULL,
     deleted_hlc INTEGER,
     deleted_by TEXT,

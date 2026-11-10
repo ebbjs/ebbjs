@@ -80,32 +80,33 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => "act_197_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          system_update("group", group_id, "put", %{
-            "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-          }),
-          system_update("groupMember", "gm_197_owner", "put", %{
-            "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-            "permissions" => %{
-              "type" => "lww",
-              "value" => ["todo.*", "groupMember.*"],
-              "hlc" => hlc
-            }
-          }),
-          system_update("todo", todo_id, "put", %{
-            "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-          }),
-          system_update("entityGroup", "eg_197", "put", %{
-            "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
-            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-          }),
-          system_update("groupMember", "gm_197_third", "put", %{
-            "actor_id" => %{"type" => "lww", "value" => "a_197_third", "hlc" => hlc},
-            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-            "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-          })
-        ]
+        "updates" =>
+          List.flatten([
+            system_updates("group", group_id, "replace", %{
+              "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+            }),
+            system_updates("groupMember", "gm_197_owner", "replace", %{
+              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+              "permissions" => %{
+                "type" => "lww",
+                "value" => ["todo.*", "groupMember.*"],
+                "hlc" => hlc
+              }
+            }),
+            system_updates("todo", todo_id, "replace", %{
+              "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+            }),
+            system_updates("entityGroup", "eg_197", "replace", %{
+              "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+            }),
+            system_updates("groupMember", "gm_197_third", "replace", %{
+              "actor_id" => %{"type" => "lww", "value" => "a_197_third", "hlc" => hlc},
+              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+              "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
+            })
+          ])
       }
 
       conn =
@@ -120,15 +121,15 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       bytes = receive_sse_data()
       payload = bytes |> single_data_payload() |> Jason.decode!()
 
-      subject_types =
+      models =
         payload["updates"]
-        |> Enum.map(fn update -> update["subject_type"] end)
+        |> Enum.map(fn update -> update["component"] |> String.split("/") |> hd() end)
         |> Enum.uniq()
         |> Enum.sort()
 
-      assert "group" in subject_types
-      assert "groupMember" in subject_types
-      assert "entityGroup" in subject_types
+      assert "group" in models
+      assert "groupMember" in models
+      assert "entityGroup" in models
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -158,11 +159,9 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
             %{
               id: update_id,
               subject_id: "todo_532",
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}
-              }
+              component: "todo/title",
+              method: :replace,
+              data: %{"type" => "lww", "value" => "x", "hlc" => hlc}
             }
           ]
         }
@@ -250,20 +249,16 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
             "id" => "act_363_batch_#{i}_#{:erlang.unique_integer([:positive])}",
             "actor_id" => actor_id,
             "hlc" => hlc,
-            "updates" => [
-              %{
-                "id" => "upd_363_#{i}_#{:erlang.unique_integer([:positive])}",
-                "subject_id" => entity_id,
-                "subject_type" => "todo",
-                "method" => "put",
-                "data" => %{
-                  "fields" => %{
-                    "title" => %{"type" => "lww", "value" => "Batch #{i}", "hlc" => hlc}
-                  }
+            "updates" =>
+              [
+                %{
+                  "id" => "upd_363_#{i}_#{:erlang.unique_integer([:positive])}",
+                  "subject_id" => entity_id,
+                  "component" => "todo/title",
+                  "method" => "replace",
+                  "data" => %{"type" => "lww", "value" => "Batch #{i}", "hlc" => hlc}
                 }
-              },
-              ActionHelpers.entity_group_update(entity_id, group_id, hlc)
-            ]
+              ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
           }
         end
 
@@ -309,20 +304,16 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => "act_583_hops_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_583_hops_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Hops", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_583_hops_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Hops", "hlc" => hlc}
             }
-          },
-          ActionHelpers.entity_group_update(entity_id, group_id, hlc)
-        ]
+          ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
       }
 
       conn =
@@ -354,14 +345,17 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
     end
   end
 
-  defp system_update(subject_type, subject_id, method, fields) do
-    %{
-      "id" => "upd_197_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => subject_id,
-      "subject_type" => subject_type,
-      "method" => method,
-      "data" => %{"fields" => fields}
-    }
+  defp system_updates(model, subject_id, method, fields) do
+    fields
+    |> Enum.map(fn {field, value} ->
+      %{
+        "id" => "upd_197_#{:erlang.unique_integer([:positive])}",
+        "subject_id" => subject_id,
+        "component" => "#{model}/#{field}",
+        "method" => method,
+        "data" => value
+      }
+    end)
   end
 
   describe "subscriber lifecycle (#278)" do
@@ -430,10 +424,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => "act_473_seed_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          todo_update(other_id, hlc),
-          ActionHelpers.entity_group_update(other_id, g2, hlc)
-        ]
+        "updates" =>
+          [todo_update(other_id, hlc)] ++ ActionHelpers.entity_group_update(other_id, g2, hlc)
       }
 
       assert ActionHelpers.post_actions(
@@ -461,11 +453,10 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => action_id,
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          todo_update(leaked_id, hlc),
-          entity_group_put(eg_leak, leaked_id, g1, hlc),
-          entity_group_put(eg_other, other_id, g2, hlc)
-        ]
+        "updates" =>
+          [todo_update(leaked_id, hlc)] ++
+            entity_group_put(eg_leak, leaked_id, g1, hlc) ++
+            entity_group_put(eg_other, other_id, g2, hlc)
       }
 
       conn =
@@ -482,8 +473,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       # One Action; g1 sees only its own write and membership row, g2 only
       # the row for the entity it already holds.
-      assert Enum.sort(g1_ids) == Enum.sort([leaked_id, eg_leak])
-      assert g2_ids == [eg_other]
+      assert Enum.sort(g1_ids) == Enum.sort([leaked_id, eg_leak, eg_leak])
+      assert Enum.sort(g2_ids) == [eg_other, eg_other]
 
       :ok = FanOutRouter.unsubscribe(sse1)
       :ok = FanOutRouter.unsubscribe(sse2)
@@ -494,24 +485,26 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
     %{
       "id" => "upd_473_#{:erlang.unique_integer([:positive])}",
       "subject_id" => entity_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}}
+      "component" => "todo/title",
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
     }
   end
 
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+    [
+      entity_group_component(eg_id, "entity_id", entity_id, hlc, 0),
+      entity_group_component(eg_id, "group_id", group_id, hlc, 1)
+    ]
+  end
+
+  defp entity_group_component(eg_id, field, value, hlc, index) do
     %{
-      "id" => eg_id,
+      "id" => "#{eg_id}_#{index}",
       "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        }
-      }
+      "component" => "entityGroup/#{field}",
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
     }
   end
 

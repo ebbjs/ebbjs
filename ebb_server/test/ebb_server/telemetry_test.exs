@@ -71,7 +71,7 @@ defmodule EbbServer.TelemetryTest do
 
       result =
         Telemetry.span([:entity_store, :materialize], %{subject_id: "todo_1"}, fn ->
-          {:materialized, %{subject_type: "todo"}}
+          {:materialized, %{model: "todo"}}
         end)
 
       assert result == :materialized
@@ -87,7 +87,7 @@ defmodule EbbServer.TelemetryTest do
 
       assert is_integer(stop_measurements.duration)
       assert is_integer(stop_measurements.monotonic_time)
-      assert stop_metadata.subject_type == "todo"
+      assert stop_metadata.model == "todo"
     end
 
     test "carries extra measurements returned by the span function" do

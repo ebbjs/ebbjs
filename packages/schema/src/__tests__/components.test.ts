@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ComponentLeafMismatchError,
   ComponentOutsideModelError,
   InvalidComponentNameError,
   ModelRegistry,
@@ -170,10 +171,18 @@ describe("defineSchema component validation", () => {
     expect((caught as Error).message).toContain("other/body");
   });
 
-  it("rejects a component attached under a different leaf, naming it", () => {
+  it("rejects a component attached under a leaf other than its own key", () => {
     const body = defineComponent("note/body", { text: e.string() });
-    const note = defineModel("note", { content: body });
 
-    expect(() => defineSchema({ models: { note }, version: 1 })).toThrow(/"note\/body"/);
+    let caught: unknown;
+    try {
+      defineModel("note", { content: body });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ComponentLeafMismatchError);
+    expect((caught as ComponentLeafMismatchError).componentName).toBe("note/body");
+    expect((caught as ComponentLeafMismatchError).key).toBe("content");
   });
 });

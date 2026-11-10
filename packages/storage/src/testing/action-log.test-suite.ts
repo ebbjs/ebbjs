@@ -12,7 +12,6 @@ export interface ActionLogTestSuiteOptions {
 const buildPerGroupDelete = (): Update => ({
   id: "u_delete",
   subject_id: "todo_2",
-  subject_type: "todo",
   method: "delete",
   data: null,
 });
@@ -69,7 +68,7 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         expect(perGroup.position).toBe(1);
         expect(perGroup.added.map((update) => update.id)).toEqual(["u_delete"]);
         expect(perGroup.action.updates.map((update) => update.id).sort()).toEqual([
-          "u_1",
+          "u_1_title",
           "u_delete",
         ]);
       });
@@ -165,7 +164,7 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         const tail = await log.readTail(0);
         expect(tail).toHaveLength(1);
         expect(tail[0]!.position).toBe(1);
-        expect(tail[0]!.added.map((update) => update.id).sort()).toEqual(["u_1", "u_delete"]);
+        expect(tail[0]!.added.map((update) => update.id).sort()).toEqual(["u_1_title", "u_delete"]);
       });
     });
 
@@ -218,9 +217,8 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
             {
               id: "u_other",
               subject_id: "todo_2",
-              subject_type: "todo",
-              method: "put",
-              data: { fields: {} },
+              method: "delete",
+              data: null,
             },
           ],
         });
@@ -248,16 +246,16 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
             {
               id: "u_multi_1",
               subject_id: "todo_1",
-              subject_type: "todo",
-              method: "put",
-              data: { fields: {} },
+              component: "todo/title",
+              method: "replace",
+              data: { value: "One", update_id: "u_multi_1" },
             },
             {
               id: "u_multi_2",
               subject_id: "todo_2",
-              subject_type: "todo",
-              method: "put",
-              data: { fields: {} },
+              component: "todo/title",
+              method: "replace",
+              data: { value: "Two", update_id: "u_multi_2" },
             },
           ],
         });

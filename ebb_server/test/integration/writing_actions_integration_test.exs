@@ -57,20 +57,16 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "id" => "act_valid_#{:erlang.unique_integer([:positive])}",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_valid_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Valid Action", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_valid_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Valid Action", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -91,13 +87,9 @@ defmodule EbbServer.WritingActionsIntegrationTest do
           %{
             "id" => "upd_future_#{:erlang.unique_integer([:positive])}",
             "subject_id" => "todo_future",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Future", "hlc" => hlc_future}
-              }
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Future", "hlc" => hlc_future}
           }
         ]
       }
@@ -127,36 +119,32 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "id" => "act_seq1_#{:erlang.unique_integer([:positive])}",
         "actor_id" => "a_test",
         "hlc" => hlc1,
-        "updates" => [
-          %{
-            "id" => "upd_seq1_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity1,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "First", "hlc" => hlc1}}
+        "updates" =>
+          [
+            %{
+              "id" => "upd_seq1_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity1,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc1}
             }
-          },
-          entity_group_update(entity1, "g_test", hlc1)
-        ]
+          ] ++ entity_group_update(entity1, "g_test", hlc1)
       }
 
       action2 = %{
         "id" => "act_seq2_#{:erlang.unique_integer([:positive])}",
         "actor_id" => "a_test",
         "hlc" => hlc2,
-        "updates" => [
-          %{
-            "id" => "upd_seq2_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity2,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Second", "hlc" => hlc2}}
+        "updates" =>
+          [
+            %{
+              "id" => "upd_seq2_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity2,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Second", "hlc" => hlc2}
             }
-          },
-          entity_group_update(entity2, "g_test", hlc2)
-        ]
+          ] ++ entity_group_update(entity2, "g_test", hlc2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action1]}))
@@ -165,11 +153,13 @@ defmodule EbbServer.WritingActionsIntegrationTest do
       conn1 =
         conn(:get, "/entities/#{entity1}")
         |> put_req_header("x-ebb-actor-id", "a_test")
+        |> Plug.Conn.fetch_query_params()
         |> Router.call([])
 
       conn2 =
         conn(:get, "/entities/#{entity2}")
         |> put_req_header("x-ebb-actor-id", "a_test")
+        |> Plug.Conn.fetch_query_params()
         |> Router.call([])
 
       {:ok, e1} = Jason.decode(conn1.resp_body)
@@ -182,7 +172,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
 
   describe "Re-submitting a committed Action is idempotent (#285)" do
     setup do
-      bootstrap_group("a_test", "g_test", ["todo.create", "todo.read"])
+      bootstrap_group("a_test", "g_test", ["todo.create", "todo.update", "todo.read"])
       :ok
     end
 
@@ -194,20 +184,16 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "id" => "act_dedup_#{:erlang.unique_integer([:positive])}",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_dedup_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Dedup", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_dedup_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Dedup", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       body = msgpack_encode!(%{"actions" => [action_body]})
@@ -243,18 +229,16 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "id" => "act_dirty_#{:erlang.unique_integer([:positive])}",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_dirty_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Dirty Test", "hlc" => hlc}}
+        "updates" =>
+          [
+            %{
+              "id" => "upd_dirty_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Dirty Test", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))

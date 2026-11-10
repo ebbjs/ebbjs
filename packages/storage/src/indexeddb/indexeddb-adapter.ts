@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
+import { updateModel } from "../internal/materialize";
 import type { LoggedAction } from "../types/action-log";
 import type { StorageAdapter } from "../types/storage-adapter";
 import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
@@ -58,7 +59,10 @@ export const createIndexedDBAdapter = async (
       async append(action: Action): Promise<LoggedAction> {
         const entry = await actionLog.append(action);
         for (const update of action.updates) {
-          await dirtyTracker.mark(update.subject_id, update.subject_type);
+          await dirtyTracker.mark(
+            update.subject_id,
+            updateModel(update, await entityStore.get(update.subject_id)),
+          );
         }
         return entry;
       },
@@ -69,7 +73,10 @@ export const createIndexedDBAdapter = async (
         // win is the log's single transaction, so they stay one write each.
         for (const action of actions) {
           for (const update of action.updates) {
-            await dirtyTracker.mark(update.subject_id, update.subject_type);
+            await dirtyTracker.mark(
+              update.subject_id,
+              updateModel(update, await entityStore.get(update.subject_id)),
+            );
           }
         }
         return entries;

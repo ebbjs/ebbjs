@@ -1,6 +1,14 @@
 import { deepStrictEqual } from "node:assert";
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import { createMemoryAdapter } from "../memory/memory-adapter";
 import type { StorageAdapter } from "../types/storage-adapter";
@@ -33,11 +41,33 @@ interface WriteSpec {
   readonly fields: Record<string, FieldValue>;
 }
 
-const build = (
-  method: "put" | "patch" | "delete",
-  spec: WriteSpec,
-  data: Update["data"],
-): Action => ({
+/** One component Update per fixture field; a keyed component always merges. */
+const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[] =>
+  Object.entries(spec.fields).map(([field, value]) => ({
+    id: `${spec.updateId}_${field}`,
+    subject_id: spec.entityId ?? "e_1",
+    component: componentName(spec.type ?? "todo", field),
+    method: isFieldMap(value) ? "merge" : method,
+    data: value,
+  }));
+
+const put = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: componentUpdates(spec, "replace"),
+});
+
+const patch = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: componentUpdates(spec, "merge"),
+});
+
+const remove = (spec: Omit<WriteSpec, "fields">): Action => ({
   id: spec.actionId,
   actor_id: "user_1",
   hlc: makeHlc(spec.ms ?? 1),
@@ -46,17 +76,26 @@ const build = (
     {
       id: spec.updateId,
       subject_id: spec.entityId ?? "e_1",
-      subject_type: spec.type ?? "todo",
-      method,
-      data,
+      method: "delete",
+      data: null,
     },
   ],
 });
 
-const put = (spec: WriteSpec): Action => build("put", spec, { fields: spec.fields });
-const patch = (spec: WriteSpec): Action => build("patch", spec, { fields: spec.fields });
-const remove = (spec: Omit<WriteSpec, "fields">): Action =>
-  build("delete", { ...spec, fields: {} }, null);
+/** One `drop` per fixture field. A drop for a row with no base is an orphan. */
+const drop = (spec: WriteSpec): Action => ({
+  id: spec.actionId,
+  actor_id: "user_1",
+  hlc: makeHlc(spec.ms ?? 1),
+  gsn: spec.gsn ?? 1,
+  updates: Object.keys(spec.fields).map((field) => ({
+    id: `${spec.updateId}_${field}`,
+    subject_id: spec.entityId ?? "e_1",
+    component: componentName(spec.type ?? "todo", field),
+    method: "drop" as const,
+    data: null,
+  })),
+});
 
 const openRun = () => {
   const adapter = createMemoryAdapter();
@@ -282,12 +321,12 @@ describe("replica/memory dual-run", () => {
   it("carries an orphan across a toRecord()/load() cycle", async () => {
     const { adapter, replica, durable } = openRun();
     await durable(
-      patch({
-        actionId: "a_patch",
-        updateId: "u_patch",
+      drop({
+        actionId: "a_drop",
+        updateId: "u_drop",
         gsn: 5,
         ms: 50,
-        fields: { title: leaf("Patched", "u_patch", 50) },
+        fields: { title: leaf("Dropped", "u_drop", 50) },
       }),
     );
     await equivalent(replica, adapter, "e_1", "todo");

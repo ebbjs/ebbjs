@@ -34,15 +34,11 @@ const writeTitle = (args: {
   gsn: args.gsn,
   updates: [
     {
-      id: `u_${args.id}`,
+      id: `${`u_${args.id}`}_0`,
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: args.value, update_id: `u_${args.id}`, hlc: args.hlc },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: args.value, update_id: `u_${args.id}`, hlc: args.hlc },
     },
   ],
 });

@@ -76,11 +76,11 @@ const mkTodoWrite = (args: {
   gsn: args.gsn,
   updates: [
     {
-      id: args.updateId,
+      id: `${args.updateId}_0`,
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: args.method ?? "put",
-      data: { fields: { title: { value: args.value, update_id: args.updateId, hlc: args.hlc } } },
+      component: "todo/title",
+      method: "merge",
+      data: { value: args.value, update_id: args.updateId, hlc: args.hlc },
     },
   ],
 });
@@ -100,7 +100,11 @@ const onlyConflict = async (client: {
 
 /** One entry's contested positions flattened for shape assertions. */
 const slotPaths = (entry: ConflictEntry | undefined) =>
-  entry?.slots?.map((slot) => ({ subjectId: slot.subjectId, field: slot.field, path: slot.path }));
+  entry?.slots?.map((slot) => ({
+    subjectId: slot.subjectId,
+    component: slot.component,
+    path: slot.path,
+  }));
 
 /** Seed one detected conflict: a pending local write out-dated by a peer. */
 const seedConflict = async () => {
@@ -192,7 +196,7 @@ describe("client.conflicts (#781)", () => {
     expect(conflict?.entries[0]?.subjects).toEqual(["todo_1"]);
     expect(conflict?.subjects).toEqual(["todo_1"]);
     expect(slotPaths(conflict?.entries[0])).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
+      { subjectId: "todo_1", component: "todo/title", path: [] },
     ]);
     expect(conflict?.entries[0]?.slots?.[0]?.local).toEqual({
       value: "mine",
@@ -252,7 +256,7 @@ describe("client.conflicts (#781)", () => {
     expect(logged?.actor_id).toBe(held.actor_id);
   });
 
-  it("sendLocalActions submits a field an inbound put reverted unchanged", async () => {
+  it("sendLocalActions submits a component an inbound delete reverted unchanged", async () => {
     const storage = createMemoryAdapter();
     const stub = mkStubFetch();
     const client = mkClient(stub.fn, storage);
@@ -275,38 +279,30 @@ describe("client.conflicts (#781)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_local",
+          id: "u_local_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: { fields: { title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
         },
       ],
     };
     await client.outbox.enqueue(local);
-    // The peer's put replaces the entity and omits `title`, so the local
-    // patch's field is reverted rather than out-dated.
+    // The peer's delete clears the subject, so the local component write is
+    // reverted rather than out-dated.
     const peer: Action = {
       id: "act_peer",
       actor_id: ACTOR_ID,
       hlc: PEER_HLC,
       gsn: 9,
-      updates: [
-        {
-          id: "u_peer",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: { fields: { completed: { value: true, update_id: "u_peer", hlc: PEER_HLC } } },
-        },
-      ],
+      updates: [{ id: "u_peer_del", subject_id: "todo_1", method: "delete", data: null }],
     };
     await callApplyAction(client, peer, "g_1");
     await client.outbox.detectConflicts([peer], "cu_1");
 
     const conflict = await onlyConflict(client);
     expect(slotPaths(conflict.entries[0])).toEqual([
-      { subjectId: "todo_1", field: "title", path: [] },
+      { subjectId: "todo_1", component: "todo/title", path: [] },
     ]);
     expect(conflict.entries[0]?.slots?.[0]?.remote).toEqual({ value: undefined });
 
@@ -315,10 +311,8 @@ describe("client.conflicts (#781)", () => {
     const actions = postedActions(stub.calls);
     expect(actions).toHaveLength(1);
     expect(actions[0]).toEqual(local);
-    const field = actions[0]?.updates[0]?.data?.fields.title;
-    expect(field?.value).toBe("mine");
-    expect(field?.update_id).toBe("u_local");
-    expect(field?.hlc).toBe(LOCAL_HLC);
+    const field = actions[0]?.updates[0];
+    expect(field?.data).toEqual({ value: "mine", update_id: "u_local", hlc: LOCAL_HLC });
   });
 
   it("clearLocalActions converges local state on the server view and removes the conflict", async () => {
@@ -418,7 +412,7 @@ describe("client.conflicts (#781)", () => {
     const conflict = await onlyConflict(clientB);
     const state = conflict.subjectStates[0];
     expect(state?.subjectId).toBe("todo_1");
-    expect(state?.subjectType).toBe("todo");
+    expect(state?.model).toBe("todo");
     expect(state?.before?.data.fields.title.value).toBe("mine");
     expect(state?.after?.data.fields.title.value).toBe("theirs");
     expect(state?.diff).toEqual([
@@ -437,16 +431,18 @@ describe("client.conflicts (#781)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_local",
+          id: "u_local_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              title: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
-              completed: { value: false, update_id: "u_local", hlc: LOCAL_HLC },
-            },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
+        },
+        {
+          id: "u_local_1",
+          subject_id: "todo_1",
+          component: "todo/completed",
+          method: "replace",
+          data: { value: false, update_id: "u_local", hlc: LOCAL_HLC },
         },
       ],
     });
@@ -470,11 +466,11 @@ describe("client.conflicts (#781)", () => {
       groups: ["g_1"],
     });
 
-    const put = postedActions(stub.calls)
+    const title = postedActions(stub.calls)
       .flatMap((action) => action.updates)
-      .find((update) => update.subject_type === "todo");
-    expect(put?.data?.fields.title?.value).toBe("mine");
-    expect(put?.subject_id).toBe(id);
+      .find((update) => update.method !== "delete" && update.component === "todo/title");
+    expect((title?.data as { value: unknown } | null)?.value).toBe("mine");
+    expect(title?.subject_id).toBe(id);
     // The conflict's source row is untouched by the backup.
     expect((await client.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("theirs");
   });
@@ -494,18 +490,14 @@ describe("client.conflicts (#781)", () => {
         gsn: 5,
         updates: [
           {
-            id: "u_seed",
+            id: "u_seed_0",
             subject_id: "todo_2",
-            subject_type: "todo",
-            method: "put",
+            component: "todo/title",
+            method: "replace",
             data: {
-              fields: {
-                title: {
-                  value: "server",
-                  update_id: "u_seed",
-                  hlc: makeHlc(1_711_036_799_000),
-                },
-              },
+              value: "server",
+              update_id: "u_seed",
+              hlc: makeHlc(1_711_036_799_000),
             },
           },
         ],
@@ -521,18 +513,18 @@ describe("client.conflicts (#781)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_local_1",
+          id: "u_local_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: { fields: { title: { value: "mine", update_id: "u_local_1", hlc: LOCAL_HLC } } },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "mine", update_id: "u_local_1", hlc: LOCAL_HLC },
         },
         {
-          id: "u_local_2",
+          id: "u_local_2_0",
           subject_id: "todo_2",
-          subject_type: "todo",
-          method: "patch",
-          data: { fields: { title: { value: "mine", update_id: "u_local_2", hlc: LOCAL_HLC } } },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "mine", update_id: "u_local_2", hlc: LOCAL_HLC },
         },
       ],
     });
@@ -631,15 +623,11 @@ describe("client.conflicts (#781)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_local",
+          id: "u_local_0",
           subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          data: {
-            fields: {
-              content: { map: { a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
-            },
-          },
+          component: "doc/content",
+          method: "merge",
+          data: { map: { a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
         },
       ],
     };
@@ -660,15 +648,11 @@ describe("client.conflicts (#781)", () => {
       gsn: 9,
       updates: [
         {
-          id: "u_peer",
+          id: "u_peer_0",
           subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          data: {
-            fields: {
-              content: { map: { b: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
-            },
-          },
+          component: "doc/content",
+          method: "merge",
+          data: { map: { b: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
         },
       ],
     };

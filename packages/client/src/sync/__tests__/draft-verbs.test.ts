@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, makeHlc, type Action, type Entity } from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -23,6 +23,7 @@ import type { ActionDrafts } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
 import type { Rejection } from "../types";
+import { updateModel } from "../test-utils";
 
 const list = defineModel("list", { name: e.string() });
 const label = defineModel("label", { name: e.string() });
@@ -238,9 +239,27 @@ const submittedActions = (seen: readonly RecordedRequest[]): readonly Action[] =
 const updatesOf = (seen: readonly RecordedRequest[]): Action["updates"] =>
   submittedActions(seen).flatMap((action) => action.updates);
 
-const fieldsOf = (update: Action["updates"][number]): Record<string, unknown> =>
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
+  const bySubject = new Map<string, Update[]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** A row's component values, keyed by field. */
+const fieldsOf = (row: readonly Update[]): Record<string, unknown> =>
   Object.fromEntries(
-    Object.entries(update.data?.fields ?? {}).map(([key, envelope]) => [key, envelope.value]),
+    row
+      .filter((update) => update.method === "merge" || update.method === "replace")
+      .map((update) => [
+        update.method === "delete" ? "" : update.component.slice(update.component.indexOf("/") + 1),
+        update.method === "delete" ? null : (update.data as { value: unknown }).value,
+      ]),
   );
 
 const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
@@ -296,13 +315,14 @@ describe("drafts — update / delete", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
+    const [row] = rowsOf(updates, "todo");
+    expect(row).toHaveLength(1);
+    expect(row![0]).toMatchObject({
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "patch",
+      component: "todo/title",
+      method: "merge",
     });
-    expect(fieldsOf(updates[0]!)["title"]).toBe("Renamed");
+    expect(fieldsOf(row!)["title"]).toBe("Renamed");
   });
 
   it("delete emits one delete Update carrying no data", async () => {
@@ -313,12 +333,7 @@ describe("drafts — update / delete", () => {
 
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "todo_1",
-      subject_type: "todo",
-      method: "delete",
-      data: null,
-    });
+    expect(updates[0]).toMatchObject({ subject_id: "todo_1", method: "delete", data: null });
   });
 });
 
@@ -331,16 +346,20 @@ describe("drafts — duplicate", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const put = updates.find((update) => update.subject_type === "todo")!;
+    const [put] = rowsOf(updates, "todo");
     expect(copy.id).toMatch(/^e_/);
-    expect(put.subject_id).toBe(copy.id);
-    expect(put.method).toBe("put");
-    expect(fieldsOf(put)).toMatchObject({ title: "Ship", completed: true, tags: [] });
+    expect(put![0]!.subject_id).toBe(copy.id);
+    expect(put!.every((update) => update.method === "replace")).toBe(true);
+    expect(fieldsOf(put!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
     // Verbatim stamps: the copy is a snapshot of the source's merge state,
     // not a re-stamped write.
-    expect(put.data?.fields?.["title"]?.update_id).toBe("u_src");
+    const title = put!.find(
+      (update) => update.method !== "delete" && update.component === "todo/title",
+    )!;
+    expect(title.method).not.toBe("delete");
+    expect((title.data as { update_id: string }).update_id).toBe("u_src");
 
-    const memberships = updates.filter((update) => update.subject_type === "entityGroup");
+    const memberships = rowsOf(updates, "entityGroup");
     expect(memberships).toHaveLength(2);
     expect(memberships.every((row) => fieldsOf(row)["entity_id"] === copy.id)).toBe(true);
     expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
@@ -352,7 +371,7 @@ describe("drafts — duplicate", () => {
 
     await client.actions.duplicateTodo({ id: "todo_1", groups: ["g_2"] });
 
-    const memberships = updatesOf(seen).filter((update) => update.subject_type === "entityGroup");
+    const memberships = rowsOf(updatesOf(seen), "entityGroup");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_2"]);
   });
 
@@ -369,9 +388,9 @@ describe("drafts — duplicate", () => {
 
     const copy = await client.actions.duplicateTodo({ id: "todo_1", at: "preSync" });
 
-    const put = updatesOf(seen).find((update) => update.subject_type === "todo")!;
-    expect(put.subject_id).toBe(copy.id);
-    expect(fieldsOf(put)).toMatchObject({ title: "mine", completed: true });
+    const [put] = rowsOf(updatesOf(seen), "todo");
+    expect(put![0]!.subject_id).toBe(copy.id);
+    expect(fieldsOf(put!)).toMatchObject({ title: "mine", completed: true });
   });
 });
 
@@ -382,11 +401,9 @@ describe("drafts — link / unlink / setLinks", () => {
 
     await client.actions.linkTodoList({ id: "todo_1", targetId: "list_9" });
 
-    const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.subject_type).toBe("relationship");
-    expect(updates[0]!.method).toBe("put");
-    expect(fieldsOf(updates[0]!)).toMatchObject({
+    const relationships = rowsOf(updatesOf(seen), "relationship");
+    expect(relationships).toHaveLength(1);
+    expect(fieldsOf(relationships[0]!)).toMatchObject({
       source_id: "todo_1",
       target_id: "list_9",
       field: "list",
@@ -403,12 +420,7 @@ describe("drafts — link / unlink / setLinks", () => {
 
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "rel_1",
-      subject_type: "relationship",
-      method: "delete",
-      data: null,
-    });
+    expect(updates[0]).toMatchObject({ subject_id: "rel_1", method: "delete", data: null });
   });
 
   it("unlink with no live edge is a no-op with no submitted Action", async () => {
@@ -427,12 +439,12 @@ describe("drafts — link / unlink / setLinks", () => {
     await client.actions.setTodoLabels({ id: "todo_1", labels: ["label_1", "label_2"] });
 
     const updates = updatesOf(seen);
-    const entityPut = updates.find((update) => update.subject_type === "todo")!;
-    expect(fieldsOf(entityPut)["tags"]).toEqual(["label_1", "label_2"]);
+    const [entityRow] = rowsOf(updates, "todo");
+    expect(fieldsOf(entityRow!)["tags"]).toEqual(["label_1", "label_2"]);
 
-    const relationships = updates.filter((update) => update.subject_type === "relationship");
+    const relationships = rowsOf(updates, "relationship");
     expect(relationships).toHaveLength(2);
-    expect(relationships.map((update) => fieldsOf(update)["target_id"]).sort()).toEqual([
+    expect(relationships.map((row) => fieldsOf(row)["target_id"]).sort()).toEqual([
       "label_1",
       "label_2",
     ]);
@@ -468,10 +480,11 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.setTodoGroups({ id: "todo_1", groupIds: ["g_2", "g_3"] });
 
     const updates = updatesOf(seen);
-    expect(updates).toHaveLength(2);
-    const put = updates.find((update) => update.method === "put")!;
-    expect(put.subject_id).toBe(entityGroupId("todo_1", "g_3"));
-    expect(fieldsOf(put)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
+    const rows = rowsOf(updates, "entityGroup");
+    expect(rows).toHaveLength(1);
+    const added = rows[0]!;
+    expect(added[0]!.subject_id).toBe(entityGroupId("todo_1", "g_3"));
+    expect(fieldsOf(added)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
     const deleted = updates.find((update) => update.method === "delete")!;
     // The row the local view knows, not the derived id: the delete names
     // the row to remove.
@@ -488,13 +501,14 @@ describe("drafts — membership.update / membership.delete", () => {
     await client.actions.demoteMember({ memberId: "gm_1" });
 
     const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
+    const [row] = rowsOf(updates, "groupMember");
+    expect(row).toHaveLength(1);
+    expect(row![0]).toMatchObject({
       subject_id: "gm_1",
-      subject_type: "groupMember",
-      method: "patch",
+      component: "groupMember/permissions",
+      method: "merge",
     });
-    expect(fieldsOf(updates[0]!)["permissions"]).toEqual([]);
+    expect(fieldsOf(row!)["permissions"]).toEqual([]);
   });
 
   it("leaveWorkspace removes the profile membership and the member row in one Action", async () => {
@@ -514,9 +528,11 @@ describe("drafts — membership.update / membership.delete", () => {
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
     const membershipDelete = updates.find(
-      (update) => update.subject_type === "entityGroup" && update.method === "delete",
+      (update) => update.method === "delete" && update.subject_id === "eg_workspace",
     )!;
-    const memberDelete = updates.find((update) => update.subject_type === "groupMember")!;
+    const memberDelete = updates.find(
+      (update) => update.method === "delete" && update.subject_id === "gm_1",
+    )!;
     expect(membershipDelete.subject_id).toBe("eg_workspace");
     expect(memberDelete).toMatchObject({ subject_id: "gm_1", method: "delete", data: null });
     // Call order carries onto the wire: the unshare precedes the delete.
@@ -562,22 +578,19 @@ describe("drafts — call order is wire order", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const todoPuts = updates.filter((update) => update.subject_type === "todo");
-    expect(todoPuts).toHaveLength(2);
-    expect(todoPuts[0]!.subject_id).toBe(created.id);
-    expect(fieldsOf(todoPuts[0]!)["title"]).toBe("first");
-    expect(todoPuts[1]!.subject_id).toBe(created.id);
-    expect(fieldsOf(todoPuts[1]!)["title"]).toBe("second");
+    const titleWrites = updates.filter(
+      (update) => update.method !== "delete" && update.component === "todo/title",
+    );
+    expect(titleWrites).toHaveLength(2);
+    expect(titleWrites[0]!.subject_id).toBe(created.id);
+    expect((titleWrites[0]!.data as { value: unknown }).value).toBe("first");
+    expect(titleWrites[1]!.subject_id).toBe(created.id);
+    expect((titleWrites[1]!.data as { value: unknown }).value).toBe("second");
 
     // The create's membership row lands before the patch, not after the batch.
-    const patchIndex = updates.indexOf(todoPuts[1]!);
+    const patchIndex = updates.indexOf(titleWrites[1]!);
     expect(
-      updates
-        .slice(0, patchIndex)
-        .some(
-          (update) =>
-            update.subject_type === "entityGroup" && fieldsOf(update)["entity_id"] === created.id,
-        ),
+      updates.slice(0, patchIndex).some((update) => updateModel(update) === "entityGroup"),
     ).toBe(true);
   });
 
@@ -587,14 +600,10 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_2" });
 
     const updates = updatesOf(seen);
-    expect(updates[0]).toMatchObject({
-      subject_id: created.id,
-      subject_type: "todo",
-      method: "put",
-    });
-    const memberships = updates.filter((update) => update.subject_type === "entityGroup");
-    expect(memberships.map((update) => fieldsOf(update)["group_id"])).toEqual(["g_1", "g_2"]);
-    expect(memberships[1]!.subject_id).toBe(entityGroupId(created.id, "g_2"));
+    expect(updates[0]).toMatchObject({ subject_id: created.id, component: "todo/title" });
+    const memberships = rowsOf(updates, "entityGroup");
+    expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
+    expect(memberships[1]![0]!.subject_id).toBe(entityGroupId(created.id, "g_2"));
   });
 
   it("skips a share of the group the batch's own create already filed", async () => {
@@ -603,10 +612,10 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_1" });
 
     const updates = updatesOf(seen);
-    expect(updates.filter((update) => update.subject_type === "entityGroup")).toHaveLength(1);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
     expect(
-      updates.filter((update) => update.subject_id === created.id && update.method === "put"),
-    ).toHaveLength(1);
+      updates.filter((update) => update.subject_id === created.id && update.method === "replace"),
+    ).not.toHaveLength(0);
   });
 });
 
@@ -683,7 +692,7 @@ const mkConflict = (before: Entity): Conflict => ({
   subjectStates: [
     {
       subjectId: before.id,
-      subjectType: before.type,
+      model: before.type,
       before,
       after: mkEntity(before.id, before.type, { title: "merged", completed: false, tags: [] }),
       diff: [],

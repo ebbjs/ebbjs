@@ -242,13 +242,9 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
     %{
       id: update_id,
       subject_id: "todo_#{update_id}",
-      subject_type: "todo",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "title" => %{"type" => "lww", "value" => update_id, "hlc" => hlc}
-        }
-      }
+      component: "todo/title",
+      method: :replace,
+      data: %{"type" => "lww", "value" => update_id, "hlc" => hlc}
     }
   end
 

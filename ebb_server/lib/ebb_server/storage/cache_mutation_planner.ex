@@ -1,7 +1,11 @@
 defmodule EbbServer.Storage.CacheMutationPlanner do
   @moduledoc """
-  Computes the system-cache writes a batch's Updates imply, and the
-  overlay of rows those writes would leave behind.
+  Computes the system-cache writes a batch's rows imply, and the overlay of
+  rows those writes would leave behind. Its input is the folded row
+  projection (`EbbServer.Storage.RowMutations`), because the system caches
+  are projections of whole rows: a membership's `group_id` and a
+  relationship's `source_id` may arrive in different component Updates of the
+  same row.
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`
@@ -30,7 +34,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     Fields,
     GroupAppsCache,
     GroupCache,
-    PermissionChecker
+    RelationshipCache,
+    RowMutations
   }
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
@@ -41,6 +46,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   @type tables :: %{
           group_members_by_id: :ets.tab(),
           entity_groups_by_id: :ets.tab(),
+          relationships_by_id: :ets.tab(),
           group_apps: :ets.tab()
         }
 
@@ -62,7 +68,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   @type overlay :: Overlay.t()
 
   @doc """
-  Plans a flat list of validated Updates against the given cache tables.
+  Plans a flat list of folded row mutations against the given cache tables.
 
   The returned overlay is `overlay` extended with this plan's effects, so a
   caller can chain onto a predecessor's plan with `plan(updates, tables,
@@ -72,7 +78,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   and the head of the next is emitted (and applied) twice, which every cache
   here treats as idempotent.
   """
-  @spec plan([PermissionChecker.validated_update()], tables(), overlay() | nil) ::
+  @spec plan([RowMutations.mutation()], tables(), overlay() | nil) ::
           {[mutation()], overlay()}
   def plan(updates, tables, overlay \\ nil) do
     overlay = Overlay.normalize(overlay)
@@ -132,15 +138,21 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     Enum.reverse(kept)
   end
 
-  # The entity-type index mirrors `cf_type_entities`, which the Writer
-  # writes for every Update (including deletes, whose entry stays).
-  defp plan_update(update, tables, {mutations, overlay}) do
-    overlay = Overlay.put(overlay, {:entity_types, update.subject_id}, update.subject_type)
-    mutations = [{:entity_type, update.subject_id, update.subject_type} | mutations]
+  # The entity-type index mirrors `cf_type_entities`, which the Writer writes
+  # for every row (including deletes, whose entry stays). A delete's model is
+  # the committed one the fold resolved; an id nothing records has nothing to
+  # index, and an Action cannot invent a model for it.
+  defp plan_update(%{model: nil} = update, tables, {mutations, overlay}) do
     plan_system_mutation(update, tables, mutations, overlay)
   end
 
-  defp plan_system_mutation(%{subject_type: "groupMember"} = update, tables, mutations, overlay) do
+  defp plan_update(update, tables, {mutations, overlay}) do
+    overlay = Overlay.put(overlay, {:entity_types, update.subject_id}, update.model)
+    mutations = [{:entity_type, update.subject_id, update.model} | mutations]
+    plan_system_mutation(update, tables, mutations, overlay)
+  end
+
+  defp plan_system_mutation(%{model: "groupMember"} = update, tables, mutations, overlay) do
     key = {:group_members_by_id, update.subject_id}
 
     case update.method do
@@ -178,7 +190,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  defp plan_system_mutation(%{subject_type: "entityGroup"} = update, tables, mutations, overlay) do
+  defp plan_system_mutation(%{model: "entityGroup"} = update, tables, mutations, overlay) do
     key = {:entity_groups_by_id, update.subject_id}
 
     case update.method do
@@ -216,7 +228,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   # wire value. A patch merges per app id so concurrent scope edits do not
   # clobber each other. Neither path affects write authorization: app scope
   # is a sync filter, so the overlay must not serialize successors.
-  defp plan_system_mutation(%{subject_type: "group"} = update, tables, mutations, overlay) do
+  defp plan_system_mutation(%{model: "group"} = update, tables, mutations, overlay) do
     key = {:group_apps, update.subject_id}
 
     case update.method do
@@ -244,16 +256,27 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  # Relationship rows never merge with the cached row: the wire fields are
-  # authoritative, as in the pre-dedup handler.
-  defp plan_system_mutation(%{subject_type: "relationship"} = update, _tables, mutations, overlay) do
+  # A relationship row's components may arrive across several Updates, so the
+  # wire value wins where it is present and the cached row supplies the rest.
+  # A row still missing its source or target cannot be projected.
+  defp plan_system_mutation(%{model: "relationship"} = update, tables, mutations, overlay) do
     key = {:relationships_by_id, update.subject_id}
 
     case update.method do
       method when method in [:put, :patch] ->
         data = update.data || %{}
-        source_id = Fields.get(data, "source_id")
-        target_id = Fields.get(data, "target_id")
+
+        existing =
+          patch_existing(
+            update,
+            overlay,
+            :relationships_by_id,
+            tables.relationships_by_id,
+            &RelationshipCache.get_relationship/2
+          )
+
+        source_id = Fields.get(data, "source_id") || row_field(existing, :source_id)
+        target_id = Fields.get(data, "target_id") || row_field(existing, :target_id)
 
         if is_nil(source_id) or is_nil(target_id) do
           {mutations, overlay}
@@ -262,8 +285,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
             id: update.subject_id,
             source_id: source_id,
             target_id: target_id,
-            type: Fields.get(data, "type"),
-            field: Fields.get(data, "field")
+            type: Fields.get(data, "type") || row_field(existing, :type),
+            field: Fields.get(data, "field") || row_field(existing, :field)
           }
 
           {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
@@ -296,6 +319,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
     FieldMerge.merge(existing, Fields.get(data, "apps"))
   end
+
+  defp row_field(existing, key), do: existing[key] || existing[to_string(key)]
 
   # A delete's wire form carries only the membership id, so the projection
   # needs the entity the row belonged to. Prefer the chain, then the cache.

@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import { PermissionError } from "../permission";
@@ -49,25 +49,33 @@ const fields = (
 ): Record<string, { value: unknown; update_id: string }> =>
   Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
 
+/**
+ * One Update per field: a former `put` is a `replace`, a former `patch` a
+ * `merge`, and `delete` names no component.
+ */
 const update = (
   subjectType: string,
   subjectId: string,
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
-): Update => ({
-  id: `u_${subjectId}_${method}`,
-  subject_id: subjectId,
-  subject_type: subjectType,
-  method,
-  data: method === "delete" ? null : { fields: fields(values) },
-});
+): Update[] =>
+  method === "delete"
+    ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
+    : Object.entries(fields(values)).map(([name, value]) => ({
+        id: `u_${subjectId}_${method}_${name}`,
+        subject_id: subjectId,
+        component: componentName(subjectType, name),
+        method: method === "put" ? "replace" : "merge",
+        data: value,
+      }));
 
-const action = (updates: readonly Update[]): Action => ({
+/** One Action from any number of component-Update groups. */
+const action = (...groups: readonly (readonly Update[])[]): Action => ({
   id: "a_1",
   actor_id: ACTOR_ID,
   hlc: makeHlc(1_711_036_800_000),
   gsn: 0,
-  updates: [...updates],
+  updates: groups.flat(),
 });
 
 const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
@@ -107,7 +115,7 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     await expect(
-      client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+      client.write([action(update("todo", "todo_1", "put", { title: "Ship" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
 
     expect(client.outbox.size()).toBe(0);
@@ -121,7 +129,7 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     const error = await client
-      .write([action([update("todo", "todo_1", "put", { title: "Ship" })])])
+      .write([action(update("todo", "todo_1", "put", { title: "Ship" }))])
       .then(() => null)
       .catch((err: unknown) => err);
 
@@ -129,7 +137,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -150,7 +158,7 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     await expect(
-      client.write([action([update("todo", "todo_1", "patch", { title: "Renamed" })])]),
+      client.write([action(update("todo", "todo_1", "patch", { title: "Renamed" }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -166,7 +174,7 @@ describe("collectPermissionViolations — user entities", () => {
       mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
-    await expect(client.write([action([update("todo", "todo_1", "delete")])])).resolves.toEqual({
+    await expect(client.write([action(update("todo", "todo_1", "delete"))])).resolves.toEqual({
       rejected: [],
     });
   });
@@ -178,7 +186,7 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     await expect(
-      client.write([action([update("todo", "todo_1", "patch", { title: "Renamed" })])]),
+      client.write([action(update("todo", "todo_1", "patch", { title: "Renamed" }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -186,12 +194,12 @@ describe("collectPermissionViolations — user entities", () => {
     const { client, calls } = await mkClient([["g_1", []]]);
 
     await expect(
-      client.write([action([update("todo", "unowned", "put", { title: "Ship" })])]),
+      client.write([action(update("todo", "unowned", "put", { title: "Ship" }))]),
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
   });
 
-  it.each(["put", "patch", "delete"] as const)(
+  it.each(["put", "patch"] as const)(
     "refuses a wire type that contradicts the committed type for a %s",
     async (method) => {
       const { client, calls } = await mkClient([["g_1", ["todo.*"]]]);
@@ -204,7 +212,7 @@ describe("collectPermissionViolations — user entities", () => {
       // committed as an `invoice`, so the relabel is refused whatever the
       // permission (#624).
       const error = await client
-        .write([action([update("todo", "invoice_1", method, { amount: 999_999 })])])
+        .write([action(update("todo", "invoice_1", method, { amount: 999_999 }))])
         .then(() => null)
         .catch((err: unknown) => err);
 
@@ -212,9 +220,9 @@ describe("collectPermissionViolations — user entities", () => {
       expect((error as PermissionError).violations).toEqual([
         {
           kind: "type-mismatch",
-          subjectType: "todo",
+          model: "todo",
           subjectId: "invoice_1",
-          committedType: "invoice",
+          committedModel: "invoice",
           groupIds: ["g_1"],
         },
       ]);
@@ -234,13 +242,13 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     const error = await client
-      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .write([action(update("todo", "invoice_1", "put", { amount: 999_999 }))])
       .then(() => null)
       .catch((err: unknown) => err);
 
     expect(error).toBeInstanceOf(PermissionError);
     expect((error as PermissionError).message).toContain(
-      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+      'todo invoice_1: declared model "todo" but the entity is committed as "invoice"',
     );
     expect((error as PermissionError).message).not.toContain("missing");
     expect(client.outbox.size()).toBe(0);
@@ -254,7 +262,7 @@ describe("collectPermissionViolations — user entities", () => {
     );
 
     await expect(
-      client.write([action([update("invoice", "invoice_1", "put", { amount: 200 })])]),
+      client.write([action(update("invoice", "invoice_1", "put", { amount: 200 }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -266,7 +274,7 @@ describe("collectPermissionViolations — user entities", () => {
       mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await expect(
-      allowed.client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+      allowed.client.write([action(update("todo", "todo_1", "put", { title: "Ship" }))]),
     ).resolves.toEqual({ rejected: [] });
 
     const denied = await mkClient([["g_1", ["invoice.create"]]]);
@@ -274,7 +282,7 @@ describe("collectPermissionViolations — user entities", () => {
       mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
     );
     const error = await denied.client
-      .write([action([update("todo", "todo_1", "put", { title: "Ship" })])])
+      .write([action(update("todo", "todo_1", "put", { title: "Ship" }))])
       .then(() => null)
       .catch((err: unknown) => err);
 
@@ -282,7 +290,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -304,7 +312,7 @@ describe("collectPermissionViolations — user entities", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        subjectType: "invoice",
+        model: "invoice",
         subjectId: "invoice_1",
         required: "invoice.create",
         groupIds: ["g_1"],
@@ -312,15 +320,15 @@ describe("collectPermissionViolations — user entities", () => {
     });
 
     const error = await client
-      .write([action([update("todo", "invoice_1", "put", { amount: 999_999 })])])
+      .write([action(update("todo", "invoice_1", "put", { amount: 999_999 }))])
       .then(() => null)
       .catch((err: unknown) => err);
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "type-mismatch",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "invoice_1",
-        committedType: "invoice",
+        committedModel: "invoice",
         groupIds: ["g_1"],
       },
     ]);
@@ -328,7 +336,7 @@ describe("collectPermissionViolations — user entities", () => {
 });
 
 describe("collectPermissionViolations — relationship edges", () => {
-  const relUpdate = (sourceId: string, targetId: string, type: string): Update =>
+  const relUpdate = (sourceId: string, targetId: string, type: string): Update[] =>
     update("relationship", "rel_1", "put", {
       source_id: sourceId,
       target_id: targetId,
@@ -350,7 +358,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     );
 
     await expect(
-      client.write([action([relUpdate("todo_1", "list_1", "todo")])]),
+      client.write([action(relUpdate("todo_1", "list_1", "todo"))]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(client.outbox.size()).toBe(0);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -371,7 +379,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       mkEntity("eg_tgt", "entityGroup", { entity_id: "list_1", group_id: "g_target" }),
     );
 
-    await expect(client.write([action([relUpdate("todo_1", "list_1", "todo")])])).resolves.toEqual({
+    await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
       rejected: [],
     });
   });
@@ -386,7 +394,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     // The wire claims `comment`, which the actor holds; the source is
     // really a `todo`, which the actor may not update (#323).
     await expect(
-      client.write([action([relUpdate("todo_1", "list_1", "comment")])]),
+      client.write([action(relUpdate("todo_1", "list_1", "comment"))]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(client.outbox.size()).toBe(0);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -400,7 +408,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     );
 
     await expect(
-      client.write([action([relUpdate("todo_1", "list_1", "todo.belongsTo.list")])]),
+      client.write([action(relUpdate("todo_1", "list_1", "todo.belongsTo.list"))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -419,7 +427,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
     );
 
-    await expect(client.write([action([relUpdate("todo_1", "list_1", "todo")])])).resolves.toEqual({
+    await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
       rejected: [],
     });
   });
@@ -440,9 +448,9 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action([
+        action(
           update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ]),
+        ),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -451,7 +459,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(
-      client.write([action([update("relationship", "rel_1", "put", { target_id: "list_1" })])]),
+      client.write([action(update("relationship", "rel_1", "put", { target_id: "list_1" }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -479,7 +487,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     );
 
     const error = await client
-      .write([action([update("relationship", "rel_1", "patch", { source_id: "todo_new" })])])
+      .write([action(update("relationship", "rel_1", "patch", { source_id: "todo_new" }))])
       .then(() => null)
       .catch((err: unknown) => err);
 
@@ -487,7 +495,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        subjectType: "relationship",
+        model: "relationship",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -518,14 +526,14 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action([
+        action(
           update("relationship", "rel_1", "put", {
             source_id: "todo_new",
             target_id: "list_2",
             field: "list",
             type: "todo",
           }),
-        ]),
+        ),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -563,10 +571,7 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action([
-          update("relationship", "rel_1", "delete"),
-          relUpdate("todo_new", "list_2", "todo"),
-        ]),
+        action(update("relationship", "rel_1", "delete"), relUpdate("todo_new", "list_2", "todo")),
       ]),
     ).resolves.toEqual({ rejected: [] });
     expect(client.outbox.size("acknowledged")).toBe(1);
@@ -578,8 +583,8 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action([update("relationship", "rel_1", "delete")]),
-        { ...action([relUpdate("todo_new", "list_2", "todo")]), id: "a_2" },
+        action(update("relationship", "rel_1", "delete")),
+        { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
       ]),
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
@@ -589,14 +594,14 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client, calls } = await mkMovingEdgeClient();
 
     const error = await client
-      .write([action([relUpdate("todo_new", "list_2", "todo")])])
+      .write([action(relUpdate("todo_new", "list_2", "todo"))])
       .then(() => null)
       .catch((err: unknown) => err);
 
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        subjectType: "relationship",
+        model: "relationship",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -614,8 +619,8 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     const error = await client
       .write([
-        action([relUpdate("todo_new", "list_2", "todo")]),
-        { ...action([update("relationship", "rel_1", "delete")]), id: "a_2" },
+        action(relUpdate("todo_new", "list_2", "todo")),
+        { ...action(update("relationship", "rel_1", "delete")), id: "a_2" },
       ])
       .then(() => null)
       .catch((err: unknown) => err);
@@ -623,7 +628,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        subjectType: "relationship",
+        model: "relationship",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -644,11 +649,11 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     const error = await client
       .write([
-        action([
+        action(
           update("relationship", "rel_1", "delete"),
           update("todo", "todo_1", "put", { title: "Ship" }),
-        ]),
-        { ...action([relUpdate("todo_new", "list_2", "todo")]), id: "a_2" },
+        ),
+        { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
       ])
       .then(() => null)
       .catch((err: unknown) => err);
@@ -656,98 +661,18 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_old"],
       },
       {
         kind: "source-mismatch",
-        subjectType: "relationship",
+        model: "relationship",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
         groupIds: ["g_old"],
-      },
-    ]);
-  });
-
-  it("ignores a delete's wire source and authorizes against the stored row", async () => {
-    // The server resolves a delete's groups from the stored row and never
-    // looks at a wire `source_id`, so a stale one may not refuse it here.
-    const { client } = await mkClient([
-      ["g_owner", ["relationship.delete"]],
-      ["g_foreign", []],
-    ]);
-    await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
-        source_id: "todo_old",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_owner", "entityGroup", { entity_id: "todo_old", group_id: "g_owner" }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_foreign", "entityGroup", { entity_id: "todo_new", group_id: "g_foreign" }),
-    );
-
-    await expect(
-      client.write([
-        action([
-          {
-            ...update("relationship", "rel_1", "delete"),
-            data: { fields: fields({ source_id: "todo_new" }) },
-          },
-        ]),
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("does not let a delete borrow the wire source's permission", async () => {
-    // `relationship.delete` is held for the source the wire names, not for
-    // the stored row's source: the stored row's set decides.
-    const { client } = await mkClient([
-      ["g_owner", []],
-      ["g_foreign", ["relationship.delete"]],
-    ]);
-    await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
-        source_id: "todo_old",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_owner", "entityGroup", { entity_id: "todo_old", group_id: "g_owner" }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_foreign", "entityGroup", { entity_id: "todo_new", group_id: "g_foreign" }),
-    );
-
-    const error = await client
-      .write([
-        action([
-          {
-            ...update("relationship", "rel_1", "delete"),
-            data: { fields: fields({ source_id: "todo_new" }) },
-          },
-        ]),
-      ])
-      .then(() => null)
-      .catch((err: unknown) => err);
-
-    expect(error).toBeInstanceOf(PermissionError);
-    expect((error as PermissionError).violations).toEqual([
-      {
-        kind: "missing-permission",
-        subjectType: "relationship",
-        subjectId: "rel_1",
-        required: "relationship.delete",
-        groupIds: ["g_owner"],
       },
     ]);
   });
@@ -770,7 +695,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     );
 
     await expect(
-      client.write([action([update("relationship", "rel_1", "delete")])]),
+      client.write([action(update("relationship", "rel_1", "delete"))]),
     ).resolves.toEqual({ rejected: [] });
   });
 });
@@ -782,7 +707,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -802,7 +727,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })]),
+        action(update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
       ]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -820,7 +745,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })]),
+        action(update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -841,7 +766,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_3", "put", { entity_id: "todo_1", group_id: "g_3" })]),
+        action(update("entityGroup", "eg_3", "put", { entity_id: "todo_1", group_id: "g_3" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -855,7 +780,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -867,26 +792,9 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action([update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })]),
+        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("refuses a patch structurally even when entityGroup.update is held", async () => {
-    // The server does not support the method, so no grant makes it pass: a
-    // membership is replaced by delete + put (#623).
-    const { client, calls } = await mkClient([["g_1", ["entityGroup.update", "entityGroup.*"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
-    );
-
-    await expect(
-      client.write([
-        action([update("entityGroup", "eg_1", "patch", { entity_id: "todo_1", group_id: "g_1" })]),
-      ]),
-    ).rejects.toThrow(/does not support `patch`/);
-    expect(actionRequests(calls)).toHaveLength(0);
   });
 
   it("requires <type>.update in the entity's current set for a delete", async () => {
@@ -900,7 +808,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     );
 
     await expect(
-      client.write([action([update("entityGroup", "eg_1", "delete")])]),
+      client.write([action(update("entityGroup", "eg_1", "delete"))]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
   });
@@ -918,16 +826,16 @@ describe("collectPermissionViolations — entityGroup membership", () => {
       mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
-    await expect(
-      client.write([action([update("entityGroup", "eg_1", "delete")])]),
-    ).resolves.toEqual({ rejected: [] });
+    await expect(client.write([action(update("entityGroup", "eg_1", "delete"))])).resolves.toEqual({
+      rejected: [],
+    });
   });
 
   it("skips a delete whose membership row cannot be resolved", async () => {
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(
-      client.write([action([update("entityGroup", "eg_missing", "delete")])]),
+      client.write([action(update("entityGroup", "eg_missing", "delete"))]),
     ).resolves.toEqual({ rejected: [] });
   });
 });
@@ -936,7 +844,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
   it("exempts a group bootstrap and honors its declared permissions", async () => {
     const { client, calls } = await mkClient([["g_old", []]]);
 
-    const created = action([
+    const created = action(
       update("group", "g_new", "put", { id: "g_new" }),
       update("groupMember", "gm_1", "put", {
         actor_id: ACTOR_ID,
@@ -945,7 +853,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
       update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
-    ]);
+    );
 
     await expect(client.write([created])).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
@@ -955,13 +863,13 @@ describe("collectPermissionViolations — group bootstrap", () => {
     const { client } = await mkClient([["g_old", []]]);
 
     await expect(
-      client.write([action([update("group", "g_new", "put", { name: "New" })])]),
+      client.write([action(update("group", "g_new", "put", { name: "New" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
   it("allows a subsequent write to a group the actor bootstrapped", async () => {
     const { client } = await mkClient([["g_old", []]]);
-    const created = action([
+    const created = action(
       update("group", "g_new", "put", { name: "New" }),
       update("groupMember", "gm_1", "put", {
         actor_id: ACTOR_ID,
@@ -970,13 +878,13 @@ describe("collectPermissionViolations — group bootstrap", () => {
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
       update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
-    ]);
+    );
     await client.write([created]);
 
-    const followUp = action([
+    const followUp = action(
       update("todo", "todo_2", "put", { title: "Ship again" }),
       update("entityGroup", "eg_2", "put", { entity_id: "todo_2", group_id: "g_new" }),
-    ]);
+    );
     await expect(client.write([followUp])).resolves.toEqual({ rejected: [] });
   });
 
@@ -984,7 +892,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
     const { client } = await mkClient([["g_old", []]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
 
-    const created = action([
+    const created = action(
       update("group", "g_new", "put", { id: "g_new" }),
       update("groupMember", "gm_1", "put", {
         actor_id: ACTOR_ID,
@@ -993,7 +901,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
       update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
-    ]);
+    );
 
     await expect(client.write([created])).rejects.toBeInstanceOf(PermissionError);
   });
@@ -1010,7 +918,7 @@ describe("collectPermissionViolations — best-effort", () => {
     );
 
     await expect(
-      client.write([action([update("todo", "todo_1", "put", { title: "Ship" })])]),
+      client.write([action(update("todo", "todo_1", "put", { title: "Ship" }))]),
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
     expect(client.outbox.size("acknowledged")).toBe(1);
@@ -1027,8 +935,8 @@ describe("collectPermissionViolations — best-effort", () => {
 
     const error = await client
       .write([
-        action([update("todo", "todo_1", "put", { title: "One" })]),
-        { ...action([update("todo", "todo_2", "put", { title: "Two" })]), id: "a_2" },
+        action(update("todo", "todo_1", "put", { title: "One" })),
+        { ...action(update("todo", "todo_2", "put", { title: "Two" })), id: "a_2" },
       ])
       .then(() => null)
       .catch((err: unknown) => err);
@@ -1060,7 +968,7 @@ describe("collectPermissionViolations — best-effort", () => {
     );
 
     const response = await client.write([
-      action([update("todo", "todo_1", "put", { title: "Ship" })]),
+      action(update("todo", "todo_1", "put", { title: "Ship" })),
     ]);
     expect(response.rejected.map((rejection) => rejection.id)).toEqual(["a_1"]);
     expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["a_1"]);
@@ -1072,7 +980,7 @@ describe("collectPermissionViolations — system entities", () => {
     const { client } = await mkClient([["g_1", ["group.update"]]]);
 
     await expect(
-      client.write([action([update("group", "g_1", "put", { name: "G" })])]),
+      client.write([action(update("group", "g_1", "put", { name: "G" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
@@ -1080,7 +988,7 @@ describe("collectPermissionViolations — system entities", () => {
     const { client } = await mkClient([["g_1", ["group.*"]]]);
 
     await expect(
-      client.write([action([update("group", "g_1", "put", { name: "G" })])]),
+      client.write([action(update("group", "g_1", "put", { name: "G" }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
@@ -1089,13 +997,13 @@ describe("collectPermissionViolations — system entities", () => {
 
     await expect(
       client.write([
-        action([
+        action(
           update("groupMember", "gm_1", "put", {
             actor_id: "actor_2",
             group_id: "g_1",
             permissions: [],
           }),
-        ]),
+        ),
       ]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
@@ -1107,18 +1015,21 @@ describe("collectPermissionViolations — system entities", () => {
     );
 
     await expect(
-      client.write([action([update("groupMember", "gm_1", "delete")])]),
+      client.write([action(update("groupMember", "gm_1", "delete"))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
-  it("requires entityGroup.update in the membership's group for a patch", async () => {
+  it("requires <type>.update in the membership's group for a write", async () => {
     const { client } = await mkClient([["g_1", []]]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
       mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
-      client.write([action([update("entityGroup", "eg_1", "patch", { group_id: "g_1" })])]),
+      client.write([
+        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
+      ]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
@@ -1137,7 +1048,7 @@ describe("collectPermissionViolations — system entities", () => {
     );
 
     await expect(
-      client.write([action([update("relationship", "rel_1", "patch", { target_id: "list_2" })])]),
+      client.write([action(update("relationship", "rel_1", "patch", { target_id: "list_2" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 });
@@ -1147,7 +1058,7 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -1166,7 +1077,7 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "source-mismatch",
-        subjectType: "relationship",
+        model: "relationship",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -1186,17 +1097,17 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "type-mismatch",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "invoice_1",
-        committedType: "invoice",
+        committedModel: "invoice",
         groupIds: ["g_1"],
       },
     ]);
 
     expect(error.message).toContain(
-      'todo invoice_1: declared type "todo" but the entity is committed as "invoice"',
+      'todo invoice_1: declared model "todo" but the entity is committed as "invoice"',
     );
-    expect(error.message).toContain("an entity's type cannot change");
+    expect(error.message).toContain("an entity's model cannot change");
     expect(error.message).not.toContain("missing");
     expect(error.message).not.toContain("todo.create");
   });

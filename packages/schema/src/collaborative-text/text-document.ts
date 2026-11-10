@@ -10,12 +10,12 @@
  *
  * ## Wire format
  *
- * Each Update targets the document entity (subject_id = docId,
- * subject_type = docType, method: "patch") and carries two fields:
+ * Each edit emits two Updates addressed to the document (`subject_id` =
+ * docId), one per component:
  *
- * - `content`: a map keyed by cell id, each `{ value: RunCell | CutCell,
- *   update_id, hlc }`;
- * - `version`: the cell-format leaf, written by every edit.
+ * - `<docType>/content`: a keyed component whose map is keyed by cell id,
+ *   each `{ value: RunCell | CutCell, update_id, hlc }`;
+ * - `<docType>/version`: the cell-format leaf, written by every edit.
  *
  * Runs are immutable and cuts are additive, so a write only ever adds map
  * keys. The map's per-key merge therefore never drops a peer's edit, and a
@@ -149,8 +149,8 @@ export class TextDocument {
   /** Local actor id (used for outgoing action attribution). */
   readonly actorId: string;
   /**
-   * The subject_type of the document entity. Defaults to
-   * "text_document"; override only if you need a custom type.
+   * The model the document entity is committed under. Defaults to
+   * "text_document"; override only if you need a custom model.
    */
   readonly docType: string;
 
@@ -380,12 +380,12 @@ export class TextDocument {
 
     const hlc = cells[0]!.stamp;
     const updateId = `u_${cells[0]!.id}`;
-    const update = docActionToUpdate(cells, {
+    const updates = docActionToUpdate(cells, {
       docId: this.docId,
       updateId,
       docSubjectType: this.docType,
     });
-    if (update === null) return null;
+    if (updates === null) return null;
 
     const batch = new Map<string, CellFieldValue>(
       cells.map((cell) => [cell.id, { value: cell, update_id: updateId, hlc: cell.stamp }]),
@@ -400,7 +400,7 @@ export class TextDocument {
       actor_id: this.actorId,
       hlc,
       gsn: 0,
-      updates: [update],
+      updates,
     };
     this.pending.push(action);
     this.selfFlush(action);

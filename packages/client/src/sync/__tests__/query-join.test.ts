@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { makeHlc, type Action, type Update } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -111,19 +111,16 @@ const action = (gsn: number, updates: Update[]): Action => ({
 });
 
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
-  action(gsn, [
-    {
-      id: `u_${gsn}`,
+  action(
+    gsn,
+    Object.entries(fields).map(([key, value]) => ({
+      id: `u_${gsn}_${key}`,
       subject_id: id,
-      subject_type: type,
-      method: "put",
-      data: {
-        fields: Object.fromEntries(
-          Object.entries(fields).map(([key, value]) => [key, field(value, `u_${gsn}`)]),
-        ),
-      },
-    },
-  ]);
+      component: componentName(type, key),
+      method: "replace" as const,
+      data: field(value, `u_${gsn}`),
+    })),
+  );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
   put(gsn, `rel_${gsn}`, "relationship", {

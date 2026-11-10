@@ -188,11 +188,9 @@ defmodule EbbServer.Functions.HostTest do
         %{
           "id" => "upd_host_#{System.unique_integer([:positive])}",
           "subject_id" => entity_id,
-          "subject_type" => "doc",
-          "method" => "patch",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => value, "hlc" => hlc}}
-          }
+          "component" => "doc/title",
+          "method" => "merge",
+          "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
         }
       ]
     }

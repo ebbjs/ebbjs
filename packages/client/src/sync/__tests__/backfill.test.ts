@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { makeHlc, type Action, type Entity } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Entity } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import {
@@ -61,22 +61,13 @@ const putAction = (opts: {
     actor_id: "a_peer",
     hlc,
     gsn: opts.gsn,
-    updates: [
-      {
-        id: updateId,
-        subject_id: opts.entityId,
-        subject_type: opts.entityType,
-        method: "put",
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(opts.fields).map(([key, value]) => [
-              key,
-              { value, update_id: `${updateId}_${key}`, hlc },
-            ]),
-          ),
-        },
-      },
-    ],
+    updates: Object.entries(opts.fields).map(([key, value]) => ({
+      id: `${updateId}_${key}`,
+      subject_id: opts.entityId,
+      component: componentName(opts.entityType, key),
+      method: "replace" as const,
+      data: { value, update_id: `${updateId}_${key}`, hlc },
+    })),
   };
 };
 
@@ -95,16 +86,18 @@ const membershipPut = (opts: {
     gsn: opts.gsn ?? 1,
     updates: [
       {
-        id: updateId,
+        id: `${updateId}_0`,
         subject_id: opts.membershipId,
-        subject_type: "entityGroup",
-        method: "put",
-        data: {
-          fields: {
-            entity_id: { value: opts.entityId, update_id: updateId, hlc: HLC },
-            group_id: { value: opts.groupId ?? "g_2", update_id: updateId, hlc: HLC },
-          },
-        },
+        component: "entityGroup/entity_id",
+        method: "replace",
+        data: { value: opts.entityId, update_id: updateId, hlc: HLC },
+      },
+      {
+        id: `${updateId}_1`,
+        subject_id: opts.membershipId,
+        component: "entityGroup/group_id",
+        method: "replace",
+        data: { value: opts.groupId ?? "g_2", update_id: updateId, hlc: HLC },
       },
     ],
   };
@@ -126,22 +119,13 @@ const patchAction = (opts: {
     actor_id: "a_peer",
     hlc,
     gsn: opts.gsn,
-    updates: [
-      {
-        id: updateId,
-        subject_id: opts.entityId,
-        subject_type: opts.entityType,
-        method: "patch",
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(opts.fields).map(([key, value]) => [
-              key,
-              { value, update_id: `${updateId}_${key}`, hlc },
-            ]),
-          ),
-        },
-      },
-    ],
+    updates: Object.entries(opts.fields).map(([key, value]) => ({
+      id: `${updateId}_${key}`,
+      subject_id: opts.entityId,
+      component: componentName(opts.entityType, key),
+      method: "merge" as const,
+      data: { value, update_id: `${updateId}_${key}`, hlc },
+    })),
   };
 };
 
@@ -332,8 +316,17 @@ describe("snapshotAction", () => {
 
     expect(action.gsn).toBe(entity.last_gsn);
     expect(action.hlc).toBe(entity.updated_hlc);
-    expect(action.updates[0]?.method).toBe("put");
-    expect(action.updates[0]?.data?.fields).toEqual(entity.data.fields);
+    expect(action.updates.every((update) => update.method === "replace")).toBe(true);
+    expect(
+      Object.fromEntries(
+        action.updates.map((update) => [
+          update.method === "delete"
+            ? ""
+            : update.component.slice(update.component.indexOf("/") + 1),
+          update.method === "delete" ? null : update.data,
+        ]),
+      ),
+    ).toEqual(entity.data.fields);
   });
 });
 

@@ -132,7 +132,7 @@ defmodule EbbServer.Bench.Materialize.Workload do
   end
 
   @doc """
-  A one-key patch to a document's `content` map.
+  A one-key patch to a document's `content` keyed component.
   """
   @spec patch_action(String.t(), String.t(), String.t(), String.t()) :: map()
   def patch_action(entity_id, actor_id, key, value) do
@@ -143,17 +143,12 @@ defmodule EbbServer.Bench.Materialize.Workload do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" => [
-        %{
-          "id" => unique("u"),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "patch",
-          "data" => %{
-            "fields" => %{
-              "content" => %{"map" => %{key => %{"value" => value, "hlc" => hlc}}}
-            }
-          }
-        }
+        component_update(
+          entity_id,
+          "todo/content",
+          "merge",
+          %{"map" => %{key => %{"value" => value, "hlc" => hlc}}}
+        )
       ]
     }
   end
@@ -182,28 +177,15 @@ defmodule EbbServer.Bench.Materialize.Workload do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" => [
-        %{
-          "id" => unique("u_group"),
-          "subject_id" => group_id,
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"name" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}}
-          }
-        },
-        %{
-          "id" => unique("u_member"),
-          "subject_id" => membership_id,
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => @permissions, "hlc" => hlc}
-            }
-          }
-        }
+        component_update(group_id, "group/name", "replace", leaf(group_id, hlc)),
+        component_update(membership_id, "groupMember/actor_id", "replace", leaf(actor_id, hlc)),
+        component_update(membership_id, "groupMember/group_id", "replace", leaf(group_id, hlc)),
+        component_update(
+          membership_id,
+          "groupMember/permissions",
+          "replace",
+          leaf(@permissions, hlc)
+        )
       ]
     }
   end
@@ -216,31 +198,23 @@ defmodule EbbServer.Bench.Materialize.Workload do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" => [
-        %{
-          "id" => unique("u_entity"),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => title, "hlc" => hlc},
-              "content" => content
-            }
-          }
-        },
-        %{
-          "id" => unique("u_eg"),
-          "subject_id" => membership_id,
-          "subject_type" => "entityGroup",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-            }
-          }
-        }
+        component_update(entity_id, "todo/title", "replace", leaf(title, hlc)),
+        component_update(entity_id, "todo/content", "merge", content),
+        component_update(membership_id, "entityGroup/entity_id", "replace", leaf(entity_id, hlc)),
+        component_update(membership_id, "entityGroup/group_id", "replace", leaf(group_id, hlc))
       ]
+    }
+  end
+
+  defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
+
+  defp component_update(subject_id, component, method, data) do
+    %{
+      "id" => unique("u"),
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => method,
+      "data" => data
     }
   end
 

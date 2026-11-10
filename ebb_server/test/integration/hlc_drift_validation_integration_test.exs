@@ -17,13 +17,9 @@ defmodule EbbServer.HLCDriftValidationIntegrationTest do
           %{
             "id" => "upd_future_" <> Nanoid.generate(),
             "subject_id" => "todo_future",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Future Test", "hlc" => hlc_future}
-              }
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Future Test", "hlc" => hlc_future}
           }
         ]
       }
@@ -104,18 +100,16 @@ defmodule EbbServer.HLCDriftValidationIntegrationTest do
       "id" => "act_put_" <> Nanoid.generate(),
       "actor_id" => "a_test",
       "hlc" => action_hlc,
-      "updates" => [
-        %{
-          "id" => "upd_put_" <> Nanoid.generate(),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => value, "hlc" => leaf_hlc}}
+      "updates" =>
+        [
+          %{
+            "id" => "upd_put_" <> Nanoid.generate(),
+            "subject_id" => entity_id,
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => value, "hlc" => leaf_hlc}
           }
-        },
-        entity_group_update(entity_id, "g_leaf_hlc", action_hlc)
-      ]
+        ] ++ entity_group_update(entity_id, "g_leaf_hlc", action_hlc)
     }
   end
 
@@ -128,11 +122,9 @@ defmodule EbbServer.HLCDriftValidationIntegrationTest do
         %{
           "id" => "upd_patch_" <> Nanoid.generate(),
           "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "patch",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => value, "hlc" => leaf_hlc}}
-          }
+          "component" => "todo/title",
+          "method" => "merge",
+          "data" => %{"type" => "lww", "value" => value, "hlc" => leaf_hlc}
         }
       ]
     }

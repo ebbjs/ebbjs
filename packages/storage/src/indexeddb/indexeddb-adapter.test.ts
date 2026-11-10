@@ -38,21 +38,21 @@ describe("IndexedDB adapter persistence", () => {
       // Both sides materialized, the common case.
       {
         subjectId: "todo_1",
-        subjectType: "todo",
+        model: "todo",
         before: buildTodoEntity("todo_1", "mine", makeHlc(HLC_BASE)),
         after: buildTodoEntity("todo_1", "theirs", makeHlc(HLC_BASE, 1)),
       },
       // `before: null` — a patch or delete whose base row was never cached.
       {
         subjectId: "todo_2",
-        subjectType: "todo",
+        model: "todo",
         before: null,
         after: buildTodoEntity("todo_2", "theirs", makeHlc(HLC_BASE, 1)),
       },
       // The missed window deleted the row, so `after` is a tombstone.
       {
         subjectId: "todo_3",
-        subjectType: "todo",
+        model: "todo",
         before: buildTodoEntity("todo_3", "mine", makeHlc(HLC_BASE)),
         after: buildDeletedTodoEntity("todo_3", "mine", makeHlc(HLC_BASE, 1)),
       },
@@ -61,7 +61,7 @@ describe("IndexedDB adapter persistence", () => {
       // not only today's producer output.
       {
         subjectId: "todo_4",
-        subjectType: "todo",
+        model: "todo",
         before: buildTodoEntity("todo_4", "mine", makeHlc(HLC_BASE)),
         after: null,
       },

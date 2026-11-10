@@ -71,11 +71,15 @@ const contextFor = (host: FakeHost) =>
   });
 
 interface CommittedUpdate {
-  readonly subject_type: string;
+  readonly component?: string;
   readonly method: string;
   readonly subject_id: string;
-  readonly data?: { readonly fields?: Record<string, { readonly value?: unknown }> };
+  readonly data?: { readonly value?: unknown };
 }
+
+/** The model a committed Update's component names; `undefined` for a delete. */
+const modelOf = (update: CommittedUpdate): string | undefined =>
+  update.component?.slice(0, update.component.indexOf("/"));
 
 interface CommittedAction {
   readonly updates: readonly CommittedUpdate[];
@@ -118,23 +122,18 @@ describe("proofreadDocument", () => {
     await ctx.commit();
 
     const [action] = host.commits as CommittedAction[];
-    expect(action?.updates.map((update) => update.subject_type)).toEqual([
-      "comment",
-      "entityGroup",
-      "comment",
-      "entityGroup",
-    ]);
-    expect(action?.updates.map((update) => update.method)).toEqual(["put", "put", "put", "put"]);
+    const models = action?.updates
+      .map(modelOf)
+      .filter((model, index, all) => model !== all[index - 1]);
+    expect(models).toEqual(["comment", "entityGroup", "comment", "entityGroup"]);
+    expect(action?.updates.every((update) => update.method === "replace")).toBe(true);
 
-    const commentBodies = action?.updates
-      .filter((update) => update.subject_type === "comment")
-      .map((update) => update.data?.fields?.body?.value);
-    expect(commentBodies).toEqual(["the cat sat", "Consider a stronger verb."]);
-
-    const linkedDocuments = action?.updates
-      .filter((update) => update.subject_type === "comment")
-      .map((update) => update.data?.fields?.documentId?.value);
-    expect(linkedDocuments).toEqual([DOCUMENT_ID, DOCUMENT_ID]);
+    const valueOf = (component: string): unknown[] =>
+      (action?.updates ?? [])
+        .filter((update) => update.component === component)
+        .map((update) => update.data?.value);
+    expect(valueOf("comment/body")).toEqual(["the cat sat", "Consider a stronger verb."]);
+    expect(valueOf("comment/documentId")).toEqual([DOCUMENT_ID, DOCUMENT_ID]);
   });
 
   it("throws when the document is absent, before any external call or write", async () => {

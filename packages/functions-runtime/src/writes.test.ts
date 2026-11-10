@@ -15,7 +15,15 @@ import {
   actionIdForInvocation,
   createContext,
 } from "./index.ts";
-import { countingIds, fakeHost, hostRow, testContext } from "./test-support/host.ts";
+import {
+  countingIds,
+  fakeHost,
+  hostRow,
+  modelsOf,
+  rowsOf,
+  testContext,
+  valueOf,
+} from "./test-support/host.ts";
 
 const ISSUE = { title: "Ship", done: false, labels: [] };
 
@@ -30,10 +38,13 @@ describe("ctx.create", () => {
     expect(Object.isFrozen(handle)).toBe(true);
 
     await ctx.commit();
-    const [action] = host.commits as { updates: { subject_type: string; method: string }[] }[];
+    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
 
-    expect(action?.updates.map((update) => update.subject_type)).toEqual(["issue", "entityGroup"]);
-    expect(action?.updates.map((update) => update.method)).toEqual(["put", "put"]);
+    const models = modelsOf(action!.updates).filter(
+      (model, index, all) => model !== all[index - 1],
+    );
+    expect(models).toEqual(["issue", "entityGroup"]);
+    expect(action!.updates.every((update) => update.method === "replace")).toBe(true);
   });
 
   it("collapses a handle used as a later field value or relationship pointer", async () => {
@@ -45,16 +56,15 @@ describe("ctx.create", () => {
     ctx.create("issue", { ...ISSUE, project }, { id: "e_issue1", groups: ["g_1"] });
     await ctx.commit();
 
-    const [action] = host.commits as {
-      updates: { subject_id: string; subject_type: string; data: unknown }[];
-    }[];
-    const copiedName = action?.updates.find((update) => update.subject_id === "e_proj2");
-    const relationship = action?.updates.find((update) => update.subject_type === "relationship");
+    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
+    const [copiedRow] = rowsOf(action!.updates, "project").filter(
+      (row) => row[0]!.subject_id === "e_proj2",
+    );
+    const [relationship] = rowsOf(action!.updates, "relationship");
 
-    expect(copiedName?.data).toMatchObject({ fields: { name: { value: project.id } } });
-    expect(relationship?.data).toMatchObject({
-      fields: { target_id: { value: project.id }, field: { value: "project" } },
-    });
+    expect(valueOf(copiedRow!, "name")).toBe(project.id);
+    expect(valueOf(relationship!, "target_id")).toBe(project.id);
+    expect(valueOf(relationship!, "field")).toBe("project");
   });
 
   it("requires a non-empty groups option", () => {
@@ -109,7 +119,7 @@ describe("ctx.update / ctx.delete", () => {
 
     const [action] = host.commits as { updates: { subject_id: string; method: string }[] }[];
     expect(action?.updates).toMatchObject([
-      { subject_id: "e_issue1", method: "patch" },
+      { subject_id: "e_issue1", method: "merge" },
       { subject_id: "e_issue2", method: "delete", data: null },
     ]);
   });
@@ -129,17 +139,14 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.unrelate("issue", "e_issue1", "project");
     await ctx.commit();
 
-    const [action] = host.commits as {
-      updates: { id: string; subject_id: string; subject_type: string; method: string }[];
-    }[];
-    const relationshipEdges = action?.updates.filter(
-      (update) => update.subject_type === "relationship",
-    );
+    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
+    const relationshipRows = rowsOf(action!.updates, "relationship");
+    const deleted = action!.updates.filter((update) => update.method === "delete");
 
-    expect(relationshipEdges).toHaveLength(2);
-    expect(relationshipEdges?.[0]?.method).toBe("put");
-    expect(relationshipEdges?.[1]?.method).toBe("delete");
-    expect(relationshipEdges?.[1]?.subject_id).toBe(relationshipEdges?.[0]?.subject_id);
+    // One rel_seeded row (four components) and its delete.
+    expect(relationshipRows).toHaveLength(1);
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0]!.subject_id).toBe(relationshipRows[0]![0]!.subject_id);
   });
 
   it("sets a many-cardinality FK list and clears it", async () => {
@@ -150,14 +157,12 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.unrelate("issue", "e_issue1", "labels");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: { subject_type: string; data: unknown }[] }[];
-    const issueFields = action?.updates
-      .filter((update) => update.subject_type === "issue")
-      .map(
-        (update) => (update.data as { fields: { labels: { value: unknown } } }).fields.labels.value,
-      );
+    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
+    const labels = action!.updates
+      .filter((update) => update.method !== "delete" && update.component === "issue/labels")
+      .map((update) => (update.data as { value: unknown }).value);
 
-    expect(issueFields).toEqual([["e_l1", "e_l2"], []]);
+    expect(labels).toEqual([["e_l1", "e_l2"], []]);
   });
 
   it("drops one target from the current FK set read through the overlay", async () => {
@@ -169,8 +174,11 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.unrelate("issue", "e_issue1", "labels", "e_l1");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: { data: unknown }[] }[];
-    expect(action?.updates[0]?.data).toMatchObject({ fields: { labels: { value: ["e_l2"] } } });
+    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
+    const labels = action!.updates.find(
+      (update) => update.method !== "delete" && update.component === "issue/labels",
+    )!;
+    expect(labels.data).toMatchObject({ value: ["e_l2"] });
   });
 
   it("refuses to unlink one target of an FK set it cannot read", async () => {
@@ -196,7 +204,7 @@ describe("ctx.relate / ctx.unrelate", () => {
 
     const [action] = host.commits as { updates: unknown[] }[];
     expect(action?.updates).toMatchObject([
-      { subject_id: "rel_known", subject_type: "relationship", method: "delete" },
+      { subject_id: "rel_known", method: "delete", data: null },
     ]);
   });
 
@@ -257,7 +265,7 @@ describe("ctx.commit", () => {
     const host = fakeHost();
     const ctx = testContext(host);
 
-    ctx.delete("unregistered", "e_x");
+    ctx.update("unregistered", "e_x", { title: "x" });
     await expect(ctx.commit()).rejects.toThrow(EntityValidationError);
     expect(host.commits).toEqual([]);
   });

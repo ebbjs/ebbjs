@@ -156,21 +156,18 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "id" => "act_251_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => "upd_251_#{:erlang.unique_integer([:positive])}",
-          "subject_id" => todo_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => "Snapshot", "hlc" => hlc}
-            }
+      "updates" =>
+        [
+          %{
+            "id" => "upd_251_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => todo_id,
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Snapshot", "hlc" => hlc}
           }
-        },
-        entity_group_update(eg_id, todo_id, group_id, "put", hlc),
-        entity_group_update(eg_other_id, todo_id, other_group_id, "put", hlc)
-      ]
+        ] ++
+          entity_group_update(eg_id, todo_id, group_id, "replace", hlc) ++
+          entity_group_update(eg_other_id, todo_id, other_group_id, "replace", hlc)
     }
 
     :ok = post!(action, actor_id)
@@ -183,7 +180,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "id" => "act_251_del_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => TestHelpers.generate_hlc(),
-      "updates" => [entity_group_update(eg_id, nil, nil, "delete", TestHelpers.generate_hlc())]
+      "updates" => entity_group_update(eg_id, nil, nil, "delete", TestHelpers.generate_hlc())
     }
   end
 
@@ -194,21 +191,19 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "id" => "act_251_gm_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => gm_id,
-          "subject_id" => gm_id,
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => member_actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-            }
-          }
-        }
-      ]
+      "updates" =>
+        component_updates(
+          gm_id,
+          gm_id,
+          "groupMember",
+          "replace",
+          %{
+            "actor_id" => member_actor_id,
+            "group_id" => group_id,
+            "permissions" => ["todo.read"]
+          },
+          hlc
+        )
     }
   end
 
@@ -221,7 +216,6 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
         %{
           "id" => "upd_251_gm_del_#{:erlang.unique_integer([:positive])}",
           "subject_id" => gm_id,
-          "subject_type" => "groupMember",
           "method" => "delete",
           "data" => nil
         }
@@ -230,24 +224,41 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   end
 
   defp entity_group_update(eg_id, entity_id, group_id, method, hlc) do
-    data =
-      if method == "delete" do
-        nil
-      else
+    if method == "delete" do
+      [
         %{
-          "fields" => %{
-            "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-          }
+          "id" => "upd_251_eg_#{:erlang.unique_integer([:positive])}",
+          "subject_id" => eg_id,
+          "method" => "delete",
+          "data" => nil
         }
-      end
+      ]
+    else
+      component_updates(
+        eg_id,
+        eg_id,
+        "entityGroup",
+        "replace",
+        %{
+          "entity_id" => entity_id,
+          "group_id" => group_id
+        },
+        hlc
+      )
+    end
+  end
 
-    %{
-      "id" => "upd_251_eg_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => method,
-      "data" => data
-    }
+  defp component_updates(id_prefix, subject_id, model, method, fields, hlc) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      %{
+        "id" => "#{id_prefix}_#{index}",
+        "subject_id" => subject_id,
+        "component" => "#{model}/#{field}",
+        "method" => method,
+        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+      }
+    end)
   end
 end

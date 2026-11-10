@@ -1,6 +1,6 @@
 {
   "name": "delete",
-  "description": "one soft delete: a single Update whose data is null",
+  "description": "one soft delete: a single Update that names the row and carries no component",
   "schema": "schema",
   "invocation_id": "inv_goldenDelete",
   "actor_id": "a_golden",
@@ -25,7 +25,6 @@
       {
         "id": "u_gdelete1",
         "subject_id": "e_gissue1",
-        "subject_type": "issue",
         "method": "delete",
         "data": null
       }

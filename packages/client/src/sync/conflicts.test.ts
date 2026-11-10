@@ -30,13 +30,11 @@ const mkAction = (actionId: string): Action => ({
   gsn: 0,
   updates: [
     {
-      id: `u_${actionId}`,
+      id: `${`u_${actionId}`}_0`,
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "patch",
-      data: {
-        fields: { title: { value: "mine", update_id: `u_${actionId}`, hlc: LOCAL_HLC } },
-      },
+      component: "todo/title",
+      method: "merge",
+      data: { value: "mine", update_id: `u_${actionId}`, hlc: LOCAL_HLC },
     },
   ],
 });
@@ -64,12 +62,12 @@ const mkState = (
   subjectId: string,
   before: Entity | null,
   after: Entity | null,
-): ConflictSubjectState => ({ subjectId, subjectType: "todo", before, after });
+): ConflictSubjectState => ({ subjectId, model: "todo", before, after });
 
 /** The default contested `title` slot. */
 const mkSlot = (overrides: Partial<ConflictSlot> = {}): ConflictSlot => ({
   subjectId: "todo_1",
-  field: "title",
+  component: "todo/title",
   path: [],
   local: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC },
   remote: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC },
@@ -392,9 +390,8 @@ describe("createConflicts", () => {
       updates: subjects.map((subjectId) => ({
         id: `u_${id}_${subjectId}`,
         subject_id: subjectId,
-        subject_type: "todo",
-        method: "patch",
-        data: { fields: {} },
+        method: "delete" as const,
+        data: null,
       })),
     });
     const harness = mkDeps([

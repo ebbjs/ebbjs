@@ -16,6 +16,7 @@ import { defineSchema } from "@ebbjs/schema";
 import { ActionRejectedError } from "@ebbjs/write";
 import { EntityValidationError } from "@ebbjs/schema";
 import { createClient } from "../client";
+import { updateModel } from "../test-utils";
 import { testActions } from "./test-actions";
 
 const todo = defineModel("todo", { title: e.string() });
@@ -78,6 +79,21 @@ const mkClient = async () => {
 const updatesOf = (actions: readonly Action[][]): Action["updates"] =>
   actions.flatMap((batch) => batch.flatMap((action) => action.updates));
 
+/** The distinct membership row ids a batch creates. */
+const entityGroupIds = (updates: Action["updates"]): readonly string[] => [
+  ...new Set(
+    updates
+      .filter((update) => updateModel(update) === "entityGroup")
+      .map((update) => update.subject_id),
+  ),
+];
+
+/** The `group_id` component value of every membership row. */
+const entityGroupGroups = (updates: Action["updates"]): readonly unknown[] =>
+  updates
+    .filter((update) => update.method !== "delete" && update.component === "entityGroup/group_id")
+    .map((update) => (update.data as { value: unknown }).value);
+
 describe("drafts — membership verbs (#464)", () => {
   it("composes a draft addToGroup with a group-coherent create into one Action", async () => {
     const { client, actions } = await mkClient();
@@ -91,8 +107,8 @@ describe("drafts — membership verbs (#464)", () => {
     const updates = updatesOf(actions);
     // One content put + one entityGroup put for the create, plus one
     // entityGroup put for the addToGroup.
-    expect(updates.filter((u) => u.subject_type === "todo")).toHaveLength(1);
-    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
+    expect(updates.filter((u) => updateModel(u) === "todo")).toHaveLength(1);
+    expect(new Set(entityGroupIds(updates)).size).toBe(2);
   });
 
   it("submits a content create in g_1 mixed with a membership delta into g_2 as one Action", async () => {
@@ -107,14 +123,9 @@ describe("drafts — membership verbs (#464)", () => {
     const updates = updatesOf(actions);
     // One content put + one entityGroup put for the create, plus one
     // entityGroup put for the addToGroup. The batch spans g_1 and g_2.
-    expect(updates.filter((u) => u.subject_type === "todo")).toHaveLength(1);
-    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
-    expect(
-      updates
-        .filter((u) => u.subject_type === "entityGroup")
-        .map((u) => u.data?.fields?.["group_id"]?.value)
-        .sort(),
-    ).toEqual(["g_1", "g_2"]);
+    expect(updates.filter((u) => updateModel(u) === "todo")).toHaveLength(1);
+    expect(new Set(entityGroupIds(updates)).size).toBe(2);
+    expect([...entityGroupGroups(updates)].sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("lets a membership batch span groups in one Action", async () => {
@@ -127,8 +138,8 @@ describe("drafts — membership verbs (#464)", () => {
 
     expect(actions).toHaveLength(1);
     const updates = updatesOf(actions);
-    expect(updates).toHaveLength(2);
-    expect(updates.map((u) => u.data?.fields?.["group_id"]?.value).sort()).toEqual(["g_1", "g_2"]);
+    expect(new Set(entityGroupIds(updates)).size).toBe(2);
+    expect([...entityGroupGroups(updates)].sort()).toEqual(["g_1", "g_2"]);
   });
 
   // One row per `(entity, group)` (#623): two devices that share the same
@@ -161,9 +172,7 @@ describe("drafts — membership verbs (#464)", () => {
       groups: ["g_1", "g_2"],
     });
 
-    const ids = updatesOf(actions)
-      .filter((u) => u.subject_type === "entityGroup")
-      .map((u) => u.subject_id);
+    const ids = entityGroupIds(updatesOf(actions));
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
   });
@@ -180,7 +189,9 @@ describe("drafts — membership verbs (#464)", () => {
       draft.addToGroup("todo_1", "g_1");
     });
 
-    const puts = updatesOf(actions).filter((u) => u.method === "put");
+    const puts = updatesOf(actions).filter(
+      (u) => u.method !== "delete" && u.component === "entityGroup/entity_id",
+    );
     expect(puts).toHaveLength(1);
     // Same pair, so the same derived row id the first share used: an
     // unshare followed by a re-share cannot leave a second row behind.

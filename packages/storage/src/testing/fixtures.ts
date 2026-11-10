@@ -1,4 +1,11 @@
-import { makeHlc, type Action, type Entity } from "@ebbjs/core";
+import {
+  componentName,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import type { OutboxConflict } from "../types/outbox-store";
 
@@ -11,9 +18,26 @@ import type { OutboxConflict } from "../types/outbox-store";
 
 export const HLC_BASE = 1_711_036_800_000;
 
+/** One (`replace` or `merge`) Update per field, ids derived from `idBase`. */
+const componentUpdates = (
+  subjectId: string,
+  model: string,
+  method: "merge" | "replace",
+  fields: Record<string, FieldValue>,
+  idBase: string,
+): Update[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `${idBase}_${field}`,
+    subject_id: subjectId,
+    component: componentName(model, field),
+    method,
+    data: value,
+  }));
+
 /**
- * A `put` for `todo_1`. `counter` offsets the HLC within `HLC_BASE` so
- * tests can order write time independently of GSN.
+ * A `put` equivalent for `todo_1`: one `replace` per component. `counter`
+ * offsets the HLC within `HLC_BASE` so tests can order write time
+ * independently of GSN.
  */
 export const buildPutAction = (counter = 0): Action => {
   const hlc = makeHlc(HLC_BASE, counter);
@@ -23,25 +47,20 @@ export const buildPutAction = (counter = 0): Action => {
     actor_id: "a_user1",
     hlc,
     gsn: 1,
-    updates: [
-      {
-        id: "u_1",
-        subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: {
-            title: { value: "Hello", update_id: "u_1", hlc },
-          },
-        },
-      },
-    ],
+    updates: componentUpdates(
+      "todo_1",
+      "todo",
+      "replace",
+      { title: { value: "Hello", update_id: "u_1_title", hlc } },
+      "u_1",
+    ),
   };
 };
 
 /**
- * A `patch` for `todo_1`, applied after {@link buildPutAction}. See that
- * builder for how `counter` orders the HLC independently of GSN.
+ * A `patch` equivalent for `todo_1` — one `merge` of its component, applied
+ * after {@link buildPutAction}. See that builder for how `counter` orders the
+ * HLC independently of GSN.
  */
 export const buildPatchAction = (counter = 1): Action => {
   const hlc = makeHlc(HLC_BASE, counter);
@@ -51,19 +70,13 @@ export const buildPatchAction = (counter = 1): Action => {
     actor_id: "a_user1",
     hlc,
     gsn: 2,
-    updates: [
-      {
-        id: "u_2",
-        subject_id: "todo_1",
-        subject_type: "todo",
-        method: "patch",
-        data: {
-          fields: {
-            title: { value: "Updated", update_id: "u_2", hlc },
-          },
-        },
-      },
-    ],
+    updates: componentUpdates(
+      "todo_1",
+      "todo",
+      "merge",
+      { title: { value: "Updated", update_id: "u_2_title", hlc } },
+      "u_2",
+    ),
   };
 };
 
@@ -78,35 +91,35 @@ export interface RelationshipRowFixture {
 }
 
 /**
- * Build a `put` Action for one Relationship row, the shape the wire
- * writes when a source points at a target.
+ * Build a create Action for one Relationship row: one `replace` per
+ * component, the shape the wire writes when a source points at a target.
  */
 export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${row.id}`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc });
+  const field = (value: string, name: string) => ({
+    value,
+    update_id: `${updateId}_${name}`,
+    hlc,
+  });
 
   return {
     id: `a_${row.id}`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: [
+    updates: componentUpdates(
+      row.id,
+      "relationship",
+      "replace",
       {
-        id: updateId,
-        subject_id: row.id,
-        subject_type: "relationship",
-        method: "put",
-        data: {
-          fields: {
-            source_id: field(row.sourceId),
-            target_id: field(row.targetId),
-            type: field(row.type),
-            field: field(row.field),
-          },
-        },
+        source_id: field(row.sourceId, "source_id"),
+        target_id: field(row.targetId, "target_id"),
+        type: field(row.type, "type"),
+        field: field(row.field, "field"),
       },
-    ],
+      updateId,
+    ),
   };
 };
 
@@ -121,8 +134,8 @@ export interface RelationshipPatchFixture {
 }
 
 /**
- * Build a `patch` Action that changes one or more natural-key fields
- * of a Relationship row.
+ * Build an Action that changes one or more natural-key components of a
+ * Relationship row, one `merge` each.
  */
 export const buildRelationshipPatchAction = (
   patch: RelationshipPatchFixture,
@@ -130,31 +143,27 @@ export const buildRelationshipPatchAction = (
 ): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${patch.id}_patch`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc });
-  const fields: Record<string, { value: string; update_id: string; hlc: string }> = {};
-  if (patch.sourceId !== undefined) fields.source_id = field(patch.sourceId);
-  if (patch.targetId !== undefined) fields.target_id = field(patch.targetId);
-  if (patch.type !== undefined) fields.type = field(patch.type);
-  if (patch.field !== undefined) fields.field = field(patch.field);
+  const field = (value: string, name: string) => ({
+    value,
+    update_id: `${updateId}_${name}`,
+    hlc,
+  });
+  const fields: Record<string, FieldValue> = {};
+  if (patch.sourceId !== undefined) fields.source_id = field(patch.sourceId, "source_id");
+  if (patch.targetId !== undefined) fields.target_id = field(patch.targetId, "target_id");
+  if (patch.type !== undefined) fields.type = field(patch.type, "type");
+  if (patch.field !== undefined) fields.field = field(patch.field, "field");
 
   return {
     id: `a_${patch.id}_patch`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: [
-      {
-        id: updateId,
-        subject_id: patch.id,
-        subject_type: "relationship",
-        method: "patch",
-        data: { fields },
-      },
-    ],
+    updates: componentUpdates(patch.id, "relationship", "merge", fields, updateId),
   };
 };
 
-/** Build a `patch` Action that re-points a Relationship row at a new target. */
+/** Build an Action that re-points a Relationship row at a new target. */
 export const buildRelationshipRetargetAction = (
   args: { id: string; targetId: string },
   gsn: number,
@@ -172,7 +181,6 @@ export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number)
       {
         id: `u_${args.id}_delete`,
         subject_id: args.id,
-        subject_type: "relationship",
         method: "delete",
         data: null,
       },
@@ -187,33 +195,33 @@ export interface EntityGroupRowFixture {
 }
 
 /**
- * Build a `put` Action for one `entityGroup` membership row, the shape
- * the wire writes when an entity joins a group.
+ * Build a create Action for one `entityGroup` membership row: one `replace`
+ * per component, the shape the wire writes when an entity joins a group.
  */
 export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${row.id}`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc });
+  const field = (value: string, name: string) => ({
+    value,
+    update_id: `${updateId}_${name}`,
+    hlc,
+  });
 
   return {
     id: `a_${row.id}`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: [
+    updates: componentUpdates(
+      row.id,
+      "entityGroup",
+      "replace",
       {
-        id: updateId,
-        subject_id: row.id,
-        subject_type: "entityGroup",
-        method: "put",
-        data: {
-          fields: {
-            entity_id: field(row.entityId),
-            group_id: field(row.groupId),
-          },
-        },
+        entity_id: field(row.entityId, "entity_id"),
+        group_id: field(row.groupId, "group_id"),
       },
-    ],
+      updateId,
+    ),
   };
 };
 
@@ -224,8 +232,8 @@ export interface EntityGroupPatchFixture {
 }
 
 /**
- * Build a `patch` Action that changes one or both ids of an
- * `entityGroup` membership row.
+ * Build an Action that changes one or both ids of an `entityGroup` membership
+ * row, one `merge` per component.
  */
 export const buildEntityGroupPatchAction = (
   patch: EntityGroupPatchFixture,
@@ -233,29 +241,25 @@ export const buildEntityGroupPatchAction = (
 ): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${patch.id}_patch`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc });
-  const fields: Record<string, { value: string; update_id: string; hlc: string }> = {};
-  if (patch.entityId !== undefined) fields.entity_id = field(patch.entityId);
-  if (patch.groupId !== undefined) fields.group_id = field(patch.groupId);
+  const field = (value: string, name: string) => ({
+    value,
+    update_id: `${updateId}_${name}`,
+    hlc,
+  });
+  const fields: Record<string, FieldValue> = {};
+  if (patch.entityId !== undefined) fields.entity_id = field(patch.entityId, "entity_id");
+  if (patch.groupId !== undefined) fields.group_id = field(patch.groupId, "group_id");
 
   return {
     id: `a_${patch.id}_patch`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: [
-      {
-        id: updateId,
-        subject_id: patch.id,
-        subject_type: "entityGroup",
-        method: "patch",
-        data: { fields },
-      },
-    ],
+    updates: componentUpdates(patch.id, "entityGroup", "merge", fields, updateId),
   };
 };
 
-/** Build a `delete` Action for an `entityGroup` membership row. */
+/** Build a delete Action for an `entityGroup` membership row. */
 export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
 
@@ -268,7 +272,6 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
       {
         id: `u_${args.id}_delete`,
         subject_id: args.id,
-        subject_type: "entityGroup",
         method: "delete",
         data: null,
       },
@@ -294,7 +297,7 @@ export const buildDeletedTodoEntity = (id: string, title: string, hlc: string): 
 });
 
 /**
- * A conflict payload for a losing `put` on `todo_1`: the `title` slot's
+ * A conflict payload for a losing write on `todo_1`: the `title` slot's
  * local / remote sides, detected at `detectedAtMs`. Callers attach it to
  * an outbox entry to exercise the durable status transition.
  */
@@ -305,7 +308,7 @@ export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
   subjectStates: [
     {
       subjectId: "todo_1",
-      subjectType: "todo",
+      model: "todo",
       before: buildTodoEntity("todo_1", "Hello", makeHlc(HLC_BASE)),
       after: buildTodoEntity("todo_1", "Updated", makeHlc(HLC_BASE, detectedAtMs)),
     },
@@ -313,7 +316,7 @@ export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
   slots: [
     {
       subjectId: "todo_1",
-      field: "title",
+      component: "todo/title",
       path: [],
       local: { value: "Hello", update_id: "u_1", hlc: makeHlc(HLC_BASE) },
       remote: { update_id: "u_2", hlc: makeHlc(HLC_BASE, detectedAtMs), value: "Updated" },

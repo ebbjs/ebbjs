@@ -124,25 +124,22 @@ const waitForStream = (calls: readonly string[], timeoutMs = 10_000): Promise<vo
  * groupMember.* permission). Idempotent — tolerates already_exists.
  */
 async function addMemberAsSeeder(actorId: string): Promise<void> {
-  const { encodeSync, createAction, createClock, localEvent } = await import("@ebbjs/core");
+  const { encodeSync, createAction, createClock, componentName, localEvent } =
+    await import("@ebbjs/core");
   const clock = createClock();
-  const update = {
-    subject_id: `gm_${actorId}`,
-    subject_type: "groupMember",
-    method: "put" as const,
-    data: {
-      fields: {
-        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
-        group_id: { value: GROUP_ID, update_id: "add", hlc: localEvent(clock) },
-        permissions: {
-          value: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
-          update_id: "add",
-          hlc: localEvent(clock),
-        },
-      },
-    },
+  const hlc = localEvent(clock);
+  const fields: Record<string, unknown> = {
+    actor_id: actorId,
+    group_id: GROUP_ID,
+    permissions: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
   };
-  const { action } = createAction({ actorId: "demo-seeder", updates: [update], clock });
+  const updates = Object.entries(fields).map(([field, value]) => ({
+    subject_id: `gm_${actorId}`,
+    component: componentName("groupMember", field),
+    method: "replace" as const,
+    data: { value, update_id: `add_${field}`, hlc },
+  }));
+  const { action } = createAction({ actorId: "demo-seeder", updates, clock });
   const body = encodeSync({ actions: [action] });
 
   const res = await fetch(`${SERVER_URL}/sync/actions`, {

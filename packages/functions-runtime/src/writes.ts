@@ -11,6 +11,8 @@
  */
 
 import {
+  componentField,
+  componentModel,
   generateId,
   isFieldMap,
   localEvent,
@@ -108,12 +110,6 @@ export interface WriteSurface extends PreflightView {
 const edgeKey = (type: string, sourceId: string, as: string): string =>
   `${type}\u0000${sourceId}\u0000${as}`;
 
-const stringField = (fields: Record<string, FieldValue>, key: string): string | undefined => {
-  const field = fields[key];
-  if (field === undefined || isFieldMap(field)) return undefined;
-  return typeof field.value === "string" ? field.value : undefined;
-};
-
 const stringListField = (
   fields: Record<string, FieldValue>,
   key: string,
@@ -121,6 +117,24 @@ const stringListField = (
   const field = fields[key];
   if (field === undefined || isFieldMap(field)) return undefined;
   const value = field.value;
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? value
+    : undefined;
+};
+
+/** A component's projected plain value, from the buffered row so far. */
+const plainField = (fields: Record<string, unknown>, key: string): unknown => fields[key];
+
+const stringValue = (fields: Record<string, unknown>, key: string): string | undefined => {
+  const value = plainField(fields, key);
+  return typeof value === "string" ? value : undefined;
+};
+
+const stringListValue = (
+  fields: Record<string, unknown>,
+  key: string,
+): readonly string[] | undefined => {
+  const value = plainField(fields, key);
   return Array.isArray(value) && value.every((entry) => typeof entry === "string")
     ? value
     : undefined;
@@ -182,34 +196,67 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     edgeKeys.delete(relationshipId);
   };
 
+  /**
+   * The plain component values each buffered subject carries so far. A row's
+   * components arrive as separate Updates, so the index folds them here before
+   * resolving a membership or an edge.
+   */
+  const rowValues = new Map<string, Record<string, unknown>>();
+
+  /** Fold one component Update into the subject's plain values. */
+  const foldRow = (update: Update): Record<string, unknown> | undefined => {
+    if (update.method === "delete") return undefined;
+    const field = componentField(update.component);
+    const previous = rowValues.get(update.subject_id) ?? {};
+    const values = { ...previous };
+    if (update.method === "drop") delete values[field];
+    else values[field] = isFieldMap(update.data) ? undefined : update.data.value;
+    rowValues.set(update.subject_id, values);
+    return values;
+  };
+
   /** Index one buffered Update so later verbs and reads can resolve against it. */
   const indexWrite = (update: Update): void => {
-    const fields = update.data?.fields ?? {};
-    switch (update.subject_type) {
+    const id = update.subject_id;
+    if (update.method === "delete") {
+      if (membershipGroup.has(id)) {
+        removeGroup(membershipEntity.get(id) ?? "", membershipGroup.get(id) ?? "");
+        membershipGroup.delete(id);
+        membershipEntity.delete(id);
+        return;
+      }
+      if (edgeKeys.has(id)) {
+        markEdgeGone(id);
+        return;
+      }
+      const groupId = memberGroup.get(id);
+      if (groupId !== undefined) {
+        membersByGroup.get(groupId)?.delete(id);
+        memberGroup.delete(id);
+      }
+      rowValues.delete(id);
+      return;
+    }
+
+    const model = componentModel(update.component);
+    const values = foldRow(update);
+    if (values === undefined) return;
+
+    switch (model) {
       case "entityGroup": {
-        if (update.method === "delete") {
-          const groupId = membershipGroup.get(update.subject_id);
-          const entityId = membershipEntity.get(update.subject_id);
-          if (groupId !== undefined && entityId !== undefined) removeGroup(entityId, groupId);
-          return;
-        }
-        const groupId = stringField(fields, "group_id");
-        const entityId = stringField(fields, "entity_id");
+        const groupId = stringValue(values, "group_id");
+        const entityId = stringValue(values, "entity_id");
         if (groupId === undefined || entityId === undefined) return;
-        membershipGroup.set(update.subject_id, groupId);
-        membershipEntity.set(update.subject_id, entityId);
+        membershipGroup.set(id, groupId);
+        membershipEntity.set(id, entityId);
         addGroup(entityId, groupId);
         return;
       }
       case "relationship": {
-        if (update.method === "delete") {
-          markEdgeGone(update.subject_id);
-          return;
-        }
-        const sourceId = stringField(fields, "source_id");
-        const field = stringField(fields, "field");
-        const type = stringField(fields, "type");
-        const targetId = stringField(fields, "target_id");
+        const sourceId = stringValue(values, "source_id");
+        const field = stringValue(values, "field");
+        const type = stringValue(values, "type");
+        const targetId = stringValue(values, "target_id");
         if (
           sourceId === undefined ||
           field === undefined ||
@@ -219,30 +266,24 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
           return;
         }
         const key = edgeKey(type, sourceId, field);
-        edges.set(key, { relationshipId: update.subject_id, targetId });
-        edgeKeys.set(update.subject_id, key);
+        edges.set(key, { relationshipId: id, targetId });
+        edgeKeys.set(id, key);
         return;
       }
       case "group": {
-        if (update.method === "delete") return;
-        createdGroups.add(update.subject_id);
-        addGroup(update.subject_id, update.subject_id);
+        createdGroups.add(id);
+        addGroup(id, id);
         return;
       }
       case "groupMember": {
-        if (update.method === "delete") {
-          const groupId = memberGroup.get(update.subject_id);
-          if (groupId !== undefined) membersByGroup.get(groupId)?.delete(update.subject_id);
-          return;
-        }
-        const groupId = stringField(fields, "group_id");
+        const groupId = stringValue(values, "group_id");
         if (groupId === undefined) return;
-        const permissions = stringListField(fields, "permissions") ?? [];
-        memberGroup.set(update.subject_id, groupId);
+        const permissions = stringListValue(values, "permissions") ?? [];
+        memberGroup.set(id, groupId);
         const roster = membersByGroup.get(groupId) ?? new Map<string, readonly string[]>();
-        roster.set(update.subject_id, permissions);
+        roster.set(id, permissions);
         membersByGroup.set(groupId, roster);
-        addGroup(update.subject_id, groupId);
+        addGroup(id, groupId);
         return;
       }
       default:
@@ -256,7 +297,9 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       const held = updatesById.get(update.subject_id);
       if (held === undefined) updatesById.set(update.subject_id, [update]);
       else held.push(update);
-      types.set(update.subject_id, update.subject_type);
+      if (update.method !== "delete") {
+        types.set(update.subject_id, componentModel(update.component));
+      }
       indexWrite(update);
     }
   };
@@ -378,7 +421,10 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       preflightView,
       entity,
       id,
-      batch.filter((update) => update.subject_type === "entityGroup"),
+      batch.filter(
+        (update) =>
+          update.method !== "delete" && componentModel(update.component) === "entityGroup",
+      ),
     );
     return createHandle(id);
   };

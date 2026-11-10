@@ -44,17 +44,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_group_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: [
-        %{
-          id: "upd_group_" <> Nanoid.generate(),
-          subject_id: group_id,
-          subject_type: "group",
-          method: :put,
-          data: %{
-            "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
-          }
-        }
-      ]
+      updates: component_updates("upd_group_", group_id, "group", %{"name" => "Test Group"}, hlc)
     }
 
     {:ok, {_gsn1, _gsn1}, []} = Writer.write_actions([group_action])
@@ -63,21 +53,14 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_gm_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: [
-        %{
-          id: "upd_gm_" <> Nanoid.generate(),
-          subject_id: gm_id,
-          subject_type: "groupMember",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-            }
-          }
-        }
-      ]
+      updates:
+        component_updates(
+          "upd_gm_",
+          gm_id,
+          "groupMember",
+          %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
+          hlc
+        )
     }
 
     {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([gm_action])
@@ -89,20 +72,14 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_eg_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: eg_hlc,
-      updates: [
-        %{
-          id: "upd_eg_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
-      ]
+      updates:
+        component_updates(
+          "upd_eg_",
+          eg_id,
+          "entityGroup",
+          %{"entity_id" => group_id, "group_id" => group_id},
+          eg_hlc
+        )
     }
 
     {:ok, {_gsn3, _gsn3}, []} = Writer.write_actions([eg_action])
@@ -119,20 +96,14 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: todo_id,
-          subject_type: "todo",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => title, "hlc" => hlc},
-              "completed" => %{"type" => "lww", "value" => completed, "hlc" => hlc}
-            }
-          }
-        }
-      ]
+      updates:
+        component_updates(
+          "upd_",
+          todo_id,
+          "todo",
+          %{"title" => title, "completed" => completed},
+          hlc
+        )
     }
 
     {:ok, {_gsn1, _gsn1}, []} = Writer.write_actions([todo_action])
@@ -143,24 +114,34 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_eg_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: eg_hlc,
-      updates: [
-        %{
-          id: "upd_eg_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
-      ]
+      updates:
+        component_updates(
+          "upd_eg_",
+          eg_id,
+          "entityGroup",
+          %{"entity_id" => todo_id, "group_id" => group_id},
+          eg_hlc
+        )
     }
 
     {:ok, {_gsn2, _gsn2}, []} = Writer.write_actions([eg_action])
     :ok
+  end
+
+  defp component_updates(id_prefix, subject_id, model, fields, hlc) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      %{
+        id: "#{id_prefix}#{index}_#{Nanoid.generate()}",
+        subject_id: subject_id,
+        component: "#{model}/#{field}",
+        model: model,
+        field: field,
+        method: :replace,
+        data: %{"type" => "lww", "value" => value, "hlc" => hlc}
+      }
+    end)
   end
 
   describe "POST /entities/query" do

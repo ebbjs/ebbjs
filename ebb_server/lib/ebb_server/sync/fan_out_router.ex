@@ -545,6 +545,7 @@ defmodule EbbServer.Sync.FanOutRouter do
     resolve_opts = [
       entity_groups: CacheTables.entity_groups(),
       entity_groups_by_id: CacheTables.entity_groups_by_id(),
+      entity_types: CacheTables.entity_types(),
       relationships_by_id: CacheTables.relationships_by_id(),
       group_members_by_id: CacheTables.group_members_by_id()
     ]

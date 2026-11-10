@@ -113,18 +113,16 @@ defmodule EbbServer.RestartReadIntegrationTest do
       "id" => "act_put_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => "upd_put_" <> Nanoid.generate(),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
+      "updates" =>
+        [
+          %{
+            "id" => "upd_put_" <> Nanoid.generate(),
+            "subject_id" => entity_id,
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
           }
-        },
-        entity_group_update(entity_id, group_id, hlc)
-      ]
+        ] ++ entity_group_update(entity_id, group_id, hlc)
     }
 
     assert_rejected_empty!(post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id))
@@ -139,11 +137,9 @@ defmodule EbbServer.RestartReadIntegrationTest do
         %{
           "id" => "upd_patch_" <> Nanoid.generate(),
           "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "patch",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
-          }
+          "component" => "todo/title",
+          "method" => "merge",
+          "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
         }
       ]
     }

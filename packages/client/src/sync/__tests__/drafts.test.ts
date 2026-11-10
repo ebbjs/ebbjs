@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { decodeSync, type Action, type Update } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -27,6 +27,33 @@ import { ActionRejectedError, ActionResolutionError, resolveReferences } from ".
 import type { Rejection } from "../types";
 import { createClient } from "../client";
 import { testActions } from "./test-actions";
+import { updateModel } from "../test-utils";
+
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
+  const bySubject = new Map<string, Update[]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** A component's value on a row, or `undefined` when absent or dropped. */
+const valueOf = (row: readonly Update[], field: string): unknown => {
+  const update = row.find(
+    (candidate) =>
+      candidate.method !== "drop" &&
+      candidate.method !== "delete" &&
+      candidate.component.endsWith(`/${field}`),
+  );
+  if (update === undefined || update.method === "drop" || update.method === "delete") {
+    return undefined;
+  }
+  return update.data.value;
+};
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -146,40 +173,34 @@ describe("drafts — one Action, forward references", () => {
     const actions = decodeActions(calls[0]!);
     expect(actions).toHaveLength(1);
     const updates = actions[0]!.updates;
-    // 2 entity puts + 2 membership rows + 1 domain relationship put.
-    expect(updates).toHaveLength(5);
+    // 2 entity rows + 2 membership rows + 1 domain relationship row.
+    expect(rowsOf(updates, "todo")).toHaveLength(1);
+    expect(rowsOf(updates, "list")).toHaveLength(1);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(2);
+    expect(rowsOf(updates, "relationship")).toHaveLength(1);
 
-    const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
-    const listUpdate = updates.find((u) => u.subject_type === "list")!;
+    const [todoRow] = rowsOf(updates, "todo");
+    const [listRow] = rowsOf(updates, "list");
+    const [domainRel] = rowsOf(updates, "relationship");
+    const membershipRows = rowsOf(updates, "entityGroup");
 
-    const domainRel = updates.find(
-      (u) => u.subject_type === "relationship" && u.data?.fields?.["field"]?.value === "list",
-    )!;
-    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
-    expect(membershipRows).toHaveLength(2);
+    for (const update of todoRow!) expect(update.method).toBe("replace");
+    expect(todoRow![0]!.subject_id).toBe(created.todo.id);
+    expect(valueOf(todoRow!, "title")).toBe("Ship it");
+    // The relationship pointer is not an entity component on the wire.
+    expect(valueOf(todoRow!, "list")).toBeUndefined();
 
-    expect(todoUpdate.method).toBe("put");
-    expect(todoUpdate.subject_id).toBe(created.todo.id);
-    expect(todoUpdate.data?.fields?.["title"]?.value).toBe("Ship it");
-    // The relationship pointer is not an entity field on the wire.
-    expect(todoUpdate.data?.fields?.["list"]).toBeUndefined();
+    expect(listRow![0]!.subject_id).toBe(created.list.id);
+    expect(valueOf(listRow!, "name")).toBe("Today");
 
-    expect(listUpdate.subject_id).toBe(created.list.id);
-    expect(listUpdate.data?.fields?.["name"]?.value).toBe("Today");
+    expect(valueOf(domainRel!, "source_id")).toBe(created.todo.id);
+    expect(valueOf(domainRel!, "target_id")).toBe(created.list.id);
+    expect(valueOf(domainRel!, "type")).toBe("todo");
 
-    expect(domainRel.method).toBe("put");
-    expect(domainRel.data?.fields?.["source_id"]?.value).toBe(created.todo.id);
-    expect(domainRel.data?.fields?.["target_id"]?.value).toBe(created.list.id);
-    expect(domainRel.data?.fields?.["type"]?.value).toBe("todo");
-
-    for (const row of membershipRows) {
-      expect(row.method).toBe("put");
-      expect(row.data?.fields?.["group_id"]?.value).toBe("g_1");
-    }
-    const membershipEntities = membershipRows
-      .map((r) => r.data?.fields?.["entity_id"]?.value)
-      .sort();
-    expect(membershipEntities).toEqual([created.list.id, created.todo.id].sort());
+    for (const row of membershipRows) expect(valueOf(row, "group_id")).toBe("g_1");
+    expect(membershipRows.map((row) => valueOf(row, "entity_id")).sort()).toEqual(
+      [created.list.id, created.todo.id].sort(),
+    );
   });
 
   it("emits one entityGroup row per group into the same Action", async () => {
@@ -192,17 +213,12 @@ describe("drafts — one Action, forward references", () => {
 
     const actions = actionCalls(seen);
     expect(actions).toHaveLength(1);
-    const membershipRows = decodeActions(actions[0]!)[0]!.updates.filter(
-      (u) => u.subject_type === "entityGroup",
-    );
+    const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "entityGroup");
     expect(membershipRows).toHaveLength(2);
     for (const row of membershipRows) {
-      expect(row.data?.fields?.["entity_id"]?.value).toBe(created.id);
+      expect(valueOf(row, "entity_id")).toBe(created.id);
     }
-    expect(membershipRows.map((r) => r.data?.fields?.["group_id"]?.value).sort()).toEqual([
-      "g_1",
-      "g_2",
-    ]);
+    expect(membershipRows.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("rejects a missing groups option before any network call", async () => {
@@ -261,11 +277,9 @@ describe("drafts — one Action, forward references", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    // 3 entity puts + 3 entityGroup puts + 2 domain relationship puts.
-    expect(updates).toHaveLength(8);
-    const relTargets = updates
-      .filter((u) => u.subject_type === "relationship")
-      .map((u) => u.data?.fields?.["target_id"]?.value);
+    // 3 entity rows + 3 membership rows + 2 domain relationship rows.
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(3);
+    const relTargets = rowsOf(updates, "relationship").map((row) => valueOf(row, "target_id"));
     expect(relTargets).toContain(created.a.id);
     expect(relTargets).toContain(created.b.id);
   });
@@ -280,12 +294,12 @@ describe("drafts — one Action, forward references", () => {
 
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 1 entity put + 1 entityGroup put + 1 domain relationship put.
-    expect(updates).toHaveLength(3);
-    const relUpdate = updates.find(
-      (u) => u.subject_type === "relationship" && u.data?.fields?.["field"]?.value === "list",
-    )!;
-    expect(relUpdate.data?.fields?.["target_id"]?.value).toBe("list_existing");
+    // 1 entity row + 1 membership row + 1 domain relationship row.
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
+    expect(rowsOf(updates, "todo")).toHaveLength(1);
+    const [relRow] = rowsOf(updates, "relationship");
+    expect(valueOf(relRow!, "field")).toBe("list");
+    expect(valueOf(relRow!, "target_id")).toBe("list_existing");
   });
 
   it("emits N Relationship Updates for a many-cardinality pointer and carries the FK set", async () => {
@@ -317,10 +331,10 @@ describe("drafts — one Action, forward references", () => {
 
     expect(created.todo.tags).toEqual([created.a.id, created.b.id]);
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 3 entity puts + 3 entityGroup puts + 2 domain relationship puts.
-    expect(updates).toHaveLength(8);
-    const todoUpdate = updates.find((u) => u.subject_type === "todo")!;
-    expect(todoUpdate.data?.fields?.["tags"]?.value).toEqual([created.a.id, created.b.id]);
+    // 3 entity rows + 3 membership rows + 2 domain relationship rows.
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(3);
+    const [todoRow] = rowsOf(updates, "todo");
+    expect(valueOf(todoRow!, "tags")).toEqual([created.a.id, created.b.id]);
   });
 
   it("rejects an array for a one-cardinality pointer", async () => {
@@ -346,10 +360,8 @@ describe("drafts — one Action, forward references", () => {
     });
 
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    const entityUpdates = updates.filter(
-      (u) => u.subject_type !== "relationship" && u.subject_type !== "entityGroup",
-    );
-    expect(entityUpdates).toHaveLength(2);
+    const entityRows = rowsOf(updates, "todo").concat(rowsOf(updates, "list"));
+    expect(entityRows).toHaveLength(2);
   });
 
   it("rejects an undeclared field before any network call", async () => {
@@ -390,11 +402,9 @@ describe("drafts — per-Update delivery (#473)", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
+    const membershipRows = rowsOf(updates, "entityGroup");
     expect(membershipRows).toHaveLength(2);
-    for (const row of membershipRows) {
-      expect(row.data?.fields?.["group_id"]?.value).toBe("g_1");
-    }
+    for (const row of membershipRows) expect(valueOf(row, "group_id")).toBe("g_1");
   });
 
   it("accepts an Action whose writes share a multi-group membership set", async () => {
@@ -408,7 +418,7 @@ describe("drafts — per-Update delivery (#473)", () => {
 
     // Two entityGroup rows per write, in one Action.
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(4);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(4);
   });
 
   it("submits a cross-group Action as one Action, each write keeping its own group", async () => {
@@ -423,11 +433,8 @@ describe("drafts — per-Update delivery (#473)", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
-    expect(membershipRows.map((r) => r.data?.fields?.["group_id"]?.value).sort()).toEqual([
-      "g_1",
-      "g_2",
-    ]);
+    const membershipRows = rowsOf(updates, "entityGroup");
+    expect(membershipRows.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("emits one membership row per write, each carrying its own group", async () => {
@@ -446,12 +453,9 @@ describe("drafts — per-Update delivery (#473)", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = updates.filter((u) => u.subject_type === "entityGroup");
+    const membershipRows = rowsOf(updates, "entityGroup");
     const groupByEntity = new Map(
-      membershipRows.map((row) => [
-        row.data?.fields?.["entity_id"]?.value,
-        row.data?.fields?.["group_id"]?.value,
-      ]),
+      membershipRows.map((row) => [valueOf(row, "entity_id"), valueOf(row, "group_id")]),
     );
     expect(groupByEntity.get(handles.todo!.id)).toBe("g_1");
     expect(groupByEntity.get(handles.list!.id)).toBe("g_2");
@@ -472,13 +476,11 @@ describe("drafts — per-Update delivery (#473)", () => {
 
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
-    const membershipRows = decodeActions(calls[0]!)[0]!.updates.filter(
-      (u) => u.subject_type === "entityGroup",
-    );
+    const membershipRows = rowsOf(decodeActions(calls[0]!)[0]!.updates, "entityGroup");
     const rowsFor = (entityId: string) =>
       membershipRows
-        .filter((row) => row.data?.fields?.["entity_id"]?.value === entityId)
-        .map((row) => row.data?.fields?.["group_id"]?.value)
+        .filter((row) => valueOf(row, "entity_id") === entityId)
+        .map((row) => valueOf(row, "group_id"))
         .sort();
     // The wide write carries both groups; the narrow write only g_1.
     expect(rowsFor(handles.todo!.id)).toEqual(["g_1", "g_2"]);

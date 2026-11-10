@@ -1,4 +1,5 @@
 import type { Action } from "@ebbjs/core";
+import { updateModel } from "../internal/materialize";
 import type { LoggedAction } from "../types/action-log";
 import type { StorageAdapter } from "../types/storage-adapter";
 
@@ -29,7 +30,7 @@ import { createMemoryReplicaStore } from "./replica-store.memory";
  * // On action receipt:
  * await storage.actions.append(action);
  * for (const update of action.updates) {
- *   await storage.dirtyTracker.mark(update.subject_id, update.subject_type);
+ *   await storage.dirtyTracker.mark(update.subject_id, updateModel(update, row));
  * }
  *
  * // On entity read:
@@ -57,7 +58,10 @@ export const createMemoryAdapter = (): StorageAdapter => {
       async append(action: Action): Promise<LoggedAction> {
         const entry = await actionLog.append(action);
         for (const update of action.updates) {
-          await dirtyTracker.mark(update.subject_id, update.subject_type);
+          await dirtyTracker.mark(
+            update.subject_id,
+            updateModel(update, await entityStore.get(update.subject_id)),
+          );
         }
         return entry;
       },
@@ -68,7 +72,10 @@ export const createMemoryAdapter = (): StorageAdapter => {
         // win is the log's single transaction, so they stay one write each.
         for (const action of actions) {
           for (const update of action.updates) {
-            await dirtyTracker.mark(update.subject_id, update.subject_type);
+            await dirtyTracker.mark(
+              update.subject_id,
+              updateModel(update, await entityStore.get(update.subject_id)),
+            );
           }
         }
         return entries;

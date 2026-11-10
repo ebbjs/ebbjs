@@ -17,7 +17,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  decodeSync,
+  makeHlc,
+  type Action,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -43,16 +50,27 @@ const mkAction = (): Action => ({
   gsn: 0,
   updates: [
     {
-      id: "u_1",
+      id: "u_1_0",
+
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
-          completed: { value: false, update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
-        },
-      },
+
+      component: "todo/title",
+
+      method: "replace",
+
+      data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
+    },
+
+    {
+      id: "u_1_1",
+
+      subject_id: "todo_1",
+
+      component: "todo/completed",
+
+      method: "replace",
+
+      data: { value: false, update_id: "u_1", hlc: makeHlc(1_711_036_800_000) },
     },
   ],
 });
@@ -197,13 +215,15 @@ describe("client.outbox", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_a",
+          id: "u_a_0",
+
           subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          data: {
-            fields: { content: { map: { a: { value: "A", update_id: "u_a", hlc: hlcA } } } },
-          },
+
+          component: "doc/content",
+
+          method: "replace",
+
+          data: { map: { a: { value: "A", update_id: "u_a", hlc: hlcA } } },
         },
       ],
     });
@@ -214,13 +234,15 @@ describe("client.outbox", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_b",
+          id: "u_b_0",
+
           subject_id: "doc_1",
-          subject_type: "doc",
-          method: "patch",
-          data: {
-            fields: { content: { map: { b: { value: "B", update_id: "u_b", hlc: hlcB } } } },
-          },
+
+          component: "doc/content",
+
+          method: "merge",
+
+          data: { map: { b: { value: "B", update_id: "u_b", hlc: hlcB } } },
         },
       ],
     });
@@ -250,15 +272,7 @@ describe("client.outbox", () => {
     const second: Action = {
       ...mkAction(),
       id: "act_2",
-      updates: [
-        {
-          id: "u_2",
-          subject_id: "todo_2",
-          subject_type: "todo",
-          method: "put",
-          data: { fields: {} },
-        } as never,
-      ],
+      updates: [{ id: "u_2", subject_id: "todo_2", method: "delete", data: null }],
     };
 
     await client.write([mkAction(), second]);
@@ -312,15 +326,15 @@ describe("client.outbox", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_patch",
+          id: "u_patch_0",
+
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: {
-              title: { value: "Patched", update_id: "u_patch", hlc: patchHlc },
-            },
-          },
+
+          component: "todo/title",
+
+          method: "merge",
+
+          data: { value: "Patched", update_id: "u_patch", hlc: patchHlc },
         },
       ],
     };
@@ -347,18 +361,18 @@ describe("client.outbox", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_patch",
+          id: "u_patch_0",
+
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
+
+          component: "todo/title",
+
+          method: "merge",
+
           data: {
-            fields: {
-              title: {
-                value: "Patched",
-                update_id: "u_patch",
-                hlc: makeHlc(1_711_036_800_000, 1),
-              },
-            },
+            value: "Patched",
+            update_id: "u_patch",
+            hlc: makeHlc(1_711_036_800_000, 1),
           },
         },
       ],
@@ -383,11 +397,15 @@ describe("client.outbox", () => {
       hlc: seedHlc,
       updates: [
         {
-          id: "u_seed",
+          id: "u_seed_0",
+
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: { fields: { title: { value: "server", update_id: "u_seed", hlc: seedHlc } } },
+
+          component: "todo/title",
+
+          method: "replace",
+
+          data: { value: "server", update_id: "u_seed", hlc: seedHlc },
         },
       ],
     });
@@ -398,11 +416,15 @@ describe("client.outbox", () => {
       gsn: 0,
       updates: [
         {
-          id: updateId,
+          id: `${updateId}_0`,
+
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: { fields: { title: { value, update_id: updateId, hlc: seedHlc } } },
+
+          component: "todo/title",
+
+          method: "merge",
+
+          data: { value, update_id: updateId, hlc: seedHlc },
         },
       ],
     });
@@ -424,11 +446,15 @@ describe("client.outbox", () => {
       hlc: seedHlc,
       updates: [
         {
-          id: "u_seed",
+          id: "u_seed_0",
+
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: { fields: { title: { value: "server", update_id: "u_seed", hlc: seedHlc } } },
+
+          component: "todo/title",
+
+          method: "replace",
+
+          data: { value: "server", update_id: "u_seed", hlc: seedHlc },
         },
       ],
     });
@@ -443,11 +469,15 @@ describe("client.outbox", () => {
         gsn: 0,
         updates: [
           {
-            id: "u_zzz",
+            id: "u_zzz_0",
+
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "patch",
-            data: { fields: { title: { value: "mine", update_id: "u_zzz", hlc: seedHlc } } },
+
+            component: "todo/title",
+
+            method: "merge",
+
+            data: { value: "mine", update_id: "u_zzz", hlc: seedHlc },
           },
         ],
       },
@@ -469,7 +499,6 @@ describe("client.outbox", () => {
         {
           id: "u_delete",
           subject_id: "todo_1",
-          subject_type: "todo",
           method: "delete",
           data: null,
         },
@@ -489,11 +518,9 @@ describe("client.outbox", () => {
     const update: Update = {
       id: "u_rel_1",
       subject_id: "rel_1",
-      subject_type: "relationship",
-      method: "put",
-      data: {
-        fields: { source_id: { value: "todo_1", update_id: "u_rel_1" } },
-      },
+      component: "relationship/source_id",
+      method: "replace",
+      data: { value: "todo_1", update_id: "u_rel_1" },
     };
 
     await client.submitRelationshipUpdates([update]);
@@ -697,26 +724,37 @@ describe("catch-up conflict detection (#308, #390)", () => {
     updateId: string;
     hlc: string;
     gsn: number;
-    method?: "put" | "patch";
+    method?: "merge";
     fields?: Record<string, FieldValue>;
   }): Action => ({
     id: args.id,
     actor_id: ACTOR_ID,
     hlc: args.hlc,
     gsn: args.gsn,
-    updates: [
-      {
-        id: args.updateId,
-        subject_id: "todo_1",
-        subject_type: "todo",
-        method: args.method ?? "put",
-        data: {
-          fields: args.fields ?? {
-            title: { value: args.value, update_id: args.updateId, hlc: args.hlc },
-          },
-        },
-      },
-    ],
+    updates:
+      args.method === "merge"
+        ? Object.entries(
+            args.fields ?? {
+              title: { value: args.value, update_id: args.updateId, hlc: args.hlc },
+            },
+          ).map(([field, value]) => ({
+            id: `${args.updateId}_${field}`,
+            subject_id: "todo_1",
+            component: componentName("todo", field),
+            method: "merge" as const,
+            data: value,
+          }))
+        : Object.entries(
+            args.fields ?? {
+              title: { value: args.value, update_id: args.updateId, hlc: args.hlc },
+            },
+          ).map(([field, value]) => ({
+            id: `${args.updateId}_${field}`,
+            subject_id: "todo_1",
+            component: componentName("todo", field),
+            method: "replace" as const,
+            data: value,
+          })),
   });
 
   it("holds a pending local write as conflicted when the missed window out-dates it", async () => {
@@ -753,7 +791,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(conflicts[0]?.entries[0]?.slots).toEqual([
       {
         subjectId: "todo_1",
-        field: "title",
+        component: "todo/title",
         path: [],
         local: { value: "mine", update_id: "u_local", hlc: localHlc },
         remote: { value: "theirs", update_id: "u_peer", hlc: peerHlc },
@@ -767,7 +805,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
   });
 
-  it("holds a pending local patch as conflicted when a missed put omits its field", async () => {
+  it("does not flag a pending write whose component the missed window omits", async () => {
     const localHlc = makeHlc(1_711_036_800_000);
     const peerHlc = makeHlc(1_711_036_800_001);
     const { fn, calls } = mkSyncFetch({
@@ -791,31 +829,19 @@ describe("catch-up conflict detection (#308, #390)", () => {
         updateId: "u_local",
         hlc: localHlc,
         gsn: 0,
-        method: "patch",
+        method: "merge",
       }),
     );
 
     const unsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(async () => (await client.conflicts.list()).length > 0);
+    await waitFor(() => client.outbox.size("acknowledged") === 1);
     unsubscribe();
 
-    const conflicts = await client.conflicts.list();
-    expect(conflicts).toHaveLength(1);
-    // A missed `put` replaces the subject, so the omitted `title` is
-    // reverted on the server: the remote side holds no value.
-    expect(conflicts[0]?.entries[0]?.slots).toEqual([
-      {
-        subjectId: "todo_1",
-        field: "title",
-        path: [],
-        local: { value: "mine", update_id: "u_local", hlc: localHlc },
-        remote: { value: undefined },
-        remoteWins: expect.any(Function),
-      },
-    ]);
-
-    expect(await storage.outbox.get("act_local")).toMatchObject({ status: "conflicted" });
-    expect(calls.some((url) => url.includes("/sync/actions"))).toBe(false);
+    // A component write carries one component; a missed write to another
+    // component does not revert the local `title` write.
+    expect(await client.conflicts.list()).toEqual([]);
+    expect(await storage.outbox.get("act_local")).toMatchObject({ status: "acknowledged" });
+    expect(calls.filter((url) => url.includes("/sync/actions"))).toHaveLength(1);
   });
 
   it("does not flag a write whose base is at or ahead of the missed window", async () => {
@@ -853,18 +879,51 @@ describe("catch-up conflict detection (#308, #390)", () => {
       gsn,
       updates: [
         {
-          id: `u_${id}`,
+          id: `${`u_${id}`}_0`,
+
           subject_id: "rel_1",
-          subject_type: "relationship",
-          method: "put",
-          data: {
-            fields: {
-              source_id: { value: "todo_1", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-              target_id: { value: target, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-              type: { value: "link", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-              field: { value: "target", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-            },
-          },
+
+          component: "relationship/source_id",
+
+          method: "replace",
+
+          data: { value: "todo_1", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+        },
+
+        {
+          id: `${`u_${id}`}_1`,
+
+          subject_id: "rel_1",
+
+          component: "relationship/target_id",
+
+          method: "replace",
+
+          data: { value: target, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+        },
+
+        {
+          id: `${`u_${id}`}_2`,
+
+          subject_id: "rel_1",
+
+          component: "relationship/type",
+
+          method: "replace",
+
+          data: { value: "link", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+        },
+
+        {
+          id: `${`u_${id}`}_3`,
+
+          subject_id: "rel_1",
+
+          component: "relationship/field",
+
+          method: "replace",
+
+          data: { value: "target", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
         },
       ],
     });
@@ -895,13 +954,15 @@ describe("catch-up conflict detection (#308, #390)", () => {
       gsn,
       updates: [
         {
-          id: `u_${id}`,
+          id: `${`u_${id}`}_0`,
+
           subject_id: "doc_1",
-          subject_type: "text_document",
-          method: "patch",
-          data: {
-            fields: { content: { map: { [runId]: { value, update_id: `u_${id}`, hlc } } } },
-          },
+
+          component: "text_document/content",
+
+          method: "merge",
+
+          data: { map: { [runId]: { value, update_id: `u_${id}`, hlc } } },
         },
       ],
     });
@@ -921,20 +982,20 @@ describe("catch-up conflict detection (#308, #390)", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_doc_base",
+          id: "u_doc_base_0",
+
           subject_id: "doc_1",
-          subject_type: "text_document",
-          method: "put",
+
+          component: "text_document/content",
+
+          method: "replace",
+
           data: {
-            fields: {
-              content: {
-                map: {
-                  "run:base": {
-                    value: "base",
-                    update_id: "u_doc_base",
-                    hlc: makeHlc(1_711_036_799_000),
-                  },
-                },
+            map: {
+              "run:base": {
+                value: "base",
+                update_id: "u_doc_base",
+                hlc: makeHlc(1_711_036_799_000),
               },
             },
           },

@@ -191,9 +191,9 @@ defmodule EbbServer.Sync.FanOutRouter.FramesTest do
     %{
       "id" => id,
       "subject_id" => "s_#{id}",
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => %{"title" => %{"type" => "lww", "value" => id, "hlc" => 1}}}
+      "component" => "todo/title",
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => id, "hlc" => 1}
     }
   end
 end

@@ -14,7 +14,7 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
 
   import ExUnit.CaptureLog
   import EbbServer.FunctionsTestHelpers
-  import EbbServer.Integration.ActionHelpers
+  import EbbServer.Integration.ActionHelpers, except: [get_entity: 1, get_entity: 2]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
 
   alias EbbServer.Functions
@@ -380,6 +380,7 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
       response =
         Plug.Test.conn(:get, "/entities/anything")
         |> Plug.Conn.put_req_header("x-ebb-service-token", "token-svc_a")
+        |> Plug.Conn.fetch_query_params()
         |> EbbServer.Sync.Router.call([])
 
       assert response.status == 401
@@ -550,16 +551,16 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
     %{
       "id" => unique("act_svc"),
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => unique("upd_svc"),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{"fields" => fields(title)}
-        },
-        entity_group_update(entity_id, group_id, hlc)
-      ]
+      "updates" =>
+        [
+          component_update(
+            unique("upd_svc"),
+            entity_id,
+            "todo/title",
+            "replace",
+            %{"type" => "lww", "value" => title, "hlc" => hlc}
+          )
+        ] ++ entity_group_update(entity_id, group_id, hlc)
     }
   end
 
@@ -584,5 +585,14 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
 
     assert_received {:capture_result, ^ref, result}
     {result, log}
+  end
+
+  # The endpoint's plug pipeline fetches query params before the router reads
+  # the `components` parameter; calling the router directly does not.
+  defp get_entity(id, actor_id \\ "a_test") do
+    Plug.Test.conn(:get, "/entities/#{id}")
+    |> Plug.Conn.put_req_header("x-ebb-actor-id", actor_id)
+    |> Plug.Conn.fetch_query_params()
+    |> EbbServer.Sync.Router.call([])
   end
 end

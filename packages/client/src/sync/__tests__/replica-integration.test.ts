@@ -32,11 +32,11 @@ const put = (opts: {
     gsn: opts.gsn,
     updates: [
       {
-        id: `u_${opts.id}`,
+        id: `${`u_${opts.id}`}_0`,
         subject_id: opts.entityId,
-        subject_type: "todo",
-        method: "put",
-        data: { fields: { title: { value: opts.value, update_id: `u_${opts.id}`, hlc } } },
+        component: "todo/title",
+        method: "replace",
+        data: { value: opts.value, update_id: `u_${opts.id}`, hlc },
       },
     ],
   };
@@ -93,13 +93,11 @@ describe("client replica (#496)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_local",
+          id: "u_local_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: { title: { value: "Local", update_id: "u_local", hlc: makeHlc(20) } },
-          },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Local", update_id: "u_local", hlc: makeHlc(20) },
         },
       ],
     });

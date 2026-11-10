@@ -18,7 +18,7 @@ import { defineAction } from "../../schema/action";
 import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
-import { jsonResponse, openSseResponse } from "../test-utils";
+import { jsonResponse, openSseResponse, updateModel } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -148,6 +148,34 @@ const seedTodo = async (
 const actionRequests = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
   seen.filter((r) => r.url.endsWith("/sync/actions"));
 
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (
+  updates: readonly Action["updates"][number][],
+  model: string,
+): readonly (readonly Action["updates"][number][])[] => {
+  const bySubject = new Map<string, Action["updates"][number][]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** One component's value on a row. */
+const componentOf = (row: readonly Action["updates"][number][], field: string): unknown => {
+  const update = row.find(
+    (candidate) =>
+      candidate.method !== "drop" &&
+      candidate.method !== "delete" &&
+      candidate.component === `todo/${field}`,
+  );
+  return update === undefined || update.method === "drop" || update.method === "delete"
+    ? undefined
+    : update.data.value;
+};
+
 const decodeFirstAction = (request: RecordedRequest): Action =>
   decodeSync<{ actions: Action[] }>(request.body!).actions[0]!;
 
@@ -159,13 +187,11 @@ describe("duplicate — field copy", () => {
     const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     expect(id).not.toBe("t_1");
-    const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
-      (u) => u.subject_type === "todo",
-    )!;
-    expect(put.method).toBe("put");
-    expect(put.subject_id).toBe(id);
-    expect(put.data?.fields?.["title"]?.value).toBe("Ship");
-    expect(put.data?.fields?.["completed"]?.value).toBe(false);
+    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
+    expect(put!.every((update) => update.method === "replace")).toBe(true);
+    expect(put![0]!.subject_id).toBe(id);
+    expect(componentOf(put!, "title")).toBe("Ship");
+    expect(componentOf(put!, "completed")).toBe(false);
 
     // Local materialization: the backup is readable immediately.
     const copy = await storage.entities.get(id);
@@ -189,11 +215,11 @@ describe("duplicate — field copy", () => {
 
     const { id } = await client.actions.duplicateDoc({ id: "doc_1" });
 
-    const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
-      (u) => u.subject_type === "doc",
+    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "doc");
+    const content = put!.find(
+      (update) => update.method !== "delete" && update.component === "doc/content",
     )!;
-    const content = put.data?.fields?.["content"];
-    expect(content && "map" in content ? content.map : undefined).toEqual({ run_1: runField });
+    expect(content.data).toEqual({ map: { run_1: runField } });
 
     // The copy is an independent object graph, not an alias of the source.
     const copied = await storage.entities.get(id);
@@ -272,14 +298,23 @@ describe("duplicate — memberships", () => {
 
     const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
-    const memberships = decodeFirstAction(actionRequests(seen)[0]!).updates.filter(
-      (u) => u.subject_type === "entityGroup",
-    );
+    const memberships = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "entityGroup");
     expect(memberships).toHaveLength(2);
+    const valueOfComponent = (
+      row: readonly Action["updates"][number][],
+      component: string,
+    ): unknown => {
+      const update = row.find(
+        (candidate) => candidate.method !== "delete" && candidate.component === component,
+      );
+      return update === undefined || update.method === "delete"
+        ? undefined
+        : (update.data as { value: unknown }).value;
+    };
     for (const membership of memberships) {
-      expect(membership.data?.fields?.["entity_id"]?.value).toBe(id);
+      expect(valueOfComponent(membership, "entityGroup/entity_id")).toBe(id);
     }
-    expect(memberships.map((m) => m.data?.fields?.["group_id"]?.value).sort()).toEqual([
+    expect(memberships.map((row) => valueOfComponent(row, "entityGroup/group_id")).sort()).toEqual([
       "g_1",
       "g_2",
     ]);
@@ -291,10 +326,18 @@ describe("duplicate — memberships", () => {
 
     await client.actions.duplicateTodo({ id: "t_1", groups: ["g_2"] });
 
-    const memberships = decodeFirstAction(actionRequests(seen)[0]!).updates.filter(
-      (u) => u.subject_type === "entityGroup",
-    );
-    expect(memberships.map((m) => m.data?.fields?.["group_id"]?.value)).toEqual(["g_2"]);
+    const memberships = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "entityGroup");
+    expect(
+      memberships.map((row) => {
+        const update = row.find(
+          (candidate) =>
+            candidate.method !== "delete" && candidate.component === "entityGroup/group_id",
+        );
+        return update === undefined || update.method === "delete"
+          ? undefined
+          : (update.data as { value: unknown }).value;
+      }),
+    ).toEqual(["g_2"]);
   });
 
   it("refuses an empty groups option before any network call", async () => {
@@ -323,7 +366,7 @@ const mkConflict = (before: Entity): Conflict => ({
   subjectStates: [
     {
       subjectId: before.id,
-      subjectType: before.type,
+      model: before.type,
       before,
       after: mkEntity(before.id, before.type, { title: "merged", completed: false }),
       diff: [],
@@ -343,11 +386,9 @@ describe("duplicate — at: preSync", () => {
 
     const { id } = await client.actions.duplicateTodo({ id: "t_1", at: "preSync" });
 
-    const put = decodeFirstAction(actionRequests(seen)[0]!).updates.find(
-      (u) => u.subject_type === "todo",
-    )!;
-    expect(put.data?.fields?.["title"]?.value).toBe("mine");
-    expect(put.data?.fields?.["completed"]?.value).toBe(true);
+    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
+    expect(componentOf(put!, "title")).toBe("mine");
+    expect(componentOf(put!, "completed")).toBe(true);
     expect((await storage.entities.get(id))?.data?.fields?.["title"]?.value).toBe("mine");
   });
 
@@ -394,13 +435,11 @@ describe("duplicate({ at: preSync }) after an offline merge (#397)", () => {
     gsn: opts.gsn,
     updates: [
       {
-        id: opts.updateId,
+        id: `${opts.updateId}_0`,
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: { title: { value: opts.title, update_id: opts.updateId, hlc: opts.hlc } },
-        },
+        component: "todo/title",
+        method: "replace",
+        data: { value: opts.title, update_id: opts.updateId, hlc: opts.hlc },
       },
     ],
   });

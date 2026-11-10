@@ -441,6 +441,29 @@ export const assertComponentName = (name: string): void => {
   if (!isComponentName(name)) throw new InvalidComponentNameError(name);
 };
 
+/**
+ * Raised when a declared component is attached under a field key that is not
+ * its name's leaf. The wire names one component `<model>/<field>`, so the two
+ * must agree or a write would address a field the declaration does not name.
+ */
+export class ComponentLeafMismatchError extends Error {
+  readonly modelName: string;
+  readonly componentName: string;
+  readonly key: string;
+
+  constructor(modelName: string, componentName: string, key: string) {
+    super(
+      `Model "${modelName}" attaches component "${componentName}" under key "${key}". ` +
+        `A component's name leaf must equal the key it is attached under: ` +
+        `declare it as "${modelName}/${key}".`,
+    );
+    this.name = "ComponentLeafMismatchError";
+    this.modelName = modelName;
+    this.componentName = componentName;
+    this.key = key;
+  }
+}
+
 /** True when a value is a component declaration rather than a bare schema. */
 const isComponentDef = (value: ComponentInput): value is ComponentDef =>
   typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "component";
@@ -647,6 +670,10 @@ export function buildModelDef<TInputs extends Record<string, ComponentInput>, TN
   for (const [key, input] of Object.entries(inputs)) {
     if (admitsNull(isComponentDef(input) ? input.shape : (input as TSchema))) {
       throw new NullFieldError(name, key);
+    }
+
+    if (isComponentDef(input) && input.name.split("/")[1] !== key) {
+      throw new ComponentLeafMismatchError(name, input.name, key);
     }
 
     const component = isComponentDef(input)

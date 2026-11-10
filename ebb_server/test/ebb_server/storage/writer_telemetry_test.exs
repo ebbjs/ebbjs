@@ -103,11 +103,18 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
     test "emits the accepted-Action counter when a cache failure escalates", ctx do
       ref = attach_telemetry(@writer_events)
 
+      # The failing table is one only the applied cache projection reads; the
+      # fold's existence check does not, so the durable write still succeeds.
       %{name: writer_name} =
-        start_writer(writer_opts(ctx, %{entity_types: :ebb_360_missing_table}))
+        start_writer(writer_opts(ctx, %{group_apps: :ebb_360_missing_table}))
 
-      assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{id: "act_escalate"})], writer_name)
+      action =
+        validated_action(%{
+          id: "act_escalate",
+          updates: [validated_component("g_escalate", "group/name", %{"value" => "escalate"})]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       events = telemetry_events(ref)
 
@@ -300,11 +307,18 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
     test "a failed cache apply reports the durable range as ok with the replies in notify", ctx do
       ref = attach_telemetry(@writer_events)
 
+      # A table only the applied cache projection reads, so the failure lands
+      # in the apply phase rather than in the fold.
       %{name: writer_name} =
-        start_writer(writer_opts(ctx, %{entity_types: :ebb_537_missing_table}))
+        start_writer(writer_opts(ctx, %{group_apps: :ebb_537_missing_table}))
 
-      assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{id: "act_phase_escalate"})], writer_name)
+      action =
+        validated_action(%{
+          id: "act_phase_escalate",
+          updates: [validated_component("g_phase", "group/name", %{"value" => "phase"})]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       assert [{[:ebb, :writer, :flush_phase_ms], measurements, metadata}] =
                flush_phase_events(telemetry_events(ref))

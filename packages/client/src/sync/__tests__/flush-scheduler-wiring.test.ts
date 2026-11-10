@@ -29,15 +29,11 @@ const mkAction = (id: string): Action => ({
   gsn: 0,
   updates: [
     {
-      id: `u_${id}`,
+      id: `${`u_${id}`}_0`,
       subject_id: `todo_${id}`,
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: id, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: id, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
     },
   ],
 });

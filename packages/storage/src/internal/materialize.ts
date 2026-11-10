@@ -1,5 +1,5 @@
 import type { Action, Entity, FieldValue, HLCTimestamp, Update } from "@ebbjs/core";
-import { latestHlc, mergeFieldValue } from "@ebbjs/core";
+import { componentField, componentModel, latestHlc, mergeFieldValue } from "@ebbjs/core";
 
 import { adoptMapFields, mergeResidentFieldValue, toWireMapFields } from "./map-field";
 
@@ -7,16 +7,30 @@ import { adoptMapFields, mergeResidentFieldValue, toWireMapFields } from "./map-
  * Shared materialization helpers used by every EntityStore implementation.
  *
  * Both the in-memory adapter and the IndexedDB adapter replay the same
- * action sequence into an entity state. LWW merge semantics, BigInt
- * HLC handling, and the field-envelope unwrap all live here so the
- * two adapters cannot drift.
+ * action sequence into an entity state. Per-component application rules, BigInt
+ * HLC handling, and the row's field projection all live here so the two
+ * adapters cannot drift.
  */
 
+/** One Update projected to the component write it is: a row field, a method, a value. */
+export type ComponentUpdate =
+  | { readonly field: string; readonly method: "merge" | "replace"; readonly value: FieldValue }
+  | { readonly field: string; readonly method: "drop"; readonly value: null };
+
+/** The model an Update commits under: the component prefix, or the row's type for a delete. */
+export const updateModel = (update: Update, entity: Entity | null): string =>
+  update.method === "delete" ? (entity?.type ?? "") : componentModel(update.component);
+
 /**
- * Pull the field map off an Update's `data`.
+ * Project one wire Update to the component write it carries. A `delete` names
+ * no component and projects to `null`: it tombstones the row.
  */
-export const readFields = (update: Update): Record<string, FieldValue> => {
-  return update.data?.fields ?? {};
+export const componentUpdate = (update: Update): ComponentUpdate | null => {
+  if (update.method === "delete") return null;
+  const field = componentField(update.component);
+  return update.method === "drop"
+    ? { field, method: "drop", value: null }
+    : { field, method: update.method, value: update.data };
 };
 
 /**
@@ -33,38 +47,28 @@ export interface MaterializeOptions {
 export const RESIDENT_MAP_FIELDS: MaterializeOptions = { residentMapFields: true };
 
 /**
- * Merges patch fields into existing entity data using LWW semantics.
- * Higher HLC wins; equal HLC breaks toward the lexicographically
- * greater `update_id`. A map field merges key by key. The recursive
- * rule itself lives in `@ebbjs/core` so the server, the outbox, and
- * both adapters share one definition.
+ * Merges one component value into a row's field map under the wire's LWW rule.
+ * Higher HLC wins; equal HLC breaks toward the lexicographically greater
+ * `update_id`. A map field merges key by key. The recursive rule itself lives in
+ * `@ebbjs/core` so the server, the outbox, and both adapters share one
+ * definition.
  *
- * The fields record is copied only when a field actually changes; when
- * the patch contributes nothing, the existing data object is returned
- * by reference so a caller can detect a no-op without a structural
- * comparison. With {@link MaterializeOptions.residentMapFields}, a large map
- * field is a sharded container, so a winning one-key patch copies one shard
- * rather than the whole map.
+ * The fields record is copied only when a field actually changes; when the
+ * write contributes nothing, the existing data object is returned by reference
+ * so a caller can detect a no-op without a structural comparison. With
+ * {@link MaterializeOptions.residentMapFields}, a large map field is a sharded
+ * container, so a winning one-key write copies one shard rather than the whole
+ * map.
  */
 export const mergeFields = (
   existing: Entity["data"],
-  update: Update,
+  write: Extract<ComponentUpdate, { method: "merge" | "replace" }>,
   options?: MaterializeOptions,
 ): Entity["data"] => {
-  const patch = readFields(update);
   const mergeValue = options?.residentMapFields ? mergeResidentFieldValue : mergeFieldValue;
-  let merged: Record<string, FieldValue> | undefined;
-
-  for (const [field, patchValue] of Object.entries(patch)) {
-    const previous = merged === undefined ? existing.fields[field] : merged[field];
-    const next = mergeValue(previous, patchValue);
-    if (next !== previous) {
-      if (merged === undefined) merged = { ...existing.fields };
-      merged[field] = next;
-    }
-  }
-
-  return merged === undefined ? existing : { fields: merged };
+  const previous = existing.fields[write.field];
+  const next = mergeValue(previous, write.value);
+  return next === previous ? existing : { fields: { ...existing.fields, [write.field]: next } };
 };
 
 const withTransformedFields = (
@@ -90,14 +94,43 @@ export const withAdoptedMapFields = (entity: Entity): Entity =>
 export const withWireMapFields = (entity: Entity): Entity =>
   withTransformedFields(entity, toWireMapFields);
 
+/** A fresh row created by the first component write. */
+const createRow = (
+  update: Exclude<Update, { method: "delete" }>,
+  write: ComponentUpdate,
+  gsn: number,
+  hlc: HLCTimestamp,
+  options: MaterializeOptions | undefined,
+): Entity => {
+  const fields: Record<string, FieldValue> =
+    write.method === "drop" ? {} : { [write.field]: write.value };
+  return {
+    id: update.subject_id,
+    type: componentModel(update.component),
+    data: { fields: options?.residentMapFields ? adoptMapFields(fields) : fields },
+    // A `merge` that creates the row has not seen its create, so the row's
+    // creation time stays unset and a backfill fetches the base.
+    created_hlc: write.method === "replace" ? hlc : "",
+    updated_hlc: hlc,
+    deleted_hlc: null,
+    last_gsn: gsn,
+  };
+};
+
 /**
- * Applies a single update to an entity during materialization.
+ * Applies a single component Update to a row during materialization.
  *
- * - PUT: full replacement
- * - PATCH: field-level LWW merge; ignored on a soft-deleted entity
- * - DELETE: soft delete (sets `deleted_hlc`); bumps `last_gsn` and
- *   `updated_hlc`. A delete for a row that was never materialized is a
- *   no-op, so a per-Update delivery (#473) cannot break the drain.
+ * - `merge` / `replace`: apply the component's value at its field under the
+ *   leaf-level LWW compare. The first such write on a row that does not exist
+ *   creates it; `replace` stamps `created_hlc`, `merge` leaves it unset because
+ *   the row's create has not been seen.
+ * - `drop`: remove the field from an existing row; the row survives.
+ * - `delete`: tombstone the row, keeping its type. A delete for a row that was
+ *   never materialized is a no-op, so a per-Update delivery (#473) cannot break
+ *   the drain.
+ *
+ * A component write to a tombstoned row resurrects it, exactly as the server's
+ * materialization does.
  */
 export const applyUpdate = (
   entity: Entity | null,
@@ -106,46 +139,47 @@ export const applyUpdate = (
   hlc: HLCTimestamp,
   options?: MaterializeOptions,
 ): Entity | null => {
-  switch (update.method) {
-    case "put":
-      return {
-        id: update.subject_id,
-        type: update.subject_type,
-        data: {
-          fields: options?.residentMapFields
-            ? adoptMapFields(readFields(update))
-            : readFields(update),
-        },
-        created_hlc: hlc,
-        updated_hlc: hlc,
-        deleted_hlc: null,
-        last_gsn: gsn,
-      };
-
-    case "patch":
-      // A per-Update delivery can land a patch in a group that never held
-      // the base `put`; the content backfill supplies the base (#475).
-      if (!entity) return null;
-      if (entity.deleted_hlc) return entity;
-      return {
-        ...entity,
-        data: mergeFields(entity.data, update, options),
-        updated_hlc: latestHlc(entity.updated_hlc, hlc),
-        last_gsn: Math.max(entity.last_gsn, gsn),
-      };
-
-    case "delete":
-      // The delivered group may never have held the row: with per-Update
-      // scope the delete and the put can land in different groups (#473).
-      // Absence is already the post-delete state, so it is a no-op.
-      if (!entity) return null;
-      return {
-        ...entity,
-        deleted_hlc: hlc,
-        updated_hlc: hlc,
-        last_gsn: Math.max(entity.last_gsn, gsn),
-      };
+  if (update.method === "delete") {
+    // The delivered group may never have held the row: with per-Update
+    // scope the delete and its components can land in different groups (#473).
+    // Absence is already the post-delete state, so it is a no-op.
+    if (!entity) return null;
+    return {
+      ...entity,
+      deleted_hlc: hlc,
+      updated_hlc: hlc,
+      last_gsn: Math.max(entity.last_gsn, gsn),
+    };
   }
+
+  const write = componentUpdate(update);
+  if (write === null) return entity;
+  if (write.method === "drop") {
+    if (!entity) return null;
+    const { [write.field]: _dropped, ...fields } = entity.data.fields;
+    return {
+      ...entity,
+      data: { fields },
+      updated_hlc: latestHlc(entity.updated_hlc, hlc),
+      deleted_hlc: null,
+      last_gsn: Math.max(entity.last_gsn, gsn),
+    };
+  }
+  if (!entity) return createRow(update, write, gsn, hlc, options);
+
+  const created_hlc =
+    write.method === "replace" && entity.created_hlc === "" ? hlc : entity.created_hlc;
+  return {
+    ...entity,
+    type: componentModel(update.component),
+    // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
+    // rule: an out-of-order base snapshot must not clobber a newer write.
+    data: mergeFields(entity.data, write, options),
+    created_hlc,
+    updated_hlc: latestHlc(entity.updated_hlc, hlc),
+    deleted_hlc: null,
+    last_gsn: Math.max(entity.last_gsn, gsn),
+  };
 };
 
 /**

@@ -4,20 +4,32 @@ import { NanoIdSchema } from "./nanoid";
 import { HLCTimestampSchema, type HLCTimestamp } from "./hlc";
 import { compare } from "../hlc";
 
-export const SubjectTypeSchema = Type.Union([
-  Type.Literal("group"),
-  Type.Literal("groupMember"),
-  Type.Literal("relationship"),
-  Type.String({ minLength: 1 }),
-]);
-export type SubjectType = Static<typeof SubjectTypeSchema>;
+/**
+ * The `<model>/<field>` name of one component: the segment before the first
+ * `/` is the model the entity is committed under, the segment after it is the
+ * row field the component's value lives at.
+ */
+export const ComponentNameSchema = Type.String({ pattern: "^[^/]+/[^/]+$" });
+export type ComponentName = `${string}/${string}`;
 
 export const UpdateMethodSchema = Type.Union([
-  Type.Literal("put"),
-  Type.Literal("patch"),
+  Type.Literal("merge"),
+  Type.Literal("replace"),
+  Type.Literal("drop"),
   Type.Literal("delete"),
 ]);
 export type UpdateMethod = Static<typeof UpdateMethodSchema>;
+
+/** The model segment of a `<model>/<field>` component name. */
+export const componentModel = (component: string): string =>
+  component.slice(0, component.indexOf("/"));
+
+/** The field segment of a `<model>/<field>` component name. */
+export const componentField = (component: string): string =>
+  component.slice(component.indexOf("/") + 1);
+
+/** The component a model's field is declared under. */
+export const componentName = (model: string, field: string): ComponentName => `${model}/${field}`;
 
 // A field value is either a leaf carrying a scalar/opaque `value` merged
 // by last-writer-wins, or a `map` of nested field values merged key by
@@ -112,44 +124,100 @@ export const mergeFieldValue = (
   return merged === undefined ? existing : { map: merged };
 };
 
-// An Update's `data` is a `{ fields: Record<string, FieldValue> }`
-// envelope. The same shape ships on the wire for every entity type
-// (user, groupMember, relationship), so the materializer and the
-// wire validator share one code path.
-const FieldsEnvelopeSchema = Type.Object({
-  fields: Type.Record(Type.String(), FieldValueSchema),
-});
-
-export const PutDataSchema = FieldsEnvelopeSchema;
-export type PutData = Static<typeof PutDataSchema>;
-
-export const PatchDataSchema = FieldsEnvelopeSchema;
-export type PatchData = Static<typeof PatchDataSchema>;
-
-const BaseUpdateFields = Type.Object({
-  subject_id: NanoIdSchema,
-  subject_type: Type.String({ minLength: 1 }),
-  method: UpdateMethodSchema,
-});
-
-export const UpdateInputSchema = Type.Intersect([
-  BaseUpdateFields,
-  Type.Object({
-    id: Type.Optional(NanoIdSchema),
-    data: Type.Union([Type.Null(), FieldsEnvelopeSchema]),
-  }),
+export const UpdateInputSchema = Type.Union([
+  Type.Object(
+    {
+      id: Type.Optional(NanoIdSchema),
+      subject_id: NanoIdSchema,
+      component: ComponentNameSchema,
+      method: Type.Union([Type.Literal("merge"), Type.Literal("replace")]),
+      data: FieldValueSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: Type.Optional(NanoIdSchema),
+      subject_id: NanoIdSchema,
+      component: ComponentNameSchema,
+      method: Type.Literal("drop"),
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: Type.Optional(NanoIdSchema),
+      subject_id: NanoIdSchema,
+      method: Type.Literal("delete"),
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
 ]);
-export type UpdateInput = Static<typeof UpdateInputSchema>;
 
-export const UpdateSchema = Type.Intersect([
-  BaseUpdateFields,
-  Type.Object({
-    id: NanoIdSchema,
-    subject_type: SubjectTypeSchema,
-    data: Type.Union([PutDataSchema, PatchDataSchema, Type.Null()]),
-  }),
+export const UpdateSchema = Type.Union([
+  Type.Object(
+    {
+      id: NanoIdSchema,
+      subject_id: NanoIdSchema,
+      component: ComponentNameSchema,
+      method: Type.Union([Type.Literal("merge"), Type.Literal("replace")]),
+      data: FieldValueSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: NanoIdSchema,
+      subject_id: NanoIdSchema,
+      component: ComponentNameSchema,
+      method: Type.Literal("drop"),
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: NanoIdSchema,
+      subject_id: NanoIdSchema,
+      method: Type.Literal("delete"),
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
 ]);
-export type Update = Static<typeof UpdateSchema>;
+
+/**
+ * One write to one `(entity, component)`. `data` is the component's value,
+ * never a row's field record; `delete` names the row and no component.
+ */
+export type Update =
+  | {
+      id: string;
+      subject_id: string;
+      component: ComponentName;
+      method: "merge" | "replace";
+      data: FieldValue;
+    }
+  | { id: string; subject_id: string; component: ComponentName; method: "drop"; data: null }
+  | { id: string; subject_id: string; method: "delete"; data: null };
+
+/** The component value an Update carries; `undefined` for `drop` and `delete`. */
+export const updateComponentValue = (update: Update): FieldValue | undefined =>
+  update.method === "merge" || update.method === "replace" ? update.data : undefined;
+
+/** {@link Update} before its id is stamped. */
+export type UpdateInput =
+  | {
+      id?: string;
+      subject_id: string;
+      component: ComponentName;
+      method: "merge" | "replace";
+      data: FieldValue;
+    }
+  | { id?: string; subject_id: string; component: ComponentName; method: "drop"; data: null }
+  | { id?: string; subject_id: string; method: "delete"; data: null };
 
 export const ActionSchema = Type.Object({
   id: NanoIdSchema,
@@ -158,4 +226,12 @@ export const ActionSchema = Type.Object({
   gsn: Type.Number({ minimum: 0 }),
   updates: Type.Array(UpdateSchema),
 });
-export type Action = Static<typeof ActionSchema>;
+
+/** One actor's batch of Updates, the unit the server commits and fans out. */
+export interface Action {
+  id: string;
+  actor_id: string;
+  hlc: HLCTimestamp;
+  gsn: number;
+  updates: Update[];
+}

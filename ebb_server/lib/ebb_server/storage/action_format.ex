@@ -40,6 +40,14 @@ defmodule EbbServer.Storage.ActionFormat do
   so a corrupt or hostile record raises rather than constructing arbitrary
   terms.
 
+  ## The stored Update
+
+  An Update is stored as `id`, `subject_id`, `method`, `data`, and — for
+  every method but `delete` — `component`. `data` is the component's own
+  value; the pre-component wire's row record is never read. A payload with
+  any other Update shape raises, so an old-shape Action is unreadable rather
+  than half-understood.
+
   ## Two readers, one decode
 
   Log readers (`decode/2`, catch-up, materialization, export) join the two
@@ -154,7 +162,7 @@ defmodule EbbServer.Storage.ActionFormat do
   defp decode_payload_term(payload_etf, gsn) do
     case decode_term(payload_etf) do
       %{} = payload ->
-        Map.put_new(payload, "gsn", gsn)
+        payload |> validate_payload!() |> Map.put_new("gsn", gsn)
 
       other ->
         raise ArgumentError,
@@ -176,12 +184,78 @@ defmodule EbbServer.Storage.ActionFormat do
     %{
       "id" => update.id,
       "subject_id" => update.subject_id,
-      "subject_type" => update.subject_type,
       "method" => method_string(update.method),
       "data" => update.data
     }
+    |> put_component(update.component)
   end
+
+  defp put_component(stored, nil), do: stored
+  defp put_component(stored, component), do: Map.put(stored, "component", component)
 
   defp method_string(method) when is_atom(method), do: Atom.to_string(method)
   defp method_string(method), do: method
+
+  @update_keys ["id", "subject_id", "component", "method", "data"]
+  @methods ["merge", "replace", "drop", "delete"]
+
+  defp validate_payload!(%{"updates" => updates} = payload) when is_list(updates) do
+    Enum.each(updates, &validate_update!/1)
+    payload
+  end
+
+  defp validate_payload!(payload) do
+    raise ArgumentError,
+          "cf_actions payload does not hold an Update list: #{inspect(payload, limit: 4)}"
+  end
+
+  # The reader accepts exactly the component envelope. An Update naming a row
+  # (a delete) carries no component; every other method names one
+  # `<model>/<field>` component and its value.
+  defp validate_update!(update) when is_map(update) do
+    method = update["method"]
+
+    cond do
+      Map.keys(update) -- @update_keys != [] ->
+        reject_update(update, "unknown keys")
+
+      not is_binary(update["id"]) or not is_binary(update["subject_id"]) ->
+        reject_update(update, "missing id or subject_id")
+
+      method not in @methods ->
+        reject_update(update, "unknown method")
+
+      method == "delete" ->
+        if Map.has_key?(update, "component") or not is_nil(update["data"]),
+          do: reject_update(update, "a delete names the row and carries no component")
+
+      not component?(update["component"]) ->
+        reject_update(update, "component is not <model>/<field>")
+
+      method in ["drop", "delete"] and not is_nil(update["data"]) ->
+        reject_update(update, "#{method} carries no value")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_update!(update) do
+    raise ArgumentError, "cf_actions Update is not a map: #{inspect(update, limit: 4)}"
+  end
+
+  defp component?(component) when is_binary(component) do
+    case :binary.split(component, "/") do
+      [model, field] -> model != "" and field != "" and :binary.match(field, "/") == :nomatch
+      _ -> false
+    end
+  end
+
+  defp component?(_component), do: false
+
+  defp reject_update(update, reason) do
+    raise ArgumentError,
+          "cf_actions Update is not a component envelope (#{reason}): " <>
+            inspect(update, limit: 8)
+  end
 end

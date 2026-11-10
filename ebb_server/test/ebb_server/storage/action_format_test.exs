@@ -19,14 +19,18 @@ defmodule EbbServer.Storage.ActionFormatTest do
       %{
         id: "upd_1",
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: :put,
-        data: %{"fields" => %{}}
+        component: "todo/title",
+        model: "todo",
+        field: "title",
+        method: :merge,
+        data: %{"value" => "Buy milk", "hlc" => 10}
       },
       %{
         id: "upd_2",
         subject_id: "todo_2",
-        subject_type: "todo",
+        component: nil,
+        model: nil,
+        field: nil,
         method: :delete,
         data: nil
       }
@@ -58,14 +62,13 @@ defmodule EbbServer.Storage.ActionFormatTest do
         %{
           "id" => "upd_1",
           "subject_id" => "todo_1",
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{"fields" => %{}}
+          "component" => "todo/title",
+          "method" => "merge",
+          "data" => %{"value" => "Buy milk", "hlc" => 10}
         },
         %{
           "id" => "upd_2",
           "subject_id" => "todo_2",
-          "subject_type" => "todo",
           "method" => "delete",
           "data" => nil
         }
@@ -154,6 +157,31 @@ defmodule EbbServer.Storage.ActionFormatTest do
       end
     end
 
+    test "rejects a payload whose Updates still use the pre-component shape" do
+      # The stored Update is the component envelope. A row record from the
+      # pre-component wire is unreadable rather than half-understood.
+      payload = %{
+        "id" => "act_1",
+        "actor_id" => "a_1",
+        "hlc" => 123,
+        "updates" => [
+          %{
+            "id" => "upd_1",
+            "subject_id" => "todo_1",
+            "subject_type" => "todo",
+            "method" => "put",
+            "data" => %{"fields" => %{}}
+          }
+        ]
+      }
+
+      value = ActionFormat.frame(:erlang.term_to_binary(payload), [[]])
+
+      assert_raise ArgumentError, ~r/not a component envelope/, fn ->
+        ActionFormat.decode_payload(value, 42)
+      end
+    end
+
     test "rejects a payload that does not decode to an Action" do
       value = ActionFormat.frame(:erlang.term_to_binary([1, 2, 3]), [[]])
 
@@ -170,7 +198,16 @@ defmodule EbbServer.Storage.ActionFormatTest do
       assert Map.keys(payload) |> Enum.sort() == ["actor_id", "hlc", "id", "updates"]
       refute Map.has_key?(payload, "gsn")
       refute Map.has_key?(payload, "update_scopes")
-      assert Enum.map(payload["updates"], & &1["method"]) == ["put", "delete"]
+      assert Enum.map(payload["updates"], & &1["method"]) == ["merge", "delete"]
+    end
+
+    test "stores one component per Update and none on a delete" do
+      payload = ActionFormat.build(prepared_action())
+
+      assert [component_update, delete_update] = payload["updates"]
+      assert component_update["component"] == "todo/title"
+      refute Map.has_key?(delete_update, "component")
+      refute Map.has_key?(component_update, "subject_type")
     end
   end
 

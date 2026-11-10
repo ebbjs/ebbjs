@@ -53,7 +53,9 @@ describe("seed", () => {
     const actions = decodeSync<{ actions: Action[] }>(seen[0]!.init.body as Uint8Array).actions;
     expect(actions).toHaveLength(1);
     expect(actions[0]!.actor_id).toBe("actor_1");
-    expect(actions[0]!.updates).toHaveLength(4);
+    // One Update per component: group/name, three groupMember fields,
+    // todo/title, and two entityGroup fields.
+    expect(actions[0]!.updates).toHaveLength(7);
   });
 
   it("stamps plain field values into envelopes on the wire", async () => {
@@ -66,12 +68,11 @@ describe("seed", () => {
     await seed("http://localhost:4000", "actor_1", seedData);
 
     const actions = decodeSync<{ actions: Action[] }>(seen[0]!.init.body as Uint8Array).actions;
-    const todo = actions[0]!.updates.find((u) => u.subject_type === "todo")!;
-    expect(todo.data?.fields?.["title"]).toMatchObject({
-      value: "Ship it",
-      update_id: "seed_update",
-    });
-    expect(typeof todo.data?.fields?.["title"]?.hlc).toBe("string");
+    const title = actions[0]!.updates.find(
+      (u) => u.method !== "delete" && u.component === "todo/title",
+    )!;
+    expect(title.data).toMatchObject({ value: "Ship it", update_id: "seed_update" });
+    expect(typeof (title.data as { hlc?: unknown }).hlc).toBe("string");
   });
 
   it("tolerates already_exists / duplicate_action rejections", async () => {

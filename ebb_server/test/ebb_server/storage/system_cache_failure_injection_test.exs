@@ -265,13 +265,12 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
         actor_id: "demo-seeder",
         hlc: TestHelpers.generate_hlc(),
         updates: [
-          %{
-            id: "upd_#{System.unique_integer([:positive])}",
-            subject_id: entity_id,
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{}}
-          }
+          TestHelpers.validated_component(
+            entity_id,
+            "todo/title",
+            %{"value" => "seeded"},
+            id: "upd_#{System.unique_integer([:positive])}"
+          )
         ]
       }
       |> ActionFormat.build()

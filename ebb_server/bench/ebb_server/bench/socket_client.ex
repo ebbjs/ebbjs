@@ -710,25 +710,29 @@ defmodule EbbServer.Bench.SocketClient do
   end
 
   @doc """
-  The workbook's `bench_sent_us` stamp, read without decoding the payload.
-
-  The field is `"bench_sent_us":{"hlc":...,"type":"lww","value":N}`, so the
-  search is for the key and then for its `"value"`.
+  The workbook's `todo/bench_sent_us` component value, decoded from the
+  frame's `data` payload.
   """
   @spec frame_sent_us(binary()) :: non_neg_integer() | nil
   def frame_sent_us(frame) do
-    with {position, length} <- :binary.match(frame, ~s("bench_sent_us":)),
-         tail = binary_part(frame, position + length, byte_size(frame) - position - length),
-         {value_position, value_length} <- :binary.match(tail, ~s("value":)) do
-      tail
-      |> binary_part(
-        value_position + value_length,
-        byte_size(tail) - value_position - value_length
-      )
-      |> integer()
+    with {:ok, %{"updates" => updates}} <- Jason.decode(data_line(frame)),
+         %{"data" => %{"value" => sent}} <- Enum.find(updates, &stamp_component?/1) do
+      sent
     else
-      _nomatch -> nil
+      _ -> nil
     end
+  end
+
+  defp stamp_component?(%{"component" => "todo/bench_sent_us"}), do: true
+  defp stamp_component?(_update), do: false
+
+  defp data_line(frame) do
+    frame
+    |> String.split("\n")
+    |> Enum.find_value(fn
+      "data: " <> payload -> payload
+      _ -> nil
+    end)
   end
 
   # Monotonic stamps can be negative (`erlang:monotonic_time/0` has an

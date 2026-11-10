@@ -3,7 +3,7 @@
  * relationship module. Storage-backed traversal stays in `@ebbjs/client`.
  */
 
-import { generateId, type Update } from "@ebbjs/core";
+import { componentName, generateId, type FieldValue, type Update } from "@ebbjs/core";
 
 import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
@@ -40,7 +40,7 @@ export interface BuildRelationshipWriteOptions {
    * — the canonical FK set lives on the source's data field, so the
    * entity Update carries `data.fields[as]`.
    */
-  entityUpdate?: import("@ebbjs/core").Update;
+  entityUpdate?: Update;
   /** Pointer value for `sourceCardinality: "one"` (default). String id or entity. */
   targetId?: PointerValue;
   /** Pointer value(s) for `sourceCardinality: "many"`. */
@@ -64,15 +64,15 @@ export interface BuildRelationshipWriteOptions {
 
 export interface BuildRelationshipWriteResult {
   /**
-   * The entity Update. Present for `sourceCardinality: "many"`,
+   * The source entity's FK Update. Present for `sourceCardinality: "many"`,
    * absent for `sourceCardinality: "one"`.
    */
-  entityUpdate?: import("@ebbjs/core").Update;
+  entityUpdate?: Update;
   /**
-   * Single Update for `sourceCardinality: "one"`; an array
-   * (possibly empty) for `sourceCardinality: "many"`.
+   * The Relationship row's Updates — one per component, or one `delete`.
+   * Empty for `sourceCardinality: "many"` with no `targetIds`.
    */
-  relationshipUpdate: import("@ebbjs/core").Update | readonly import("@ebbjs/core").Update[];
+  relationshipUpdates: readonly Update[];
 }
 
 /**
@@ -119,10 +119,24 @@ export function resolveCardinality(
   return "one";
 }
 
+/** One `replace` Update for one component of a freshly created row. */
+const createComponent = (
+  subjectId: string,
+  model: string,
+  field: string,
+  value: unknown,
+  updateId: string,
+): Update => ({
+  id: `${updateId}_${field}`,
+  subject_id: subjectId,
+  component: componentName(model, field),
+  method: "replace",
+  data: { value, update_id: `${updateId}_${field}` } as FieldValue,
+});
+
 /**
- * Build the wire-level `Relationship` Update for a single link.
- * Returns `method: "delete"` when the target is null; otherwise
- * `method: "put"` with the four standard fields.
+ * Build the wire-level Updates for a single link: one per component of the
+ * Relationship row, or a single `delete` when the target is null.
  */
 export function buildRelationshipUpdate(args: {
   relationshipId: string;
@@ -131,54 +145,39 @@ export function buildRelationshipUpdate(args: {
   field: string;
   type: string;
   updateId: string;
-}): import("@ebbjs/core").Update {
+}): Update[] {
   if (args.targetId === null) {
-    return {
-      id: args.updateId,
-      subject_id: args.relationshipId,
-      subject_type: "relationship",
-      method: "delete",
-      data: null,
-    };
-  }
-  return {
-    id: args.updateId,
-    subject_id: args.relationshipId,
-    subject_type: "relationship",
-    method: "put",
-    data: {
-      fields: {
-        source_id: { value: args.sourceId, update_id: args.updateId },
-        target_id: { value: args.targetId, update_id: args.updateId },
-        type: { value: args.type, update_id: args.updateId },
-        field: { value: args.field, update_id: args.updateId },
+    return [
+      {
+        id: args.updateId,
+        subject_id: args.relationshipId,
+        method: "delete",
+        data: null,
       },
-    },
-  };
+    ];
+  }
+  return [
+    createComponent(args.relationshipId, "relationship", "source_id", args.sourceId, args.updateId),
+    createComponent(args.relationshipId, "relationship", "target_id", args.targetId, args.updateId),
+    createComponent(args.relationshipId, "relationship", "type", args.type, args.updateId),
+    createComponent(args.relationshipId, "relationship", "field", args.field, args.updateId),
+  ];
 }
 
 /**
- * Build a `put` Update for an `entityGroup` membership row, scoping
- * `entityId` to `groupId`. One row per (entity, group).
+ * Build the Updates for an `entityGroup` membership row, scoping `entityId` to
+ * `groupId`. One row per (entity, group), one Update per component.
  */
 export function buildEntityGroupUpdate(args: {
   membershipId: string;
   entityId: string;
   groupId: string;
   updateId: string;
-}): import("@ebbjs/core").Update {
-  return {
-    id: args.updateId,
-    subject_id: args.membershipId,
-    subject_type: "entityGroup",
-    method: "put",
-    data: {
-      fields: {
-        entity_id: { value: args.entityId, update_id: args.updateId },
-        group_id: { value: args.groupId, update_id: args.updateId },
-      },
-    },
-  };
+}): Update[] {
+  return [
+    createComponent(args.membershipId, "entityGroup", "entity_id", args.entityId, args.updateId),
+    createComponent(args.membershipId, "entityGroup", "group_id", args.groupId, args.updateId),
+  ];
 }
 
 /**
@@ -187,14 +186,10 @@ export function buildEntityGroupUpdate(args: {
  * recovers the entity/group from its by-id cache, so no `data` is
  * sent.
  */
-export function buildEntityGroupDelete(args: {
-  membershipId: string;
-  updateId: string;
-}): import("@ebbjs/core").Update {
+export function buildEntityGroupDelete(args: { membershipId: string; updateId: string }): Update {
   return {
     id: args.updateId,
     subject_id: args.membershipId,
-    subject_type: "entityGroup",
     method: "delete",
     data: null,
   };
@@ -209,8 +204,8 @@ export function buildEntityGroupUpdates(
   entityId: string,
   groupIds: readonly string[],
   generateUpdateId: () => string,
-): import("@ebbjs/core").Update[] {
-  return groupIds.map((groupId) =>
+): Update[] {
+  return groupIds.flatMap((groupId) =>
     buildEntityGroupUpdate({
       membershipId: entityGroupId(entityId, groupId),
       entityId,
@@ -221,18 +216,17 @@ export function buildEntityGroupUpdates(
 }
 
 /**
- * Build a `patch` Update for the source entity carrying the canonical
- * FK set on `data.fields[as]`. Used by the many-cardinality
- * relationship-write path: the entity Update is one half of the
- * wire shape, with N `Relationship` Updates being the other half.
+ * Build the Update for the source entity carrying the canonical FK set on its
+ * declared component. Used by the many-cardinality relationship-write path:
+ * the entity Update is one half of the wire shape, with N Relationship
+ * Updates being the other half.
  *
- * It is a patch, not a put: a put replaces the entity's whole field
- * map, so setting a many-cardinality FK would drop every other field
- * on the row.
+ * It merges the one component: a replace would discard a concurrent writer's
+ * siblings on a keyed component, and any other component of the row is
+ * untouched either way.
  *
- * `hlc` is the freshly-minted local HLC; `updateId` is the Update's
- * id. Both surface in the field's `update_id` so the wire envelope
- * is self-contained.
+ * `hlc` is the freshly-minted local HLC; `updateId` is the Update's id. Both
+ * surface in the leaf's `update_id` so the wire envelope is self-contained.
  */
 export function buildManyEntityUpdate(args: {
   sourceId: string;
@@ -241,20 +235,16 @@ export function buildManyEntityUpdate(args: {
   targetIds: readonly string[];
   updateId: string;
   hlc: string;
-}): import("@ebbjs/core").Update {
+}): Update {
   return {
     id: args.updateId,
     subject_id: args.sourceId,
-    subject_type: args.sourceEntityName,
-    method: "patch",
+    component: componentName(args.sourceEntityName, args.as),
+    method: "merge",
     data: {
-      fields: {
-        [args.as]: {
-          value: [...args.targetIds],
-          update_id: args.updateId,
-          hlc: args.hlc,
-        },
-      },
+      value: [...args.targetIds],
+      update_id: args.updateId,
+      hlc: args.hlc,
     },
   };
 }
@@ -312,14 +302,14 @@ function wireTypeFor(registry: ModelRegistry, sourceName: string, as: string): s
   return rel?.type ?? sourceName;
 }
 
-/** Build a single Relationship `put` for a many-cardinality target. */
+/** Build the Relationship row's Updates for one many-cardinality target. */
 function makeManyRelationshipUpdate(
   sourceId: string,
   as: string,
   wireType: string,
   targetId: string,
   newId: (prefix: string) => string,
-): Update {
+): Update[] {
   return buildRelationshipUpdate({
     relationshipId: newId("rel"),
     sourceId,
@@ -390,7 +380,7 @@ export function buildRelationshipWrite(
     const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
     const updateId = newId("u");
     const relationshipId = opts.relationshipSubjectId ?? newId("rel");
-    const relUpdate = buildRelationshipUpdate({
+    const relationshipUpdates = buildRelationshipUpdate({
       relationshipId,
       sourceId,
       targetId,
@@ -398,7 +388,7 @@ export function buildRelationshipWrite(
       type: wireTypeFor(registry, sourceName, as),
       updateId,
     });
-    return { relationshipUpdate: relUpdate };
+    return { relationshipUpdates };
   }
 
   const entityUpdate = requireEntityUpdate(opts, as);
@@ -409,24 +399,24 @@ export function buildRelationshipWrite(
   if (targetIds === undefined) {
     // No `targetIds` — emit the entity Update with no relationship
     // edges, matching `targetId: null` on the one-cardinality side.
-    return { entityUpdate, relationshipUpdate: updates };
+    return { entityUpdate, relationshipUpdates: updates };
   }
   if ("replace" in targetIds) {
     const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
     for (const targetId of normalized) {
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId));
     }
   } else {
     for (const targetId of targetIds.add) {
       const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
       if (id === null) continue;
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
     }
     for (const targetId of targetIds.remove) {
       const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
       if (id === null) continue;
-      updates.push(makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
     }
   }
-  return { entityUpdate, relationshipUpdate: updates };
+  return { entityUpdate, relationshipUpdates: updates };
 }

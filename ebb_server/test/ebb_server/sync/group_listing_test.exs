@@ -424,14 +424,22 @@ defmodule EbbServer.Sync.GroupListingTest do
       light_relationship = unique("rel")
       outside_relationship = unique("rel")
 
-      write_action(
-        actor_id,
-        Enum.map(heavy_relationships, &relationship_update(&1, heavy_todo, unique("t"), "many")) ++
-          [
-            relationship_update(light_relationship, light_todo, unique("t"), "link"),
-            relationship_update(outside_relationship, outside_todo, unique("t"), "link")
-          ]
-      )
+      # Four components per relationship row, so 500 rows in one Action would
+      # exceed the 1000-update cap. Split the heavy source across Actions; the
+      # listing windows on membership rows, not on Action boundaries.
+      heavy_relationships
+      |> Enum.chunk_every(200)
+      |> Enum.each(fn chunk ->
+        write_action(
+          actor_id,
+          Enum.map(chunk, &relationship_update(&1, heavy_todo, unique("t"), "many"))
+        )
+      end)
+
+      write_action(actor_id, [
+        relationship_update(light_relationship, light_todo, unique("t"), "link"),
+        relationship_update(outside_relationship, outside_todo, unique("t"), "link")
+      ])
 
       {:ok, page1} = GroupListing.list(group_id, actor_id, limit: 2)
       assert page1.has_more
@@ -698,7 +706,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       member_row_id = member_row_for(seeded.entities, member_id)
       owner_row_id = member_row_for(seeded.entities, owner_id)
 
-      conn = write_delete(owner_id, member_row_id, "groupMember")
+      conn = write_delete(owner_id, member_row_id)
       assert conn.status == 200
       assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
 
@@ -728,12 +736,14 @@ defmodule EbbServer.Sync.GroupListingTest do
       member_row_id = member_row_for(seeded.entities, member_id)
       owner_row_id = member_row_for(seeded.entities, owner_id)
 
-      # The same row re-put with no `group_id`: the cache still files it under
-      # the group the keyset read, the log says it is not a member of it.
-      write_put(owner_id, member_row_id, "groupMember", %{
-        "actor_id" => lww(member_id),
-        "permissions" => lww(["todo.read"])
-      })
+      # The same row re-put with its `group_id` component dropped: the cache
+      # still files it under the group the keyset read, the log says it is not
+      # a member of it.
+      write_components(owner_id, [
+        component_update(member_row_id, "groupMember/actor_id", "replace", lww(member_id)),
+        component_update(member_row_id, "groupMember/permissions", "replace", lww(["todo.read"])),
+        component_update(member_row_id, "groupMember/group_id", "drop", nil)
+      ])
 
       DirtyTracker.reset()
 
@@ -881,25 +891,11 @@ defmodule EbbServer.Sync.GroupListingTest do
           %{
             "id" => unique("upd"),
             "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => title, "hlc" => hlc}}
-            }
-          },
-          %{
-            "id" => eg_id,
-            "subject_id" => eg_id,
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-                "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-              }
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
           }
-        ]
+        ] ++ entity_group_update(entity_id, group_id, hlc, eg_id)
       end)
 
     action = %{"id" => unique("act"), "actor_id" => actor_id, "hlc" => hlc, "updates" => updates}
@@ -954,7 +950,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => generate_hlc(),
-      "updates" => updates
+      "updates" => List.flatten(updates)
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -966,30 +962,31 @@ defmodule EbbServer.Sync.GroupListingTest do
     %{
       "id" => unique("upd"),
       "subject_id" => entity_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => %{"title" => lww(title)}}
+      "component" => "todo/title",
+      "method" => "replace",
+      "data" => lww(title)
     }
   end
 
   defp relationship_update(relationship_id, source_id, target_id, field) do
     %{
-      "id" => unique("upd"),
-      "subject_id" => relationship_id,
-      "subject_type" => "relationship",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "source_id" => lww(source_id),
-          "target_id" => lww(target_id),
-          "type" => lww("todo"),
-          "field" => lww(field)
-        }
-      }
+      "source_id" => lww(source_id),
+      "target_id" => lww(target_id),
+      "type" => lww("todo"),
+      "field" => lww(field)
     }
+    |> Enum.map(fn {name, value} ->
+      %{
+        "id" => unique("upd"),
+        "subject_id" => relationship_id,
+        "component" => "relationship/#{name}",
+        "method" => "replace",
+        "data" => value
+      }
+    end)
   end
 
-  defp write_delete(actor_id, entity_id, subject_type \\ "todo") do
+  defp write_delete(actor_id, entity_id) do
     action = %{
       "id" => unique("act"),
       "actor_id" => actor_id,
@@ -998,7 +995,6 @@ defmodule EbbServer.Sync.GroupListingTest do
         %{
           "id" => unique("upd"),
           "subject_id" => entity_id,
-          "subject_type" => subject_type,
           "method" => "delete",
           "data" => nil
         }
@@ -1008,20 +1004,22 @@ defmodule EbbServer.Sync.GroupListingTest do
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  defp write_put(actor_id, entity_id, subject_type, fields) do
+  defp component_update(subject_id, component, method, data) do
+    %{
+      "id" => unique("upd"),
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => method,
+      "data" => data
+    }
+  end
+
+  defp write_components(actor_id, updates) do
     action = %{
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => generate_hlc(),
-      "updates" => [
-        %{
-          "id" => unique("upd"),
-          "subject_id" => entity_id,
-          "subject_type" => subject_type,
-          "method" => "put",
-          "data" => %{"fields" => fields}
-        }
-      ]
+      "updates" => updates
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -1040,13 +1038,9 @@ defmodule EbbServer.Sync.GroupListingTest do
         %{
           "id" => unique("upd"),
           "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "patch",
-          "data" => %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => title, "hlc" => generate_hlc()}
-            }
-          }
+          "component" => "todo/title",
+          "method" => "merge",
+          "data" => %{"type" => "lww", "value" => title, "hlc" => generate_hlc()}
         }
       ]
     }

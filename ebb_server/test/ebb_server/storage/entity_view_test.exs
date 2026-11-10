@@ -58,12 +58,7 @@ defmodule EbbServer.Storage.EntityViewTest do
     hlc = generate_hlc()
 
     update =
-      validated_update(%{
-        subject_id: entity_id,
-        data: %{
-          "fields" => %{"title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc}}
-        }
-      })
+      validated_component(entity_id, "todo/title", %{"value" => "Buy milk", "hlc" => hlc})
 
     action = validated_action(%{actor_id: "a_member", updates: [update]})
 

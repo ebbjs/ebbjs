@@ -13,6 +13,24 @@ defmodule EbbServer.Storage.ActionValidator do
   copies a row's leaves verbatim, so a copy can carry a peer's slightly newer
   stamp; the future drift window is what bounds the pin.
 
+  ## The component envelope
+
+  One Update names one `(entity, component)`:
+
+      %{"id", "subject_id", "component" => "note/title",
+        "method" => "merge" | "replace" | "drop", "data" => field_value | nil}
+      %{"id", "subject_id", "method" => "delete", "data" => nil}
+
+  `component` is `<model>/<field>` and `data` is the component's own value,
+  never a row's field record. A `delete` names the row and carries no
+  component. `replace` is refused for a keyed component (any `data` carrying
+  `map`), because a wholesale replace would discard a concurrent writer's
+  siblings.
+
+  The pre-component wire — a per-Update type name, `put`/`patch` methods,
+  and `data.fields` — is rejected here rather than read through: there is
+  no alias and no deprecation path.
+
   Every Action is bounded before anything else reads it: at most 1 000
   Updates and 1 MiB in external term format. An Action over either cap is
   refused here, so it never reaches authorization, a prepare slot, or a
@@ -40,8 +58,10 @@ defmodule EbbServer.Storage.ActionValidator do
   @type validated_update :: %{
           id: String.t(),
           subject_id: String.t(),
-          subject_type: String.t(),
-          method: :put | :patch | :delete,
+          component: String.t() | nil,
+          model: String.t() | nil,
+          field: String.t() | nil,
+          method: :merge | :replace | :drop | :delete,
           data: map() | nil
         }
 
@@ -51,8 +71,7 @@ defmodule EbbServer.Storage.ActionValidator do
           details: String.t() | nil
         }
 
-  @system_entity_types PermissionHelper.system_entity_types()
-  @method_atoms PermissionHelper.method_atoms()
+  @methods PermissionHelper.methods()
 
   @future_drift_limit_ms 120_000
   @max_action_bytes 1_048_576
@@ -144,7 +163,7 @@ defmodule EbbServer.Storage.ActionValidator do
   - actor_id is a non-empty string
   - hlc is a positive integer (or parsable string)
   - updates is a non-empty list
-  - each update has valid id, subject_id, subject_type, method, and data
+  - each update has valid id, subject_id, method, component, and data
   """
   @spec validate_structure(raw_action()) :: :ok | {:error, String.t(), String.t()}
   def validate_structure(action) do
@@ -176,11 +195,29 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp validate_update_structure(update) do
-    with :ok <- validate_update_id(update["id"]),
+    with :ok <- validate_update_keys(update),
+         :ok <- validate_update_id(update["id"]),
          :ok <- validate_update_subject_id(update["subject_id"]),
-         :ok <- validate_update_subject_type(update["subject_type"]),
-         :ok <- validate_update_method(update["method"]) do
-      validate_update_data(update)
+         :ok <- validate_update_method(update["method"]),
+         :ok <- validate_update_component(update),
+         :ok <- validate_update_data(update) do
+      validate_replace_target(update)
+    end
+  end
+
+  # The envelope has exactly five keys. A per-Update type name or a row's
+  # field record cannot ride along unrecognised: the pre-component wire is
+  # refused here, and a stored frame in that shape raises on decode.
+  @update_keys ["id", "subject_id", "component", "method", "data"]
+
+  defp validate_update_keys(update) do
+    case Map.keys(update) -- @update_keys do
+      [] ->
+        :ok
+
+      unknown ->
+        {:error, "invalid_structure",
+         "update has unknown keys: #{unknown |> Enum.sort() |> Enum.join(", ")}"}
     end
   end
 
@@ -196,57 +233,84 @@ defmodule EbbServer.Storage.ActionValidator do
       else: {:error, "invalid_structure", "update subject_id must be a non-empty string"}
   end
 
-  defp validate_update_subject_type(subject_type) do
-    if is_binary(subject_type) and subject_type != "",
-      do: :ok,
-      else: {:error, "invalid_structure", "update subject_type must be a non-empty string"}
-  end
-
   defp validate_update_method(method) do
-    if method in ["put", "patch", "delete"],
+    if method in ["merge", "replace", "drop", "delete"],
       do: :ok,
-      else: {:error, "invalid_structure", "update method must be one of: put, patch, delete"}
+      else:
+        {:error, "invalid_structure",
+         "update method must be one of: merge, replace, drop, delete"}
   end
 
-  defp validate_update_data(update) do
-    # System entities accept any data shape (including `nil`); the
-    # server's update handler ignores `data` for these. For a delete
-    # the data is dropped on the wire. For a user-entity put/patch
-    # `data.fields` must be present. A field value that uses the `map`
-    # discriminant is validated recursively; bare leaves are left to
-    # the merge, which stamps their `update_id` on ingest.
-    fields = if is_map(update["data"]), do: update["data"]["fields"], else: nil
-
-    cond do
-      update["subject_type"] in @system_entity_types ->
-        :ok
-
-      update["method"] == "delete" ->
-        :ok
-
-      update["method"] in ["put", "patch"] and is_map(update["data"]) and is_map(fields) and
-          valid_map_fields?(fields) ->
-        :ok
-
-      true ->
-        {:error, "invalid_structure",
-         "update data must be a well-formed map for put/patch/delete on user entities"}
+  defp validate_update_component(%{"method" => "delete"} = update) do
+    if Map.has_key?(update, "component") do
+      {:error, "invalid_structure", "a delete names the row and carries no component"}
+    else
+      :ok
     end
   end
 
-  defp valid_map_fields?(fields) do
-    Enum.all?(fields, fn {_key, value} -> valid_map_field?(value) end)
+  defp validate_update_component(update) do
+    case update["component"] do
+      component when is_binary(component) ->
+        case :binary.split(component, "/") do
+          [model, field] when model != "" and field != "" ->
+            if :binary.match(field, "/") == :nomatch,
+              do: :ok,
+              else: component_error(component)
+
+          _ ->
+            component_error(component)
+        end
+
+      _ ->
+        component_error(update["component"])
+    end
   end
 
-  # Only the map variant needs structural validation: its entries are
-  # leaves or nested maps, and the merge assumes each leaf carries the
-  # `update_id` the client stamped. A non-map value is a leaf the server
-  # stamps itself, so it keeps the historical shape freedom.
-  defp valid_map_field?(%{"map" => entries}) do
+  defp component_error(component) do
+    {:error, "invalid_structure",
+     "update component must be <model>/<field>, got: #{inspect(component, limit: 4)}"}
+  end
+
+  defp validate_update_data(%{"method" => method} = update) when method in ["merge", "replace"] do
+    data = update["data"]
+
+    cond do
+      not is_map(data) ->
+        {:error, "invalid_structure", "update data must be a field value for #{method}"}
+
+      Map.has_key?(data, "fields") ->
+        {:error, "invalid_structure",
+         "update data is the component's value; a row's fields record is not accepted"}
+
+      Map.has_key?(data, "map") ->
+        if valid_map_entries?(data), do: :ok, else: field_value_error()
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_update_data(update) do
+    if is_nil(update["data"]) do
+      :ok
+    else
+      {:error, "invalid_structure", "update data must be null for #{update["method"]}"}
+    end
+  end
+
+  defp field_value_error do
+    {:error, "invalid_structure",
+     "update data must be a well-formed field value: a leaf map or a map of leaves"}
+  end
+
+  # Only the map variant needs structural validation: its entries are leaves
+  # or nested maps, and the merge assumes each leaf carries the `update_id` the
+  # client stamped. A non-map value is a leaf the server stamps itself, so it
+  # keeps its historical shape freedom.
+  defp valid_map_entries?(%{"map" => entries}) do
     is_map(entries) and Enum.all?(entries, fn {_key, value} -> valid_map_entry?(value) end)
   end
-
-  defp valid_map_field?(_value), do: true
 
   defp valid_map_entry?(%{"map" => entries}) do
     is_map(entries) and Enum.all?(entries, fn {_key, value} -> valid_map_entry?(value) end)
@@ -314,16 +378,13 @@ defmodule EbbServer.Storage.ActionValidator do
     first_error(action["updates"], &update_leaf_hlc_error(&1, now_ms))
   end
 
-  # A delete drops its data on the wire. A system row is exempt from the
-  # `data` *shape* rules, not from the merge: its fields are materialized
-  # and read like any other row's, so its leaves are bounded too.
+  # A delete or drop carries no value. Every other method's data is the
+  # component's own value, so the walk starts at the component name.
   defp update_leaf_hlc_error(update, now_ms) do
-    fields = if is_map(update["data"]), do: Map.get(update["data"], "fields"), else: nil
+    data = update["data"]
 
-    if update["method"] in ["put", "patch"] and is_map(fields) do
-      first_error(fields, fn {key, value} ->
-        field_leaf_hlc_error(value, [key, "fields"], now_ms)
-      end)
+    if update["method"] in ["merge", "replace"] and is_map(data) do
+      field_leaf_hlc_error(data, [update["component"]], now_ms)
     else
       :ok
     end
@@ -397,7 +458,8 @@ defmodule EbbServer.Storage.ActionValidator do
   @doc """
   Converts a raw action to validated action format.
 
-  Transforms string keys to atoms where appropriate (e.g., method).
+  Transforms string keys to atoms where appropriate (e.g., method) and
+  splits a component into the row's `model` and `field`.
   """
   @spec to_validated_action(raw_action()) :: validated_action()
   def to_validated_action(action) do
@@ -410,12 +472,38 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp to_validated_update(update) do
+    {model, field} = split_component(update["component"])
+
     %{
       id: update["id"],
       subject_id: update["subject_id"],
-      subject_type: update["subject_type"],
-      method: Map.fetch!(@method_atoms, update["method"]),
+      component: update["component"],
+      model: model,
+      field: field,
+      method: Map.fetch!(@methods, update["method"]),
       data: update["data"]
     }
   end
+
+  defp split_component(nil), do: {nil, nil}
+
+  defp split_component(component) do
+    [model, field] = :binary.split(component, "/")
+    {model, field}
+  end
+
+  # `replace` sets a component's value whole, so it is refused for a keyed
+  # component: the client's key set is not this writer's to discard.
+  defp validate_replace_target(%{"method" => "replace"} = update) do
+    case update["data"] do
+      %{"map" => _entries} ->
+        {:error, "invalid_structure",
+         "component #{inspect(update["component"])} is a keyed component; replace is refused"}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_replace_target(_update), do: :ok
 end
