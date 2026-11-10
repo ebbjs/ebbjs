@@ -42,7 +42,7 @@ const schema = defineSchema({
 });
 ```
 
-- `"field"` surfaces a same-position race, and a concurrent `put` / `delete` that omitted a field the local write holds (the field is reverted on the server).
+- `"field"` surfaces a same-position race, and a concurrent `delete` or `drop` of a component the local write holds (the component is reverted on the server).
 - `"entity"` surfaces any concurrent touch of an entity that has buffered local writes.
 - Unknown entity types default to `"field"`.
 - Structural edge subject types (`relationship`, `entityGroup`, `groupMember`) are never surfaced: concurrent writes to edges are not field conflicts.
@@ -70,7 +70,7 @@ The body's `version` leaf is metadata declaring the cell format, never a positio
 
 There is no per-field "address a value" hook. A field type with non-map positions would extend the field marker.
 
-A nested map key that a missed `put` replaced away — the `put` supplied a `content` map omitting that key — is **not** surfaced as a slot: the pending write re-adds it on flush. A field the peer's `put` reverted entirely _is_ surfaced, with a remote side of `{ value: undefined }`.
+A nested map key a missed component write omits is **not** surfaced as a slot: a map merges key by key, so the key the pending write holds was never reverted, and it stands on flush. A component the peer's `delete` reverted entirely _is_ surfaced, with a remote side of `{ value: undefined }`.
 
 ## The write base and the HLC caveat
 
@@ -235,9 +235,10 @@ const copy = await client.actions.restoreIssue({ id: issueId });
 
 The server and every client materializer apply one deterministic rule:
 
-- a `put` replaces the subject's whole field set — a top-level field the `put` omits is reverted;
-- a later `patch` merges its fields back over whatever stands;
-- a map field merges key by key, so a patch to one key leaves its siblings.
+- an Update writes one component, and that component's value is settled by one leaf-level compare: the higher HLC wins, then the lexicographically greater `update_id`;
+- `replace` and `merge` go through that same compare; the only difference is that a `replace` stamps the row's creation time, so neither rewrites a component back to an older value;
+- a `drop` detaches a component and a `delete` tombstones the row — nothing else reverts an omitted component;
+- a map field merges key by key, so a write to one key leaves its siblings.
 
 A pending local write is always submitted after catch-up, so it lands after the missed window in server order.
 

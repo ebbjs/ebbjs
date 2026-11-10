@@ -733,15 +733,16 @@ It is the counterfactual the epic priced, as a number:
 --batch-size 100 --distribution hot` — the real `Writer`, no HTTP, `sync: true` — with the
 logical Action held constant: one `todo` row write (3 components) plus its `entityGroup` row
 (2 components). Before the envelope that Action is 2 Updates carrying 5 field leaves; after it
-is 5 Updates carrying one component value each. Three runs per side; median, with the range in
+is 5 Updates carrying one component value each. Three runs per side, paired on an otherwise idle
+machine (the "before" tree is `origin/main` in a separate checkout); median, with the range in
 brackets:
 
-| Measure                            | Before (2 Updates)   | After (5 Updates)   | Delta |
-| ---------------------------------- | -------------------- | ------------------- | ----: |
-| Accepted Actions/s (logical edits) | 9,480 (7,825–10,480) | 5,960 (5,680–6,120) |  −37% |
-| Updates/s committed                | 18,960               | 29,800              |  +57% |
-| Client p50 per Action              | 91.0 ms              | 109.4 ms            |  +20% |
-| Client p95 per Action              | 106.1 ms             | 198.4 ms            |  +87% |
+| Measure                            | Before (2 Updates)    | After (5 Updates)   | Delta |
+| ---------------------------------- | --------------------- | ------------------- | ----: |
+| Accepted Actions/s (logical edits) | 10,030 (9,665–10,600) | 7,200 (7,200–7,255) |  −28% |
+| Updates/s committed                | 20,060                | 36,000              |  +79% |
+| Client p50 per Action              | 89.7 ms               | 101.5 ms            |  +13% |
+| Client p95 per Action              | 103.1 ms              | 175.2 ms            |  +70% |
 
 **What it says.** The cost is per Update, not per byte: Updates/s rises by half while logical
 edits/s falls by a third, and the payload grows only 50% for five components because each
@@ -749,9 +750,11 @@ Update's fixed envelope is paid once per component. A single-field write is one 
 envelopes, so the common edit is free; the cost is paid exactly by writes that touch many
 components at once — creates, and multi-field edits. That is the throughput figure the epic's
 "costs — throughput, slightly" was guessing at, and it is steeper at the hot write path than
-"slightly": at 8 callers and a 400-Action flush, a fifth of the accepted write rate moves from
-doing useful edits to carrying per-Update overhead. The latency figures are the same effect at
-flush granularity, not a second cost.
+"slightly": at 8 callers and a 400-Action flush, roughly a quarter of the accepted write rate
+moves from doing useful edits to carrying per-Update overhead. The latency figures are the same
+effect at flush granularity, not a second cost. Slice 4 also removed the Writer's per-flush
+quadratic list build, which recovered ~17% of this path on its own; the remaining gap is the
+envelope's fixed cost per component.
 
 The open question this answers (below, question 2) is whether Update-count growth dominates
 payload growth. It does not dominate payload — payload is sublinear in fields — but it is the
@@ -775,7 +778,7 @@ rather than by how much data it carries.
 1. Does the archetype index earn its keep over intersecting component sets? Slice 6 measures.
 2. Is `data: FieldValue` (one component per Update) the right envelope, or does Update-count growth
    dominate payload growth? **Measured in slice 4** (see [Measurement](#measurement-the-envelopes-cost-slice-4-797)):
-   payload grows 50% for a five-field edit, Updates/s rises 57% while logical edits/s falls 37% at
+   payload grows 50% for a five-field edit, Updates/s rises 79% while logical edits/s falls 28% at
    the hot write path. The cost is per Update, so a single-field write is unchanged and a create is
    where it lands. The envelope stands; slice 6 must keep `indexed: false` the default for the same
    reason.

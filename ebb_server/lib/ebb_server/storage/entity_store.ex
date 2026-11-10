@@ -72,7 +72,8 @@ defmodule EbbServer.Storage.EntityStore do
     - `drop` removes the field; the row survives, keeps its type and its
       `created_hlc`, and is not tombstoned. A `drop` for a row that was never
       materialized is a no-op, exactly as it is on the client;
-    - `delete` tombstones the row.
+    - `delete` tombstones the row. A delete for a row that was never created
+      writes nothing, for the same reason a `drop` there is a no-op.
 
   A delta replay starts from the row already in SQLite, not from an empty
   row: a delta that carries only a `drop` or a `delete` must not rewrite the
@@ -388,8 +389,9 @@ defmodule EbbServer.Storage.EntityStore do
     case materialized do
       {:ok, %{exists?: false}} ->
         # Nothing replayed created or touched a row, and SQLite had none: a
-        # `drop` for an id that was never materialized leaves no row behind,
-        # rather than upserting an empty one under an unknown model.
+        # `drop` or `delete` for an id that was never materialized leaves no
+        # row behind, rather than upserting an empty one under an unknown
+        # model.
         clear_settled(entity_id, observed_generation, dirty_set)
         :not_found
 
@@ -593,15 +595,27 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
+  # A delete for a row nothing in the delta created is a no-op, like a drop:
+  # replay always starts at the row's `last_gsn` in SQLite, which is 0 when
+  # there is no row, so a delta carries every Action that ever touched the id.
+  # A delete with no row anywhere therefore names an id that was never
+  # created — the authorizer refuses such a delete — and upserting a tombstone
+  # for it would invent a row under the `unknown` model with nothing to
+  # suppress. A row the delta does create is still tombstoned, so a later
+  # clean read cannot resurrect it.
   defp apply_delete(action, gsn, acc) do
-    %{
+    if acc.exists? do
+      %{
+        acc
+        | deleted_hlc: action["hlc"],
+          deleted_by: action["actor_id"],
+          updated_hlc: action["hlc"],
+          max_gsn: max(acc.max_gsn, gsn),
+          exists?: true
+      }
+    else
       acc
-      | deleted_hlc: action["hlc"],
-        deleted_by: action["actor_id"],
-        updated_hlc: action["hlc"],
-        max_gsn: max(acc.max_gsn, gsn),
-        exists?: true
-    }
+    end
   end
 
   defp existing_meta(nil, _key), do: nil

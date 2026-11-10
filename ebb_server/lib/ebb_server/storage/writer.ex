@@ -2014,25 +2014,44 @@ defmodule EbbServer.Storage.Writer do
   # `EntityIndex.resolve_groups_cached/3`). Each Action still unions its own
   # intra-action membership on top, so two Actions that move the same entity
   # cannot see each other's membership.
+  #
+  # One flush is one commit — the normal case is a whole request — so the
+  # Actions after the first see the subjects the flush already folded as
+  # created. Without that, a second write to a row whose create is still in
+  # this flush folds as `:put`, which the cache planner reads as "replace the
+  # whole row" instead of "patch the components this Action carries".
   defp prepare(fresh, gsn_start, state, incoming_overlay) do
     resolve_opts =
       state
       |> resolve_cache_opts()
       |> Keyword.put(:overlay, incoming_overlay)
 
-    {prepared, {groups_by_gsn, mutations, _memo}} =
+    {prepared, {groups_by_gsn, mutations, _created, _memo}} =
       fresh
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({%{}, [], %{}}, fn {{action, payload_etf}, gsn},
-                                            {groups, mutations, memo} ->
+      |> Enum.map_reduce({%{}, [], MapSet.new(), %{}}, fn {{action, payload_etf}, gsn},
+                                                          {groups, mutations, created, memo} ->
         {prepared_action, action_mutations, memo} =
-          prepare_action(action, payload_etf, state, resolve_opts, memo)
+          prepare_action(action, payload_etf, state, resolve_opts, created, memo)
 
         {prepared_action,
-         {Map.put(groups, gsn, prepared_action.groups), mutations ++ action_mutations, memo}}
+         {Map.put(groups, gsn, prepared_action.groups), Enum.reverse(action_mutations, mutations),
+          fold_subjects(action_mutations, created), memo}}
       end)
 
-    {prepared, groups_by_gsn, plan_cache_mutations(mutations, state, incoming_overlay)}
+    {prepared, groups_by_gsn,
+     plan_cache_mutations(Enum.reverse(mutations), state, incoming_overlay)}
+  end
+
+  # Every subject this Action folded is a row the flush has already written,
+  # so later Actions of the same flush have to patch it rather than put it.
+  # Keyed by subject id alone, not `{model, id}` as the group-resolution memo
+  # is: ids are not guaranteed model-unique in this codebase, but every
+  # system-model branch of the cache planner projects a `:put` and a `:patch`
+  # identically when no cached row exists, so a cross-model collision cannot
+  # change the plan today.
+  defp fold_subjects(mutations, created) do
+    Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
   end
 
   # Plan before the commit so a successor can resolve against this batch's
@@ -2057,12 +2076,12 @@ defmodule EbbServer.Storage.Writer do
   defp overlay_before(state, ref),
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
-  defp prepare_action(action, payload_etf, state, resolve_opts, memo) do
+  defp prepare_action(action, payload_etf, state, resolve_opts, created, memo) do
     # Scope is a per-subject decision, never a per-component one: an
     # `entityGroup` row's `group_id` and a relationship row's `source_id` each
     # arrive in one component Update while their siblings carry none, so the
     # folded row decides for every Update of that row.
-    mutations = RowMutations.fold(action.updates, resolve_opts)
+    mutations = RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
     intra_action_context = PermissionHelper.build_intra_action_context(mutations)
 
     resolve_opts =

@@ -84,15 +84,17 @@ client sees over `POST /sync/actions`. Any other host failure throws a
 own merge rule (`mergeFieldValue`):
 
 - a row created here reads back with `last_gsn: 0` and the write's HLCs;
-- a `patch` merges fields; a `put` replaces them; a `delete` reads as `null`;
+- a `create` stamps its components with `replace` and an `update` names its
+  components with `merge` — both go through the same leaf-level compare, so an
+  older HLC never overwrites a newer value; a `delete` reads as `null`;
 - a row created and then deleted in the same invocation reads as `null`;
 - an id this invocation never wrote passes the host's view through untouched.
 
 Every read comes back in the same wire shape the entity endpoints publish:
 `data.fields` holds `FieldValue` leaves and maps (`.value`, `.update_id`,
-`.hlc`), whether or not the invocation wrote to the row. A `patch` merges with
-the wire's rule, so a field the batch did not touch keeps the stored leaf and
-its HLC. The overlay also backs the relationship verbs' FK reads and the
+`.hlc`), whether or not the invocation wrote to the row. An `update` merges with
+the wire's rule, so a component the batch did not touch keeps the stored leaf
+and its HLC. The overlay also backs the relationship verbs' FK reads and the
 membership pre-flight, so a verb after a write sees the batch, not the stored
 state.
 

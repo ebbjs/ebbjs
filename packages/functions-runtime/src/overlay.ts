@@ -78,10 +78,11 @@ const readOverlay = async (source: OverlaySource, id: string): Promise<EntityRes
     } else {
       const incoming = update.data;
       const previous = current[field];
-      const next =
-        update.method === "merge" && previous !== undefined
-          ? mergeFieldValue(previous, incoming)
-          : incoming;
+      // Both value methods compare leaves: a `replace` is the same LWW compare
+      // as a `merge` (see the server's `apply_component` and the storage
+      // materializer), so an older write never overwrites a newer value the
+      // buffer already holds. Only a `drop` or `delete` reverts a component.
+      const next = previous === undefined ? incoming : mergeFieldValue(previous, incoming);
       fields = { ...current, [field]: next };
       if (!exists && update.method === "replace") {
         createdHlc = leafOf(update)?.hlc ?? createdHlc;

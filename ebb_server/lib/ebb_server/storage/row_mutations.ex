@@ -82,8 +82,9 @@ defmodule EbbServer.Storage.RowMutations do
 
   ## Options
 
-  - `:created` — ids an earlier Action of the same request created, as a
-    `MapSet` or a map keyed by id. A row in this set is not new.
+  - `:created` — ids an earlier Action of the same request (for the Writer,
+    the same flush, which is one commit) folded, as a `MapSet` or a map keyed
+    by id. A row in this set is not new.
   - `:exists?` — `(entity_id -> boolean)` deciding whether a row already
     exists. Defaults to the entity-type index. A caller that has existence
     signals the index can lag (the authorizer's by-id caches) passes its own

@@ -1399,6 +1399,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
                  sqlite_name: sqlite_name,
                  dirty_set: dirty_set
                )
+
+      # A delete for an id nothing ever created writes nothing: a tombstone
+      # here would be a row under the `unknown` model with nothing to
+      # suppress, and there is no base for a later delta to replay onto.
+      assert SQLite.get_entity(entity_id, sqlite_name) == :not_found
     end
 
     test "PUT followed by DELETE returns :not_found", %{
