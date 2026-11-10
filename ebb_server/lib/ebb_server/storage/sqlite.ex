@@ -31,6 +31,24 @@ defmodule EbbServer.Storage.SQLite do
   A separate `cursors` table holds durable named consumer cursors (Action
   export today, peer replication later).
 
+  ## Component existence
+
+  A materialized row's `data.components` is the canonical, sorted list of
+  `<model>/<field>` names derived from `data.fields`. It is written by
+  `EbbServer.Storage.EntityStore` alongside the fields and is not part of the
+  wire shape: `EbbServer.Storage.EntityView` projects it away.
+
+  `entity_components` mirrors that list one row per `(entity, component)` so
+  "which live rows hold component X" is an index lookup rather than a JSON
+  scan. Tombstoned rows keep their component rows; the reader joins
+  `entities` and filters `deleted_hlc IS NULL`.
+
+  The obvious single-table form — an expression index over
+  `json_each(data, '$.components')` — is not implementable: `json_each` is a
+  table-valued function, and SQLite refuses it in an index expression. The
+  derived `data.components` column plus this normalized mirror is the
+  amendment.
+
   ## Reads vs. writes
 
   This module is read+upsert against the entity cache, plus the small
@@ -100,6 +118,27 @@ defmodule EbbServer.Storage.SQLite do
   CREATE INDEX IF NOT EXISTS idx_entities_entity_group_page ON entities(group_id, id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
   """
 
+  @create_entity_components_table """
+  CREATE TABLE IF NOT EXISTS entity_components (
+    entity_id TEXT NOT NULL,
+    component TEXT NOT NULL,
+    PRIMARY KEY (entity_id, component)
+  );
+  """
+
+  # The PK prefix covers deletes and replacement for one entity; this index
+  # answers the by-component read the table exists for.
+  @create_entity_components_indexes """
+  CREATE INDEX IF NOT EXISTS idx_entity_components_component
+    ON entity_components(component, entity_id);
+  """
+
+  @delete_entity_components_sql "DELETE FROM entity_components WHERE entity_id = ?"
+
+  @insert_entity_component_sql """
+  INSERT OR IGNORE INTO entity_components (entity_id, component) VALUES (?, ?)
+  """
+
   @upsert_sql """
   INSERT INTO entities (id, type, data, created_hlc, updated_hlc, deleted_hlc, deleted_by, last_gsn)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -119,6 +158,18 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   @get_last_gsn_sql "SELECT last_gsn FROM entities WHERE id = ?"
+
+  # Reads the by-component side table rather than parsing `data.components`,
+  # so a tombstone that keeps its component rows is filtered by the join.
+  # `INDEXED BY` pins the plan on a database that is never `ANALYZE`d.
+  @query_component_ids_sql """
+  SELECT ec.entity_id
+  FROM entity_components ec INDEXED BY idx_entity_components_component
+  JOIN entities e ON e.id = ec.entity_id
+  WHERE ec.component = ? AND e.deleted_hlc IS NULL
+  ORDER BY ec.entity_id
+  LIMIT ?
+  """
 
   # Group-scoped listing pages (#476). Each query is the keyset for one phase
   # of `EbbServer.Sync.GroupListing`: group members are ordered by
@@ -229,6 +280,8 @@ defmodule EbbServer.Storage.SQLite do
 
   `entity_row` must be a map with keys: `:id`, `:type`, `:data`,
   `:created_hlc`, `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, `:last_gsn`.
+  An optional `:components` list mirrors the row's sorted component names
+  into `entity_components` in the same statement that writes the row.
   `created_hlc` is the row's creation time. A fresh data directory's schema
   refuses a row without one, and the repo discards old data rather than
   migrating it (#793 decision 9), so a materializer that loses the stamp
@@ -262,10 +315,21 @@ defmodule EbbServer.Storage.SQLite do
   Like `upsert_entity/2`, the write is monotonic in `last_gsn`: the row is
   only updated when its current `last_gsn` is less than or equal to the
   patch's. A lower `last_gsn` is rejected and the row is left alone.
+
+  `components` is the row's sorted `<model>/<field>` list. It replaces the
+  entity's `entity_components` rows inside the same GenServer call, and is
+  written into `data.components` in the same `json_set` statement as the
+  field patches, so the canonical JSON cannot go stale.
   """
-  @spec patch_entity(String.t(), %{String.t() => String.t()}, map(), GenServer.server()) :: :ok
-  def patch_entity(entity_id, fields, meta, server \\ __MODULE__) do
-    GenServer.call(server, {:patch_entity, entity_id, fields, meta})
+  @spec patch_entity(
+          String.t(),
+          %{String.t() => String.t()},
+          [String.t()],
+          map(),
+          GenServer.server()
+        ) :: :ok
+  def patch_entity(entity_id, fields, components, meta, server \\ __MODULE__) do
+    GenServer.call(server, {:patch_entity, entity_id, fields, components, meta})
   end
 
   @doc """
@@ -368,6 +432,31 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
+  Lists the live ids of entities holding `component`, ascending.
+
+  Reads through `idx_entity_components_component` and joins `entities` so a
+  tombstoned row, which keeps its component rows, is not returned. This is
+  the read seam for #799; no wire query path uses it yet.
+  """
+  @spec query_component_ids(String.t(), pos_integer(), GenServer.server()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def query_component_ids(component, limit, server \\ __MODULE__) do
+    GenServer.call(server, {:query_component_ids, component, limit})
+  end
+
+  @doc """
+  Returns SQLite's `EXPLAIN QUERY PLAN` details for the component read.
+
+  Like `explain_page_relationship_ids/2`, this seam lets a test assert the
+  plan, rather than the SQL text, names `idx_entity_components_component`.
+  """
+  @spec explain_component_ids(String.t(), GenServer.server()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def explain_component_ids(component, server \\ __MODULE__) do
+    GenServer.call(server, {:explain_component_ids, component})
+  end
+
+  @doc """
   Fetches multiple live entity rows by id.
 
   Rows deleted by tombstone are omitted, so the result can be shorter than
@@ -437,6 +526,8 @@ defmodule EbbServer.Storage.SQLite do
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
     :ok = Sqlite3.execute(db, @create_indexes)
+    :ok = Sqlite3.execute(db, @create_entity_components_table)
+    :ok = Sqlite3.execute(db, @create_entity_components_indexes)
     :ok = Sqlite3.execute(db, @create_cursors_table)
 
     # Prepare cached statements
@@ -445,6 +536,8 @@ defmodule EbbServer.Storage.SQLite do
     {:ok, get_last_gsn_stmt} = Sqlite3.prepare(db, @get_last_gsn_sql)
     {:ok, get_cursor_stmt} = Sqlite3.prepare(db, @get_cursor_sql)
     {:ok, put_cursor_stmt} = Sqlite3.prepare(db, @put_cursor_sql)
+    {:ok, delete_components_stmt} = Sqlite3.prepare(db, @delete_entity_components_sql)
+    {:ok, insert_component_stmt} = Sqlite3.prepare(db, @insert_entity_component_sql)
 
     state = %{
       db: db,
@@ -453,7 +546,9 @@ defmodule EbbServer.Storage.SQLite do
         get_entity: get_entity_stmt,
         get_last_gsn: get_last_gsn_stmt,
         get_cursor: get_cursor_stmt,
-        put_cursor: put_cursor_stmt
+        put_cursor: put_cursor_stmt,
+        delete_components: delete_components_stmt,
+        insert_component: insert_component_stmt
       }
     }
 
@@ -482,13 +577,24 @@ defmodule EbbServer.Storage.SQLite do
 
     :ok = Sqlite3.bind(stmt, values)
     :done = Sqlite3.step(db, stmt)
+    # A rejected stale upsert must not rewrite the index from its old row.
+    applied? = write_applied?(db)
     :ok = Sqlite3.reset(stmt)
+
+    if applied? do
+      replace_entity_components(
+        db,
+        state.stmts,
+        entity_row.id,
+        Map.get(entity_row, :components, [])
+      )
+    end
 
     {:reply, :ok, state}
   end
 
   @impl true
-  def handle_call({:patch_entity, id, fields, meta}, _from, state) do
+  def handle_call({:patch_entity, id, fields, components, meta}, _from, state) do
     %{db: db} = state
 
     pairs =
@@ -499,12 +605,13 @@ defmodule EbbServer.Storage.SQLite do
     {data_clause, data_params} =
       case pairs do
         [] ->
-          {"", []}
+          {"data = json_set(data, '$.components', json(?)), ", []}
 
         _ ->
           placeholders = Enum.map_join(pairs, "", fn _ -> ", ?, json(?)" end)
           params = Enum.flat_map(pairs, fn {path, json} -> [path, json] end)
-          {"data = json_set(data" <> placeholders <> "), ", params}
+
+          {"data = json_set(data" <> placeholders <> ", '$.components', json(?)), ", params}
       end
 
     sql =
@@ -516,6 +623,7 @@ defmodule EbbServer.Storage.SQLite do
     params =
       data_params ++
         [
+          Jason.encode!(components),
           meta.type,
           meta.created_hlc,
           meta.updated_hlc,
@@ -527,10 +635,18 @@ defmodule EbbServer.Storage.SQLite do
         ]
 
     {:ok, stmt} = Sqlite3.prepare(db, sql)
-    :ok = Sqlite3.bind(stmt, params)
-    :done = Sqlite3.step(db, stmt)
-    :ok = Sqlite3.reset(stmt)
-    Sqlite3.release(db, stmt)
+
+    try do
+      :ok = Sqlite3.bind(stmt, params)
+      :done = Sqlite3.step(db, stmt)
+      # A rejected stale patch must not rewrite the index from its old row.
+      applied? = write_applied?(db)
+      :ok = Sqlite3.reset(stmt)
+
+      if applied?, do: replace_entity_components(db, state.stmts, id, components)
+    after
+      Sqlite3.release(db, stmt)
+    end
 
     {:reply, :ok, state}
   end
@@ -598,6 +714,22 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
+  def handle_call({:query_component_ids, component, limit}, _from, state)
+      when is_integer(limit) and limit > 0 do
+    {:reply, collect_ids(state, @query_component_ids_sql, [component, limit]), state}
+  end
+
+  @impl true
+  def handle_call({:query_component_ids, _component, _limit}, _from, state) do
+    {:reply, {:error, :invalid_limit}, state}
+  end
+
+  @impl true
+  def handle_call({:explain_component_ids, component}, _from, state) do
+    {:reply, explain(state.db, @query_component_ids_sql, [component, 1]), state}
+  end
+
+  @impl true
   def handle_call({:list_group_members, group_id, after_key, limit}, _from, state) do
     {sql, params} =
       case after_key do
@@ -636,24 +768,7 @@ defmodule EbbServer.Storage.SQLite do
     # to bind: the plan is the answer.
     {sql, params} = page_relationship_statement(nil, after_key, nil)
 
-    result =
-      case Sqlite3.prepare(db, "EXPLAIN QUERY PLAN " <> sql) do
-        {:ok, stmt} ->
-          try do
-            with :ok <- Sqlite3.bind(stmt, params) do
-              collect_plan_details(db, stmt, [])
-            end
-          rescue
-            error -> {:error, error}
-          after
-            Sqlite3.release(db, stmt)
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-
-    {:reply, result, state}
+    {:reply, explain(db, sql, params), state}
   end
 
   @impl true
@@ -865,6 +980,51 @@ defmodule EbbServer.Storage.SQLite do
 
   defp page_relationship_statement(group_id, after_key, window_end) do
     {@list_page_relationship_ids_after_sql, [group_id, after_key, window_end]}
+  end
+
+  # Statements that name an index are explained rather than run, so a renamed
+  # or dropped index fails as a plan assertion instead of a silent scan.
+  defp explain(db, sql, params) do
+    case Sqlite3.prepare(db, "EXPLAIN QUERY PLAN " <> sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params) do
+            collect_plan_details(db, stmt, [])
+          end
+        rescue
+          error -> {:error, error}
+        after
+          Sqlite3.release(db, stmt)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # `changes/1` reports the row count of the statement just stepped; a
+  # monotonic guard that rejected the write leaves it at zero.
+  defp write_applied?(db) do
+    case Sqlite3.changes(db) do
+      {:ok, count} -> count > 0
+      _error -> false
+    end
+  end
+
+  # Delete-then-insert keeps the mirror exactly equal to the row's list, so a
+  # drop and an added component both converge on the same state.
+  defp replace_entity_components(db, stmts, entity_id, components) do
+    :ok = Sqlite3.bind(stmts.delete_components, [entity_id])
+    :done = Sqlite3.step(db, stmts.delete_components)
+    :ok = Sqlite3.reset(stmts.delete_components)
+
+    Enum.each(components, fn component ->
+      :ok = Sqlite3.bind(stmts.insert_component, [entity_id, component])
+      :done = Sqlite3.step(db, stmts.insert_component)
+      :ok = Sqlite3.reset(stmts.insert_component)
+    end)
+
+    :ok
   end
 
   defp collect_pairs(state, sql, params) do

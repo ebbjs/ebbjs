@@ -66,8 +66,12 @@ defmodule EbbServer.Storage.EntityStore do
   ## Applying a component Update
 
   The wire names one `(entity, component)` per Update, while the materialized
-  row stays field-keyed: `data` is `%{"fields" => %{field => value}}`, and
-  `EntityView` is the only thing that turns a row into a wire shape.
+  row stays field-keyed: `data` is `%{"fields" => %{field => value}}`, plus a
+  derived `"components"` list, and `EntityView` is the only thing that turns a
+  row into a wire shape. `data.components` is the canonical sorted
+  `<model>/<field>` set — recomputed from `data.fields` on every apply — that
+  mirrors into SQLite's `entity_components` index. It is derived, never a
+  write truth: the field map is.
 
   A stored Update applies at `data["fields"][field]`, where `field` is the
   component's leaf:
@@ -453,8 +457,13 @@ defmodule EbbServer.Storage.EntityStore do
       last_gsn: max_gsn
     }
 
+    components = components_of(merged_data, type)
+    merged_data = Map.put(merged_data, "components", components)
+
     # The write — whole-blob or per-key — persists the tombstone columns;
-    # that is what stops a later clean read from resurrecting the entity.
+    # that is what stops a later clean read from resurrecting the entity. The
+    # component mirror is replaced in the same write so the index is never a
+    # separate, losable step.
     if data_mode == :patch and base_present? and safe_changed_paths?(changed) do
       changed_json =
         timed(:encode, fn -> build_patch_fields(changed, current_data, merged_data) end)
@@ -469,13 +478,16 @@ defmodule EbbServer.Storage.EntityStore do
           :last_gsn
         ])
 
-      timed(:upsert, fn -> SQLite.patch_entity(entity_id, changed_json, meta, sqlite_name) end)
+      timed(:upsert, fn ->
+        SQLite.patch_entity(entity_id, changed_json, components, meta, sqlite_name)
+      end)
     else
       # A put replaced the whole `fields` map (or there was no cached base to
       # patch), so the merged map must be written wholesale.
       data = timed(:encode, fn -> Jason.encode!(merged_data) end)
 
-      timed(:upsert, fn -> SQLite.upsert_entity(Map.put(entity_row, :data, data), sqlite_name) end)
+      row = entity_row |> Map.put(:components, components) |> Map.put(:data, data)
+      timed(:upsert, fn -> SQLite.upsert_entity(row, sqlite_name) end)
     end
 
     clear_settled(entity_id, observed_generation, dirty_set)
@@ -561,13 +573,14 @@ defmodule EbbServer.Storage.EntityStore do
     incoming = FieldMerge.stamp(update["data"], update["id"])
     existing_fields = fields_of(acc.data)
     fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
+    model = acc.type || model
 
     %{
       acc
-      | data: %{"fields" => fields},
+      | data: row_data(fields, model),
         # The model is fixed at the row's first write; a later component's
         # prefix must agree with it (the authorizer refuses a relabel).
-        type: acc.type || model,
+        type: model,
         created_hlc: created_hlc(acc.created_hlc, action),
         updated_hlc: action["hlc"],
         max_gsn: max(acc.max_gsn, gsn),
@@ -589,11 +602,11 @@ defmodule EbbServer.Storage.EntityStore do
   # tombstone columns alone: detaching a component is not a resurrection.
   defp apply_drop(action, update, gsn, acc) do
     if acc.materialized? do
+      fields = Map.delete(fields_of(acc.data), Component.field(update["component"]))
+
       %{
         acc
-        | data: %{
-            "fields" => Map.delete(fields_of(acc.data), Component.field(update["component"]))
-          },
+        | data: row_data(fields, acc.type),
           updated_hlc: action["hlc"],
           max_gsn: max(acc.max_gsn, gsn),
           data_mode: :replace
@@ -631,6 +644,31 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp fields_of(%{"fields" => fields}) when is_map(fields), do: fields
   defp fields_of(_data), do: %{}
+
+  # `data.components` is derived, so every apply rebuilds it from the field
+  # keys in sorted order. Sorted, not insertion order: two materializers that
+  # converged on the same fields must agree on the canonical JSON byte for
+  # byte.
+  defp row_data(fields, model) do
+    %{"fields" => fields, "components" => components_for(fields, model)}
+  end
+
+  defp components_of(data, model) when is_binary(model),
+    do: components_for(fields_of(data), model)
+
+  defp components_of(%{"components" => components}, _model) when is_list(components),
+    do: components
+
+  defp components_of(_data, _model), do: []
+
+  defp components_for(fields, model) when is_binary(model) do
+    fields
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.map(fn field -> model <> "/" <> field end)
+  end
+
+  defp components_for(_fields, _model), do: []
 
   # A write changes the keys it carries, so the JSON paths that need writing
   # are exactly the leaves of the incoming value: a leaf contributes its field

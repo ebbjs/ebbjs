@@ -849,7 +849,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       last_gsn: row.last_gsn
     }
 
-    :ok = SQLite.patch_entity(id, %{}, Map.merge(meta, attrs), SQLite)
+    :ok = SQLite.patch_entity(id, %{}, [], Map.merge(meta, attrs), SQLite)
   end
 
   # An entity-actions entry with no Action behind it: materializing the id

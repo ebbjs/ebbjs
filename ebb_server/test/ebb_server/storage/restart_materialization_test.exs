@@ -256,14 +256,14 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     assert row.type == "todo"
     assert row.created_hlc == create_hlc
     assert row.deleted_hlc == nil
-    assert row.data == %{"fields" => %{}}
+    assert row.data == %{"fields" => %{}, "components" => []}
     assert row.last_gsn == 2
 
     assert {:ok, cached} = SQLite.get_entity(todo_id, restarted.sqlite_name)
     assert cached.created_hlc == create_hlc
     assert cached.deleted_hlc == nil
     assert cached.last_gsn == 2
-    assert Jason.decode!(cached.data) == %{"fields" => %{}}
+    assert Jason.decode!(cached.data) == %{"fields" => %{}, "components" => []}
   end
 
   defp write(writer_name, actor_id, method, subject_id, model, fields, base_hlc, counter) do
