@@ -345,6 +345,44 @@ export interface QueryContext {
 export type LoadEntities = () => Promise<readonly Entity[]>;
 
 /**
+ * The field keys `orderBy` accepts: a field whose declared schema is
+ * scalar. An object- or array-shaped field has no total order, so it is
+ * refused at the type level and at runtime.
+ */
+export type OrderableKey<TFields extends Record<string, TSchema>> = {
+  [K in keyof TFields & string]: TFields[K] extends { readonly type: "object" | "array" }
+    ? never
+    : K;
+}[keyof TFields & string];
+
+/**
+ * A field's stored value is orderable only when it is scalar: the executor
+ * compares numbers numerically and everything else lexically, and a
+ * compound value has no total order. Refuse an object- or array-shaped
+ * declared type where the schema is known, rather than sorting every row
+ * into an id tie.
+ */
+const assertOrderableField = <TFields extends Record<string, TSchema>>(
+  shape: TObject<TFields>,
+  field: string,
+  entityName: string,
+): void => {
+  const property = shape.properties[field];
+  if (property === undefined) return;
+  if ("properties" in property || "patternProperties" in property || "items" in property) {
+    throw new EntityValidationError([
+      {
+        entityName,
+        field,
+        message:
+          `orderBy("${field}"): only scalar fields are orderable; ` +
+          `object and array values are not orderable`,
+      },
+    ]);
+  }
+};
+
+/**
  * Typed thenable chain over a list of candidate entities. The same
  * chain is consumed by `client.<entity>.query()` and by the
  * relationship accessors on a projected row — one chain, one
@@ -398,8 +436,8 @@ export interface QueryBuilder<
     key: string,
     target: PointerValue | readonly PointerValue[],
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
-  /** Ordering on a field of `TFields`. */
-  orderBy<K extends keyof TFields & string>(
+  /** Ordering on a scalar field of `TFields`; object and array fields are not orderable. */
+  orderBy<K extends OrderableKey<TFields>>(
     field: K,
     direction: "asc" | "desc",
   ): QueryBuilder<TFields, TJoins, TJoined, TRow>;
@@ -821,6 +859,7 @@ function buildChain<
       return make({ ...query, groups: [...query.groups, [predicate]] });
     },
     orderBy(field, direction) {
+      assertOrderableField(shape, field, context?.entityName ?? "(unknown)");
       return make({ ...query, order: { field, direction } });
     },
     limit(n) {

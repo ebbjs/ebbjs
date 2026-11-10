@@ -83,17 +83,48 @@ const fieldEntry = (entity: Entity, field: string): FieldValue | undefined =>
  */
 export type FieldResolver = (entity: Entity, field: string) => unknown;
 
+/** A non-null object or array: the value kinds that have no scalar order. */
+const isNonScalar = (value: unknown): boolean => value !== null && typeof value === "object";
+
+/**
+ * Structural equality for a leaf value: scalars compare by identity, arrays
+ * element-wise, and plain objects by the same key set regardless of key
+ * order. A compound leaf is one value on the wire, so a predicate object
+ * asks for "this value", never "this reference".
+ */
+const valuesEqual = (a: unknown, b: unknown): boolean => {
+  if (a === b) return true;
+  if (!isNonScalar(a) || !isNonScalar(b)) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((value, index) => valuesEqual(value, b[index]));
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  return (
+    aKeys.length === bKeys.length &&
+    aKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(bRecord, key) &&
+        valuesEqual(aRecord[key], bRecord[key]),
+    )
+  );
+};
+
 /**
  * A `null` predicate asks for "no live value": an absent leaf and a
  * tombstoned one both answer yes. A map envelope is a live value even when
  * its keys are tombstoned (clearing the whole field writes a leaf
  * tombstone), so it never matches. Any non-null value matches only an equal
- * stored leaf, so a schema default never widens a filter.
+ * stored leaf — structurally, so an object or array leaf compares by value
+ * — and a schema default never widens a filter.
  */
 const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
   if (field === undefined) return expected === null;
   if (isFieldMap(field)) return false;
-  return expected === null ? field.value === null : field.value === expected;
+  return expected === null ? field.value === null : valuesEqual(field.value, expected);
 };
 
 /**
@@ -101,7 +132,21 @@ const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): bo
  * last, numbers numerically, everything else by locale — so a query
  * reordered here matches one ordered there.
  */
-const compareFieldValues = (av: unknown, bv: unknown, direction: Direction): number => {
+const compareFieldValues = (
+  av: unknown,
+  bv: unknown,
+  direction: Direction,
+  field: string,
+): number => {
+  // `String()` on an object is `"[object Object]"` for every row, so a
+  // non-scalar field would silently tie all of them. A compound value has
+  // no total order: refuse it, naming the field, rather than sort by id.
+  if (isNonScalar(av) || isNonScalar(bv)) {
+    throw new Error(
+      `orderBy("${field}"): only scalar fields are orderable; an object or array value ` +
+        `has no total order and is not orderable (object field values, such as an e.object value)`,
+    );
+  }
   if (av === bv) return 0;
   if (av === undefined) return 1;
   if (bv === undefined) return -1;
@@ -128,7 +173,12 @@ const compareRows = (
   if (field === null) {
     return direction === "asc" ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
   }
-  const primary = compareFieldValues(resolveField(a, field), resolveField(b, field), direction);
+  const primary = compareFieldValues(
+    resolveField(a, field),
+    resolveField(b, field),
+    direction,
+    field,
+  );
   return primary === 0 ? a.id.localeCompare(b.id) : primary;
 };
 

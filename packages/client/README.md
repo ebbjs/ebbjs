@@ -93,14 +93,18 @@ Grammar:
 
 - `where(key, value)` — equality conjunct. A key may be a shape field, a
   registered relationship `as` (filters that edge), or the reserved `groups`
-  key (filters built-in membership).
+  key (filters built-in membership). An object or array value compares
+  structurally, so key order does not matter and a compound leaf is matched
+  by value rather than by reference.
 - `or(key, value)` — starts a new AND-group. Predicates are a disjunction of
   AND-groups, so `.where(a).where(b).or(c).where(d)` means
   `(a AND b) OR (c AND d)`.
 - `where(key, null)` — matches rows with no live value for the field (absent
   or cleared). A schema default never widens the filter; `.where("status",
 "open").or("status", null)` is the explicit "open or unset".
-- `orderBy(field, "asc" | "desc")` and `limit(n)`.
+- `orderBy(field, "asc" | "desc")` and `limit(n)`. `orderBy` accepts scalar
+  fields only: object and array values are not orderable (there is no total
+  order to compare them by), so such a field is refused rather than tied.
 - `with({ key: true, ... })` — one-level joins over the schema's relationships
   plus `groups`. Each selected key is merged onto the row; a nested selector
   is rejected.
