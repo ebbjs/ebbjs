@@ -217,7 +217,32 @@ large component can be excluded without a second read path (ADR "component-scope
 - **Backfill snapshot** (`snapshotAction`) becomes one `replace` Update per component of
   the fetched row, plus the row's `delete` when the fetch returns a tombstone.
 
-## 4. Out of scope (do not invent it here)
+## 4. Handoff: what is pinned, and what later slices own
+
+The envelope is the durable part of this slice; the machinery around it is not. Three decisions are
+pinned here because reversing them later costs a wire or data-format change:
+
+- **`replace` stays.** It is the only method a keyed component must refuse, and removing it is a wire
+  change, so it is revisited only if slice 6 (#799) finds no consumer.
+- **`<model>/<field>` is the addressing rule, not an implementation detail.** A component's name leaf
+  is the row field it lives at; that is what lets the server stay schema-free. A later slice may
+  rename the _names_ (`ebb/link` in slice 12) but not the shape — a component addressed
+  independently of a row field is a wire change, not a schema relaxation.
+- **One model per subject per Action** is an invariant of the identity story, enforced at structure
+  validation. Declared-set authorization (slice 10) and the system-component rename (slice 12) both
+  depend on it holding.
+
+These are scaffolding that slice 5 (#798) deletes, listed there so they are not rediscovered: a
+`merge` on an absent row creating the row; `created_hlc` unset meaning "the base has not been seen"
+(and the backfill trigger that reads it); "a row with zero components cannot be created". Nothing
+may build an API on them — no `has()`-style predicate, no documentation that describes them as
+semantics.
+
+One delivery question this slice does not decide is tracked as #813: an Action whose resolved group
+scope is `[]` is committed but delivered to nobody. Slice 6 (#799) owns it, because the scope index
+is what loses it.
+
+## 5. Out of scope (do not invent it here)
 
 - `e.object` / multi-field atomic component values (#796), `optional`/`has`/`drop`
   authoring surface (#798), component existence index (#799), component-granular
@@ -227,7 +252,7 @@ large component can be excluded without a second read path (ADR "component-scope
 - Any migration, alias, or read-through of the old wire. Data is discarded.
 - Field-level read permissions.
 
-## 5. Migration note
+## 6. Migration note
 
 Ebb is greenfield: there is no migration. The old wire is simply unreadable. This is the
 one place the old names are recorded, so nothing in `packages/core/src` or `ebb_server/lib`
@@ -246,7 +271,7 @@ A row that was one Update carrying five fields is now five Updates carrying one 
 each. The client store is reset and server data is discarded; there is no alias, no
 deprecation window, and no read-through of a stored old-shape Action.
 
-## 6. Verification
+## 7. Verification
 
 - `rg "subject_type" packages/core/src ebb_server/lib` ⇒ nothing.
 - `pnpm typecheck`, `pnpm lint`, `pnpm -r --filter "@ebbjs/*" exec vitest --run`, `mix test`.
