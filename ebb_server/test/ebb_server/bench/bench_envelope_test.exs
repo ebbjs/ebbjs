@@ -14,9 +14,17 @@ defmodule EbbServer.Bench.EnvelopeTest do
                  "id" => "act_1",
                  "actor_id" => "a_1",
                  "hlc" => 123,
-                 "updates" => [%{"id" => "upd_1", "method" => "put"}]
+                 "updates" => [
+                   %{
+                     "id" => "upd_1",
+                     "subject_id" => "todo_1",
+                     "component" => "todo/title",
+                     "method" => "merge",
+                     "data" => %{"value" => "x", "hlc" => 1}
+                   }
+                 ]
                })
-  @scopes [["g_1"], ["g_1", "g_2"]]
+  @scopes [["g_1"]]
   @input %{payload_etf: @payload_etf, update_scopes: @scopes, gsn: 42}
 
   describe "options" do

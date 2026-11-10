@@ -34,23 +34,18 @@
       {
         "id": "u_gunrelate1",
         "subject_id": "rel_gknown",
-        "subject_type": "relationship",
         "method": "delete",
         "data": null
       },
       {
         "id": "u_gunrelate2",
         "subject_id": "e_gissue1",
-        "subject_type": "issue",
-        "method": "patch",
+        "component": "issue/labels",
+        "method": "merge",
         "data": {
-          "fields": {
-            "labels": {
-              "value": [],
-              "update_id": "u_gunrelate2",
-              "hlc": "111690000000000041"
-            }
-          }
+          "value": [],
+          "update_id": "u_gunrelate2",
+          "hlc": "111690000000000041"
         }
       }
     ]

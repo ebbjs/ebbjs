@@ -204,13 +204,9 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderE2ETest do
             %{
               "id" => "upd_534_e2e_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity_id,
-              "subject_type" => "todo",
-              "method" => "put",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => title, "hlc" => hlc}
-                }
-              }
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
             }
           ]
         }

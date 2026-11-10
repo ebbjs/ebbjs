@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { format, pack, type Action, type HLCTimestamp } from "@ebbjs/core";
+import { componentName, format, pack, type Action, type HLCTimestamp } from "@ebbjs/core";
 import {
   DOC_CONTENT_FIELD,
   DOC_VERSION_FIELD,
@@ -43,7 +43,7 @@ const peerRun = (
   };
 };
 
-const makeInsertAction = (run: RunCell, subjectType = "text_document"): Action => ({
+const makeInsertAction = (run: RunCell, docType = "text_document"): Action => ({
   id: `act_${run.id}`,
   actor_id: run.author,
   hlc: run.stamp,
@@ -52,18 +52,20 @@ const makeInsertAction = (run: RunCell, subjectType = "text_document"): Action =
     {
       id: `upd_${run.id}`,
       subject_id: "doc_1",
-      subject_type: subjectType,
-      method: "patch",
+      component: componentName(docType, DOC_CONTENT_FIELD),
+      method: "merge",
       data: {
-        fields: {
-          [DOC_CONTENT_FIELD]: {
-            map: {
-              [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.stamp },
-            },
-          },
-          [DOC_VERSION_FIELD]: versionField(run.stamp, `upd_${run.id}`),
+        map: {
+          [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.stamp },
         },
       },
+    },
+    {
+      id: `upd_${run.id}v`,
+      subject_id: "doc_1",
+      component: componentName(docType, DOC_VERSION_FIELD),
+      method: "merge",
+      data: versionField(run.stamp, `upd_${run.id}v`),
     },
   ],
 });
@@ -210,10 +212,10 @@ describe("TextDocument — update event flow", () => {
           {
             id: "upd_todo",
             subject_id: "todo_x",
-            subject_type: "todo",
-            method: "put",
-            data: null,
-          } as never,
+            component: "todo/title",
+            method: "replace",
+            data: { value: "x", update_id: "upd_todo" },
+          },
         ],
       },
     ]);

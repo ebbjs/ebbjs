@@ -204,8 +204,8 @@ describe("normalizeManyPointers", () => {
 });
 
 describe("buildRelationshipUpdate", () => {
-  it("produces a put Update with source_id, target_id, type, field", () => {
-    const u = buildRelationshipUpdate({
+  it("produces one replace Update per Relationship component", () => {
+    const updates = buildRelationshipUpdate({
       relationshipId: "rel_1",
       sourceId: "todo_1",
       targetId: "list_1",
@@ -213,18 +213,23 @@ describe("buildRelationshipUpdate", () => {
       type: "todo",
       updateId: "u_1",
     });
-    expect(u.id).toBe("u_1");
-    expect(u.subject_id).toBe("rel_1");
-    expect(u.subject_type).toBe("relationship");
-    expect(u.method).toBe("put");
-    expect(u.data?.fields.source_id.value).toBe("todo_1");
-    expect(u.data?.fields.target_id.value).toBe("list_1");
-    expect(u.data?.fields.type.value).toBe("todo");
-    expect(u.data?.fields.field.value).toBe("list");
+    expect(updates).toHaveLength(4);
+    expect(updates.every((u) => u.subject_id === "rel_1" && u.method === "replace")).toBe(true);
+
+    const value = (field: string): unknown => {
+      const update = updates.find(
+        (u) => u.method !== "delete" && u.component === `relationship/${field}`,
+      )!;
+      return (update.data as { value: unknown } | null)?.value;
+    };
+    expect(value("source_id")).toBe("todo_1");
+    expect(value("target_id")).toBe("list_1");
+    expect(value("type")).toBe("todo");
+    expect(value("field")).toBe("list");
   });
 
   it("produces a delete Update when targetId is null", () => {
-    const u = buildRelationshipUpdate({
+    const [u] = buildRelationshipUpdate({
       relationshipId: "rel_1",
       sourceId: "todo_1",
       targetId: null,
@@ -232,26 +237,22 @@ describe("buildRelationshipUpdate", () => {
       type: "todo",
       updateId: "u_1",
     });
-    expect(u.method).toBe("delete");
-    expect(u.data).toBeNull();
+    expect(u!.method).toBe("delete");
+    expect(u!.data).toBeNull();
   });
 });
 
 describe("buildRelationshipWrite (SyncClient)", () => {
-  const buildEntityUpdate = (id: string, fields: Record<string, unknown> = {}): Update => ({
-    id: "u_e",
-    subject_id: id,
-    subject_type: "todo",
-    method: "put",
-    data: {
-      fields: {
-        title: { value: "Ship it", update_id: "u_e" },
-        ...Object.fromEntries(
-          Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_e" }]),
-        ),
-      },
-    },
-  });
+  const buildEntityUpdate = (id: string, fields: Record<string, unknown> = {}): Update => {
+    const [field, value] = Object.entries({ title: "Ship it", ...fields })[0]!;
+    return {
+      id: "u_e",
+      subject_id: id,
+      component: `todo/${field}`,
+      method: "replace",
+      data: { value, update_id: "u_e" },
+    };
+  };
 
   it("produces a put relationship update for one-cardinality with a string id", () => {
     const client = createClient({
@@ -277,14 +278,17 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     });
 
     expect(result.entityUpdate).toBeUndefined();
-    expect(Array.isArray(result.relationshipUpdate)).toBe(false);
-    const rel = result.relationshipUpdate as Update;
-    expect(rel.method).toBe("put");
-    expect(rel.subject_type).toBe("relationship");
-    expect(rel.data?.fields.source_id.value).toBe("todo_1");
-    expect(rel.data?.fields.target_id.value).toBe("list_1");
-    expect(rel.data?.fields.field.value).toBe("list");
-    expect(rel.data?.fields.type.value).toBe("todo");
+    expect(result.relationshipUpdates).toHaveLength(4);
+    const value = (field: string): unknown => {
+      const update = result.relationshipUpdates.find(
+        (u) => u.method !== "delete" && u.component === `relationship/${field}`,
+      )!;
+      return (update.data as { value: unknown } | null)?.value;
+    };
+    expect(value("source_id")).toBe("todo_1");
+    expect(value("target_id")).toBe("list_1");
+    expect(value("field")).toBe("list");
+    expect(value("type")).toBe("todo");
   });
 
   it("produces a delete relationship update for one-cardinality with null targetId", () => {
@@ -309,8 +313,8 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     });
 
     expect(result.entityUpdate).toBeUndefined();
-    const rel = result.relationshipUpdate as Update;
-    expect(rel.method).toBe("delete");
+    expect(result.relationshipUpdates).toHaveLength(1);
+    expect(result.relationshipUpdates[0]!.method).toBe("delete");
   });
 
   it("normalizes an entity-shape pointer to its .id", () => {
@@ -333,8 +337,10 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       sourceId: "todo_1",
       targetId: { id: "list_99" },
     });
-    const rel = result.relationshipUpdate as Update;
-    expect(rel.data?.fields.target_id.value).toBe("list_99");
+    const target = result.relationshipUpdates.find(
+      (u) => u.method !== "delete" && u.component === "relationship/target_id",
+    )!;
+    expect((target.data as { value: unknown } | null)?.value).toBe("list_99");
   });
 
   it("rejects a non-id, non-entity pointer value", () => {
@@ -449,12 +455,20 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       targetIds: { replace: ["list_1", "list_2", { id: "list_3" }] },
     });
 
-    const relUpdates = Array.isArray(result.relationshipUpdate)
-      ? result.relationshipUpdate
-      : [result.relationshipUpdate];
-    expect(relUpdates).toHaveLength(3);
-    expect(relUpdates.every((u) => u.method === "put")).toBe(true);
-    const targets = relUpdates.map((u) => u.data?.fields.target_id.value).sort();
+    const rows = new Map<string, readonly Update[]>();
+    for (const update of result.relationshipUpdates) {
+      rows.set(update.subject_id, [...(rows.get(update.subject_id) ?? []), update]);
+    }
+    expect(rows.size).toBe(3);
+    const targets = [...rows.values()]
+      .map(
+        (row) =>
+          (
+            row.find((u) => u.method !== "delete" && u.component === "relationship/target_id")!
+              .data as { value: unknown } | null
+          )?.value,
+      )
+      .sort();
     expect(targets).toEqual(["list_1", "list_2", "list_3"]);
   });
 
@@ -631,14 +645,13 @@ describe("buildRelationshipWrite: registry cardinality lookup", () => {
       entityUpdate: {
         id: "u_e",
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: { fields: {} },
+        component: "todo/tags",
+        method: "merge",
+        data: { value: [], update_id: "u_e" },
       },
     });
 
-    expect(Array.isArray(result.relationshipUpdate)).toBe(true);
-    expect(result.relationshipUpdate).toEqual([]);
+    expect(result.relationshipUpdates).toEqual([]);
   });
 });
 

@@ -22,7 +22,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
   use EbbServer.Integration.StorageCase, with_auth_mode: true
 
   import EbbServer.FunctionsTestHelpers
-  import EbbServer.Integration.ActionHelpers
+  import EbbServer.Integration.ActionHelpers, except: [get_entity: 1, get_entity: 2]
   import EbbServer.LiveStreamHelpers, only: [start_live_stream: 2]
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
@@ -116,8 +116,8 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
 
     assert Enum.any?(
              event["updates"],
-             &(&1["subject_id"] == created_id and &1["subject_type"] == "todo" and
-                 &1["method"] == "put")
+             &(&1["subject_id"] == created_id and &1["component"] == "todo/title" and
+                 &1["method"] == "replace")
            )
 
     Task.shutdown(stream, :brutal_kill)
@@ -156,19 +156,28 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     subject_ids = MapSet.new(updates, & &1["subject_id"])
     assert MapSet.subset?(MapSet.new(body["result"]["ids"]), subject_ids)
 
-    # Two creates (each entity put plus its membership row), one patch, one
-    # one-cardinality relationship put.
-    assert length(updates) == 6
-    assert Enum.count(updates, &(&1["subject_type"] == "entityGroup")) == 2
+    # Two creates (each entity plus its membership row), one patch, one
+    # one-cardinality relationship put. Each is one Update per component.
+    entity_group_components =
+      Enum.filter(updates, &String.starts_with?(&1["component"] || "", "entityGroup/"))
 
-    [patch] = Enum.filter(updates, &(&1["method"] == "patch"))
+    assert length(entity_group_components) == 4
+
+    [patch] = Enum.filter(updates, &(&1["method"] == "merge"))
     assert patch["subject_id"] == todo_id
-    assert patch["data"]["fields"]["done"]["value"] == true
+    assert patch["component"] == "todo/done"
+    assert patch["data"]["value"] == true
 
-    [relationship] = Enum.filter(updates, &(&1["subject_type"] == "relationship"))
-    assert relationship["method"] == "put"
-    assert relationship["data"]["fields"]["source_id"]["value"] == todo_id
-    assert relationship["data"]["fields"]["target_id"]["value"] == project_id
+    relationship_updates =
+      Enum.filter(updates, &String.starts_with?(&1["component"] || "", "relationship/"))
+
+    assert length(relationship_updates) == 4
+    assert Enum.all?(relationship_updates, &(&1["method"] == "replace"))
+
+    source = Enum.find(relationship_updates, &(&1["component"] == "relationship/source_id"))
+    target = Enum.find(relationship_updates, &(&1["component"] == "relationship/target_id"))
+    assert source["data"]["value"] == todo_id
+    assert target["data"]["value"] == project_id
   end
 
   test "a handler that throws after a create leaves nothing", %{dir: dir} do
@@ -336,9 +345,21 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert [action] = ActionLog.read(before + 1, before + 1)
     assert action["gsn"] == before + 1
 
-    relationship_updates = Enum.filter(action["updates"], &(&1["subject_type"] == "relationship"))
-    assert Enum.map(relationship_updates, & &1["method"]) |> Enum.sort() == ["delete", "put"]
-    assert [relationship_id] = relationship_updates |> Enum.map(& &1["subject_id"]) |> Enum.uniq()
+    put_updates =
+      Enum.filter(
+        action["updates"],
+        &String.starts_with?(&1["component"] || "", "relationship/")
+      )
+
+    assert length(put_updates) == 4
+    assert Enum.all?(put_updates, &(&1["method"] == "replace"))
+    assert [relationship_id] = put_updates |> Enum.map(& &1["subject_id"]) |> Enum.uniq()
+
+    assert [%{"method" => "delete"}] =
+             Enum.filter(
+               action["updates"],
+               &(&1["method"] == "delete" and &1["subject_id"] == relationship_id)
+             )
 
     # The row the put created was deleted by the same Action, so it is gone
     # from the cache the reader paths use.
@@ -355,11 +376,23 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert event["gsn"] == before + 1
 
     live_relationship_updates =
-      Enum.filter(event["updates"], &(&1["subject_type"] == "relationship"))
+      Enum.filter(
+        event["updates"],
+        &(&1["subject_id"] == relationship_id)
+      )
 
-    assert Enum.map(live_relationship_updates, & &1["method"]) |> Enum.sort() == ["delete", "put"]
-    assert Enum.all?(live_relationship_updates, &(&1["subject_id"] == relationship_id))
-    refute Enum.any?(live_relationship_updates, &(&1["subject_id"] == created_id))
+    assert Enum.count(live_relationship_updates, &(&1["method"] == "replace")) == 4
+    assert Enum.count(live_relationship_updates, &(&1["method"] == "delete")) == 1
+
+    # The one relationship row is the only relationship subject the event
+    # carries; the todo the row links is its own subject.
+    assert Enum.all?(
+             Enum.filter(
+               event["updates"],
+               &String.starts_with?(&1["component"] || "", "relationship/")
+             ),
+             &(&1["subject_id"] == relationship_id)
+           )
 
     Task.shutdown(stream, :brutal_kill)
   end
@@ -458,8 +491,9 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert [action] = ActionLog.read(before + 1, before + 1)
 
     [todo_update] = Enum.filter(action["updates"], &(&1["subject_id"] == todo_id))
-    assert todo_update["method"] == "patch"
-    assert todo_update["data"]["fields"]["labels"]["value"] == ["e_l2"]
+    assert todo_update["method"] == "merge"
+    assert todo_update["component"] == "todo/labels"
+    assert todo_update["data"]["value"] == ["e_l2"]
 
     # The FK update must not replace the row's other fields: a partial put
     # would drop the title entirely.
@@ -496,20 +530,25 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
         %{
           "id" => update_id,
           "subject_id" => todo_id,
-          "subject_type" => "todo",
-          "method" => "patch",
+          "component" => "todo/title",
+          "method" => "merge",
           "data" => %{
-            "fields" => %{
-              "title" => %{
-                "type" => "lww",
-                "value" => "overwritten",
-                "update_id" => update_id,
-                "hlc" => hlc
-              }
-            }
+            "type" => "lww",
+            "value" => "overwritten",
+            "update_id" => update_id,
+            "hlc" => hlc
           }
         }
       ]
     }
+  end
+
+  # The endpoint's plug pipeline fetches query params before the router reads
+  # the `components` parameter; calling the router directly does not.
+  defp get_entity(id, actor_id \\ "a_test") do
+    Plug.Test.conn(:get, "/entities/#{id}")
+    |> Plug.Conn.put_req_header("x-ebb-actor-id", actor_id)
+    |> Plug.Conn.fetch_query_params()
+    |> EbbServer.Sync.Router.call([])
   end
 end

@@ -31,9 +31,10 @@ defmodule EbbServer.ActionExport do
   ## Egress
 
   The exporter bypasses group authorization by design: it reads the log
-  directly. System membership rows (`groupMember`, `entityGroup`) are
-  stripped from the exported Updates by default, and an Action left with
-  no Updates is dropped entirely. The per-Update delivery scopes (#473)
+  directly. Updates of the system membership models (`groupMember`,
+  `entityGroup`) are stripped by default, and an Action left with no Updates
+  is dropped entirely. A `delete` names no component, so it carries no model
+  to exclude and is always exported. The per-Update delivery scopes (#473)
   are internal routing metadata, not part of the Action contract, so they
   are stripped too.
 
@@ -69,13 +70,14 @@ defmodule EbbServer.ActionExport do
   require Logger
 
   alias EbbServer.Storage.ActionLog
+  alias EbbServer.Storage.Component
   alias EbbServer.Storage.RocksDB
   alias EbbServer.Storage.SQLite
   alias EbbServer.Storage.WatermarkTracker
   alias EbbServer.Telemetry
 
   @default_cursor_name "action_export"
-  @default_excluded_subject_types ["groupMember", "entityGroup"]
+  @default_excluded_models ["groupMember", "entityGroup"]
 
   defstruct [
     :on_action,
@@ -87,7 +89,7 @@ defmodule EbbServer.ActionExport do
     :batch_size,
     :poll_interval_ms,
     :handler_timeout_ms,
-    :excluded_subject_types,
+    :excluded_models,
     cursor: 0
   ]
 
@@ -115,8 +117,7 @@ defmodule EbbServer.ActionExport do
       batch_size: Keyword.get(opts, :batch_size, 500),
       poll_interval_ms: Keyword.get(opts, :poll_interval_ms, 1000),
       handler_timeout_ms: Keyword.get(opts, :handler_timeout_ms, 5000),
-      excluded_subject_types:
-        Keyword.get(opts, :excluded_subject_types, @default_excluded_subject_types)
+      excluded_models: Keyword.get(opts, :excluded_models, @default_excluded_models)
     }
 
     send(self(), :poll)
@@ -160,7 +161,7 @@ defmodule EbbServer.ActionExport do
     exported =
       from_gsn
       |> ActionLog.read(to_gsn, rocks_name: state.rocks_name)
-      |> filter_actions(state.excluded_subject_types)
+      |> filter_actions(state.excluded_models)
 
     case invoke_handlers(exported, state) do
       :ok ->
@@ -205,7 +206,7 @@ defmodule EbbServer.ActionExport do
   defp filter_actions(actions, excluded) do
     {kept, dropped} =
       Enum.reduce(actions, {[], 0}, fn action, {kept, dropped} ->
-        updates = Enum.reject(action["updates"], &(&1["subject_type"] in excluded))
+        updates = Enum.reject(action["updates"], &(update_model(&1) in excluded))
         removed = length(action["updates"]) - length(updates)
 
         case updates do
@@ -226,6 +227,13 @@ defmodule EbbServer.ActionExport do
 
     kept
   end
+
+  # A delete names the row and no component, so it has no model to exclude.
+  defp update_model(%{"component" => component}) when is_binary(component) do
+    Component.model(component)
+  end
+
+  defp update_model(_update), do: nil
 
   defp invoke_handlers(actions, state) do
     Enum.reduce_while(actions, :ok, fn action, :ok ->

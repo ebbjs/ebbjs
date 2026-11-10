@@ -75,7 +75,7 @@ defmodule EbbServer.Storage.SQLite do
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     data TEXT,
-    created_hlc INTEGER NOT NULL,
+    created_hlc INTEGER,
     updated_hlc INTEGER NOT NULL,
     deleted_hlc INTEGER,
     deleted_by TEXT,
@@ -247,10 +247,12 @@ defmodule EbbServer.Storage.SQLite do
   key and for rejecting a top-level field name that is not a safe JSON path
   component.
 
-  `meta` carries the row's non-JSON columns: `:type`, `:updated_hlc`,
-  `:deleted_hlc`, `:deleted_by`, and `:last_gsn`. `created_hlc` is not
-  touched by an update. An empty `fields` map performs a metadata-only
-  update.
+  `meta` carries the row's non-JSON columns — `:type`, `:created_hlc`,
+  `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, and `:last_gsn` — and each
+  is written as given. The materializer replays a delta from the row it
+  already holds, so `created_hlc` is only ever restated or stamped by the
+  first `replace` whose create it has now seen. An empty `fields` map
+  performs a metadata-only update.
 
   Like `upsert_entity/2`, the write is monotonic in `last_gsn`: the row is
   only updated when its current `last_gsn` is less than or equal to the
@@ -503,13 +505,14 @@ defmodule EbbServer.Storage.SQLite do
     sql =
       "UPDATE entities SET " <>
         data_clause <>
-        "type = ?, updated_hlc = ?, deleted_hlc = ?, deleted_by = ?, last_gsn = ? " <>
-        "WHERE id = ? AND last_gsn <= ?"
+        "type = ?, created_hlc = ?, updated_hlc = ?, deleted_hlc = ?, deleted_by = ?, " <>
+        "last_gsn = ? WHERE id = ? AND last_gsn <= ?"
 
     params =
       data_params ++
         [
           meta.type,
+          meta.created_hlc,
           meta.updated_hlc,
           meta.deleted_hlc,
           meta.deleted_by,

@@ -248,7 +248,9 @@ defmodule EbbServer.Sync.Router do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   get "/entities/:id" do
+    conn = Plug.Conn.fetch_query_params(conn)
     entity_id = conn.path_params["id"]
+    components = requested_components(conn.query_params["components"])
 
     case conn.assigns[:actor] do
       nil ->
@@ -257,7 +259,7 @@ defmodule EbbServer.Sync.Router do
       actor ->
         case EntityView.for_actor(entity_id, actor.id) do
           {:ok, view} ->
-            send_json(conn, 200, view)
+            send_json(conn, 200, EntityView.filter_components(view, components))
 
           # Non-membership maps to the same 404 as a missing entity: a
           # distinct status would turn the endpoint into an existence
@@ -269,6 +271,18 @@ defmodule EbbServer.Sync.Router do
             send_json(conn, 503, %{"error" => "materialization_failed"})
         end
     end
+  end
+
+  # An omitted parameter is the whole row; a present one filters `data.fields`
+  # to the requested components' fields, ignoring names the row does not hold.
+  defp requested_components(nil), do: nil
+
+  defp requested_components(param) do
+    param
+    |> List.wrap()
+    |> Enum.flat_map(&String.split(&1, ",", trim: true))
+    |> Enum.map(&String.trim/1)
+    |> MapSet.new()
   end
 
   post "/entities/query" do
@@ -595,7 +609,15 @@ defmodule EbbServer.Sync.Router do
           "Requires the actor to be a member of one of the entity's groups.",
       tags: ["Entities"],
       parameters: [
-        OperationSchema.path_param("id", "string", "The entity ID")
+        OperationSchema.path_param("id", "string", "The entity ID"),
+        OperationSchema.query_param(
+          "components",
+          "string",
+          "Comma-separated components (`<model>/<field>`). When present, `data.fields` is " <>
+            "filtered to those components' fields; unknown names are ignored. Omit for the " <>
+            "whole row.",
+          []
+        )
       ],
       responses: %{
         "200" => OperationSchema.entity_response(),
@@ -1029,6 +1051,8 @@ end
 defmodule EbbServer.Sync.Router.OperationSchema do
   @moduledoc "Shared schema definitions for OpenAPI operations"
 
+  alias EbbServer.Storage.Component
+
   def action do
     %OpenApiSpex.Schema{
       type: :object,
@@ -1052,29 +1076,35 @@ defmodule EbbServer.Sync.Router.OperationSchema do
   def update do
     %OpenApiSpex.Schema{
       type: :object,
-      required: ["id", "subject_id", "subject_type", "method"],
+      required: ["id", "subject_id", "method"],
       properties: %{
         id: %OpenApiSpex.Schema{type: :string, description: "Unique update ID within the action"},
         subject_id: %OpenApiSpex.Schema{
           type: :string,
           description: "ID of the entity being updated"
         },
-        subject_type: %OpenApiSpex.Schema{
+        component: %OpenApiSpex.Schema{
           type: :string,
           description:
-            "Type of the entity: the type an id nothing has committed yet is created under, and " <>
-              "the type the entity was committed under for an existing id, which may not change"
+            "The component being written, `<model>/<field>`. The prefix is the model the entity " <>
+              "is committed under and the leaf is the row field the value is stored at. Required " <>
+              "for merge, replace and drop; a delete names the row and carries none."
         },
         method: %OpenApiSpex.Schema{
           type: :string,
-          enum: ["put", "patch", "delete"],
-          description: "Update method"
+          enum: Component.method_names(),
+          description:
+            "merge folds the value into the component under last-writer-wins; replace sets it " <>
+              "whole (refused for a keyed component); drop detaches the component; delete " <>
+              "tombstones the row"
         },
         data: %OpenApiSpex.Schema{
           type: :object,
           nullable: true,
           description:
-            "Update payload. Each field leaf's `hlc` must sit at most 120s ahead of the server clock"
+            "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value " <>
+              "`{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must " <>
+              "sit at most 120s ahead of the server clock"
         }
       }
     }
@@ -1091,7 +1121,14 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           type: :object,
           description: "Contains `fields` map of FieldValue entries"
         },
-        created_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
+        created_hlc: %OpenApiSpex.Schema{
+          type: :integer,
+          format: :int64,
+          nullable: true,
+          description:
+            "The HLC of the row's first replace. Null while the row was only ever merge-created, " <>
+              "because its create has not been seen"
+        },
         updated_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
         deleted_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64, nullable: true},
         last_gsn: %OpenApiSpex.Schema{type: :integer, format: :int64}

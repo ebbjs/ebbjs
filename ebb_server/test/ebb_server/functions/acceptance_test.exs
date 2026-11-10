@@ -477,16 +477,16 @@ defmodule EbbServer.Functions.AcceptanceTest do
     %{
       "id" => unique("act_fn"),
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => unique("upd_fn"),
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{"fields" => fields(title)}
-        },
-        entity_group_update(entity_id, group_id, hlc)
-      ]
+      "updates" =>
+        [
+          component_update(
+            unique("upd_fn"),
+            entity_id,
+            "todo/title",
+            "replace",
+            %{"type" => "lww", "value" => title, "hlc" => hlc}
+          )
+        ] ++ entity_group_update(entity_id, group_id, hlc)
     }
   end
 

@@ -3,11 +3,11 @@ defmodule EbbServer.Storage.DirtyTracker do
   GenServer that owns the dirty set ETS table.
 
   Tracks which entities need re-materialization. Each mark stores the
-  entity ID together with its subject type and a monotonic generation
-  stamped when the mark is written: `{entity_id, subject_type,
-  generation}`. The recorded type is what lets a query materialize the
-  dirty entities of a type without inferring the type from the ID —
-  clients own ID generation, so a prefix carries no type information.
+  entity ID together with its committed model and a monotonic generation
+  stamped when the mark is written: `{entity_id, model, generation}`. The
+  recorded model is what lets a query materialize the dirty entities of a
+  model without inferring it from the ID — clients own ID generation, so a
+  prefix carries no model information.
 
   A materializer reads the generation before it scans, then clears with
   a compare-and-clear (`clear_dirty/3`): the mark is removed only if the
@@ -37,7 +37,12 @@ defmodule EbbServer.Storage.DirtyTracker do
 
   @default_dirty_set_name :ebb_dirty_set
 
-  @type entity_mark :: {entity_id :: String.t(), subject_type :: String.t()}
+  # The model is the row's committed model as the Writer's fold resolved it,
+  # or `nil` when nothing could: a delete whose id no index, cache, or earlier
+  # Action models. A `nil` model is "nothing known", never an identity claim,
+  # and it never replaces a model an earlier mark recorded — a query finds a
+  # model's dirty rows by the model in the mark.
+  @type entity_mark :: {entity_id :: String.t(), model :: String.t() | nil}
   @type t :: %__MODULE__{
           dirty_set: atom()
         }
@@ -49,7 +54,7 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Marks a batch of `{entity_id, subject_type}` pairs as dirty (needs
+  Marks a batch of `{entity_id, model}` pairs as dirty (needs
   re-materialization).
 
   Every entity in the batch shares one fresh generation.
@@ -66,8 +71,8 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Marks a batch of `{entity_id, subject_type}` pairs as provisionally
-  dirty while a commit is in flight.
+  Marks a batch of `{entity_id, model}` pairs as provisionally dirty while
+  a commit is in flight.
 
   The Writer writes a provisional mark *before* it attempts the durable
   commit, so an entity is never observed clean between the commit landing
@@ -111,8 +116,11 @@ defmodule EbbServer.Storage.DirtyTracker do
   # No default for `dirty_set`: a two-arity call must not silently pass a
   # table where a generation is expected.
   def clear_pending_batch(entities, generation, dirty_set) when is_list(entities) do
-    Enum.each(entities, fn {id, subject_type} ->
-      :ets.delete_object(dirty_set, {id, subject_type, {:pending, generation}})
+    # Matched on the id and this batch's generation, not on the model: a
+    # `nil` model in the batch never replaced the model the mark preserved,
+    # so the mark's model is not the batch's to predict.
+    Enum.each(entities, fn {id, _model} ->
+      :ets.match_delete(dirty_set, {id, :_, {:pending, generation}})
     end)
 
     :ok
@@ -139,8 +147,8 @@ defmodule EbbServer.Storage.DirtyTracker do
     dirty_set
     |> :ets.tab2list()
     |> Enum.each(fn
-      {entity_id, subject_type, {:pending, _}} ->
-        :ets.insert(dirty_set, {entity_id, subject_type, generation})
+      {entity_id, model, {:pending, _}} ->
+        :ets.insert(dirty_set, {entity_id, model, generation})
 
       _settled ->
         :ok
@@ -190,7 +198,7 @@ defmodule EbbServer.Storage.DirtyTracker do
   @spec dirty_generation(String.t(), atom()) :: term()
   def dirty_generation(entity_id, dirty_set \\ @default_dirty_set_name) do
     case :ets.lookup(dirty_set, entity_id) do
-      [{^entity_id, _subject_type, mark}] -> mark
+      [{^entity_id, _model, mark}] -> mark
       [] -> nil
     end
   end
@@ -268,45 +276,62 @@ defmodule EbbServer.Storage.DirtyTracker do
   end
 
   @doc """
-  Returns all dirty entity IDs recorded under any of the given subject
-  types.
+  Returns all dirty entity IDs recorded under any of the given models.
 
-  Classification is by the type recorded in the mark, never by the ID
+  Classification is by the model recorded in the mark, never by the ID
   prefix. The result order is unspecified.
 
   ## Examples
 
-      iex> DirtyTracker.dirty_entity_ids_for_types(["todo"])
+      iex> DirtyTracker.dirty_entity_ids_for_models(["todo"])
       ["todo_abc", "todo_xyz"]
   """
-  @spec dirty_entity_ids_for_types([String.t()], atom()) :: [String.t()]
-  def dirty_entity_ids_for_types(types, dirty_set \\ @default_dirty_set_name)
-      when is_list(types) do
+  @spec dirty_entity_ids_for_models([String.t()], atom()) :: [String.t()]
+  def dirty_entity_ids_for_models(models, dirty_set \\ @default_dirty_set_name)
+      when is_list(models) do
     match_spec =
-      types
+      models
       |> Enum.uniq()
-      |> Enum.map(fn type -> {{:"$1", type, :_}, [], [:"$1"]} end)
+      |> Enum.map(fn model -> {{:"$1", model, :_}, [], [:"$1"]} end)
 
     :ets.select(dirty_set, match_spec)
   end
 
   @doc """
-  Returns all dirty entity IDs recorded under a single subject type.
+  Returns all dirty entity IDs recorded under a single model.
 
   ## Examples
 
-      iex> DirtyTracker.dirty_entity_ids_for_type("todo")
+      iex> DirtyTracker.dirty_entity_ids_for_model("todo")
       ["todo_abc", "todo_xyz"]
   """
-  @spec dirty_entity_ids_for_type(String.t(), atom()) :: [String.t()]
-  def dirty_entity_ids_for_type(type, dirty_set \\ @default_dirty_set_name) do
-    dirty_entity_ids_for_types([type], dirty_set)
+  @spec dirty_entity_ids_for_model(String.t(), atom()) :: [String.t()]
+  def dirty_entity_ids_for_model(model, dirty_set \\ @default_dirty_set_name) do
+    dirty_entity_ids_for_models([model], dirty_set)
   end
 
   defp insert_marks(entities, dirty_set, mark) do
-    Enum.each(entities, fn {id, subject_type} ->
-      :ets.insert(dirty_set, {id, subject_type, mark})
-    end)
+    Enum.each(entities, fn {id, model} -> insert_mark(dirty_set, id, model, mark) end)
+  end
+
+  defp insert_mark(dirty_set, id, nil, mark) do
+    # A mark is one row per id, so a `nil` model would overwrite — and hide —
+    # the model an earlier mark recorded, leaving the entity invisible to
+    # `dirty_entity_ids_for_model/2`. Update the mark alone and keep whatever
+    # model the row already carries; `insert_new` covers an id with no mark
+    # yet, and losing that race re-runs the model-preserving update.
+    unless :ets.update_element(dirty_set, id, {3, mark}) do
+      unless :ets.insert_new(dirty_set, {id, nil, mark}) do
+        :ets.update_element(dirty_set, id, {3, mark})
+      end
+    end
+
+    :ok
+  end
+
+  defp insert_mark(dirty_set, id, model, mark) do
+    :ets.insert(dirty_set, {id, model, mark})
+    :ok
   end
 
   @impl true

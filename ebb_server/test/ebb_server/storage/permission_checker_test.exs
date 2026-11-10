@@ -2,6 +2,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
   use ExUnit.Case, async: false
 
   import EbbServer.TestHelpers
+  alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionChecker
 
   defp put_membership(tables, entity_id, group_id, id) do
@@ -18,6 +19,16 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     )
   end
 
+  defp put_group_member_row(tables, id, actor_id, group_id, permissions) do
+    :ok =
+      GroupCache.put_group_member(
+        %{id: id, actor_id: actor_id, group_id: group_id, permissions: permissions},
+        group_members: tables.group_members,
+        group_members_by_id: tables.group_members_by_id,
+        group_members_by_group: tables.group_members_by_group
+      )
+  end
+
   defp put_entity_group_by_id(tables, id, entity_id, group_id) do
     :ets.insert(
       tables.entity_groups_by_id,
@@ -25,111 +36,80 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     )
   end
 
-  defp put_entity_type(tables, entity_id, type) do
-    :ets.insert(tables.entity_types, {entity_id, type})
+  defp put_entity_type(tables, entity_id, model) do
+    :ets.insert(tables.entity_types, {entity_id, model})
   end
 
-  defp user_action(subject_id, method \\ "put") do
+  defp user_action(subject_id, method \\ "replace") do
     sample_action(%{
-      "updates" => [
-        %{
-          "id" => "upd_1",
-          "subject_id" => subject_id,
-          "subject_type" => "todo",
-          "method" => method,
-          "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-        }
-      ]
+      "updates" => row_updates(subject_id, "todo", %{"title" => "Test"}, method: method)
     })
   end
 
-  defp user_put_update(id, subject_id) do
+  defp leaf(value), do: %{"value" => value, "hlc" => generate_hlc()}
+
+  defp update(id, subject_id, component, method, data) do
     %{
       "id" => id,
       "subject_id" => subject_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
+      "component" => component,
+      "method" => method,
+      "data" => data
     }
   end
 
-  defp entity_group_put_update(id, entity_id, group_id) do
-    %{
-      "id" => id,
-      "subject_id" => id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"value" => entity_id},
-          "group_id" => %{"value" => group_id}
-        }
-      }
-    }
+  # One Update per field: the wire names a component, and the row the rule
+  # engine reads is the fold of them.
+  defp row_updates(subject_id, model, fields, opts \\ []) do
+    method = Keyword.get(opts, :method, "replace")
+    id = Keyword.get(opts, :id)
+
+    Enum.map(fields, fn {field, value} ->
+      update(id || new_id(), subject_id, "#{model}/#{field}", method, leaf(value))
+    end)
   end
 
-  defp relationship_put_update(id, source_id, target_id) do
-    %{
-      "id" => id,
-      "subject_id" => id,
-      "subject_type" => "relationship",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "source_id" => %{"value" => source_id},
-          "target_id" => %{"value" => target_id}
-        }
-      }
-    }
+  defp delete_update(subject_id) do
+    %{"id" => new_id(), "subject_id" => subject_id, "method" => "delete", "data" => nil}
   end
+
+  defp user_put_updates(subject_id) do
+    row_updates(subject_id, "todo", %{"title" => "Test"})
+  end
+
+  defp entity_group_put_updates(id, entity_id, group_id) do
+    [
+      update(id <> "_entity", id, "entityGroup/entity_id", "replace", leaf(entity_id)),
+      update(id <> "_group", id, "entityGroup/group_id", "replace", leaf(group_id))
+    ]
+  end
+
+  defp relationship_put_updates(id, source_id, target_id) do
+    [
+      update(id <> "_source", id, "relationship/source_id", "replace", leaf(source_id)),
+      update(id <> "_target", id, "relationship/target_id", "replace", leaf(target_id))
+    ]
+  end
+
+  defp new_id, do: "upd_" <> Nanoid.generate()
 
   describe "authorize_updates/2" do
     test "group bootstrap allowed without prior permissions" do
+      updates =
+        row_updates("g_1", "group", %{"name" => "Test Group"}) ++
+          row_updates("gm_1", "groupMember", %{
+            "actor_id" => "a_1",
+            "group_id" => "g_1",
+            "permissions" => ["todo.*"]
+          }) ++
+          user_put_updates("todo_1") ++
+          entity_group_put_updates("eg_1", "todo_1", "g_1")
+
       action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "g_1",
-            "subject_id" => "g_1",
-            "subject_type" => "group",
-            "method" => "put",
-            "data" => %{"fields" => %{"name" => %{"value" => "Test Group"}}}
-          },
-          %{
-            "id" => "gm_1",
-            "subject_id" => "gm_1",
-            "subject_type" => "groupMember",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "actor_id" => %{"value" => "a_1"},
-                "group_id" => %{"value" => "g_1"},
-                "permissions" => %{"value" => ["todo.*"]}
-              }
-            }
-          },
-          %{
-            "id" => "todo_1",
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-          },
-          %{
-            "id" => "eg_1",
-            "subject_id" => "eg_1",
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"value" => "todo_1"},
-                "group_id" => %{"value" => "g_1"}
-              }
-            }
-          }
-        ]
+        "updates" => updates
       }
 
       opts = auth_opts(create_isolated_tables())
@@ -178,7 +158,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
-      assert PermissionChecker.authorize_updates(user_action("todo_1", "patch"), "a_1", opts) ==
+      assert PermissionChecker.authorize_updates(user_action("todo_1", "merge"), "a_1", opts) ==
                :ok
     end
 
@@ -192,27 +172,9 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "upd_1",
-            "subject_id" => "todo_new",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-          },
-          %{
-            "id" => "eg_1",
-            "subject_id" => "eg_new",
-            "subject_type" => "entityGroup",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"value" => "todo_new"},
-                "group_id" => %{"value" => "g_1"}
-              }
-            }
-          }
-        ]
+        "updates" =>
+          user_put_updates("todo_new") ++
+            entity_group_put_updates("eg_new", "todo_new", "g_1")
       }
 
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
@@ -223,25 +185,15 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       opts = auth_opts(tables)
 
       put_group_member(tables, "g_1", ["groupMember.update"])
+      put_group_member_row(tables, "gm_2", "a_2", "g_1", ["group.read"])
+      put_entity_type(tables, "gm_2", "groupMember")
 
       action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          %{
-            "id" => "gm_2",
-            "subject_id" => "gm_2",
-            "subject_type" => "groupMember",
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "group_id" => %{"value" => "g_1"},
-                "actor_id" => %{"value" => "a_2"},
-                "permissions" => %{"value" => ["group.read"]}
-              }
-            }
-          }
+          update(new_id(), "gm_2", "groupMember/permissions", "merge", leaf(["group.write"]))
         ]
       }
 
@@ -256,21 +208,17 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "gm_1",
-            "subject_id" => "gm_1",
-            "subject_type" => "groupMember",
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "group_id" => %{"value" => "g_1"},
-                "actor_id" => %{"value" => "a_2"},
-                "permissions" => %{"value" => ["group.read"]}
-              }
-            }
-          }
-        ]
+        "updates" =>
+          row_updates(
+            "gm_1",
+            "groupMember",
+            %{
+              "group_id" => "g_1",
+              "actor_id" => "a_2",
+              "permissions" => ["group.read"]
+            },
+            method: "merge"
+          )
       }
 
       assert {:error, "not_authorized", _} =
@@ -283,7 +231,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
@@ -291,30 +239,14 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "upd_1",
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-          }
-        ]
+        "updates" => user_put_updates("todo_1")
       }
 
       invalid_action = %{
         "id" => "act_2",
         "actor_id" => "a_2",
         "hlc" => generate_hlc(),
-        "updates" => [
-          %{
-            "id" => "upd_2",
-            "subject_id" => "todo_1",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-          }
-        ]
+        "updates" => user_put_updates("todo_1")
       }
 
       {accepted, rejected} =
@@ -341,15 +273,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       action =
         sample_action(%{
           "actor_id" => "a_1",
-          "updates" => [
-            %{
-              "id" => "upd_1",
-              "subject_id" => "todo_unowned",
-              "subject_type" => "todo",
-              "method" => "put",
-              "data" => %{"fields" => %{"title" => %{"value" => "Test"}}}
-            }
-          ]
+          "updates" => user_put_updates("todo_unowned")
         })
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
@@ -372,15 +296,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       action =
         sample_action(%{
           "actor_id" => "a_1",
-          "updates" => [
-            %{
-              "id" => "upd_del",
-              "subject_id" => "eg_1",
-              "subject_type" => "entityGroup",
-              "method" => "delete",
-              "data" => nil
-            }
-          ]
+          "updates" => [delete_update("eg_1")]
         })
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
@@ -419,11 +335,10 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_mixed",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_todo", "todo_new"),
-          entity_group_put_update("upd_eg_a", "todo_new", "g_a"),
-          entity_group_put_update("upd_eg_b", "other_1", "g_b")
-        ]
+        "updates" =>
+          user_put_updates("todo_new") ++
+            entity_group_put_updates("eg_a", "todo_new", "g_a") ++
+            entity_group_put_updates("eg_b", "other_1", "g_b")
       }
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
@@ -443,11 +358,10 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_multi",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_todo", "todo_new"),
-          entity_group_put_update("upd_eg_a", "todo_new", "g_a"),
-          entity_group_put_update("upd_eg_b", "todo_new", "g_b")
-        ]
+        "updates" =>
+          user_put_updates("todo_new") ++
+            entity_group_put_updates("eg_a", "todo_new", "g_a") ++
+            entity_group_put_updates("eg_b", "todo_new", "g_b")
       }
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
@@ -470,16 +384,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_set_groups",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          entity_group_put_update("upd_eg_b", "todo_1", "g_b"),
-          %{
-            "id" => "upd_eg_del",
-            "subject_id" => "eg_a",
-            "subject_type" => "entityGroup",
-            "method" => "delete",
-            "data" => nil
-          }
-        ]
+        "updates" => entity_group_put_updates("eg_b", "todo_1", "g_b") ++ [delete_update("eg_a")]
       }
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)
@@ -492,7 +397,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"])
       put_membership(tables, "todo_ok", "g_1", "eg_ok")
       put_membership(tables, "todo_bad", "g_2", "eg_bad")
       put_entity_type(tables, "todo_ok", "todo")
@@ -502,14 +407,14 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         sample_action(%{
           "id" => "act_ok",
           "actor_id" => "a_1",
-          "updates" => [user_put_update("upd_ok", "todo_ok")]
+          "updates" => user_put_updates("todo_ok")
         })
 
       unauthorized =
         sample_action(%{
           "id" => "act_bad",
           "actor_id" => "a_1",
-          "updates" => [user_put_update("upd_bad", "todo_bad")]
+          "updates" => user_put_updates("todo_bad")
         })
 
       {accepted, rejected} =
@@ -529,11 +434,10 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_rel_owned",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => [
-          user_put_update("upd_todo", "todo_1"),
-          entity_group_put_update("upd_eg", "todo_1", "g_a"),
-          relationship_put_update("upd_rel", "todo_1", "target_1")
-        ]
+        "updates" =>
+          user_put_updates("todo_1") ++
+            entity_group_put_updates("eg", "todo_1", "g_a") ++
+            relationship_put_updates("upd_rel", "todo_1", "target_1")
       }
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)

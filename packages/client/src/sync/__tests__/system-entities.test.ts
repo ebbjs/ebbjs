@@ -24,7 +24,7 @@ import { ActionRejectedError } from "@ebbjs/write";
 import type { ActionDrafts } from "../drafts";
 import type { WireCreateStatic, WireStatic } from "../namespace";
 import { createClient } from "../client";
-import { seedReplicaRow } from "../test-utils";
+import { seedReplicaRow, updateModel } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -244,9 +244,43 @@ const decodeActions = (request: RecordedRequest): readonly Action[] =>
 const updatesOf = (seen: readonly RecordedRequest[]): Action["updates"] =>
   actionCalls(seen).flatMap((call) => decodeActions(call).flatMap((action) => action.updates));
 
-const fieldsOf = (update: Action["updates"][number]): Record<string, unknown> =>
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (
+  updates: readonly Action["updates"][number][],
+  model: string,
+): readonly (readonly Action["updates"][number][])[] => {
+  const bySubject = new Map<string, Action["updates"][number][]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** One component's value on a row, as the wire carries it. */
+const componentOf = (row: readonly Action["updates"][number][], field: string): unknown => {
+  const update = row.find(
+    (candidate) =>
+      candidate.method !== "drop" &&
+      candidate.method !== "delete" &&
+      candidate.component.endsWith(`/${field}`),
+  );
+  return update === undefined || update.method === "drop" || update.method === "delete"
+    ? undefined
+    : update.data;
+};
+
+/** A row's component values, keyed by field. */
+const fieldsOf = (row: readonly Action["updates"][number][]): Record<string, unknown> =>
   Object.fromEntries(
-    Object.entries(update.data?.fields ?? {}).map(([key, env]) => [key, env.value]),
+    row
+      .filter((update) => update.method === "merge" || update.method === "replace")
+      .map((update) => [
+        update.method === "delete" ? "" : update.component.slice(update.component.indexOf("/") + 1),
+        update.method === "delete" ? null : (update.data as { value: unknown }).value,
+      ]),
   );
 
 const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
@@ -270,20 +304,20 @@ describe("draft group.create — bootstrap", () => {
     const created = await client.actions.createGroup({ name: "Team" });
 
     const updates = updatesOf(seen);
-    expect(updates.filter((u) => u.subject_type === "group")).toHaveLength(1);
-    const groupPut = updates.find((u) => u.subject_type === "group")!;
-    expect(groupPut.subject_id).toBe(created.id);
-    expect(fieldsOf(groupPut)["name"]).toBe("Team");
+    const groupRows = rowsOf(updates, "group");
+    expect(groupRows).toHaveLength(1);
+    expect(groupRows[0]![0]!.subject_id).toBe(created.id);
+    expect(fieldsOf(groupRows[0]!)["name"]).toBe("Team");
 
-    expect(updates.filter((u) => u.subject_type === "groupMember")).toHaveLength(1);
-    const memberPut = updates.find((u) => u.subject_type === "groupMember")!;
-    expect(fieldsOf(memberPut)).toMatchObject({
+    const memberRows = rowsOf(updates, "groupMember");
+    expect(memberRows).toHaveLength(1);
+    expect(fieldsOf(memberRows[0]!)).toMatchObject({
       actor_id: "actor_1",
       group_id: created.id,
     });
 
     // No `entityGroup` row for the group itself — a group is its own group.
-    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(0);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(0);
 
     // Exactly one Action reached the wire.
     expect(actionCalls(seen)).toHaveLength(1);
@@ -295,8 +329,8 @@ describe("draft group.create — bootstrap", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const memberPut = updatesOf(seen).find((u) => u.subject_type === "groupMember")!;
-    const permissions = fieldsOf(memberPut)["permissions"] as readonly string[];
+    const [memberRow] = rowsOf(updatesOf(seen), "groupMember");
+    const permissions = fieldsOf(memberRow!)["permissions"] as readonly string[];
     expect(permissions).toContain("profile.*");
     expect(permissions).toContain("group.*");
     expect(permissions).toContain("groupMember.*");
@@ -310,8 +344,8 @@ describe("draft group.create — app scope (#732)", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
-    expect(groupPut.data!.fields!["apps"]).toEqual({
+    const [groupRow] = rowsOf(updatesOf(seen), "group");
+    expect(componentOf(groupRow!, "apps")).toEqual({
       map: { notes: { value: true, update_id: expect.any(String), hlc: expect.any(String) } },
     });
   });
@@ -321,8 +355,8 @@ describe("draft group.create — app scope (#732)", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
-    expect(groupPut.data!.fields!["apps"]).toBeUndefined();
+    const [groupRow] = rowsOf(updatesOf(seen), "group");
+    expect(fieldsOf(groupRow!)["apps"]).toBeUndefined();
   });
 
   it("writes a map envelope for a scope patch so app keys merge independently", async () => {
@@ -331,8 +365,10 @@ describe("draft group.create — app scope (#732)", () => {
 
     await client.actions.updateGroupApps({ id: "g_1", apps: { issues: false } });
 
-    const patch = updatesOf(seen)[0]!;
-    expect(patch.data!.fields!["apps"]).toEqual({
+    const [appsComponent] = updatesOf(seen).filter(
+      (update) => update.method !== "delete" && update.component === "group/apps",
+    );
+    expect(appsComponent!.data).toEqual({
       map: { issues: { value: false, update_id: expect.any(String), hlc: expect.any(String) } },
     });
   });
@@ -349,16 +385,16 @@ describe("draft membership.create", () => {
     });
 
     const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
+    const [row] = rowsOf(updates, "groupMember");
+    expect(row).toHaveLength(3);
     expect(created.id).toMatch(/^e_/);
-    expect(updates[0]!.subject_type).toBe("groupMember");
-    expect(updates[0]!.subject_id).toBe(created.id);
-    expect(fieldsOf(updates[0]!)).toMatchObject({
+    expect(row![0]!.subject_id).toBe(created.id);
+    expect(fieldsOf(row!)).toMatchObject({
       group_id: "g_1",
       actor_id: "actor_2",
       permissions: ["profile.*"],
     });
-    expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(0);
+    expect(rowsOf(updates, "entityGroup")).toHaveLength(0);
   });
 });
 
@@ -420,14 +456,10 @@ describe("draft system — shared verbs", () => {
 
     await client.actions.updateGroup({ id: "g_1", name: "Renamed" });
 
-    const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "g_1",
-      subject_type: "group",
-      method: "patch",
-    });
-    expect(fieldsOf(updates[0]!)["name"]).toBe("Renamed");
+    const [row] = rowsOf(updatesOf(seen), "group");
+    expect(row).toHaveLength(1);
+    expect(row![0]).toMatchObject({ subject_id: "g_1", component: "group/name", method: "merge" });
+    expect(fieldsOf(row!)["name"]).toBe("Renamed");
   });
 
   it("group.delete emits one delete Update carrying no data", async () => {
@@ -438,12 +470,7 @@ describe("draft system — shared verbs", () => {
 
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "g_1",
-      subject_type: "group",
-      method: "delete",
-      data: null,
-    });
+    expect(updates[0]).toMatchObject({ subject_id: "g_1", method: "delete", data: null });
   });
 
   it("group.duplicate copies the row into the requested groups", async () => {
@@ -453,17 +480,14 @@ describe("draft system — shared verbs", () => {
     const copy = await client.actions.duplicateGroup({ id: "g_src", groups: ["g_1"] });
 
     const updates = updatesOf(seen);
-    const put = updates.find(
-      (update) => update.subject_type === "group" && update.subject_id === copy.id,
-    )!;
+    const [put] = rowsOf(updates, "group").filter((row) => row[0]!.subject_id === copy.id);
     expect(copy.id).toMatch(/^e_/);
-    expect(put.method).toBe("put");
-    expect(fieldsOf(put)["name"]).toBe("Team");
-    const filed = updates.filter(
-      (update) =>
-        update.subject_type === "entityGroup" && fieldsOf(update)["entity_id"] === copy.id,
+    expect(put!.every((update) => update.method === "replace")).toBe(true);
+    expect(fieldsOf(put!)["name"]).toBe("Team");
+    const filed = rowsOf(updates, "entityGroup").filter(
+      (row) => fieldsOf(row)["entity_id"] === copy.id,
     );
-    expect(filed.map((update) => fieldsOf(update)["group_id"])).toEqual(["g_1"]);
+    expect(filed.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1"]);
     expect(actionCalls(seen)).toHaveLength(1);
   });
 
@@ -479,10 +503,10 @@ describe("draft system — shared verbs", () => {
 
     const copy = await client.actions.duplicateMembership({ id: "gm_src" });
 
-    const put = updatesOf(seen).find((update) => update.subject_type === "groupMember")!;
-    expect(put.subject_id).toBe(copy.id);
-    expect(put.method).toBe("put");
-    expect(fieldsOf(put)).toMatchObject({
+    const [put] = rowsOf(updatesOf(seen), "groupMember");
+    expect(put![0]!.subject_id).toBe(copy.id);
+    expect(put!.every((update) => update.method === "replace")).toBe(true);
+    expect(fieldsOf(put!)).toMatchObject({
       group_id: "g_1",
       actor_id: "actor_2",
       permissions: ["profile.*"],
@@ -494,11 +518,9 @@ describe("draft system — shared verbs", () => {
 
     await client.actions.linkGroupLead({ id: "g_1", profileId: "profile_1" });
 
-    const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.subject_type).toBe("relationship");
-    expect(updates[0]!.method).toBe("put");
-    expect(fieldsOf(updates[0]!)).toMatchObject({
+    const relationships = rowsOf(updatesOf(seen), "relationship");
+    expect(relationships).toHaveLength(1);
+    expect(fieldsOf(relationships[0]!)).toMatchObject({
       source_id: "g_1",
       target_id: "profile_1",
       field: "lead",
@@ -521,12 +543,7 @@ describe("draft system — shared verbs", () => {
 
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "rel_1",
-      subject_type: "relationship",
-      method: "delete",
-      data: null,
-    });
+    expect(updates[0]).toMatchObject({ subject_id: "rel_1", method: "delete", data: null });
   });
 });
 
@@ -547,8 +564,8 @@ describe("draft system creates — validate pass-through", () => {
 
     await client.actions.createGroupWith({ name: 42, validate: false });
 
-    const groupPut = updatesOf(seen).find((update) => update.subject_type === "group")!;
-    expect(fieldsOf(groupPut)["name"]).toBe(42);
+    const [groupRow] = rowsOf(updatesOf(seen), "group");
+    expect(fieldsOf(groupRow!)["name"]).toBe(42);
   });
 
   it("membership.create validates the payload by default", async () => {
@@ -567,8 +584,8 @@ describe("draft system creates — validate pass-through", () => {
 
     await client.actions.createMembershipWith({ permissions: 42, validate: false });
 
-    const memberPut = updatesOf(seen).find((update) => update.subject_type === "groupMember")!;
-    expect(fieldsOf(memberPut)["permissions"]).toBe(42);
+    const [memberRow] = rowsOf(updatesOf(seen), "groupMember");
+    expect(fieldsOf(memberRow!)["permissions"]).toBe(42);
   });
 });
 
@@ -601,11 +618,11 @@ describe("system drafts — one Action", () => {
 
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
-    expect(updates.filter((u) => u.subject_type === "group")).toHaveLength(1);
-    expect(updates.filter((u) => u.subject_type === "groupMember")).toHaveLength(1);
-    expect(updates.filter((u) => u.subject_type === "profile")).toHaveLength(1);
+    expect(rowsOf(updates, "group")).toHaveLength(1);
+    expect(rowsOf(updates, "groupMember")).toHaveLength(1);
+    expect(rowsOf(updates, "profile")).toHaveLength(1);
 
-    const membership = updates.filter((u) => u.subject_type === "entityGroup");
+    const membership = rowsOf(updates, "entityGroup");
     expect(membership).toHaveLength(1);
     expect(fieldsOf(membership[0]!)).toEqual({
       entity_id: result.member.id,
@@ -626,10 +643,9 @@ describe("defineAction — addToWorkspace", () => {
 
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
-    expect(updates).toHaveLength(2);
-    expect(updates.filter((u) => u.subject_type === "groupMember")).toHaveLength(1);
+    expect(rowsOf(updates, "groupMember")).toHaveLength(1);
 
-    const membership = updates.filter((u) => u.subject_type === "entityGroup");
+    const membership = rowsOf(updates, "entityGroup");
     expect(membership).toHaveLength(1);
     expect(fieldsOf(membership[0]!)).toEqual({
       entity_id: "profile_1",

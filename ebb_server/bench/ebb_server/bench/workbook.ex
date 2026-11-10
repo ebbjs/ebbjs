@@ -7,9 +7,9 @@ defmodule EbbServer.Bench.Workbook do
   ids) so it never hits the idempotency dedup path, which would consume
   zero GSNs and silently inflate the accepted rate.
 
-  The canonical unit is the 2-Update Action from
-  `test/support/integration/action_helpers.ex`: a user-entity `put` plus an
-  `entityGroup` `put` filing it into the bench group.
+  One Update names one `(entity, component)`, so the canonical unit is a
+  row's components: a user entity's `todo/title` plus the two components of
+  the `entityGroup` row filing it into the bench group.
   """
 
   alias EbbServer.Bench.Options
@@ -73,30 +73,34 @@ defmodule EbbServer.Bench.Workbook do
       "actor_id" => @actor_id,
       "hlc" => hlc,
       "updates" => [
-        %{
-          "id" => "u_bench_group",
-          "subject_id" => @group_id,
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "name" => %{"type" => "lww", "value" => "Bench Group", "hlc" => hlc}
-            }
-          }
-        },
-        %{
-          "id" => "u_bench_member",
-          "subject_id" => "gm_bench",
-          "subject_type" => "groupMember",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => @actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => @group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => @permissions, "hlc" => hlc}
-            }
-          }
-        }
+        component_update(
+          "u_bench_group",
+          @group_id,
+          "group/name",
+          "replace",
+          leaf("Bench Group", hlc)
+        ),
+        component_update(
+          "u_bench_member_actor",
+          "gm_bench",
+          "groupMember/actor_id",
+          "replace",
+          leaf(@actor_id, hlc)
+        ),
+        component_update(
+          "u_bench_member_group",
+          "gm_bench",
+          "groupMember/group_id",
+          "replace",
+          leaf(@group_id, hlc)
+        ),
+        component_update(
+          "u_bench_member_perms",
+          "gm_bench",
+          "groupMember/permissions",
+          "replace",
+          leaf(@permissions, hlc)
+        )
       ]
     }
   end
@@ -113,8 +117,8 @@ defmodule EbbServer.Bench.Workbook do
       "actor_id" => @actor_id,
       "hlc" => hlc,
       "updates" => [
-        todo_put(entity_id, "title", "seed-#{seq}", seq, hlc, nil),
-        entity_group_put(entity_id, membership_id, hlc)
+        todo_component(entity_id, "title", "seed-#{seq}", seq, hlc, nil)
+        | entity_group_updates(entity_id, membership_id, hlc)
       ]
     }
   end
@@ -149,59 +153,68 @@ defmodule EbbServer.Bench.Workbook do
     {"todo_#{id}", "eg_#{id}"}
   end
 
-  # A 1-Update Action cannot create ownership, so it targets an entity
-  # that is already filed into the bench group.
-  defp updates(%{updates_per_action: 1}, entity_id, nil, worker_id, seq, hlc, sent_us) do
-    [todo_put(entity_id, "title", "w#{worker_id}-#{seq}", seq, hlc, sent_us)]
+  # A 1-Update Action cannot create ownership, so it targets an entity that
+  # is already filed into the bench group.
+  defp updates(%{updates_per_action: 1}, entity_id, nil, _worker_id, seq, hlc, sent_us) do
+    [todo_component(entity_id, "bench_sent_us", sent_us, seq, hlc, sent_us)]
   end
 
   defp updates(config, entity_id, membership_id, worker_id, seq, hlc, sent_us) do
-    extras =
-      for i <- 3..config.updates_per_action//1 do
-        todo_put(entity_id, "f#{i}", "w#{worker_id}-#{seq}-#{i}", seq * 100 + i, hlc, nil)
-      end
+    ownership = entity_group_updates(entity_id, membership_id, hlc)
 
+    content =
+      [
+        todo_component(entity_id, "bench_sent_us", sent_us, seq, hlc, sent_us),
+        todo_component(entity_id, "title", "w#{worker_id}-#{seq}", seq, hlc, sent_us)
+        | for i <- 5..config.updates_per_action//1 do
+            todo_component(
+              entity_id,
+              "f#{i}",
+              "w#{worker_id}-#{seq}-#{i}",
+              seq * 100 + i,
+              hlc,
+              nil
+            )
+          end
+      ]
+
+    # Exactly `updates_per_action` Updates: the row's ownership components,
+    # then its content components, truncated to the configured count.
+    Enum.take(ownership ++ content, config.updates_per_action)
+  end
+
+  defp entity_group_updates(entity_id, membership_id, hlc) do
     [
-      todo_put(entity_id, "title", "w#{worker_id}-#{seq}", seq, hlc, sent_us),
-      entity_group_put(entity_id, membership_id, hlc)
-      | extras
+      component_update(
+        "u_eg_e_#{unique()}",
+        membership_id,
+        "entityGroup/entity_id",
+        "replace",
+        leaf(entity_id, hlc)
+      ),
+      component_update(
+        "u_eg_g_#{unique()}",
+        membership_id,
+        "entityGroup/group_id",
+        "replace",
+        leaf(@group_id, hlc)
+      )
     ]
   end
 
-  defp todo_put(entity_id, field, value, seq, hlc, sent_us) do
-    fields = %{
-      field => %{"type" => "lww", "value" => value, "hlc" => hlc},
-      "done" => %{"type" => "lww", "value" => rem(seq, 2) == 0, "hlc" => hlc}
-    }
-
-    fields =
-      if sent_us do
-        Map.put(fields, "bench_sent_us", %{"type" => "lww", "value" => sent_us, "hlc" => hlc})
-      else
-        fields
-      end
-
-    %{
-      "id" => "u_#{unique()}",
-      "subject_id" => entity_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => fields}
-    }
+  defp todo_component(entity_id, field, value, _seq, hlc, _sent_us) do
+    component_update("u_#{unique()}", entity_id, "todo/#{field}", "replace", leaf(value, hlc))
   end
 
-  defp entity_group_put(entity_id, membership_id, hlc) do
+  defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
+
+  defp component_update(id, subject_id, component, method, data) do
     %{
-      "id" => "u_eg_#{unique()}",
-      "subject_id" => membership_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => @group_id, "hlc" => hlc}
-        }
-      }
+      "id" => id,
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => method,
+      "data" => data
     }
   end
 

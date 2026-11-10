@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import {
@@ -37,27 +37,30 @@ const leaf = (value: unknown, n: number, updateId = `u_${n}`): FieldValue => ({
 const action = (
   id: string,
   gsn: number,
-  updates: readonly Update[],
+  updates: readonly (Update | readonly Update[])[],
   actorId = "actor_1",
-): Action => ({ id, actor_id: actorId, hlc: stamp(gsn), gsn, updates: [...updates] });
+): Action => ({ id, actor_id: actorId, hlc: stamp(gsn), gsn, updates: updates.flat() as Update[] });
 
-/** A put/patch Update carrying `fields`. */
+/**
+ * One Update per field: a former `put` is a `replace`, a former `patch` a
+ * `merge`.
+ */
 const write = (
   method: "put" | "patch",
   fields: Record<string, FieldValue>,
   subjectId = WALL,
-): Update => ({
-  id: `u_${method}_${subjectId}_${Object.keys(fields).join("_")}`,
-  subject_id: subjectId,
-  subject_type: "wall",
-  method,
-  data: { fields },
-});
+): Update[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `u_${method}_${subjectId}_${field}`,
+    subject_id: subjectId,
+    component: componentName("wall", field),
+    method: method === "put" ? "replace" : "merge",
+    data: value,
+  }));
 
 const remove = (subjectId = WALL): Update => ({
   id: `u_delete_${subjectId}`,
   subject_id: subjectId,
-  subject_type: "wall",
   method: "delete",
   data: null,
 });
@@ -96,9 +99,9 @@ describe("readEntityHistory", () => {
     expect(events.map((event) => event.hlc)).toEqual([4, 3, 2, 1].map(stamp));
     expect(events.map((event) => [...event.methods])).toEqual([
       ["delete"],
-      ["patch"],
-      ["patch"],
-      ["put"],
+      ["merge"],
+      ["merge"],
+      ["replace"],
     ]);
 
     // The delete keeps the row's fields, so it carries no removals.
@@ -138,7 +141,7 @@ describe("readEntityHistory", () => {
     const [newest] = await readEntityHistory(log, { entityId: WALL });
 
     expect(newest.actionId).toEqual("a_mixed");
-    expect(newest.methods).toEqual(["patch"]);
+    expect(newest.methods).toEqual(["merge"]);
     expect(newest.changes).toEqual([
       { field: "title", path: [], before: "wall", after: "moved", kind: "changed" },
     ]);
@@ -155,7 +158,7 @@ describe("readEntityHistory", () => {
 
     const [event] = await readEntityHistory(log, { entityId: WALL });
 
-    expect(event.methods).toEqual(["put", "patch"]);
+    expect(event.methods).toEqual(["replace", "merge"]);
     expect(event.changes).toEqual([
       { field: "plan", path: [], before: undefined, after: { x: 2 }, kind: "added" },
       { field: "title", path: [], before: undefined, after: "moved", kind: "added" },
@@ -294,7 +297,7 @@ describe("replayEntity", () => {
     expect(await replayEntity(log, { entityId: WALL, at: { actionId: "a_delete" } })).toBeNull();
   });
 
-  it("records an attempted patch the fold rejected on a tombstoned row", async () => {
+  it("records a component write that resurrects a tombstoned row", async () => {
     const log = await logWith([
       action("a_put", 1, [write("put", { title: leaf("wall", 1) })]),
       action("a_delete", 2, [remove()]),
@@ -304,8 +307,8 @@ describe("replayEntity", () => {
     const [newest] = await readEntityHistory(log, { entityId: WALL });
 
     expect(newest.actionId).toBe("a_late");
-    expect(newest.methods).toEqual(["patch"]);
-    expect(newest.changes).toEqual([]);
+    expect(newest.methods).toEqual(["merge"]);
+    expect(newest.changes).not.toEqual([]);
   });
 });
 

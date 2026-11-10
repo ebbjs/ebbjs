@@ -320,7 +320,7 @@ const sideRemoteWins = (slot: ConflictSlot): boolean => {
 /** Project a stored slot into its method-carrying view. */
 const toSlotView = (slot: ConflictSlot): ConflictSlotView => ({
   subjectId: slot.subjectId,
-  field: slot.field,
+  component: slot.component,
   path: slot.path,
   local: slot.local,
   remote: slot.remote,

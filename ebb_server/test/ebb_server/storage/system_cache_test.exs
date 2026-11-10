@@ -117,54 +117,55 @@ defmodule EbbServer.Storage.SystemCacheTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "demo-seeder",
         hlc: hlc,
-        updates: [
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "grp_test",
-            subject_type: "group",
-            method: :put,
-            data: %{"name" => "Test"}
-          },
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "gm_test",
-            subject_type: "groupMember",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "actor_id" => %{"value" => "demo-seeder", "update_id" => "u1"},
-                "group_id" => %{"value" => "grp_test", "update_id" => "u1"},
-                "permissions" => %{"value" => ["group.*"], "update_id" => "u1"}
-              }
-            }
-          },
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "eg_test",
-            subject_type: "entityGroup",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "entity_id" => %{"value" => "doc_test", "update_id" => "u1"},
-                "group_id" => %{"value" => "grp_test", "update_id" => "u1"}
-              }
-            }
-          },
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "rel_test",
-            subject_type: "relationship",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "source_id" => %{"value" => "doc_test", "update_id" => "u1"},
-                "target_id" => %{"value" => "author_1", "update_id" => "u1"},
-                "type" => %{"value" => "text_document", "update_id" => "u1"},
-                "field" => %{"value" => "author", "update_id" => "u1"}
-              }
-            }
-          }
-        ]
+        updates:
+          [
+            TestHelpers.validated_component("grp_test", "group/name", %{
+              "value" => "Test",
+              "update_id" => "u1"
+            })
+          ] ++
+            [
+              TestHelpers.validated_component("gm_test", "groupMember/actor_id", %{
+                "value" => "demo-seeder",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("gm_test", "groupMember/group_id", %{
+                "value" => "grp_test",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("gm_test", "groupMember/permissions", %{
+                "value" => ["group.*"],
+                "update_id" => "u1"
+              })
+            ] ++
+            [
+              TestHelpers.validated_component("eg_test", "entityGroup/entity_id", %{
+                "value" => "doc_test",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("eg_test", "entityGroup/group_id", %{
+                "value" => "grp_test",
+                "update_id" => "u1"
+              })
+            ] ++
+            [
+              TestHelpers.validated_component("rel_test", "relationship/source_id", %{
+                "value" => "doc_test",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_test", "relationship/target_id", %{
+                "value" => "author_1",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_test", "relationship/type", %{
+                "value" => "text_document",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_test", "relationship/field", %{
+                "value" => "author",
+                "update_id" => "u1"
+              })
+            ]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -229,26 +230,21 @@ defmodule EbbServer.Storage.SystemCacheTest do
         actor_id: "demo-seeder",
         hlc: hlc,
         updates: [
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "grp_apps",
-            subject_type: "group",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "name" => %{"value" => "Scoped", "update_id" => "u1", "hlc" => hlc},
-                "apps" => %{
-                  "map" => %{
-                    "notes" => %{
-                      "value" => true,
-                      "update_id" => "u1",
-                      "hlc" => hlc
-                    }
-                  }
-                }
+          TestHelpers.validated_component("grp_apps", "group/name", %{
+            "value" => "Scoped",
+            "update_id" => "u1",
+            "hlc" => hlc
+          }),
+          TestHelpers.validated_component(
+            "grp_apps",
+            "group/apps",
+            %{
+              "map" => %{
+                "notes" => %{"value" => true, "update_id" => "u1", "hlc" => hlc}
               }
-            }
-          }
+            },
+            method: :merge
+          )
         ]
       }
 
@@ -320,34 +316,35 @@ defmodule EbbServer.Storage.SystemCacheTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "demo-seeder",
         hlc: hlc,
-        updates: [
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "eg_demo",
-            subject_type: "entityGroup",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "entity_id" => %{"value" => "doc_demo", "update_id" => "u1"},
-                "group_id" => %{"value" => "grp_demo", "update_id" => "u1"}
-              }
-            }
-          },
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: "rel_demo",
-            subject_type: "relationship",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "source_id" => %{"value" => "doc_demo", "update_id" => "u1"},
-                "target_id" => %{"value" => "author_demo", "update_id" => "u1"},
-                "type" => %{"value" => "text_document", "update_id" => "u1"},
-                "field" => %{"value" => "author", "update_id" => "u1"}
-              }
-            }
-          }
-        ]
+        updates:
+          [
+            TestHelpers.validated_component("eg_demo", "entityGroup/entity_id", %{
+              "value" => "doc_demo",
+              "update_id" => "u1"
+            }),
+            TestHelpers.validated_component("eg_demo", "entityGroup/group_id", %{
+              "value" => "grp_demo",
+              "update_id" => "u1"
+            })
+          ] ++
+            [
+              TestHelpers.validated_component("rel_demo", "relationship/source_id", %{
+                "value" => "doc_demo",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_demo", "relationship/target_id", %{
+                "value" => "author_demo",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_demo", "relationship/type", %{
+                "value" => "text_document",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("rel_demo", "relationship/field", %{
+                "value" => "author",
+                "update_id" => "u1"
+              })
+            ]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -399,27 +396,25 @@ defmodule EbbServer.Storage.SystemCacheTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "demo-seeder",
         hlc: hlc,
-        updates: [
-          %{
-            id: "upd_typed",
-            subject_id: "todo_typed",
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{"title" => %{"value" => "Typed", "hlc" => hlc}}}
-          },
-          %{
-            id: "eg_typed",
-            subject_id: "eg_typed",
-            subject_type: "entityGroup",
-            method: :put,
-            data: %{
-              "fields" => %{
-                "entity_id" => %{"value" => "todo_typed", "update_id" => "u1"},
-                "group_id" => %{"value" => "grp_typed", "update_id" => "u1"}
-              }
-            }
-          }
-        ]
+        updates:
+          [
+            TestHelpers.validated_component(
+              "todo_typed",
+              "todo/title",
+              %{"value" => "Typed", "hlc" => hlc},
+              id: "upd_typed"
+            )
+          ] ++
+            [
+              TestHelpers.validated_component("eg_typed", "entityGroup/entity_id", %{
+                "value" => "todo_typed",
+                "update_id" => "u1"
+              }),
+              TestHelpers.validated_component("eg_typed", "entityGroup/group_id", %{
+                "value" => "grp_typed",
+                "update_id" => "u1"
+              })
+            ]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -602,16 +597,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
       action =
         TestHelpers.validated_action(%{
           updates: [
-            TestHelpers.validated_update(%{
-              subject_id: entity_id,
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Backfilled", "hlc" => hlc}
-                }
-              }
-            })
+            TestHelpers.validated_component(
+              entity_id,
+              "todo/title",
+              %{"value" => "Backfilled", "hlc" => hlc}
+            )
           ]
         })
 
@@ -657,13 +647,12 @@ defmodule EbbServer.Storage.SystemCacheTest do
           actor_id: "demo-seeder",
           hlc: TestHelpers.generate_hlc(),
           updates: [
-            %{
-              id: "upd_frame_#{:erlang.unique_integer([:positive])}",
-              subject_id: entity_id,
-              subject_type: "todo",
-              method: :put,
-              data: %{"fields" => %{}}
-            }
+            TestHelpers.validated_component(
+              entity_id,
+              "todo/title",
+              %{"value" => "Framed"},
+              id: "upd_frame_#{:erlang.unique_integer([:positive])}"
+            )
           ]
         }
         |> ActionFormat.build()

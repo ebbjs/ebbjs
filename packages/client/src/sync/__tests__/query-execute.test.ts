@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import type { Filter } from "@ebbjs/schema";
@@ -30,29 +30,21 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   actor_id: "actor_1",
   hlc: makeHlc(1_711_036_800_000, gsn),
   gsn,
-  updates: [
-    {
-      id: `u_${id}`,
-      subject_id: id,
-      subject_type: type,
-      method: "put",
-      data: {
-        fields: Object.fromEntries(
-          Object.entries(fields).map(([key, value]) => [key, field(value, `u_${id}`)]),
-        ),
-      },
-    },
-  ],
+  updates: Object.entries(fields).map(([key, value]) => ({
+    id: `u_${id}_${key}`,
+    subject_id: id,
+    component: componentName(type, key),
+    method: "replace" as const,
+    data: field(value, `u_${id}`),
+  })),
 });
 
-const remove = (gsn: number, id: string, type: string): Action => ({
+const remove = (gsn: number, id: string, _type: string): Action => ({
   id: `a_${gsn}`,
   actor_id: "actor_1",
   hlc: makeHlc(1_711_036_800_000, gsn),
   gsn,
-  updates: [
-    { id: `u_${id}_del`, subject_id: id, subject_type: type, method: "delete", data: null },
-  ],
+  updates: [{ id: `u_${id}_del`, subject_id: id, method: "delete", data: null }],
 });
 
 /** A materialized row, as a relationship accessor chain would hold it. */

@@ -51,7 +51,7 @@ export const assertMembershipScope = (
   throw new ActionRejectedError([
     {
       id: entityId,
-      subjectType: entity,
+      model: entity,
       reason: "missing_ownership",
       details: `membership write for "${entityId}" resolves to no owning group`,
     },
@@ -75,7 +75,7 @@ export const assertLastMembership = (
   });
   if (details === undefined) return;
   throw new ActionRejectedError([
-    { id: entityId, subjectType: entity, reason: "last_membership", details },
+    { id: entityId, model: entity, reason: "last_membership", details },
   ]);
 };
 

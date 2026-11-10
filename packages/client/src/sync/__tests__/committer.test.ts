@@ -86,8 +86,8 @@ describe("commit — per-Update scope (#473)", () => {
     );
 
     expect(submitted).toHaveLength(1);
-    // One put + one entityGroup row per create.
-    expect(submitted[0]).toHaveLength(4);
+    // One component Update per create field plus two per entityGroup row.
+    expect(submitted[0]).toHaveLength(6);
     expect(result.groups).toEqual(["g_1", "g_2"]);
     expect(result.response.rejected).toEqual([]);
   });
@@ -114,7 +114,7 @@ describe("commit — per-Update scope (#473)", () => {
     );
 
     expect(submitted).toHaveLength(1);
-    expect(submitted[0]).toHaveLength(4);
+    expect(submitted[0]).toHaveLength(6);
     expect(result.groups).toEqual(["g_1"]);
     expect(result.response.rejected).toEqual([]);
   });
@@ -142,10 +142,10 @@ describe("commit — per-Update scope (#473)", () => {
       cap,
     );
 
-    // Two relationship puts into different groups; the server delivers
-    // each by its own scope.
+    // Two relationship rows, one Update per component, into different
+    // groups; the server delivers each by its own scope.
     expect(submitted).toHaveLength(1);
-    expect(submitted[0]).toHaveLength(2);
+    expect(submitted[0]).toHaveLength(8);
     expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 
@@ -171,8 +171,8 @@ describe("commit — per-Update scope (#473)", () => {
     );
 
     expect(submitted).toHaveLength(1);
-    // One entityGroup put + one entityGroup delete.
-    expect(submitted[0]).toHaveLength(2);
+    // One entityGroup row (two components) + one entityGroup delete.
+    expect(submitted[0]).toHaveLength(3);
     expect(result.groups).toEqual(["g_2", "g_3"]);
   });
 
@@ -193,9 +193,9 @@ describe("commit — per-Update scope (#473)", () => {
     );
 
     expect(submitted).toHaveLength(1);
-    // One content put + one entityGroup put for the create, plus one
-    // entityGroup put for the membership delta.
-    expect(submitted[0]).toHaveLength(3);
+    // One content component + one entityGroup row for the create, plus one
+    // entityGroup row for the membership delta.
+    expect(submitted[0]).toHaveLength(5);
     expect(result.groups).toEqual(["g_1", "g_2"]);
   });
 

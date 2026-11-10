@@ -75,7 +75,7 @@ const seedRow = async (
   storage: ReturnType<typeof createMemoryAdapter>,
   replica: Replica,
   row: Entity,
-  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
+  method: "replace" | "delete" = row.deleted_hlc === null ? "replace" : "delete",
 ): Promise<void> => {
   seedReplicaRow(replica, row, method);
   await storage.entities.set(row);

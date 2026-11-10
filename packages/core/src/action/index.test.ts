@@ -17,9 +17,9 @@ describe("createAction", () => {
       updates: [
         {
           subject_id: "a_target",
-          subject_type: "group",
-          method: "put",
-          data: null,
+          component: "group/name",
+          method: "replace",
+          data: { value: "Group", update_id: "u_value" },
         },
       ],
       clock,
@@ -65,8 +65,8 @@ describe("createAction", () => {
     const { action } = createAction({
       actorId: "a_me",
       updates: [
-        { subject_id: "a_target", subject_type: "group", method: "put", data: null },
-        { subject_id: "a_target", subject_type: "group", method: "patch", data: null },
+        { subject_id: "a_target", method: "delete", data: null },
+        { subject_id: "a_target", component: "group/name", method: "drop", data: null },
       ],
       clock,
     });
@@ -83,8 +83,7 @@ describe("createAction", () => {
         {
           id: "u_mycustomid",
           subject_id: "a_target",
-          subject_type: "group",
-          method: "put",
+          method: "delete",
           data: null,
         },
       ],

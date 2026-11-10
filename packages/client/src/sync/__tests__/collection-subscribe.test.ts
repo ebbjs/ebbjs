@@ -38,16 +38,18 @@ const mkAction = (gsn: number, subjectId: string, completed: boolean): Action =>
   gsn,
   updates: [
     {
-      id: `u_${gsn}`,
+      id: `${`u_${gsn}`}_0`,
       subject_id: subjectId,
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: `T${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-          completed: { value: completed, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: `T${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) },
+    },
+    {
+      id: `${`u_${gsn}`}_1`,
+      subject_id: subjectId,
+      component: "todo/completed",
+      method: "replace",
+      data: { value: completed, update_id: `u_${gsn}`, hlc: makeHlc(1) },
     },
   ],
 });
@@ -57,9 +59,7 @@ const mkDeleteAction = (gsn: number, subjectId: string): Action => ({
   actor_id: "actor_1",
   hlc: makeHlc(1_711_036_800_000, gsn),
   gsn,
-  updates: [
-    { id: `u_${gsn}`, subject_id: subjectId, subject_type: "todo", method: "delete", data: null },
-  ],
+  updates: [{ id: `u_${gsn}`, subject_id: subjectId, method: "delete", data: null }],
 });
 
 describe("client.<entity>.subscribe(filter, cb)", () => {

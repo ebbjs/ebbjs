@@ -43,7 +43,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.watermark.lag`                       | `lag` (durability: max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.writer.in_flight_action_ids`         | `size`                                | —                                                   |
-  | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `subject_type`, `path` (`:dirty_materialize`) |
+  | `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`      | `subject_id`, `model`, `path` (`:dirty_materialize`) |
   | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                   | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`) |
   | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count` | `path` (`:clean_hit` / `:query`), `subject_id`      |
   | `ebb.entity_store.cache_hit_rate`         | `count`                               | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`) |
@@ -369,7 +369,7 @@ defmodule EbbServer.Telemetry do
 
       EbbServer.Telemetry.span([:entity_store, :materialize], %{subject_id: id}, fn ->
         result = do_materialize(id)
-        {result, %{subject_type: "todo"}}
+        {result, %{model: "todo"}}
       end)
   """
   @spec span([atom()], map(), (-> {term(), map()} | {term(), map(), map()})) :: term()

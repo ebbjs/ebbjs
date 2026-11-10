@@ -172,7 +172,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
       writer =
         start_writer(
           writer_opts(ctx, %{
-            entity_types: :ebb_332_missing_table,
+            group_apps: :ebb_332_missing_table,
             fan_out_router: router
           })
         )
@@ -181,7 +181,7 @@ defmodule EbbServer.Storage.WriterCoalescingTest do
         for i <- 1..n do
           validated_action(%{
             id: "act_esc_#{i}",
-            updates: [validated_update(%{subject_id: "todo_esc_#{i}"})]
+            updates: [validated_component("g_esc_#{i}", "group/name", %{"value" => "esc"})]
           })
         end
 

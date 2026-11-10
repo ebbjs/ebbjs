@@ -80,11 +80,16 @@ describe("runInvocation", () => {
 
     expect(value).toMatchObject({ id: expect.stringMatching(/^e_/) });
     expect(commits).toHaveLength(1);
-    expect(commits[0]).toMatchObject({
-      actor_id: "a_test",
-      gsn: 0,
-      updates: [{ subject_type: "issue", method: "put" }, { subject_type: "entityGroup" }],
-    });
+    const frame = commits[0] as {
+      readonly actor_id: string;
+      readonly gsn: number;
+      readonly updates: readonly { readonly component?: string; readonly method: string }[];
+    };
+    expect(frame).toMatchObject({ actor_id: "a_test", gsn: 0 });
+    expect(new Set(frame.updates.map((update) => update.component))).toEqual(
+      new Set(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]),
+    );
+    expect(frame.updates.every((update) => update.method === "replace")).toBe(true);
   });
 
   it("reports a service caller when the host resolved one", async () => {
@@ -130,9 +135,12 @@ describe("runInvocation", () => {
 
     expect(value).toMatchObject({ id: expect.stringMatching(/^e_/) });
     expect(commits).toHaveLength(1);
-    expect(commits[0]).toMatchObject({
-      updates: [{ subject_type: "issue", method: "put" }, { subject_type: "entityGroup" }],
-    });
+    const deployedFrame = commits[0] as {
+      readonly updates: readonly { readonly component?: string }[];
+    };
+    expect(new Set(deployedFrame.updates.map((update) => update.component))).toEqual(
+      new Set(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]),
+    );
   });
 
   it("commits nothing when the handler throws", async () => {

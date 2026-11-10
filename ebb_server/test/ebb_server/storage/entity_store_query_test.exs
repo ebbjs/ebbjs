@@ -14,19 +14,15 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: gm_id,
-          subject_type: "groupMember",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => ["todo.create"], "hlc" => hlc}
-            }
-          }
-        }
+        validated_component(gm_id, "groupMember/actor_id", %{"value" => actor_id, "hlc" => hlc}),
+        validated_component(gm_id, "groupMember/group_id", %{
+          "value" => group_id,
+          "hlc" => hlc
+        }),
+        validated_component(gm_id, "groupMember/permissions", %{
+          "value" => ["todo.create"],
+          "hlc" => hlc
+        })
       ]
     }
 
@@ -40,18 +36,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
+        validated_component(eg_id, "entityGroup/entity_id", %{
+          "value" => group_id,
+          "hlc" => eg_hlc
+        }),
+        validated_component(eg_id, "entityGroup/group_id", %{
+          "value" => group_id,
+          "hlc" => eg_hlc
+        })
       ]
     }
 
@@ -70,23 +62,15 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
           "completed" => Keyword.get(opts, :completed, false)
         }
       end)
-      |> Map.new(fn {field, value} ->
-        {field, %{"type" => "lww", "value" => value, "hlc" => hlc}}
-      end)
 
     action = %{
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: todo_id,
-          subject_type: "todo",
-          method: :put,
-          data: %{"fields" => fields}
-        }
-      ]
+      updates:
+        Enum.map(fields, fn {field, value} ->
+          validated_component(todo_id, "todo/#{field}", %{"value" => value, "hlc" => hlc})
+        end)
     }
 
     {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
@@ -99,18 +83,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
+        validated_component(eg_id, "entityGroup/entity_id", %{
+          "value" => todo_id,
+          "hlc" => eg_hlc
+        }),
+        validated_component(eg_id, "entityGroup/group_id", %{
+          "value" => group_id,
+          "hlc" => eg_hlc
+        })
       ]
     }
 
@@ -679,15 +659,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: actor_id,
         hlc: generate_hlc(),
-        updates: [
-          %{
-            id: "upd_" <> Nanoid.generate(),
-            subject_id: todo_id,
-            subject_type: "todo",
-            method: :delete,
-            data: %{"fields" => %{}}
-          }
-        ]
+        updates: [validated_update(%{subject_id: todo_id, method: :delete})]
       }
 
       {:ok, _gsns, []} = Writer.write_actions([delete_action], writer_name)
@@ -791,20 +763,22 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: rel_id,
-          subject_type: "relationship",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
-              "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
-              "type" => %{"type" => "lww", "value" => "assignedTo", "hlc" => hlc},
-              "field" => %{"type" => "lww", "value" => "assignee", "hlc" => hlc}
-            }
-          }
-        }
+        validated_component(rel_id, "relationship/source_id", %{
+          "value" => source_id,
+          "hlc" => hlc
+        }),
+        validated_component(rel_id, "relationship/target_id", %{
+          "value" => target_id,
+          "hlc" => hlc
+        }),
+        validated_component(rel_id, "relationship/type", %{
+          "value" => "assignedTo",
+          "hlc" => hlc
+        }),
+        validated_component(rel_id, "relationship/field", %{
+          "value" => "assignee",
+          "hlc" => hlc
+        })
       ]
     }
 
@@ -820,17 +794,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: group_id,
-          subject_type: "group",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "name" => %{"type" => "lww", "value" => "Test group", "hlc" => hlc}
-            }
-          }
-        }
+        validated_component(group_id, "group/name", %{"value" => "Test group", "hlc" => hlc})
       ]
     }
 
@@ -846,17 +810,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: generate_hlc(),
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: post_id,
-          subject_type: "post",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => title, "hlc" => generate_hlc()}
-            }
-          }
-        }
+        validated_component(post_id, "post/title", %{"value" => title, "hlc" => generate_hlc()})
       ]
     }
 
@@ -870,18 +824,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => post_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
+        validated_component(eg_id, "entityGroup/entity_id", %{
+          "value" => post_id,
+          "hlc" => eg_hlc
+        }),
+        validated_component(eg_id, "entityGroup/group_id", %{
+          "value" => group_id,
+          "hlc" => eg_hlc
+        })
       ]
     }
 

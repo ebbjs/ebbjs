@@ -183,7 +183,12 @@ defmodule EbbServer.Bench.Options do
   # One client OS process per this many connections keeps a single BEAM's
   # parse cost off the critical path; the cap keeps the clients on one host.
   @socket_connections_per_process 250
-  @updates_per_action [1, 2, 10]
+  # `5` is the shape that keeps the canonical logical Action constant across
+  # the component envelope (#797): one `todo` row write (3 components) plus its
+  # `entityGroup` row (2 components). Before #797 the same logical Action was
+  # `2` Updates, each carrying several fields, so an envelope comparison runs
+  # `--updates-per-action 2` on the old tree and `5` on the new one.
+  @updates_per_action [1, 2, 5, 10]
 
   # Canonical order for the parsed list and the printed command.
   @ablate_phases [

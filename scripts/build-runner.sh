@@ -38,7 +38,9 @@ if [ ! -d "$REPO_ROOT/node_modules" ]; then
 fi
 
 # The workspace packages resolve through their published `dist` entries, the
-# same entries a deployed bundle uses.
+# same entries a deployed bundle uses. A source-only change under `packages/*`
+# therefore leaves the bundle stale until `pnpm build:packages` refreshes those
+# entries, and `--check` compares against whatever `dist` holds at that moment.
 if [ ! -f "$REPO_ROOT/packages/core/dist/index.js" ]; then
   echo "Error: workspace packages are not built; run 'pnpm build:packages' first." >&2
   exit 1

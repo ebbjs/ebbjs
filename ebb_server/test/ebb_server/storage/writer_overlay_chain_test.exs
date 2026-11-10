@@ -11,7 +11,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionLog, EntityGroupCache, Writer}
+  alias EbbServer.Storage.{ActionLog, EntityGroupCache, EntityTypeCache, Writer}
 
   import EbbServer.TestHelpers
 
@@ -37,7 +37,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
           })
         )
 
-      first = validated_action(%{id: "act_overlay_first", updates: [membership_put()]})
+      first = validated_action(%{id: "act_overlay_first", updates: membership_put()})
       second = validated_action(%{id: "act_overlay_second", updates: [todo_update()]})
 
       first_task = Task.async(fn -> Writer.write_actions([first], writer_name) end)
@@ -174,7 +174,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
           })
         )
 
-      first = validated_action(%{id: "act_overlay_fail", updates: [membership_put()]})
+      first = validated_action(%{id: "act_overlay_fail", updates: membership_put()})
       second = validated_action(%{id: "act_overlay_rebuilt", updates: [todo_update()]})
 
       first_task = Task.async(fn -> Writer.write_actions([first], writer_name) end)
@@ -221,7 +221,12 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
     end
   end
 
+  # Seeds the committed row the way the caches hold it: the membership by id
+  # plus the entity-type index, which is what tells the fold a later component
+  # Update patches an existing row rather than creating one.
   defp seed_membership(ctx, group_id) do
+    :ok = EntityTypeCache.put_type("eg_chain", "entityGroup", entity_types: ctx.entity_types)
+
     :ok =
       EntityGroupCache.put_entity_group(
         %{id: "eg_chain", entity_id: "todo_chain", group_id: group_id},
@@ -232,39 +237,27 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
   end
 
   defp membership_patch(group_id) do
-    validated_update(%{
-      id: "eg_chain",
-      subject_id: "eg_chain",
-      subject_type: "entityGroup",
-      method: :patch,
-      data: %{"fields" => %{"group_id" => %{"value" => group_id}}}
-    })
+    validated_component("eg_chain", "entityGroup/group_id", %{"value" => group_id},
+      method: :merge
+    )
   end
 
   defp delete_opts do
     %{
       id: "eg_chain",
       subject_id: "eg_chain",
-      subject_type: "entityGroup",
       method: :delete
     }
   end
 
   defp membership_put do
-    validated_update(%{
-      id: "eg_chain",
-      subject_id: "eg_chain",
-      subject_type: "entityGroup",
-      data: %{
-        "fields" => %{
-          "entity_id" => %{"value" => "todo_chain"},
-          "group_id" => %{"value" => "group_chain"}
-        }
-      }
-    })
+    [
+      validated_component("eg_chain", "entityGroup/entity_id", %{"value" => "todo_chain"}),
+      validated_component("eg_chain", "entityGroup/group_id", %{"value" => "group_chain"})
+    ]
   end
 
   defp todo_update do
-    validated_update(%{subject_id: "todo_chain", subject_type: "todo"})
+    validated_update(%{subject_id: "todo_chain"})
   end
 end

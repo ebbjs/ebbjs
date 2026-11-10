@@ -12,10 +12,10 @@ defmodule EbbServer.Storage.PermissionChecker do
      then shape, actor, HLC future drift (logical time must not be more than
      `now + 120s`). There is no stale bound: GSN provides total ordering, and
      the bound returns with the compaction watermark tracked by #123.
-  2. **Authorizer** — for each Update, does the actor have the right
-     `<type>.<verb>` (or `<type>.*`) on the entity's group, where
-     `<type>` is the type the id was committed under rather than the
-     wire `subject_type` (#624)?
+  2. **Authorizer** — for each row the Action's Updates fold into, does the
+     actor have the right `<model>.<verb>` (or `<model>.*`) on the entity's
+     group, where `<model>` is the model the id was committed under rather
+     than a component's prefix (#624)?
 
   Delivery scope is no longer a validation concern: the Writer persists
   each Update's own fan-out scope and the router delivers per Update
@@ -39,7 +39,7 @@ defmodule EbbServer.Storage.PermissionChecker do
   ## What "permission" means here
 
   Permissions are stored on the Group system entity as a list of
-  `<type>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`). The
+  `<model>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`). The
   actor's per-group permissions are loaded into `GroupCache` on startup;
   a write to a Group updates the cache in place. Writes that arrive
   referencing an entity whose group the actor is not a member of, or

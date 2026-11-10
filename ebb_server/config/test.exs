@@ -1,12 +1,22 @@
 import Config
 
 # Point the storage layer at a per-run directory under the OS temp dir so
-# `mix test` never leaves a `data/` tree inside the repo. `System.tmp_dir!/0`
-# is evaluated once at boot — every `mix test` invocation gets a fresh path
-# because the BEAM exits between runs, so there's no risk of stale lock
-# files carrying over.
-config :ebb_server, port: 4001
-config :ebb_server, data_dir: Path.join(System.tmp_dir!(), "ebb_server_test_app_storage")
+# `mix test` never leaves a `data/` tree inside the repo. The suffix is
+# stamped per invocation, so two suites running at once (two checkouts, or
+# two agents in one checkout) cannot fight over one RocksDB lock. The tag is
+# exported so `test/test_helper.exs` can clean the same directory up.
+# The OS pid distinguishes concurrent suites (each `mix test` is its own VM);
+# the unique integer distinguishes successive runs in one VM. Tests that pin a
+# port set it explicitly.
+run_tag = "#{System.pid()}_#{System.unique_integer([:positive])}"
+
+# A per-run port and storage directory for the same reason: two suites at
+# once must not fight over one listener or one RocksDB lock.
+config :ebb_server, port: 20_000 + rem(:erlang.phash2(run_tag), 20_000)
+
+app_storage_tag = "ebb_server_test_app_storage_#{run_tag}"
+System.put_env("EBB_TEST_APP_STORAGE_TAG", app_storage_tag)
+config :ebb_server, data_dir: Path.join(System.tmp_dir!(), app_storage_tag)
 config :ebb_server, auth_mode: :bypass
 # The app registry writes `apps.json`; a per-run directory keeps registrations
 # (and deliberately corrupt-file tests) from leaking between suite runs.

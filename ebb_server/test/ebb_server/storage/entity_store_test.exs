@@ -34,17 +34,13 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
   import EbbServer.TestHelpers
 
+  # A row's components are one Update each, so a fixture that names a row's
+  # fields expands into one validated Update per field.
   defp put_action(id, entity_id, fields, hlc) do
     validated_action(%{
       "id" => id,
       "hlc" => hlc,
-      "updates" => [
-        validated_update(%{
-          "id" => id,
-          "subject_id" => entity_id,
-          "data" => %{"fields" => fields}
-        })
-      ]
+      "updates" => component_updates(id, entity_id, fields, :replace)
     })
   end
 
@@ -52,15 +48,28 @@ defmodule EbbServer.Storage.EntityStoreTest do
     validated_action(%{
       "id" => id,
       "hlc" => hlc,
+      "updates" => component_updates(id, entity_id, fields, :merge)
+    })
+  end
+
+  defp drop_action(id, entity_id, component, hlc) do
+    validated_action(%{
+      "id" => id,
+      "hlc" => hlc,
       "updates" => [
-        validated_update(%{
-          "id" => id,
-          "subject_id" => entity_id,
-          "method" => "patch",
-          "data" => %{"fields" => fields}
-        })
+        validated_component(entity_id, component, nil, id: id, method: :drop)
       ]
     })
+  end
+
+  defp component_updates(id, entity_id, fields, method) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      update_id = if map_size(fields) == 1, do: id, else: "#{id}_#{index}"
+
+      validated_component(entity_id, "todo/#{field}", value, id: update_id, method: method)
+    end)
   end
 
   defp map_field(entries), do: %{"map" => entries}
@@ -109,8 +118,14 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
-      action = validated_action(%{updates: [update]})
+      hlc = generate_hlc()
+
+      updates = [
+        validated_component(entity_id, "todo/title", leaf("Buy milk", hlc)),
+        validated_component(entity_id, "todo/completed", leaf(false, hlc))
+      ]
+
+      action = validated_action(%{updates: updates})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
@@ -135,7 +150,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       dirty_set: dirty_set
     } do
       entity_id = "todo_abc"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
       action = validated_action(%{updates: [update]})
 
       Writer.write_actions([action], writer_name)
@@ -171,11 +186,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             %{
               id: update_id,
               subject_id: entity_id,
-              subject_type: "todo",
-              method: :put,
-              data: %{
-                "fields" => %{"title" => %{"value" => "Framed", "hlc" => hlc}}
-              }
+              component: "todo/title",
+              method: :replace,
+              data: %{"value" => "Framed", "hlc" => hlc}
             }
           ]
         }
@@ -541,11 +554,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -558,12 +568,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Second", "hlc" => hlc_from(2_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Second", "hlc" => hlc_from(2_000)}
             })
           ]
         })
@@ -597,11 +604,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Newer", "hlc" => hlc_from(2_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Newer", "hlc" => hlc_from(2_000)}
             })
           ]
         })
@@ -614,12 +618,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Older", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Older", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -653,11 +654,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -670,15 +668,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
-              "method" => "patch",
+              "method" => "merge",
+              "component" => "todo/description",
               "data" => %{
-                "fields" => %{
-                  "description" => %{
-                    "type" => "lww",
-                    "value" => "Added later",
-                    "hlc" => hlc_from(2_000)
-                  }
-                }
+                "type" => "lww",
+                "value" => "Added later",
+                "hlc" => hlc_from(2_000)
               }
             })
           ]
@@ -726,11 +721,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_aaa",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Lower ID", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Lower ID", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -743,12 +735,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_zzz",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Higher ID", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Higher ID", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -783,11 +772,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_zzz",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Higher ID", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Higher ID", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -800,12 +786,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_aaa",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Lower ID", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Lower ID", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1040,7 +1023,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
              }
     end
 
-    test "put replaces a map field wholesale", %{
+    # A keyed component's create is one `merge` (replace is refused for it),
+    # and every later write touches only the keys it sends.
+    test "a keyed component's writes merge key by key", %{
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       writer_name: writer_name,
@@ -1052,8 +1037,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       hlc_b = hlc_from(3_000)
       hlc_c = hlc_from(4_000)
 
-      put_1 =
-        put_action(
+      create =
+        patch_action(
           "act_put_1",
           entity_id,
           %{"content" => map_field(%{"a" => leaf(1, hlc_a)})},
@@ -1063,23 +1048,18 @@ defmodule EbbServer.Storage.EntityStoreTest do
       patch_b =
         patch_action("u_b", entity_id, %{"content" => map_field(%{"b" => leaf(2, hlc_b)})}, hlc_b)
 
-      put_2 =
-        put_action(
-          "act_put_2",
-          entity_id,
-          %{"content" => map_field(%{"c" => leaf(3, hlc_c)})},
-          hlc_c
-        )
+      patch_c =
+        patch_action("u_c", entity_id, %{"content" => map_field(%{"c" => leaf(3, hlc_c)})}, hlc_c)
 
-      Writer.write_actions([put_1], writer_name)
+      Writer.write_actions([create], writer_name)
       Writer.write_actions([patch_b], writer_name)
-      Writer.write_actions([put_2], writer_name)
+      Writer.write_actions([patch_c], writer_name)
 
       assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
 
-      assert entity.data["fields"]["content"] == %{
-               "map" => %{"c" => %{"value" => 3, "update_id" => "act_put_2", "hlc" => hlc_c}}
-             }
+      assert %{"map" => keys} = entity.data["fields"]["content"]
+      assert Map.keys(keys) |> Enum.sort() == ["a", "b", "c"]
+      assert keys["c"] == %{"value" => 3, "update_id" => "u_c", "hlc" => hlc_c}
     end
 
     test "nested map fields merge key by key", %{
@@ -1407,7 +1387,6 @@ defmodule EbbServer.Storage.EntityStoreTest do
       delete_update =
         validated_update(%{
           "subject_id" => entity_id,
-          "subject_type" => "todo",
           "method" => "delete"
         })
 
@@ -1420,6 +1399,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
                  sqlite_name: sqlite_name,
                  dirty_set: dirty_set
                )
+
+      # A delete for an id nothing ever created writes nothing: a tombstone
+      # here would be a row under the `unknown` model with nothing to
+      # suppress, and there is no base for a later delta to replay onto.
+      assert SQLite.get_entity(entity_id, sqlite_name) == :not_found
     end
 
     test "PUT followed by DELETE returns :not_found", %{
@@ -1438,14 +1422,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
+              "component" => "todo/title",
               "data" => %{
-                "fields" => %{
-                  "title" => %{
-                    "type" => "lww",
-                    "value" => "To be deleted",
-                    "hlc" => hlc_from(1_000)
-                  }
-                }
+                "type" => "lww",
+                "value" => "To be deleted",
+                "hlc" => hlc_from(1_000)
               }
             })
           ]
@@ -1505,11 +1486,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1566,11 +1544,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1596,15 +1571,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
-              "method" => "patch",
+              "method" => "merge",
+              "component" => "todo/description",
               "data" => %{
-                "fields" => %{
-                  "description" => %{
-                    "type" => "lww",
-                    "value" => "Updated",
-                    "hlc" => hlc_from(3_000)
-                  }
-                }
+                "type" => "lww",
+                "value" => "Updated",
+                "hlc" => hlc_from(3_000)
               }
             })
           ]
@@ -1644,11 +1616,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_put",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1675,15 +1644,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_patch",
               "subject_id" => entity_id,
-              "method" => "patch",
+              "method" => "merge",
+              "component" => "todo/description",
               "data" => %{
-                "fields" => %{
-                  "description" => %{
-                    "type" => "lww",
-                    "value" => "Updated",
-                    "hlc" => hlc_from(3_000)
-                  }
-                }
+                "type" => "lww",
+                "value" => "Updated",
+                "hlc" => hlc_from(3_000)
               }
             })
           ]
@@ -1722,11 +1688,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_1",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1739,15 +1702,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_2",
               "subject_id" => entity_id,
-              "method" => "patch",
+              "method" => "merge",
+              "component" => "todo/description",
               "data" => %{
-                "fields" => %{
-                  "description" => %{
-                    "type" => "lww",
-                    "value" => "Second",
-                    "hlc" => hlc_from(2_000)
-                  }
-                }
+                "type" => "lww",
+                "value" => "Second",
+                "hlc" => hlc_from(2_000)
               }
             })
           ]
@@ -1761,12 +1721,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_3",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
             })
           ]
         })
@@ -1878,11 +1835,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_1",
               "subject_id" => entity_id,
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
-                }
-              }
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc_from(1_000)}
             })
           ]
         })
@@ -1895,12 +1849,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_2",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Second", "hlc" => hlc_from(2_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Second", "hlc" => hlc_from(2_000)}
             })
           ]
         })
@@ -1913,12 +1864,9 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_update(%{
               "id" => "upd_3",
               "subject_id" => entity_id,
-              "method" => "patch",
-              "data" => %{
-                "fields" => %{
-                  "title" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
-                }
-              }
+              "method" => "merge",
+              "component" => "todo/title",
+              "data" => %{"type" => "lww", "value" => "Third", "hlc" => hlc_from(3_000)}
             })
           ]
         })
@@ -1976,6 +1924,167 @@ defmodule EbbServer.Storage.EntityStoreTest do
     end
   end
 
+  # The materialized row is the row the client materializes: the same leaf
+  # merge for `replace`, and a delta replay that starts from the row SQLite
+  # already holds instead of from an empty one.
+  describe "component materialization" do
+    test "an older replace arriving later does not clobber a newer stored leaf", ctx do
+      entity_id = "todo_replace_lww"
+      opts = store_opts(ctx)
+
+      newer =
+        put_action(
+          "act_newer",
+          entity_id,
+          %{"title" => leaf("newer", hlc_from(5_000))},
+          hlc_from(5_000)
+        )
+
+      # The Action is later than the stored one, but its leaf is older. The
+      # merge is per leaf, so the newer stored value stands; the client's
+      # materializer reaches the same answer.
+      older =
+        put_action(
+          "act_older",
+          entity_id,
+          %{"title" => leaf("older", hlc_from(2_000))},
+          hlc_from(6_000)
+        )
+
+      Writer.write_actions([newer], ctx.writer_name)
+      Writer.write_actions([older], ctx.writer_name)
+
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+      assert entity.data["fields"]["title"]["value"] == "newer"
+    end
+
+    test "a replace stamps created_hlc on a row a merge created", ctx do
+      entity_id = "todo_replace_created"
+      opts = store_opts(ctx)
+      replace_hlc = hlc_from(2_000)
+
+      # A `merge` is the only way to create a row whose components are all
+      # keyed, and it leaves `created_hlc` unset: the row's create has not
+      # been seen. The first `replace` is what stamps it.
+      created =
+        patch_action(
+          "act_merge",
+          entity_id,
+          %{"title" => leaf("draft", hlc_from(1_000))},
+          hlc_from(1_000)
+        )
+
+      Writer.write_actions([created], ctx.writer_name)
+
+      assert {:ok, merged} = EntityStore.get(entity_id, "a_test", opts)
+      assert is_nil(merged.created_hlc)
+
+      replace =
+        put_action(
+          "act_replace",
+          entity_id,
+          %{"title" => leaf("final", replace_hlc)},
+          replace_hlc
+        )
+
+      Writer.write_actions([replace], ctx.writer_name)
+
+      assert {:ok, replaced} = EntityStore.get(entity_id, "a_test", opts)
+      assert replaced.created_hlc == replace_hlc
+      assert replaced.data["fields"]["title"]["value"] == "final"
+
+      # The stamp has to reach SQLite, not just this read's snapshot: the
+      # replay takes the per-key patch path for an existing row.
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.created_hlc == replace_hlc
+    end
+
+    test "a drop removes the field and keeps the row's metadata", ctx do
+      entity_id = "todo_drop_live"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      created =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("kept", create_hlc), "body" => leaf("detached", create_hlc)},
+          create_hlc
+        )
+
+      Writer.write_actions([created], ctx.writer_name)
+      assert {:ok, before} = EntityStore.get(entity_id, "a_test", opts)
+      assert before.created_hlc == create_hlc
+
+      # The drop arrives as its own Action, so the read replays a delta over
+      # the row SQLite already holds.
+      Writer.write_actions(
+        [drop_action("act_drop", entity_id, "todo/body", hlc_from(2_000))],
+        ctx.writer_name
+      )
+
+      assert {:ok, after_drop} = EntityStore.get(entity_id, "a_test", opts)
+      assert after_drop.type == "todo"
+      assert after_drop.created_hlc == create_hlc
+      assert after_drop.deleted_hlc == nil
+      assert after_drop.data["fields"]["title"]["value"] == "kept"
+      refute Map.has_key?(after_drop.data["fields"], "body")
+    end
+
+    test "a drop for a row that was never materialized creates nothing", ctx do
+      entity_id = "todo_drop_absent"
+      opts = store_opts(ctx)
+
+      Writer.write_actions(
+        [drop_action("act_drop_absent", entity_id, "todo/body", hlc_from(1_000))],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert :not_found = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
+    end
+
+    test "a drop leaves a tombstone untouched", ctx do
+      entity_id = "todo_drop_tombstone"
+      opts = store_opts(ctx)
+      deleted_hlc = hlc_from(2_000)
+
+      create =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("t", hlc_from(1_000))},
+          hlc_from(1_000)
+        )
+
+      Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions(
+        [
+          validated_action(%{
+            "id" => "act_delete",
+            "hlc" => deleted_hlc,
+            "updates" => [validated_update(%{"subject_id" => entity_id, "method" => "delete"})]
+          })
+        ],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+
+      Writer.write_actions(
+        [drop_action("act_drop", entity_id, "todo/title", hlc_from(3_000))],
+        ctx.writer_name
+      )
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.deleted_hlc == deleted_hlc
+    end
+  end
+
   describe "durable commit and read ordering" do
     test "a read after the durable commit does not see stale SQLite", ctx do
       entity_id = "todo_after_commit"
@@ -1983,7 +2092,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       action =
         validated_action(%{
           id: "act_after_commit",
-          updates: [validated_update(%{subject_id: entity_id, subject_type: "todo"})]
+          updates: [validated_update(%{subject_id: entity_id})]
         })
 
       opts = [
@@ -2020,7 +2129,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         ])
 
       entity_id = "todo_telemetry_dirty"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2039,12 +2148,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert is_integer(duration)
       assert duration >= 0
       assert metadata.subject_id == entity_id
-      assert metadata.subject_type == "todo"
+      assert metadata.model == "todo"
     end
 
     test "clean read emits a cache hit and no materialize latency", ctx do
       entity_id = "todo_telemetry_clean"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2079,7 +2188,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
     test "query with a dirty entity emits a cache miss", ctx do
       entity_id = "todo_telemetry_query_miss"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2098,7 +2207,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           entity_id = "todo_telemetry_many_#{n}"
 
           validated_action(%{
-            updates: [validated_update(%{subject_id: entity_id, subject_type: "todo"})]
+            updates: [validated_update(%{subject_id: entity_id})]
           })
         end
 
@@ -2121,7 +2230,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
     end
 
     test "query materializing a dirty system entity emits a cache miss", ctx do
-      update = validated_update(%{subject_id: "gm_telemetry", subject_type: "groupMember"})
+      update = validated_update(%{subject_id: "gm_telemetry"})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2143,7 +2252,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         ])
 
       entity_id = "todo_telemetry_phases"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2186,7 +2295,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
     test "a warm dirty materialize reports the pre-existing blob size", ctx do
       entity_id = "todo_telemetry_warm"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
@@ -2196,13 +2305,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
       patch =
         validated_update(%{
           subject_id: entity_id,
-          subject_type: "todo",
-          method: :patch,
-          data: %{
-            "fields" => %{
-              "title" => %{"type" => "lww", "value" => "patched", "hlc" => generate_hlc()}
-            }
-          }
+          component: "todo/title",
+          data: %{"type" => "lww", "value" => "patched", "hlc" => generate_hlc()}
         })
 
       assert {:ok, {2, 2}, []} =
@@ -2222,7 +2326,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
     test "a clean read reports a decode sample with path and blob size", ctx do
       entity_id = "todo_telemetry_clean_read"
-      update = validated_update(%{subject_id: entity_id, subject_type: "todo"})
+      update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)

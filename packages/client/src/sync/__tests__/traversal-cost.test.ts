@@ -12,7 +12,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -58,14 +65,14 @@ const ingestRow = (replica: ReturnType<typeof createReplica>, entity: Entity, po
     gsn: position,
     updates: [],
   };
-  const update: Update = {
-    id: `u_${entity.id}`,
+  const updates: Update[] = Object.entries(entity.data.fields).map(([field, value]) => ({
+    id: `u_${entity.id}_${field}`,
     subject_id: entity.id,
-    subject_type: entity.type,
-    method: "put",
-    data: { fields: entity.data?.fields ?? {} },
-  };
-  replica.ingest(action, [update], position);
+    component: componentName(entity.type, field),
+    method: isFieldMap(value) ? "merge" : "replace",
+    data: value,
+  }));
+  replica.ingest(action, updates, position);
 };
 
 type Backend = "storage" | "replica";

@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Entity } from "@ebbjs/core";
+import { componentName, makeHlc, type Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
@@ -33,20 +33,19 @@ const ingest = (
   type: string,
   id: string,
   title = id,
+  method: "merge" | "replace" = "replace",
 ): void => {
   gsn += 1;
   const entity = row(id, title);
   replica.ingest(
     { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
-    [
-      {
-        id: `u_${gsn}`,
-        subject_id: id,
-        subject_type: type,
-        method: "put",
-        data: { fields: entity.data.fields },
-      },
-    ],
+    Object.entries(entity.data.fields).map(([field, value]) => ({
+      id: `u_${gsn}_${field}`,
+      subject_id: id,
+      component: componentName(type, field),
+      method: method ?? ("replace" as const),
+      data: value,
+    })),
     gsn,
   );
 };

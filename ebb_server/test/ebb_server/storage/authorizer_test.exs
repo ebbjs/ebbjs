@@ -58,7 +58,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp build_action(updates, actor_id \\ "a_1") do
-    %{id: "act_test", actor_id: actor_id, hlc: generate_hlc(), updates: updates}
+    %{id: "act_test", actor_id: actor_id, hlc: generate_hlc(), updates: List.flatten(updates)}
   end
 
   defp assert_accepted(result) do
@@ -73,143 +73,110 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp group_put(id) do
-    %{
-      id: id,
-      subject_id: id,
-      subject_type: "group",
-      method: :put,
-      data: %{"fields" => %{"name" => %{"value" => "Test Group"}}}
-    }
+    component_update(id, id, "group/name", :replace, %{"value" => "Test Group"})
   end
 
+  # A row is one component per field, so a system row's fixture expands into
+  # the component Updates the wire would carry.
   defp group_member_put(id, actor_id, group_id, permissions) do
-    %{
-      id: id,
-      subject_id: id,
-      subject_type: "groupMember",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "actor_id" => %{"value" => actor_id},
-          "group_id" => %{"value" => group_id},
-          "permissions" => %{"value" => permissions}
-        }
-      }
-    }
-  end
-
-  defp entity_put(id, type) do
-    %{id: id, subject_id: id, subject_type: type, method: :put, data: %{"fields" => %{}}}
-  end
-
-  defp entity_patch(id, type) do
-    %{
-      id: "#{id}_patch",
-      subject_id: id,
-      subject_type: type,
-      method: :patch,
-      data: %{"fields" => %{}}
-    }
-  end
-
-  defp entity_delete(id, type) do
-    %{id: "#{id}_delete", subject_id: id, subject_type: type, method: :delete, data: nil}
-  end
-
-  defp entity_group_put(id, entity_id, group_id) do
-    %{
-      id: id,
-      subject_id: id,
-      subject_type: "entityGroup",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "entity_id" => %{"value" => entity_id},
-          "group_id" => %{"value" => group_id}
-        }
-      }
-    }
-  end
-
-  defp entity_group_delete(id) do
-    %{id: id, subject_id: id, subject_type: "entityGroup", method: :delete, data: nil}
-  end
-
-  defp group_member_delete(id) do
-    %{id: id, subject_id: id, subject_type: "groupMember", method: :delete, data: nil}
+    component_updates(id, id, "groupMember", :replace, %{
+      "actor_id" => actor_id,
+      "group_id" => group_id,
+      "permissions" => permissions
+    })
   end
 
   defp group_member_patch(id, group_id, permissions) do
-    %{
-      id: id,
-      subject_id: id,
-      subject_type: "groupMember",
-      method: :patch,
-      data: %{
-        "fields" => %{
-          "group_id" => %{"value" => group_id},
-          "permissions" => %{"value" => permissions}
-        }
-      }
-    }
+    component_updates(
+      "#{id}_patch",
+      id,
+      "groupMember",
+      :merge,
+      %{"group_id" => group_id, "permissions" => permissions}
+    )
   end
 
-  # A patch's wire form carries only the fields it changes; `group_member_patch/3`
-  # above always names both.
+  # A merge carries only the components it changes.
   defp group_member_patch_without_permissions(id, group_id) do
-    %{
-      id: "#{id}_patch",
-      subject_id: id,
-      subject_type: "groupMember",
-      method: :patch,
-      data: %{"fields" => %{"group_id" => %{"value" => group_id}}}
-    }
+    component_updates("#{id}_patch", id, "groupMember", :merge, %{"group_id" => group_id})
   end
+
+  defp entity_put(id, model) do
+    component_update(id, id, "#{model}/title", :replace, %{"value" => "Test"})
+  end
+
+  defp entity_patch(id, model) do
+    component_update("#{id}_patch", id, "#{model}/title", :merge, %{"value" => "Patched"})
+  end
+
+  defp entity_delete(id, _model) do
+    delete_update("#{id}_delete", id)
+  end
+
+  defp entity_group_put(id, entity_id, group_id) do
+    component_updates(id, id, "entityGroup", :replace, %{
+      "entity_id" => entity_id,
+      "group_id" => group_id
+    })
+  end
+
+  defp entity_group_delete(id), do: delete_update(id, id)
+
+  defp group_member_delete(id), do: delete_update(id, id)
 
   defp relationship_put(id, source_id, target_id, source_type) do
-    %{
-      id: id,
-      subject_id: id,
-      subject_type: "relationship",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "source_id" => %{"value" => source_id},
-          "target_id" => %{"value" => target_id},
-          "type" => %{"value" => source_type},
-          "field" => %{"value" => "column"}
-        }
-      }
-    }
+    component_updates(id, id, "relationship", :replace, %{
+      "source_id" => source_id,
+      "target_id" => target_id,
+      "type" => source_type,
+      "field" => "column"
+    })
   end
 
   defp relationship_patch(id, source_id, target_id) do
+    component_updates("#{id}_patch", id, "relationship", :merge, %{
+      "source_id" => source_id,
+      "target_id" => target_id
+    })
+  end
+
+  # A delete names the row and no component, so it carries no wire source;
+  # the stored row is the delete's scope.
+  defp relationship_delete(id, _source_id \\ nil), do: delete_update("#{id}_delete", id)
+
+  defp component_update(id, subject_id, component, method, data) do
+    [model, field] = :binary.split(component, "/")
+
     %{
-      id: "#{id}_patch",
-      subject_id: id,
-      subject_type: "relationship",
-      method: :patch,
-      data: %{
-        "fields" => %{
-          "source_id" => %{"value" => source_id},
-          "target_id" => %{"value" => target_id}
-        }
-      }
+      id: id,
+      subject_id: subject_id,
+      component: component,
+      model: model,
+      field: field,
+      method: method,
+      data: data
     }
   end
 
-  defp relationship_delete(id, source_id \\ nil) do
-    data =
-      if source_id do
-        %{"fields" => %{"source_id" => %{"value" => source_id}}}
-      end
+  defp component_updates(id, subject_id, model, method, fields) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map(fn {{field, value}, index} ->
+      component_update("#{id}_#{index}", subject_id, "#{model}/#{field}", method, %{
+        "value" => value
+      })
+    end)
+  end
 
+  defp delete_update(id, subject_id) do
     %{
-      id: "#{id}_delete",
-      subject_id: id,
-      subject_type: "relationship",
+      id: id,
+      subject_id: subject_id,
+      component: nil,
+      model: nil,
+      field: nil,
       method: :delete,
-      data: data
+      data: nil
     }
   end
 
@@ -242,9 +209,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :replace,
+            data: %{"value" => "Test"}
           }
         ])
 
@@ -262,9 +231,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :replace,
+            data: %{"value" => "Test"}
           }
         ])
 
@@ -283,9 +254,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :replace,
+            data: %{"value" => "Test"}
           }
         ])
 
@@ -305,9 +278,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: :patch,
-            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :replace,
+            data: %{"value" => "Test"}
           }
         ])
 
@@ -318,7 +293,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"])
       put_group_member(tables, "g_2", ["todo.read"], "gm_2")
 
       put_membership(tables, "todo_1", "g_1", "eg_1")
@@ -330,9 +305,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: :put,
-            data: %{"fields" => %{"title" => %{"value" => "Test"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :replace,
+            data: %{"value" => "Test"}
           }
         ])
 
@@ -359,22 +336,15 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_1", ["groupMember.update"])
+      put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["group.read"])
 
       action =
         build_action([
-          %{
-            id: "gm_2",
-            subject_id: "gm_2",
-            subject_type: "groupMember",
-            method: :patch,
-            data: %{
-              "fields" => %{
-                "group_id" => %{"value" => "g_1"},
-                "actor_id" => %{"value" => "a_2"},
-                "permissions" => %{"value" => ["group.read"]}
-              }
-            }
-          }
+          component_updates("gm_2_patch", "gm_2", "groupMember", :merge, %{
+            "group_id" => "g_1",
+            "actor_id" => "a_2",
+            "permissions" => ["group.read"]
+          })
         ])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
@@ -386,19 +356,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action =
         build_action([
-          %{
-            id: "gm_1",
-            subject_id: "gm_1",
-            subject_type: "groupMember",
-            method: :patch,
-            data: %{
-              "fields" => %{
-                "group_id" => %{"value" => "g_1"},
-                "actor_id" => %{"value" => "a_2"},
-                "permissions" => %{"value" => ["group.read"]}
-              }
-            }
-          }
+          component_updates("gm_1_patch", "gm_1", "groupMember", :merge, %{
+            "group_id" => "g_1",
+            "actor_id" => "a_2",
+            "permissions" => ["group.read"]
+          })
         ])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
@@ -457,7 +419,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_del",
             subject_id: "rel_1",
-            subject_type: "relationship",
+            component: nil,
+            model: nil,
+            field: nil,
             method: :delete,
             data: nil
           }
@@ -478,7 +442,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_del",
             subject_id: "rel_1",
-            subject_type: "relationship",
+            component: nil,
+            model: nil,
+            field: nil,
             method: :delete,
             data: nil
           }
@@ -487,37 +453,27 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
 
-    test "relationship delete rejects when the relationship is not in cache" do
+    test "relationship delete is refused when nothing can model the row" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      action =
-        build_action([
-          %{
-            id: "upd_del",
-            subject_id: "rel_unknown",
-            subject_type: "relationship",
-            method: :delete,
-            data: nil
-          }
-        ])
+      # A delete names no component, so the committed model is the only way
+      # to place it as a relationship. Nothing places this id, and resolving
+      # no group at all would be no check.
+      action = build_action([relationship_delete("rel_unknown")])
 
-      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
 
-    test "groupMember delete without wire data is refused when the index cannot place the row" do
+    test "groupMember delete is refused when nothing can model the row" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
 
-      # The delete wire form drops the data fields, so the group has to come
-      # from the index. Nothing places an unknown row, and authorizing the
-      # delete against no group at all would be no check.
       action = build_action([group_member_delete("gm_ghost")])
 
-      rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
-      assert rejection.details == "cannot resolve the group for this groupMember"
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
 
     test "groupMember delete resolves group_id from cache after a put" do
@@ -535,7 +491,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_del",
             subject_id: "gm_1",
-            subject_type: "groupMember",
+            component: nil,
+            model: nil,
+            field: nil,
             method: :delete,
             data: nil
           }
@@ -664,9 +622,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_other",
             subject_id: "todo_other",
-            subject_type: "todo",
-            method: :patch,
-            data: %{"fields" => %{"title" => %{"value" => "hax"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :merge,
+            data: %{"value" => "hax"}
           }
         ])
 
@@ -704,9 +664,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
           %{
             id: "upd_victim",
             subject_id: "todo_victim",
-            subject_type: "todo",
-            method: :patch,
-            data: %{"fields" => %{"title" => %{"value" => "hax"}}}
+            component: "todo/title",
+            model: "todo",
+            field: "title",
+            method: :merge,
+            data: %{"value" => "hax"}
           }
         ])
 
@@ -782,7 +744,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
@@ -797,21 +759,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       put_group_member(tables, "g_1", ["todo.update", "todo.delete"])
 
-      patch = %{
-        id: "upd_patch",
-        subject_id: "todo_orphan",
-        subject_type: "todo",
-        method: :patch,
-        data: %{"fields" => %{}}
-      }
+      patch =
+        component_update("upd_patch", "todo_orphan", "todo/title", :merge, %{"value" => "x"})
 
-      delete = %{
-        id: "upd_delete",
-        subject_id: "todo_orphan_2",
-        subject_type: "todo",
-        method: :delete,
-        data: nil
-      }
+      delete = delete_update("upd_delete", "todo_orphan_2")
 
       assert_rejected(
         Authorizer.authorize([build_action([patch])], "a_1", ctx),
@@ -825,11 +776,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # #624: the wire `subject_type` is client input, while the type an id
-  # was committed under is authoritative. Without this check, a
-  # permission on any type in the group authorizes a relabel and a full
-  # overwrite of every other type's entities there.
-  describe "authorize/3 - writes use the committed type" do
+  # #624: a component's model prefix is client input, while the model an id
+  # was committed under is authoritative. Without this check, a permission on
+  # any model in the group authorizes a relabel and a full overwrite of every
+  # other model's entities there.
+  describe "authorize/3 - writes use the committed model" do
     test "rejects a put, patch and delete that relabel an existing entity" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
@@ -1127,7 +1078,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["todo.*"])
+      put_group_member(tables, "g_victim", ["todo.*", "relationship.update"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
@@ -1164,9 +1115,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_rel",
         subject_id: "rel_1",
-        subject_type: "relationship",
-        method: :put,
-        data: %{"fields" => %{"target_id" => %{"value" => "col_2"}}}
+        component: "relationship/target_id",
+        model: "relationship",
+        field: "target_id",
+        method: :replace,
+        data: %{"value" => "col_2"}
       }
 
       rejection =
@@ -1175,7 +1128,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           "not_authorized"
         )
 
-      assert rejection.details == "relationship source type is unresolvable"
+      assert rejection.details == "relationship source model is unresolvable"
     end
 
     test "accepts a brand-new relationship row" do
@@ -1205,9 +1158,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       sourceless_patch = %{
         id: "rel_victim_patch",
         subject_id: "rel_victim",
-        subject_type: "relationship",
-        method: :patch,
-        data: %{"fields" => %{"target_id" => %{"value" => "col_y"}}}
+        component: "relationship/target_id",
+        model: "relationship",
+        field: "target_id",
+        method: :merge,
+        data: %{"value" => "col_y"}
       }
 
       rejection =
@@ -1282,16 +1237,19 @@ defmodule EbbServer.Storage.AuthorizerTest do
     # row was either created earlier in the request or already tombstoned,
     # and in both cases the wire source is the only scope there is. That is
     # also why an absent by-id row is not treated as a refusal (#624).
-    test "resolves a delete from the wire source when no committed row exists" do
+    test "a delete with no committed row and no sibling write has no scope" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_victim", ["relationship.*"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
 
+      # A delete names no component, so a row nothing committed has neither a
+      # model nor a wire source to scope it; its only scope is a put for the
+      # same row in the same Action (`:intra_relationship_sources`).
       action = build_action([relationship_delete("rel_new", "todo_victim")])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
 
     # Moving an edge is a delete plus a put (#624's prescribed remedy). The
@@ -1304,7 +1262,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
-      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_group_member(tables, "g_new", ["todo.*", "relationship.*"], "gm_new")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_membership(tables, "todo_new", "g_new", "eg_new")
@@ -1325,7 +1283,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
-      put_group_member(tables, "g_new", ["todo.*"], "gm_new")
+      put_group_member(tables, "g_new", ["todo.*", "relationship.*"], "gm_new")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_membership(tables, "todo_new", "g_new", "eg_new")
@@ -1737,10 +1695,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert Enum.all?(rest, &(&1.reason == "last_membership"))
     end
 
-    test "an unresolvable membership delete is not_authorized", %{ctx: ctx} do
+    test "an unresolvable membership delete is refused", %{ctx: ctx} do
       action = build_action([entity_group_delete("eg_unknown")])
 
-      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "missing_ownership")
     end
   end
 
@@ -1913,20 +1871,26 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a put without a wire group is a no-op, not a lockout", %{tables: tables, ctx: ctx} do
+    test "a write that empties the permission list is a lockout", %{tables: tables, ctx: ctx} do
       put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
 
-      # No `group_id` on the wire, so the Writer drops the update; the
-      # guard must not read that as emptying the cached row.
+      # Only the permission component is written, so the row keeps its group
+      # and its permission list becomes empty — the group would be left with
+      # no member that can administer it.
       update = %{
         id: "upd_gm",
         subject_id: "gm_actor",
-        subject_type: "groupMember",
-        method: :put,
-        data: %{"fields" => %{"permissions" => %{"value" => []}}}
+        component: "groupMember/permissions",
+        model: "groupMember",
+        field: "permissions",
+        method: :replace,
+        data: %{"value" => []}
       }
 
-      assert_accepted(Authorizer.authorize([build_action([update])], "a_1", ctx))
+      assert_rejected(
+        Authorizer.authorize([build_action([update])], "a_1", ctx),
+        "last_group_member"
+      )
     end
 
     test "moving a membership out of a group that keeps a capable row is allowed", %{
@@ -2069,11 +2033,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # #623: an `entityGroup` patch is authorized against the group named on
-  # the wire and writes a membership row when the row id is unknown, so it
-  # can file any entity id into the caller's group. The server refuses the
-  # method until it is bound to the row; put and delete are unchanged.
-  describe "authorize/3 - entityGroup patch" do
+  # #623: an `entityGroup` write is authorized against the entity and group
+  # it names, never against the caller's own group alone. A membership row
+  # for an id nothing models cannot be filed, whatever permission the caller
+  # holds.
+  describe "authorize/3 - entityGroup writes are bound to the entity" do
     setup do
       tables = create_isolated_tables()
 
@@ -2082,21 +2046,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
       %{tables: tables, ctx: auth_context(tables)}
     end
 
-    test "is rejected even when the actor holds entityGroup.update in the wire group", %{
+    test "is rejected even when the actor holds entityGroup.update in the target group", %{
       ctx: ctx
     } do
-      update = %{
-        id: "eg_fresh",
-        subject_id: "eg_fresh",
-        subject_type: "entityGroup",
-        method: :patch,
-        data: %{
-          "fields" => %{
-            "entity_id" => %{"value" => "todo_victim"},
-            "group_id" => %{"value" => "g_atk"}
-          }
-        }
-      }
+      update =
+        component_updates("eg_fresh_patch", "eg_fresh", "entityGroup", :merge, %{
+          "entity_id" => "todo_victim",
+          "group_id" => "g_atk"
+        })
 
       rejection =
         assert_rejected(
@@ -2104,7 +2061,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           "not_authorized"
         )
 
-      assert rejection.details =~ "patch"
+      assert rejection.details =~ "cannot resolve the model of the entity"
     end
 
     test "a bootstrap entityGroup put cannot re-point an existing membership row" do
@@ -2141,7 +2098,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       duplicate = %{
         id: "dup_update",
-        subject_type: "entityGroup",
+        component: nil,
+        model: nil,
+        field: nil,
         method: :delete,
         data: nil
       }
@@ -2174,6 +2133,52 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action([entity_group_put("eg_victim", "todo_attacker", "g_atk")])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # #623: an existing membership row's write folds to `:patch`, so the row
+    # identity check has to cover both verbs. Otherwise a caller holding
+    # `<model>.create` and `<model>.update` in their own group can merge a
+    # victim's row id onto another entity and steal the membership, silently
+    # stripping the victim of its last group.
+    test "a merge cannot re-point a live membership row at another entity", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      # The attacker is fully authorized for their own pair, so a rejection
+      # here can only come from the row-identity check.
+      put_group_member(tables, "g_atk", ["todo.create", "todo.update"], "gm_atk")
+      put_entity_type(tables, "todo_attacker", "todo")
+      put_membership(tables, "todo_attacker", "g_atk", "eg_attacker")
+      put_entity_group_by_id(tables, "eg_attacker", "todo_attacker", "g_atk")
+      put_entity_type(tables, "todo_victim", "todo")
+      put_membership(tables, "todo_victim", "g_victim", "eg_victim")
+      put_entity_group_by_id(tables, "eg_victim", "todo_victim", "g_victim")
+
+      re_point =
+        component_updates("eg_victim_merge", "eg_victim", "entityGroup", :merge, %{
+          "entity_id" => "todo_attacker",
+          "group_id" => "g_atk"
+        })
+
+      rejection =
+        assert_rejected(
+          Authorizer.authorize([build_action([re_point])], "a_1", ctx),
+          "not_authorized"
+        )
+
+      assert rejection.details == "a membership row cannot be re-pointed at another entity"
+
+      # The same merge naming the row's own entity is an ordinary write: the
+      # check is identity, not a refusal of membership merges.
+      put_group_member(tables, "g_victim", ["todo.create"], "gm_victim")
+
+      keep =
+        component_updates("eg_victim_merge_2", "eg_victim", "entityGroup", :merge, %{
+          "entity_id" => "todo_victim",
+          "group_id" => "g_victim"
+        })
+
+      assert_accepted(Authorizer.authorize([build_action([keep])], "a_1", ctx))
     end
 
     test "a put may move a membership row it names to another group", %{tables: tables, ctx: ctx} do
@@ -2356,12 +2361,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "an existing group re-put by a member with group.create still succeeds" do
+    test "an existing group re-put by a member with group.update still succeeds" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
       put_entity_type(tables, "g_1", "group")
-      put_group_member(tables, "g_1", ["group.create"])
+      put_group_member(tables, "g_1", ["group.update"])
 
       assert_accepted(Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx))
     end
@@ -2400,19 +2405,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
 
     test "cannot update a groupMember", %{ctx: ctx} do
-      update = %{
-        id: "upd_gm",
-        subject_id: "gm_2",
-        subject_type: "groupMember",
-        method: :patch,
-        data: %{
-          "fields" => %{
-            "group_id" => %{"value" => "g_1"},
-            "actor_id" => %{"value" => "a_2"},
-            "permissions" => %{"value" => ["*"]}
-          }
-        }
-      }
+      update =
+        component_updates("upd_gm_patch", "gm_2", "groupMember", :merge, %{
+          "group_id" => "g_1",
+          "actor_id" => "a_2",
+          "permissions" => ["*"]
+        })
 
       assert_rejected(
         Authorizer.authorize([build_action([update])], "a_1", ctx),
@@ -2423,13 +2421,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     test "cannot delete a groupMember", %{tables: tables, ctx: ctx} do
       put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["*"])
 
-      update = %{
-        id: "upd_gm",
-        subject_id: "gm_2",
-        subject_type: "groupMember",
-        method: :delete,
-        data: nil
-      }
+      update = delete_update("upd_gm", "gm_2")
 
       assert_rejected(
         Authorizer.authorize([build_action([update])], "a_1", ctx),
@@ -2448,9 +2440,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_rel",
         subject_id: "rel_1",
-        subject_type: "relationship",
-        method: :patch,
-        data: %{"fields" => %{"source_id" => %{"value" => "todo_1"}}}
+        component: "relationship/source_id",
+        model: "relationship",
+        field: "source_id",
+        method: :merge,
+        data: %{"value" => "todo_1"}
       }
 
       assert_rejected(
@@ -2465,7 +2459,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_rel",
         subject_id: "rel_1",
-        subject_type: "relationship",
+        component: nil,
+        model: nil,
+        field: nil,
         method: :delete,
         data: nil
       }
@@ -2489,9 +2485,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_eg",
         subject_id: "eg_1",
-        subject_type: "entityGroup",
-        method: :patch,
-        data: %{"fields" => %{"group_id" => %{"value" => "g_1"}}}
+        component: "entityGroup/group_id",
+        model: "entityGroup",
+        field: "group_id",
+        method: :merge,
+        data: %{"value" => "g_1"}
       }
 
       assert_rejected(
@@ -2506,7 +2504,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_eg",
         subject_id: "eg_1",
-        subject_type: "entityGroup",
+        component: nil,
+        model: nil,
+        field: nil,
         method: :delete,
         data: nil
       }
@@ -2526,7 +2526,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["todo.create"])
+      put_group_member(tables, "g_1", ["todo.update"])
       put_membership(tables, "todo_ok", "g_1", "eg_ok")
       put_membership(tables, "todo_bad", "g_2", "eg_bad")
       put_entity_type(tables, "todo_ok", "todo")
@@ -2564,7 +2564,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       assert create_rejection.reason == "not_authorized"
       assert add_rejection.reason == "not_authorized"
-      assert add_rejection.details =~ "cannot resolve the type"
+      assert add_rejection.details =~ "cannot resolve the model"
     end
   end
 end

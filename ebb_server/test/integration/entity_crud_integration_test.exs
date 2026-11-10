@@ -23,21 +23,23 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_test1",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_test1",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc},
-                "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_test1" <> "_title",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc}
+            },
+            %{
+              "id" => "upd_test1" <> "_completed",
+              "subject_id" => entity_id,
+              "component" => "todo/completed",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => false, "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -64,20 +66,16 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_cache",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_cache",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Cached item", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_cache",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Cached item", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -108,20 +106,16 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_gsn",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_gsn",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "GSN test", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_gsn",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "GSN test", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -145,20 +139,16 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_dirty",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_dirty",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Dirty test", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_dirty",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Dirty test", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -184,40 +174,32 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_seq1",
         "actor_id" => "a_test",
         "hlc" => hlc1,
-        "updates" => [
-          %{
-            "id" => "upd_seq1",
-            "subject_id" => entity1,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "First entity", "hlc" => hlc1}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_seq1",
+              "subject_id" => entity1,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "First entity", "hlc" => hlc1}
             }
-          },
-          entity_group_update(entity1, "g_test", hlc1)
-        ]
+          ] ++ entity_group_update(entity1, "g_test", hlc1)
       }
 
       action2 = %{
         "id" => "act_seq2",
         "actor_id" => "a_test",
         "hlc" => hlc2,
-        "updates" => [
-          %{
-            "id" => "upd_seq2",
-            "subject_id" => entity2,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Second entity", "hlc" => hlc2}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_seq2",
+              "subject_id" => entity2,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Second entity", "hlc" => hlc2}
             }
-          },
-          entity_group_update(entity2, "g_test", hlc2)
-        ]
+          ] ++ entity_group_update(entity2, "g_test", hlc2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action1]}))
@@ -261,20 +243,16 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_hlc_int",
         "actor_id" => "a_test",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_hlc_int",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_hlc_int",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -291,20 +269,16 @@ defmodule EbbServer.EntityCrudIntegrationTest do
         "id" => "act_hlc_str",
         "actor_id" => "a_test",
         "hlc" => "#{hlc}",
-        "updates" => [
-          %{
-            "id" => "upd_hlc_str",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "String HLC", "hlc" => hlc}
-              }
+        "updates" =>
+          [
+            %{
+              "id" => "upd_hlc_str",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "String HLC", "hlc" => hlc}
             }
-          },
-          entity_group_update(entity_id, "g_test", hlc)
-        ]
+          ] ++ entity_group_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -322,11 +296,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_zero",
             "subject_id" => "todo_zero",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 0}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => 0}
           }
         ]
       }
@@ -346,11 +318,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_neg",
             "subject_id" => "todo_neg",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => -1}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => -1}
           }
         ]
       }
@@ -370,11 +340,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_nan",
             "subject_id" => "todo_nan",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => "abc"}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => "abc"}
           }
         ]
       }
@@ -394,11 +362,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_float",
             "subject_id" => "todo_float",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 1.5}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => 1.5}
           }
         ]
       }
@@ -418,11 +384,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_nil",
             "subject_id" => "todo_nil",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => nil}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => nil}
           }
         ]
       }
@@ -442,11 +406,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_hlc_empty",
             "subject_id" => "todo_empty",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => ""}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => ""}
           }
         ]
       }
@@ -473,11 +435,9 @@ defmodule EbbServer.EntityCrudIntegrationTest do
           %{
             "id" => "upd_rej",
             "subject_id" => "todo_rej",
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Test", "hlc" => 0}}
-            }
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test", "hlc" => 0}
           }
         ]
       }

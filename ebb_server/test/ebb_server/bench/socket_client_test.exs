@@ -200,8 +200,8 @@ defmodule EbbServer.Bench.SocketClientTest do
   describe "frame_sent_us/1" do
     test "reads the workbook's monotonic stamp" do
       frame =
-        ~s(event: data\ndata: {"gsn":1,"updates":[{"data":{"fields":) <>
-          ~s({"bench_sent_us":{"hlc":5,"type":"lww","value":123456}}}]}}\n\n)
+        ~s(event: data\ndata: {"gsn":1,"updates":[{"component":"todo/bench_sent_us",) <>
+          ~s("method":"replace","data":{"value":123456,"hlc":5}}]}\n\n)
 
       assert SocketClient.frame_sent_us(frame) == 123_456
     end
@@ -210,8 +210,8 @@ defmodule EbbServer.Bench.SocketClientTest do
       # `erlang:monotonic_time/0` has an undefined per-VM epoch, so the server's
       # stamp can be negative on the child's terms.
       frame =
-        ~s(event: data\ndata: {"gsn":1,"updates":[{"data":{"fields":) <>
-          ~s({"bench_sent_us":{"hlc":5,"type":"lww","value":-576460750230959}}}]}}\n\n)
+        ~s(event: data\ndata: {"gsn":1,"updates":[{"component":"todo/bench_sent_us",) <>
+          ~s("method":"replace","data":{"value":-576460750230959,"hlc":5}}]}\n\n)
 
       assert SocketClient.frame_sent_us(frame) == -576_460_750_230_959
     end

@@ -48,7 +48,7 @@
  * storage adapter and fetch.
  */
 
-import { compare, type Action, type Entity } from "@ebbjs/core";
+import { compare, componentField, componentName, type Action, type Entity } from "@ebbjs/core";
 import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD, type ConflictScope } from "@ebbjs/schema";
 import type {
   ConflictRemoteAction,
@@ -130,7 +130,8 @@ const isConcurrent = (entry: OutboxEntry, action: Action): boolean => action.gsn
 /** A loser subject's pre-detection state; `after` is read at detection. */
 interface LoserSubject {
   readonly subjectId: string;
-  readonly subjectType: string;
+  /** The model the row is committed under. */
+  readonly model: string;
   readonly before: Entity | null;
 }
 
@@ -249,20 +250,20 @@ export interface OutboxDependencies {
    */
   baseGsn: () => number;
   /**
-   * Conflict granularity declared by an entity: `"field"` surfaces a
-   * same-position race, `"entity"` any concurrent touch. Unknown types
+   * Conflict granularity declared by a model: `"field"` surfaces a
+   * same-position race, `"entity"` any concurrent touch. Unknown models
    * default to `"field"`.
    */
-  conflictScope: (subjectType: string) => ConflictScope;
+  conflictScope: (model: string) => ConflictScope;
   /**
-   * Field-kind oracle: `true` when `field` on `subjectType` merges
-   * last-writer-wins, so an inbound write can silently overwrite a
-   * buffered local one. A map field (a document's `content`) is LWW per
-   * leaf, so the slot comparison still gates on the leaf. Counter
-   * fields return `false`. Structural edge subject types are excluded
-   * regardless. Defaults to every non-structural field being LWW.
+   * Component-kind oracle: `true` when `component` merges last-writer-wins,
+   * so an inbound write can silently overwrite a buffered local one. A keyed
+   * component (a document's `content`) is LWW per leaf, so the slot comparison
+   * still gates on the leaf. Counter components return `false`. Structural
+   * edge models are excluded regardless. Defaults to every non-structural
+   * component being LWW.
    */
-  isLwwField?: (subjectType: string, field: string) => boolean;
+  isLwwField?: (model: string, component: string) => boolean;
   /** Stamp a fresh HLC for an entry's `enqueuedAtHlc` ordering key. */
   hlc: () => string;
   /** Mint an id for one detected conflict entry. */
@@ -887,25 +888,30 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         if (concurrent.length === 0) continue;
         const overlap: ConflictSlot[] = [];
         for (const actionInbound of concurrent) {
-          for (const [field, pendingValue] of pending.fields) {
-            if (!isConflictableField(deps.isLwwField, inbound.subjectType, field)) continue;
-            // A text body's `version` leaf declares its cell format; it is
-            // metadata, not state, so a concurrent write never contests it.
-            if (field === DOC_VERSION_FIELD && pending.fields.has(DOC_CONTENT_FIELD)) continue;
-            const remoteField = inbound.fields.get(field);
-            const winner = actionInbound.fields.get(field);
+          for (const [component, pendingValue] of pending.components) {
+            if (!isConflictableField(deps.isLwwField, inbound.model, component)) continue;
+            // A text body's `version` component declares its cell format; it
+            // is metadata, not state, so a concurrent write never contests it.
+            if (
+              componentField(component) === DOC_VERSION_FIELD &&
+              pending.components.has(componentName(inbound.model, DOC_CONTENT_FIELD))
+            ) {
+              continue;
+            }
+            const remoteField = inbound.components.get(component);
+            const winner = actionInbound.components.get(component);
             const paths = winner !== undefined ? overlappingPaths(pendingValue, winner) : [];
-            // A concurrent put or delete touches every field the entry
-            // writes, even one it omits.
-            if (winner === undefined && actionInbound.replaced) paths.push([]);
+            // A concurrent delete reverts every component the entry writes,
+            // even one it omits.
+            if (winner === undefined && actionInbound.deleted) paths.push([]);
             for (const path of paths) {
-              const key = slotKey({ subjectId, field, path });
+              const key = slotKey({ subjectId, component, path });
               if (seen.has(key)) continue;
               seen.add(key);
               overlap.push(
                 conflictSlot({
                   subjectId,
-                  field,
+                  component,
                   path,
                   pending: pendingValue,
                   remote: winner === undefined ? undefined : remoteField,
@@ -914,12 +920,12 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
             }
           }
         }
-        const declared = deps.conflictScope(inbound.subjectType);
+        const declared = deps.conflictScope(inbound.model);
         if (declared === "entity" || overlap.length > 0) {
           subjects.push(subjectId);
           subjectStates.push({
             subjectId,
-            subjectType: inbound.subjectType,
+            model: inbound.model,
             before: deps.preSyncRow(catchUpId, subjectId),
           });
           slots.push(...overlap);

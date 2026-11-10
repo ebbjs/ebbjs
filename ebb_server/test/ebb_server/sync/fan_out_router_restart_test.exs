@@ -228,10 +228,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "id" => "act_473_rec_seed_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          todo_update(other_id, hlc),
-          ActionHelpers.entity_group_update(other_id, g2, hlc)
-        ]
+        "updates" =>
+          [todo_update(other_id, hlc)] ++ ActionHelpers.entity_group_update(other_id, g2, hlc)
       }
 
       assert ActionHelpers.post_actions(
@@ -258,11 +256,10 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "id" => "act_473_rec_span_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [
-          todo_update(leaked_id, hlc),
-          entity_group_put(eg_leak, leaked_id, g1, hlc),
-          entity_group_put(eg_other, other_id, g2, hlc)
-        ]
+        "updates" =>
+          [todo_update(leaked_id, hlc)] ++
+            entity_group_put(eg_leak, leaked_id, g1, hlc) ++
+            entity_group_put(eg_other, other_id, g2, hlc)
       }
 
       assert ActionHelpers.post_actions(
@@ -280,7 +277,11 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         end)
         |> Enum.sort()
 
-      assert scoped == Enum.sort([Enum.sort([leaked_id, eg_leak]), [eg_other]])
+      assert scoped ==
+               Enum.sort([
+                 Enum.sort([leaked_id, eg_leak, eg_leak]),
+                 [eg_other, eg_other]
+               ])
 
       :ok = FanOutRouter.unsubscribe(sse1)
       :ok = FanOutRouter.unsubscribe(sse2)
@@ -291,24 +292,26 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
     %{
       "id" => "upd_473_rec_#{:erlang.unique_integer([:positive])}",
       "subject_id" => entity_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{"fields" => %{"title" => %{"type" => "lww", "value" => "x", "hlc" => hlc}}}
+      "component" => "todo/title",
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
     }
   end
 
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+    [
+      entity_group_component(eg_id, "entity_id", entity_id, hlc, 0),
+      entity_group_component(eg_id, "group_id", group_id, hlc, 1)
+    ]
+  end
+
+  defp entity_group_component(eg_id, field, value, hlc, index) do
     %{
-      "id" => eg_id,
+      "id" => "#{eg_id}_#{index}",
       "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        }
-      }
+      "component" => "entityGroup/#{field}",
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
     }
   end
 

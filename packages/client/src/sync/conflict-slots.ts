@@ -2,20 +2,22 @@
  * Conflict slots — the generic recursion that turns a local write and a
  * missed inbound write into the positions they contest.
  *
- * The position vocabulary is the merge vocabulary: map keys merge key by
- * key, so two writes to different keys are different positions and do
- * not conflict, while a leaf or a kind change is one position. For a
- * collaborative-text document this recursion *is* the conflict policy —
- * concurrent inserts write different run keys and never surface, while a
- * concurrent extend-vs-delete on one run is one slot and does.
+ * The position vocabulary is the merge vocabulary: map keys inside a
+ * component merge key by key, so two writes to different keys are different
+ * positions and do not conflict, while a leaf or a kind change is one
+ * position. For a collaborative-text document this recursion *is* the
+ * conflict policy — concurrent inserts write different run keys and never
+ * surface, while a concurrent extend-vs-delete on one run is one slot and
+ * does.
  *
  * Detection (#390) uses this to find overlapping positions; resolution
  * (#392) reads the persisted slots back. The module is pure: it folds
- * Actions and reports sides, and reads the LWW field oracle through an
+ * Actions and reports sides, and reads the LWW component oracle through an
  * injected predicate.
  */
 
 import {
+  componentModel,
   isFieldMap,
   mergeFieldValue,
   type Action,
@@ -35,78 +37,83 @@ export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =
   scopes.includes("entity") ? "entity" : "field";
 
 /**
- * Subject types whose Updates carry structural edges, not LWW field
- * writes: a `relationship` edge, an `entityGroup` membership, and a
- * `groupMember` permission row. Concurrent writes to edges are never
- * surfaced as conflicts.
+ * Models whose rows carry structural edges, not LWW component writes: a
+ * `relationship` edge, an `entityGroup` membership, and a `groupMember`
+ * permission row. Concurrent writes to edges are never surfaced as conflicts.
  */
-export const STRUCTURAL_SUBJECT_TYPES: ReadonlySet<string> = new Set([
+export const STRUCTURAL_MODELS: ReadonlySet<string> = new Set([
   "relationship",
   "entityGroup",
   "groupMember",
 ]);
 
-/** The field-kind oracle the outbox injects; `undefined` defaults to LWW. */
-export type LwwFieldOracle = ((subjectType: string, field: string) => boolean) | undefined;
+/** The component-kind oracle the outbox injects; `undefined` defaults to LWW. */
+export type LwwFieldOracle = ((model: string, component: string) => boolean) | undefined;
 
 /** The effective inbound state for one subject an Action writes. */
 export interface InboundSubject {
-  readonly subjectType: string;
+  /** The model the row is committed under. */
+  readonly model: string;
   /**
-   * A `put` or `delete` makes the Action's fields the subject's whole
-   * field set: a buffered write to a field the Action omits is reverted,
-   * not left alone.
+   * A `delete` makes the Action's components the subject's whole component
+   * set: a buffered write to a component the Action omits is reverted, not
+   * left alone.
    */
-  readonly replaced: boolean;
-  readonly fields: ReadonlyMap<string, FieldValue>;
+  readonly deleted: boolean;
+  /** The components the Action leaves attached, keyed by `<model>/<field>`. */
+  readonly components: ReadonlyMap<string, FieldValue>;
 }
 
-/** The fields a buffered Action writes to one subject. */
+/** The components a buffered Action writes to one subject. */
 export interface PendingWrite {
-  readonly subjectType: string;
-  readonly fields: ReadonlyMap<string, FieldValue>;
+  readonly model: string;
+  readonly components: ReadonlyMap<string, FieldValue>;
 }
 
-/** The field map an Update carries, tolerating a peer's unwrapped envelope. */
-const updateFields = (update: Update): Record<string, FieldValue> | undefined =>
-  update.data?.fields as Record<string, FieldValue> | undefined;
+const isDeleteUpdate = (update: Update): update is Extract<Update, { method: "delete" }> =>
+  update.method === "delete";
 
-const mergeUpdateFields = (fields: Map<string, FieldValue>, update: Update): void => {
-  for (const [field, value] of Object.entries(updateFields(update) ?? {})) {
-    const previous = fields.get(field);
-    fields.set(field, previous === undefined ? value : mergeFieldValue(previous, value));
+/** Fold one component Update into a per-subject component map. */
+const mergeUpdateComponents = (components: Map<string, FieldValue>, update: Update): void => {
+  if (isDeleteUpdate(update)) return;
+  if (update.method === "drop") {
+    components.delete(update.component);
+    return;
   }
+  const previous = components.get(update.component);
+  components.set(
+    update.component,
+    previous === undefined ? update.data : mergeFieldValue(previous, update.data),
+  );
 };
 
 /** Fold one Action's Updates into an existing per-subject accumulator. */
 const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void => {
   for (const update of action.updates) {
     const current = subjects.get(update.subject_id) ?? {
-      subjectType: update.subject_type,
-      replaced: false,
-      fields: new Map<string, FieldValue>(),
+      model: isDeleteUpdate(update) ? "" : componentModel(update.component),
+      deleted: false,
+      components: new Map<string, FieldValue>(),
     };
-    if (update.method === "put") {
-      const fields = new Map<string, FieldValue>();
-      mergeUpdateFields(fields, update);
-      subjects.set(update.subject_id, { ...current, replaced: true, fields });
+    if (isDeleteUpdate(update)) {
+      subjects.set(update.subject_id, { ...current, deleted: true, components: new Map() });
       continue;
     }
-    if (update.method === "delete") {
-      subjects.set(update.subject_id, { ...current, replaced: true, fields: new Map() });
-      continue;
-    }
-    const fields = new Map(current.fields);
-    mergeUpdateFields(fields, update);
-    subjects.set(update.subject_id, { ...current, fields });
+    const components = new Map(current.components);
+    mergeUpdateComponents(components, update);
+    subjects.set(update.subject_id, {
+      model: componentModel(update.component),
+      deleted: current.deleted,
+      components,
+    });
   }
 };
 
 /**
  * Collapse one Action's Updates into one effective state per subject,
- * applied in order. A `put` replaces the subject's whole field set (a
- * missing `fields` map replaces it with nothing); a `delete` leaves it
- * empty; a `patch` merges its fields into whatever stands.
+ * applied in order. A `delete` clears the subject's component set; a `drop`
+ * detaches one component; a `merge` / `replace` merges its component value
+ * into whatever stands.
  */
 export const inboundSubjects = (action: Action): Map<string, InboundSubject> => {
   const subjects = new Map<string, InboundSubject>();
@@ -130,24 +137,29 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   const writes = new Map<string, PendingWrite>();
   for (const update of action.updates) {
     const current = writes.get(update.subject_id);
-    const fields = new Map(current?.fields ?? []);
-    mergeUpdateFields(fields, update);
-    writes.set(update.subject_id, { subjectType: update.subject_type, fields });
+    const components = new Map(current?.components ?? []);
+    mergeUpdateComponents(components, update);
+    writes.set(update.subject_id, {
+      model: current?.model ?? (isDeleteUpdate(update) ? "" : componentModel(update.component)),
+      components,
+    });
   }
   return writes;
 };
 
-/** True when an inbound write to `field` can silently overwrite a local one. */
+/**
+ * True when an inbound write to `component` can silently overwrite a local
+ * one. A structural model's rows are edges, never LWW component writes.
+ */
 export const isConflictableField = (
   isLwwField: LwwFieldOracle,
-  subjectType: string,
-  field: string,
-): boolean =>
-  !STRUCTURAL_SUBJECT_TYPES.has(subjectType) && (isLwwField?.(subjectType, field) ?? true);
+  model: string,
+  component: string,
+): boolean => !STRUCTURAL_MODELS.has(model) && (isLwwField?.(model, component) ?? true);
 
 /**
  * The `ConflictSide` view of a FieldValue: a leaf carries its LWW triple,
- * a whole-field map has no single leaf and `value` is the projected map.
+ * a whole-component map has no single leaf and `value` is the projected map.
  * A leaf tombstone (`value: null`) is absence, so its side value is
  * `undefined` — the read model has no stored null.
  */
@@ -194,18 +206,18 @@ export const overlappingPaths = (
   return [[...path]];
 };
 
+/** Stable key for one position, so detection can dedupe overlapping reports. */
+export const slotKey = (slot: Pick<ConflictSlot, "subjectId" | "component" | "path">): string =>
+  `${slot.subjectId}\u0000${slot.component}\u0000${slot.path.join("\u0001")}`;
+
 /**
  * A contested slot with its local side and the `remote` value the server
- * holds after the missed window. A path the fold never wrote (or an
- * inbound `put` / `delete` reverted) has a `{ value: undefined }` remote.
+ * holds after the missed window. A path the fold never wrote (or an inbound
+ * `delete` reverted) has a `{ value: undefined }` remote.
  */
-/** Stable key for one position, so detection can dedupe overlapping reports. */
-export const slotKey = (slot: Pick<ConflictSlot, "subjectId" | "field" | "path">): string =>
-  `${slot.subjectId}\u0000${slot.field}\u0000${slot.path.join("\u0001")}`;
-
 export const conflictSlot = (args: {
   subjectId: string;
-  field: string;
+  component: string;
   path: readonly string[];
   pending: FieldValue;
   remote: FieldValue | undefined;
@@ -214,7 +226,7 @@ export const conflictSlot = (args: {
   const remote = args.remote === undefined ? undefined : nodeAtPath(args.remote, args.path);
   return {
     subjectId: args.subjectId,
-    field: args.field,
+    component: args.component,
     path: args.path,
     local: local === undefined ? { value: undefined } : conflictSide(local),
     remote: remote === undefined ? { value: undefined } : conflictSide(remote),

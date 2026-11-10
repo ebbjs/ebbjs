@@ -1,13 +1,13 @@
 defmodule EbbServer.Storage.EntityTypeCache do
   @moduledoc """
-  GenServer that owns the entity id → `subject_type` ETS table.
+  GenServer that owns the entity id → committed model ETS table.
 
-  The authorizer needs an existing entity's type to gate membership
-  mutations by `<type>.create` / `<type>.update` (#264). The type is not
-  on the `entityGroup` wire and a same-Action entity `put` only covers
-  creates, so the resolved type lives here: populated from the RocksDB
-  `cf_type_entities` index on startup and maintained by the Writer for
-  every committed Update.
+  The authorizer needs an existing entity's committed model to gate
+  membership mutations by `<model>.create` / `<model>.update` (#264). The
+  model is the `entityGroup` row's own model, carried by no component of a
+  sibling write, and a same-Action first write only covers creates, so the
+  resolved model lives here: populated from the RocksDB `cf_type_entities`
+  index on startup and maintained by the Writer for every committed row.
 
   A plain `:set` keyed by entity id. The GenServer exists solely to own
   the table lifetime and publish its name; every read is a lock-free

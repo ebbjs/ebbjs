@@ -1,18 +1,18 @@
 /**
  * Schema fragments for a collaborative-text document entity.
  *
- * An app declares the document entity itself and links it to the parent with
- * a declared relationship. The entity carries two fields: `content`, a map
- * whose keys are cell ids (`RunCell` or `CutCell`), and `version`, a leaf
+ * An app declares the document model itself and links it to the parent with
+ * a declared relationship. The entity carries two components: `content`, a
+ * map whose keys are cell ids (`RunCell` or `CutCell`), and `version`, a leaf
  * written by every write so a reader can refuse a cell shape it does not know.
  */
 
 import { Type } from "@sinclair/typebox";
 
-/** Field on the document entity holding the cell map. */
+/** Field on the document model holding the cell map. */
 export const DOC_CONTENT_FIELD = "content";
 
-/** Field on the document entity carrying the cell-format version. */
+/** Field on the document model carrying the cell-format version. */
 export const DOC_VERSION_FIELD = "version";
 
 /**
@@ -65,3 +65,14 @@ export const CellFieldValueSchema = Type.Object({
   update_id: Type.String(),
   hlc: Type.String(),
 });
+
+/**
+ * True when `path` inside `component` is an append-only position: a batch may
+ * only add entries to it, never rewrite one.
+ *
+ * The collaborative-text cell map is the one log position today. It is the
+ * whole value of the document's own `content` component, so the path is empty;
+ * a component that holds a log among other fields names it in the path.
+ */
+export const isLogPosition = (component: string, path: readonly string[]): boolean =>
+  path.length === 0 && component.endsWith(`/${DOC_CONTENT_FIELD}`);

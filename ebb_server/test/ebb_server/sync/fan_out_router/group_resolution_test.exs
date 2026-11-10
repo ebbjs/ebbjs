@@ -9,10 +9,11 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
   silently returned `nil` and the update never reached the per-group
   `GroupServer`.
 
-  `GroupResolution` resolves by `subject_type` through
-  `EntityIndex.resolve_groups/3` so each kind of update lands in the right
-  group. These tests pin its resolution surface for every subject type the
-  router can encounter.
+  `GroupResolution` folds an Action's per-component Updates into row
+  mutations and resolves each row by `model` through
+  `EntityIndex.resolve_groups/3`, so each kind of row lands in the right
+  group. These tests pin its resolution surface for every model the router
+  can encounter.
   """
 
   use ExUnit.Case, async: false
@@ -29,6 +30,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     eg = :"for_eg_#{System.unique_integer([:positive])}"
     eg_by_id = :"for_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"for_egbg_#{System.unique_integer([:positive])}"
+    entity_types = :"for_et_#{System.unique_integer([:positive])}"
+    :ets.new(entity_types, [:set, :public, :named_table])
 
     {:ok, _} =
       RelationshipCache.start_link(
@@ -71,7 +74,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
         entity_groups_by_group: eg_by_group
       )
 
-      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group] do
+      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_types] do
         try do
           :ets.delete(t)
         rescue
@@ -88,7 +91,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       group_members_by_group: gm_by_group,
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
-      entity_groups_by_group: eg_by_group
+      entity_groups_by_group: eg_by_group,
+      entity_types: entity_types
     }
 
     {:ok, tables: t, resolve_opts: opts(t)}
@@ -99,8 +103,28 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       entity_groups: t.entity_groups,
       entity_groups_by_id: t.entity_groups_by_id,
       relationships_by_id: t.relationships_by_id,
-      group_members_by_id: t.group_members_by_id
+      group_members_by_id: t.group_members_by_id,
+      entity_types: t.entity_types
     ]
+
+  defp row_update(subject_id, component, value \\ nil) do
+    %{
+      "id" => "upd_" <> subject_id,
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => value || subject_id, "hlc" => 1}
+    }
+  end
+
+  defp delete_update(subject_id) do
+    %{
+      "id" => "upd_" <> subject_id,
+      "subject_id" => subject_id,
+      "method" => "delete",
+      "data" => nil
+    }
+  end
 
   defp put_membership(t, entity_id, group_id, id) do
     EntityGroupCache.put_entity_group(
@@ -129,7 +153,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     test "routes a user-entity update to its group's id", %{tables: t} do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
+      action = %{"updates" => [row_update("todo_1", "todo/title")]}
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
@@ -137,7 +161,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
   describe "resolve_group_ids/2 — system-entity updates (#197)" do
     test "routes a group update to the group itself", %{resolve_opts: opts} do
-      action = %{"updates" => [%{"subject_type" => "group", "subject_id" => "g_1"}]}
+      action = %{"updates" => [row_update("g_1", "group/name", "Test Group")]}
 
       assert GroupResolution.resolve_group_ids(action, opts) == ["g_1"]
     end
@@ -146,7 +170,9 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_relationship(t, "rel_1", "todo_1", "col_1")
 
-      action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_1"}]}
+      action = %{
+        "updates" => [row_update("rel_1", "relationship/source_id", "todo_1")]
+      }
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
@@ -154,19 +180,9 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     test "resolves groups from the Action's own membership rows", %{resolve_opts: opts} do
       action = %{
         "updates" => [
-          %{"subject_type" => "todo", "subject_id" => "todo_new"},
-          %{
-            "id" => "eg_new",
-            "subject_type" => "entityGroup",
-            "subject_id" => "eg_new",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"value" => "todo_new"},
-                "group_id" => %{"value" => "g_intra"}
-              }
-            }
-          }
+          row_update("todo_new", "todo/title"),
+          row_update("eg_new", "entityGroup/entity_id", "todo_new"),
+          row_update("eg_new", "entityGroup/group_id", "g_intra")
         ]
       }
 
@@ -177,7 +193,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_membership(t, "todo_1", "g_2", "eg_2")
 
-      action = %{"updates" => [%{"subject_type" => "todo", "subject_id" => "todo_1"}]}
+      action = %{"updates" => [row_update("todo_1", "todo/title")]}
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) |> Enum.sort() == ["g_1", "g_2"]
     end
@@ -185,28 +201,22 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     test "a relationship whose source has no membership adds no group", %{tables: t} do
       :ok = put_relationship(t, "rel_link", "todo_1", "doc_1")
 
-      action = %{"updates" => [%{"subject_type" => "relationship", "subject_id" => "rel_link"}]}
+      action = %{
+        "updates" => [row_update("rel_link", "relationship/source_id", "todo_1")]
+      }
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == []
     end
 
-    # A delete is scoped by the row's stored source, so a wire `source_id`
-    # cannot widen its fan-out to a group the row never belonged to (#624).
-    test "a delete is scoped by the stored row's source, not a wire source_id", %{tables: t} do
+    # A delete names only the row, so it is scoped by the stored source and
+    # cannot reach a group the row never belonged to (#624).
+    test "a delete is scoped by the stored row's source", %{tables: t} do
       :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
       :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
       :ok = put_relationship(t, "rel_1", "todo_victim", "col_1")
+      :ets.insert(t.entity_types, {"rel_1", "relationship"})
 
-      action = %{
-        "updates" => [
-          %{
-            "subject_type" => "relationship",
-            "subject_id" => "rel_1",
-            "method" => "delete",
-            "data" => %{"fields" => %{"source_id" => %{"value" => "todo_attacker"}}}
-          }
-        ]
-      }
+      action = %{"updates" => [delete_update("rel_1")]}
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_victim"]
     end
@@ -220,7 +230,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
           group_members_by_group: t.group_members_by_group
         )
 
-      action = %{"updates" => [%{"subject_type" => "groupMember", "subject_id" => "gm_1"}]}
+      action = %{"updates" => [row_update("gm_1", "groupMember/group_id", "g_1")]}
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
@@ -233,8 +243,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
       action = %{
         "updates" => [
-          %{"subject_type" => "relationship", "subject_id" => "rel_1"},
-          %{"subject_type" => "relationship", "subject_id" => "rel_2"}
+          row_update("rel_1", "relationship/source_id", "todo_1"),
+          row_update("rel_2", "relationship/source_id", "todo_2")
         ]
       }
 
@@ -245,8 +255,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
          %{resolve_opts: opts} do
       action = %{
         "updates" => [
-          %{"subject_type" => "relationship", "subject_id" => "rel_unknown"},
-          %{"subject_type" => "todo", "subject_id" => "todo_unknown"}
+          row_update("rel_unknown", "relationship/source_id", "todo_unknown"),
+          row_update("todo_unknown", "todo/title")
         ]
       }
 
@@ -260,9 +270,9 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
       action = %{
         "updates" => [
-          %{"subject_type" => "todo", "subject_id" => "todo_1"},
-          %{"subject_type" => "relationship", "subject_id" => "rel_2"},
-          %{"subject_type" => "group", "subject_id" => "g_2"}
+          row_update("todo_1", "todo/title"),
+          row_update("rel_2", "relationship/source_id", "todo_2"),
+          row_update("g_2", "group/name", "Group 2")
         ]
       }
 

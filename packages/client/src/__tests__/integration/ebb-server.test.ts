@@ -37,6 +37,7 @@
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  componentName,
   createAction,
   createClock,
   decodeSync,
@@ -44,9 +45,11 @@ import {
   localEvent,
   makeHlc,
   type Action,
+  type Update,
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, defineAction, type SyncClient } from "../..";
+import { CURRENT_TEXT_VERSION } from "@ebbjs/schema";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
@@ -55,6 +58,26 @@ import { groupSystemEntity } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+
+/** The model an Update commits under; `undefined` for a delete. */
+const modelOf = (update: Update): string | undefined =>
+  update.method === "delete" ? undefined : update.component.slice(0, update.component.indexOf("/"));
+
+/** One wire Update per field, the per-component shape every write emits. */
+const componentUpdates = (
+  subjectId: string,
+  model: string,
+  fields: Record<string, unknown>,
+  hlc: string,
+  updateId = "seed",
+): UpdateInput[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `${updateId}_${field}`,
+    subject_id: subjectId,
+    component: componentName(model, field),
+    method: "replace" as const,
+    data: { value, update_id: `${updateId}_${field}`, hlc },
+  }));
 
 const TEST_SEEDER = "test_seeder";
 
@@ -120,54 +143,31 @@ beforeAll(async () => {
   const bootstrapDocId = testDocId("bootstrap");
   const bootstrapMembershipId = `eg_${RUN_ID}_bootstrap`;
   const clock = createClock();
+  const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
-    {
-      subject_id: TEST_GROUP_ID,
-      subject_type: "group",
-      method: "put",
-      data: {
-        fields: {
-          name: {
-            value: `Integration Test ${RUN_ID}`,
-            update_id: "seed",
-            hlc: localEvent(clock),
-          },
-        },
+    ...componentUpdates(TEST_GROUP_ID, "group", { name: `Integration Test ${RUN_ID}` }, hlc),
+    ...componentUpdates(
+      `gm_${TEST_SEEDER}`,
+      "groupMember",
+      {
+        actor_id: TEST_SEEDER,
+        group_id: TEST_GROUP_ID,
+        permissions: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
       },
-    },
-    {
-      subject_id: `gm_${TEST_SEEDER}`,
-      subject_type: "groupMember",
-      method: "put" as const,
-      data: {
-        fields: {
-          actor_id: { value: TEST_SEEDER, update_id: "seed", hlc: localEvent(clock) },
-          group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-          permissions: {
-            value: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
-            update_id: "seed",
-            hlc: localEvent(clock),
-          },
-        },
-      },
-    },
+      hlc,
+    ),
     {
       subject_id: bootstrapDocId,
-      subject_type: "text_document",
-      method: "put" as const,
-      data: { fields: {} },
+      component: "text_document/version",
+      method: "replace",
+      data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    {
-      subject_id: bootstrapMembershipId,
-      subject_type: "entityGroup",
-      method: "put" as const,
-      data: {
-        fields: {
-          entity_id: { value: bootstrapDocId, update_id: "seed", hlc: localEvent(clock) },
-          group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-        },
-      },
-    },
+    ...componentUpdates(
+      bootstrapMembershipId,
+      "entityGroup",
+      { entity_id: bootstrapDocId, group_id: TEST_GROUP_ID },
+      hlc,
+    ),
   ];
   const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
   const body = encodeSync({ actions: [action] });
@@ -198,23 +198,18 @@ afterAll(async () => {
 async function addMemberAsSeeder(actorId: string): Promise<void> {
   const clock = createClock();
   const memberId = `gm_${actorId}`;
-  const update = {
-    subject_id: memberId,
-    subject_type: "groupMember",
-    method: "put" as const,
-    data: {
-      fields: {
-        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
-        group_id: { value: TEST_GROUP_ID, update_id: "add", hlc: localEvent(clock) },
-        permissions: {
-          value: ["text_document.*", "group.read", "groupMember.*", "relationship.*"],
-          update_id: "add",
-          hlc: localEvent(clock),
-        },
-      },
+  const updates = componentUpdates(
+    memberId,
+    "groupMember",
+    {
+      actor_id: actorId,
+      group_id: TEST_GROUP_ID,
+      permissions: ["text_document.*", "group.read", "groupMember.*", "relationship.*"],
     },
-  };
-  const { action } = createAction({ actorId: TEST_SEEDER, updates: [update], clock });
+    localEvent(clock),
+    "add",
+  );
+  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
   const body = encodeSync({ actions: [action] });
 
   const res = await fetch(`${SERVER_URL}/sync/actions`, {
@@ -267,24 +262,20 @@ async function fetchActions(fromGsn = 0): Promise<readonly Action[]> {
  */
 async function createTestDoc(docId: string): Promise<void> {
   const clock = createClock();
+  const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
     {
       subject_id: docId,
-      subject_type: "text_document",
-      method: "put",
-      data: { fields: {} },
+      component: "text_document/version",
+      method: "replace",
+      data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    {
-      subject_id: `eg_${RUN_ID}_${docId}`,
-      subject_type: "entityGroup",
-      method: "put",
-      data: {
-        fields: {
-          entity_id: { value: docId, update_id: "seed", hlc: localEvent(clock) },
-          group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: localEvent(clock) },
-        },
-      },
-    },
+    ...componentUpdates(
+      `eg_${RUN_ID}_${docId}`,
+      "entityGroup",
+      { entity_id: docId, group_id: TEST_GROUP_ID },
+      hlc,
+    ),
   ];
   const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
   const body = encodeSync({ actions: [action] });
@@ -564,23 +555,18 @@ describe("integration: localDelete round-trip", () => {
 async function addMemberWithTodoPerms(actorId: string): Promise<void> {
   const clock = createClock();
   const memberId = `gm_${actorId}`;
-  const update = {
-    subject_id: memberId,
-    subject_type: "groupMember",
-    method: "put" as const,
-    data: {
-      fields: {
-        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
-        group_id: { value: TEST_GROUP_ID, update_id: "add", hlc: localEvent(clock) },
-        permissions: {
-          value: ["text_document.*", "group.read", "groupMember.*", "relationship.*", "todo.*"],
-          update_id: "add",
-          hlc: localEvent(clock),
-        },
-      },
+  const updates = componentUpdates(
+    memberId,
+    "groupMember",
+    {
+      actor_id: actorId,
+      group_id: TEST_GROUP_ID,
+      permissions: ["text_document.*", "group.read", "groupMember.*", "relationship.*", "todo.*"],
     },
-  };
-  const { action } = createAction({ actorId: TEST_SEEDER, updates: [update], clock });
+    localEvent(clock),
+    "add",
+  );
+  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
   const body = encodeSync({ actions: [action] });
   const res = await fetch(`${SERVER_URL}/sync/actions`, {
     method: "POST",
@@ -642,18 +628,10 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
             {
               id: "u_1",
               subject_id: "todo_rt_1",
-              subject_type: "todo",
-              method: "put",
-              data: {
-                fields: {
-                  // `typo` is not declared on the entity.
-                  typo: {
-                    value: "should be title",
-                    update_id: "u_1",
-                    hlc,
-                  },
-                },
-              },
+              // `typo` is not declared on the entity.
+              component: "todo/typo",
+              method: "replace",
+              data: { value: "should be title", update_id: "u_1", hlc },
             },
           ],
         };
@@ -683,22 +661,20 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       actorId: actor,
       clock: seedClock,
       updates: [
+        ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
         {
-          subject_id: todoId,
-          subject_type: "todo",
-          method: "put",
-          data: { fields: {} },
+          id: "u_1_0",
+          subject_id: membershipId,
+          component: "entityGroup/entity_id",
+          method: "replace",
+          data: { value: todoId, update_id: "seed", hlc: seedHlc },
         },
         {
+          id: "u_1_1",
           subject_id: membershipId,
-          subject_type: "entityGroup",
-          method: "put",
-          data: {
-            fields: {
-              entity_id: { value: todoId, update_id: "seed", hlc: seedHlc },
-              group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
-            },
-          },
+          component: "entityGroup/group_id",
+          method: "replace",
+          data: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
         },
       ],
     });
@@ -731,16 +707,18 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
         gsn: 0,
         updates: [
           {
-            id: "u_1",
+            id: "u_1_0",
             subject_id: todoId,
-            subject_type: "todo",
-            method: "put",
-            data: {
-              fields: {
-                title: { value: "Integration", update_id: "u_1", hlc },
-                completed: { value: false, update_id: "u_1", hlc },
-              },
-            },
+            component: "todo/title",
+            method: "replace",
+            data: { value: "Integration", update_id: "u_1", hlc },
+          },
+          {
+            id: "u_1_1",
+            subject_id: todoId,
+            component: "todo/completed",
+            method: "replace",
+            data: { value: false, update_id: "u_1", hlc },
           },
         ],
       };
@@ -772,22 +750,20 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       actorId: seeder,
       clock: seedClock,
       updates: [
+        ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
         {
-          subject_id: todoId,
-          subject_type: "todo",
-          method: "put",
-          data: { fields: {} },
+          id: "u_1_0",
+          subject_id: membershipId,
+          component: "entityGroup/entity_id",
+          method: "replace",
+          data: { value: todoId, update_id: "seed", hlc: seedHlc },
         },
         {
+          id: "u_1_1",
           subject_id: membershipId,
-          subject_type: "entityGroup",
-          method: "put",
-          data: {
-            fields: {
-              entity_id: { value: todoId, update_id: "seed", hlc: seedHlc },
-              group_id: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
-            },
-          },
+          component: "entityGroup/group_id",
+          method: "replace",
+          data: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
         },
       ],
     });
@@ -802,16 +778,18 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       gsn: 0,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: todoId,
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              title: { value: "Hi", update_id: "u_1", hlc: badHlc },
-              bogus: { value: 42, update_id: "u_1", hlc: badHlc },
-            },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hi", update_id: "u_1", hlc: badHlc },
+        },
+        {
+          id: "u_1_1",
+          subject_id: todoId,
+          component: "todo/bogus",
+          method: "replace",
+          data: { value: 42, update_id: "u_1", hlc: badHlc },
         },
       ],
     };
@@ -1425,23 +1403,18 @@ describe("integration: multi-entity Action", () => {
 async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
   const clock = createClock();
   const memberId = `gm_${actorId}`;
-  const update = {
-    subject_id: memberId,
-    subject_type: "groupMember",
-    method: "put" as const,
-    data: {
-      fields: {
-        actor_id: { value: actorId, update_id: "add", hlc: localEvent(clock) },
-        group_id: { value: TEST_GROUP_ID, update_id: "add", hlc: localEvent(clock) },
-        permissions: {
-          value: ["todo.*", "list.*", "relationship.*"],
-          update_id: "add",
-          hlc: localEvent(clock),
-        },
-      },
+  const updates = componentUpdates(
+    memberId,
+    "groupMember",
+    {
+      actor_id: actorId,
+      group_id: TEST_GROUP_ID,
+      permissions: ["todo.*", "list.*", "relationship.*"],
     },
-  };
-  const { action } = createAction({ actorId: TEST_SEEDER, updates: [update], clock });
+    localEvent(clock),
+    "add",
+  );
+  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
   const body = encodeSync({ actions: [action] });
   const res = await fetch(`${SERVER_URL}/sync/actions`, {
     method: "POST",
@@ -1510,9 +1483,11 @@ describe("integration: client.actions (defineAction)", () => {
       // ride in that Action.
       expect(written).toHaveLength(1);
       const updates = written[0]!.updates;
-      expect(updates.some((u) => u.subject_type === "todo")).toBe(true);
-      expect(updates.some((u) => u.subject_type === "list")).toBe(true);
-      expect(updates.filter((u) => u.subject_type === "entityGroup")).toHaveLength(2);
+      expect(updates.some((u) => modelOf(u) === "todo")).toBe(true);
+      expect(updates.some((u) => modelOf(u) === "list")).toBe(true);
+      expect(
+        new Set(updates.filter((u) => modelOf(u) === "entityGroup").map((u) => u.subject_id)).size,
+      ).toBe(2);
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
       const todos = await client.storage.entities.query("todo");

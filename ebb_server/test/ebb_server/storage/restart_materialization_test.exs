@@ -79,7 +79,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :put,
+               :replace,
                todo_stale,
                "todo",
                %{"title" => lww("Draft", base_hlc, 0)},
@@ -94,7 +94,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :patch,
+               :merge,
                todo_stale,
                "todo",
                %{"title" => lww("Patched", base_hlc, 1)},
@@ -107,7 +107,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :put,
+               :replace,
                todo_missing,
                "todo",
                %{"title" => lww("Never read", base_hlc, 2)},
@@ -121,7 +121,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :put,
+               :replace,
                group_id,
                "group",
                %{"name" => lww("Original", base_hlc, 3)},
@@ -136,7 +136,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :patch,
+               :merge,
                group_id,
                "group",
                %{"name" => lww("Patched group", base_hlc, 4)},
@@ -150,7 +150,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
              write(
                writer_name,
                actor_id,
-               :put,
+               :replace,
                "gm_restart_#{System.unique_integer([:positive])}",
                "groupMember",
                %{
@@ -167,7 +167,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
                write(
                  writer_name,
                  actor_id,
-                 :put,
+                 :replace,
                  "eg_restart_#{counter}",
                  "entityGroup",
                  %{
@@ -187,12 +187,12 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
 
     # The eager phases materialize and clear the system-type marks; a surviving
     # one would be a repair candidate, not the normal state.
-    assert DirtyTracker.dirty_entity_ids_for_types(
+    assert DirtyTracker.dirty_entity_ids_for_models(
              ["groupMember", "entityGroup", "group", "relationship"],
              dirty_set
            ) == []
 
-    assert Enum.sort(DirtyTracker.dirty_entity_ids_for_type("todo", dirty_set)) ==
+    assert Enum.sort(DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set)) ==
              Enum.sort([todo_stale, todo_missing])
 
     assert {:ok, stale} = get(ctx, todo_stale, restarted)
@@ -214,21 +214,24 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     assert field(queried_stale, "title") == "Patched"
   end
 
-  defp write(writer_name, actor_id, method, subject_id, subject_type, fields, base_hlc, counter) do
+  defp write(writer_name, actor_id, method, subject_id, model, fields, base_hlc, counter) do
     hlc = TestHelpers.hlc_from(base_hlc, counter)
+
+    updates =
+      Enum.map(fields, fn {field, value} ->
+        TestHelpers.validated_component(
+          subject_id,
+          "#{model}/#{field}",
+          value,
+          method: method
+        )
+      end)
 
     action =
       TestHelpers.validated_action(%{
         actor_id: actor_id,
         hlc: hlc,
-        updates: [
-          TestHelpers.validated_update(%{
-            subject_id: subject_id,
-            subject_type: subject_type,
-            method: method,
-            data: %{"fields" => fields}
-          })
-        ]
+        updates: updates
       })
 
     Writer.write_actions([action], writer_name)

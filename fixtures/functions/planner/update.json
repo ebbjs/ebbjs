@@ -1,6 +1,6 @@
 {
   "name": "update",
-  "description": "one patch: a single Update carrying the changed field's stamp",
+  "description": "one update: one merge Update carrying the changed component's value",
   "schema": "schema",
   "invocation_id": "inv_goldenUpdate",
   "actor_id": "a_golden",
@@ -28,16 +28,12 @@
       {
         "id": "u_gupdate1",
         "subject_id": "e_gissue1",
-        "subject_type": "issue",
-        "method": "patch",
+        "component": "issue/title",
+        "method": "merge",
         "data": {
-          "fields": {
-            "title": {
-              "value": "Revised",
-              "update_id": "u_gupdate1",
-              "hlc": "111690000000000011"
-            }
-          }
+          "value": "Revised",
+          "update_id": "u_gupdate1",
+          "hlc": "111690000000000011"
         }
       }
     ]

@@ -13,13 +13,12 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
 
   Every materialization here is driven from the action log the way the Writer
   leaves it — crafted `cf_actions` frames plus a matching `cf_entity_actions`
-  GSN list — because the update shapes that reach these branches are ones the
-  write-path validator never has to admit.
+  GSN list — so a payload can name a verb the write-path validator refuses.
   """
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionFormat, DirtyTracker, EntityStore, RocksDB, SQLite}
+  alias EbbServer.Storage.{ActionFormat, ActionLog, DirtyTracker, EntityStore, RocksDB, SQLite}
   alias Exqlite.Sqlite3
 
   import EbbServer.TestHelpers
@@ -59,22 +58,27 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
       )
   end
 
-  defp update_action(entity_id, gsn, method, fields, hlc, subject_type \\ "todo") do
+  defp update_action(entity_id, gsn, method, fields, hlc, model \\ "todo") do
+    updates =
+      fields
+      |> Enum.with_index()
+      |> Enum.map(fn {{field, value}, index} ->
+        %{
+          id: "upd_#{entity_id}_#{gsn}_#{index}",
+          subject_id: entity_id,
+          component: "#{model}/#{field}",
+          method: method,
+          data: value
+        }
+      end)
+
     %{
       gsn: gsn,
       action: %{
         id: "act_#{entity_id}_#{gsn}",
         actor_id: "a_test",
         hlc: hlc,
-        updates: [
-          %{
-            id: "upd_#{entity_id}_#{gsn}",
-            subject_id: entity_id,
-            subject_type: subject_type,
-            method: method,
-            data: %{"fields" => fields}
-          }
-        ]
+        updates: updates
       }
     }
   end
@@ -122,7 +126,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
   end
 
   describe "an update method materialization does not know" do
-    test "is ignored: it changes neither the entity nor its type", ctx do
+    test "refuses the record rather than half-applying it", ctx do
       entity_id = "todo_pm_unknown_method"
 
       store_actions(
@@ -131,13 +135,12 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
           update_action(
             entity_id,
             1,
-            "put",
+            "replace",
             %{"title" => leaf("Kept", hlc_from(1_000))},
             hlc_from(1_000)
           ),
-          # A verb this build does not materialize — a newer one on the wire,
-          # or a corrupt record — must not fail the read or half-apply its
-          # payload.
+          # A verb outside the component envelope — a newer one on the wire,
+          # or a corrupt record — is unreadable rather than silently skipped.
           update_action(
             entity_id,
             2,
@@ -153,15 +156,14 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
         ctx
       )
 
-      assert {:ok, entity} = EntityStore.materialize(entity_id, store_opts(ctx))
-      assert entity.type == "todo"
-      assert entity.last_gsn == 1
-      assert entity.data["fields"]["title"]["value"] == "Kept"
-      refute Map.has_key?(entity.data["fields"], "archived_at")
+      # The read fails closed: the unreadable record is not half-applied.
+      assert {:error, :materialization_failed} =
+               EntityStore.materialize(entity_id, store_opts(ctx))
 
-      assert {:ok, cached} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
-      assert cached.type == "todo"
-      assert cached.data["fields"]["title"]["value"] == "Kept"
+      # And the frame itself is what the reader refuses.
+      assert_raise ArgumentError, ~r/not a component envelope \(unknown method\)/, fn ->
+        ActionLog.read(1, 2, rocks_name: ctx.rocks_name)
+      end
     end
   end
 
@@ -178,7 +180,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
           update_action(
             entity_id,
             1,
-            "patch",
+            "merge",
             %{"title" => leaf("Hello", hlc_from(1_000))},
             hlc_from(1_000)
           )
@@ -205,7 +207,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
           update_action(
             entity_id,
             1,
-            "patch",
+            "merge",
             %{"content" => map_field(%{})},
             hlc_from(2_000)
           )
@@ -242,7 +244,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
 
       store_actions(
         entity_id,
-        [update_action(entity_id, 1, "patch", %{"content" => nested}, hlc_from(2_000))],
+        [update_action(entity_id, 1, "merge", %{"content" => nested}, hlc_from(2_000))],
         ctx
       )
 
@@ -274,7 +276,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
 
       store_actions(
         entity_id,
-        [update_action(entity_id, 1, "patch", %{"content" => nested}, hlc_from(2_000))],
+        [update_action(entity_id, 1, "merge", %{"content" => nested}, hlc_from(2_000))],
         ctx
       )
 
@@ -318,10 +320,10 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
       store_actions(
         entity_id,
         [
-          update_action(entity_id, 1, "patch", %{"content" => deeper}, hlc_from(2_000)),
+          update_action(entity_id, 1, "merge", %{"content" => deeper}, hlc_from(2_000)),
           # The newer patch turns `a` into a leaf, so the path the earlier
           # patch contributed is gone from the merged field.
-          update_action(entity_id, 2, "patch", %{"content" => replacement}, hlc_from(3_000))
+          update_action(entity_id, 2, "merge", %{"content" => replacement}, hlc_from(3_000))
         ],
         ctx
       )
@@ -363,15 +365,15 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
       store_actions(
         entity_id,
         [
-          update_action(entity_id, 1, "patch", %{"content" => deeper}, hlc_from(2_000)),
+          update_action(entity_id, 1, "merge", %{"content" => deeper}, hlc_from(2_000)),
           update_action(
             entity_id,
             2,
-            "patch",
+            "merge",
             %{"content" => map_field(%{"a" => leaf("scalar", hlc_from(3_000))})},
             hlc_from(3_000)
           ),
-          update_action(entity_id, 3, "patch", %{"content" => replacement}, hlc_from(4_000))
+          update_action(entity_id, 3, "merge", %{"content" => replacement}, hlc_from(4_000))
         ],
         ctx
       )

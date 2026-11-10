@@ -14,7 +14,6 @@ defmodule EbbServer.Functions.HardeningBunTest do
 
   import ExUnit.CaptureLog
   import EbbServer.FunctionsTestHelpers
-  import EbbServer.Integration.ActionHelpers, only: [get_entity: 2]
 
   alias EbbServer.Functions
   alias EbbServer.Functions.Worker.Bun, as: BunWorker
@@ -314,5 +313,14 @@ defmodule EbbServer.Functions.HardeningBunTest do
       true ->
         flunk("condition never became true")
     end
+  end
+
+  # The endpoint's plug pipeline fetches query params before the router reads
+  # the `components` parameter; calling the router directly does not.
+  defp get_entity(id, actor_id \\ "a_test") do
+    Plug.Test.conn(:get, "/entities/#{id}")
+    |> Plug.Conn.put_req_header("x-ebb-actor-id", actor_id)
+    |> Plug.Conn.fetch_query_params()
+    |> EbbServer.Sync.Router.call([])
   end
 end

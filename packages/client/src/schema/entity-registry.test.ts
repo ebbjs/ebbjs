@@ -14,25 +14,13 @@ const buildRegistry = (): ModelRegistry => {
   return r;
 };
 
+/** One `replace` per declared field, the shape a create emits. */
 const validUpdate = {
   id: "u_1",
   subject_id: "todo_1",
-  subject_type: "todo",
-  method: "put" as const,
-  data: {
-    fields: {
-      title: {
-        value: "Hello",
-        update_id: "u_1",
-        hlc: makeHlc(1711036800000),
-      },
-      completed: {
-        value: false,
-        update_id: "u_1",
-        hlc: makeHlc(1711036800000),
-      },
-    },
-  },
+  component: "todo/title" as const,
+  method: "replace" as const,
+  data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
 };
 
 const buildAction = (updates: Action["updates"]): Action => ({
@@ -104,31 +92,18 @@ describe("ModelRegistry.validateAction", () => {
     expect(r.validateAction(action)).toEqual([]);
   });
 
-  it("reports unknown subject_type", () => {
+  it("reports a component naming an unregistered model", () => {
     const r = buildRegistry();
-    const action = buildAction([{ ...validUpdate, subject_type: "list" }]);
+    const action = buildAction([{ ...validUpdate, component: "list/title" }]);
     const v = r.validateAction(action);
     expect(v).toHaveLength(1);
     expect(v[0]?.entityName).toBe("(unknown)");
-    expect(v[0]?.message).toMatch(/Unknown subject_type: "list"/);
+    expect(v[0]?.message).toMatch(/Unknown model "list" for component "list\/title"/);
   });
 
   it("reports unknown field names", () => {
     const r = buildRegistry();
-    const action = buildAction([
-      {
-        ...validUpdate,
-        data: {
-          fields: {
-            typo: {
-              value: "x",
-              update_id: "u_1",
-              hlc: makeHlc(1711036800000),
-            },
-          },
-        },
-      },
-    ]);
+    const action = buildAction([{ ...validUpdate, component: "todo/typo" }]);
     const v = r.validateAction(action);
     expect(v).toHaveLength(1);
     expect(v[0]?.entityName).toBe("todo");
@@ -140,24 +115,12 @@ describe("ModelRegistry.validateAction", () => {
     const r = buildRegistry();
     const action = buildAction([
       validUpdate,
-      { ...validUpdate, subject_type: "list" },
-      {
-        ...validUpdate,
-        id: "u_3",
-        data: {
-          fields: {
-            bogus: {
-              value: 1,
-              update_id: "u_3",
-              hlc: makeHlc(1711036800000),
-            },
-          },
-        },
-      },
+      { ...validUpdate, component: "list/title" },
+      { ...validUpdate, id: "u_3", component: "todo/bogus" },
     ]);
     const v = r.validateAction(action);
     expect(v).toHaveLength(2);
-    const unknownType = v.find((x) => x.message.includes("Unknown subject_type"));
+    const unknownType = v.find((x) => x.message.includes("Unknown model"));
     expect(unknownType?.updateIndex).toBe(1);
     const badField = v.find((x) => x.field === "bogus");
     expect(badField?.updateIndex).toBe(2);
@@ -166,13 +129,7 @@ describe("ModelRegistry.validateAction", () => {
   it("skips fields check for delete updates (data === null)", () => {
     const r = buildRegistry();
     const action = buildAction([
-      {
-        id: "u_del",
-        subject_id: "todo_1",
-        subject_type: "todo",
-        method: "delete",
-        data: null,
-      },
+      { id: "u_del", subject_id: "todo_1", method: "delete", data: null },
     ]);
     expect(r.validateAction(action)).toEqual([]);
   });

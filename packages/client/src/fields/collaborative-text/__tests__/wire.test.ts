@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  componentName,
   format,
   pack,
   type Action,
@@ -52,20 +53,22 @@ const run = (id: string, text: string, anchor = { runId: "ROOT", offset: 0 }): R
   anchor,
 });
 
-const updateWith = (fields: Record<string, FieldValue>, subjectType = "text_document"): Update => ({
-  id: "upd_1",
-  subject_id: "doc_1",
-  subject_type: subjectType,
-  method: "patch",
-  data: { fields } as never,
-});
+/** One Update per field, each naming its own `<docType>/<field>` component. */
+const updatesWith = (fields: Record<string, FieldValue>, docType = "text_document"): Update[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `upd_${field}`,
+    subject_id: "doc_1",
+    component: componentName(docType, field),
+    method: "merge",
+    data: value,
+  }));
 
-const actionWith = (update: Update): Action => ({
+const actionWith = (...updates: Update[]): Action => ({
   id: "act_1",
   actor_id: "a",
   hlc: T,
   gsn: 1,
-  updates: [update],
+  updates,
 });
 
 const contentOf = (cellList: TextCell[]): FieldValue => ({
@@ -129,14 +132,17 @@ describe("version", () => {
     );
   });
 
-  it("writes the version leaf on every Update", () => {
-    const update = docActionToUpdate([run("r1", "hi")], { docId: "doc_1", updateId: "u1" })!;
-    const fields = (update.data as { fields: Record<string, FieldValue> }).fields;
-    expect(fields[DOC_VERSION_FIELD]).toMatchObject({
-      value: CURRENT_TEXT_VERSION,
-      update_id: "u1",
-    });
-    expect(fields[DOC_CONTENT_FIELD]).toBeDefined();
+  it("writes one Update per component, the version leaf beside the cells", () => {
+    const updates = docActionToUpdate([run("r1", "hi")], { docId: "doc_1", updateId: "u1" })!;
+    const content = updates.find(
+      (update) => update.method !== "delete" && update.component === "text_document/content",
+    )!;
+    const version = updates.find(
+      (update) => update.method !== "delete" && update.component === "text_document/version",
+    )!;
+
+    expect(version.data).toMatchObject({ value: CURRENT_TEXT_VERSION });
+    expect(content.data).toBeDefined();
   });
 });
 
@@ -218,16 +224,16 @@ describe("append-only discipline", () => {
 describe("applyActions", () => {
   it("projects delivered cells and reports only newly delivered ones", () => {
     const base = run("r1", "hello");
-    const update = updateWith({
+    const updates = updatesWith({
       [DOC_CONTENT_FIELD]: contentOf([base]),
       [DOC_VERSION_FIELD]: versionField(T, "u"),
     });
 
-    const first = applyActions(createDocState(), [actionWith(update)]);
+    const first = applyActions(createDocState(), [actionWith(...updates)]);
     expect(first.state.text).toBe("hello");
     expect(first.applied).toEqual([{ cellId: "r1", cell: base }]);
 
-    const again = applyActions(first.state, [actionWith(update)]);
+    const again = applyActions(first.state, [actionWith(...updates)]);
     expect(again.state).toBe(first.state);
     expect(again.applied).toEqual([]);
   });
@@ -235,44 +241,59 @@ describe("applyActions", () => {
   it("is delivery-order independent", () => {
     const base = run("r1", "abc");
     const x = run("r2", "X", { runId: "r1", offset: 1 });
-    const updateFor = (cell: TextCell) =>
-      updateWith({
+    const updatesFor = (cell: TextCell) =>
+      updatesWith({
         [DOC_CONTENT_FIELD]: contentOf([cell]),
         [DOC_VERSION_FIELD]: versionField(T, `u_${cell.id}`),
       });
 
-    const ab = applyActions(applyActions(createDocState(), [actionWith(updateFor(base))]).state, [
-      actionWith(updateFor(x)),
-    ]);
-    const ba = applyActions(applyActions(createDocState(), [actionWith(updateFor(x))]).state, [
-      actionWith(updateFor(base)),
+    const ab = applyActions(
+      applyActions(createDocState(), [actionWith(...updatesFor(base))]).state,
+      [actionWith(...updatesFor(x))],
+    );
+    const ba = applyActions(applyActions(createDocState(), [actionWith(...updatesFor(x))]).state, [
+      actionWith(...updatesFor(base)),
     ]);
     expect(ab.state.text).toBe("aXbc");
     expect(ba.state.text).toBe("aXbc");
   });
 
-  it("skips Updates for another subject type", () => {
-    const update = updateWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) }, "other_doc");
-    expect(applyActions(createDocState(), [actionWith(update)]).state.text).toBe("");
+  it("skips Updates for another document model", () => {
+    const updates = updatesWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) }, "other_doc");
+    expect(applyActions(createDocState(), [actionWith(...updates)]).state.text).toBe("");
   });
 
   it("fails on an unknown version", () => {
-    const update = updateWith({
+    const updates = updatesWith({
       [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]),
       [DOC_VERSION_FIELD]: versionField(T, "u", 999),
     });
-    expect(() => applyActions(createDocState(), [actionWith(update)])).toThrow(
+    expect(() => applyActions(createDocState(), [actionWith(...updates)])).toThrow(
       DocumentVersionError,
     );
   });
 
-  it("identifies the doc subject", () => {
-    expect(isDocSubjectUpdate(updateWith({}, "text_document"), "text_document")).toBe(true);
-    expect(isDocSubjectUpdate(updateWith({}, "other"), "text_document")).toBe(false);
+  it("identifies a document's component Update", () => {
+    const doc: Update = {
+      id: "u_doc",
+      subject_id: "doc_1",
+      component: "text_document/content",
+      method: "drop",
+      data: null,
+    };
+    const other: Update = {
+      id: "u_other",
+      subject_id: "doc_1",
+      component: "other/content",
+      method: "drop",
+      data: null,
+    };
+    expect(isDocSubjectUpdate(doc, "text_document")).toBe(true);
+    expect(isDocSubjectUpdate(other, "text_document")).toBe(false);
   });
 
   it("reads cells out of an Update", () => {
-    const update = updateWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) });
-    expect([...readCellFields(update).keys()]).toEqual(["r1"]);
+    const [update] = updatesWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) });
+    expect([...readCellFields(update!).keys()]).toEqual(["r1"]);
   });
 });

@@ -80,7 +80,6 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
           %{
             "id" => unique("upd"),
             "subject_id" => gm_owner,
-            "subject_type" => "groupMember",
             "method" => "delete",
             "data" => nil
           }
@@ -133,13 +132,9 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
           %{
             "id" => unique("upd"),
             "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-              }
-            }
+            "component" => "groupMember/permissions",
+            "method" => "merge",
+            "data" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
           }
         ]
       })
@@ -186,10 +181,11 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
         "id" => unique("act"),
         "actor_id" => owner_id,
         "hlc" => hlc,
-        "updates" => [
-          member_update(unique("gm"), owner_id, group_id, ["todo.read"], hlc),
-          member_update(unique("gm"), owner_id, group_id, ["todo.write"], hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            member_update(unique("gm"), owner_id, group_id, ["todo.read"], hlc),
+            member_update(unique("gm"), owner_id, group_id, ["todo.write"], hlc)
+          ])
       })
 
       receive_sse_data()
@@ -293,18 +289,16 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => unique("upd"),
-          "subject_id" => group_id,
-          "subject_type" => "group",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"name" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}}
+      "updates" =>
+        [
+          %{
+            "id" => unique("upd"),
+            "subject_id" => group_id,
+            "component" => "group/name",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
           }
-        },
-        member_update(gm_id, actor_id, group_id, permissions, hlc)
-      ]
+        ] ++ member_update(gm_id, actor_id, group_id, permissions, hlc)
     })
   end
 
@@ -315,24 +309,25 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [member_update(gm_id, member_actor_id, group_id, permissions, hlc)]
+      "updates" => member_update(gm_id, member_actor_id, group_id, permissions, hlc)
     })
   end
 
   defp member_update(gm_id, member_actor_id, group_id, permissions, hlc) do
     %{
-      "id" => gm_id,
-      "subject_id" => gm_id,
-      "subject_type" => "groupMember",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "actor_id" => %{"type" => "lww", "value" => member_actor_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-          "permissions" => %{"type" => "lww", "value" => permissions, "hlc" => hlc}
-        }
-      }
+      "actor_id" => member_actor_id,
+      "group_id" => group_id,
+      "permissions" => permissions
     }
+    |> Enum.map(fn {field, value} ->
+      %{
+        "id" => "#{gm_id}_#{field}",
+        "subject_id" => gm_id,
+        "component" => "groupMember/#{field}",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+      }
+    end)
   end
 
   defp post!(action) do

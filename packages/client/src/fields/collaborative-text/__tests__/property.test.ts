@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  componentField,
   format,
   mergeFieldValue,
   pack,
@@ -38,18 +39,23 @@ const pick = <T>(rng: () => number, values: readonly T[]): T =>
   values[Math.floor(rng() * values.length)]!;
 
 const contentOf = (action: Action): FieldValue | undefined => {
-  const data = action.updates[0]?.data;
-  if (data === null || typeof data !== "object" || !("fields" in data)) return undefined;
-  return data.fields[DOC_CONTENT_FIELD];
+  const update = action.updates.find(
+    (candidate) =>
+      candidate.method !== "delete" && componentField(candidate.component) === DOC_CONTENT_FIELD,
+  );
+  if (update === undefined || update.method === "drop" || update.method === "delete") {
+    return undefined;
+  }
+  return update.data;
 };
 
 const mergedContent = (actions: readonly Action[], base: FieldValue): FieldValue => {
   let merged = base;
   for (const action of actions) {
     for (const update of action.updates) {
-      const data = update.data;
-      if (data === null || typeof data !== "object" || !("fields" in data)) continue;
-      merged = mergeFieldValue(merged, data.fields[DOC_CONTENT_FIELD]!);
+      if (update.method === "drop" || update.method === "delete") continue;
+      if (componentField(update.component) !== DOC_CONTENT_FIELD) continue;
+      merged = mergeFieldValue(merged, update.data);
     }
   }
   return merged;

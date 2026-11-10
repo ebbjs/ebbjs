@@ -8,6 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  componentField,
+  componentName,
   format,
   mergeFieldValue,
   pack,
@@ -41,9 +43,8 @@ const BASE_ACTOR = "actor_a";
 const makeHlc = (ts: number, count = 0): HLCTimestamp => format(pack(BigInt(ts), BigInt(count)));
 
 const contentOf = (update: Update): FieldValue | undefined => {
-  const data = update.data;
-  if (data === null || typeof data !== "object" || !("fields" in data)) return undefined;
-  return data.fields[DOC_CONTENT_FIELD];
+  if (update.method === "drop" || update.method === "delete") return undefined;
+  return componentField(update.component) === DOC_CONTENT_FIELD ? update.data : undefined;
 };
 
 /** Fold a batch of Actions into one `content` map, using the wire's merge rule. */
@@ -94,25 +95,30 @@ const actionFrom = (doc: TextDocument, updates: Update[]): Action => ({
 const cellUpdate = (
   cells: readonly (RunCell | CutCell)[],
   opts: { docId?: string; subjectType?: string; hlc?: HLCTimestamp; version?: number } = {},
-): Update => {
+): Update[] => {
   const t = opts.hlc ?? makeHlc(999);
   const updateId = `u_${cells[0]?.id ?? "none"}`;
-  return {
-    id: updateId,
-    subject_id: opts.docId ?? DOC_ID,
-    subject_type: opts.subjectType ?? "text_document",
-    method: "patch",
-    data: {
-      fields: {
-        [DOC_CONTENT_FIELD]: {
-          map: Object.fromEntries(
-            cells.map((cell) => [cell.id, { value: cell, update_id: updateId, hlc: cell.stamp }]),
-          ),
-        },
-        [DOC_VERSION_FIELD]: versionField(t, updateId, opts.version),
+  const docType = opts.subjectType ?? "text_document";
+  return [
+    {
+      id: updateId,
+      subject_id: opts.docId ?? DOC_ID,
+      component: componentName(docType, DOC_CONTENT_FIELD),
+      method: "merge",
+      data: {
+        map: Object.fromEntries(
+          cells.map((cell) => [cell.id, { value: cell, update_id: updateId, hlc: cell.stamp }]),
+        ),
       },
     },
-  };
+    {
+      id: `${updateId}v`,
+      subject_id: opts.docId ?? DOC_ID,
+      component: componentName(docType, DOC_VERSION_FIELD),
+      method: "merge",
+      data: versionField(t, `${updateId}v`, opts.version),
+    },
+  ];
 };
 
 const peerRun = (
@@ -405,7 +411,7 @@ describe("TextDocument.applyActions", () => {
   it("projects an external run", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    const action = actionFrom(doc, [cellUpdate([base])]);
+    const action = actionFrom(doc, cellUpdate([base]));
 
     doc.applyActions([action]);
     expect(doc.text).toBe("hello");
@@ -416,8 +422,8 @@ describe("TextDocument.applyActions", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const first = peerRun(doc, "a", { runId: "ROOT", offset: 0 }, "r1");
     const second = peerRun(doc, "b", { runId: "r1", offset: 1 }, "r2");
-    const actionA = actionFrom(doc, [cellUpdate([first])]);
-    const actionB = actionFrom(doc, [cellUpdate([second])]);
+    const actionA = actionFrom(doc, cellUpdate([first]));
+    const actionB = actionFrom(doc, cellUpdate([second]));
 
     const events: AppliedUpdate[] = [];
     doc.onUpdate((evt) => events.push(evt));
@@ -433,14 +439,14 @@ describe("TextDocument.applyActions", () => {
   it("ignores actions for another document type", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    doc.applyActions([actionFrom(doc, [cellUpdate([base], { subjectType: "other" })])]);
+    doc.applyActions([actionFrom(doc, cellUpdate([base], { subjectType: "other" }))]);
     expect(doc.text).toBe("");
   });
 
   it("is idempotent on re-delivery", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    const action = actionFrom(doc, [cellUpdate([base])]);
+    const action = actionFrom(doc, cellUpdate([base]));
 
     doc.applyActions([action]);
     const state = doc.docState;
@@ -451,14 +457,14 @@ describe("TextDocument.applyActions", () => {
   it("fails on a document from an unknown version", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    const action = actionFrom(doc, [cellUpdate([base], { version: 999 })]);
+    const action = actionFrom(doc, cellUpdate([base], { version: 999 }));
     expect(() => doc.applyActions([action])).toThrow(DocumentVersionError);
   });
 
   it("applyUpdate wraps a single Update", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hi", { runId: "ROOT", offset: 0 }, "r1");
-    doc.applyUpdate(cellUpdate([base]));
+    doc.applyUpdate(cellUpdate([base])[0]!);
     expect(doc.text).toBe("hi");
   });
 });
@@ -688,11 +694,12 @@ describe("version leaf", () => {
   it("is written by every local edit", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     doc.localInsert("a", { hlc: makeHlc(2) });
-    const fields = (
-      doc.pendingActions()[0]!.updates[0]!.data as {
-        fields: Record<string, FieldValue>;
-      }
-    ).fields;
-    expect(fields[DOC_VERSION_FIELD]).toMatchObject({ value: CURRENT_TEXT_VERSION });
+    const version = doc
+      .pendingActions()[0]!
+      .updates.find(
+        (update) =>
+          update.method !== "delete" && componentField(update.component) === DOC_VERSION_FIELD,
+      )!;
+    expect(version.data).toMatchObject({ value: CURRENT_TEXT_VERSION });
   });
 });

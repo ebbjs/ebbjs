@@ -1,4 +1,4 @@
-import type { Action } from "@ebbjs/core";
+import { componentModel, type Action } from "@ebbjs/core";
 import { addedUpdates, mergeActionUpdates } from "../internal/action-merge";
 import type { ActionLog, LoggedAction } from "../types/action-log";
 
@@ -9,7 +9,7 @@ import type { ActionLog, LoggedAction } from "../types/action-log";
  * - `actions` — Actions in append order; the entry at index `i` sits at
  *   log position `i + 1`, so positions are 1-based, contiguous, and stable
  *   across re-delivery of the same Action id
- * - `typeIndex` — maps entity type to set of entity IDs affected (for query optimization)
+ * - `typeIndex` — maps model to set of entity IDs affected (for query optimization)
  *
  * ## Materialization Flow
  * 1. Action received via `append()`
@@ -24,23 +24,38 @@ interface ActionLogState {
   typeIndex: readonly (readonly [type: string, entityIds: readonly string[]])[];
 }
 
+/** The model an id is already indexed under, or `undefined` when it is not. */
+const modelOf = (index: Map<string, Set<string>>, entityId: string): string | undefined => {
+  for (const [model, ids] of index) {
+    if (ids.has(entityId)) return model;
+  }
+  return undefined;
+};
+
 const updateTypeIndex = (
   typeIndex: readonly (readonly [string, readonly string[]])[],
   action: Action,
 ): (readonly [string, readonly string[]])[] => {
   const map = new Map<string, Set<string>>();
-  for (const [type, entityIds] of typeIndex) {
-    map.set(type, new Set(entityIds));
+  for (const [model, entityIds] of typeIndex) {
+    map.set(model, new Set(entityIds));
   }
   for (const update of action.updates) {
-    const existing = map.get(update.subject_type);
+    // A delete names no component; it belongs to the model the id was
+    // committed under.
+    const model =
+      update.method === "delete"
+        ? modelOf(map, update.subject_id)
+        : componentModel(update.component);
+    if (model === undefined) continue;
+    const existing = map.get(model);
     if (existing) {
       existing.add(update.subject_id);
     } else {
-      map.set(update.subject_type, new Set([update.subject_id]));
+      map.set(model, new Set([update.subject_id]));
     }
   }
-  return Array.from(map.entries()).map(([type, ids]) => [type, Array.from(ids)] as const);
+  return Array.from(map.entries()).map(([model, ids]) => [model, Array.from(ids)] as const);
 };
 
 export const createMemoryActionLog = (): ActionLog => {

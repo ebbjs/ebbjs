@@ -6,9 +6,10 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
   must reproduce `fixtures/query_semantics_vectors.json`, so the two
   hand-mirrored implementations of one predicate language cannot drift.
 
-  Fixture rows are written through the real write path (one `put` per row plus
-  its `entityGroup` row) so the query also runs the permission JOINs a caller
-  reaches through `EntityStore.query/4`.
+  Fixture rows are written through the real write path (one create per row
+  plus its `entityGroup` row, each as one Update per component) so the query
+  also runs the permission JOINs a caller reaches through
+  `EntityStore.query/4`.
   """
 
   use ExUnit.Case, async: false
@@ -97,37 +98,31 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
   defp write_row(row_id, group_id, actor_id, writer_name, fields, maps) do
     hlc = generate_hlc()
 
-    envelopes =
-      Map.new(fields, fn {field, value} ->
-        {field, %{"type" => "lww", "value" => value, "hlc" => hlc}}
+    leaf_updates =
+      Enum.map(fields, fn {field, value} ->
+        validated_component(row_id, "todo/#{field}", %{"value" => value, "hlc" => hlc})
       end)
 
-    map_envelopes =
-      Map.new(maps, fn {field, entries} ->
-        {field,
-         %{
-           "map" =>
-             Map.new(entries, fn {key, value} ->
-               {key, %{"type" => "lww", "value" => value, "hlc" => hlc}}
-             end)
-         }}
+    map_updates =
+      Enum.map(maps, fn {field, entries} ->
+        validated_component(
+          row_id,
+          "todo/#{field}",
+          %{
+            "map" =>
+              Map.new(entries, fn {key, value} ->
+                {key, %{"value" => value, "hlc" => hlc}}
+              end)
+          },
+          method: :merge
+        )
       end)
-
-    envelopes = Map.merge(envelopes, map_envelopes)
 
     action = %{
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: row_id,
-          subject_type: "todo",
-          method: :put,
-          data: %{"fields" => envelopes}
-        }
-      ]
+      updates: leaf_updates ++ map_updates
     }
 
     {:ok, _gsn_pair, []} = Writer.write_actions([action], writer_name)
@@ -140,18 +135,14 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: eg_id,
-          subject_type: "entityGroup",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "entity_id" => %{"type" => "lww", "value" => row_id, "hlc" => eg_hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => eg_hlc}
-            }
-          }
-        }
+        validated_component(eg_id, "entityGroup/entity_id", %{
+          "value" => row_id,
+          "hlc" => eg_hlc
+        }),
+        validated_component(eg_id, "entityGroup/group_id", %{
+          "value" => group_id,
+          "hlc" => eg_hlc
+        })
       ]
     }
 
@@ -169,19 +160,15 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        %{
-          id: "upd_" <> Nanoid.generate(),
-          subject_id: gm_id,
-          subject_type: "groupMember",
-          method: :put,
-          data: %{
-            "fields" => %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-            }
-          }
-        }
+        validated_component(gm_id, "groupMember/actor_id", %{"value" => actor_id, "hlc" => hlc}),
+        validated_component(gm_id, "groupMember/group_id", %{
+          "value" => group_id,
+          "hlc" => hlc
+        }),
+        validated_component(gm_id, "groupMember/permissions", %{
+          "value" => ["todo.read"],
+          "hlc" => hlc
+        })
       ]
     }
 

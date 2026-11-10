@@ -80,12 +80,15 @@ const encode = (value) => {
 
 const stamp = (value, hlc) => ({ value, update_id: "seed_update", hlc });
 
-const update = (id, subjectId, subjectType, fields) => ({
+// One Update names one component: `component` is `<model>/<field>` and `data`
+// is that component's own value, never a row's field record. A create writes
+// one `replace` per component.
+const update = (id, subjectId, component, data) => ({
   id,
   subject_id: subjectId,
-  subject_type: subjectType,
-  method: "put",
-  data: { fields },
+  component,
+  method: "replace",
+  data,
 });
 
 /** The bootstrap Action `@ebbjs/core`'s seed builder emits, by hand. */
@@ -94,19 +97,25 @@ const buildSeedAction = (hlc) => ({
   actor_id: ACTOR_ID,
   hlc,
   updates: [
-    update("u_group", GROUP_ID, "group", { name: stamp("Docker Smoke", hlc) }),
-    update("u_member", MEMBER_ID, "groupMember", {
-      actor_id: stamp(ACTOR_ID, hlc),
-      group_id: stamp(GROUP_ID, hlc),
-      // Permission strings are `<entity_type>.<verb>`; the wildcard
-      // covers the verbs this probe reads back.
-      permissions: stamp(["todo.*"], hlc),
-    }),
-    update("u_entity", ENTITY_ID, ENTITY_TYPE, { title: stamp(FIELD_VALUE, hlc) }),
-    update("u_entity_group", ENTITY_GROUP_ID, "entityGroup", {
-      entity_id: stamp(ENTITY_ID, hlc),
-      group_id: stamp(GROUP_ID, hlc),
-    }),
+    update("u_group_name", GROUP_ID, "group/name", stamp("Docker Smoke", hlc)),
+    update("u_member_actor_id", MEMBER_ID, "groupMember/actor_id", stamp(ACTOR_ID, hlc)),
+    update("u_member_group_id", MEMBER_ID, "groupMember/group_id", stamp(GROUP_ID, hlc)),
+    // Permission strings are `<entity_type>.<verb>`; the wildcard
+    // covers the verbs this probe reads back.
+    update("u_member_permissions", MEMBER_ID, "groupMember/permissions", stamp(["todo.*"], hlc)),
+    update("u_entity_title", ENTITY_ID, `${ENTITY_TYPE}/title`, stamp(FIELD_VALUE, hlc)),
+    update(
+      "u_entity_group_entity_id",
+      ENTITY_GROUP_ID,
+      "entityGroup/entity_id",
+      stamp(ENTITY_ID, hlc),
+    ),
+    update(
+      "u_entity_group_group_id",
+      ENTITY_GROUP_ID,
+      "entityGroup/group_id",
+      stamp(GROUP_ID, hlc),
+    ),
   ],
 });
 

@@ -15,6 +15,7 @@ import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { createClient } from "../client";
+import { updateModel } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -113,20 +114,25 @@ const canonicalize = (action: Action): unknown => {
     ids.set(id, next);
     return next;
   };
-  const canonicalUpdates = action.updates.map((update) => ({
-    subject_id: idOf(update.subject_id),
-    subject_type: update.subject_type,
-    method: update.method,
-    fields: Object.fromEntries(
-      Object.entries(update.data?.fields ?? {}).map(([key, env]) => {
-        const value =
-          key === "source_id" || key === "target_id" || key === "entity_id"
-            ? idOf(env.value as string)
-            : env.value;
-        return [key, value];
-      }),
-    ),
-  }));
+  const canonicalUpdates = action.updates.map((update) => {
+    if (update.method === "drop" || update.method === "delete") {
+      return { subject_id: idOf(update.subject_id), method: update.method };
+    }
+    const leaf = update.data;
+    const value =
+      "value" in leaf &&
+      (update.component.endsWith("/source_id") ||
+        update.component.endsWith("/target_id") ||
+        update.component.endsWith("/entity_id"))
+        ? idOf(leaf.value as string)
+        : leaf.value;
+    return {
+      subject_id: idOf(update.subject_id),
+      component: update.component,
+      method: update.method,
+      data: value,
+    };
+  });
   return canonicalUpdates.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 };
 
@@ -232,14 +238,13 @@ describe("client.actions composition", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const [action] = decodeActions(calls[0]!);
-    expect(action!.updates.map((update) => update.subject_type)).toEqual([
-      "list",
-      "entityGroup",
-      "todo",
-      "entityGroup",
-      "relationship",
-    ]);
-    const relationship = action!.updates.find((u) => u.subject_type === "relationship")!;
-    expect(relationship.data?.fields?.["target_id"]?.value).toBe(created.list.id);
+    const models = action!.updates
+      .map((update) => updateModel(update))
+      .filter((model, index, all) => model !== all[index - 1]);
+    expect(models).toEqual(["list", "entityGroup", "todo", "entityGroup", "relationship"]);
+    const target = action!.updates.find(
+      (update) => update.method !== "delete" && update.component === "relationship/target_id",
+    )!;
+    expect(target.data).toMatchObject({ value: created.list.id });
   });
 });

@@ -26,19 +26,18 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_multi_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_multi_#{Nanoid.generate()}",
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"title" => %{"type" => "lww", "value" => "Multi", "hlc" => hlc}}
-            }
-          },
-          entity_group_update(entity_id, "group_1", hlc),
-          entity_group_update(entity_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_multi_#{Nanoid.generate()}",
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Multi", "hlc" => hlc}
+            },
+            entity_group_update(entity_id, "group_1", hlc),
+            entity_group_update(entity_id, "group_2", hlc)
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
@@ -65,10 +64,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_seed_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(other_id, hlc),
-          entity_group_put(eg_other, other_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(other_id, hlc),
+            entity_group_put(eg_other, other_id, "group_2", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(seed)
@@ -83,11 +83,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_leak_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(leaked_id, hlc),
-          entity_group_put(eg_leak, leaked_id, "group_1", hlc),
-          entity_group_put(eg_other_2, other_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(leaked_id, hlc),
+            entity_group_put(eg_leak, leaked_id, "group_1", hlc),
+            entity_group_put(eg_other_2, other_id, "group_2", hlc)
+          ])
       }
 
       # The spanning Action commits as one Action; only delivery is scoped.
@@ -117,10 +118,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_move_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(entity_id, hlc),
-          entity_group_put(eg_old, entity_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_old, entity_id, "group_1", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -129,16 +131,16 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_move_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          entity_group_put(eg_new, entity_id, "group_2", hlc),
-          %{
-            "id" => "upd_move_#{Nanoid.generate()}",
-            "subject_id" => eg_old,
-            "subject_type" => "entityGroup",
-            "method" => "delete",
-            "data" => nil
-          }
-        ]
+        "updates" =>
+          List.flatten([
+            entity_group_put(eg_new, entity_id, "group_2", hlc),
+            %{
+              "id" => "upd_move_#{Nanoid.generate()}",
+              "subject_id" => eg_old,
+              "method" => "delete",
+              "data" => nil
+            }
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(move)
@@ -166,10 +168,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_ok_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(ok_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", ok_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(ok_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", ok_id, "group_1", hlc)
+          ])
       }
 
       # `actor_1` is not a member of `group_2`, so this Action fails
@@ -178,10 +181,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_bad_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(bad_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", bad_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(bad_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", bad_id, "group_2", hlc)
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [unauthorized, authorized]}), "actor_1")
@@ -213,20 +217,17 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_auth_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_auth_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
-              }
-            }
-          },
-          entity_group_update(entity_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_auth_" <> Nanoid.generate(),
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
+            },
+            entity_group_update(entity_id, "group_1", hlc)
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}), "actor_1")
@@ -252,20 +253,17 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_intra_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_intra_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Intra Action", "hlc" => hlc}
-              }
-            }
-          },
-          entity_group_update(entity_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_intra_" <> Nanoid.generate(),
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Intra Action", "hlc" => hlc}
+            },
+            entity_group_update(entity_id, "group_1", hlc)
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
@@ -314,19 +312,16 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_unowned_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_unowned_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Unowned Todo", "hlc" => hlc}
-              }
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_unowned_" <> Nanoid.generate(),
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Unowned Todo", "hlc" => hlc}
             }
-          }
-        ]
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
@@ -349,19 +344,16 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_patch_orphan_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_patch_orphan_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Patched Orphan", "hlc" => hlc}
-              }
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_patch_orphan_" <> Nanoid.generate(),
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "merge",
+              "data" => %{"type" => "lww", "value" => "Patched Orphan", "hlc" => hlc}
             }
-          }
-        ]
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
@@ -383,19 +375,16 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_mismatch_" <> Nanoid.generate(),
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_mismatch_" <> Nanoid.generate(),
-            "subject_id" => entity_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "title" => %{"type" => "lww", "value" => "Mismatch Test", "hlc" => hlc}
-              }
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_mismatch_" <> Nanoid.generate(),
+              "subject_id" => entity_id,
+              "component" => "todo/title",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => "Mismatch Test", "hlc" => hlc}
             }
-          }
-        ]
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_2")
@@ -427,7 +416,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_add_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [todo_put(entity_id, hlc), entity_group_put(eg_1, entity_id, "group_1", hlc)]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_1, entity_id, "group_1", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -438,7 +431,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_add_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_put(eg_2, entity_id, "group_2", hlc)]
+        "updates" => List.flatten([entity_group_put(eg_2, entity_id, "group_2", hlc)])
       }
 
       assert %{"rejected" => []} = post_membership_action(add)
@@ -462,17 +455,18 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_batchtype_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(entity_id, hlc),
-          entity_group_put(eg_1, entity_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_1, entity_id, "group_1", hlc)
+          ])
       }
 
       add = %{
         "id" => "act_batchtype_add_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_put(eg_2, entity_id, "group_2", hlc)]
+        "updates" => List.flatten([entity_group_put(eg_2, entity_id, "group_2", hlc)])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [create, add]}), "actor_1")
@@ -498,11 +492,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_remove_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(entity_id, hlc),
-          entity_group_put(eg_1, entity_id, "group_1", hlc),
-          entity_group_put(eg_2, entity_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_1, entity_id, "group_1", hlc),
+            entity_group_put(eg_2, entity_id, "group_2", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -511,7 +506,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_remove_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_delete(eg_2)]
+        "updates" => List.flatten([entity_group_delete(eg_2)])
       }
 
       assert %{"rejected" => []} = post_membership_action(remove)
@@ -529,7 +524,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_last_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [todo_put(entity_id, hlc), entity_group_put(eg_1, entity_id, "group_1", hlc)]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_1, entity_id, "group_1", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -538,7 +537,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_last_remove_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_delete(eg_1)]
+        "updates" => List.flatten([entity_group_delete(eg_1)])
       }
 
       response = post_membership_action(remove)
@@ -562,10 +561,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_swap_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(entity_id, hlc),
-          entity_group_put(eg_old, entity_id, "group_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_old, entity_id, "group_1", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -576,10 +576,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => swap_id,
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          entity_group_put(eg_new, entity_id, "group_2", hlc),
-          entity_group_delete(eg_old)
-        ]
+        "updates" =>
+          List.flatten([
+            entity_group_put(eg_new, entity_id, "group_2", hlc),
+            entity_group_delete(eg_old)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(swap)
@@ -604,11 +605,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_bypass_create_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(entity_id, hlc),
-          entity_group_put(eg_1, entity_id, "group_1", hlc),
-          entity_group_put(eg_2, entity_id, "group_2", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(entity_id, hlc),
+            entity_group_put(eg_1, entity_id, "group_1", hlc),
+            entity_group_put(eg_2, entity_id, "group_2", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = post_membership_action(create)
@@ -617,14 +619,14 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_bypass_a_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_delete(eg_1)]
+        "updates" => List.flatten([entity_group_delete(eg_1)])
       }
 
       remove_2 = %{
         "id" => "act_bypass_b_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [entity_group_delete(eg_2)]
+        "updates" => List.flatten([entity_group_delete(eg_2)])
       }
 
       response =
@@ -660,15 +662,15 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_gm_remove_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_gm_remove_#{Nanoid.generate()}",
-            "subject_id" => gm_id,
-            "subject_type" => "groupMember",
-            "method" => "delete",
-            "data" => nil
-          }
-        ]
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_gm_remove_#{Nanoid.generate()}",
+              "subject_id" => gm_id,
+              "method" => "delete",
+              "data" => nil
+            }
+          ])
       }
 
       response = post_membership_action(remove)
@@ -720,7 +722,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   defp group_member_id(action) do
     action["updates"]
-    |> Enum.find(&(&1["subject_type"] == "groupMember"))
+    |> Enum.find(&String.starts_with?(&1["component"] || "", "groupMember/"))
     |> Map.fetch!("subject_id")
   end
 
@@ -739,10 +741,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_secret_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(secret_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(secret_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(create, "victim")
@@ -754,7 +757,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_graft_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)]
+        "updates" =>
+          List.flatten([entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(graft, "attacker")
@@ -769,7 +773,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_share_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)]
+        "updates" =>
+          List.flatten([entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => []} = submit(share, "victim")
@@ -788,10 +793,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_secret_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(secret_id, hlc),
-          entity_group_put(secret_eg, secret_id, "g_victim", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(secret_id, hlc),
+            entity_group_put(secret_eg, secret_id, "g_victim", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(create, "victim")
@@ -807,10 +813,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_own_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(own_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(own_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(own, "attacker")
@@ -823,29 +830,34 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_repoint_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [entity_group_put(secret_eg, own_id, "g_atk", hlc)]
+        "updates" => List.flatten([entity_group_put(secret_eg, own_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
+
+      patch_eg = "eg_#{Nanoid.generate()}"
 
       patch_graft = %{
         "id" => "act_graft_patch_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_graft_patch_#{Nanoid.generate()}",
-            "subject_id" => "eg_#{Nanoid.generate()}",
-            "subject_type" => "entityGroup",
-            "method" => "patch",
-            "data" => %{
-              "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => secret_id, "hlc" => hlc},
-                "group_id" => %{"type" => "lww", "value" => "g_atk", "hlc" => hlc}
-              }
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_graft_patch_#{Nanoid.generate()}" <> "_entity_id",
+              "subject_id" => patch_eg,
+              "component" => "entityGroup/entity_id",
+              "method" => "merge",
+              "data" => %{"type" => "lww", "value" => secret_id, "hlc" => hlc}
+            },
+            %{
+              "id" => "upd_graft_patch_#{Nanoid.generate()}" <> "_group_id",
+              "subject_id" => patch_eg,
+              "component" => "entityGroup/group_id",
+              "method" => "merge",
+              "data" => %{"type" => "lww", "value" => "g_atk", "hlc" => hlc}
             }
-          }
-        ]
+          ])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(patch_graft, "attacker")
@@ -855,8 +867,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
-  # #624: a write is authorized under the type the entity was committed
-  # with, never the `subject_type` the client sends. Otherwise any
+  # #624: a write is authorized under the model the entity was committed
+  # with, never the component prefix the client sends. Otherwise any
   # `<type>.create` in a group becomes a full overwrite and relabel of
   # every other type's entities there.
   describe "committed-type authorization (#624)" do
@@ -878,19 +890,16 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_attack_#{Nanoid.generate()}",
         "actor_id" => "actor_2",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_attack_#{Nanoid.generate()}",
-            "subject_id" => invoice_id,
-            "subject_type" => "todo",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{
-                "amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
-              }
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_attack_#{Nanoid.generate()}",
+              "subject_id" => invoice_id,
+              "component" => "todo/amount",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
             }
-          }
-        ]
+          ])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
@@ -909,10 +918,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_legit_#{Nanoid.generate()}",
         "actor_id" => "actor_2",
         "hlc" => legit_hlc,
-        "updates" => [
-          todo_put(todo_id, legit_hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(todo_id, legit_hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(legit, "actor_2")
@@ -935,22 +945,28 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
                "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
              }).status == 200
 
-      fields = %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
+      amount = %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
 
-      for {method, data} <- [{"patch", %{"fields" => fields}}, {"delete", nil}] do
-        update = %{
-          "id" => "upd_#{method}_#{Nanoid.generate()}",
-          "subject_id" => invoice_id,
-          "subject_type" => "todo",
-          "method" => method,
-          "data" => data
-        }
+      for {method, component, data} <- [
+            {"merge", "todo/amount", amount},
+            {"delete", nil, nil}
+          ] do
+        update =
+          %{
+            "id" => "upd_#{method}_#{Nanoid.generate()}",
+            "subject_id" => invoice_id,
+            "method" => method,
+            "data" => data
+          }
+          |> then(fn update ->
+            if component, do: Map.put(update, "component", component), else: update
+          end)
 
         attack = %{
           "id" => "act_#{method}_#{Nanoid.generate()}",
           "actor_id" => "actor_2",
           "hlc" => hlc,
-          "updates" => [update]
+          "updates" => List.flatten([update])
         }
 
         assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
@@ -971,10 +987,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_create_#{Nanoid.generate()}",
         "actor_id" => "actor_2",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(todo_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(todo_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+          ])
       }
 
       # Nothing has committed `todo_id` yet when this Action is authorized, so
@@ -983,18 +1000,17 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_relabel_#{Nanoid.generate()}",
         "actor_id" => "actor_2",
         "hlc" => hlc,
-        "updates" => [
-          %{
-            "id" => "upd_relabel_#{Nanoid.generate()}",
-            "subject_id" => todo_id,
-            "subject_type" => "invoice",
-            "method" => "put",
-            "data" => %{
-              "fields" => %{"amount" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}}
-            }
-          },
-          entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            %{
+              "id" => "upd_relabel_#{Nanoid.generate()}",
+              "subject_id" => todo_id,
+              "component" => "invoice/amount",
+              "method" => "replace",
+              "data" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
+            },
+            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+          ])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [create, relabel]}), "actor_2")
@@ -1026,11 +1042,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_victim_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(victim_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
-          relationship_put(victim_edge, victim_id, "col_x", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(victim_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            relationship_put(victim_edge, victim_id, "col_x", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(victim_create, "victim")
@@ -1046,11 +1063,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_attacker_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => attacker_hlc,
-        "updates" => [
-          todo_put(attacker_id, attacker_hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
-          relationship_put(attacker_edge, attacker_id, "col_x", attacker_hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(attacker_id, attacker_hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
+            relationship_put(attacker_edge, attacker_id, "col_x", attacker_hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(attacker_create, "attacker")
@@ -1060,7 +1078,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_repoint_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [relationship_put(victim_edge, attacker_id, "col_x", hlc)]
+        "updates" => List.flatten([relationship_put(victim_edge, attacker_id, "col_x", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
@@ -1074,16 +1092,15 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_victim_write_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [relationship_patch(victim_edge, victim_id, "col_y", hlc)]
+        "updates" => List.flatten([relationship_patch(victim_edge, victim_id, "col_y", hlc)])
       }
 
       assert %{"rejected" => []} = submit(victim_write, "victim")
     end
 
-    # The delete wire form may carry a `source_id`, but the row's source is
-    # its identity: the scope comes from the stored row, so an attacker
-    # cannot delete another group's edge by naming their own source.
-    test "an outsider cannot delete a victim's edge by naming their own source" do
+    # A delete names the row and carries no component, so the scope can only
+    # come from the stored row's source: naming a row is not authority.
+    test "an outsider cannot delete a victim's edge" do
       bootstrap_group("victim", "g_victim", ["todo.*", "relationship.*"])
       bootstrap_group("attacker", "g_attacker", ["todo.*", "relationship.*"])
 
@@ -1095,11 +1112,12 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_victim_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(victim_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
-          relationship_put(victim_edge, victim_id, "col_x", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(victim_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            relationship_put(victim_edge, victim_id, "col_x", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(victim_create, "victim")
@@ -1112,10 +1130,11 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_attacker_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => attacker_hlc,
-        "updates" => [
-          todo_put(attacker_id, attacker_hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(attacker_id, attacker_hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(attacker_create, "attacker")
@@ -1124,7 +1143,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_attack_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => [relationship_delete(victim_edge, attacker_id, hlc)]
+        "updates" => List.flatten([relationship_delete(victim_edge, attacker_id, hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "attacker")
@@ -1137,15 +1156,17 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_victim_delete_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => [relationship_delete(victim_edge, nil, hlc)]
+        "updates" => List.flatten([relationship_delete(victim_edge, nil, hlc)])
       }
 
       assert %{"rejected" => []} = submit(victim_delete, "victim")
     end
 
-    # Moving an edge is a delete plus a put (#624). The delete is delivered
-    # to the groups the stored row belonged to, the put to the new source's,
-    # so neither group receives an Update it should not see.
+    # Moving an edge is a delete plus a put (#624). A row's scope is a
+    # per-subject decision in this slice, so the move is two Actions: the
+    # delete is delivered to the groups the stored row belonged to, the put
+    # to the new source's, and neither group receives an Update it should
+    # not see.
     test "delete plus put moves an edge to another source, one scope per group" do
       bootstrap_group("owner", "g_victim", ["todo.*", "relationship.*"])
       bootstrap_group("owner", "g_new", ["todo.*", "relationship.*"])
@@ -1159,36 +1180,49 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_seed_#{Nanoid.generate()}",
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" => [
-          todo_put(victim_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
-          todo_put(new_id, hlc),
-          entity_group_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
-          relationship_put(edge, victim_id, "col_x", hlc)
-        ]
+        "updates" =>
+          List.flatten([
+            todo_put(victim_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            todo_put(new_id, hlc),
+            entity_group_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
+            relationship_put(edge, victim_id, "col_x", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(seed, "owner")
 
-      move_id = "act_move_#{Nanoid.generate()}"
+      remove_id = "act_move_remove_#{Nanoid.generate()}"
 
-      move = %{
-        "id" => move_id,
+      remove = %{
+        "id" => remove_id,
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" => [
-          relationship_delete(edge, nil, hlc),
-          relationship_put(edge, new_id, "col_x", hlc)
-        ]
+        "updates" => List.flatten([relationship_delete(edge, nil, hlc)])
       }
 
-      assert %{"rejected" => []} = submit(move, "owner")
+      assert %{"rejected" => []} = submit(remove, "owner")
 
       assert [%{"subject_id" => ^edge, "method" => "delete"}] =
-               action_updates("g_victim", "owner", move_id)
+               action_updates("g_victim", "owner", remove_id)
 
-      assert [%{"subject_id" => ^edge, "method" => "put"}] =
-               action_updates("g_new", "owner", move_id)
+      put_id = "act_move_put_#{Nanoid.generate()}"
+
+      put = %{
+        "id" => put_id,
+        "actor_id" => "owner",
+        "hlc" => hlc,
+        "updates" => List.flatten([relationship_put(edge, new_id, "col_x", hlc)])
+      }
+
+      assert %{"rejected" => []} = submit(put, "owner")
+
+      # The put is four component Updates, all scoped to the new source's
+      # group; none of them reaches the old source's group.
+      updates = action_updates("g_new", "owner", put_id)
+      assert length(updates) == 4
+      assert Enum.all?(updates, &(&1["subject_id"] == edge and &1["method"] == "replace"))
+      assert action_updates("g_victim", "owner", put_id) == []
     end
   end
 
@@ -1204,83 +1238,107 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     Jason.decode!(conn.resp_body)
   end
 
+  # Helpers return one Update per component, so an Action's `updates` list
+  # flattens their results.
   defp todo_put(entity_id, hlc) do
-    %{
-      "id" => "upd_todo_#{Nanoid.generate()}",
-      "subject_id" => entity_id,
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{"title" => %{"type" => "lww", "value" => "Member", "hlc" => hlc}}
+    [
+      %{
+        "id" => "upd_todo_#{Nanoid.generate()}",
+        "subject_id" => entity_id,
+        "component" => "todo/title",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => "Member", "hlc" => hlc}
       }
-    }
+    ]
   end
 
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
-    %{
-      "id" => eg_id,
-      "subject_id" => eg_id,
-      "subject_type" => "entityGroup",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        }
+    [
+      %{
+        "id" => eg_id <> "_entity_id",
+        "subject_id" => eg_id,
+        "component" => "entityGroup/entity_id",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc}
+      },
+      %{
+        "id" => eg_id <> "_group_id",
+        "subject_id" => eg_id,
+        "component" => "entityGroup/group_id",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
       }
-    }
+    ]
   end
 
   defp relationship_put(rel_id, source_id, target_id, hlc) do
-    %{
-      "id" => "upd_rel_#{Nanoid.generate()}",
-      "subject_id" => rel_id,
-      "subject_type" => "relationship",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
-          "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc},
-          "type" => %{"type" => "lww", "value" => "todo", "hlc" => hlc},
-          "field" => %{"type" => "lww", "value" => "column", "hlc" => hlc}
-        }
+    id = "upd_rel_#{Nanoid.generate()}"
+
+    [
+      %{
+        "id" => id <> "_source_id",
+        "subject_id" => rel_id,
+        "component" => "relationship/source_id",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}
+      },
+      %{
+        "id" => id <> "_target_id",
+        "subject_id" => rel_id,
+        "component" => "relationship/target_id",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
+      },
+      %{
+        "id" => id <> "_type",
+        "subject_id" => rel_id,
+        "component" => "relationship/type",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => "todo", "hlc" => hlc}
+      },
+      %{
+        "id" => id <> "_field",
+        "subject_id" => rel_id,
+        "component" => "relationship/field",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => "column", "hlc" => hlc}
       }
-    }
+    ]
   end
 
   defp relationship_patch(rel_id, source_id, target_id, hlc) do
-    %{
-      "id" => "upd_rel_patch_#{Nanoid.generate()}",
-      "subject_id" => rel_id,
-      "subject_type" => "relationship",
-      "method" => "patch",
-      "data" => %{
-        "fields" => %{
-          "source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc},
-          "target_id" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
-        }
+    id = "upd_rel_patch_#{Nanoid.generate()}"
+
+    [
+      %{
+        "id" => id <> "_source_id",
+        "subject_id" => rel_id,
+        "component" => "relationship/source_id",
+        "method" => "merge",
+        "data" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}
+      },
+      %{
+        "id" => id <> "_target_id",
+        "subject_id" => rel_id,
+        "component" => "relationship/target_id",
+        "method" => "merge",
+        "data" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
       }
-    }
+    ]
   end
 
-  defp relationship_delete(rel_id, source_id, hlc) do
-    %{
-      "id" => "upd_rel_delete_#{Nanoid.generate()}",
-      "subject_id" => rel_id,
-      "subject_type" => "relationship",
-      "method" => "delete",
-      "data" => relationship_delete_data(source_id, hlc)
-    }
-  end
-
-  # The delete wire form normally drops the data envelope; a caller may
-  # still send fields, which is exactly the attack MF1 covers.
-  defp relationship_delete_data(nil, _hlc), do: nil
-
-  defp relationship_delete_data(source_id, hlc) do
-    %{
-      "fields" => %{"source_id" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}}
-    }
+  # A delete names the row and carries no component, so the old wire form's
+  # `source_id` attack is not expressible: the stored row's source decides
+  # the scope. The third argument stays so the attack call sites read the same.
+  defp relationship_delete(rel_id, _source_id, _hlc) do
+    [
+      %{
+        "id" => "upd_rel_delete_#{Nanoid.generate()}",
+        "subject_id" => rel_id,
+        "method" => "delete",
+        "data" => nil
+      }
+    ]
   end
 
   defp action_id_list(group_id, actor_id) do

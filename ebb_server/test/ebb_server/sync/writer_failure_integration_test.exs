@@ -49,25 +49,27 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
     gm_id = "gm_282_cache_#{:erlang.unique_integer([:positive])}"
     hlc = TestHelpers.generate_hlc()
 
-    update = %{
-      id: "upd_282_cache_#{:erlang.unique_integer([:positive])}",
-      subject_id: gm_id,
-      subject_type: "groupMember",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-          "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-        }
-      }
-    }
+    updates =
+      Enum.map(
+        %{
+          "actor_id" => actor_id,
+          "group_id" => group_id,
+          "permissions" => ["todo.read"]
+        },
+        fn {field, value} ->
+          TestHelpers.validated_component(
+            gm_id,
+            "groupMember/#{field}",
+            %{"type" => "lww", "value" => value, "hlc" => hlc}
+          )
+        end
+      )
 
     action = %{
       id: "act_282_cache_#{:erlang.unique_integer([:positive])}",
       actor_id: actor_id,
       hlc: hlc,
-      updates: [update]
+      updates: updates
     }
 
     # The batch is durable, so the caller gets success even though the cache
@@ -184,9 +186,9 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
           %{
             id: "upd_282_drain",
             subject_id: "todo_282_drain",
-            subject_type: "todo",
-            method: :put,
-            data: %{}
+            component: "todo/title",
+            method: :replace,
+            data: %{"type" => "lww", "value" => "x", "hlc" => 1}
           }
         ]
       }
@@ -299,34 +301,38 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
       "id" => "act_282_e2e_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        update("group", group_id, "put", %{
-          "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-        }),
-        update("groupMember", "gm_282_e2e_owner", "put", %{
-          "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-          "permissions" => %{"type" => "lww", "value" => ["todo.*"], "hlc" => hlc}
-        }),
-        update("todo", todo_id, "put", %{
-          "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-        }),
-        update("entityGroup", "eg_282_e2e", "put", %{
-          "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
-          "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-        })
-      ]
+      "updates" =>
+        List.flatten([
+          updates("group", group_id, "replace", %{
+            "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+          }),
+          updates("groupMember", "gm_282_e2e_owner", "replace", %{
+            "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
+            "permissions" => %{"type" => "lww", "value" => ["todo.*"], "hlc" => hlc}
+          }),
+          updates("todo", todo_id, "replace", %{
+            "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
+          }),
+          updates("entityGroup", "eg_282_e2e", "replace", %{
+            "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
+            "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+          })
+        ])
     }
   end
 
-  defp update(subject_type, subject_id, method, fields) do
-    %{
-      "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => subject_id,
-      "subject_type" => subject_type,
-      "method" => method,
-      "data" => %{"fields" => fields}
-    }
+  defp updates(model, subject_id, method, fields) do
+    fields
+    |> Enum.map(fn {field, value} ->
+      %{
+        "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
+        "subject_id" => subject_id,
+        "component" => "#{model}/#{field}",
+        "method" => method,
+        "data" => value
+      }
+    end)
   end
 end
 
@@ -408,18 +414,16 @@ defmodule EbbServer.Sync.ActionDedupLostAckHttpTest do
       "id" => @lost_ack_action_id,
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        %{
-          "id" => "upd_285_lost_ack",
-          "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => "Lost ack", "hlc" => hlc}}
+      "updates" =>
+        [
+          %{
+            "id" => "upd_285_lost_ack",
+            "subject_id" => entity_id,
+            "component" => "todo/title",
+            "method" => "replace",
+            "data" => %{"type" => "lww", "value" => "Lost ack", "hlc" => hlc}
           }
-        },
-        ActionHelpers.entity_group_update(entity_id, group_id, hlc)
-      ]
+        ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
     }
   end
 

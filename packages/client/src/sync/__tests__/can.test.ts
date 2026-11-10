@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import { PermissionError } from "../permission";
@@ -48,25 +48,33 @@ const fields = (
 ): Record<string, { value: unknown; update_id: string }> =>
   Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
 
+/**
+ * One Update per field: a former `put` is a `replace`, a former `patch` a
+ * `merge`, and `delete` names no component.
+ */
 const update = (
-  subjectType: string,
+  model: string,
   subjectId: string,
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
-): Update => ({
-  id: `u_${subjectId}_${method}`,
-  subject_id: subjectId,
-  subject_type: subjectType,
-  method,
-  data: method === "delete" ? null : { fields: fields(values) },
-});
+): Update[] =>
+  method === "delete"
+    ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
+    : Object.entries(fields(values)).map(([name, value]) => ({
+        id: `u_${subjectId}_${method}_${name}`,
+        subject_id: subjectId,
+        component: componentName(model, name),
+        method: method === "put" ? "replace" : "merge",
+        data: value,
+      }));
 
-const action = (updates: readonly Update[]): Action => ({
+/** One Action from any number of component-Update groups. */
+const action = (...groups: readonly (readonly Update[])[]): Action => ({
   id: "a_1",
   actor_id: ACTOR_ID,
   hlc: makeHlc(1_711_036_800_000),
   gsn: 0,
-  updates: [...updates],
+  updates: groups.flat(),
 });
 
 const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
@@ -139,7 +147,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "*",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -191,7 +199,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "*",
         required: "todo.update",
         groupIds: [],
@@ -237,7 +245,7 @@ describe("client.can — per-entity form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        subjectType: "todo",
+        model: "todo",
         subjectId: "todo_1",
         required: "todo.delete",
         groupIds: ["g_1"],
@@ -374,7 +382,7 @@ describe("client.can — parity with the write-path pre-check", () => {
     const query = await client.can("todo_1", "update");
     expect(query.kind).toBe("denied");
     await expect(
-      client.write([action([update("todo", "todo_1", "patch", { title: "Ship" })])]),
+      client.write([action(update("todo", "todo_1", "patch", { title: "Ship" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
@@ -388,7 +396,7 @@ describe("client.can — parity with the write-path pre-check", () => {
     const query = await client.can("todo_1", "update");
     expect(query.kind).toBe("allowed");
     await expect(
-      client.write([action([update("todo", "todo_1", "patch", { title: "Ship" })])]),
+      client.write([action(update("todo", "todo_1", "patch", { title: "Ship" }))]),
     ).resolves.toEqual({ rejected: [] });
     expect(actionRequests(calls)).toHaveLength(1);
   });
@@ -415,9 +423,9 @@ describe("client.can — parity with the write-path pre-check", () => {
     });
     await expect(
       client.write([
-        action([
+        action(
           update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ]),
+        ),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -438,7 +446,7 @@ describe("client.can — parity with the write-path pre-check", () => {
 
     const violation = {
       kind: "missing-permission",
-      subjectType: "relationship",
+      model: "relationship",
       subjectId: "rel_1",
       required: "relationship.update",
       groupIds: ["g_src"],
@@ -449,9 +457,9 @@ describe("client.can — parity with the write-path pre-check", () => {
     // denied for the ordinary missing permission, not a re-point.
     const error = await client
       .write([
-        action([
+        action(
           update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ]),
+        ),
       ])
       .then(() => null)
       .catch((err: unknown) => err);

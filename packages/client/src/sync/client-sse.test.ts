@@ -57,11 +57,11 @@ const localPut = (id: string): Action => {
     gsn: 0,
     updates: [
       {
-        id: `u_${id}`,
+        id: `${`u_${id}`}_0`,
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: { fields: { title: { value: "parked", update_id: `u_${id}`, hlc } } },
+        component: "todo/title",
+        method: "replace",
+        data: { value: "parked", update_id: `u_${id}`, hlc },
       },
     ],
   };
@@ -84,13 +84,11 @@ describe("SyncClient.subscribe (SSE)", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Live", update_id: "u_1", hlc: "112134507724800000" } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Live", update_id: "u_1", hlc: "112134507724800000" },
         },
       ],
     };
@@ -252,13 +250,9 @@ describe("SyncClient.subscribe (SSE)", () => {
         {
           id: "u_sse",
           subject_id: "doc_1",
-          subject_type: "doc",
-          method: "put",
-          // User entities nest their fields under `data.fields` (mirrors
-          // `EbbServer.Storage.ActionValidator.well_formed_data?/1`).
-          data: {
-            fields: { x: { value: 1, update_id: "u_sse", hlc: "112134507724800000" } },
-          },
+          component: "doc/x",
+          method: "replace",
+          data: { value: 1, update_id: "u_sse", hlc: "112134507724800000" },
         },
       ],
     };
@@ -319,13 +313,11 @@ describe("SyncClient.subscribe (SSE)", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_put",
+          id: "u_put_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
         },
       ],
     };
@@ -336,15 +328,11 @@ describe("SyncClient.subscribe (SSE)", () => {
       gsn: 2,
       updates: [
         {
-          id: "u_patch",
+          id: "u_patch_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: {
-              title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
-            },
-          },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
         },
       ],
     };
@@ -361,68 +349,6 @@ describe("SyncClient.subscribe (SSE)", () => {
     const e = await storage.entities.get("todo_1");
     expect(e).not.toBeNull();
     expect((e!.data.fields.title as { value?: unknown }).value).toBe("Updated");
-  });
-
-  it("does not materialize a user-entity patch with unwrapped (flat) data", async () => {
-    // Documents the failure mode that the smoke test in
-    // examples/ebb-client-smoke used to hit: a patch update whose `data`
-    // shape doesn't wrap fields is silently dropped by the client
-    // materializer (extractPatchFields returns {}), and the entity never
-    // updates. This pins the failure mode so a future "fix" that loosens
-    // the unwrap won't silently regress.
-    const storage = createMemoryAdapter();
-    const putAction: Action = {
-      id: "act_put",
-      actor_id: "a_alice",
-      hlc: makeHlc(1711036800000),
-      gsn: 1,
-      updates: [
-        {
-          id: "u_put",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) } },
-          },
-        },
-      ],
-    };
-    const flatPatch: Action = {
-      id: "act_flat_patch",
-      actor_id: "a_alice",
-      hlc: makeHlc(1711036800000, 1),
-      gsn: 2,
-      updates: [
-        {
-          id: "u_flat",
-          subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          // NO `fields` wrapper — this is the bug shape.
-          data: {
-            title: {
-              value: "Should not stick",
-              update_id: "u_flat",
-              hlc: makeHlc(1711036800000, 1),
-            },
-          },
-        } as never,
-      ],
-    };
-    const seedClient = createClient({
-      serverUrl: "http://localhost:0",
-      actorId: "a_alice",
-      storage,
-    });
-    await callApplyAction(seedClient, putAction, "grp_1");
-    await callApplyAction(seedClient, flatPatch, "grp_1");
-    const e = await storage.entities.get("todo_1");
-    expect(e).not.toBeNull();
-    // The flat patch must NOT have overwritten the put's title.
-    expect((e!.data.fields.title as { value?: unknown }).value).toBe("Hello");
-    // And the patch must not have produced a stray `fields` key under data.fields.
-    expect(e!.data.fields).not.toHaveProperty("fields");
   });
 
   it("fires onEvent for control events", async () => {

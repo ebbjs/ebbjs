@@ -84,7 +84,7 @@ const callApplyAction = async (
   storage: ReturnType<typeof createMemoryAdapter>,
   action: Action,
   groupId?: string,
-): Promise<{ entityId: string; entityType: string }[]> => {
+): Promise<{ entityId: string }[]> => {
   const client = createClient({
     serverUrl: "http://localhost:0",
     actorId: "a_test",
@@ -92,7 +92,7 @@ const callApplyAction = async (
   });
   return (
     client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; entityType: string }[]>;
+      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string }[]>;
     }
   )._applyAction.call(client, action, groupId);
 };
@@ -107,18 +107,16 @@ describe("_applyAction (storage path)", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
         },
       ],
     };
     const affected = await callApplyAction(storage, action, "grp_1");
-    expect(affected).toEqual([{ entityId: "todo_1", entityType: "todo" }]);
+    expect(affected).toEqual([{ entityId: "todo_1" }]);
     expect(await storage.isDirty("todo_1")).toBe(true);
     expect(await storage.cursors.get("grp_1")).toBe(1);
   });
@@ -133,13 +131,11 @@ describe("_applyAction (storage path)", () => {
       gsn: 5,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
         },
       ],
     };
@@ -169,22 +165,18 @@ describe("_applyAction (storage path)", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_1",
+          id: "u_1_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
         },
         {
-          id: "u_2",
+          id: "u_2_0",
           subject_id: "todo_2",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: { title: { value: "World", update_id: "u_2", hlc: makeHlc(1711036800000, 1) } },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "World", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
         },
       ],
     };
@@ -208,15 +200,11 @@ describe("_applyAction HLC handling", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_put",
+          id: "u_put_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              title: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
-            },
-          },
+          component: "todo/title",
+          method: "replace",
+          data: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
         },
       ],
     };
@@ -227,15 +215,11 @@ describe("_applyAction HLC handling", () => {
       gsn: 2,
       updates: [
         {
-          id: "u_patch",
+          id: "u_patch_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: {
-              title: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
-            },
-          },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
         },
       ],
     };

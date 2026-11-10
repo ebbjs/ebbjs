@@ -1,7 +1,7 @@
 {
   "name": "batch",
-  "description": "create, patch, link, set links, and delete in one invocation, in call order",
-  "notes": "The created row is patched and related afterwards; its Updates precede them in the Action.",
+  "description": "create, update, link, set links, and delete in one invocation, in call order",
+  "notes": "The created row is updated and related afterwards; each row's component Updates precede the next row's.",
   "schema": "schema",
   "invocation_id": "inv_goldenBatch",
   "actor_id": "a_golden",
@@ -13,7 +13,10 @@
       "u_gbatch4",
       "u_gbatch5",
       "u_gbatch6",
-      "u_gbatch7"
+      "u_gbatch7",
+      "u_gbatch8",
+      "u_gbatch9",
+      "u_gbatch10"
     ],
     "rel": ["rel_gbatch1", "rel_gbatch2"],
     "hlc": ["111690000000000051", "111690000000000052", "111690000000000053", "111690000000000054"]
@@ -68,137 +71,172 @@
       {
         "id": "u_gbatch1",
         "subject_id": "e_gbatch1",
-        "subject_type": "issue",
-        "method": "put",
+        "component": "issue/title",
+        "method": "replace",
         "data": {
-          "fields": {
-            "title": {
-              "value": "Draft",
-              "update_id": "u_gbatch1",
-              "hlc": "111690000000000051"
-            },
-            "done": {
-              "value": false,
-              "update_id": "u_gbatch1",
-              "hlc": "111690000000000051"
-            },
-            "labels": {
-              "value": [],
-              "update_id": "u_gbatch1",
-              "hlc": "111690000000000051"
-            }
-          }
+          "value": "Draft",
+          "update_id": "u_gbatch1",
+          "hlc": "111690000000000051"
         }
       },
       {
         "id": "u_gbatch2",
-        "subject_id": "eg_9_e_gbatch1g_gship",
-        "subject_type": "entityGroup",
-        "method": "put",
+        "subject_id": "e_gbatch1",
+        "component": "issue/done",
+        "method": "replace",
         "data": {
-          "fields": {
-            "entity_id": {
-              "value": "e_gbatch1",
-              "update_id": "u_gbatch2"
-            },
-            "group_id": {
-              "value": "g_gship",
-              "update_id": "u_gbatch2"
-            }
-          }
+          "value": false,
+          "update_id": "u_gbatch2",
+          "hlc": "111690000000000051"
         }
       },
       {
         "id": "u_gbatch3",
         "subject_id": "e_gbatch1",
-        "subject_type": "issue",
-        "method": "patch",
+        "component": "issue/labels",
+        "method": "replace",
         "data": {
-          "fields": {
-            "title": {
-              "value": "Final",
-              "update_id": "u_gbatch3",
-              "hlc": "111690000000000052"
-            },
-            "done": {
-              "value": true,
-              "update_id": "u_gbatch3",
-              "hlc": "111690000000000052"
-            }
-          }
+          "value": [],
+          "update_id": "u_gbatch3",
+          "hlc": "111690000000000051"
         }
       },
       {
-        "id": "u_gbatch4",
-        "subject_id": "rel_gbatch1",
-        "subject_type": "relationship",
-        "method": "put",
+        "id": "u_gbatch4_entity_id",
+        "subject_id": "eg_9_e_gbatch1g_gship",
+        "component": "entityGroup/entity_id",
+        "method": "replace",
         "data": {
-          "fields": {
-            "source_id": {
-              "value": "e_gbatch1",
-              "update_id": "u_gbatch4"
-            },
-            "target_id": {
-              "value": "e_gproject1",
-              "update_id": "u_gbatch4"
-            },
-            "type": {
-              "value": "issue",
-              "update_id": "u_gbatch4"
-            },
-            "field": {
-              "value": "project",
-              "update_id": "u_gbatch4"
-            }
-          }
+          "value": "e_gbatch1",
+          "update_id": "u_gbatch4_entity_id"
+        }
+      },
+      {
+        "id": "u_gbatch4_group_id",
+        "subject_id": "eg_9_e_gbatch1g_gship",
+        "component": "entityGroup/group_id",
+        "method": "replace",
+        "data": {
+          "value": "g_gship",
+          "update_id": "u_gbatch4_group_id"
         }
       },
       {
         "id": "u_gbatch5",
         "subject_id": "e_gbatch1",
-        "subject_type": "issue",
-        "method": "patch",
+        "component": "issue/title",
+        "method": "merge",
         "data": {
-          "fields": {
-            "labels": {
-              "value": ["e_glabel1"],
-              "update_id": "u_gbatch5",
-              "hlc": "111690000000000053"
-            }
-          }
+          "value": "Final",
+          "update_id": "u_gbatch5",
+          "hlc": "111690000000000052"
         }
       },
       {
         "id": "u_gbatch6",
-        "subject_id": "rel_gbatch2",
-        "subject_type": "relationship",
-        "method": "put",
+        "subject_id": "e_gbatch1",
+        "component": "issue/done",
+        "method": "merge",
         "data": {
-          "fields": {
-            "source_id": {
-              "value": "e_gbatch1",
-              "update_id": "u_gbatch6"
-            },
-            "target_id": {
-              "value": "e_glabel1",
-              "update_id": "u_gbatch6"
-            },
-            "type": {
-              "value": "issue",
-              "update_id": "u_gbatch6"
-            },
-            "field": {
-              "value": "labels",
-              "update_id": "u_gbatch6"
-            }
-          }
+          "value": true,
+          "update_id": "u_gbatch6",
+          "hlc": "111690000000000052"
         }
       },
       {
-        "id": "u_gbatch7",
+        "id": "u_gbatch7_source_id",
+        "subject_id": "rel_gbatch1",
+        "component": "relationship/source_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gbatch1",
+          "update_id": "u_gbatch7_source_id"
+        }
+      },
+      {
+        "id": "u_gbatch7_target_id",
+        "subject_id": "rel_gbatch1",
+        "component": "relationship/target_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gproject1",
+          "update_id": "u_gbatch7_target_id"
+        }
+      },
+      {
+        "id": "u_gbatch7_type",
+        "subject_id": "rel_gbatch1",
+        "component": "relationship/type",
+        "method": "replace",
+        "data": {
+          "value": "issue",
+          "update_id": "u_gbatch7_type"
+        }
+      },
+      {
+        "id": "u_gbatch7_field",
+        "subject_id": "rel_gbatch1",
+        "component": "relationship/field",
+        "method": "replace",
+        "data": {
+          "value": "project",
+          "update_id": "u_gbatch7_field"
+        }
+      },
+      {
+        "id": "u_gbatch8",
+        "subject_id": "e_gbatch1",
+        "component": "issue/labels",
+        "method": "merge",
+        "data": {
+          "value": ["e_glabel1"],
+          "update_id": "u_gbatch8",
+          "hlc": "111690000000000053"
+        }
+      },
+      {
+        "id": "u_gbatch9_source_id",
+        "subject_id": "rel_gbatch2",
+        "component": "relationship/source_id",
+        "method": "replace",
+        "data": {
+          "value": "e_gbatch1",
+          "update_id": "u_gbatch9_source_id"
+        }
+      },
+      {
+        "id": "u_gbatch9_target_id",
+        "subject_id": "rel_gbatch2",
+        "component": "relationship/target_id",
+        "method": "replace",
+        "data": {
+          "value": "e_glabel1",
+          "update_id": "u_gbatch9_target_id"
+        }
+      },
+      {
+        "id": "u_gbatch9_type",
+        "subject_id": "rel_gbatch2",
+        "component": "relationship/type",
+        "method": "replace",
+        "data": {
+          "value": "issue",
+          "update_id": "u_gbatch9_type"
+        }
+      },
+      {
+        "id": "u_gbatch9_field",
+        "subject_id": "rel_gbatch2",
+        "component": "relationship/field",
+        "method": "replace",
+        "data": {
+          "value": "labels",
+          "update_id": "u_gbatch9_field"
+        }
+      },
+      {
+        "id": "u_gbatch10",
         "subject_id": "e_gother1",
-        "subject_type": "issue",
         "method": "delete",
         "data": null
       }

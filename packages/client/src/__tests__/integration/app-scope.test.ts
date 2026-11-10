@@ -88,11 +88,11 @@ const notePatch = (title: string) => {
     clock,
     updates: [
       {
-        id: updateId,
+        id: `${updateId}_0`,
         subject_id: NOTE,
-        subject_type: "note",
-        method: "patch",
-        data: { fields: { title: leaf(title, updateId, clock) } },
+        component: "note/title",
+        method: "merge",
+        data: leaf(title, updateId, clock),
       },
     ],
   }).action;
@@ -106,16 +106,18 @@ const fileInto = (entityId: string, groupId: string) => {
     clock,
     updates: [
       {
-        id: updateId,
+        id: `${updateId}_0`,
         subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
-        subject_type: "entityGroup",
-        method: "put",
-        data: {
-          fields: {
-            entity_id: leaf(entityId, updateId, clock),
-            group_id: leaf(groupId, updateId, clock),
-          },
-        },
+        component: "entityGroup/entity_id",
+        method: "replace",
+        data: leaf(entityId, updateId, clock),
+      },
+      {
+        id: `${updateId}_1`,
+        subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
+        component: "entityGroup/group_id",
+        method: "replace",
+        data: leaf(groupId, updateId, clock),
       },
     ],
   }).action;

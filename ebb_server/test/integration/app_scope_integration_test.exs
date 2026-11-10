@@ -76,9 +76,9 @@ defmodule EbbServer.AppScopeIntegrationTest do
         %{
           "id" => update_id,
           "subject_id" => group_id,
-          "subject_type" => "group",
-          "method" => "patch",
-          "data" => %{"fields" => %{"apps" => group_apps_field(apps, hlc, update_id)}}
+          "component" => "group/apps",
+          "method" => "merge",
+          "data" => group_apps_field(apps, hlc, update_id)
         }
       ]
     }

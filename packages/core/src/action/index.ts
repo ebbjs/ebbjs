@@ -10,6 +10,31 @@ export interface CreateActionOptions {
   clock: HLCState;
 }
 
+/** Stamp a client-authored update with its id, leaving its envelope as built. */
+const stampUpdate = (update: UpdateInput): Update => {
+  const id = update.id ?? generateId(ID_PREFIX_UPDATE);
+  switch (update.method) {
+    case "delete":
+      return { id, subject_id: update.subject_id, method: "delete", data: null };
+    case "drop":
+      return {
+        id,
+        subject_id: update.subject_id,
+        component: update.component,
+        method: "drop",
+        data: null,
+      };
+    default:
+      return {
+        id,
+        subject_id: update.subject_id,
+        component: update.component,
+        method: update.method,
+        data: update.data,
+      };
+  }
+};
+
 export function createAction(options: CreateActionOptions): {
   action: Action;
   hlc: HLCTimestamp;
@@ -18,20 +43,12 @@ export function createAction(options: CreateActionOptions): {
 
   const hlc = localEvent(clock);
 
-  const builtUpdates: Update[] = updates.map((u) => ({
-    id: u.id ?? generateId(ID_PREFIX_UPDATE),
-    subject_id: u.subject_id,
-    subject_type: u.subject_type as Update["subject_type"],
-    method: u.method as Update["method"],
-    data: u.data as Update["data"],
-  }));
-
   const action: Action = {
     id: generateId(ID_PREFIX_ACTION),
     actor_id: actorId,
     hlc,
     gsn: 0,
-    updates: builtUpdates,
+    updates: updates.map(stampUpdate),
   };
 
   return { action, hlc };

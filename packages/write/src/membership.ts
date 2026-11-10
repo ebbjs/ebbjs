@@ -12,7 +12,7 @@
  * resolution also feeds the `groups` union the committer returns.
  */
 
-import type { Entity, Update } from "@ebbjs/core";
+import { componentModel, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 
 /**
  * The local view the checker resolves a system write against. It is
@@ -26,16 +26,37 @@ export interface MembershipView {
   groupOfMembership(membershipId: string): string | undefined;
 }
 
-/** The wire `group_id` a membership put carries, or `[]` when absent. */
-const wireGroupIds = (update: Update): readonly string[] => {
-  const value = update.data?.fields?.["group_id"]?.value;
-  return typeof value === "string" ? [value] : [];
+/** One wire field's value from a row's component values, or `undefined`. */
+const wireLeaf = (components: ReadonlyMap<string, FieldValue>, component: string): unknown => {
+  const value = components.get(component);
+  return value === undefined || isFieldMap(value) ? undefined : value.value;
 };
 
-/** The wire `source_id` a relationship put carries, or `undefined`. */
-const wireSourceId = (update: Update): string | undefined => {
-  const value = update.data?.fields?.["source_id"]?.value;
-  return typeof value === "string" ? value : undefined;
+/** One subject's writes in a batch, folded to the components it carries. */
+export interface SubjectWrites {
+  /** The model its components name; `undefined` for a delete-only row. */
+  model?: string;
+  readonly components: Map<string, FieldValue>;
+  deleted: boolean;
+}
+
+/** Fold a batch's Updates into one entry per subject. */
+const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
+  const subjects = new Map<string, SubjectWrites>();
+  for (const update of updates) {
+    const entry: SubjectWrites = subjects.get(update.subject_id) ?? {
+      components: new Map(),
+      deleted: false,
+    };
+    if (update.method === "delete") {
+      entry.deleted = true;
+    } else {
+      entry.model = componentModel(update.component);
+      if (update.method !== "drop") entry.components.set(update.component, update.data);
+    }
+    subjects.set(update.subject_id, entry);
+  }
+  return subjects;
 };
 
 const sortedUnique = (groups: readonly string[]): readonly string[] => [...new Set(groups)].sort();
@@ -58,44 +79,50 @@ export const entityGroupId = (entityId: string, groupId: string): string =>
   `eg_${entityId.length}_${entityId}${groupId}`;
 
 /**
- * Resolve one Update's fan-out group set:
+ * Resolve one subject's fan-out group set from the components its batch
+ * carries:
  *
  * - `group` → its own id (a group is its own group);
- * - `groupMember` / `entityGroup` put → the wired `group_id`;
- * - `entityGroup` delete → the membership row's group (the wire form
- *   drops the reference, so the local view supplies it);
+ * - `groupMember` / `entityGroup` → the wired `group_id`;
  * - `relationship` → the source entity's groups;
- * - a content subject → the entity's groups.
+ * - a delete → the membership row's group when the local view knows one, else
+ *   the subject's own group set (a content row);
+ * - anything else → the entity's groups.
  *
  * An unresolvable scope is `[]`: the committer reports it as
  * `missing_ownership` rather than guessing.
  */
-export const resolveUpdateGroups = (update: Update, view: MembershipView): readonly string[] => {
-  switch (update.subject_type) {
-    case "group":
-      return [update.subject_id];
-    case "groupMember":
-      return wireGroupIds(update);
-    case "entityGroup": {
-      if (update.method !== "delete") return wireGroupIds(update);
-      const groupId = view.groupOfMembership(update.subject_id);
-      return groupId === undefined ? [] : [groupId];
-    }
-    case "relationship": {
-      const sourceId = wireSourceId(update);
-      return sourceId === undefined ? [] : view.groupsOf(sourceId);
-    }
-    default:
-      return view.groupsOf(update.subject_id);
+export const resolveSubjectGroups = (
+  subjectId: string,
+  writes: SubjectWrites,
+  view: MembershipView,
+): readonly string[] => {
+  if (writes.model === "group") return [subjectId];
+  if (writes.model === "groupMember" || writes.model === "entityGroup") {
+    const groupId = wireLeaf(writes.components, `${writes.model}/group_id`);
+    return typeof groupId === "string" ? [groupId] : [];
   }
+  if (writes.model === "relationship") {
+    const sourceId = wireLeaf(writes.components, "relationship/source_id");
+    return typeof sourceId === "string" ? view.groupsOf(sourceId) : [];
+  }
+  if (writes.deleted) {
+    const groupId = view.groupOfMembership(subjectId);
+    return groupId === undefined ? view.groupsOf(subjectId) : [groupId];
+  }
+  return view.groupsOf(subjectId);
 };
 
-/** Sorted union of the fan-out groups of every Update in a batch. */
+/** Sorted union of the fan-out groups of every subject a batch writes. */
 export const membershipScope = (
   updates: readonly Update[],
   view: MembershipView,
 ): readonly string[] =>
-  sortedUnique(updates.flatMap((update) => resolveUpdateGroups(update, view)));
+  sortedUnique(
+    [...foldSubjects(updates)].flatMap(([subjectId, writes]) =>
+      resolveSubjectGroups(subjectId, writes, view),
+    ),
+  );
 
 /** A membership delta: the groups to add and the rows (with groups) to delete. */
 export interface MembershipDelta {

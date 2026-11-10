@@ -114,7 +114,7 @@ describe("client.invokeFunction", () => {
 
   it("throws ActionRejectedError for a rejected commit", async () => {
     const rejected = [
-      { id: "u_1", subjectType: "todo", reason: "permission_denied", details: "todo.create" },
+      { id: "u_1", model: "todo", reason: "permission_denied", details: "todo.create" },
     ];
     const { client } = mkClient(() => jsonResponse({ error: "rejected", rejected }, 422));
 

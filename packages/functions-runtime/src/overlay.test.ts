@@ -4,8 +4,10 @@
  * Action will store.
  */
 
+import type { Update } from "@ebbjs/core";
 import { describe, expect, it } from "vitest";
 
+import { createOverlay } from "./overlay.ts";
 import { hostRow, fakeHost, projectFields, testContext } from "./test-support/host.ts";
 
 const stored = (): ReturnType<typeof hostRow> =>
@@ -126,12 +128,14 @@ describe("ctx.get overlay", () => {
     await expect(ctx.get("e_issue1")).resolves.toBeNull();
   });
 
-  it("keeps a row the host cannot see invisible", async () => {
+  it("creates the row from a merge the host cannot see, leaving created_hlc unset", async () => {
     const ctx = testContext(fakeHost());
 
     ctx.update("issue", "e_hidden", { title: "Invisible" });
 
-    await expect(ctx.get("e_hidden")).resolves.toBeNull();
+    const view = await ctx.get("e_hidden");
+    expect(view).toMatchObject({ id: "e_hidden", type: "issue", created_hlc: "" });
+    expect(projectFields(view?.data.fields ?? {})).toEqual({ title: "Invisible" });
   });
 
   it("refuses an empty entity id without calling the host", async () => {
@@ -140,5 +144,47 @@ describe("ctx.get overlay", () => {
 
     await expect(ctx.get("")).rejects.toThrow(TypeError);
     expect(host.calls).toEqual([]);
+  });
+});
+
+describe("the overlay's component compare", () => {
+  const OLDER = "111690000000000001";
+  const NEWER = "111690000000000005";
+
+  const titleWrite = (method: "merge" | "replace", value: string, hlc: string): Update => ({
+    id: `u_${method}_${hlc}`,
+    subject_id: "e_issue1",
+    component: "issue/title",
+    method,
+    data: { value, update_id: `u_${method}_${hlc}`, hlc },
+  });
+
+  const overlayOf = (...writes: Update[]) =>
+    createOverlay({
+      updatesFor: (id) => (id === "e_issue1" ? writes : []),
+      typeOf: () => "issue",
+      readHost: async () => stored(),
+    });
+
+  // A `replace` is the same leaf-level LWW compare as a `merge`, so wire order
+  // alone does not decide it: the newer HLC does.
+  it("keeps a newer buffered value when a later replace carries an older HLC", async () => {
+    const overlay = overlayOf(
+      titleWrite("merge", "Newer", NEWER),
+      titleWrite("replace", "Older", OLDER),
+    );
+
+    const view = await overlay.read("e_issue1");
+    expect(view?.data.fields["title"]).toMatchObject({ value: "Newer", hlc: NEWER });
+  });
+
+  it("lets a replace with a newer HLC overwrite the buffered value", async () => {
+    const overlay = overlayOf(
+      titleWrite("merge", "Older", OLDER),
+      titleWrite("replace", "Newer", NEWER),
+    );
+
+    const view = await overlay.read("e_issue1");
+    expect(view?.data.fields["title"]).toMatchObject({ value: "Newer", hlc: NEWER });
   });
 });

@@ -33,16 +33,18 @@ const mkAction = (gsn: number, subjectId: string, title: string, completed: bool
   gsn,
   updates: [
     {
-      id: `u_${gsn}`,
+      id: `${`u_${gsn}`}_0`,
       subject_id: subjectId,
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: title, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-          completed: { value: completed, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: title, update_id: `u_${gsn}`, hlc: makeHlc(1) },
+    },
+    {
+      id: `${`u_${gsn}`}_1`,
+      subject_id: subjectId,
+      component: "todo/completed",
+      method: "replace",
+      data: { value: completed, update_id: `u_${gsn}`, hlc: makeHlc(1) },
     },
   ],
 });
@@ -56,7 +58,6 @@ const mkDeleteAction = (gsn: number, subjectId: string): Action => ({
     {
       id: `u_${gsn}`,
       subject_id: subjectId,
-      subject_type: "todo",
       method: "delete",
       data: null,
     },
@@ -144,13 +145,11 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
       gsn: 9,
       updates: [
         {
-          id: "u_stale",
+          id: "u_stale_0",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "patch",
-          data: {
-            fields: { title: { value: "Stale", update_id: "u_000", hlc: makeHlc(1) } },
-          },
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Stale", update_id: "u_000", hlc: makeHlc(1) },
         },
       ],
     };

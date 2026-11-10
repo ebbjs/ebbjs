@@ -2,12 +2,20 @@ defmodule EbbServer.Storage.PermissionHelper do
   @moduledoc """
   Utility functions for permission checking and method-to-permission mapping.
 
+  ## Row mutations
+
+  The wire names one component per Update; the rule engine was written
+  against a whole row. Every function here that reads a row therefore takes
+  `EbbServer.Storage.RowMutations` output — one mutation per subject with
+  `model`, `method: :put | :patch | :delete`, and `data` a
+  `%{"fields" => %{field => value}}` map — never a raw Update.
+
   ## Group bootstrap
 
   An actor creating a group has no prior membership to authorize against,
   so the Action that creates the group and adds the actor to it is
   partially exempt from the permission table. The exemption is
-  **per Update**, never whole-Action:
+  **per row**, never whole-Action:
 
     - the `group` put for the new group;
     - the acting actor's own `groupMember` put in that group, for a row
@@ -33,28 +41,21 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   alias EbbServer.Storage.Fields
 
-  @system_entity_types ["group", "groupMember", "relationship", "entityGroup"]
-  @method_atoms %{"put" => :put, "patch" => :patch, "delete" => :delete}
+  @system_models ["group", "groupMember", "relationship", "entityGroup"]
 
   @doc """
-  Returns the list of system entity type names.
+  Returns the list of system model names.
   """
-  @spec system_entity_types() :: [String.t()]
-  def system_entity_types, do: @system_entity_types
+  @spec system_models() :: [String.t()]
+  def system_models, do: @system_models
 
   @doc """
-  Returns the map of method strings to method atoms.
+  Converts an internal row-mutation method to its permission verb.
   """
-  @spec method_atoms() :: %{String.t() => atom()}
-  def method_atoms, do: @method_atoms
-
-  @doc """
-  Converts HTTP method to permission name.
-  """
-  @spec method_to_permission(String.t()) :: String.t()
-  def method_to_permission("put"), do: "create"
-  def method_to_permission("patch"), do: "update"
-  def method_to_permission("delete"), do: "delete"
+  @spec method_to_permission(atom()) :: String.t()
+  def method_to_permission(:put), do: "create"
+  def method_to_permission(:patch), do: "update"
+  def method_to_permission(:delete), do: "delete"
 
   @doc """
   Checks if actor has the required permission.
@@ -62,11 +63,11 @@ defmodule EbbServer.Storage.PermissionHelper do
   Permissions can be exact match (e.g., "todo.create") or wildcard (e.g., "todo.*").
   """
   @spec check_permission([String.t()], String.t(), String.t()) :: boolean()
-  def check_permission(permissions, type, permission) do
-    required = "#{type}.#{permission}"
+  def check_permission(permissions, model, permission) do
+    required = "#{model}.#{permission}"
 
     Enum.any?(permissions, fn p ->
-      p == required or p == "#{type}.*"
+      p == required or p == "#{model}.*"
     end)
   end
 
@@ -87,34 +88,34 @@ defmodule EbbServer.Storage.PermissionHelper do
   """
   @spec bootstrap_group_permissions([map()], String.t(), (String.t() -> boolean())) ::
           %{String.t() => [String.t()]}
-  def bootstrap_group_permissions(updates, actor_id, exists?) do
-    group_ids = bootstrapped_group_ids(updates, exists?)
+  def bootstrap_group_permissions(mutations, actor_id, exists?) do
+    group_ids = bootstrapped_group_ids(mutations, exists?)
 
-    updates
+    mutations
     |> Enum.filter(&own_group_member_put?(&1, actor_id, group_ids))
-    |> Map.new(fn update ->
-      {get_data_field(update, "group_id"), List.wrap(get_data_field(update, "permissions"))}
+    |> Map.new(fn mutation ->
+      {get_data_field(mutation, "group_id"), List.wrap(get_data_field(mutation, "permissions"))}
     end)
   end
 
-  defp bootstrapped_group_ids(updates, exists?) do
-    updates
+  defp bootstrapped_group_ids(mutations, exists?) do
+    mutations
     |> group_put_ids()
     |> Enum.reject(exists?)
     |> MapSet.new()
   end
 
-  defp group_put_ids(updates) do
-    updates
+  defp group_put_ids(mutations) do
+    mutations
     |> Enum.filter(&put_of?(&1, "group"))
-    |> Enum.map(&get_subject_id/1)
+    |> Enum.map(& &1.subject_id)
     |> MapSet.new()
   end
 
-  defp own_group_member_put?(update, actor_id, group_ids) do
-    put_of?(update, "groupMember") and
-      get_data_field(update, "actor_id") == actor_id and
-      MapSet.member?(group_ids, get_data_field(update, "group_id"))
+  defp own_group_member_put?(mutation, actor_id, group_ids) do
+    put_of?(mutation, "groupMember") and
+      get_data_field(mutation, "actor_id") == actor_id and
+      MapSet.member?(group_ids, get_data_field(mutation, "group_id"))
   end
 
   @doc """
@@ -130,57 +131,56 @@ defmodule EbbServer.Storage.PermissionHelper do
   """
   @spec bootstrap_membership_row_ids([map()], String.t(), (String.t() -> boolean())) ::
           MapSet.t(String.t())
-  def bootstrap_membership_row_ids(updates, actor_id, exists?) do
-    group_ids = bootstrapped_group_ids(updates, exists?)
+  def bootstrap_membership_row_ids(mutations, actor_id, exists?) do
+    group_ids = bootstrapped_group_ids(mutations, exists?)
 
-    updates
+    mutations
     |> Enum.filter(&own_group_member_put?(&1, actor_id, group_ids))
-    |> Enum.map(&get_subject_id/1)
+    |> Enum.map(& &1.subject_id)
     |> Enum.reject(exists?)
     |> MapSet.new()
   end
 
   @doc """
   Returns the ids of the user entities this Action **actually creates**
-  (`put` for an id the existence index does not already know).
+  (a first write for an id the existence index does not already know).
 
   Anchors a bootstrap `entityGroup` exemption to entities the Action is
   creating, so the exemption cannot graft an already-existing entity
-  into a group the actor is bootstrapping. Re-`put`ting an existing
-  entity excludes it here; the membership put is then authorized
-  against the permission table.
+  into a group the actor is bootstrapping. Re-writing an existing entity
+  excludes it here; the membership put is then authorized against the
+  permission table.
   """
   @spec created_subject_ids([map()], (String.t() -> boolean())) :: MapSet.t(String.t())
-  def created_subject_ids(updates, exists?) do
-    updates
-    |> created_entity_types()
+  def created_subject_ids(mutations, exists?) do
+    mutations
+    |> created_models()
     |> Map.keys()
     |> Enum.reject(exists?)
     |> MapSet.new()
   end
 
   @doc """
-  Returns the type of every user entity this Action creates (`put`).
+  Returns the model of every user entity this Action creates.
 
-  The `entityGroup` wire form carries only `entity_id`, so the authorizer
-  recovers the entity's type from the same Action to pick the right
-  `<type>.create` permission.
+  The `entityGroup` row carries only `entity_id`, so the authorizer
+  recovers the entity's model from the same Action to pick the right
+  `<model>.create` permission.
   """
-  @spec created_entity_types([map()]) :: %{String.t() => String.t()}
-  def created_entity_types(updates) do
-    updates
+  @spec created_models([map()]) :: %{String.t() => String.t()}
+  def created_models(mutations) do
+    mutations
     |> Enum.filter(&user_entity_put?/1)
-    |> Map.new(fn update -> {get_subject_id(update), get_subject_type(update)} end)
+    |> Map.new(fn mutation -> {mutation.subject_id, mutation.model} end)
   end
 
-  defp user_entity_put?(update) do
-    normalize_method(get_method(update)) == "put" and
-      get_subject_type(update) not in @system_entity_types
+  defp user_entity_put?(mutation) do
+    mutation.method == :put and mutation.model not in @system_models
   end
 
   @doc """
-  Returns true when the update is part of a bootstrap and is therefore
-  exempt from the permission table.
+  Returns true when the row mutation is part of a bootstrap and is
+  therefore exempt from the permission table.
 
   The exemption covers exactly the bootstrap's own writes:
 
@@ -190,7 +190,7 @@ defmodule EbbServer.Storage.PermissionHelper do
     - `entityGroup` puts targeting those groups whose entity the Action
       is creating.
 
-  Every other update — third-party memberships, re-`put`s of an existing
+  Every other mutation — third-party memberships, re-puts of an existing
   membership row, link edges, group patches, entity updates — is
   authorized normally.
   """
@@ -201,44 +201,47 @@ defmodule EbbServer.Storage.PermissionHelper do
           MapSet.t(String.t()),
           MapSet.t(String.t())
         ) :: boolean()
-  def bootstrap_update?(update, actor_id, bootstrap, created_ids, membership_row_ids) do
-    group_bootstrap_update?(update, bootstrap) or
-      own_membership_bootstrap_update?(update, actor_id, membership_row_ids) or
-      entity_group_bootstrap_update?(update, bootstrap, created_ids)
+  def bootstrap_update?(mutation, actor_id, bootstrap, created_ids, membership_row_ids) do
+    group_bootstrap_update?(mutation, bootstrap) or
+      own_membership_bootstrap_update?(mutation, actor_id, membership_row_ids) or
+      entity_group_bootstrap_update?(mutation, bootstrap, created_ids)
   end
 
-  defp group_bootstrap_update?(update, bootstrap) do
-    put_of?(update, "group") and Map.has_key?(bootstrap, get_subject_id(update))
+  defp group_bootstrap_update?(mutation, bootstrap) do
+    put_of?(mutation, "group") and Map.has_key?(bootstrap, mutation.subject_id)
   end
 
-  defp own_membership_bootstrap_update?(update, actor_id, membership_row_ids) do
-    put_of?(update, "groupMember") and
-      get_data_field(update, "actor_id") == actor_id and
-      MapSet.member?(membership_row_ids, get_subject_id(update))
+  defp own_membership_bootstrap_update?(mutation, actor_id, membership_row_ids) do
+    put_of?(mutation, "groupMember") and
+      get_data_field(mutation, "actor_id") == actor_id and
+      MapSet.member?(membership_row_ids, mutation.subject_id)
   end
 
-  defp entity_group_bootstrap_update?(update, bootstrap, created_ids) do
-    put_of?(update, "entityGroup") and
-      Map.has_key?(bootstrap, get_data_field(update, "group_id")) and
-      MapSet.member?(created_ids, get_data_field(update, "entity_id"))
+  defp entity_group_bootstrap_update?(mutation, bootstrap, created_ids) do
+    put_of?(mutation, "entityGroup") and
+      Map.has_key?(bootstrap, get_data_field(mutation, "group_id")) and
+      MapSet.member?(created_ids, get_data_field(mutation, "entity_id"))
   end
 
   @doc """
-  Maps each `relationship` put's row id to its source entity id.
+  Maps each `relationship` row this Action writes to the source entity id
+  its component Updates carry.
 
-  A relationship delete carries no `data`, so the server resolves the row's
-  groups from the stored row. Within one Action the row may not be stored yet:
-  a handler that links an edge and unlinks it again — or a client that creates
-  and then removes one — sends the put and the delete in the same Action. The
-  put's `source_id` is then the delete's only scope, and it is the same one the
-  put was authorized against.
+  Read from the raw Updates rather than the folded row: a delete collapses
+  the row in the fold and drops its `data`, while the put's source is the
+  delete's only scope when the edge was not stored yet. A handler that
+  links an edge and unlinks it again — or a client that creates and then
+  removes one — sends the put and the delete in the same Action, and the
+  put's `source_id` is the same scope the put was authorized against.
   """
   @spec build_intra_relationship_sources([map()]) :: %{String.t() => String.t()}
   def build_intra_relationship_sources(updates) do
     updates
-    |> Enum.filter(&put_of?(&1, "relationship"))
+    |> Enum.filter(&relationship_source_update?/1)
     |> Enum.reduce(%{}, fn update, acc ->
-      case {get_subject_id(update), get_data_field(update, "source_id")} do
+      # A raw component Update carries its own field name, so the source is
+      # the `relationship/source_id` Update's value rather than a row record.
+      case {update.subject_id, Fields.component_value(update, "source_id")} do
         {rel_id, source_id} when is_binary(rel_id) and is_binary(source_id) ->
           Map.put(acc, rel_id, source_id)
 
@@ -248,20 +251,24 @@ defmodule EbbServer.Storage.PermissionHelper do
     end)
   end
 
+  defp relationship_source_update?(update) do
+    update.method in [:merge, :replace] and update.model == "relationship"
+  end
+
   @doc """
   Builds an intra-action context map for membership resolution.
 
   Maps `entity_id` to the list of group ids carried by `entityGroup`
-  puts within the same action. Domain relationship puts do not move an
+  rows within the same action. Domain relationship rows do not move an
   entity into a group.
   """
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
-  def build_intra_action_context(updates) do
-    updates
-    |> Enum.filter(&put_of?(&1, "entityGroup"))
-    |> Enum.reduce(%{}, fn update, acc ->
-      entity_id = get_data_field(update, "entity_id")
-      group_id = get_data_field(update, "group_id")
+  def build_intra_action_context(mutations) do
+    mutations
+    |> Enum.filter(&entity_group_put?/1)
+    |> Enum.reduce(%{}, fn mutation, acc ->
+      entity_id = get_data_field(mutation, "entity_id")
+      group_id = get_data_field(mutation, "group_id")
 
       if entity_id && group_id do
         Map.update(acc, entity_id, [group_id], &Enum.sort(Enum.uniq([group_id | &1])))
@@ -271,31 +278,15 @@ defmodule EbbServer.Storage.PermissionHelper do
     end)
   end
 
-  defp get_subject_type(map) do
-    Map.get(map, "subject_type") || Map.get(map, :subject_type)
+  defp entity_group_put?(mutation) do
+    mutation.model == "entityGroup" and mutation.method in [:put, :patch]
   end
 
-  defp put_of?(update, type) do
-    get_subject_type(update) == type and normalize_method(get_method(update)) == "put"
+  defp put_of?(mutation, model) do
+    mutation.model == model and mutation.method == :put
   end
 
-  defp get_method(map) do
-    Map.get(map, "method") || Map.get(map, :method)
-  end
-
-  defp normalize_method(method) when is_binary(method), do: method
-  defp normalize_method(method) when is_atom(method), do: Atom.to_string(method)
-  defp normalize_method(_), do: nil
-
-  defp get_subject_id(map) do
-    Map.get(map, "subject_id") || Map.get(map, :subject_id)
-  end
-
-  defp get_data_field(map, key) do
-    data = Map.get(map, "data") || Map.get(map, :data)
-
-    if is_map(data) do
-      Fields.get(data, key)
-    end
+  defp get_data_field(mutation, key) do
+    Fields.get(mutation.data, key)
   end
 end

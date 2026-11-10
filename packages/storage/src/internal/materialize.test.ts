@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Action, Entity, FieldValue, Update } from "@ebbjs/core";
+import { componentName, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { applyUpdate, foldEntityAction, foldEntityActions, mergeFields } from "./materialize";
 
 const leaf = (value: unknown, hlc: string, updateId: string): FieldValue => ({
@@ -22,24 +22,35 @@ const entity = (): Entity => ({
   last_gsn: 1,
 });
 
+/** A `merge` of the `doc/content` component. */
 const patch = (content: FieldValue): Update => ({
   id: "upd_1",
   subject_id: "doc_1",
-  subject_type: "doc",
-  method: "patch",
-  data: { fields: { content } },
+  component: componentName("doc", "content"),
+  method: "merge",
+  data: content,
 });
 
 const update = (
-  method: Update["method"],
+  method: "merge" | "replace",
   fields: Record<string, FieldValue>,
   subjectId = "doc_1",
-): Update => ({
-  id: `upd_${method}_${subjectId}`,
+): Update => {
+  const [field, value] = Object.entries(fields)[0]!;
+  return {
+    id: `upd_${method}_${subjectId}`,
+    subject_id: subjectId,
+    component: componentName("doc", field!),
+    method,
+    data: value!,
+  };
+};
+
+const remove = (subjectId = "doc_1"): Update => ({
+  id: `upd_delete_${subjectId}`,
   subject_id: subjectId,
-  subject_type: "doc",
-  method,
-  data: { fields },
+  method: "delete",
+  data: null,
 });
 
 const action = (gsn: number, updates: readonly Update[]): Action => ({
@@ -61,14 +72,22 @@ const fold = (actions: readonly Action[], initial: Entity | null = null): Entity
 describe("mergeFields reference reuse", () => {
   it("returns the existing data when the patch loses", () => {
     const base = entity();
-    const update = patch({ map: { a: leaf("x", "0", "u_x") } });
-    expect(mergeFields(base.data, update)).toBe(base.data);
+    const write = {
+      field: "content",
+      method: "merge" as const,
+      value: { map: { a: leaf("x", "0", "u_x") } },
+    };
+    expect(mergeFields(base.data, write)).toBe(base.data);
   });
 
   it("returns new data when a key wins", () => {
     const base = entity();
-    const update = patch({ map: { a: leaf("new", "9", "u_x") } });
-    const merged = mergeFields(base.data, update);
+    const write = {
+      field: "content",
+      method: "merge" as const,
+      value: { map: { a: leaf("new", "9", "u_x") } },
+    };
+    const merged = mergeFields(base.data, write);
 
     expect(merged).not.toBe(base.data);
     expect(merged.fields.content).not.toBe(base.data.fields.content);
@@ -120,9 +139,9 @@ describe("foldEntityAction", () => {
       null,
       "doc_1",
       action(12, [
-        update("put", { title: leaf("t", "9", "u_t") }),
-        update("put", { content: leaf("other", "9", "u_other") }, "doc_2"),
-        update("patch", { content: leaf("c", "10", "u_c") }),
+        update("replace", { title: leaf("t", "9", "u_t") }),
+        update("replace", { content: leaf("other", "9", "u_other") }, "doc_2"),
+        update("merge", { content: leaf("c", "10", "u_c") }),
       ]),
     );
 
@@ -143,17 +162,17 @@ describe("foldEntityAction", () => {
     const folded = foldEntityAction(
       null,
       "doc_1",
-      action(4, [update("put", { content: leaf("other", "1", "u_other") }, "doc_2")]),
+      action(4, [update("replace", { content: leaf("other", "1", "u_other") }, "doc_2")]),
     );
 
     expect(folded).toBeNull();
   });
 
-  it("tombstones the row after put, patch and delete", () => {
+  it("tombstones the row after create, merge and delete", () => {
     const folded = fold([
-      action(3, [update("put", { title: leaf("first", "3", "u_put") })]),
-      action(7, [update("patch", { title: leaf("second", "7", "u_patch") })]),
-      action(9, [update("delete", {})]),
+      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+      action(7, [update("merge", { title: leaf("second", "7", "u_patch") })]),
+      action(9, [remove()]),
     ]);
 
     expect(folded).toEqual({
@@ -167,14 +186,84 @@ describe("foldEntityAction", () => {
     });
   });
 
-  it("leaves a null row null on a patch", () => {
+  it("creates the row from a merge with no base row and leaves created_hlc unset", () => {
     const folded = foldEntityAction(
       null,
       "doc_1",
-      action(5, [update("patch", { title: leaf("late", "5", "u_late") })]),
+      action(5, [update("merge", { title: leaf("late", "5", "u_late") })]),
     );
 
-    expect(folded).toBeNull();
+    expect(folded).toEqual({
+      id: "doc_1",
+      type: "doc",
+      data: { fields: { title: leaf("late", "5", "u_late") } },
+      created_hlc: "",
+      updated_hlc: "5",
+      deleted_hlc: null,
+      last_gsn: 5,
+    });
+  });
+
+  it("drops a component and leaves the row", () => {
+    const folded = fold([
+      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+      action(4, [
+        {
+          id: "upd_drop",
+          subject_id: "doc_1",
+          component: componentName("doc", "title"),
+          method: "drop",
+          data: null,
+        },
+      ]),
+    ]);
+
+    expect(folded).toEqual({
+      id: "doc_1",
+      type: "doc",
+      data: { fields: {} },
+      created_hlc: "3",
+      updated_hlc: "4",
+      deleted_hlc: null,
+      last_gsn: 4,
+    });
+  });
+
+  it("a drop after a delete leaves the tombstone alone", () => {
+    const folded = fold([
+      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+      action(4, [remove()]),
+      action(5, [
+        {
+          id: "upd_drop",
+          subject_id: "doc_1",
+          component: componentName("doc", "title"),
+          method: "drop",
+          data: null,
+        },
+      ]),
+    ]);
+
+    // Detaching a component is not a resurrection: the row stays tombstoned,
+    // which is what the server's materialization does too.
+    expect(folded).toEqual({
+      id: "doc_1",
+      type: "doc",
+      data: { fields: {} },
+      created_hlc: "3",
+      updated_hlc: "5",
+      deleted_hlc: "4",
+      last_gsn: 5,
+    });
+  });
+
+  it("keeps the existing row's type on a delete", () => {
+    const folded = fold([
+      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+      action(9, [remove()]),
+    ]);
+
+    expect(folded!.type).toBe("doc");
   });
 });
 
@@ -186,9 +275,9 @@ describe("foldEntityActions", () => {
   it("folds a whole read for one subject in the given order", () => {
     const folded = foldEntityActions(
       [
-        action(3, [update("put", { title: leaf("first", "3", "u_put") })]),
-        action(5, [update("patch", { title: leaf("other", "5", "u_other") }, "doc_2")]),
-        action(7, [update("patch", { title: leaf("third", "7", "u_patch") })]),
+        action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
+        action(5, [update("merge", { title: leaf("other", "5", "u_other") }, "doc_2")]),
+        action(7, [update("merge", { title: leaf("third", "7", "u_patch") })]),
       ],
       "doc_1",
     );
@@ -206,7 +295,7 @@ describe("foldEntityActions", () => {
 
   it("returns null when no Action touches the subject", () => {
     const folded = foldEntityActions(
-      [action(4, [update("put", { content: leaf("other", "1", "u_other") }, "doc_2")])],
+      [action(4, [update("replace", { content: leaf("other", "1", "u_other") }, "doc_2")])],
       "doc_1",
     );
 

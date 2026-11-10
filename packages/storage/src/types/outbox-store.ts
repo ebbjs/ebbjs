@@ -16,33 +16,33 @@ export type OutboxStatus = "pending" | "acknowledged" | "error" | "conflicted";
 /**
  * One side of a contested slot: the buffered local write, or the value
  * the server holds once the catch-up window is applied. A leaf carries
- * its LWW triple; a whole-field map replacement has no single leaf, so
+ * its LWW triple; a whole-component map replacement has no single leaf, so
  * `update_id` / `hlc` are absent and `value` is the projected map. A
- * field an inbound `put` or `delete` reverted also has no triple, and
+ * component an inbound `merge` or `delete` reverted also has no triple, and
  * `value` is `undefined` because the server holds no value.
  */
 export interface ConflictSide {
   /** Projected leaf or map value. `undefined` when the server holds nothing. */
   readonly value: unknown;
-  /** `update_id` of the FieldValue; absent for a map side or a reverted field. */
+  /** `update_id` of the FieldValue; absent for a map side or a reverted component. */
   readonly update_id?: string;
-  /** HLC carried by the FieldValue; absent for a map side or a reverted field. */
+  /** HLC carried by the FieldValue; absent for a map side or a reverted component. */
   readonly hlc?: string;
 }
 
 /**
- * One contested position on a losing Action: a field plus the map-key
- * path from the field root to the position. `path` is empty for a plain
- * leaf field, an entity-level touch that overlaps no position, or a
- * field an inbound `put` / `delete` reverted. Concurrent writes to
+ * One contested position on a losing Action: a component plus the map-key
+ * path from the component's value root to the position. `path` is empty for a
+ * plain leaf component, an entity-level touch that overlaps no position, or a
+ * component an inbound `merge` / `delete` reverted. Concurrent writes to
  * different keys are different slots and so are not conflicts.
  */
 export interface ConflictSlot {
   /** The `subject_id` of the Update that carried the write. */
   readonly subjectId: string;
-  /** The field name on that subject. */
-  readonly field: string;
-  /** Ordered map keys from the field root to the position; empty at the root. */
+  /** The `<model>/<field>` component name on that subject. */
+  readonly component: string;
+  /** Ordered map keys from the component root to the position; empty at the root. */
   readonly path: readonly string[];
   /** The buffered local value at the position. */
   readonly local: ConflictSide;
@@ -68,7 +68,8 @@ export interface ConflictRemoteAction {
  */
 export interface ConflictSubjectState {
   readonly subjectId: string;
-  readonly subjectType: string;
+  /** The model the row is committed under. */
+  readonly model: string;
   readonly before: Entity | null;
   readonly after: Entity | null;
 }

@@ -23,6 +23,9 @@ import {
   type NamespacedClient,
   type QueryStatus,
 } from "@ebbjs/client";
+/** The `<model>/<field>` component name a write addresses. */
+const componentName = (model: string, field: string): `${string}/${string}` => `${model}/${field}`;
+
 import { EbbProvider, useClient, useQuery, type QueryRoot } from "../index";
 
 const todo = defineModel("todo", {
@@ -111,7 +114,7 @@ let seedPosition = 0;
 const seedRow = async (
   client: Client,
   row: ReplicaRow,
-  method: "put" | "delete" = row.deleted_hlc === null ? "put" : "delete",
+  method: "replace" | "delete" = row.deleted_hlc === null ? "replace" : "delete",
 ): Promise<void> => {
   seedPosition += 1;
   const hlc = String(BigInt(seedPosition) << 16n);
@@ -123,23 +126,22 @@ const seedRow = async (
       gsn: seedPosition,
       updates: [],
     },
-    [
-      method === "put"
-        ? {
+    method === "replace"
+      ? Object.entries(row.data.fields).map(([field, value]) => ({
+          id: `u_seed_${seedPosition}_${field}`,
+          subject_id: row.id,
+          component: componentName(row.type, field),
+          method: "replace" as const,
+          data: value,
+        }))
+      : [
+          {
             id: `u_seed_${seedPosition}`,
             subject_id: row.id,
-            subject_type: row.type,
-            method,
-            data: { fields: row.data.fields },
-          }
-        : {
-            id: `u_seed_${seedPosition}`,
-            subject_id: row.id,
-            subject_type: row.type,
-            method: "delete",
+            method: "delete" as const,
             data: null,
           },
-    ],
+        ],
     seedPosition,
   );
   await client.storage.entities.set(row);

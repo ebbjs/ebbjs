@@ -40,6 +40,37 @@ defmodule EbbServer.Storage.EntityView do
     end
   end
 
+  @doc """
+  Narrows a row view to the components a caller asked for.
+
+  `components` is a set of `<model>/<field>` names, or `nil` for the whole
+  row. A field survives only when the row's own model names it, so a
+  component of another model cannot address a same-named field, and an
+  unknown name simply matches nothing. The row shape — `data.fields` — stays
+  as it is; this is a read filter, not a wire change.
+  """
+  @spec filter_components(view(), MapSet.t(String.t()) | nil) :: view()
+  def filter_components(view, nil), do: view
+
+  def filter_components(%{"data" => %{"fields" => fields}} = view, components)
+      when is_map(fields) do
+    model = view["type"]
+
+    kept =
+      Map.filter(fields, fn {field, _value} ->
+        MapSet.member?(components, component_name(model, field))
+      end)
+
+    Map.put(view, "data", Map.put(view["data"], "fields", kept))
+  end
+
+  def filter_components(view, _components), do: view
+
+  defp component_name(model, field) when is_binary(model) and is_binary(field),
+    do: model <> "/" <> field
+
+  defp component_name(_model, _field), do: nil
+
   @spec json(map()) :: view()
   def json(entity) do
     %{

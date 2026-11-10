@@ -144,13 +144,9 @@ describe("SyncClient schema option", () => {
         {
           id: "u_1",
           subject_id: "todo_1",
-          subject_type: "todo",
-          method: "put",
-          data: {
-            fields: {
-              typo: { value: "oops", update_id: "u_1", hlc },
-            },
-          },
+          component: "todo/typo",
+          method: "replace",
+          data: { value: "oops", update_id: "u_1", hlc },
         },
       ],
     };
@@ -436,11 +432,9 @@ describe("SyncClient.catchUp", () => {
           {
             id: "u_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "put",
-            data: {
-              fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-            },
+            component: "todo/title",
+            method: "replace",
+            data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
           },
         ],
       },
@@ -453,13 +447,9 @@ describe("SyncClient.catchUp", () => {
           {
             id: "u_2",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "patch",
-            data: {
-              fields: {
-                title: { value: "Updated", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
-              },
-            },
+            component: "todo/title",
+            method: "merge",
+            data: { value: "Updated", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
           },
         ],
       },
@@ -568,11 +558,9 @@ describe("SyncClient.write", () => {
           {
             id: "u_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "put",
-            data: {
-              fields: { title: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) } },
-            },
+            component: "todo/title",
+            method: "replace",
+            data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
           },
         ],
       },
@@ -585,10 +573,9 @@ describe("SyncClient.write", () => {
           {
             id: "u_2",
             subject_id: "todo_2",
-            subject_type: "todo",
-            method: "put",
-            data: {},
-          } as never,
+            method: "delete",
+            data: null,
+          },
         ],
       },
     ]);
@@ -642,10 +629,9 @@ describe("SyncClient.write", () => {
             {
               id: "u_1",
               subject_id: "todo_1",
-              subject_type: "todo",
-              method: "put",
-              data: {},
-            } as never,
+              method: "delete",
+              data: null,
+            },
           ],
         },
       ]),
@@ -846,7 +832,9 @@ describe("SyncClient reconnect backoff (#40)", () => {
 });
 
 describe("SyncClient.write with ModelRegistry (#143)", () => {
-  const todoAction = (overrides: Partial<Action["updates"][number]> = {}): Action => ({
+  const todoAction = (
+    overrides: Partial<Extract<Action["updates"][number], { method: "merge" | "replace" }>> = {},
+  ): Action => ({
     id: "act_ok",
     actor_id: "a_test",
     hlc: makeHlc(1711036800000),
@@ -855,17 +843,9 @@ describe("SyncClient.write with ModelRegistry (#143)", () => {
       {
         id: "u_1",
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: {
-            title: {
-              value: "Hello",
-              update_id: "u_1",
-              hlc: makeHlc(1711036800000),
-            },
-          },
-        },
+        component: "todo/title",
+        method: "replace",
+        data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
         ...overrides,
       },
     ],
@@ -898,17 +878,7 @@ describe("SyncClient.write with ModelRegistry (#143)", () => {
       fetchImpl: fn,
       registry: todoEntity(),
     });
-    const action = todoAction({
-      data: {
-        fields: {
-          typo: {
-            value: "x",
-            update_id: "u_1",
-            hlc: makeHlc(1711036800000),
-          },
-        },
-      },
-    });
+    const action = todoAction({ component: "todo/typo" });
     await expect(client.write([action])).rejects.toBeInstanceOf(EntityValidationError);
     expect(fn.mock.calls).toHaveLength(0);
   });
@@ -922,22 +892,8 @@ describe("SyncClient.write with ModelRegistry (#143)", () => {
       registry: todoEntity(),
     });
     const good = todoAction();
-    const badField = todoAction({
-      id: "u_bad",
-      data: {
-        fields: {
-          typo: {
-            value: "x",
-            update_id: "u_bad",
-            hlc: makeHlc(1711036800000),
-          },
-        },
-      },
-    });
-    const badType = todoAction({
-      id: "u_unknown",
-      subject_type: "list",
-    });
+    const badField = todoAction({ id: "u_bad", component: "todo/typo" });
+    const badType = todoAction({ id: "u_unknown", component: "list/title" });
     let caught: unknown;
     try {
       await client.write([good, badField, badType]);
@@ -959,17 +915,7 @@ describe("SyncClient.write with ModelRegistry (#143)", () => {
     });
     // `data.fields.typo` would normally violate a registered todo
     // entity, but without a registry validation is a no-op.
-    const action = todoAction({
-      data: {
-        fields: {
-          typo: {
-            value: "x",
-            update_id: "u_1",
-            hlc: makeHlc(1711036800000),
-          },
-        },
-      },
-    });
+    const action = todoAction({ component: "todo/typo" });
     const result = await client.write([action]);
     expect(result.rejected).toEqual([]);
     expect(fn.mock.calls).toHaveLength(1);
@@ -1124,18 +1070,14 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
         updates: [
           {
             id: "u_1",
+
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "put",
-            data: {
-              fields: {
-                typo: {
-                  value: "x",
-                  update_id: "u_1",
-                  hlc: makeHlc(1711036800000),
-                },
-              },
-            },
+
+            component: "todo/typo",
+
+            method: "replace",
+
+            data: { value: "x", update_id: "u_1", hlc: makeHlc(1711036800000) },
           },
         ],
       };
@@ -1171,17 +1113,9 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
           {
             id: "u_1",
             subject_id: "todo_1",
-            subject_type: "todo",
-            method: "put",
-            data: {
-              fields: {
-                title: {
-                  value: "Hello",
-                  update_id: "u_1",
-                  hlc: makeHlc(1711036800000),
-                },
-              },
-            },
+            component: "todo/title",
+            method: "replace",
+            data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
           },
         ],
       };
@@ -1217,17 +1151,9 @@ describe("SyncClient.onRegistryViolation hook", () => {
       {
         id: "u_1",
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: {
-            typo: {
-              value: "x",
-              update_id: "u_1",
-              hlc: makeHlc(1711036800000),
-            },
-          },
-        },
+        component: "todo/typo",
+        method: "replace",
+        data: { value: "x", update_id: "u_1", hlc: makeHlc(1711036800000) },
       },
     ],
   });
@@ -1356,7 +1282,7 @@ describe("SyncClient.onRegistryViolation hook", () => {
 
 describe("SyncClient.sync observables", () => {
   /** A well-formed single-update Action; only the id varies per test. */
-  const writeAction = (id: string) => ({
+  const writeAction = (id: string): Action => ({
     id,
     actor_id: "a_test",
     hlc: makeHlc(1711036800000),
@@ -1365,13 +1291,9 @@ describe("SyncClient.sync observables", () => {
       {
         id: `u_${id}`,
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put" as const,
-        data: {
-          fields: {
-            title: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) },
-          },
-        },
+        component: "todo/title",
+        method: "replace" as const,
+        data: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) },
       },
     ],
   });
@@ -1441,11 +1363,9 @@ describe("SyncClient.status (#371)", () => {
       {
         id: `u_${id}`,
         subject_id: "todo_1",
-        subject_type: "todo",
-        method: "put",
-        data: {
-          fields: { title: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) } },
-        },
+        component: "todo/title",
+        method: "replace" as const,
+        data: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) },
       },
     ],
   });
@@ -1672,7 +1592,12 @@ describe("app scope (#732)", () => {
     };
 
     const appsField = (action: Action, groupId: string): unknown =>
-      action.updates.find((update) => update.subject_id === groupId)!.data!.fields!["apps"];
+      action.updates.find(
+        (update) =>
+          update.method !== "delete" &&
+          update.component === "group/apps" &&
+          update.subject_id === groupId,
+      )?.data;
 
     it("scopes an unscoped group to the client's app", async () => {
       const { client, calls } = mkSeedClient("notes");

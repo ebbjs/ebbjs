@@ -48,11 +48,39 @@ defmodule EbbServer.Storage.EntityStore do
   (for the source-of-truth reads during materialization), plus ETS reads
   from `DirtyTracker` and `EbbServer.Storage.EntityStore.GsnTracker`.
 
-  ## Merge rules
+  ## Applying a component Update
 
-  Per-field materialization follows the wire's last-writer-wins rule:
-  see `EbbServer.Storage.FieldMerge`, which hand-mirrors
-  `packages/core/src/types/action.ts`'s `mergeFieldValue`.
+  The wire names one `(entity, component)` per Update, while the materialized
+  row stays field-keyed: `data` is `%{"fields" => %{field => value}}`, and
+  `EntityView` is the only thing that turns a row into a wire shape.
+
+  A stored Update applies at `data["fields"][field]`, where `field` is the
+  component's leaf:
+
+    - `merge` and `replace` both merge the incoming value over the stored
+      field under the wire's last-writer-wins rule —
+      `EbbServer.Storage.FieldMerge`, which hand-mirrors
+      `packages/core/src/types/action.ts`'s `mergeFieldValue`. A `replace` is
+      the leaf-level LWW compare, exactly like a `merge`: it may be refused
+      for a keyed component but it never overwrites a newer leaf, so the two
+      materializers converge on an out-of-order base snapshot;
+    - `replace` stamps `created_hlc` with the Action's HLC when the row had
+      none, which is its only effect a `merge` does not have. A `merge` that
+      arrives first for an unknown row creates it too, but leaves
+      `created_hlc` unset: the row's create has not been seen, and a client
+      can tell the two apart;
+    - `drop` removes the field; the row survives, keeps its type and its
+      `created_hlc`, and is not tombstoned. A `drop` for a row that was never
+      materialized is a no-op, exactly as it is on the client;
+    - `delete` tombstones the row. A delete for a row that was never created
+      writes nothing, for the same reason a `drop` there is a no-op.
+
+  A delta replay starts from the row already in SQLite, not from an empty
+  row: a delta that carries only a `drop` or a `delete` must not rewrite the
+  metadata the earlier Actions established.
+
+  The row's `type` is the component's model. A `delete` names no component
+  and keeps the committed model.
 
   ## Hot path
 
@@ -65,6 +93,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   alias EbbServer.Storage.{
     ActionFormat,
+    Component,
     DirtyTracker,
     FieldMerge,
     PermissionHelper,
@@ -214,16 +243,16 @@ defmodule EbbServer.Storage.EntityStore do
     started_at = System.monotonic_time()
     {result, byte_size} = do_materialize(entity_id, opts)
 
-    subject_type =
+    model =
       case result do
-        {:ok, %{type: type}} -> type
+        {:ok, %{type: model}} -> model
         _ -> nil
       end
 
     Telemetry.execute(
       [:entity_store, :materialize_latency_ms],
       %{duration: System.monotonic_time() - started_at, byte_size: byte_size},
-      %{subject_id: entity_id, subject_type: subject_type, path: :dirty_materialize}
+      %{subject_id: entity_id, model: model, path: :dirty_materialize}
     )
 
     result
@@ -239,8 +268,6 @@ defmodule EbbServer.Storage.EntityStore do
 
     {current_data, last_gsn, existing_row, byte_size} =
       fetch_current_state(entity_id, sqlite_name)
-
-    base_present? = existing_row != nil
 
     gsns =
       timed(:entries_scan, fn -> fetch_relevant_gsns(entity_id, rocks_name, last_gsn) end)
@@ -259,7 +286,7 @@ defmodule EbbServer.Storage.EntityStore do
           observed_generation,
           dirty_set,
           sqlite_name,
-          base_present?
+          existing_row
         )
       end
 
@@ -344,18 +371,26 @@ defmodule EbbServer.Storage.EntityStore do
          observed_generation,
          dirty_set,
          sqlite_name,
-         base_present?
+         existing_row
        ) do
     materialized =
       try do
         actions = timed(:actions_load, fn -> load_actions(gsns, rocks_name) end)
-        {:ok, timed(:merge, fn -> replay(current_data, actions, entity_id) end)}
+        {:ok, timed(:merge, fn -> replay(current_data, actions, entity_id, existing_row) end)}
       rescue
         e ->
           {:error, e}
       end
 
     case materialized do
+      {:ok, %{exists?: false}} ->
+        # Nothing replayed created or touched a row, and SQLite had none: a
+        # `drop` or `delete` for an id that was never materialized leaves no
+        # row behind, rather than upserting an empty one under an unknown
+        # model.
+        clear_settled(entity_id, observed_generation, dirty_set)
+        :not_found
+
       {:ok, result} ->
         handle_materialized_result(
           entity_id,
@@ -363,7 +398,7 @@ defmodule EbbServer.Storage.EntityStore do
           observed_generation,
           dirty_set,
           sqlite_name,
-          base_present?,
+          existing_row != nil,
           current_data
         )
 
@@ -396,7 +431,7 @@ defmodule EbbServer.Storage.EntityStore do
     entity_row = %{
       id: entity_id,
       type: type || "unknown",
-      created_hlc: created_hlc || updated_hlc,
+      created_hlc: created_hlc,
       updated_hlc: updated_hlc,
       deleted_hlc: deleted_hlc,
       deleted_by: deleted_by,
@@ -409,7 +444,15 @@ defmodule EbbServer.Storage.EntityStore do
       changed_json =
         timed(:encode, fn -> build_patch_fields(changed, current_data, merged_data) end)
 
-      meta = Map.take(entity_row, [:type, :updated_hlc, :deleted_hlc, :deleted_by, :last_gsn])
+      meta =
+        Map.take(entity_row, [
+          :type,
+          :created_hlc,
+          :updated_hlc,
+          :deleted_hlc,
+          :deleted_by,
+          :last_gsn
+        ])
 
       timed(:upsert, fn -> SQLite.patch_entity(entity_id, changed_json, meta, sqlite_name) end)
     else
@@ -445,21 +488,29 @@ defmodule EbbServer.Storage.EntityStore do
     raise "cf_actions has no action at gsn #{gsn}"
   end
 
-  defp replay(data, actions, entity_id) do
+  # The accumulator starts from the row SQLite already holds, stamps included.
+  # A delta replay only carries the Actions after the row's `last_gsn`, so a
+  # delta that touches one field must not restate — or blank — the model,
+  # `created_hlc` or tombstone columns an earlier Action established, and a
+  # delta that touches nothing must not regress `last_gsn`. Each method
+  # overrides what it changes, and `exists?` is the row's presence: a `drop`
+  # needs one.
+  defp replay(data, actions, entity_id, existing_row) do
     initial_data = if is_map(data), do: data, else: %{"fields" => %{}}
 
     Enum.reduce(
       actions,
       %{
         data: initial_data,
-        type: nil,
-        created_hlc: nil,
-        updated_hlc: 0,
-        deleted_hlc: nil,
-        deleted_by: nil,
-        max_gsn: 0,
+        type: existing_meta(existing_row, :type),
+        created_hlc: existing_meta(existing_row, :created_hlc),
+        updated_hlc: existing_meta(existing_row, :updated_hlc) || 0,
+        deleted_hlc: existing_meta(existing_row, :deleted_hlc),
+        deleted_by: existing_meta(existing_row, :deleted_by),
+        max_gsn: existing_meta(existing_row, :last_gsn) || 0,
         data_mode: :patch,
-        changed: MapSet.new()
+        changed: MapSet.new(),
+        exists?: existing_row != nil
       },
       fn {gsn, action}, acc ->
         relevant_updates =
@@ -475,14 +526,17 @@ defmodule EbbServer.Storage.EntityStore do
   defp apply_action(action, updates, gsn, acc) do
     Enum.reduce(updates, acc, fn update, inner_acc ->
       case update["method"] do
-        "put" ->
-          apply_put(action, update, gsn, inner_acc)
+        "merge" ->
+          apply_component(action, update, gsn, inner_acc, :merge)
 
-        "patch" ->
-          apply_patch(action, update, gsn, inner_acc)
+        "replace" ->
+          apply_component(action, update, gsn, inner_acc, :replace)
+
+        "drop" ->
+          apply_drop(action, update, gsn, inner_acc)
 
         "delete" ->
-          apply_delete(action, update, gsn, inner_acc)
+          apply_delete(action, gsn, inner_acc)
 
         _ ->
           inner_acc
@@ -490,77 +544,88 @@ defmodule EbbServer.Storage.EntityStore do
     end)
   end
 
-  defp apply_put(action, update, gsn, acc) do
-    hlc = action["hlc"]
-    subject_type = update["subject_type"]
-
-    fields_with_update_id =
-      Enum.into(update["data"]["fields"] || %{}, %{}, fn {field_name, field_value} ->
-        {field_name, FieldMerge.stamp(field_value, update["id"])}
-      end)
+  defp apply_component(action, update, gsn, acc, method) do
+    {model, field} = Component.split(update["component"])
+    incoming = FieldMerge.stamp(update["data"], update["id"])
+    existing_fields = fields_of(acc.data)
+    fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
 
     %{
       acc
-      | data: %{"fields" => fields_with_update_id},
-        type: subject_type,
-        created_hlc: if(acc.created_hlc == nil, do: hlc, else: acc.created_hlc),
-        updated_hlc: hlc,
-        max_gsn: max(acc.max_gsn, gsn),
-        data_mode: :replace
-    }
-  end
-
-  defp apply_patch(action, update, gsn, acc) do
-    hlc = action["hlc"]
-
-    stamped_fields =
-      Enum.map(update["data"]["fields"] || %{}, fn {field_name, new_field} ->
-        {field_name, FieldMerge.stamp(new_field, update["id"])}
-      end)
-
-    existing_fields =
-      if is_map(acc.data) and Map.has_key?(acc.data, "fields"),
-        do: acc.data["fields"],
-        else: %{}
-
-    merged_fields =
-      Enum.reduce(stamped_fields, existing_fields, fn {field_name, incoming}, fields ->
-        Map.put(fields, field_name, FieldMerge.merge(Map.get(fields, field_name), incoming))
-      end)
-
-    changed_paths =
-      Enum.flat_map(stamped_fields, fn {field_name, incoming} ->
-        leaf_paths([field_name], incoming)
-      end)
-
-    %{
-      acc
-      | data: %{"fields" => merged_fields},
-        type: acc.type || update["subject_type"],
-        created_hlc: acc.created_hlc,
-        updated_hlc: hlc,
+      | data: %{"fields" => fields},
+        # The model is fixed at the row's first write; a later component's
+        # prefix must agree with it (the authorizer refuses a relabel).
+        type: acc.type || model,
+        created_hlc: created_hlc(acc.created_hlc, action, method),
+        updated_hlc: action["hlc"],
         max_gsn: max(acc.max_gsn, gsn),
         deleted_hlc: nil,
         deleted_by: nil,
-        changed: MapSet.union(acc.changed, MapSet.new(changed_paths))
+        changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
+        exists?: true
     }
   end
 
-  defp apply_delete(action, _update, gsn, acc) do
-    %{
+  # Only a `replace` stamps the row's creation time; a `merge` that creates a
+  # row leaves it unset, because the row's create has not been seen.
+  defp created_hlc(nil, action, :replace), do: action["hlc"]
+  defp created_hlc(created_hlc, _action, _method), do: created_hlc
+
+  # Detaching a component removes the key, which a `json_set` patch cannot do;
+  # it rewrites the whole `fields` blob instead. A drop for a row that does
+  # not exist is a no-op — there is nothing to detach — and a drop leaves the
+  # tombstone columns alone: detaching a component is not a resurrection.
+  defp apply_drop(action, update, gsn, acc) do
+    if acc.exists? do
+      %{
+        acc
+        | data: %{
+            "fields" => Map.delete(fields_of(acc.data), Component.field(update["component"]))
+          },
+          updated_hlc: action["hlc"],
+          max_gsn: max(acc.max_gsn, gsn),
+          data_mode: :replace
+      }
+    else
       acc
-      | deleted_hlc: action["hlc"],
-        deleted_by: action["actor_id"],
-        updated_hlc: action["hlc"],
-        max_gsn: max(acc.max_gsn, gsn)
-    }
+    end
   end
 
-  # A patch can only change the keys it carries, so the JSON paths that need
-  # writing are exactly the leaves of the incoming field value: a leaf
-  # contributes its field name, a map field one path per touched map key. This
-  # is what lets write-back touch only the changed key instead of re-encoding a
-  # large map field.
+  # A delete for a row nothing in the delta created is a no-op, like a drop:
+  # replay always starts at the row's `last_gsn` in SQLite, which is 0 when
+  # there is no row, so a delta carries every Action that ever touched the id.
+  # A delete with no row anywhere therefore names an id that was never
+  # created — the authorizer refuses such a delete — and upserting a tombstone
+  # for it would invent a row under the `unknown` model with nothing to
+  # suppress. A row the delta does create is still tombstoned, so a later
+  # clean read cannot resurrect it.
+  defp apply_delete(action, gsn, acc) do
+    if acc.exists? do
+      %{
+        acc
+        | deleted_hlc: action["hlc"],
+          deleted_by: action["actor_id"],
+          updated_hlc: action["hlc"],
+          max_gsn: max(acc.max_gsn, gsn),
+          exists?: true
+      }
+    else
+      acc
+    end
+  end
+
+  defp existing_meta(nil, _key), do: nil
+  defp existing_meta(row, key), do: Map.get(row, key)
+
+  defp fields_of(%{"fields" => fields}) when is_map(fields), do: fields
+  defp fields_of(_data), do: %{}
+
+  # A write changes the keys it carries, so the JSON paths that need writing
+  # are exactly the leaves of the incoming value: a leaf contributes its field
+  # name, a keyed value one path per touched key. This is what lets write-back
+  # touch only the changed key instead of re-encoding a large field.
+  defp changed_paths(field, incoming), do: leaf_paths([field], incoming)
+
   defp leaf_paths(prefix, %{"map" => entries}) when is_map(entries) do
     case Map.to_list(entries) do
       [] -> [prefix]
@@ -687,12 +752,13 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   @doc """
-  Queries entities of a given type with permission filtering and optional field
+  Queries a model's entities with permission filtering and optional field
   filters, given as a disjunction of filter groups (see
   `EbbServer.Storage.QueryFilter`).
 
-  First materializes any dirty entities of the requested type, then delegates to
-  SQLite for the permission-checked query.
+  First materializes any dirty entities of the requested model, then delegates
+  to SQLite for the permission-checked query. The model is the row's committed
+  model — the query source — while the column it selects on is still `type`.
 
   ## Options
   - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
@@ -710,13 +776,13 @@ defmodule EbbServer.Storage.EntityStore do
   @spec query(String.t(), [map()] | nil, String.t(), keyword()) ::
           {:ok, [map()]}
           | {:error, :invalid_limit | :invalid_offset | :invalid_filter | term()}
-  def query(type, filter, actor_id, opts \\ []) do
+  def query(model, filter, actor_id, opts \\ []) do
     limit = Keyword.get(opts, :limit)
     offset = Keyword.get(opts, :offset)
 
     with {:ok, limit, offset} <- normalize_pagination(limit, offset),
          {:ok, filter} <- QueryFilter.normalize(filter) do
-      run_query(type, filter, actor_id, limit, offset, opts)
+      run_query(model, filter, actor_id, limit, offset, opts)
     end
   end
 
@@ -755,12 +821,14 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp normalize_offset(_offset), do: {:error, :invalid_offset}
 
-  defp run_query(type, filter, actor_id, limit, offset, opts) do
+  # `model` is the row's committed model — the query source — while the
+  # SQLite column it selects on is still named `type`.
+  defp run_query(model, filter, actor_id, limit, offset, opts) do
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    dirty_ids = DirtyTracker.dirty_entity_ids_for_type(type, dirty_set)
+    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(model, dirty_set)
 
     if dirty_ids != [] do
       Enum.each(dirty_ids, fn id ->
@@ -775,7 +843,7 @@ defmodule EbbServer.Storage.EntityStore do
       :query
     )
 
-    query_params = %{type: type, filter: filter, actor_id: actor_id, limit: limit}
+    query_params = %{type: model, filter: filter, actor_id: actor_id, limit: limit}
     query_params = if offset, do: Map.put(query_params, :offset, offset), else: query_params
 
     case SQLite.query_entities(query_params, sqlite_name) do
@@ -797,7 +865,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
     dirty_ids =
-      DirtyTracker.dirty_entity_ids_for_types(PermissionHelper.system_entity_types(), dirty_set)
+      DirtyTracker.dirty_entity_ids_for_models(PermissionHelper.system_models(), dirty_set)
 
     Enum.each(dirty_ids, fn id ->
       materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)

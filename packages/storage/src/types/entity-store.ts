@@ -43,9 +43,10 @@ export interface MembershipLink {
  * handled by the DirtyTracker.
  *
  * ## Merge Semantics
- * - **put** — full entity replacement
- * - **patch** — field-level Last-Writer-Wins (LWW): higher HLC wins; tiebreak by lexicographic `update_id`
- * - **delete** — soft delete (sets `deleted_hlc`); patch-on-deleted is ignored
+ * - **merge** — Last-Writer-Wins (LWW) at the component's field: higher HLC wins; tiebreak by lexicographic `update_id`
+ * - **replace** — the component's field is set whole; the first write to an absent row creates it
+ * - **drop** — the component's field is removed; the row survives
+ * - **delete** — soft delete (sets `deleted_hlc`); the row keeps its type
  *
  * A field value is either a leaf merged by the LWW rule above, or a
  * `{ map }` of nested field values merged key by key under the same

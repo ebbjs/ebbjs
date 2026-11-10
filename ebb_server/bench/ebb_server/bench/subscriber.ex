@@ -242,9 +242,9 @@ defmodule EbbServer.Bench.Subscriber do
   end
 
   defp delivery_lag(payload) do
-    with {:ok, %{"updates" => [update | _]}} <- Jason.decode(payload),
-         sent when is_integer(sent) <-
-           get_in(update, ["data", "fields", "bench_sent_us", "value"]) do
+    with {:ok, %{"updates" => updates}} <- Jason.decode(payload),
+         %{"data" => %{"value" => sent}} when is_integer(sent) <-
+           Enum.find(updates, &(&1["component"] == "todo/bench_sent_us")) do
       System.monotonic_time(:microsecond) - sent
     else
       _ -> nil

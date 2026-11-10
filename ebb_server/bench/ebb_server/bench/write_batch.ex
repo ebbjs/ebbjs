@@ -205,7 +205,8 @@ defmodule EbbServer.Bench.WriteBatch do
 
   defp action_type_keys(action) do
     action.updates
-    |> Enum.map(&RocksDB.encode_type_entity_key(&1.subject_type, &1.subject_id))
+    |> Enum.reject(&is_nil(&1.model))
+    |> Enum.map(&RocksDB.encode_type_entity_key(&1.model, &1.subject_id))
     |> MapSet.new()
   end
 

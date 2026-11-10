@@ -5,8 +5,8 @@ defmodule EbbServer.Bench.WriteBatchTest do
   disjoint ranges between callers.
 
   Expected counts are written as literals derived from the canonical shape
-  (100 Actions x 2 Updates, one group per Update) rather than recomputed
-  from the module under test.
+  (100 Actions x 2 component Updates, one group per Update) rather than
+  recomputed from the module under test.
   """
 
   use ExUnit.Case, async: true
@@ -132,13 +132,14 @@ defmodule EbbServer.Bench.WriteBatchTest do
       assert count.(full, RocksDB.cf_action_dedup()) == 10
       assert count.(no_dedup, RocksDB.cf_action_dedup()) == 0
 
-      # The hot batch touches two subjects, so the coalesced entity index is
-      # two rows, not one per Update.
-      assert count.(full, RocksDB.cf_entity_actions()) == 2
+      # Both components of a hot Action are the shared membership row's, so
+      # the coalesced entity index is one row, not one per Update, and the hot
+      # batch has one (entityGroup, membership) type key.
+      assert count.(full, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_actions, RocksDB.cf_entity_actions()) == 0
-      assert count.(no_entity_actions, RocksDB.cf_type_entities()) == 2
+      assert count.(no_entity_actions, RocksDB.cf_type_entities()) == 1
       assert count.(no_type_entities, RocksDB.cf_type_entities()) == 0
-      assert count.(no_type_entities, RocksDB.cf_entity_actions()) == 2
+      assert count.(no_type_entities, RocksDB.cf_entity_actions()) == 1
       assert count.(no_entity_index, RocksDB.cf_entity_actions()) == 0
       assert count.(no_entity_index, RocksDB.cf_type_entities()) == 0
 
@@ -167,19 +168,20 @@ defmodule EbbServer.Bench.WriteBatchTest do
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
       # 100 Actions x (cf_actions + dedup + group) = 300, plus one coalesced
-      # entity row for each of the two hot subjects and the two type keys
+      # entity row for the one hot membership subject and the one type key
       # every hot Action shares.
-      assert length(ops) == 304
+      assert length(ops) == 302
     end
 
-    test "a spread batch writes one type key per Update", context do
+    test "a spread batch writes one entity index row and one type key per Action", context do
       {:ok, config} =
         Options.parse(["--tier", "t5", "--batch-size", "100", "--distribution", "spread"])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
-      # 100 Actions x 5 rows plus 100 Actions x 2 uniquely-typed Updates.
-      assert length(ops) == 700
+      # 100 Actions x (cf_actions + dedup + group) = 300, plus one entity index
+      # row for each Action's unique membership and one type key for it.
+      assert length(ops) == 500
     end
 
     test "cf_actions holds one contiguous GSN range per call, in order", context do
@@ -213,7 +215,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
       assert stored["actor_id"] == Workbook.actor_id()
       assert stored["update_scopes"] == [[Workbook.group_id()], [Workbook.group_id()]]
       assert length(stored["updates"]) == 2
-      assert Enum.all?(stored["updates"], &is_map_key(&1, "subject_type"))
+      assert Enum.all?(stored["updates"], &is_map_key(&1, "component"))
     end
 
     test "group and dedup rows point at the Action and its GSN", context do
@@ -245,14 +247,22 @@ defmodule EbbServer.Bench.WriteBatchTest do
         end)
 
       assert Enum.sort(rows) == [
-               {"eg_bench_hot", 1_000_000_009, Enum.to_list(1_000_000_000..1_000_000_009)},
-               {"todo_bench_hot", 1_000_000_009, Enum.to_list(1_000_000_000..1_000_000_009)}
+               {"eg_bench_hot", 1_000_000_009, Enum.to_list(1_000_000_000..1_000_000_009)}
              ]
     end
 
     test "type entity keys are unique and one per distinct entity/type pair", context do
       {:ok, config} =
-        Options.parse(["--tier", "t5", "--batch-size", "20", "--distribution", "spread"])
+        Options.parse([
+          "--tier",
+          "t5",
+          "--batch-size",
+          "20",
+          "--distribution",
+          "spread",
+          "--updates-per-action",
+          "10"
+        ])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 

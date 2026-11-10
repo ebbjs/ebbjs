@@ -49,16 +49,12 @@ const buildAction = (id: number, entityId: string, gsn: number): Action => ({
     {
       id: `u_${id}`,
       subject_id: entityId,
-      subject_type: "todo",
-      method: "put",
+      component: "todo/title",
+      method: "replace",
       data: {
-        fields: {
-          title: {
-            value: `Entity ${id}`,
-            update_id: `u_${id}`,
-            hlc: makeHlc(1_700_000_000_000 + id),
-          },
-        },
+        value: `Entity ${id}`,
+        update_id: `u_${id}`,
+        hlc: makeHlc(1_700_000_000_000 + id),
       },
     },
   ],

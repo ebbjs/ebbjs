@@ -11,18 +11,26 @@
  *
  * The store is log-derived — entities materialize by replaying
  * `storage.actions` — so the fetched base is written as a synthetic
- * snapshot `put` stamped with the entity's own `last_gsn` and
- * `updated_hlc`. That places the full-replacement base at its true
- * causal position in the log: an already-delivered patch with a lower
- * gsn is subsumed by the base, a later patch merges on top by HLC, and
- * an in-flight patch the fetch predates wins. Because the fetched field
- * envelopes are the server's canonical ones, replaying later Updates
- * merges over the base by HLC without regressing it. A 404 is left
- * absent rather than resurrected: the membership row can outlive the
- * entity's delete.
+ * snapshot stamped with the entity's own `last_gsn` and `updated_hlc`, one
+ * `replace` per leaf component and one `merge` per keyed component. That
+ * places the base at its true causal position in the log: an
+ * already-delivered write with a lower gsn is subsumed by the base, a later
+ * one merges on top by HLC, and an in-flight write the fetch predates wins.
+ * Because the fetched field envelopes are the server's canonical ones,
+ * replaying later Updates merges over the base by HLC without regressing it.
+ * A 404 is left absent rather than resurrected: the membership row can
+ * outlive the entity's delete.
  */
 
-import { generateId, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  componentName,
+  generateId,
+  isFieldMap,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import type { LoggedAction, StorageAdapter } from "@ebbjs/storage/types";
 
 import { liveMemberships } from "./entity-group";
@@ -37,12 +45,13 @@ import type { EntityResponse } from "./types";
 export const BACKFILL_ACTOR_ID = "a_backfill";
 
 /**
- * Build the synthetic `put` that carries a fetched entity into the log.
- * The base is stamped with the entity's own `last_gsn` and `updated_hlc`
- * so gsn ordering places it at its true causal position: an earlier
- * patch is subsumed, a later one merges on top by HLC. The field
- * envelopes come through verbatim so later merges are by HLC, not by
- * arrival.
+ * Build the synthetic snapshot that carries a fetched entity into the log:
+ * one Update per component. The base is stamped with the entity's own
+ * `last_gsn` and `updated_hlc` so gsn ordering places it at its true causal
+ * position: an earlier write is subsumed, a later one merges on top by HLC.
+ * The field envelopes come through verbatim so later merges are by HLC, not
+ * by arrival. A `replace` is a leaf-level LWW compare, and a keyed component
+ * can only merge, so the snapshot never discards a sibling.
  */
 export const snapshotAction = (entity: Entity): Action =>
   snapshotActionWithIds(entity, { actionId: generateId("a"), updateId: generateId("u") });
@@ -66,15 +75,15 @@ export const snapshotActionWithIds = (
     actor_id: ids.actorId ?? BACKFILL_ACTOR_ID,
     hlc: entity.updated_hlc,
     gsn: entity.last_gsn,
-    updates: [
-      {
-        id: ids.updateId,
+    updates: Object.entries(entity.data.fields).map(
+      ([field, value]): Update => ({
+        id: `${ids.updateId}_${field}`,
         subject_id: entity.id,
-        subject_type: entity.type,
-        method: "put",
-        data: { fields: entity.data.fields },
-      },
-    ],
+        component: componentName(entity.type, field),
+        method: isFieldMap(value) ? "merge" : "replace",
+        data: value,
+      }),
+    ),
   });
 
 const hlcToString = (hlc: number | string | null): string | null =>
@@ -130,10 +139,12 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
 });
 
 /**
- * Entity ids referenced by a live `entityGroup` row that the local cache
- * does not hold, ascending. A tombstone counts as held: the client knows
- * the entity and the delete is its current state, so it is not a
- * candidate.
+ * Entity ids referenced by a live `entityGroup` row whose base the local
+ * cache does not hold, ascending. A row created by a `merge` (no
+ * `created_hlc`) has not seen its create, so it is a candidate too: the
+ * replica received a later component write without the base. A tombstone
+ * counts as held: the client knows the entity and the delete is its current
+ * state, so it is not a candidate.
  */
 export async function collectBackfillCandidates(
   storage: StorageAdapter,
@@ -143,7 +154,8 @@ export async function collectBackfillCandidates(
 
   const missing: string[] = [];
   for (const entityId of [...referenced].sort()) {
-    if ((await storage.entities.get(entityId)) === null) missing.push(entityId);
+    const row = await storage.entities.get(entityId);
+    if (row === null || row.created_hlc === "") missing.push(entityId);
   }
   return missing;
 }
@@ -218,7 +230,9 @@ export function createBackfill(opts: BackfillOptions): Backfill {
       // An optimistic local write can land while the read is in flight.
       // It owns the cache until its echo arrives, so it wins over the
       // fetched base rather than being overwritten by the replay.
-      if (entity !== null && (await storage.entities.get(entityId)) === null) {
+      const current = await storage.entities.get(entityId);
+      const needsBase = current === null || current.created_hlc === "";
+      if (entity !== null && needsBase) {
         const entry = await storage.actions.append(snapshotAction(entity));
         onAppended?.(entry);
         // Force materialization so subscribers observe the fetched row.

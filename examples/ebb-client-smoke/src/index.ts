@@ -150,19 +150,10 @@ async function main(): Promise<void> {
         {
           id: "upd_followup",
           subject_id: SMOKE_ENTITY_ID,
-          subject_type: "todo",
-          method: "patch",
-          // User-entity updates must nest their fields under `fields` —
-          // see ActionValidator.well_formed_data?/1 in ebb_server.
-          data: {
-            fields: {
-              title: {
-                value: "Updated via SSE",
-                update_id: "upd_followup",
-                hlc: localEvent(clock),
-              },
-            },
-          },
+          // One Update names one component: the row field the value lives at.
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Updated via SSE", update_id: "upd_followup", hlc: localEvent(clock) },
         },
       ],
     });

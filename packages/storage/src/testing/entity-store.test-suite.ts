@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { isFieldMap, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  componentName,
+  isFieldMap,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { isShardedMapField } from "../internal/map-field";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
@@ -38,10 +46,24 @@ const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   ...overrides,
 });
 
+/** One `todo` component Update per field a fixture writes. */
+const todoComponentUpdates = (
+  updateId: string,
+  fields: Record<string, FieldValue>,
+  method: "merge" | "replace",
+): Update[] =>
+  Object.entries(fields).map(([field, value]) => ({
+    id: `${updateId}_${field}`,
+    subject_id: "todo_1",
+    component: componentName("todo", field),
+    method,
+    data: value,
+  }));
+
 /**
- * A `patch` for `todo_1` carrying an arbitrary field map. Map-field
- * tests build their leaf/map values with the helpers below so the
- * nested shape stays readable.
+ * A write for `todo_1` carrying an arbitrary field map, one `merge` per
+ * component. Map-field tests build their leaf/map values with the helpers
+ * below so the nested shape stays readable.
  */
 const buildFieldsPatch = (
   updateId: string,
@@ -53,9 +75,7 @@ const buildFieldsPatch = (
   actor_id: "a_user1",
   hlc,
   gsn,
-  updates: [
-    { id: updateId, subject_id: "todo_1", subject_type: "todo", method: "patch", data: { fields } },
-  ],
+  updates: todoComponentUpdates(updateId, fields, "merge"),
 });
 
 /** A leaf field value at `hlc`, carrying `updateId` as its tiebreak id. */
@@ -68,7 +88,11 @@ const leaf = (value: unknown, updateId: string, hlc: string): FieldValue => ({
 /** A map field value wrapping the given entries. */
 const map = (entries: Record<string, FieldValue>): FieldValue => ({ map: entries });
 
-const buildMapPutAction = (
+/**
+ * A whole-row write for `todo_1`: `replace` per leaf component, `merge` per
+ * keyed one, the shape a create (or a backfill snapshot) emits.
+ */
+const buildRowPutAction = (
   updateId: string,
   fields: Record<string, FieldValue>,
   hlc: string,
@@ -78,9 +102,13 @@ const buildMapPutAction = (
   actor_id: "a_user1",
   hlc,
   gsn,
-  updates: [
-    { id: updateId, subject_id: "todo_1", subject_type: "todo", method: "put", data: { fields } },
-  ],
+  updates: Object.entries(fields).map(([field, value]) => ({
+    id: `${updateId}_${field}`,
+    subject_id: "todo_1",
+    component: componentName("todo", field),
+    method: isFieldMap(value) ? "merge" : "replace",
+    data: value,
+  })),
 });
 
 /** A materialized Relationship row, for direct `set()` writes. */
@@ -241,16 +269,18 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(after!.data.fields).not.toHaveProperty("fields");
       });
 
-      it("treats a patch with no base row as a no-op until the base lands", async () => {
+      it("creates the row from a merge with no base row, leaving created_hlc unset", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        // Per-Update delivery (#473) can hand a group a patch whose base
-        // `put` stayed in another group.
+        // Per-Update delivery (#473) can hand a group a component write whose
+        // row's create stayed in another group. A merge is the only way to
+        // create a model whose components are all keyed, so it creates the row.
         await actionLog.append(buildPatchAction());
         await dirtyTracker.mark("todo_1", "todo");
 
-        expect(await entityStore.get("todo_1")).toBe(null);
-        // The dropped patch leaves the row dirty so a later base still lands.
-        expect(await dirtyTracker.isDirty("todo_1")).toBe(true);
+        const created = await entityStore.get("todo_1");
+        expect(created!.type).toBe("todo");
+        expect((created!.data.fields.title as { value: unknown }).value).toBe("Updated");
+        expect(created!.created_hlc).toBe("");
 
         await actionLog.append(buildPutAction());
         await dirtyTracker.mark("todo_1", "todo");
@@ -430,7 +460,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
             leaf(index, `u_${index}`, hlc),
           ]),
         );
-        await actionLog.append(buildMapPutAction("u_big", { content: map(entries) }, hlc, 1));
+        await actionLog.append(buildRowPutAction("u_big", { content: map(entries) }, hlc, 1));
         await dirtyTracker.mark("todo_1", "todo");
 
         const entity = await entityStore.get("todo_1");
@@ -444,7 +474,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(content.map.run_0).toEqual(leaf(0, "u_0", hlc));
       });
 
-      it("replaces a map wholesale on put", async () => {
+      it("unions a whole-row map write key by key, never replacing a key space", async () => {
         const hlcA = makeHlc(100);
         const hlcB = makeHlc(200);
         const hlcC = makeHlc(300);
@@ -457,13 +487,15 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
           buildFieldsPatch("u_b", { content: map({ b: leaf(2, "u_b", hlcB) }) }, hlcB, 3),
         );
         await actionLog.append(
-          buildMapPutAction("u_c", { content: map({ c: leaf(3, "u_c", hlcC) }) }, hlcC, 4),
+          buildRowPutAction("u_c", { content: map({ c: leaf(3, "u_c", hlcC) }) }, hlcC, 4),
         );
         await dirtyTracker.mark("todo_1", "todo");
 
         const entity = await entityStore.get("todo_1");
 
-        expect(entity!.data.fields.content).toEqual({ map: { c: leaf(3, "u_c", hlcC) } });
+        expect(entity!.data.fields.content).toEqual({
+          map: { a: leaf(1, "u_a", hlcA), b: leaf(2, "u_b", hlcB), c: leaf(3, "u_c", hlcC) },
+        });
       });
     });
 

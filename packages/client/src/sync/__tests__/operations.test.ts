@@ -4,10 +4,35 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { Update } from "@ebbjs/core";
 
 import { ModelRegistry } from "@ebbjs/schema";
 import { ActionRejectedError, call, changeGroups, type OpContext } from "@ebbjs/write";
 import { commit, type CommitCapability } from "@ebbjs/write";
+import { updateModel } from "../test-utils";
+
+/** The Updates of one model, grouped into one list per subject row. */
+const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
+  const bySubject = new Map<string, Update[]>();
+  for (const update of updates) {
+    if (updateModel(update) !== model) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/** A row's component values, keyed by field. */
+const fieldsOf = (row: readonly Update[]): Record<string, unknown> =>
+  Object.fromEntries(
+    row
+      .filter((update) => update.method === "merge" || update.method === "replace")
+      .map((update) => [
+        update.method === "delete" ? "" : update.component.slice(update.component.indexOf("/") + 1),
+        update.method === "delete" ? null : (update.data as { value: unknown }).value,
+      ]),
+  );
 
 const mkCtx = (): OpContext => ({
   registry: new ModelRegistry(),
@@ -29,10 +54,10 @@ describe("changeGroups", () => {
       currentGroups: ["g_1"],
     });
 
-    expect(result.updates.map((update) => update.method)).toEqual(["put", "delete"]);
-    expect(result.updates[0]!.subject_type).toBe("entityGroup");
-    expect(result.updates[0]!.data?.fields?.["group_id"]?.value).toBe("g_2");
-    expect(result.updates[1]!.subject_id).toBe("eg_1");
+    expect(result.updates.map((update) => update.method)).toEqual(["replace", "replace", "delete"]);
+    const [groupRow] = rowsOf(result.updates, "entityGroup");
+    expect(fieldsOf(groupRow!)["group_id"]).toBe("g_2");
+    expect(result.updates.at(-1)!.subject_id).toBe("eg_1");
     expect(result.groups).toEqual(["g_1", "g_2"]);
     expect(result.subject).toEqual({ id: "todo_1", type: "todo" });
   });

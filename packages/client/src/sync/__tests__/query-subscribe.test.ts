@@ -41,16 +41,18 @@ const mkTodoAction = (gsn: number, subjectId: string): Action => ({
   gsn,
   updates: [
     {
-      id: `u_${gsn}`,
+      id: `${`u_${gsn}`}_0`,
       subject_id: subjectId,
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: `T${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-          completed: { value: false, update_id: `u_${gsn}`, hlc: makeHlc(1) },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: `T${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) },
+    },
+    {
+      id: `${`u_${gsn}`}_1`,
+      subject_id: subjectId,
+      component: "todo/completed",
+      method: "replace",
+      data: { value: false, update_id: `u_${gsn}`, hlc: makeHlc(1) },
     },
   ],
 });
@@ -62,13 +64,11 @@ const mkNoteAction = (gsn: number, subjectId: string): Action => ({
   gsn,
   updates: [
     {
-      id: `u_${gsn}`,
+      id: `${`u_${gsn}`}_0`,
       subject_id: subjectId,
-      subject_type: "note",
-      method: "put",
-      data: {
-        fields: { body: { value: `N${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) } },
-      },
+      component: "note/body",
+      method: "replace",
+      data: { value: `N${gsn}`, update_id: `u_${gsn}`, hlc: makeHlc(1) },
     },
   ],
 });

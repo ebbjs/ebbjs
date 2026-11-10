@@ -194,7 +194,7 @@ describe("describeIdentityFailure", () => {
 describe("describeWriteError", () => {
   it("turns actor_mismatch into a reload instruction", () => {
     const error = new ActionRejectedError([
-      { id: "action_1", subjectType: "issue", reason: "actor_mismatch", details: "stale" },
+      { id: "action_1", model: "issue", reason: "actor_mismatch", details: "stale" },
     ]);
 
     expect(describeWriteError(error)).toMatch(/Reload the page/i);
@@ -202,7 +202,7 @@ describe("describeWriteError", () => {
 
   it("leaves other rejections and errors alone", () => {
     const other = new ActionRejectedError([
-      { id: "action_1", subjectType: "issue", reason: "permission_denied" },
+      { id: "action_1", model: "issue", reason: "permission_denied" },
     ]);
     expect(describeWriteError(other)).toBeNull();
     expect(describeWriteError(new Error("boom"))).toBeNull();

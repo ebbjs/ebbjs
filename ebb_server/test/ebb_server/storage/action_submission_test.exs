@@ -149,11 +149,9 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
         %{
           "id" => "upd_" <> id,
           "subject_id" => entity_id,
-          "subject_type" => "todo",
-          "method" => "put",
-          "data" => %{
-            "fields" => %{"title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc}}
-          }
+          "component" => "todo/title",
+          "method" => "replace",
+          "data" => %{"value" => "Buy milk", "hlc" => hlc}
         }
       ]
     }
@@ -169,13 +167,8 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
           %{
             update
             | "data" => %{
-                "fields" => %{
-                  "title" => %{
-                    "type" => "lww",
-                    "value" => String.duplicate("x", payload_bytes),
-                    "hlc" => update["data"]["fields"]["title"]["hlc"]
-                  }
-                }
+                "value" => String.duplicate("x", payload_bytes),
+                "hlc" => update["data"]["hlc"]
               }
           }
         ]

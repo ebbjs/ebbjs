@@ -1,41 +1,42 @@
 /**
  * Wire format adapter — convert between ebb Actions and text cells.
  *
- * ## The document is an entity; cells are keys of its map field
+ * ## The document is an entity; cells are the value of its content component
  *
- * A collaborative-text document is an ebb entity whose type is the document
- * entity name the app declares (a raw document opened directly defaults to
- * `text_document`). Its cells live in a single declared map field, `content`,
- * whose keys are cell ids and whose values are
+ * A collaborative-text document is an ebb entity whose model is the document
+ * model the app declares (a raw document opened directly defaults to
+ * `text_document`). Its cells live in one keyed component, `<docType>/content`,
+ * whose value is a map from cell id to
  * `{ value: RunCell | CutCell, update_id, hlc }`.
  *
- * The field is a *map* field (#326), so the merge is per key. Every write
+ * The component is a *keyed* component, so the merge is per key. Every write
  * only adds keys: a run is never rewritten, a cut is additive, and two
  * peers can never contest one position. The body's `version` leaf travels
- * with every write so a reader can refuse a cell shape it does not know.
+ * with every write, in its own `<docType>/version` Update, so a reader can
+ * refuse a cell shape it does not know.
  *
- * Wire-format shape for one edit:
+ * Wire-format shape for one edit (two Updates in the same Action):
  *
  * ```json
  * {
  *   "subject_id": "<docId>",
- *   "subject_type": "text_document",
- *   "method": "patch",
+ *   "component": "text_document/content",
+ *   "method": "merge",
  *   "data": {
- *     "fields": {
- *       "content": {
- *         "map": {
- *           "<cellId>": { "value": <RunCell | CutCell>, "update_id": "...", "hlc": "..." }
- *         }
- *       },
- *       "version": { "value": 1, "update_id": "...", "hlc": "..." }
+ *     "map": {
+ *       "<cellId>": { "value": <RunCell | CutCell>, "update_id": "...", "hlc": "..." }
  *     }
  *   }
  * }
+ * { "subject_id", "component": "text_document/version", "method": "merge",
+ *   "data": { "value": 1, "update_id": "...", "hlc": "..." } }
  * ```
  */
 
 import {
+  componentField,
+  componentModel,
+  componentName,
   isFieldLeaf,
   isFieldMap,
   type Action,
@@ -59,7 +60,7 @@ import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./sc
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default document subject type for collaborative-text documents. */
+/** Default document model for collaborative-text documents. */
 export const DEFAULT_DOC_SUBJECT_TYPE = "text_document";
 
 // ---------------------------------------------------------------------------
@@ -106,12 +107,13 @@ export const versionField = (
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether an Update targets the given document subject type. Use
- * this to filter updates from an Action before applying them to a
- * TextDocument (so non-doc updates pass through unchanged).
+ * Check whether an Update targets the given document model. Use this to
+ * filter updates from an Action before applying them to a TextDocument (so
+ * non-doc updates pass through unchanged). A `delete` names no component and
+ * so belongs to no single component of the row; it is not a cell delivery.
  */
 export const isDocSubjectUpdate = (update: Update, docSubjectType: string): boolean =>
-  update.subject_type === docSubjectType;
+  update.method !== "delete" && componentModel(update.component) === docSubjectType;
 
 // ---------------------------------------------------------------------------
 // Read side: parse a content map into cells
@@ -164,21 +166,14 @@ export const contentKeys = (content: unknown): readonly string[] => {
 };
 
 /**
- * Read the cells out of an Update that targets the document's `content`
- * map. Exported so the conflict path and the wire adapter unwrap the
+ * Read the cells out of an Update that carries the document's `content`
+ * component. Exported so the conflict path and the wire adapter unwrap the
  * envelope consistently.
  */
 export const readCellFields = (update: Update): ReadonlyMap<string, CellFieldValue> => {
-  if (!update.data || typeof update.data !== "object") return new Map();
-  const fields = (update.data as { fields?: Record<string, FieldValue> }).fields;
-  if (fields === undefined) return new Map();
-  return parseContentField(fields[DOC_CONTENT_FIELD]);
-};
-
-/** The fields envelope an Update carries, or undefined. */
-export const readUpdateFields = (update: Update): Record<string, FieldValue> | undefined => {
-  if (!update.data || typeof update.data !== "object") return undefined;
-  return (update.data as { fields?: Record<string, FieldValue> }).fields;
+  if (update.method === "drop" || update.method === "delete") return new Map();
+  if (componentField(update.component) !== DOC_CONTENT_FIELD) return new Map();
+  return parseContentField(update.data);
 };
 
 // ---------------------------------------------------------------------------
@@ -213,11 +208,15 @@ export const applyActions = (
     for (const update of action.updates) {
       if (!isDocSubjectUpdate(update, docSubjectType)) continue;
 
-      const fields = readUpdateFields(update);
-      if (fields === undefined) continue;
-      assertKnownVersion(fields[DOC_VERSION_FIELD]);
+      if (update.method === "drop" || update.method === "delete") continue;
+      const field = componentField(update.component);
+      if (field === DOC_VERSION_FIELD) {
+        assertKnownVersion(update.data);
+        continue;
+      }
+      if (field !== DOC_CONTENT_FIELD) continue;
 
-      const cells = parseContentField(fields[DOC_CONTENT_FIELD]);
+      const cells = parseContentField(update.data);
       if (cells.size === 0) continue;
 
       const before = current.cells;
@@ -273,35 +272,40 @@ export const contentFieldFromCells = (
 });
 
 /**
- * Build a full Update from a batch of new cells. The body's `version` leaf
- * is written alongside them, so every write declares its cell format.
+ * Build the two Updates one edit emits: the new cells in the document's
+ * `content` component, and the body's `version` leaf beside them, so every
+ * write declares its cell format.
  */
 export const docActionToUpdate = (
   cells: readonly TextCell[],
   opts: { readonly docId: string; readonly updateId: string; readonly docSubjectType?: string },
-): Update | null => {
+): Update[] | null => {
   if (cells.length === 0) return null;
-  const subjectType = opts.docSubjectType ?? DEFAULT_DOC_SUBJECT_TYPE;
-  const content = contentFieldFromCells(cells, opts.updateId);
-  return {
-    id: opts.updateId,
-    subject_id: opts.docId,
-    subject_type: subjectType,
-    method: "patch",
-    data: {
-      fields: {
-        [DOC_CONTENT_FIELD]: content,
-        [DOC_VERSION_FIELD]: versionField(hlcOf(cells), opts.updateId),
-      },
+  const docType = opts.docSubjectType ?? DEFAULT_DOC_SUBJECT_TYPE;
+  const versionUpdateId = `${opts.updateId}v`;
+  return [
+    {
+      id: opts.updateId,
+      subject_id: opts.docId,
+      component: componentName(docType, DOC_CONTENT_FIELD),
+      method: "merge",
+      data: contentFieldFromCells(cells, opts.updateId),
     },
-  };
+    {
+      id: versionUpdateId,
+      subject_id: opts.docId,
+      component: componentName(docType, DOC_VERSION_FIELD),
+      method: "merge",
+      data: versionField(hlcOf(cells), versionUpdateId),
+    },
+  ];
 };
 
 const hlcOf = (cells: readonly TextCell[]): HLCTimestamp => cells[0]!.stamp;
 
 /**
- * Build the first field map for a freshly-created document: one run holding
- * `text` plus the version leaf.
+ * Build the first component values for a freshly-created document: one run
+ * holding `text` in the content component, plus the version leaf.
  */
 export const buildInitialDocumentFields = (
   text: string,

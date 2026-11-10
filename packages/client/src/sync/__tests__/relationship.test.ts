@@ -328,7 +328,6 @@ describe("buildEntityGroupDelete", () => {
     expect(update).toEqual({
       id: "u_1",
       subject_id: "eg_1",
-      subject_type: "entityGroup",
       method: "delete",
       data: null,
     });

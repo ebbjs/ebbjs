@@ -34,8 +34,12 @@ defmodule ActionSink do
       hlc: action["hlc"],
       gsn: action["gsn"],
       update_id: update["id"],
-      subject_type: update["subject_type"],
       subject_id: update["subject_id"],
+      # One Update names one component, `<model>/<field>`, and its `data` is
+      # that component's value. `model` is the component's prefix; a `delete`
+      # names the row, carries no component, and so has no model here.
+      component: update["component"],
+      model: model_of(update),
       method: update["method"],
       data: update["data"]
     }
@@ -46,4 +50,11 @@ defmodule ActionSink do
     # a plain insert.
     Logger.info("[action_sink] #{inspect(row)}")
   end
+
+  defp model_of(%{"component" => component}) when is_binary(component) do
+    [model, _field] = :binary.split(component, "/")
+    model
+  end
+
+  defp model_of(_update), do: nil
 end

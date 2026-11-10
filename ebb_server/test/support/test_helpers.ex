@@ -29,9 +29,12 @@ defmodule EbbServer.TestHelpers do
   - `generate_hlc/0` - Generate current HLC timestamp
   - `hlc_from/2` - Build HLC from explicit time and counter
   - `sample_action/1` - Create sample action with string keys
-  - `sample_update/1` - Create sample update with string keys
+  - `sample_update/1` - Create sample component update with string keys
   - `validated_action/1` - Create sample action with atom keys (post-validation format)
-  - `validated_update/1` - Create sample update with atom keys (post-validation format)
+  - `validated_update/1` - Create sample component update with atom keys (post-validation format)
+  - `validated_component/4` - Build one validated component update
+  - `validated_row_updates/4` - Build one validated update per row field
+  - `stored_update/1` - Project a validated update into its stored (string-keyed) form
 
   **Telemetry**
   - `attach_telemetry/1` - Forward emitted `:telemetry` events to the test process
@@ -647,29 +650,31 @@ defmodule EbbServer.TestHelpers do
   end
 
   @doc """
-  Returns a valid update map with string keys.
+  Returns a valid component update map with string keys.
 
-  Accepts an optional map of overrides that will be merged on top.
+  One Update names one component, so the default writes `todo/title` with a
+  `merge` of the component's own value. An override that sets `"method"` to
+  `"delete"` drops the component and the data, because a delete names the row.
   """
   def sample_update(overrides \\ %{}) do
     hlc = generate_hlc()
 
-    Map.merge(
-      %{
-        "id" => "upd_" <> Nanoid.generate(),
-        "subject_id" => "todo_" <> Nanoid.generate(),
-        "subject_type" => "todo",
-        "method" => "put",
-        "data" => %{
-          "fields" => %{
-            "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc},
-            "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
-          }
-        }
-      },
-      overrides
-    )
+    %{
+      "id" => "upd_" <> Nanoid.generate(),
+      "subject_id" => "todo_" <> Nanoid.generate(),
+      "component" => "todo/title",
+      "method" => "merge",
+      "data" => %{"value" => "Buy milk", "hlc" => hlc}
+    }
+    |> Map.merge(overrides)
+    |> normalize_wire_update()
   end
+
+  defp normalize_wire_update(%{"method" => "delete"} = update) do
+    update |> Map.delete("component") |> Map.put("data", nil)
+  end
+
+  defp normalize_wire_update(update), do: update
 
   @doc """
   Returns a valid action map with atom keys (validated_action format).
@@ -712,17 +717,21 @@ defmodule EbbServer.TestHelpers do
     result
   end
 
+  @update_keys [:id, :subject_id, :component, :method, :data]
+
   @doc """
-  Returns a valid update map with atom keys (validated_update format).
+  Returns a valid component update map with atom keys (validated format).
   Used for testing the Writer after PermissionChecker validation.
 
-  Handles both atom and string keys in overrides for convenience.
+  Handles both atom and string keys in overrides for convenience. `model` and
+  `field` are derived from the component, so an override only sets the
+  component; a `:delete` override drops it.
 
   ## Examples
 
       validated_update()  # basic update with random IDs
-      validated_update(%{subject_id: "todo_123", method: :patch})  # with atom key overrides
-      validated_update(%{"id" => "upd_123", "subject_id" => "todo_123"})  # with string key overrides
+      validated_update(%{subject_id: "todo_123", method: :replace})
+      validated_update(%{component: "note/body", method: :merge, data: leaf})
   """
   def validated_update(overrides \\ %{}) do
     hlc = generate_hlc()
@@ -730,33 +739,94 @@ defmodule EbbServer.TestHelpers do
     base = %{
       id: "upd_" <> Nanoid.generate(),
       subject_id: "todo_" <> Nanoid.generate(),
-      subject_type: "todo",
-      method: :put,
-      data: %{
-        "fields" => %{
-          "title" => %{"type" => "lww", "value" => "Buy milk", "hlc" => hlc},
-          "completed" => %{"type" => "lww", "value" => false, "hlc" => hlc}
-        }
-      }
+      component: "todo/title",
+      model: "todo",
+      field: "title",
+      method: :merge,
+      data: %{"value" => "Buy milk", "hlc" => hlc}
     }
 
-    # Handle both atom and string keys for structural fields
-    result =
-      Enum.reduce(overrides, base, fn
-        {:id, v}, acc -> Map.put(acc, :id, v)
-        {:subject_id, v}, acc -> Map.put(acc, :subject_id, v)
-        {:subject_type, v}, acc -> Map.put(acc, :subject_type, v)
-        {:method, v}, acc -> Map.put(acc, :method, v)
-        {:data, v}, acc -> Map.put(acc, :data, v)
-        {"id", v}, acc -> Map.put(acc, :id, v)
-        {"subject_id", v}, acc -> Map.put(acc, :subject_id, v)
-        {"subject_type", v}, acc -> Map.put(acc, :subject_type, v)
-        {"method", v}, acc -> Map.put(acc, :method, v)
-        {"data", v}, acc -> Map.put(acc, :data, v)
-        # Skip other keys
-        {_, _}, acc -> acc
-      end)
+    @update_keys
+    |> Enum.reduce(base, fn key, acc ->
+      case fetch_override(overrides, key) do
+        {:ok, value} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
+    |> normalize_method()
+    |> derive_component()
+  end
 
-    result
+  defp normalize_method(%{method: method} = update) when is_binary(method) do
+    %{update | method: String.to_existing_atom(method)}
+  end
+
+  defp normalize_method(update), do: update
+
+  defp fetch_override(overrides, key) do
+    case Map.fetch(overrides, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(overrides, Atom.to_string(key))
+    end
+  end
+
+  defp derive_component(%{method: :delete} = update) do
+    %{update | component: nil, model: nil, field: nil, data: nil}
+  end
+
+  defp derive_component(%{component: component} = update) when is_binary(component) do
+    [model, field] = :binary.split(component, "/")
+    %{update | model: model, field: field}
+  end
+
+  defp derive_component(update), do: update
+
+  @doc """
+  Builds one validated component update.
+  """
+  def validated_component(subject_id, component, data, opts \\ []) do
+    validated_update(%{
+      id: Keyword.get(opts, :id, "upd_" <> Nanoid.generate()),
+      subject_id: subject_id,
+      component: component,
+      method: Keyword.get(opts, :method, :replace),
+      data: data
+    })
+  end
+
+  @doc """
+  Builds one validated update per field of a row.
+
+  `fields` is `%{field => component value}`. The default method is `:replace`
+  (a create writes one `replace` per leaf component); pass `method: :merge`
+  for a leaf patch, or for a keyed component, whose create must merge.
+  """
+  def validated_row_updates(subject_id, model, fields, opts \\ []) do
+    method = Keyword.get(opts, :method, :replace)
+
+    component_opts =
+      case Keyword.fetch(opts, :id) do
+        {:ok, id} -> [method: method, id: id]
+        :error -> [method: method]
+      end
+
+    Enum.map(fields, fn {field, value} ->
+      validated_component(subject_id, "#{model}/#{field}", value, component_opts)
+    end)
+  end
+
+  @doc """
+  Projects a validated update into its stored, string-keyed form.
+  """
+  def stored_update(update) do
+    %{
+      "id" => update.id,
+      "subject_id" => update.subject_id,
+      "method" => Atom.to_string(update.method),
+      "data" => update.data
+    }
+    |> then(fn stored ->
+      if update.component, do: Map.put(stored, "component", update.component), else: stored
+    end)
   end
 end

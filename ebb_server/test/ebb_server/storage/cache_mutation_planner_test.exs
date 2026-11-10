@@ -14,7 +14,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   - A delete in a predecessor plan is visible to a successor's patch
   - Dropping a predecessor's overlay falls back to the pre-plan cache
   - Identical repeats are dropped, distinct rows for one id are not
-  - Relationship rows never merge with a cached row
+  - A relationship row merges the components its Updates do not carry
   """
 
   use ExUnit.Case, async: true
@@ -28,12 +28,14 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   setup do
     group_members_by_id = :ets.new(:planner_group_members_by_id, [:set, :public])
     entity_groups_by_id = :ets.new(:planner_entity_groups_by_id, [:set, :public])
+    relationships_by_id = :ets.new(:planner_relationships_by_id, [:set, :public])
     group_apps = :ets.new(:planner_group_apps, [:set, :public])
 
     %{
       tables: %{
         group_members_by_id: group_members_by_id,
         entity_groups_by_id: entity_groups_by_id,
+        relationships_by_id: relationships_by_id,
         group_apps: group_apps
       },
       group_members_by_id: group_members_by_id,
@@ -51,7 +53,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
           "permissions" => ["todo.create"]
         })
 
-      todo = validated_update(%{subject_id: "todo_1", subject_type: "todo"})
+      todo = update("todo", "todo_1", :put)
 
       {mutations, _overlay} =
         CacheMutationPlanner.plan([group_member, todo, group_member, todo], tables)
@@ -218,8 +220,8 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   end
 
   describe "cross-flush resolution" do
-    test "the overlay carries every Update's entity type", %{tables: tables} do
-      todo = validated_update(%{subject_id: "todo_1", subject_type: "todo"})
+    test "the overlay carries every row's entity model", %{tables: tables} do
+      todo = update("todo", "todo_1", :put)
 
       {_mutations, overlay} = CacheMutationPlanner.plan([todo], tables)
 
@@ -319,7 +321,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {_mutations_1, overlay_1} =
         CacheMutationPlanner.plan([update("entityGroup", "eg_1", :delete)], tables)
 
-      todo = validated_update(%{subject_id: "todo_1", subject_type: "todo"})
+      todo = update("todo", "todo_1", :put)
       {_mutations_2, overlay_2} = CacheMutationPlanner.plan([todo], tables, overlay_1)
 
       cached = [%{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}]
@@ -543,7 +545,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   end
 
   describe "relationships" do
-    test "a relationship patch does not merge the row it replaces", %{tables: tables} do
+    test "a relationship merge supplies the components it does not carry", %{tables: tables} do
       put =
         update("relationship", "rel_1", :put, %{
           "source_id" => "todo_1",
@@ -558,14 +560,18 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       {plan_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
 
-      # The wire fields are authoritative: the patch omits `target_id`, so
-      # it emits no row rather than reusing the planned one.
-      assert plan_2 == [{:entity_type, "rel_1", "relationship"}]
+      # A component Update names one field, so the planned row supplies the
+      # rest; only the named field moves.
+      assert [
+               {:entity_type, "rel_1", "relationship"},
+               {:relationship_put,
+                %{source_id: "todo_9", target_id: "todo_2", type: "parent", field: "parent"}}
+             ] = Enum.sort_by(plan_2, &elem(&1, 0))
 
       assert {:ok,
               %{
                 id: "rel_1",
-                source_id: "todo_1",
+                source_id: "todo_9",
                 target_id: "todo_2",
                 type: "parent",
                 field: "parent"
@@ -581,7 +587,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
     %{
       id: "upd_" <> Nanoid.generate(),
       subject_id: group_id,
-      subject_type: "group",
+      model: "group",
       method: method,
       data: if(is_nil(fields), do: nil, else: %{"fields" => fields})
     }
@@ -600,20 +606,27 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
     %{"type" => "lww", "value" => value, "hlc" => hlc, "update_id" => update_id}
   end
 
-  defp update(subject_type, subject_id, method, fields \\ %{}) do
+  # A folded row mutation, the planner's input: one row per subject, with
+  # its whole `fields` map and no shorter method than its row deserves.
+  defp update(model, subject_id, method, fields \\ %{}) do
     hlc = generate_hlc()
 
-    data = %{
-      "fields" =>
-        Map.new(fields, fn {field, value} ->
-          {field, %{"type" => "lww", "value" => value, "hlc" => hlc}}
-        end)
-    }
+    data =
+      if method == :delete do
+        nil
+      else
+        %{
+          "fields" =>
+            Map.new(fields, fn {field, value} ->
+              {field, %{"type" => "lww", "value" => value, "hlc" => hlc}}
+            end)
+        }
+      end
 
     %{
       id: "upd_" <> Nanoid.generate(),
       subject_id: subject_id,
-      subject_type: subject_type,
+      model: model,
       method: method,
       data: data
     }

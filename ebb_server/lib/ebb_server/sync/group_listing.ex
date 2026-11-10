@@ -75,7 +75,7 @@ defmodule EbbServer.Sync.GroupListing do
   @default_limit 200
   @max_limit 1000
   @token_version 1
-  @system_types PermissionHelper.system_entity_types()
+  @system_models PermissionHelper.system_models()
 
   @default_sqlite_name EbbServer.Storage.SQLite
   @default_dirty_set :ebb_dirty_set
@@ -222,8 +222,8 @@ defmodule EbbServer.Sync.GroupListing do
   # unconditionally by `load_live_rows/2`, and a membership committed after
   # the pinned W belongs to the tail.
   defp materialize_prefix(:start, opts) do
-    @system_types
-    |> DirtyTracker.dirty_entity_ids_for_types(dirty_set(opts))
+    @system_models
+    |> DirtyTracker.dirty_entity_ids_for_models(dirty_set(opts))
     |> materialize_all(opts)
   end
 

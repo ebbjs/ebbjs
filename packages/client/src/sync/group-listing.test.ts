@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { componentName, makeHlc, type Action } from "@ebbjs/core";
 import { defineModel, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
@@ -489,22 +489,13 @@ const putAction = (opts: {
     actor_id: "a_peer",
     hlc,
     gsn: opts.gsn,
-    updates: [
-      {
-        id: `u_${opts.id}`,
-        subject_id: opts.entityId,
-        subject_type: opts.entityType ?? "blog_post",
-        method: "put",
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(opts.fields).map(([key, value]) => [
-              key,
-              { value, update_id: `u_${opts.id}_${key}`, hlc },
-            ]),
-          ),
-        },
-      },
-    ],
+    updates: Object.entries(opts.fields).map(([key, value]) => ({
+      id: `u_${opts.id}_${key}`,
+      subject_id: opts.entityId,
+      component: componentName(opts.entityType ?? "blog_post", key),
+      method: "replace" as const,
+      data: { value, update_id: `u_${opts.id}_${key}`, hlc },
+    })),
   };
 };
 
@@ -517,7 +508,6 @@ const deleteAction = (opts: { id: string; gsn: number; entityId: string }): Acti
     {
       id: `u_${opts.id}`,
       subject_id: opts.entityId,
-      subject_type: "blog_post",
       method: "delete",
       data: null,
     },
@@ -559,7 +549,7 @@ describe("SyncClient group listing", () => {
   });
 
   it("converges with a full log replay on the rows both paths can derive", async () => {
-    const ahead = [
+    const ahead: Action[] = [
       // A relationship row the log carries too: both paths must end with it,
       // and with the same adjacency answer.
       putAction({
@@ -579,13 +569,11 @@ describe("SyncClient group listing", () => {
         ...putAction({ id: "act_patch", gsn: 60, entityId: "post_2", fields: { title: "V2" } }),
         updates: [
           {
-            id: "u_act_patch",
+            id: "u_act_patch_0",
             subject_id: "post_2",
-            subject_type: "blog_post",
-            method: "patch" as const,
-            data: {
-              fields: { title: { value: "V2", update_id: "u_act_patch_title", hlc: NEWER } },
-            },
+            component: "blog_post/title",
+            method: "merge" as const,
+            data: { value: "V2", update_id: "u_act_patch_title", hlc: NEWER },
           },
         ],
       },
@@ -729,10 +717,13 @@ describe("SyncClient group listing", () => {
 
     expect(titleOf(await client.readLocalEntity("post_1"))).toBe("Server state");
     expect(titleOf(client.replica.get("post_1"))).toBe("Server state");
-    // The stale Action is not even logged: the row already holds it.
-    expect((await client.storage.actions.getAll()).map((action) => action.id)).not.toContain(
-      "act_old",
-    );
+    // A stale component write may be logged, but it loses the leaf-level LWW
+    // compare against the seeded base, so the row cannot regress.
+    expect(
+      await client.storage.actions
+        .getAll()
+        .then((actions) => actions.filter((action) => action.id === "act_old")),
+    ).toHaveLength(1);
 
     unsubscribe();
     client.close();
@@ -938,11 +929,11 @@ describe("SyncClient group listing", () => {
                 gsn: 50,
                 updates: [
                   {
-                    id: `u_cross_${groupId}`,
+                    id: `${`u_cross_${groupId}`}_0`,
                     subject_id: `${groupId}_doc`,
-                    subject_type: "blog_post",
-                    method: "patch",
-                    data: { fields: { title: { value: groupId, update_id: "u_1", hlc: HLC } } },
+                    component: "blog_post/title",
+                    method: "merge",
+                    data: { value: groupId, update_id: "u_1", hlc: HLC },
                   },
                 ],
               },

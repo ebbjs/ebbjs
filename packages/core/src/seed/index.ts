@@ -14,7 +14,7 @@
 
 import { createAction } from "../action";
 import { createClock, localEvent } from "../hlc";
-import type { Action, FieldValue } from "../types/action";
+import type { Action, FieldValue, UpdateInput } from "../types/action";
 import type { HLCState } from "../hlc/types";
 
 export type { Action };
@@ -94,81 +94,63 @@ const stampMap = (entries: Record<string, unknown>, clock: HLCState) => ({
   ),
 });
 
+/**
+ * One component Update: `data` is the component's own value, and the
+ * component is `<model>/<field>` because a seed row names its model and
+ * fields directly.
+ */
+const componentUpdate = (
+  subjectId: string,
+  model: string,
+  field: string,
+  data: FieldValue,
+  method: "merge" | "replace" = "replace",
+): UpdateInput => ({ subject_id: subjectId, component: `${model}/${field}`, method, data });
+
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
 
-  const updates = [];
+  const updates: UpdateInput[] = [];
 
   for (const group of data.groups) {
-    const fields: Record<string, FieldValue> = { name: stamp(group.name, clock) };
-    if (group.apps !== undefined) fields["apps"] = stampMap(group.apps, clock);
-    updates.push({
-      subject_id: group.id,
-      subject_type: "group",
-      method: "put" as const,
-      data: { fields },
-    });
+    updates.push(componentUpdate(group.id, "group", "name", stamp(group.name, clock)));
+    if (group.apps !== undefined) {
+      updates.push(
+        componentUpdate(group.id, "group", "apps", stampMap(group.apps, clock), "merge"),
+      );
+    }
   }
 
   for (const member of data.groupMembers) {
-    updates.push({
-      subject_id: member.id,
-      subject_type: "groupMember",
-      method: "put" as const,
-      data: {
-        fields: {
-          actor_id: stamp(member.actorId, clock),
-          group_id: stamp(member.groupId, clock),
-          permissions: stamp(member.permissions, clock),
-        },
-      },
-    });
+    updates.push(
+      componentUpdate(member.id, "groupMember", "actor_id", stamp(member.actorId, clock)),
+      componentUpdate(member.id, "groupMember", "group_id", stamp(member.groupId, clock)),
+      componentUpdate(member.id, "groupMember", "permissions", stamp(member.permissions, clock)),
+    );
   }
 
   for (const entity of data.entities ?? []) {
-    const fields: Record<string, ReturnType<typeof stamp>> = {};
     for (const patch of entity.patches) {
       for (const [key, value] of Object.entries(patch.fields)) {
-        fields[key] = stamp(value, clock);
+        updates.push(componentUpdate(entity.id, entity.type, key, stamp(value, clock)));
       }
     }
-
-    updates.push({
-      subject_id: entity.id,
-      subject_type: entity.type,
-      method: "put" as const,
-      data: { fields },
-    });
   }
 
   for (const rel of data.relationships ?? []) {
-    updates.push({
-      subject_id: rel.id,
-      subject_type: "relationship",
-      method: "put" as const,
-      data: {
-        fields: {
-          source_id: stamp(rel.sourceId, clock),
-          target_id: stamp(rel.targetId, clock),
-          type: stamp(rel.type, clock),
-          field: stamp(rel.field, clock),
-        },
-      },
-    });
+    updates.push(
+      componentUpdate(rel.id, "relationship", "source_id", stamp(rel.sourceId, clock)),
+      componentUpdate(rel.id, "relationship", "target_id", stamp(rel.targetId, clock)),
+      componentUpdate(rel.id, "relationship", "type", stamp(rel.type, clock)),
+      componentUpdate(rel.id, "relationship", "field", stamp(rel.field, clock)),
+    );
   }
 
   for (const membership of data.entityGroups ?? []) {
-    updates.push({
-      subject_id: membership.id,
-      subject_type: "entityGroup",
-      method: "put" as const,
-      data: {
-        fields: {
-          entity_id: stamp(membership.entityId, clock),
-          group_id: stamp(membership.groupId, clock),
-        },
-      },
-    });
+    updates.push(
+      componentUpdate(membership.id, "entityGroup", "entity_id", stamp(membership.entityId, clock)),
+      componentUpdate(membership.id, "entityGroup", "group_id", stamp(membership.groupId, clock)),
+    );
   }
 
   const { action } = createAction({ actorId, updates, clock });

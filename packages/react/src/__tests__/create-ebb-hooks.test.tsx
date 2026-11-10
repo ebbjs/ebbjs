@@ -14,6 +14,9 @@ import {
   type NamespacedClient,
   type SyncClient,
 } from "@ebbjs/client";
+/** The `<model>/<field>` component name a write addresses. */
+const componentName = (model: string, field: string): `${string}/${string}` => `${model}/${field}`;
+
 import { EbbProvider, createEbbHooks } from "../index";
 
 const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
@@ -51,15 +54,11 @@ const writeTitle = (args: {
   gsn: args.gsn,
   updates: [
     {
-      id: `u_${args.id}`,
+      id: `${`u_${args.id}`}_0`,
       subject_id: "todo_1",
-      subject_type: "todo",
-      method: "put",
-      data: {
-        fields: {
-          title: { value: args.value, update_id: `u_${args.id}`, hlc: args.hlc },
-        },
-      },
+      component: "todo/title",
+      method: "replace",
+      data: { value: args.value, update_id: `u_${args.id}`, hlc: args.hlc },
     },
   ],
 });
@@ -76,15 +75,13 @@ async function seedTodo(client: Client, id: string, title: string): Promise<void
   };
   client.replica.ingest(
     { id: `a_seed_${seedPosition}`, actor_id: "seed", hlc, gsn: seedPosition, updates: [] },
-    [
-      {
-        id: `u_seed_${seedPosition}`,
-        subject_id: id,
-        subject_type: "todo",
-        method: "put",
-        data: { fields },
-      },
-    ],
+    Object.entries(fields).map(([field, value]) => ({
+      id: `u_seed_${seedPosition}_${field}`,
+      subject_id: id,
+      component: componentName("todo", field),
+      method: "replace" as const,
+      data: value,
+    })),
     seedPosition,
   );
   await client.storage.entities.set({

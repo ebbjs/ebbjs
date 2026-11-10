@@ -841,7 +841,7 @@ suffix marks a latency metric, not the raw unit. Reporters convert with
 | `ebb.watermark.lag`                       | `lag` (GSNs; durability: max GSN − committed watermark)                                              | —                                                                                                                                                                                | Gauge                        | `watermark`     |
 | `ebb.dirty_set.size`                      | `size` (entries)                                                                                     | —                                                                                                                                                                                | Gauge                        | `dirty_set`     |
 | `ebb.writer.in_flight_action_ids`         | `size` (ids)                                                                                         | —                                                                                                                                                                                | Gauge                        | `writer`        |
-| `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`                                                                     | `subject_id`, `subject_type`, `path` (`:dirty_materialize`)                                                                                                                      | Histogram                    | `entity_store`  |
+| `ebb.entity_store.materialize_latency_ms` | `duration` (native), `byte_size`                                                                     | `subject_id`, `model`, `path` (`:dirty_materialize`)                                                                                                                             | Histogram                    | `entity_store`  |
 | `ebb.entity_store.materialize_phase_ms`   | `duration` (native)                                                                                  | `phase` (`:fetch_decode` / `:entries_scan` / `:actions_load` / `:merge` / `:encode` / `:upsert` / `:format`)                                                                     | Histogram                    | `entity_store`  |
 | `ebb.entity_store.read_latency_ms`        | `duration` (native), `byte_size`, `row_count`                                                        | `path` (`:clean_hit` / `:query`), `subject_id`                                                                                                                                   | Histogram                    | `entity_store`  |
 | `ebb.entity_store.cache_hit_rate`         | `count`                                                                                              | `result` (`:hit` / `:miss`), `path` (`:dirty_materialize` / `:clean_hit` / `:query`)                                                                                             | Counter (tagged by `result`) | `entity_store`  |
@@ -1087,13 +1087,13 @@ accepted (`on_action: &MyApp.WarehouseSink.handle/1`). With the key unset or
 Only `:on_action` is read from application config today. The rest are options
 to `EbbServer.ActionExport.start_link/1`, used by tests and direct starts:
 
-| Option                    | Default                          | Purpose                                          |
-| ------------------------- | -------------------------------- | ------------------------------------------------ |
-| `:batch_size`             | `500`                            | Actions read per poll                            |
-| `:poll_interval_ms`       | `1000`                           | Delay between polls once caught up               |
-| `:handler_timeout_ms`     | `5000`                           | Per-invocation timeout before the task is killed |
-| `:excluded_subject_types` | `["groupMember", "entityGroup"]` | Update subject types stripped before export      |
-| `:cursor_name`            | `"action_export"`                | SQLite `cursors` row the exporter resumes from   |
+| Option                | Default                          | Purpose                                          |
+| --------------------- | -------------------------------- | ------------------------------------------------ |
+| `:batch_size`         | `500`                            | Actions read per poll                            |
+| `:poll_interval_ms`   | `1000`                           | Delay between polls once caught up               |
+| `:handler_timeout_ms` | `5000`                           | Per-invocation timeout before the task is killed |
+| `:excluded_models`    | `["groupMember", "entityGroup"]` | Update models stripped before export             |
+| `:cursor_name`        | `"action_export"`                | SQLite `cursors` row the exporter resumes from   |
 
 #### Handler contract
 
@@ -1110,22 +1110,18 @@ in ascending GSN order:
     %{
       "id" => "upd_...",
       "subject_id" => "todo_...",
-      "subject_type" => "todo",
-      "method" => "put",
-      "data" => %{
-        "fields" => %{
-          "title" => %{"value" => "Buy milk", "update_id" => "upd_...", "hlc" => 115_300_000_000_000_000}
-        }
-      }
+      "component" => "todo/title",
+      "method" => "replace",
+      "data" => %{"value" => "Buy milk", "update_id" => "upd_...", "hlc" => 115_300_000_000_000_000}
     }
   ]
 }
 ```
 
-`"method"` is `"put"`, `"patch"`, or `"delete"`; `"data"` is the client's
-`fields` envelope, passed through unchanged (a `delete` normally carries
-`null`). An Update whose subject type is filtered out is already absent from
-`"updates"`.
+`"method"` is `"merge"`, `"replace"`, `"drop"`, or `"delete"`; `"data"` is the
+component's own value, passed through unchanged (`"drop"` and `"delete"` carry
+`null`, and a `delete` names no component). An Update whose model is filtered
+out is already absent from `"updates"`.
 
 - Return `:ok` (or anything that is not `{:error, _}`) to acknowledge.
 - Return `{:error, reason}`, raise, throw, exit, or exceed

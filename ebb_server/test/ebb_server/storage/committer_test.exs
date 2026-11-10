@@ -113,9 +113,9 @@ defmodule EbbServer.Storage.CommitterTest do
                  %{
                    "id" => "upd_1",
                    "subject_id" => "todo_1",
-                   "subject_type" => "todo",
-                   "method" => "put",
-                   "data" => %{"fields" => %{}}
+                   "component" => "todo/title",
+                   "method" => "replace",
+                   "data" => %{"value" => "x"}
                  }
                ]
              }
@@ -501,20 +501,25 @@ defmodule EbbServer.Storage.CommitterTest do
   end
 
   defp update(id, subject_id, opts \\ []) do
+    component = Keyword.get(opts, :component, "todo/title")
+    [model, field] = :binary.split(component, "/")
+
     %{
       id: id,
       subject_id: subject_id,
-      subject_type: Keyword.get(opts, :subject_type, "todo"),
-      method: Keyword.get(opts, :method, :put),
-      data: Keyword.get(opts, :data, %{"fields" => %{}})
+      component: component,
+      model: model,
+      field: field,
+      method: Keyword.get(opts, :method, :replace),
+      data: Keyword.get(opts, :data, %{"value" => "x"})
     }
   end
 
   defp type_entity_key(update) do
-    RocksDB.encode_type_entity_key(update.subject_type, update.subject_id)
+    RocksDB.encode_type_entity_key(update.model, update.subject_id)
   end
 
-  defp affected_entity(update), do: {update.subject_id, update.subject_type}
+  defp affected_entity(update), do: {update.subject_id, update.model}
 
   defp entity_rows(ops, rocks_name) do
     for {:put, cf, key, value} <- ops, cf == RocksDB.cf_entity_actions(rocks_name) do

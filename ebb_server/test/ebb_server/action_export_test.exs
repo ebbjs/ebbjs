@@ -116,11 +116,11 @@ defmodule EbbServer.ActionExportTest do
         [
           validated_action(%{
             id: "act_1",
-            updates: [validated_update(%{id: "u_1", subject_id: "todo_1", subject_type: "todo"})]
+            updates: [validated_update(%{id: "u_1", subject_id: "todo_1"})]
           }),
           validated_action(%{
             id: "act_2",
-            updates: [validated_update(%{id: "u_2", subject_id: "todo_2", subject_type: "todo"})]
+            updates: [validated_update(%{id: "u_2", subject_id: "todo_2"})]
           })
         ],
         ctx.writer_name
@@ -140,10 +140,10 @@ defmodule EbbServer.ActionExportTest do
       assert Enum.map(actions, & &1["gsn"]) == [1, 2]
       assert Enum.all?(actions, &is_binary(&1["actor_id"]))
 
-      assert [%{"id" => "u_1", "subject_id" => "todo_1", "subject_type" => "todo"} = update] =
+      assert [%{"id" => "u_1", "subject_id" => "todo_1", "component" => "todo/title"} = update] =
                hd(actions)["updates"]
 
-      assert update["method"] == "put"
+      assert update["method"] == "merge"
       assert is_map(update["data"])
 
       assert wait_until(fn -> ActionExport.cursor(name) == 2 end)
@@ -278,14 +278,14 @@ defmodule EbbServer.ActionExportTest do
           validated_action(%{
             id: "act_mixed",
             updates: [
-              validated_update(%{id: "u_todo", subject_id: "todo_1", subject_type: "todo"}),
-              validated_update(%{id: "u_gm", subject_id: "gm_1", subject_type: "groupMember"})
+              validated_update(%{id: "u_todo", subject_id: "todo_1"}),
+              validated_component("gm_1", "groupMember/permissions", %{"value" => ["todo.read"]})
             ]
           }),
           validated_action(%{
             id: "act_system",
             updates: [
-              validated_update(%{id: "u_eg", subject_id: "eg_1", subject_type: "entityGroup"})
+              validated_component("eg_1", "entityGroup/group_id", %{"value" => "g_1"})
             ]
           })
         ],

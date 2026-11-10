@@ -31,7 +31,7 @@ describe("last_membership", () => {
 
     expect(error).toBeInstanceOf(ActionRejectedError);
     expect((error as ActionRejectedError).rejections).toMatchObject([
-      { id: "e_solo", subjectType: "issue", reason: "last_membership" },
+      { id: "e_solo", model: "issue", reason: "last_membership" },
     ]);
   });
 
@@ -135,7 +135,6 @@ describe("missing_ownership", () => {
   const unowned: Update = {
     id: "u_1",
     subject_id: "eg_unknown",
-    subject_type: "entityGroup",
     method: "delete",
     data: null,
   };
@@ -157,20 +156,24 @@ describe("missing_ownership", () => {
   });
 
   it("passes a membership row that names its group", () => {
-    const owned: Update = {
-      id: "u_1",
-      subject_id: "eg_1",
-      subject_type: "entityGroup",
-      method: "put",
-      data: {
-        fields: {
-          entity_id: { value: "e_1", update_id: "u_1" },
-          group_id: { value: "g_1", update_id: "u_1" },
-        },
+    const owned: Update[] = [
+      {
+        id: "u_1_entity",
+        subject_id: "eg_1",
+        component: "entityGroup/entity_id",
+        method: "replace",
+        data: { value: "e_1", update_id: "u_1" },
       },
-    };
+      {
+        id: "u_1_group",
+        subject_id: "eg_1",
+        component: "entityGroup/group_id",
+        method: "replace",
+        data: { value: "g_1", update_id: "u_1" },
+      },
+    ];
 
-    expect(() => assertMembershipScope(view, "entityGroup", "eg_1", [owned])).not.toThrow();
+    expect(() => assertMembershipScope(view, "entityGroup", "eg_1", owned)).not.toThrow();
   });
 
   it("passes a batch with no membership writes", () => {

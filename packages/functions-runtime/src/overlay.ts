@@ -9,17 +9,25 @@
  *
  * The result is the same wire shape the host returns — `data.fields` holds
  * `FieldValue` leaves and maps, never projected primitives — so a read does not
- * change shape depending on whether the invocation wrote to the row.
+ * change shape depending on whether the invocation wrote to the row. The
+ * buffered Updates are per component, so the overlay folds each into its field.
  */
 
-import { compare, mergeFieldValue, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  compare,
+  componentField,
+  isFieldMap,
+  mergeFieldValue,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
 
 /** What the overlay reads: this invocation's buffered Updates and the host's view. */
 export interface OverlaySource {
   /** The buffered Updates addressing `id`, in wire order. */
   updatesFor(id: string): readonly Update[];
-  /** The `subject_type` of the last buffered write for `id`. */
+  /** The model of the last buffered write for `id`. */
   typeOf(id: string): string | undefined;
   /** The host's view of `id` (`ctx.get` without the overlay). */
   readHost(id: string): Promise<EntityResponse | null>;
@@ -29,19 +37,10 @@ export interface Overlay {
   read(id: string): Promise<EntityResponse | null>;
 }
 
-/** The latest HLC carried by a field map's leaves, or `undefined` when it has none. */
-const latestHlc = (fields: Record<string, FieldValue>): string | undefined => {
-  let latest: string | undefined;
-  const visit = (field: FieldValue): void => {
-    if ("map" in field) {
-      for (const entry of Object.values(field.map)) visit(entry);
-      return;
-    }
-    if (field.hlc === undefined) return;
-    if (latest === undefined || compare(field.hlc, latest) > 0) latest = field.hlc;
-  };
-  for (const field of Object.values(fields)) visit(field);
-  return latest;
+/** The leaf an Update carries, or `undefined` for a keyed or dropped value. */
+const leafOf = (update: Update): FieldValue | undefined => {
+  if (update.method === "drop" || update.method === "delete") return undefined;
+  return isFieldMap(update.data) ? undefined : update.data;
 };
 
 /**
@@ -51,41 +50,48 @@ const latestHlc = (fields: Record<string, FieldValue>): string | undefined => {
 const readOverlay = async (source: OverlaySource, id: string): Promise<EntityResponse | null> => {
   const writes = source.updatesFor(id);
   if (writes.length === 0) return source.readHost(id);
+  if (writes[writes.length - 1]?.method === "delete") return null;
 
-  const firstPut = writes.find((update) => update.method === "put");
-  const last = writes[writes.length - 1];
-  if (firstPut === undefined && last !== undefined && last.method === "delete") return null;
-
-  const host = firstPut === undefined ? await source.readHost(id) : null;
-  if (firstPut === undefined && host === null) return null;
-
+  // A `replace` as the first buffered write is this invocation's create, so
+  // the row exists without the host: no read is needed (or meaningful).
+  const createdHere = writes[0]?.method === "replace";
+  const host = createdHere ? null : await source.readHost(id);
   // The host's view is the wire shape the entity endpoints publish, so its
   // fields are already `FieldValue`s.
   let fields: Record<string, FieldValue> | null =
-    firstPut === undefined ? ((host?.data.fields ?? {}) as Record<string, FieldValue>) : {};
-  let createdHlc = firstPut === undefined ? String(host?.created_hlc ?? "") : "";
-  let updatedHlc = firstPut === undefined ? String(host?.updated_hlc ?? "") : "";
+    host === null ? {} : ((host.data.fields ?? {}) as Record<string, FieldValue>);
+  let exists = host !== null;
+  let createdHlc = host === null ? "" : String(host.created_hlc ?? "");
+  let updatedHlc = host === null ? "" : String(host.updated_hlc ?? "");
 
   for (const update of writes) {
     if (update.method === "delete") {
       fields = null;
+      exists = false;
       continue;
     }
-    const incoming = update.data?.fields ?? {};
-    if (update.method === "put") {
-      fields = { ...incoming };
+    const field = componentField(update.component);
+    const current: Record<string, FieldValue> = fields ?? {};
+    if (update.method === "drop") {
+      const { [field]: _dropped, ...rest } = current;
+      fields = rest;
     } else {
-      const base: Record<string, FieldValue> = fields ?? {};
-      const merged: Record<string, FieldValue> = { ...base };
-      for (const [key, value] of Object.entries(incoming)) {
-        merged[key] = mergeFieldValue(base[key], value);
+      const incoming = update.data;
+      const previous = current[field];
+      // Both value methods compare leaves: a `replace` is the same LWW compare
+      // as a `merge` (see the server's `apply_component` and the storage
+      // materializer), so an older write never overwrites a newer value the
+      // buffer already holds. Only a `drop` or `delete` reverts a component.
+      const next = previous === undefined ? incoming : mergeFieldValue(previous, incoming);
+      fields = { ...current, [field]: next };
+      if (!exists && update.method === "replace") {
+        createdHlc = leafOf(update)?.hlc ?? createdHlc;
       }
-      fields = merged;
+      exists = true;
     }
-    const stamp = latestHlc(incoming);
+    const stamp = leafOf(update)?.hlc;
     if (stamp === undefined) continue;
     if (updatedHlc === "" || compare(stamp, updatedHlc) > 0) updatedHlc = stamp;
-    if (createdHlc === "") createdHlc = stamp;
   }
 
   if (fields === null) return null;
@@ -98,7 +104,7 @@ const readOverlay = async (source: OverlaySource, id: string): Promise<EntityRes
     updated_hlc: updatedHlc,
     deleted_hlc: null,
     // A row created by this invocation has not been assigned a GSN yet.
-    last_gsn: firstPut === undefined ? (host?.last_gsn ?? 0) : 0,
+    last_gsn: host?.last_gsn ?? 0,
   };
 };
 

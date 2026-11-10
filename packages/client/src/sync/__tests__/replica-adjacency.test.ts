@@ -14,7 +14,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  componentName,
+  makeHlc,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -68,19 +75,18 @@ const put = (
   fields: Record<string, unknown>,
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
-  action(opts.actionId, opts.gsn, opts.ms, [
-    {
-      id: `u_${opts.actionId}`,
+  action(
+    opts.actionId,
+    opts.gsn,
+    opts.ms,
+    Object.entries(fields).map(([key, value]) => ({
+      id: `u_${opts.actionId}_${key}`,
       subject_id: id,
-      subject_type: type,
-      method: "put",
-      data: {
-        fields: Object.fromEntries(
-          Object.entries(fields).map(([k, v]) => [k, field(v, `u_${opts.actionId}`, opts.ms)]),
-        ),
-      },
-    },
-  ]);
+      component: componentName(type, key),
+      method: "replace" as const,
+      data: field(value, `u_${opts.actionId}`, opts.ms),
+    })),
+  );
 
 const remove = (
   id: string,
@@ -88,7 +94,7 @@ const remove = (
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
   action(opts.actionId, opts.gsn, opts.ms, [
-    { id: `u_${opts.actionId}`, subject_id: id, subject_type: type, method: "delete", data: null },
+    { id: `u_${opts.actionId}`, subject_id: id, method: "delete", data: null },
   ]);
 
 const putRel = (
