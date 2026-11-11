@@ -168,9 +168,9 @@ field updates; two groups, three seeds, 400 Actions each.
 | `update_scopes` byte-identical                        | **1,200 / 1,200**                                     |
 | index size after 400 Actions                          | ~520 rows / ~1,170 versions                           |
 | prune at the mid-corpus horizon                       | ~320 versions dropped, ~850 kept                      |
-| resolution per call — index                           | 1.29 / 1.85 / 1.43 µs                                 |
-| resolution per call — current caches                  | 1.22 / 2.00 / 1.00 µs                                 |
-| resolution per call — 4-process pool (current caches) | 1.75 / 1.86 / 1.40 µs                                 |
+| resolution per call — index                           | 1.37 / 1.44 / 1.47 µs                                 |
+| resolution per call — current caches                  | 1.36 / 1.28 / 1.07 µs                                 |
+| resolution per call — 4-process pool (current caches) | 1.76 / 1.88 / 1.94 µs                                 |
 
 So the mechanism reproduces the Writer's contract, but **it is not faster per call**: an
 `as_of` read and the current ETS read both cost 1–2 µs. The Writer's `resolve` phase is
