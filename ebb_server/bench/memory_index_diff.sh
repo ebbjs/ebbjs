@@ -46,6 +46,10 @@ arm_code() {
       echo "ack(batch_size: 100, duration: 20, warmup: 3, prewrite_bytes: ${PREWRITE_B100}, prebuilt: true)" ;;
     ack-b1000-prebuilt)
       echo "ack(batch_size: 1000, duration: 15, warmup: 3, prewrite_bytes: ${PREWRITE_B1000}, prebuilt: true)" ;;
+    ack-b100-window)
+      echo "ack(batch_size: 100, duration: 20, warmup: 3, prewrite_bytes: ${PREWRITE_B100}, shape: :window)" ;;
+    ack-b1000-window)
+      echo "ack(batch_size: 1000, duration: 15, warmup: 3, prewrite_bytes: ${PREWRITE_B1000}, shape: :window)" ;;
     apply)
       echo "apply(count: 100_000, window: 100)" ;;
     reads)
@@ -58,6 +62,8 @@ arm_code() {
       echo "rebuild(count: 100_000, page: 1_000)" ;;
     sqlite-write)
       echo "sqlite_write(count: 10_000, batch: 100)" ;;
+    frame-io)
+      echo "frame_io(batch_size: 1_000, windows: 300, prewrite_bytes: 600000000)" ;;
     *)
       echo "unknown arm: $1" >&2
       exit 1 ;;
@@ -66,7 +72,7 @@ arm_code() {
 
 smoke_code() {
   case "$1" in
-    ack-b100 | ack-b1000 | ack-b100-prebuilt | ack-b1000-prebuilt)
+    ack-b100 | ack-b1000 | ack-b100-prebuilt | ack-b1000-prebuilt | ack-b100-window | ack-b1000-window)
       echo "ack(batch_size: 10, duration: 0, warmup: 0, prewrite_bytes: 0)" ;;
     apply) echo "apply(count: 200, window: 100)" ;;
     reads) echo "reads(count: 50)" ;;
@@ -74,13 +80,14 @@ smoke_code() {
     memory) echo "memory(count: 500)" ;;
     rebuild) echo "rebuild(count: 200, page: 100)" ;;
     sqlite-write) echo "sqlite_write(count: 100, batch: 10)" ;;
+    frame-io) echo "frame_io(batch_size: 100, windows: 3, prewrite_bytes: 2000000)" ;;
   esac
 }
 
 run_code() {
   local code=$1
   mix run --no-start --no-compile -e \
-    "EbbServer.Bench.MemoryIndexDiff.render(${code}) |> IO.puts()"
+    "EbbServer.Bench.MemoryIndexDiff.render(EbbServer.Bench.MemoryIndexDiff.${code}) |> IO.puts()"
 }
 
 run_arm() {

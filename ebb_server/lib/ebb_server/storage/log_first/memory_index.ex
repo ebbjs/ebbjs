@@ -62,6 +62,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
           tables: %{atom() => :ets.tid()},
           segment: Segment.t(),
           membership: MembershipIndex.state(),
+          frontier: non_neg_integer(),
           applied_gsn: non_neg_integer(),
           applied_actions: non_neg_integer()
         }
@@ -74,9 +75,12 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
   @type entry :: %{kind: atom(), gsn: pos_integer(), body: binary(), offset: non_neg_integer()}
 
   @enforce_keys [:tables, :segment]
+  # `frontier` is the last Action GSN the log covers, which is not the last
+  # record's GSN once a window record carries several Actions.
   defstruct tables: nil,
             segment: nil,
             membership: nil,
+            frontier: 0,
             applied_gsn: 0,
             applied_actions: 0
 
@@ -131,7 +135,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
   """
   @spec append_window(t(), [binary()], keyword()) :: {:ok, t(), [entry()]} | {:error, term()}
   def append_window(%__MODULE__{} = index, frames, opts \\ []) when is_list(frames) do
-    base = (Segment.tail(index.segment) || 0) + 1
+    base = index.frontier + 1
     offset = index.segment.offset
     header = Segment.header_size()
 
@@ -147,9 +151,57 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
     records = Enum.map(entries, &Map.take(&1, [:kind, :gsn, :body]))
 
     case Segment.append(index.segment, records, Keyword.get(opts, :sync, true)) do
-      {:ok, segment} -> {:ok, %{index | segment: segment}, entries}
-      {:error, reason} -> {:error, reason}
+      {:ok, segment} ->
+        {:ok, %{index | segment: segment, frontier: base + length(entries) - 1}, entries}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  @doc """
+  Appends the whole window as **one** record, the shape §2 of the design note
+  names: `count::32` followed by `length::32, frame` per Action.
+
+  `append_window/3` writes one record per Action instead; that choice is what
+  makes the ack pay `Segment`'s per-record framing and sparse-index upkeep, so
+  the benchmark prices both. The record's `gsn` is the window's first GSN, and
+  the window covers `gsn..gsn + count - 1`.
+  """
+  @spec append_window_record(t(), [binary()], keyword()) :: {:ok, t(), map()} | {:error, term()}
+  def append_window_record(%__MODULE__{} = index, frames, opts \\ []) do
+    gsn = index.frontier + 1
+    offset = index.segment.offset
+    body = window_body(frames)
+
+    case Segment.append(
+           index.segment,
+           [%{kind: :action_batch, gsn: gsn, body: body}],
+           Keyword.get(opts, :sync, true)
+         ) do
+      {:ok, segment} ->
+        {:ok, %{index | segment: segment, frontier: gsn + length(frames) - 1},
+         %{
+           gsn: gsn,
+           offset: offset,
+           body: body
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  The body of a window record: one count, then each Action frame behind its
+  own length, so a catch-up reader slices one Action without decoding the rest.
+  """
+  @spec window_body([binary()]) :: binary()
+  def window_body(frames) do
+    payload =
+      for frame <- frames, into: <<>>, do: <<byte_size(frame)::unsigned-32, frame::binary>>
+
+    <<length(frames)::unsigned-32, payload::binary>>
   end
 
   @doc """
@@ -197,6 +249,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
       index
       | segment: segment,
         membership: MembershipIndex.new(),
+        frontier: 0,
         applied_gsn: 0,
         applied_actions: 0
     }
@@ -321,9 +374,10 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
   def stats(%__MODULE__{} = index) do
     %{
       log_tail: Segment.tail(index.segment) || 0,
+      frontier: index.frontier,
       applied_gsn: index.applied_gsn,
       applied_actions: index.applied_actions,
-      lag: (Segment.tail(index.segment) || 0) - index.applied_gsn
+      lag: index.frontier - index.applied_gsn
     }
   end
 
@@ -613,6 +667,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndex do
       end)
 
     index = apply_window(index, entries)
+    index = %{index | frontier: max(index.frontier, to)}
     replayed = from + length(records)
 
     if replayed > to,

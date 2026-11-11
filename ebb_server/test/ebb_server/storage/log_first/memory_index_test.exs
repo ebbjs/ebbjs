@@ -31,6 +31,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndexTest do
       # The ack returned: the record is on disk, and no derived table knows it.
       assert MemoryIndex.stats(index) == %{
                log_tail: 1,
+               frontier: 1,
                applied_gsn: 0,
                applied_actions: 0,
                lag: 1
@@ -208,6 +209,45 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndexTest do
     end
   end
 
+  describe "a window record (§2 shape)" do
+    test "the body holds one length-prefixed frame per Action", %{index: _index} do
+      frames = [frame(todo("1")), frame(todo("2"))]
+      body = MemoryIndex.window_body(frames)
+
+      assert <<2::unsigned-32, len1::unsigned-32, first::binary-size(len1), len2::unsigned-32,
+               second::binary-size(len2)>> = body
+
+      assert [first, second] == frames
+    end
+
+    test "appending a window is one record stamped with the window's first GSN", %{index: index} do
+      first = [frame(todo("1")), frame(todo("2")), frame(todo("3"))]
+
+      {:ok, index, entry} = MemoryIndex.append_window_record(index, first)
+      assert entry.gsn == 1
+
+      # One record on disk; the window covers Actions 1..3.
+      assert {:ok, %{records: 1, tail_gsn: 1}} = Segment.inspect_file(index.segment.path)
+
+      assert MemoryIndex.stats(index) == %{
+               log_tail: 1,
+               frontier: 3,
+               applied_gsn: 0,
+               applied_actions: 0,
+               lag: 3
+             }
+
+      {:ok, record} = Segment.read(index.segment, 1)
+      assert record.body == MemoryIndex.window_body(first)
+
+      # The next window is stamped after the Actions it follows, not after the
+      # last record's GSN, so the GSN space stays dense.
+      {:ok, index, entry} = MemoryIndex.append_window_record(index, [frame(todo("4"))])
+      assert entry.gsn == 4
+      assert MemoryIndex.stats(index).frontier == 4
+    end
+  end
+
   describe "updates_for_group/4" do
     setup %{index: index} do
       {:ok, index} =
@@ -292,6 +332,7 @@ defmodule EbbServer.Storage.LogFirst.MemoryIndexTest do
 
       assert MemoryIndex.stats(index) == %{
                log_tail: 20,
+               frontier: 20,
                applied_gsn: 20,
                applied_actions: 20,
                lag: 0

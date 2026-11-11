@@ -51,6 +51,7 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
     duration = Keyword.get(opts, :duration, 20)
     warmup = Keyword.get(opts, :warmup, 3)
     prebuilt? = Keyword.get(opts, :prebuilt, false)
+    shape = Keyword.get(opts, :shape, :records)
     prewrite = Keyword.get(opts, :prewrite_bytes, 0)
     config = hot_config(batch)
     ctx = workbook_ctx()
@@ -60,19 +61,22 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
       prebuilt = if prebuilt?, do: window_frames(config, ctx, 1), else: nil
 
       {index, warm_samples, warm_actions} =
-        drive(index, warmup, batch, config, ctx, prebuilt, 1)
+        drive(index, warmup, batch, config, ctx, prebuilt, shape, 1)
 
       {index, samples, actions} =
-        drive(index, duration, batch, config, ctx, prebuilt, 1 + warm_actions)
+        drive(index, duration, batch, config, ctx, prebuilt, shape, 1 + warm_actions)
 
       elapsed_ns = Enum.sum(samples)
       lat = stats(samples)
       appended = index.segment.offset
-      arm = if prebuilt?, do: "ack_prebuilt", else: "ack"
+      # The segment also holds the warmup windows; per-action bytes divide by
+      # every Action appended, not only the measured ones.
+      appended_actions = actions + length(warm_samples) * batch
+      arm = ack_arm_name(prebuilt?, shape)
 
       %{
         title:
-          "ack path — `MemoryIndex.append_window/3`, `#{arm}`, b#{batch} c=1, " <>
+          "ack path — `#{arm}`, b#{batch} c=1, " <>
             "#{duration}s window",
         table: %{
           columns: ["arm", "windows", "actions", "Actions/s", "p50 µs", "p95 µs", "p99 µs"],
@@ -97,7 +101,7 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
           warmup_windows: length(warm_samples),
           actions: actions,
           bytes_appended: appended,
-          bytes_per_action: Float.round(appended / max(actions, 1), 1),
+          bytes_per_action: Float.round(appended / max(appended_actions, 1), 1),
           prewrite_bytes: prewrite,
           appended_beyond_prewrite: max(appended - prewrite, 0),
           per_100_actions_p50_us: Float.round(lat.p50 / 1_000 * 100 / batch, 1)
@@ -438,6 +442,82 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
   end
 
   @doc """
+  Component probe for the ack path's append: is the window write's cost the
+  bytes and the `datasync`, or the shape the bytes are handed over in?
+
+  `Segment.append/3` is given one record per Action, so the window reaches
+  `:file.pwrite/3` as ~2 000 small iodata fragments; D3's window record wrote
+  one contiguous binary. This prices both, and re-runs the frame version after
+  ~1.5M records so the segment's own sparse index has grown — that index is
+  maintained with `index ++ [sample]`, so every append copies it.
+  """
+  @spec frame_io(keyword()) :: map()
+  def frame_io(opts) do
+    batch = Keyword.get(opts, :batch_size, 1_000)
+    windows = Keyword.get(opts, :windows, 300)
+    prewrite = Keyword.get(opts, :prewrite_bytes, 600_000_000)
+    config = hot_config(batch)
+    ctx = workbook_ctx()
+    frames = window_frames(config, ctx, 1)
+
+    measure(fn ->
+      dir = tmp_dir("io")
+
+      index = MemoryIndex.open(dir: dir, prewrite_bytes: prewrite)
+      {index, early} = drive_windows(index, frames, windows)
+
+      # Push the segment's sparse index to the size a full 15 s b1000 pass
+      # reaches, then measure the same append again.
+      {index, _} = drive_windows(index, frames, 1_200)
+      {index, late} = drive_windows(index, frames, windows)
+
+      contiguous = contiguous_windows(dir, frames, windows, prewrite)
+
+      %{
+        title: "component probe — window write shape (b#{batch}, #{windows} windows each)",
+        table: %{
+          columns: ["write shape", "windows", "p50 µs", "p95 µs", "Actions/s"],
+          rows: [
+            [
+              "`Segment.append/3`, #{batch} records (fragmented iodata), log < 0.5M records",
+              "#{windows}",
+              us(stats(early).p50),
+              us(stats(early).p95),
+              rate(windows * batch, Enum.sum(early))
+            ],
+            [
+              "`Segment.append/3`, same shape, log > 1.7M records (sparse index ~27k entries)",
+              "#{windows}",
+              us(stats(late).p50),
+              us(stats(late).p95),
+              rate(windows * batch, Enum.sum(late))
+            ],
+            [
+              "one contiguous window binary + `datasync` (D3's shape)",
+              "#{windows}",
+              us(stats(contiguous).p50),
+              us(stats(contiguous).p95),
+              rate(windows * batch, Enum.sum(contiguous))
+            ]
+          ]
+        },
+        fields: %{
+          batch_size: batch,
+          windows: windows,
+          bytes_per_window: batch * 525,
+          prewrite_bytes: prewrite,
+          segment_index_entries_late: length(index.segment.index)
+        },
+        notes: [
+          "All three write the same bytes into a pre-written (in-place) segment on the same fd and `datasync` once per window.",
+          "The two `Segment.append/3` rows differ only in how many records the segment already holds, which is what grows its in-memory sparse index.",
+          "The contiguous row writes what D3's `window_record` wrote: one binary per window."
+        ]
+      }
+    end)
+  end
+
+  @doc """
   What mirroring the same rows into the SQLite read model costs per action.
   """
   @spec sqlite_write(keyword()) :: map()
@@ -502,19 +582,19 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
 
   # One measured window of the ack path. `prebuilt` bypasses assembly, so the
   # two arms difference to the frame build rather than to the append.
-  defp drive(index, seconds, batch, config, ctx, prebuilt, seq) do
+  defp drive(index, seconds, batch, config, ctx, prebuilt, shape, seq) do
     deadline = now() + seconds * 1_000_000_000
-    loop(index, deadline, [], 0, batch, config, ctx, prebuilt, seq)
+    loop(index, deadline, [], 0, batch, config, ctx, prebuilt, shape, seq)
   end
 
-  defp loop(index, deadline, samples, actions, batch, config, ctx, prebuilt, seq) do
+  defp loop(index, deadline, samples, actions, batch, config, ctx, prebuilt, shape, seq) do
     if now() >= deadline do
       {index, samples, actions}
     else
       {elapsed, {:ok, index, _entries}} =
         timed(fn ->
           frames = prebuilt || window_frames(config, ctx, seq + actions)
-          MemoryIndex.append_window(index, frames)
+          append(index, frames, shape)
         end)
 
       loop(
@@ -526,15 +606,81 @@ defmodule EbbServer.Bench.MemoryIndexDiff do
         config,
         ctx,
         prebuilt,
+        shape,
         seq
       )
     end
   end
 
+  defp append(index, frames, :window), do: MemoryIndex.append_window_record(index, frames)
+  defp append(index, frames, :records), do: MemoryIndex.append_window(index, frames)
+
+  defp ack_arm_name(true, _shape), do: "ack_prebuilt"
+  defp ack_arm_name(false, :records), do: "ack"
+  defp ack_arm_name(false, :window), do: "ack_window_record"
+
   defp window_frames(config, ctx, seq) do
     for offset <- 0..(config.batch_size - 1) do
       LogAppend.stored_value(config, ctx, 1, seq + offset)
     end
+  end
+
+  defp drive_windows(index, frames, windows) do
+    Enum.reduce(1..windows, {index, []}, fn _, {index, samples} ->
+      {elapsed, {:ok, index, _entries}} =
+        timed(fn -> MemoryIndex.append_window(index, frames) end)
+
+      {index, [elapsed | samples]}
+    end)
+  end
+
+  # The same window bytes D3's `window_record` appended: one binary per window,
+  # one `pwrite` and one `datasync`.
+  defp contiguous_windows(dir, frames, windows, prewrite) do
+    path = Path.join(dir, "contiguous.seg")
+    {:ok, fd} = :file.open(path, [:raw, :binary, :read, :write])
+    {:ok, _} = :file.position(fd, {:bof, prewrite})
+    :ok = :file.truncate(fd)
+    :ok = prewrite_file(fd, prewrite)
+
+    {samples, _offset} =
+      Enum.map_reduce(1..windows, 0, fn window, offset ->
+        iodata =
+          frames
+          |> Enum.with_index()
+          |> Enum.map(fn {body, position} ->
+            gsn = (window - 1) * length(frames) + position + 1
+
+            [
+              "E8S1",
+              <<1, gsn::unsigned-64, byte_size(body)::unsigned-32,
+                :erlang.crc32(body)::unsigned-32>>,
+              body
+            ]
+          end)
+
+        binary = IO.iodata_to_binary(iodata)
+        started = now()
+        :ok = :file.pwrite(fd, offset, binary)
+        :ok = :file.datasync(fd)
+        elapsed = now() - started
+
+        {elapsed, offset + byte_size(binary)}
+      end)
+
+    :file.close(fd)
+    File.rm(path)
+    samples
+  end
+
+  defp prewrite_file(fd, bytes) do
+    chunk = :binary.copy(<<0>>, 1024 * 1024)
+
+    Enum.each(0..(div(bytes, byte_size(chunk)) - 1), fn i ->
+      :ok = :file.pwrite(fd, i * byte_size(chunk), chunk)
+    end)
+
+    :file.datasync(fd)
   end
 
   defp apply_windows(index, entries, window) do
