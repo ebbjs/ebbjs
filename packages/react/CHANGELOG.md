@@ -1,5 +1,13 @@
 # @ebbjs/react
 
+## 1.1.0
+
+### Patch Changes
+
+- Updated dependencies [cbac1a0]
+- Updated dependencies [606ee0d]
+  - @ebbjs/client@1.1.0
+
 ## 1.0.0
 
 ### Minor Changes

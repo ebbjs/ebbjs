@@ -1,6 +1,6 @@
 {
   "name": "@ebbjs/codemirror",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": false,
   "description": "CodeMirror 6 bridge for @ebbjs/client's TextDocument — bidirectional sync between the causal-tree field and a CM6 editor view.",
   "homepage": "https://ebbjs.com",
