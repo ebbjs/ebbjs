@@ -1,0 +1,28 @@
+== seed 1
+Compiling 1 file (.ex)
+
+18:44:35.464 [info] Running EbbServer.Sync.Router with Bandit 1.10.4 at 0.0.0.0:4194 (http)
+H2 corpus: 400 committed Actions, 400 planned
+  matches: %{same: 400}
+  index: 521 rows / 1171 versions
+  resolution per call: index=1.369 us current=1.364 us pool4=1.761 us
+  prune at horizon 201: dropped 320 versions, kept 851
+
+== seed 2
+
+18:44:40.357 [info] Running EbbServer.Sync.Router with Bandit 1.10.4 at 0.0.0.0:4194 (http)
+H2 corpus: 400 committed Actions, 400 planned
+  matches: %{same: 400}
+  index: 512 rows / 1182 versions
+  resolution per call: index=1.435 us current=1.278 us pool4=1.883 us
+  prune at horizon 201: dropped 320 versions, kept 862
+
+== seed 3
+
+18:44:45.845 [info] Running EbbServer.Sync.Router with Bandit 1.10.4 at 0.0.0.0:4194 (http)
+H2 corpus: 400 committed Actions, 400 planned
+  matches: %{same: 400}
+  index: 523 rows / 1250 versions
+  resolution per call: index=1.47 us current=1.073 us pool4=1.944 us
+  prune at horizon 201: dropped 359 versions, kept 891
+

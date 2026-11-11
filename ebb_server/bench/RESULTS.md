@@ -152,6 +152,47 @@ size, and the recycled arm is 1.7× `current_window` at b1000. At b100 the spars
 arms sit close; the difference is the per-append metadata, which is a fixed ~0.7 ms and
 therefore matters most at small windows.
 
+### D2 — `as_of` membership resolution against the real Writer (H2 slice)
+
+`EbbServer.Bench.MembershipDiff` writes a generated membership corpus through the **real
+Writer** (so the stored `update_scopes` in `cf_actions` are ground truth) and folds the same
+Actions into a versioned `MembershipIndex` at the GSN the Writer assigned. Every Update's
+scope is then resolved from the index at that GSN and compared byte-for-byte with the stored
+list. Operations: create an entity and file it in the same Action, file an existing entity
+into a second group, move an entity between groups in one Action, delete a membership, plain
+field updates; two groups, three seeds, 400 Actions each.
+
+| measure                                               | result                                                |
+| ----------------------------------------------------- | ----------------------------------------------------- |
+| Actions compared                                      | **1,200** (3 seeds × 400), all accepted by the Writer |
+| `update_scopes` byte-identical                        | **1,200 / 1,200**                                     |
+| index size after 400 Actions                          | ~520 rows / ~1,170 versions                           |
+| prune at the mid-corpus horizon                       | ~320 versions dropped, ~850 kept                      |
+| resolution per call — index                           | 1.29 / 1.85 / 1.43 µs                                 |
+| resolution per call — current caches                  | 1.22 / 2.00 / 1.00 µs                                 |
+| resolution per call — 4-process pool (current caches) | 1.75 / 1.86 / 1.40 µs                                 |
+
+So the mechanism reproduces the Writer's contract, but **it is not faster per call**: an
+`as_of` read and the current ETS read both cost 1–2 µs. The Writer's `resolve` phase is
+10.3 µs/Action at b100 (`1,031 µs / 100`), so most of that is fold, planning and memoization,
+not the membership lookup. Resolution leaving the serial path buys concurrency and removes the
+overlay, not latency.
+
+Two bugs the corpus caught in the first index, both worth carrying into P3:
+
+1. **Row set, not group set.** An entity may have two live membership rows that name the same
+   group. Removing one must not remove the group. The index derives groups from live row ids
+   per entity; a stored group set silently loses the group.
+2. **Scope order is the cache's insertion order.** `EntityGroupCache.entity_group_entries/2`
+   is an ETS bag lookup, and the Writer persists its order. With row-id order the corpus
+   produced 16 order-only mismatches out of 1,200; with insertion order it is 0. A new
+   resolver must either preserve that order or the format must normalize it — a contract
+   decision the design note did not state.
+
+Not measured: relationship and `groupMember` permission rows are recorded but not compared
+(the authorization surface of §4); I1 is not asserted at submit; the pool was measured for
+cost only, not wired into a writer.
+
 ### P0 — re-baseline of the current writer on this build
 
 `t0`/`t2`/`t4`, b100 u2, `--seed 1`, median of 2 passes unless noted:
