@@ -45,12 +45,15 @@ case for the whole design, so it is recorded here rather than only in the issue.
   sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
   implemented: random stream, random batch sizes, a cut at any byte, retry converges. That
   part of the design can be reused without a new idea.
-- **§4's authorizer surface is wider than versioning entity→group rows.** `t2` with
-  `--distribution spread --updates-per-action 2` is 100 % rejected today
-  (`not_authorized: cannot resolve the model of the entity being added to a group`) because
-  authorization reads committed state for an entity the Action itself creates. An `as_of:`
-  resolver has the same problem; resolution needs the Action's own Updates (the "intra-action
-  context" clause in §1), and that is now a measurement blocker, not a design detail.
+- **§4's authorizer surface already threads per-Action context, and any resolver must keep
+  doing so.** `Authorizer` resolves an entity's model from the committed index *or* from the
+  models the same Action creates (`PermissionHelper.created_models/1`), and folds membership
+  against `intra_action` context. A `spread` Action that creates an entity and files it into a
+  group authorizes (`u5`), while one that files an entity it never creates is refused
+  (`not_authorized`, fail-closed by design, #623/#625). So moving resolution to `as_of:` reads
+  is not enough by itself: the resolver must receive the Action's own Updates, exactly the
+  "intra-action context" clause in §1. The 100 % rejection seen at `t2 × spread × u2` is a
+  benchmark workload shape (ownership Updates emitted first, then truncated), not this rule.
 
 Consequences for this note: §1's pipeline, §4's interval index and §6's deletions describe
 the **candidate**, not a plan that has been validated end to end. P2–P5 were not built. The

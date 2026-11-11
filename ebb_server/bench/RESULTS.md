@@ -86,21 +86,28 @@ framing the window is what makes the fsync affordable, owning the log is not.
 | run                                         |              Actions/s | p50 ms | Actions/flush | flush p50 µs |
 | ------------------------------------------- | ---------------------: | -----: | ------------: | -----------: |
 | `t0` c=1 `hot`                              |                 11,105 |    3.6 |           100 |        3,063 |
-| `t0` c=1 `spread`                           |                  7,933 |    6.0 |           100 |            — |
+| `t0` c=1 `spread` u5                        |                  4,498 |   10.6 |           100 |            — |
 | `t2` c=8 `hot`                              |                  6,885 |    103 |           399 |       20,368 |
-| `t2` c=8 `spread` u2                        | **0 (100 % rejected)** |      — |             — |            — |
+| `t2` c=8 `spread` u5                        |                  2,445 |   304 |           400 |            — |
+| `t2` c=8 `spread` u2 (invalid workload)     | **0 (100 % rejected)** |      — |             — |            — |
 | `t0` c=1 `hot`, `--in-flight 2`             |                  7,725 |    6.1 |             — |            — |
 | `t2` c=8 `hot`, `--in-flight 2`             |                  6,658 |    243 |             — |            — |
 | `t4` 1000 subscribers, target 300 Actions/s |           250 achieved |    2.2 |            10 |            — |
 
 `t4` delivered 243 k deliveries/s at commit → broadcast p50 3.9–4.1 ms, p95 36–65 ms.
 
-`t2 --distribution spread` at `--updates-per-action 2` is **entirely rejected** on this build
-with `not_authorized: cannot resolve the model of the entity being added to a group`: the
-authorizer reads committed state for an entity the Action itself creates. `t0` bypasses
-authorization, so `spread` at `t2` needs `--updates-per-action 1 --entities 1000` (7,500
-Actions/s, p50 100 ms at c=8, measured as a 5 s probe, not a published row). This is a
-measurement blocker for any `t2 × spread × u2` cell.
+`spread` at `--updates-per-action 2` is **not a valid workload** on this harness. The
+workbook emits a new entity's two `entityGroup` ownership Updates first and then truncates the
+Action to `--updates-per-action`, so at u2 both content Updates are dropped: the Action files
+a brand-new entity into the bench group without creating it. The authorizer refuses to fall
+back to the `entityGroup.create` system permission when the entity's model is unresolvable
+(deliberate, #623/#625), so every such Action is rejected with
+`not_authorized: cannot resolve the model of the entity being added to a group`. Same-Action
+creation is supported — `--updates-per-action 5` keeps two ownership Updates plus three content
+Updates and is accepted (2,445 Actions/s at `t2` c=8). `t0` accepts the u2 shape only because
+it bypasses authorization, so its `spread` u2 number measures a write production would refuse.
+Valid spread cells are u1 with preloaded entities (update-only) and u5/u10 (create + own); the
+`spread` rows above are u5.
 
 Flush phases (`t0` c=1 `hot`, p50/p95 µs): queue 58/104, prepare 161/278, resolve
 1,031/1,995, commit_wait 2,211/3,330, apply 76/130, notify 37/75; the phases sum to 3,621 µs

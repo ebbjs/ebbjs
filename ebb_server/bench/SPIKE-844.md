@@ -20,7 +20,7 @@ shape, the P0 baseline) ship; P2–P5 do not.
 | unit                                        | gate                                                                                         | measured                                                                                                                                                                                                                                                                                                                                                                       | verdict                               |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- |
 | **D1** segment writer + property test       | append, CRC, torn-tail truncate, GSN→offset index; random stream through kill points replays | 20 randomized streams × random batch sizes × random byte cuts: recovery keeps exactly the intact prefix, truncates at the boundary, no half-read record, retry converges. 7 tests.                                                                                                                                                                                             | **pass**                              |
-| **D2** `as_of` membership on current caches | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | not implemented. Blocking measurement: `t2 --distribution spread --updates-per-action 2` is **100 % rejected** with `not_authorized: cannot resolve the model of the entity being added to a group` — the authorizer reads committed state for an entity the Action creates, so an `as_of`-only resolver cannot authorize create-with-membership without intra-action context. | **parked** (mechanism above)          |
+| **D2** `as_of` membership on current caches | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | not implemented (scope + time). The apparent blocker was a **harness workload bug**, not an authorizer limit: `spread × u2` drops both content Updates after the entity's two ownership Updates, so the Action files an entity it never creates; the authorizer refuses to guess its model (fail-closed, #623/#625). `spread × u5` is accepted. | **parked** (not attempted)            |
 | **D3** pwrite vs write_batch                | log leg **≤0.4 ms**/flush at b100; falsified if within 1.5× of 1.903 ms                      | log-first append at b100 = **1.982 ms** p50 matched (1.254 ms I/O floor); `write_batch` matched = 2.162 ms. Decomposition: `fdatasync` 1.15–1.27 ms, assembly 0.55 ms, one 51 KB `pwrite` 0.105 ms.                                                                                                                                                                            | **fail** — H1 falsified               |
 | **P0** instrument + re-baseline             | timers sum to the measured flush within 10 %                                                 | phases sum 3,621 µs p50 vs 3,647 µs client p50 (**0.7 %**); server `batch_latency` is 15 % lower by construction (starts after queue/prepare). Re-baselined `t0`/`t2`/`t4` and `mix bench.component_index`.                                                                                                                                                                    | **pass**                              |
 | **P1** window record on RocksDB             | log leg ≤0.6 ms/flush at b100; no catch-up or materialization regression                     | one window record as one `cf_actions` put: p50 **2,029 µs** at b100 (vs 2,162 matched), 9,417 µs at b1000 (vs 10,690). Append-shape gate met in direction; catch-up page p50 and materialization **not measured**, so the phase gate is **unmet**.                                                                                                                             | **adopt-in-part** (append shape only) |
@@ -39,11 +39,15 @@ shape, the P0 baseline) ship; P2–P5 do not.
   tmpfs (device latency removed) the same arms fall to 633 µs / 763 µs, confirming the disk
   is the floor. The _direction_ H1 predicted is real: at b1000 the log-first append is 17 %
   cheaper and the gap widens with window size, but it never reaches the gate.
-- **H2 (resolution) — not established.** Not attempted, and the corpus diff is blocked by the
-  authorizer's create-with-membership rejection (D2). What was established: the current
-  authorizer answers a create Action from committed state, so `as_of` reads alone cannot make
-  the `spread` workload authorizable; the design's "intra-action context" clause is load-
-  bearing, not an optimisation.
+- **H2 (resolution) — not established.** Not attempted. The corpus diff is not blocked by the
+  authorizer: same-Action model creation is already carried by `PermissionHelper.created_models/1`
+  and `intra_action` through `RowMutations`/`Authorizer`, and `spread × u5` (create + own)
+  authorizes. What the spike established instead is that this per-Action context is what makes
+  create-with-membership authorizable today, so any resolver moved off the Writer has to carry
+  it with the Action rather than read it from shared caches — the design's "intra-action
+  context" clause, now evidenced rather than assumed. The `spread × u2` 100 % rejection is a
+  **benchmark workload shape bug** (`updates/8` truncates content after ownership), not a
+  server defect.
 - **H3 (end-to-end) — not reachable, by arithmetic.** The P0 baseline shows the flush is
   3.0–3.6 ms p50 at `t0`, of which the durable commit is 2.2 ms (`commit_wait`) and scope
   resolution 1.0 ms (`resolve`). Even with every non-append phase deleted, the ceiling at
@@ -110,8 +114,11 @@ Client-visible delta for each: none shipped, because the prototype never reached
 
 ## Follow-up issues
 
-1. `fix(storage)`: authorize an Action that creates the entity it files into a group
-   (`spread × u2` at `t2` is 100 % rejected).
+1. `fix(bench)`: `--distribution spread --updates-per-action 2` emits an Action that files an
+   entity it never creates (ownership Updates are emitted first and truncate the content), so
+   the run is 100 % rejected at `t2` and measures an unauthorized write at `t0`. Either make
+   u2 spread target a preloaded entity (two content Updates) or reject the combination in
+   `Options.parse/1`. Same-Action creation needs u5/u10.
 2. `perf(bench)`: explain the 40–60 ms p99 stall present at 2.8 % CPU and on tmpfs.
 3. `perf(storage)`: frame the write window on RocksDB (P1's shape) behind a flag, measure
    catch-up and materialization, and cut over only if both hold.
