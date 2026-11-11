@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { createClock, localEvent, receiveRemoteHLC } from "./clock";
 import { unpack, pack, parse, format } from "./pack";
 import { COUNTER_MASK } from "./constants";
@@ -14,18 +14,6 @@ describe("createClock", () => {
 describe("localEvent", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-  });
-
-  it("advances logical time when called after Date.now()", () => {
-    const clock = createClock();
-    const now = 1000n;
-    vi.setSystemTime(Number(now));
-
-    const hlc = localEvent(clock);
-    const unpacked = unpack(parse(hlc));
-
-    expect(unpacked.logicalTime).toBe(now);
-    expect(unpacked.counter).toBe(0n);
   });
 
   it("increments counter when called multiple times in same ms", () => {

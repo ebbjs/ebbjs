@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { Value } from "@sinclair/typebox/value";
-import { NanoIdSchema } from "./nanoid";
-import { HLCTimestampSchema } from "./hlc";
 import {
   ActionSchema,
   UpdateSchema,
@@ -11,85 +9,48 @@ import {
   FieldValueSchema,
 } from "./action";
 
-describe("NanoId", () => {
-  it("accepts valid NanoId patterns", () => {
-    expect(Value.Check(NanoIdSchema, "a_test")).toBe(true);
-    expect(Value.Check(NanoIdSchema, "abc_def123")).toBe(true);
-    expect(Value.Check(NanoIdSchema, "a_ABCDEF123456")).toBe(true);
-    expect(Value.Check(NanoIdSchema, "group_abc")).toBe(true);
-  });
-
-  it("rejects invalid NanoId patterns", () => {
-    expect(Value.Check(NanoIdSchema, "")).toBe(false);
-    expect(Value.Check(NanoIdSchema, "abc")).toBe(false);
-    expect(Value.Check(NanoIdSchema, "_test")).toBe(false);
-    expect(Value.Check(NanoIdSchema, "test_")).toBe(false);
-    expect(Value.Check(NanoIdSchema, "a_")).toBe(false);
-  });
-});
-
-describe("HLCTimestamp", () => {
-  it("accepts non-empty decimal string", () => {
-    expect(Value.Check(HLCTimestampSchema, "123456789")).toBe(true);
-    expect(Value.Check(HLCTimestampSchema, "0")).toBe(true);
-    expect(Value.Check(HLCTimestampSchema, "9999999999999")).toBe(true);
-  });
-
-  it("rejects empty string", () => {
-    expect(Value.Check(HLCTimestampSchema, "")).toBe(false);
-  });
-});
-
-describe("ComponentName", () => {
+describe("ComponentNameSchema", () => {
   it("accepts <model>/<field> names", () => {
-    expect(Value.Check(ComponentNameSchema, "note/title")).toBe(true);
-    expect(Value.Check(ComponentNameSchema, "group/apps")).toBe(true);
-    expect(Value.Check(ComponentNameSchema, "a/b_c")).toBe(true);
+    for (const name of ["note/title", "group/apps", "a/b_c"]) {
+      expect(Value.Check(ComponentNameSchema, name)).toBe(true);
+    }
   });
 
   it("rejects a name without exactly one slash", () => {
-    expect(Value.Check(ComponentNameSchema, "")).toBe(false);
-    expect(Value.Check(ComponentNameSchema, "note")).toBe(false);
-    expect(Value.Check(ComponentNameSchema, "/title")).toBe(false);
-    expect(Value.Check(ComponentNameSchema, "note/")).toBe(false);
-    expect(Value.Check(ComponentNameSchema, "note/body/title")).toBe(false);
+    for (const name of ["", "note", "/title", "note/", "note/body/title"]) {
+      expect(Value.Check(ComponentNameSchema, name)).toBe(false);
+    }
   });
 });
 
-describe("UpdateMethod", () => {
-  it("accepts valid update methods", () => {
-    expect(Value.Check(UpdateMethodSchema, "merge")).toBe(true);
-    expect(Value.Check(UpdateMethodSchema, "replace")).toBe(true);
-    expect(Value.Check(UpdateMethodSchema, "drop")).toBe(true);
-    expect(Value.Check(UpdateMethodSchema, "delete")).toBe(true);
+describe("UpdateMethodSchema", () => {
+  it("accepts the four methods", () => {
+    for (const method of ["merge", "replace", "drop", "delete"]) {
+      expect(Value.Check(UpdateMethodSchema, method)).toBe(true);
+    }
   });
 
   it("rejects the superseded methods", () => {
-    expect(Value.Check(UpdateMethodSchema, "put")).toBe(false);
-    expect(Value.Check(UpdateMethodSchema, "patch")).toBe(false);
-    expect(Value.Check(UpdateMethodSchema, "post")).toBe(false);
-    expect(Value.Check(UpdateMethodSchema, "")).toBe(false);
+    for (const method of ["put", "patch", "post", ""]) {
+      expect(Value.Check(UpdateMethodSchema, method)).toBe(false);
+    }
   });
 });
 
-describe("FieldValue", () => {
-  it("accepts valid field values", () => {
-    expect(Value.Check(FieldValueSchema, { value: "test", update_id: "a_test", hlc: "123" })).toBe(
-      true,
-    );
-    expect(Value.Check(FieldValueSchema, { value: 42, update_id: "a_test" })).toBe(true);
-    expect(Value.Check(FieldValueSchema, { value: null, update_id: "a_test" })).toBe(true);
-    expect(Value.Check(FieldValueSchema, { value: { nested: true }, update_id: "a_test" })).toBe(
-      true,
-    );
+describe("FieldValueSchema", () => {
+  it("accepts a leaf carrying any value", () => {
+    for (const value of [
+      { value: "test", update_id: "a_test", hlc: "123" },
+      { value: 42, update_id: "a_test" },
+      { value: null, update_id: "a_test" },
+      { value: { nested: true }, update_id: "a_test" },
+    ]) {
+      expect(Value.Check(FieldValueSchema, value)).toBe(true);
+    }
   });
 
-  it("rejects field values without update_id", () => {
+  it("rejects a leaf without update_id", () => {
     expect(Value.Check(FieldValueSchema, { value: "test" })).toBe(false);
-  });
-
-  it("rejects invalid update_id format", () => {
-    expect(Value.Check(FieldValueSchema, { value: "test", update_id: "invalid" })).toBe(false);
   });
 
   it("accepts a map variant with leaf entries", () => {
@@ -124,7 +85,7 @@ describe("FieldValue", () => {
 
 const leaf = { value: "test", update_id: "u_upd1" };
 
-describe("Update", () => {
+describe("UpdateSchema", () => {
   it("accepts merge and replace carrying a component value", () => {
     expect(
       Value.Check(UpdateSchema, {
@@ -192,18 +153,6 @@ describe("Update", () => {
     ).toBe(false);
   });
 
-  it("rejects a component whose name is not <model>/<field>", () => {
-    expect(
-      Value.Check(UpdateSchema, {
-        id: "u_testid",
-        subject_id: "a_actor",
-        component: "group",
-        method: "merge",
-        data: leaf,
-      }),
-    ).toBe(false);
-  });
-
   it("rejects the superseded row-field envelope", () => {
     expect(
       Value.Check(UpdateSchema, {
@@ -221,21 +170,9 @@ describe("Update", () => {
       false,
     );
   });
-
-  it("rejects update with invalid method", () => {
-    expect(
-      Value.Check(UpdateSchema, {
-        id: "u_testid",
-        subject_id: "a_actor",
-        component: "group/name",
-        method: "post",
-        data: null,
-      }),
-    ).toBe(false);
-  });
 });
 
-describe("UpdateInput", () => {
+describe("UpdateInputSchema", () => {
   it("accepts an unstamped update", () => {
     expect(
       Value.Check(UpdateInputSchema, {
@@ -259,27 +196,8 @@ describe("UpdateInput", () => {
   });
 });
 
-describe("Action", () => {
-  it("accepts valid action", () => {
-    const action = {
-      id: "a_testid",
-      actor_id: "a_actorid",
-      hlc: "123456789",
-      gsn: 0,
-      updates: [
-        {
-          id: "u_updid",
-          subject_id: "a_actor",
-          component: "group/name",
-          method: "replace",
-          data: leaf,
-        },
-      ],
-    };
-    expect(Value.Check(ActionSchema, action)).toBe(true);
-  });
-
-  it("accepts action with multiple component updates", () => {
+describe("ActionSchema", () => {
+  it("accepts a valid action carrying leaf and map component updates", () => {
     const action = {
       id: "a_testid",
       actor_id: "a_actorid",

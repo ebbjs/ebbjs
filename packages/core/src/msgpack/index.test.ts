@@ -1,89 +1,46 @@
 import { describe, expect, it } from "vitest";
+import { decode as rawDecode } from "@msgpack/msgpack";
 import { encode, decode, encodeSync, decodeSync } from "./index";
 
-describe("encode/decode", () => {
-  it("roundtrips simple object", async () => {
-    const original = { name: "test", count: 42 };
-    const encoded = await encode(original);
-    const decoded = await decode(encoded);
-    expect(decoded).toEqual(original);
+/** An HLC small enough to survive a round trip through a double. */
+const SAFE_HLC = "1234567890123";
+/** A real packed HLC (`ms << 16`), which exceeds `Number.MAX_SAFE_INTEGER`. */
+const PACKED_HLC = "112134507724800000";
+
+const codecs = [
+  { name: "async", encode, decode },
+  { name: "sync", encode: encodeSync, decode: decodeSync },
+];
+
+describe.each(codecs)("$name codec", ({ encode, decode }) => {
+  it("puts an HLC that fits a double on the wire as an integer", async () => {
+    const bytes = await encode({ hlc: SAFE_HLC });
+
+    expect(rawDecode(bytes)).toEqual({ hlc: 1234567890123 });
+    expect(await decode(bytes)).toEqual({ hlc: SAFE_HLC });
   });
 
-  it("roundtrips object with HLC string (converted to integer)", async () => {
-    const original = { hlc: "1234567890123", actor: "a_me" };
-    const encoded = await encode(original);
-    const decoded = await decode(encoded);
-    expect(decoded).toEqual(original);
+  it("leaves a packed HLC over MAX_SAFE_INTEGER on the wire as its string", async () => {
+    const bytes = await encode({ hlc: PACKED_HLC });
+
+    expect(rawDecode(bytes)).toEqual({ hlc: PACKED_HLC });
+    expect(await decode(bytes)).toEqual({ hlc: PACKED_HLC });
   });
 
-  it("roundtrips nested object with HLC", async () => {
+  it("keeps non-HLC data and field structure intact", async () => {
     const original = {
       action: {
         id: "a_test",
-        hlc: "9999999999999",
-        data: { name: { value: "hello", update_id: "u_123" } },
+        actor_id: "a_me",
+        data: {
+          map: {
+            a: { value: 1, update_id: "u_a", hlc: SAFE_HLC },
+            b: { value: ["x", false], update_id: "u_b" },
+          },
+        },
       },
     };
-    const encoded = await encode(original);
-    const decoded = await decode(encoded);
-    expect(decoded).toEqual(original);
-  });
 
-  it("roundtrips array", async () => {
-    const original = [1, 2, 3];
-    const encoded = await encode(original);
-    const decoded = await decode(encoded);
-    expect(decoded).toEqual(original);
-  });
-
-  it("roundtrips array with HLC strings", async () => {
-    const original = ["1234567890123", "9876543210987"];
-    const encoded = await encode(original);
-    const decoded = await decode(encoded);
-    expect(decoded).toEqual(original);
-  });
-});
-
-describe("encodeSync/decodeSync", () => {
-  it("roundtrips simple object", () => {
-    const original = { name: "test", count: 42 };
-    const encoded = encodeSync(original);
-    const decoded = decodeSync(encoded);
-    expect(decoded).toEqual(original);
-  });
-
-  it("roundtrips object with HLC string", () => {
-    const original = { hlc: "1234567890123", actor: "a_me" };
-    const encoded = encodeSync(original);
-    const decoded = decodeSync(encoded);
-    expect(decoded).toEqual(original);
-  });
-
-  it("roundtrips nested object", () => {
-    const original = {
-      action: { id: "a_test", hlc: "9999999999999" },
-    };
-    const encoded = encodeSync(original);
-    const decoded = decodeSync(encoded);
-    expect(decoded).toEqual(original);
-  });
-
-  it("roundtrips array with HLC strings", () => {
-    const original = ["1234567890123", "9876543210987"];
-    const encoded = encodeSync(original);
-    const decoded = decodeSync(encoded);
-    expect(decoded).toEqual(original);
-  });
-});
-
-describe("async and sync produce equivalent results", () => {
-  it("encodeSync produces decodable output equivalent to async", async () => {
-    const original = { hlc: "1234567890123", name: "test" };
-    const syncEncoded = encodeSync(original);
-    const asyncEncoded = await encode(original);
-    const syncDecoded = decodeSync(syncEncoded);
-    const asyncDecoded = await decode(asyncEncoded);
-    expect(syncDecoded).toEqual(asyncDecoded);
-    expect(syncDecoded).toEqual(original);
+    expect(await decode(await encode(original))).toEqual(original);
   });
 });

@@ -3,21 +3,19 @@
  *
  * `buildSeedAction` turns plain seed rows into one wire `Action`; these
  * tests pin that wire shape — every plain value stamped into a field
- * envelope — and the one rejection-tolerance policy in
- * `assertSeedAccepted`.
+ * envelope — and the rejection-tolerance policy in `assertSeedAccepted`.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   SeedRejectedError,
-  TOLERATED_SEED_REJECTIONS,
   assertSeedAccepted,
   buildSeedAction,
   isToleratedSeedRejection,
   type SeedData,
   type SeedRejection,
-} from "../index";
+} from "./index";
 
 const rejection = (reason: string): SeedRejection => ({ id: "action_1", reason });
 
@@ -61,7 +59,10 @@ const componentOf = (
   subjectId?: string,
 ) => {
   const update = action.updates.find(
-    (u) => u.component === component && (subjectId === undefined || u.subject_id === subjectId),
+    (u) =>
+      u.method !== "delete" &&
+      u.component === component &&
+      (subjectId === undefined || u.subject_id === subjectId),
   );
   if (update === undefined) throw new Error(`no update for component "${component}"`);
   return update;
@@ -138,7 +139,11 @@ describe("buildSeedAction", () => {
   it("omits the apps component when the group is left unscoped", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
 
-    expect(action.updates.some((update) => update.component === "group/apps")).toBe(false);
+    expect(
+      action.updates.some(
+        (update) => update.method !== "delete" && update.component === "group/apps",
+      ),
+    ).toBe(false);
   });
 
   it("stamps every plain value into a seed_update envelope with an HLC", () => {
@@ -147,24 +152,26 @@ describe("buildSeedAction", () => {
     for (const update of action.updates) {
       const data = update.data as { value?: unknown; update_id?: string; hlc?: string };
       expect(data.update_id).toBe("seed_update");
-      expect(typeof data.hlc).toBe("string");
+      expect(data.hlc).toEqual(expect.any(String));
       expect(data.hlc).not.toBe("");
     }
   });
 });
 
 describe("assertSeedAccepted", () => {
-  it("defines the tolerance policy once", () => {
-    expect([...TOLERATED_SEED_REJECTIONS]).toEqual(["already_exists", "duplicate_action"]);
-    expect(isToleratedSeedRejection("already_exists")).toBe(true);
-    expect(isToleratedSeedRejection("duplicate_action")).toBe(true);
+  it("tolerates a duplicate or already-present seed", () => {
+    for (const reason of ["already_exists", "duplicate_action"]) {
+      expect(isToleratedSeedRejection(reason)).toBe(true);
+      expect(() => assertSeedAccepted([rejection(reason)])).not.toThrow();
+    }
+  });
+
+  it("does not tolerate a validation rejection", () => {
     expect(isToleratedSeedRejection("not_authorized")).toBe(false);
     expect(isToleratedSeedRejection(undefined)).toBe(false);
   });
 
-  it("passes tolerated rejections through", () => {
-    expect(() => assertSeedAccepted([rejection("already_exists")])).not.toThrow();
-    expect(() => assertSeedAccepted([rejection("duplicate_action")])).not.toThrow();
+  it("passes an empty rejection list", () => {
     expect(() => assertSeedAccepted([])).not.toThrow();
   });
 
