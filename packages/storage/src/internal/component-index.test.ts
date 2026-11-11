@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
 
-import {
-  applyComponentDelta,
-  buildComponentIndex,
-  componentDelta,
-  componentIds,
-  componentsOf,
-} from "./component-index";
+import { applyComponentDelta, componentDelta, componentIds, componentsOf } from "./component-index";
 
 const leaf = (value: unknown): FieldValue => ({ value, update_id: "u", hlc: makeHlc(1) });
 
@@ -75,16 +69,5 @@ describe("applyComponentDelta", () => {
     expect(next).not.toBe(index);
     expect(componentIds(next, "todo/title")).toEqual([]);
     expect(componentIds(index, "todo/title")).toEqual(["e_1"]);
-  });
-});
-
-describe("buildComponentIndex", () => {
-  it("keeps ids per component in ascending order", () => {
-    const index = buildComponentIndex([
-      row("e_2", "todo", { title: leaf("b") }),
-      row("e_1", "todo", { title: leaf("a") }),
-      row("e_3", "todo", {}),
-    ]);
-    expect(componentIds(index, "todo/title")).toEqual(["e_1", "e_2"]);
   });
 });

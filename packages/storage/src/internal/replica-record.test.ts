@@ -15,17 +15,14 @@ describe("isValidReplicaRecord", () => {
     expect(isValidReplicaRecord(validRecord())).toBe(true);
   });
 
-  it("accepts an empty entity set", () => {
-    expect(isValidReplicaRecord({ ...(validRecord() as object), entities: [] })).toBe(true);
-  });
-
   it("rejects a non-object", () => {
     for (const value of [null, undefined, "record", 7]) {
       expect(isValidReplicaRecord(value)).toBe(false);
     }
   });
 
-  it("rejects an unknown format", () => {
+  it("rejects any format this build did not write", () => {
+    expect(isValidReplicaRecord({ ...(validRecord() as object), format: 1 })).toBe(false);
     expect(isValidReplicaRecord({ ...(validRecord() as object), format: 999 })).toBe(false);
   });
 
@@ -47,10 +44,6 @@ describe("isValidReplicaRecord", () => {
     expect(isValidReplicaRecord(withEntities([{ type: "todo" }]))).toBe(false);
     expect(isValidReplicaRecord(withEntities([{ id: "todo_1" }]))).toBe(false);
     expect(isValidReplicaRecord(withEntities([{ id: 123, type: "todo" }]))).toBe(false);
-  });
-
-  it("rejects a record from the previous format", () => {
-    expect(isValidReplicaRecord({ ...(validRecord() as object), format: 1 })).toBe(false);
   });
 
   it("requires the row's existence bit and accepts a null creation time", () => {

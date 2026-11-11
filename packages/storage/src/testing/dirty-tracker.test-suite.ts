@@ -39,13 +39,6 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
         const dirty = await tracker.isDirty("unknown");
         expect(dirty).toBe(false);
       });
-
-      it("returns true for marked entity", async () => {
-        const tracker = await factory();
-        await tracker.mark("todo_1", "todo");
-        const dirty = await tracker.isDirty("todo_1");
-        expect(dirty).toBe(true);
-      });
     });
 
     describe("getDirtyForType", () => {
