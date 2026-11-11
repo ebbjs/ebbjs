@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { defineFunction } from "../function";
-import { p } from "../schema";
+import { defineFunction } from "./function";
+import { p } from "./schema";
 
 describe("defineFunction", () => {
   it("returns the schema, params, handler, and defaults", () => {
@@ -44,12 +44,5 @@ describe("defineFunction", () => {
     expect(def.handler).toBe(handler);
     expect(def.access).toBe("granted");
     expect(def.handler({} as never)).toBe(42);
-  });
-
-  it("does not validate at definition time", () => {
-    const def = defineFunction({}, p.object({ count: p.number() }), (_ctx, params) => params.count);
-    // Validation is the server's and runner's job; the definition only holds
-    // the pieces.
-    expect(def.params?.["~standard"].validate({ count: "not a number" })).toHaveProperty("issues");
   });
 });

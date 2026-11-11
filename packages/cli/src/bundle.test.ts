@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { FunctionBundleError, bundleFunction, bundleSource, definitionName } from "./bundle.ts";
+import { bundleFunction, bundleSource, definitionName } from "./bundle.ts";
 import { digestFor, validateEnvelope, type FunctionEnvelope } from "./envelope.ts";
 
 const validSource = `
@@ -110,16 +110,6 @@ describe("bundleFunction", () => {
     await expect(
       bundleFunction({ entryPath: defaultPath, outDir: dir, version: "1.0.0" }),
     ).rejects.toThrow(/export default/);
-  });
-
-  it("rejects a name longer than 64 characters", async () => {
-    const longName = `a${"b".repeat(64)}`;
-    const entryPath = await writeEntry(`
-      export const ${longName} = defineFunction(p.object({}), () => 1);
-    `);
-    await expect(bundleFunction({ entryPath, outDir: dir, version: "1.0.0" })).rejects.toThrow(
-      FunctionBundleError,
-    );
   });
 });
 

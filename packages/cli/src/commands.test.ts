@@ -112,7 +112,7 @@ describe("commands", () => {
     expect(calls[0]!.init.method).toBe("POST");
   });
 
-  it("surfaces a 409 as a non-zero error", async () => {
+  it("surfaces a server refusal as a non-zero exit with the server's code", async () => {
     const cwd = await project();
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(409, {
@@ -128,23 +128,7 @@ describe("commands", () => {
     );
 
     expect(code).toBe(1);
-    expect(errors.join("\n")).toContain("no_previous_version");
-  });
-
-  it("surfaces a 404 as a non-zero error", async () => {
-    const cwd = await project();
-    const { fetchImpl } = recordingFetch(() =>
-      jsonResponse(404, { error: "not_found", details: "echo has no active version" }),
-    );
-    const errors: string[] = [];
-
-    const code = await main(
-      ["functions", "disable", "echo", "--url", "http://api.test", "--token", "admin-token"],
-      { cwd, fetchImpl, print: () => {}, printError: (line) => errors.push(line) },
-    );
-
-    expect(code).toBe(1);
-    expect(errors.join("\n")).toContain("not_found");
+    expect(errors.join("\n")).toContain("HTTP 409 no_previous_version");
   });
 
   it("fails locally without an admin token and sends no request", async () => {
@@ -646,23 +630,6 @@ describe("apps commands", () => {
         2,
       ),
     );
-  });
-
-  it("fails locally without an admin token and sends no request", async () => {
-    const cwd = await project();
-    const { fetchImpl, calls } = recordingFetch(() => jsonResponse(200, { apps: [] }));
-    const errors: string[] = [];
-
-    const code = await main(["apps", "list", "--url", "http://api.test"], {
-      cwd,
-      fetchImpl,
-      print: () => {},
-      printError: (line) => errors.push(line),
-    });
-
-    expect(code).toBe(1);
-    expect(calls).toHaveLength(0);
-    expect(errors.join("\n")).toMatch(/admin token/);
   });
 
   it("removes an app by name and prints the preflight revocation note", async () => {

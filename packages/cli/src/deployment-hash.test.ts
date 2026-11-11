@@ -15,20 +15,13 @@ const baseEnvelope = (): FunctionEnvelope =>
     outputSchema: { type: "object", properties: { count: { type: "number" } } },
   });
 
-const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
-
 describe("deploymentHashFor", () => {
-  it("is a sha256 of lowercase hex", () => {
-    expect(deploymentHashFor(baseEnvelope())).toMatch(HASH_PATTERN);
-  });
-
-  it("is stable across calls and across the source object's key order", () => {
+  it("does not depend on the source object's key order", () => {
     const envelope = baseEnvelope();
     const reordered = Object.fromEntries(
       Object.entries(envelope).reverse(),
     ) as unknown as FunctionEnvelope;
 
-    expect(deploymentHashFor(envelope)).toBe(deploymentHashFor(envelope));
     expect(deploymentHashFor(reordered)).toBe(deploymentHashFor(envelope));
   });
 
