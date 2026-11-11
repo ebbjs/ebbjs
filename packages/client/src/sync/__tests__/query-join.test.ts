@@ -20,7 +20,7 @@ import type { GroupFields } from "@ebbjs/schema";
 import { createClient } from "../client";
 import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";
-import { planQuery } from "../query-plan";
+import { planQuery, rowReadComponentsFor } from "../query-plan";
 import type { ProjectedRow, QueryRow } from "../query-builder";
 import { callApplyAction } from "../test-utils";
 
@@ -311,7 +311,13 @@ describe("with(...) — planning and adjacency", () => {
     ]);
 
     const plan = planQuery(query);
-    expect(plan.readTypes).toEqual(["issue", "user", "page", "relationship", "entityGroup"]);
+    expect(rowReadComponentsFor(query)).toEqual([
+      "issue/*",
+      "relationship/*",
+      "user/*",
+      "page/*",
+      "entityGroup/*",
+    ]);
     expect(plan.joins).toEqual(query.joins);
   });
 

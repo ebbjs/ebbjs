@@ -1,15 +1,19 @@
 /**
  * Planner tests for the serializable query value (#498).
  *
- * The planner is pure: it turns a `Query` into an ordered op pipeline and
- * the `readTypes` invalidation record, with no registry, storage, or
- * replica in sight.
+ * The planner is pure: it turns a `Query` into an ordered op pipeline and a
+ * component-read record, with no registry, storage, or replica in sight.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { emptyQuery, type Query } from "../query";
-import { planQuery } from "../query-plan";
+import {
+  compileReadComponents,
+  planQuery,
+  readComponentsFor,
+  rowReadComponentsFor,
+} from "../query-plan";
 
 const query = (overrides: Partial<Query> & Pick<Query, "groups">): Query => ({
   ...emptyQuery("todo"),
@@ -18,19 +22,19 @@ const query = (overrides: Partial<Query> & Pick<Query, "groups">): Query => ({
 
 describe("planQuery", () => {
   it("plans a field-filtered query as scan, select, order", () => {
-    const plan = planQuery(
-      query({ groups: [[{ kind: "field", field: "completed", value: true }]] }),
-    );
+    const filtered = query({ groups: [[{ kind: "field", field: "completed", value: true }]] });
+    const plan = planQuery(filtered);
 
     expect(plan.ops).toEqual([
       { kind: "scan", type: "todo" },
       { kind: "select", predicates: [{ kind: "filter", field: "completed", value: true }] },
       { kind: "order", field: null, direction: "asc" },
     ]);
-    expect(plan.readTypes).toEqual(["todo", "entityGroup"]);
+    expect(plan.readComponents).toEqual(["todo/completed"]);
+    expect(rowReadComponentsFor(filtered)).toEqual(["todo/completed", "todo/*", "entityGroup/*"]);
   });
 
-  it("pushes indexed predicates ahead of filters and records the read types", () => {
+  it("pushes indexed predicates ahead of filters and records the read components", () => {
     const plan = planQuery(
       query({
         groups: [
@@ -51,10 +55,10 @@ describe("planQuery", () => {
         { kind: "filter", field: "completed", value: true },
       ],
     });
-    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
+    expect(plan.readComponents).toEqual(["todo/completed", "relationship/*", "entityGroup/*"]);
   });
 
-  it("records the relationship row type, not the adjacency wire type", () => {
+  it("reads the relationship row model, not the adjacency wire type", () => {
     const plan = planQuery(
       query({
         groups: [
@@ -68,10 +72,11 @@ describe("planQuery", () => {
       }),
     );
 
-    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
+    // No branch names a source component, so the source is read whole.
+    expect(plan.readComponents).toEqual(["todo/*", "relationship/*", "entityGroup/*"]);
   });
 
-  it("deduplicates read types in predicate order", () => {
+  it("deduplicates read components across branches", () => {
     const plan = planQuery(
       query({
         groups: [
@@ -81,10 +86,10 @@ describe("planQuery", () => {
       }),
     );
 
-    expect(plan.readTypes).toEqual(["todo", "relationship", "entityGroup"]);
+    expect(plan.readComponents).toEqual(["todo/*", "relationship/*"]);
   });
 
-  it("plans a existence predicate as an index op ahead of filters", () => {
+  it("plans an existence predicate as an index op ahead of filters", () => {
     const plan = planQuery(
       query({
         groups: [
@@ -105,8 +110,9 @@ describe("planQuery", () => {
         { kind: "filter", field: "title", value: "Ship" },
       ],
     });
-    // A existence predicate reads only the source type, which the scan names.
-    expect(plan.readTypes).toEqual(["todo", "entityGroup"]);
+    // Existence and equality both read the component they name; the field
+    // equality is what makes the source readable per component.
+    expect(plan.readComponents).toEqual(["todo/title", "todo/draft", "todo/body"]);
   });
 
   it("plans explicit ordering and a non-negative limit", () => {
@@ -118,11 +124,79 @@ describe("planQuery", () => {
       { kind: "order", field: "title", direction: "desc" },
       { kind: "limit", limit: 10 },
     ]);
+    expect(plan.readComponents).toEqual(["todo/*"]);
   });
 
   it("treats a negative limit as no limit", () => {
     const plan = planQuery(query({ groups: [], limit: -1 }));
 
     expect(plan.ops.map((op) => op.kind)).toEqual(["scan", "order"]);
+  });
+
+  it("reads the source whole when a branch only excludes", () => {
+    // A `hasNot`, a null equality ("no live value"), and a membership each
+    // admit a row that carries none of the components the query names.
+    const hasNot = query({
+      groups: [[{ kind: "existence", component: "todo/draft", present: false }]],
+    });
+    const nullEquality = query({ groups: [[{ kind: "field", field: "status", value: null }]] });
+    const membership = query({ groups: [[{ kind: "membership", anyOf: ["group_1"] }]] });
+
+    expect(readComponentsFor(hasNot)).toEqual(["todo/*"]);
+    expect(readComponentsFor(nullEquality)).toEqual(["todo/*"]);
+    expect(readComponentsFor(membership)).toEqual(["todo/*", "entityGroup/*"]);
+  });
+
+  it("adds membership to a projected row even when no predicate reads it", () => {
+    const filtered = query({ groups: [[{ kind: "field", field: "status", value: "open" }]] });
+
+    expect(rowReadComponentsFor(filtered)).toContain("entityGroup/*");
+  });
+
+  it("adds each joined model whole to a projected row", () => {
+    const joined: Query = {
+      ...emptyQuery("issue"),
+      groups: [[{ kind: "field", field: "title", value: "Ship" }]],
+      joins: [
+        {
+          kind: "relationship",
+          as: "assignee",
+          type: "issue",
+          target: "user",
+          direction: "forward",
+          cardinality: "one",
+        },
+        { kind: "membership", as: "groups", target: "group", cardinality: "many" },
+      ],
+    };
+    const plan = planQuery(joined);
+
+    expect(plan.readComponents).toEqual(["issue/title", "relationship/*", "entityGroup/*"]);
+    expect(rowReadComponentsFor(joined)).toEqual([
+      "issue/title",
+      "relationship/*",
+      "entityGroup/*",
+      "issue/*",
+      "user/*",
+      "group/*",
+    ]);
+  });
+
+  it("splits a read set into exact components and whole models", () => {
+    const compiled = compileReadComponents([
+      "todo/status",
+      "todo/*",
+      "entityGroup/*",
+      "todo/status",
+    ]);
+
+    expect([...compiled.components]).toEqual(["todo/status"]);
+    expect([...compiled.models].sort()).toEqual(["entityGroup", "todo"]);
+  });
+
+  it("reads nothing for a candidate chain", () => {
+    const query = emptyQuery("");
+    expect(readComponentsFor(query)).toEqual([]);
+    expect(rowReadComponentsFor(query)).toEqual([]);
   });
 });

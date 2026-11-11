@@ -112,7 +112,14 @@ export {
   filterToGroups,
 } from "./sync/query";
 
-export { type Plan, type PlanOp, type PlanPredicate, planQuery } from "./sync/query-plan";
+export {
+  type Plan,
+  type PlanOp,
+  type PlanPredicate,
+  planQuery,
+  readComponentsFor,
+  rowReadComponentsFor,
+} from "./sync/query-plan";
 
 export {
   DEFAULT_QUERY_TTL_MS,

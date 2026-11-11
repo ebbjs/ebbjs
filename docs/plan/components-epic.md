@@ -1,7 +1,7 @@
 # epic(components): components are the unit of identity
 
 Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
-Slices 1–5 landed (#794–#798); 6–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Slices 1–7 landed (#794–#800); 8–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -114,9 +114,19 @@ lands.
 
 ### Invalidation
 
-`ReplicaChange` carries `components: readonly string[]` instead of `type`. A query plan declares
-`readComponents`. The cache intersects on components, so a `title` write stops invalidating a plan
-that only reads `status`.
+`ReplicaChange` carries `components: readonly string[]`, and a query plan declares
+`readComponents`. The cache tests a change's components against a plan's reads, so a `title` write
+stops invalidating a plan that only reads `status`.
+
+What a plan reads depends on what the result keeps. A `collection` result is the matching id list,
+so it reads only the components its predicates, ordering, existence tests, and edge/membership
+indices name. A `rows` result holds whole projected rows, so it reads every component of its source
+and joined models — a projection read a plan cannot narrow until projections are component-scoped.
+When a query cannot name the components it depends on (a full scan, or a disjunction with a branch
+that only excludes), the plan reads the model whole (`<model>/*`). A change names only its
+components: a write that moves a row between models names each field under both prefixes, and a
+change that names none (a tombstone or eviction of a row that carried no component) invalidates
+every whole-model read. `ReplicaChange.type` is gone with #800.
 
 ## Decisions
 
@@ -516,7 +526,7 @@ recorded below and the cost is accepted. The server read seam is exercised by te
 wire query: `has`/`hasNot` remain builder-only (#798's limit) until a slice owns the component
 predicate; the client replica's `has` already reads its component index. Five things are recorded
 rather than resolved:
-`ReplicaChange.type` stays until #800; `archetypeIndex` is out until a plan can name an exact
+`ReplicaChange.type` is removed by #800; `archetypeIndex` is out until a plan can name an exact
 component set; the server indexes every component because #803 forbids it a schema; the SQLite
 expression index is the normalized mirror because `json_each` cannot be indexed; and a row `delete`
 leaves its component entries as existence candidates, with the row tombstone the liveness filter.
@@ -534,16 +544,32 @@ intersecting on components; a result invalidating only when a component it read 
 
 **Work.**
 
-- [ ] `readComponentsFor(query)` derived from the plan, including the edge and membership
+- [x] `readComponentsFor(query)` derived from the plan, including the edge and membership
       components a projected row carries.
-- [ ] `QueryCache` invalidation on component intersection; keep the coarse type path as a
+- [x] `QueryCache` invalidation on component intersection; keep the coarse type path as a
       fallback only while a plan cannot express its reads.
-- [ ] A compiled-plan memo keyed by component set, so the intersection is not recomputed per change.
+- [x] A compiled-plan memo keyed by component set, so the intersection is not recomputed per change.
 
 **Acceptance.** A `title` write does not re-run a plan that reads only `status`, asserted against
 the recorded plan; a full-scan query still invalidates on any change to a component it scans.
 
 **Depends on.** 6.
+
+**Current state.** Shipped in [#800](https://github.com/ebbjs/ebbjs/issues/800).
+`Plan.readComponents` records the components a plan's operations read; `rowReadComponentsFor(query)`
+is the superset a projected-row result reads (every component of the source and each joined model,
+plus membership for the `groupIds` each row carries), kept out of the plan so the execution path
+never computes it. `readComponentsFor(query)` derives the first
+set from the query alone: the fields its predicates and ordering name, the components its existence
+tests name, the edge and membership models an adjacency/membership predicate or join reads, and
+`<model>/*` when no branch requires a source component. `QueryCache` compiles each dependency set
+once — memoised by component set and shared by every entry that reads it — and a change matches when
+it names an exact component, a component of a model read whole, or no component at all (which every
+whole-model read treats as a hit). Two things are recorded rather than resolved: the `rows` surface
+stays coarse on its source because a projected row carries the whole shape, so the acceptance's
+`title`-versus-`status` precision is asserted against a collection plan and its recorded plan; and a
+`type`-free journal is what covers a tombstoned row that carried no component, at the price of
+invalidating every whole-model read rather than one model's.
 
 ---
 
@@ -827,8 +853,8 @@ the same row; a missing migration step fails at boot, not at read.
 Slices 3 and 14 are parallel lanes: neither blocks the critical path and both are useful alone.
 
 **Slice 9 is on the critical path** because #775's body-as-component is only viable once a component
-can be windowed; it is the one slice that adds machinery rather than removing it. Slice 7 is the
-cheapest win in the epic and should be pulled forward once 6 lands.
+can be windowed; it is the one slice that adds machinery rather than removing it. Slice 7, the
+cheapest win in the epic, shipped once 6 landed.
 
 **The system-component contract is 10 → 11 → 12.** Naming and atomicity (10) is a pure rename plus
 immutability with today's semantics, so it lands first and unblocks the table (11); authz (12)

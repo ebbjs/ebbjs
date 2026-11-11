@@ -10,7 +10,7 @@
  * the row array is the no-op case).
  */
 
-import { describe, it, expect as globalExpect } from "vitest";
+import { describe, it, expect as globalExpect, vi } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
@@ -50,6 +50,23 @@ const mkAction = (gsn: number, subjectId: string, completed: boolean): Action =>
       component: "todo/completed",
       method: "replace",
       data: { value: completed, update_id: `u_${gsn}`, hlc: makeHlc(1) },
+    },
+  ],
+});
+
+/** A write to a component the collection filter does not name. */
+const mkTitleAction = (gsn: number, subjectId: string, title: string): Action => ({
+  id: `act_${gsn}`,
+  actor_id: "actor_1",
+  hlc: makeHlc(1_711_036_800_000, gsn),
+  gsn,
+  updates: [
+    {
+      id: `u_${gsn}`,
+      subject_id: subjectId,
+      component: "todo/title",
+      method: "replace",
+      data: { value: title, update_id: `u_${gsn}`, hlc: makeHlc(1) },
     },
   ],
 });
@@ -192,6 +209,34 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     // field edit is not a membership change.
     await callApplyAction(client, mkAction(2, "todo_a", false), "grp_1");
     globalExpect(seen).toHaveLength(0);
+
+    unsub();
+  });
+
+  it("does not re-run its plan when a matching row edits a component the filter does not read", async () => {
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "actor_1",
+      storage,
+      schema,
+    });
+
+    await callApplyAction(client, mkAction(1, "todo_a", false), "grp_1");
+
+    const seen: { count: number }[] = [];
+    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
+      seen.push({ count: snapshot.count });
+    });
+    await flush();
+
+    const iterate = vi.spyOn(client.replica, "iterate");
+    await callApplyAction(client, mkTitleAction(2, "todo_a", "Renamed"), "grp_1");
+
+    // The filter reads `todo/completed`; a title write never reaches the plan.
+    globalExpect(iterate).not.toHaveBeenCalled();
+    globalExpect(seen).toHaveLength(0);
+    iterate.mockRestore();
 
     unsub();
   });

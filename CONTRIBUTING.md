@@ -60,11 +60,14 @@ PR body uses [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.
 
 ## Releasing
 
-The five public `@ebbjs/*` packages are published from `main` by the Release
+The seven public `@ebbjs/*` packages are published from `main` by the Release
 workflow, versioned in lockstep with changesets. Add a changeset
 (`pnpm changeset`) to any PR that changes a published package, and see
 [`docs/tooling/releasing.md`](docs/tooling/releasing.md) for the release flow,
 the npm trusted-publishing setup, and the artifact guardrails.
+
+While pre-alpha, **every changeset is `minor`** and the release train never
+crosses `2.0.0`; the full policy is in the releasing guide.
 
 ## Local setup
 

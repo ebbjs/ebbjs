@@ -4,8 +4,8 @@
  * The query cache lives beside the replica: a chain's result is cached by its
  * lowered query, a remount reads it back with a status instead of re-running,
  * and a replica change re-runs the query, diffing the result before waking
- * subscribers. The coarse `readTypes` intersection keeps unrelated type
- * changes silent.
+ * subscribers. The plan's component reads keep unrelated changes silent, and a
+ * projected-row result reads its whole source model.
  */
 
 import { describe, expect, it, vi } from "vitest";

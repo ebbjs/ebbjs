@@ -3,8 +3,9 @@
  *
  * A `Query` is pure data — no closures over storage. It is the planner
  * input, the result-cache key (#512), and the invalidation record: the
- * planner derives `readTypes` from it, so the same value that produced a
- * result also says which types must change to invalidate it.
+ * planner derives the components it reads from it, so the same value that
+ * produced a result also says which components must change to invalidate
+ * it.
  *
  * Predicates are a disjunction of conjunctions (DNF): `groups` are ORed,
  * the predicates within a group ANDed. `anyOf: null` on a relationship or

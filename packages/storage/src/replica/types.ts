@@ -18,16 +18,13 @@ export type Revision = number;
 export interface ReplicaChange {
   readonly revision: Revision;
   readonly id: string;
-  /**
-   * The row's model at the change. Slice 7 (#800) removes it once a reader can
-   * invalidate on `components` alone.
-   */
-  readonly type: string;
   readonly deleted: boolean;
   /**
    * The components this change touched, so a derived reader invalidates on what
    * it read rather than on the row's whole model. A tombstone transition touches
-   * every component the row carries.
+   * every component the row carries, and a write that moves a row between models
+   * names each field under both prefixes. Empty only for a row that carried no
+   * component.
    */
   readonly components: readonly string[];
 }

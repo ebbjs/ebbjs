@@ -3,10 +3,16 @@
  *
  * One cache entry per lowered {@link Query} and surface, ref-counted by its
  * subscribers and kept alive after the last one leaves so a remount reads the
- * cached result instead of re-running. The cache is the engine signal's first
- * consumer: it listens to the replica's revision journal and invalidates an
- * entry only when a change's type intersects the entry's `readTypes`
- * (coarse-first, epic decision 3).
+ * cached result instead of re-running. The cache listens to the replica's
+ * revision journal and invalidates an entry only when a change touches a
+ * component the entry read.
+ *
+ * What a result reads depends on what it keeps. A `rows` result holds whole
+ * projected rows, so it reads every component of its source and joined models;
+ * a `collection` result holds only the matching id list, so it reads the
+ * components its plan names. A query that cannot name the components it depends
+ * on reads its model whole (`<model>/*`), the coarse fallback a change that
+ * names no component answers.
  *
  * Status is derived, never stored ad hoc (epic decision 2):
  *
@@ -28,10 +34,16 @@
  * result change even when the source rows are untouched.
  */
 
-import type { Replica, Revision } from "@ebbjs/storage/replica";
+import { componentModel } from "@ebbjs/core";
+import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
-import { planQuery } from "./query-plan";
+import {
+  compileReadComponents,
+  planQuery,
+  rowReadComponentsFor,
+  type CompiledReadComponents,
+} from "./query-plan";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 
 /**
@@ -104,7 +116,8 @@ export interface QueryCache {
 }
 
 interface CacheEntry<T> {
-  readonly readTypes: ReadonlySet<string>;
+  /** Compiled component reads; shared with every entry of the same dependency set. */
+  readonly reads: CompiledReads;
   readonly source: QuerySource<T>;
   data: readonly T[] | undefined;
   error: Error | null;
@@ -119,6 +132,29 @@ interface CacheEntry<T> {
   evictTimer: ReturnType<typeof setTimeout> | null;
   running: boolean;
 }
+
+/** A compiled dependency set plus the key it is shared under. */
+interface CompiledReads extends CompiledReadComponents {
+  readonly key: string;
+}
+
+/**
+ * A change touches an entry when it names a component the entry read, or writes
+ * any component of a model the entry reads whole.
+ *
+ * A row's model follows its last-written component, so a cross-model write
+ * reports each field under both prefixes and the old model's readers still see
+ * it. A change that names no component comes from a row that carried none: a
+ * tombstone or eviction detaches it from its model, which only a whole-model
+ * read can observe, so every such read treats it as a hit.
+ */
+const matchesReads = (reads: CompiledReads, change: ReplicaChange): boolean => {
+  for (const component of change.components) {
+    if (reads.components.has(component)) return true;
+    if (reads.models.has(componentModel(component))) return true;
+  }
+  return change.components.length === 0 && reads.models.size > 0;
+};
 
 /**
  * Type-tagged, key-sorted encoding of a query value. `JSON.stringify` alone
@@ -192,6 +228,33 @@ export const createQueryCache = (
   const entries = new Map<string, CacheEntry<unknown>>();
   const ttlMs = options.ttlMs ?? DEFAULT_QUERY_TTL_MS;
 
+  /**
+   * Compiled dependency sets, keyed by component set and ref-counted by the
+   * entries that read it. Two entries with the same reads share one pair of
+   * lookup sets, so a change is a membership test rather than a rebuilt
+   * intersection.
+   */
+  const compilations = new Map<string, { reads: CompiledReads; refs: number }>();
+
+  const acquireReads = (components: readonly string[]): CompiledReads => {
+    const key = [...new Set(components)].sort().join("\n");
+    const existing = compilations.get(key);
+    if (existing !== undefined) {
+      existing.refs += 1;
+      return existing.reads;
+    }
+    const reads: CompiledReads = { key, ...compileReadComponents(components) };
+    compilations.set(key, { reads, refs: 1 });
+    return reads;
+  };
+
+  const releaseReads = (reads: CompiledReads): void => {
+    const entry = compilations.get(reads.key);
+    if (entry === undefined) return;
+    entry.refs -= 1;
+    if (entry.refs === 0) compilations.delete(reads.key);
+  };
+
   const cancelEviction = (entry: CacheEntry<unknown>): void => {
     if (entry.evictTimer === null) return;
     clearTimeout(entry.evictTimer);
@@ -202,7 +265,10 @@ export const createQueryCache = (
     if (!Number.isFinite(ttlMs) || ttlMs <= 0 || entry.evictTimer !== null) return;
     entry.evictTimer = setTimeout(() => {
       entry.evictTimer = null;
-      if (entry.refs === 0 && entry.listeners.size === 0) entries.delete(key);
+      if (entry.refs === 0 && entry.listeners.size === 0) {
+        entries.delete(key);
+        releaseReads(entry.reads);
+      }
     }, ttlMs);
     // A pending result must not keep a Node process alive.
     (entry.evictTimer as { unref?: () => void }).unref?.();
@@ -230,12 +296,13 @@ export const createQueryCache = (
   /**
    * Whether a journal window can touch the entry. An empty window on an
    * advanced revision is a journal gap (a replica `load`), so treat it as
-   * relevant; otherwise intersect the changed types with `readTypes`.
+   * relevant; otherwise test the changed components against the entry's
+   * compiled reads.
    */
   const isRelevant = <T>(entry: CacheEntry<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;
     const changes = replica.changesSince(from);
-    return changes.length === 0 || changes.some((change) => entry.readTypes.has(change.type));
+    return changes.length === 0 || changes.some((change) => matchesReads(entry.reads, change));
   };
 
   const notifyAll = <T>(entry: CacheEntry<T>): void => {
@@ -399,8 +466,12 @@ export const createQueryCache = (
       const key = queryKey(surface, query);
       let entry = entries.get(key);
       if (entry === undefined) {
+        // A collection result keeps ids, a projected row keeps the whole shape;
+        // only the latter needs the source and joined models read whole.
+        const reads =
+          surface === "rows" ? rowReadComponentsFor(query) : planQuery(query).readComponents;
         const created: CacheEntry<unknown> = {
-          readTypes: new Set(planQuery(query).readTypes),
+          reads: acquireReads(reads),
           // SAFETY: the entry erases the result type; `watch` restores it at
           // the store boundary, and every key maps to one surface's shape.
           source: source as QuerySource<unknown>,

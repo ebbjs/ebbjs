@@ -382,11 +382,11 @@ describe("replica: durable fold", () => {
     );
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
-      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 1, id: "e_1", deleted: false, components: ["todo/title"] },
+      { revision: 2, id: "e_1", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 2, id: "e_1", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(2)).toEqual([]);
   });
@@ -409,7 +409,6 @@ describe("replica: durable fold", () => {
       {
         revision: 1,
         id: "e_1",
-        type: "note",
         deleted: false,
         components: ["note/title", "note/status"],
       },
@@ -430,7 +429,7 @@ describe("replica: durable fold", () => {
 
     // The plan component's leaf is untouched, so only the title changes.
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "note", deleted: false, components: ["note/title"] },
+      { revision: 2, id: "e_1", deleted: false, components: ["note/title"] },
     ]);
   });
 
@@ -461,7 +460,7 @@ describe("replica: durable fold", () => {
 
     expect(replica.get("e_1")?.data.fields.title).toBe(title);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "todo", deleted: false, components: ["todo/draft"] },
+      { revision: 2, id: "e_1", deleted: false, components: ["todo/draft"] },
     ]);
   });
 
@@ -483,7 +482,6 @@ describe("replica: durable fold", () => {
       {
         revision: 2,
         id: "e_1",
-        type: "todo",
         deleted: true,
         components: ["todo/title", "todo/status"],
       },
@@ -949,7 +947,7 @@ describe("replica: materialization policy", () => {
     expect(replica.iterate("todo")).toEqual([]);
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", type: "todo", deleted: true, components: ["todo/title"] },
+      { revision: 2, id: "e_1", deleted: true, components: ["todo/title"] },
     ]);
   });
 });
@@ -1065,7 +1063,6 @@ describe("replica: evict (#499)", () => {
       {
         revision: 3,
         id: "r_1",
-        type: "relationship",
         deleted: true,
         components: [
           "relationship/field",
@@ -1077,7 +1074,6 @@ describe("replica: evict (#499)", () => {
       {
         revision: 4,
         id: "m_1",
-        type: "entityGroup",
         deleted: true,
         components: ["entityGroup/group_id", "entityGroup/entity_id"],
       },
@@ -1133,9 +1129,9 @@ describe("replica: journal capacity (#499)", () => {
     expect(replica.changesSince(0)).toEqual([]);
     expect(replica.changesSince(2)).toEqual([]);
     expect(replica.changesSince(replica.changeFloor)).toEqual([
-      { revision: 4, id: "e_4", type: "todo", deleted: false, components: ["todo/title"] },
-      { revision: 5, id: "e_5", type: "todo", deleted: false, components: ["todo/title"] },
-      { revision: 6, id: "e_6", type: "todo", deleted: false, components: ["todo/title"] },
+      { revision: 4, id: "e_4", deleted: false, components: ["todo/title"] },
+      { revision: 5, id: "e_5", deleted: false, components: ["todo/title"] },
+      { revision: 6, id: "e_6", deleted: false, components: ["todo/title"] },
     ]);
   });
 
@@ -1301,7 +1297,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(fired).toBe(1);
     // A derived reader must see the row arrive.
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "doc_1", type: "document", deleted: false, components: ["document/text"] },
+      { revision: 1, id: "doc_1", deleted: false, components: ["document/text"] },
     ]);
   });
 
@@ -1539,7 +1535,6 @@ describe("replica: on-demand residency (#500)", () => {
       {
         revision: openRevision + 1,
         id: "doc_1",
-        type: "document",
         deleted: true,
         components: ["document/text"],
       },
