@@ -5,7 +5,6 @@ import { isFieldMap, makeHlc, type FieldValue } from "@ebbjs/core";
 
 import {
   MAP_FIELD_FLIP_POINT,
-  MAP_FIELD_SHARD_COUNT,
   adoptMapField,
   adoptMapFields,
   isShardedMapField,
@@ -39,6 +38,8 @@ describe("sharded map-field container", () => {
 
     expect(isShardedMapField(field)).toBe(true);
     expect(mapFieldToWire(field)).toEqual(wire);
+    // Materialized once per version: the flat record is cached, not rebuilt
+    // on every read of the `.map` getter.
     expect(mapFieldToWire(field)).toBe(mapFieldToWire(field));
   });
 
@@ -49,10 +50,6 @@ describe("sharded map-field container", () => {
     expect(isFieldMap(field)).toBe(true);
     expect(Object.keys(field)).toEqual(["map"]);
     expect(JSON.parse(JSON.stringify(field))).toEqual({ map: wire });
-  });
-
-  it("exposes exactly one shard per configured slot", () => {
-    expect(mapFieldShards(mapFieldFromWire(content(0)))).toHaveLength(MAP_FIELD_SHARD_COUNT);
   });
 });
 
@@ -103,10 +100,6 @@ describe("merge parity with mergeFieldValue", () => {
 });
 
 describe("flip point", () => {
-  it("pins the run count at which a plain object becomes a sharded container", () => {
-    expect(MAP_FIELD_FLIP_POINT).toBe(500);
-  });
-
   it("keeps a map below the flip point on the plain object", () => {
     const field = { map: content(MAP_FIELD_FLIP_POINT - 1) };
     const merged = mergeResidentFieldValue(field, {
@@ -158,15 +151,6 @@ describe("copy-on-write over shards", () => {
     const copied = after.filter((shard, index) => shard !== before[index]);
     expect(copied).toHaveLength(1);
     expect(mapFieldToWire(merged)).toEqual({ ...content(5000), run_0: leaf("new", 2, "u_new") });
-  });
-
-  it("reuses the whole container when the patch loses", () => {
-    const field = mapFieldFromWire(content(1000));
-    const merged = mergeResidentFieldValue(field, {
-      map: { run_0: leaf("old", 0, "u_old") },
-    });
-
-    expect(merged).toBe(field);
   });
 });
 

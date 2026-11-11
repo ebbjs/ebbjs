@@ -47,17 +47,3 @@ describe("@ebbjs/storage subpaths", () => {
     expect(Object.keys(mod)).toEqual([]);
   });
 });
-
-describe("@ebbjs/storage memory bundle isolation", () => {
-  it("memory entry module does not reference idb or indexedDB in its source", async () => {
-    // Source-level check: read the file and assert the strings are absent.
-    // (A build-level check is in scripts/bundle-check.ts.)
-    const { readFile } = await import("node:fs/promises");
-    const { fileURLToPath } = await import("node:url");
-    const here = fileURLToPath(import.meta.url);
-    const memoryIndexPath = `${here.replace(/\/[^/]+$/, "")}/memory/index.ts`;
-    const src = await readFile(memoryIndexPath, "utf8");
-    expect(src).not.toMatch(/from\s+["']idb["']/);
-    expect(src).not.toMatch(/indexedDB/);
-  });
-});

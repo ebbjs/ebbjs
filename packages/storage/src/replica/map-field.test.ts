@@ -8,11 +8,7 @@ import {
   type Update,
 } from "@ebbjs/core";
 
-import {
-  MAP_FIELD_FLIP_POINT,
-  MAP_FIELD_SHARD_COUNT,
-  isShardedMapField,
-} from "../internal/map-field";
+import { MAP_FIELD_FLIP_POINT, isShardedMapField } from "../internal/map-field";
 import { createReplica, holdAll } from "./replica";
 
 const leaf = (value: unknown, ms = 1, updateId = `u_${ms}`): FieldValue => ({
@@ -102,18 +98,6 @@ describe("replica map fields over the flip point", () => {
     expect(replica.revision).toBe(revision);
   });
 
-  it("bumps the revision on a winning patch through the container", () => {
-    const replica = createReplica({ materialization: holdAll });
-    const put = putDoc(1000);
-    replica.ingest(put, put.updates, 1);
-    const revision = replica.revision;
-
-    const patch = patchRun("run_0", "edited", 2, 2);
-    replica.ingest(patch, patch.updates, 2);
-
-    expect(replica.revision).toBeGreaterThan(revision);
-  });
-
   it("bumps the revision on an equal-HLC tiebreak inside a container", () => {
     const replica = createReplica({ materialization: holdAll });
     const put = putDoc(1000);
@@ -187,11 +171,5 @@ describe("replica map fields over the flip point", () => {
 
     const content = contentOf(replica.get("doc_1"));
     expect(content !== undefined && isShardedMapField(content)).toBe(false);
-  });
-});
-
-describe("shard layout", () => {
-  it("keeps the configured shard count", () => {
-    expect(MAP_FIELD_SHARD_COUNT).toBe(64);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc } from "@ebbjs/core";
 import type { StorageAdapter } from "../types/storage-adapter";
 import { buildOutboxConflict, buildPatchAction, buildPutAction } from "./fixtures";
 
@@ -8,6 +8,12 @@ export interface AdapterTestSuiteOptions {
   factory: () => Promise<StorageAdapter> | StorageAdapter;
 }
 
+/**
+ * The adapter-level suite covers the composition: the wiring this adapter adds
+ * on top of stores that already have their own suites. A store the adapter
+ * exposes by reference (`entities`, `cursors`, `outbox`, `replica`) is covered
+ * by its own suite and is not retested here.
+ */
 export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): void => {
   describe(`${name} StorageAdapter`, () => {
     describe("actions.append", () => {
@@ -27,158 +33,19 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
         const dirty = await adapter.isDirty("todo_1");
         expect(dirty).toBe(true);
       });
-
-      it("accumulates multiple actions in insertion order", async () => {
-        const adapter = await factory();
-        const a1 = buildPutAction();
-        const a2 = buildPatchAction();
-        await adapter.actions.append(a1);
-        await adapter.actions.append(a2);
-
-        const actions = await adapter.actions.getAll();
-        expect(actions).toHaveLength(2);
-        expect(actions[0].id).toBe("a_1");
-        expect(actions[1].id).toBe("a_2");
-      });
-    });
-
-    describe("actions.getAll", () => {
-      it("returns empty array when no actions appended", async () => {
-        const adapter = await factory();
-        const actions = await adapter.actions.getAll();
-        expect(actions).toEqual([]);
-      });
-    });
-
-    describe("actions.getForEntity", () => {
-      it("returns actions touching a specific entity sorted by gsn", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPatchAction());
-        await adapter.actions.append(buildPutAction());
-
-        const actions = await adapter.actions.getForEntity("todo_1");
-        expect(actions.map((a: Action) => a.gsn)).toEqual([1, 2]);
-      });
     });
 
     describe("entities.get", () => {
-      it("returns null for unknown entity", async () => {
-        const adapter = await factory();
-        const entity = await adapter.entities.get("unknown");
-        expect(entity).toBe(null);
-      });
-
       it("materializes dirty entity on get", async () => {
         const adapter = await factory();
         await adapter.actions.append(buildPutAction());
 
+        // Composition: the entity store must read the log `append` wrote and
+        // see the dirty mark it set.
         const entity = await adapter.entities.get("todo_1");
         expect(entity).not.toBe(null);
         expect(entity!.id).toBe("todo_1");
         expect(entity!.type).toBe("todo");
-      });
-
-      it("returns copy to prevent mutation", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-
-        const entity1 = await adapter.entities.get("todo_1");
-        const entity2 = await adapter.entities.get("todo_1");
-
-        (entity1 as { data: { fields: Record<string, unknown> } }).data.fields.title = {
-          value: "Modified",
-        };
-        expect((entity2!.data.fields.title as { value: unknown }).value).not.toBe("Modified");
-      });
-
-      it("clears dirty flag after get", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-        expect(await adapter.isDirty("todo_1")).toBe(true);
-
-        await adapter.entities.get("todo_1");
-        expect(await adapter.isDirty("todo_1")).toBe(false);
-      });
-
-      it("applies a patch update to an existing entity", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-        const before = await adapter.entities.get("todo_1");
-        expect((before!.data.fields.title as { value: unknown }).value).toBe("Hello");
-
-        await adapter.actions.append(buildPatchAction());
-        const after = await adapter.entities.get("todo_1");
-
-        expect(after).not.toBe(null);
-        expect((after!.data.fields.title as { value: unknown }).value).toBe("Updated");
-        expect(after!.data.fields).not.toHaveProperty("fields");
-      });
-
-      it("preserves packed BigInt HLCs through a put→patch sequence (issue #80)", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-        await adapter.actions.append(buildPatchAction());
-
-        const after = await adapter.entities.get("todo_1");
-        expect(after).not.toBe(null);
-        expect((after!.data.fields.title as { hlc?: string }).hlc).toBe(makeHlc(1711036800000, 1));
-      });
-    });
-
-    describe("entities.query", () => {
-      it("returns all entities of type", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-
-        const entities = await adapter.entities.query("todo");
-        expect(entities).toHaveLength(1);
-        expect(entities[0].id).toBe("todo_1");
-      });
-
-      it("materializes dirty entities on query", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-        expect(await adapter.isDirty("todo_1")).toBe(true);
-
-        await adapter.entities.query("todo");
-        expect(await adapter.isDirty("todo_1")).toBe(false);
-      });
-
-      it("returns empty for unknown type", async () => {
-        const adapter = await factory();
-        const entities = await adapter.entities.query("unknown");
-        expect(entities).toEqual([]);
-      });
-    });
-
-    describe("cursors", () => {
-      it("returns null for unknown group", async () => {
-        const adapter = await factory();
-        const cursor = await adapter.cursors.get("group_1");
-        expect(cursor).toBe(null);
-      });
-
-      it("stores and retrieves cursor", async () => {
-        const adapter = await factory();
-        await adapter.cursors.set("group_1", 100);
-        const cursor = await adapter.cursors.get("group_1");
-        expect(cursor).toBe(100);
-      });
-
-      it("updates existing cursor", async () => {
-        const adapter = await factory();
-        await adapter.cursors.set("group_1", 100);
-        await adapter.cursors.set("group_1", 200);
-        const cursor = await adapter.cursors.get("group_1");
-        expect(cursor).toBe(200);
-      });
-
-      it("supports multiple groups independently", async () => {
-        const adapter = await factory();
-        await adapter.cursors.set("group_1", 100);
-        await adapter.cursors.set("group_2", 200);
-        expect(await adapter.cursors.get("group_1")).toBe(100);
-        expect(await adapter.cursors.get("group_2")).toBe(200);
       });
     });
 
@@ -194,58 +61,25 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
         const actions = await adapter.actions.getAll();
         expect(actions).toHaveLength(1);
       });
-
-      it("getDirtyForType lists entities for a type", async () => {
-        const adapter = await factory();
-        await adapter.dirtyTracker.mark("todo_1", "todo");
-        await adapter.dirtyTracker.mark("todo_2", "todo");
-        await adapter.dirtyTracker.mark("doc_1", "document");
-
-        const dirty = await adapter.dirtyTracker.getDirtyForType("todo");
-        expect(dirty).toHaveLength(2);
-        expect(dirty).toContain("todo_1");
-        expect(dirty).toContain("todo_2");
-      });
     });
 
     describe("reset", () => {
-      it("clears all actions", async () => {
+      it("clears the log, the dirty set, the entities, and every group cursor", async () => {
         const adapter = await factory();
         await adapter.actions.append(buildPutAction());
-        await adapter.reset();
-
-        const actions = await adapter.actions.getAll();
-        expect(actions).toEqual([]);
-      });
-
-      it("clears all dirty state", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
+        // Materialize a row first, so the entity store holds something to clear.
+        await adapter.entities.get("todo_1");
+        await adapter.actions.append(buildPatchAction());
+        await adapter.cursors.set("group_1", 100);
+        await adapter.cursors.setRecord("group_2", { seed: { group_id: "group_2", w: 3 } });
         expect(await adapter.isDirty("todo_1")).toBe(true);
 
         await adapter.reset();
+
+        expect(await adapter.actions.getAll()).toEqual([]);
         expect(await adapter.isDirty("todo_1")).toBe(false);
-      });
-
-      it("clears all entities", async () => {
-        const adapter = await factory();
-        await adapter.actions.append(buildPutAction());
-        await adapter.entities.get("todo_1");
-
-        await adapter.reset();
-        const entity = await adapter.entities.get("todo_1");
-        expect(entity).toBe(null);
-      });
-
-      it("clears every group cursor and seed marker", async () => {
-        const adapter = await factory();
-        await adapter.cursors.set("group_1", 100);
-        await adapter.cursors.setRecord("group_2", { seed: { group_id: "group_2", w: 3 } });
-
-        await adapter.reset();
-
+        expect(await adapter.entities.get("todo_1")).toBe(null);
         expect((await adapter.cursors.records()).size).toBe(0);
-        expect(await adapter.cursors.get("group_1")).toBe(null);
       });
     });
 

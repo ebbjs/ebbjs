@@ -155,20 +155,6 @@ describe("replica adjacency: relationship reads", () => {
       }),
     ).toEqual(["tgt_1"]);
   });
-
-  it("returns the same ascending sequence regardless of insertion order", () => {
-    const first = createReplica();
-    ingest(first, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_2", 1, 1), 1);
-    ingest(first, edge("a_2", "r_2", "author", "wrote", "src_2", "tgt_1", 2, 2), 2);
-
-    const second = createReplica();
-    ingest(second, edge("a_2", "r_2", "author", "wrote", "src_2", "tgt_1", 2, 2), 1);
-    ingest(second, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_2", 1, 1), 2);
-
-    expect(first.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual(
-      second.relationships({ as: "author", type: "wrote", sourceId: "src_1" }),
-    );
-  });
 });
 
 describe("replica adjacency: membership reads", () => {

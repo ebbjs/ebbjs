@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { componentName, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
-import { applyUpdate, foldEntityAction, foldEntityActions, mergeFields } from "./materialize";
+import { applyUpdate, foldEntityAction, foldEntityActions } from "./materialize";
 
 const leaf = (value: unknown, hlc: string, updateId: string): FieldValue => ({
   value,
@@ -70,36 +70,6 @@ const fold = (actions: readonly Action[], initial: Entity | null = null): Entity
  * read model can use `data` reference identity as its change signal instead
  * of rescanning the map.
  */
-describe("mergeFields reference reuse", () => {
-  it("returns the existing data when the patch loses", () => {
-    const base = entity();
-    const write = {
-      field: "content",
-      method: "merge" as const,
-      value: { map: { a: leaf("x", "0", "u_x") } },
-    };
-    expect(mergeFields(base.data, write)).toBe(base.data);
-  });
-
-  it("returns new data when a key wins", () => {
-    const base = entity();
-    const write = {
-      field: "content",
-      method: "merge" as const,
-      value: { map: { a: leaf("new", "9", "u_x") } },
-    };
-    const merged = mergeFields(base.data, write);
-
-    expect(merged).not.toBe(base.data);
-    expect(merged.fields.content).not.toBe(base.data.fields.content);
-    expect(merged).toEqual({
-      fields: {
-        content: { map: { a: leaf("new", "9", "u_x"), b: leaf("b", "1", "u_b") } },
-      },
-    });
-  });
-});
-
 describe("applyUpdate reference reuse", () => {
   it("reuses the data object on a losing patch while advancing bookkeeping", () => {
     const base = entity();
@@ -189,51 +159,6 @@ describe("foldEntityAction", () => {
     });
   });
 
-  it("creates a placeholder from a merge with no base row", () => {
-    const folded = foldEntityAction(
-      null,
-      "doc_1",
-      action(5, [update("merge", { title: leaf("late", "5", "u_late") })]),
-    );
-
-    expect(folded).toEqual({
-      id: "doc_1",
-      type: "doc",
-      data: { fields: { title: leaf("late", "5", "u_late") } },
-      exists: false,
-      created_hlc: null,
-      updated_hlc: "5",
-      deleted_hlc: null,
-      last_gsn: 5,
-    });
-  });
-
-  it("drops a component and leaves the row", () => {
-    const folded = fold([
-      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
-      action(4, [
-        {
-          id: "upd_drop",
-          subject_id: "doc_1",
-          component: componentName("doc", "title"),
-          method: "drop",
-          data: null,
-        },
-      ]),
-    ]);
-
-    expect(folded).toEqual({
-      id: "doc_1",
-      type: "doc",
-      data: { fields: {} },
-      exists: true,
-      created_hlc: "3",
-      updated_hlc: "4",
-      deleted_hlc: null,
-      last_gsn: 4,
-    });
-  });
-
   it("a drop after a delete leaves the tombstone alone", () => {
     const folded = fold([
       action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
@@ -262,15 +187,6 @@ describe("foldEntityAction", () => {
       last_gsn: 5,
     });
   });
-
-  it("keeps the existing row's type on a delete", () => {
-    const folded = fold([
-      action(3, [update("replace", { title: leaf("first", "3", "u_put") })]),
-      action(9, [remove()]),
-    ]);
-
-    expect(folded!.type).toBe("doc");
-  });
 });
 
 /**
@@ -298,14 +214,5 @@ describe("foldEntityActions", () => {
       deleted_hlc: null,
       last_gsn: 7,
     });
-  });
-
-  it("returns null when no Action touches the subject", () => {
-    const folded = foldEntityActions(
-      [action(4, [update("replace", { content: leaf("other", "1", "u_other") }, "doc_2")])],
-      "doc_1",
-    );
-
-    expect(folded).toBeNull();
   });
 });

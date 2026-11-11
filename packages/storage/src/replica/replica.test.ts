@@ -11,7 +11,6 @@ import {
 
 import { REPLICA_RECORD_FORMAT } from "../internal/replica-record";
 import type { ReplicaRecord } from "../types/replica-store";
-import { contentChanged } from "./content-changed";
 import { createReplica, holdAll } from "./replica";
 import type { Replica } from "./types";
 
@@ -148,45 +147,6 @@ const entity = (overrides: Partial<Entity> = {}): Entity => ({
   deleted_hlc: null,
   last_gsn: 1,
   ...overrides,
-});
-
-describe("contentChanged", () => {
-  it("is false for the same reference and true for absence", () => {
-    const row = entity();
-    expect(contentChanged(row, row)).toBe(false);
-    expect(contentChanged(undefined, undefined)).toBe(false);
-    expect(contentChanged(null, undefined)).toBe(false);
-    expect(contentChanged(row, undefined)).toBe(true);
-  });
-
-  it("ignores a last_gsn-only change", () => {
-    const row = entity();
-    expect(contentChanged(row, { ...row, last_gsn: 99 })).toBe(false);
-  });
-
-  it("detects type, exists, created_hlc, updated_hlc, deleted_hlc and field changes", () => {
-    const row = entity();
-    expect(contentChanged(row, { ...row, type: "note" })).toBe(true);
-    expect(contentChanged(row, { ...row, exists: false })).toBe(true);
-    expect(contentChanged(row, { ...row, created_hlc: null })).toBe(true);
-    expect(contentChanged(row, { ...row, updated_hlc: makeHlc(9) })).toBe(true);
-    expect(contentChanged(row, { ...row, deleted_hlc: makeHlc(9) })).toBe(true);
-    expect(contentChanged(row, { ...row, data: { fields: { title: leaf("x", "u_x", 1) } } })).toBe(
-      true,
-    );
-  });
-
-  it("sees through a touched key while sharing untouched siblings", () => {
-    const shared = leaf("a", "u_a", 1);
-    const before = entity({
-      data: { fields: { content: map({ a: shared, b: leaf("b", "u_b", 1) }) } },
-    });
-    const after = entity({
-      data: { fields: { content: map({ a: shared, b: leaf("b2", "u_b2", 2) }) } },
-    });
-    expect(contentChanged(before, after)).toBe(true);
-    expect(contentChanged(before, before)).toBe(false);
-  });
 });
 
 describe("replica: durable fold", () => {

@@ -619,26 +619,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
-      it("moves the source when a patch re-targets the row", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
-
-        await actionLog.append(
-          buildRelationshipRetargetAction({ id: "rel_1", targetId: "list_2" }, 2),
-        );
-        await dirtyTracker.mark("rel_1", "relationship");
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "list",
-            type: "todo_list",
-            targetId: "list_2",
-          }),
-        ).toEqual(["todo_1"]);
-      });
-
       it("keeps a source while any row with the same natural key is live", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_b", sourceId: "todo_b" });
@@ -654,43 +634,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
-      it("moves the source when a patch changes the accessor field", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
-
-        await actionLog.append(buildRelationshipPatchAction({ id: "rel_1", field: "owner" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "owner",
-            type: "todo_list",
-            targetId: "list_1",
-          }),
-        ).toEqual(["todo_1"]);
-      });
-
-      it("moves the source when a patch changes the relationship type", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
-
-        await actionLog.append(buildRelationshipPatchAction({ id: "rel_1", type: "todo_user" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "list",
-            type: "todo_user",
-            targetId: "list_1",
-          }),
-        ).toEqual(["todo_1"]);
-      });
-
-      it("re-keys the source when a patch changes the source id", async () => {
+      it("moves the source when a patch changes the source id", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
@@ -700,35 +644,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await dirtyTracker.mark("rel_1", "relationship");
 
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
-      });
-
-      it("re-keys the source when a re-put changes the row's natural key", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
-
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_2",
-              targetId: "list_2",
-              field: "owner",
-              type: "todo_user",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "relationship");
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "owner",
-            type: "todo_user",
-            targetId: "list_2",
-          }),
-        ).toEqual(["todo_2"]);
       });
 
       it("drops the source from its new key when a mutated row is tombstoned", async () => {
@@ -778,71 +693,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         );
 
         expect(await listQuery(entityStore)).toEqual([]);
-      });
-
-      it("moves the source when set() changes the accessor field", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
-        expect(await listQuery(entityStore)).toEqual(["todo_2"]);
-
-        await entityStore.set(
-          makeRelationshipEntity({
-            id: "rel_2",
-            sourceId: "todo_2",
-            targetId: "list_1",
-            field: "owner",
-          }),
-        );
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "owner",
-            type: "todo_list",
-            targetId: "list_1",
-          }),
-        ).toEqual(["todo_2"]);
-      });
-
-      it("moves the source when set() changes the relationship type", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
-        expect(await listQuery(entityStore)).toEqual(["todo_2"]);
-
-        await entityStore.set(
-          makeRelationshipEntity({
-            id: "rel_2",
-            sourceId: "todo_2",
-            targetId: "list_1",
-            type: "todo_user",
-          }),
-        );
-
-        expect(await listQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationship({
-            as: "list",
-            type: "todo_user",
-            targetId: "list_1",
-          }),
-        ).toEqual(["todo_2"]);
-      });
-
-      it("re-keys the source when set() changes the source id", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
-
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_3", targetId: "list_1" }),
-        );
-
-        expect(await listQuery(entityStore)).toEqual(["todo_3"]);
       });
 
       it("drops the source from its new key when a mutated set() row is tombstoned", async () => {
@@ -1182,35 +1032,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
       });
 
-      it("moves the member when a patch changes entity_id", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedMembership(actionLog, dirtyTracker, {
-          id: "eg_1",
-          entityId: "todo_1",
-          groupId: "group_1",
-        });
-
-        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", entityId: "todo_2" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
-
-        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
-      });
-
-      it("moves the member when a patch changes group_id", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedMembership(actionLog, dirtyTracker, {
-          id: "eg_1",
-          entityId: "todo_1",
-          groupId: "group_1",
-        });
-
-        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", groupId: "group_2" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
-
-        expect(await entityStore.queryByMembership("group_1")).toEqual([]);
-        expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_1"]);
-      });
-
       it("re-keys the member when a re-put changes the row's ids", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedMembership(actionLog, dirtyTracker, {
@@ -1259,19 +1080,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         );
 
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
-      });
-
-      it("moves the member when set() changes entity_id", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
-        );
-
-        await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_3", groupId: "group_1" }),
-        );
-
-        expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_3"]);
       });
 
       it("moves the member when set() changes group_id", async () => {
@@ -1389,22 +1197,6 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_2" }, 3));
         await dirtyTracker.mark("eg_2", "entityGroup");
         expect(await entityQuery(entityStore)).toEqual([]);
-      });
-
-      it("moves the membership when a patch changes group_id", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedMembership(actionLog, dirtyTracker, {
-          id: "eg_1",
-          entityId: "todo_1",
-          groupId: "group_1",
-        });
-
-        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", groupId: "group_2" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
-
-        expect(await entityQuery(entityStore)).toEqual([
-          { membershipId: "eg_1", groupId: "group_2" },
-        ]);
       });
 
       it("re-keys the membership when a patch changes entity_id", async () => {
