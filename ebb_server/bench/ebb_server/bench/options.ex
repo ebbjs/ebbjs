@@ -104,6 +104,19 @@ defmodule EbbServer.Bench.Options do
 
   @type tier :: :t0 | :t1 | :t2 | :t3 | :t4 | :t5
   @type durability :: :sync | :async
+
+  # `t5`-only: which durable append the raw tier prices. `current` is the
+  # production `write_batch`; `current_window` adds the op assembly the Writer
+  # does before the commit; `log_first*` are the owned-segment contenders
+  # (`assemble` is the record build without I/O, `io` is one pwrite+datasync of
+  # a prebuilt record). Nothing here is on the production path.
+  @type engine ::
+          :current
+          | :current_window
+          | :window_record
+          | :log_first
+          | :log_first_assemble
+          | :log_first_io
   @type distribution :: :spread | :hot
 
   @type ablate_phase ::
@@ -123,6 +136,7 @@ defmodule EbbServer.Bench.Options do
 
   @type t :: %__MODULE__{
           tier: tier(),
+          engine: engine(),
           duration: pos_integer(),
           warmup: non_neg_integer(),
           concurrency: pos_integer(),
@@ -153,6 +167,7 @@ defmodule EbbServer.Bench.Options do
         }
 
   defstruct tier: :t0,
+            engine: :current,
             duration: 10,
             warmup: 3,
             concurrency: 1,
@@ -183,6 +198,14 @@ defmodule EbbServer.Bench.Options do
 
   @tiers %{"t0" => :t0, "t1" => :t1, "t2" => :t2, "t3" => :t3, "t4" => :t4, "t5" => :t5}
   @durabilities %{"sync" => :sync, "async" => :async}
+  @engines %{
+    "current" => :current,
+    "current_window" => :current_window,
+    "window_record" => :window_record,
+    "log_first" => :log_first,
+    "log_first_assemble" => :log_first_assemble,
+    "log_first_io" => :log_first_io
+  }
   @distributions %{"spread" => :spread, "hot" => :hot}
   # One client OS process per this many connections keeps a single BEAM's
   # parse cost off the critical path; the cap keeps the clients on one host.
@@ -224,6 +247,7 @@ defmodule EbbServer.Bench.Options do
 
   @switches [
     tier: :string,
+    engine: :string,
     duration: :integer,
     warmup: :integer,
     concurrency: :integer,
@@ -282,6 +306,7 @@ defmodule EbbServer.Bench.Options do
   def describe(%__MODULE__{} = config) do
     [
       {"Tier", "#{config.tier} (#{tier_label(config)})"},
+      {"Append engine", engine_description(config.engine)},
       {"Measured window", "#{config.duration}s"},
       {"Warmup", "#{config.warmup}s"},
       {"Concurrency", "#{config.concurrency}"},
@@ -399,6 +424,7 @@ defmodule EbbServer.Bench.Options do
 
   defp optional_command_args(config) do
     [
+      {config.engine != :current, "--engine #{config.engine}"},
       {config.stall_commits > 0, "--stall-commits #{config.stall_commits}"},
       {config.subscriber_socket, "--subscriber-socket"},
       {config.subscriber_socket, "--socket-processes #{socket_processes(config)}"},
@@ -423,6 +449,7 @@ defmodule EbbServer.Bench.Options do
   def workload(%__MODULE__{} = config) do
     %{
       "tier" => Atom.to_string(config.tier),
+      "engine" => Atom.to_string(config.engine),
       "duration" => config.duration,
       "warmup" => config.warmup,
       "concurrency" => config.concurrency,
@@ -455,7 +482,29 @@ defmodule EbbServer.Bench.Options do
     do: "fixed-rate Writer.write_actions/1 plus in-process SSE subscribers"
 
   def tier_description(:t5),
-    do: "raw RocksDB.write_batch/3 from N concurrent callers, no Writer, --ablate names op groups"
+    do:
+      "raw durable append from N concurrent callers, no Writer, --ablate names op groups, --engine picks the append"
+
+  @doc """
+  The append `t5` prices. Everything but `current` is spike-only.
+  """
+  @spec engine_description(engine()) :: String.t()
+  def engine_description(:current), do: "current — one write_batch/3 (NIF time only)"
+
+  def engine_description(:current_window),
+    do: "current — op assembly + one write_batch/3 (matched to log_first)"
+
+  def engine_description(:window_record),
+    do: "window_record — one window record as one cf_actions put through write_batch/3"
+
+  def engine_description(:log_first),
+    do: "log_first — one window record: assemble + one pwrite + one datasync"
+
+  def engine_description(:log_first_assemble),
+    do: "log_first — window record assembly only (no I/O)"
+
+  def engine_description(:log_first_io),
+    do: "log_first — one pwrite + one datasync of a prebuilt record (I/O floor)"
 
   @doc """
   Whether the run drives the raw storage NIF instead of the Writer.
@@ -558,6 +607,7 @@ defmodule EbbServer.Bench.Options do
   defp put_opt({:warmup, value}, acc), do: %{acc | warmup: value}
   defp put_opt({:concurrency, value}, acc), do: %{acc | concurrency: value}
   defp put_opt({:in_flight, value}, acc), do: %{acc | in_flight: value}
+  defp put_opt({:engine, value}, acc), do: %{acc | engine: value}
   defp put_opt({:batch_size, value}, acc), do: %{acc | batch_size: value}
   defp put_opt({:port, value}, acc), do: %{acc | port: value}
   defp put_opt({:seed, value}, acc), do: %{acc | seed: value}
@@ -593,17 +643,20 @@ defmodule EbbServer.Bench.Options do
 
   defp validate(config) do
     with {:ok, tier} <- map_value(config.tier, @tiers, "tier"),
+         {:ok, engine} <- map_value(config.engine, @engines, "engine"),
          {:ok, durability} <- map_value(config.durability, @durabilities, "durability"),
          {:ok, distribution} <- map_value(config.distribution, @distributions, "distribution"),
          {:ok, ablate} <- validate_ablate(config.ablate),
          :ok <- validate_stall(tier, durability, config),
          :ok <- validate_in_flight(tier, config),
          :ok <- validate_ranges(config),
-         :ok <- validate_tier(tier, config) do
+         :ok <- validate_tier(tier, config),
+         :ok <- validate_engine(tier, engine) do
       {:ok,
        apply_tier_constraints(%{
          config
          | tier: tier,
+           engine: engine,
            durability: durability,
            distribution: distribution,
            ablate: ablate
@@ -874,6 +927,16 @@ defmodule EbbServer.Bench.Options do
   end
 
   defp validate_tier_ablate(_tier, _config), do: :ok
+
+  defp validate_engine(:t5, _engine), do: :ok
+
+  defp validate_engine(_tier, :current), do: :ok
+
+  defp validate_engine(tier, engine) do
+    {:error,
+     "--engine #{engine} is only supported with --tier t5; it selects the raw append " <>
+       "the spike prices, not the production path (#{tier} always runs the Writer)"}
+  end
 
   # T1 exists to isolate per-request overhead with no queueing at the
   # Writer, so a concurrency argument cannot change it.

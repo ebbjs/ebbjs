@@ -593,11 +593,35 @@ defmodule EbbServer.Bench.Report do
       "beside it); a sweep renders that phase table in the pipeline-depth section.\n"
   end
 
+  defp latency_note(%{tier: :t5, engine: :current_window}) do
+    "Values are wall time around op assembly (Action construction, validation, ETF encoding, " <>
+      "key building, `batch_put`) plus the `:rocksdb.write_batch/3` call, so the sample is " <>
+      "matched to `log_first`'s assembly-inside-the-timer shape. The throughput table above " <>
+      "counts wall Actions over the same region.\n"
+  end
+
+  defp latency_note(%{tier: :t5, engine: :window_record}) do
+    "Values are wall time around building one window record and committing it as a single " <>
+      "`cf_actions` put through `:rocksdb.write_batch/3`, so the sample prices the framing " <>
+      "rather than one put per Action.\n"
+  end
+
+  defp latency_note(%{tier: :t5, engine: :log_first_assemble}) do
+    "Values are wall time around building one window record — Action construction, validation, " <>
+      "ETF encoding, per-Action length/CRC stamping and the concatenation — with no I/O in the " <>
+      "sample.\n"
+  end
+
+  defp latency_note(%{tier: :t5, engine: :log_first_io}) do
+    "Values are wall time around one `:file.pwrite/3` and one `:file.datasync/1` of a record " <>
+      "built once before the window, so the sample prices the syscall and the flush alone.\n"
+  end
+
   defp latency_note(%{tier: :t5}) do
-    "Values are wall time around the raw `:rocksdb.write_batch/3` call in the bench worker. " <>
-      "Batch assembly — Action construction, validation, ETF encoding, key building, and " <>
-      "`batch_put` — is outside the timer, so this is the NIF call alone. The throughput " <>
-      "table above counts wall Actions, assembly included.\n"
+    "Values are wall time around the selected append in the bench worker " <>
+      "(`log_first` includes frame assembly, the CRC, one `pwrite` and one `datasync`; " <>
+      "`current` is `:rocksdb.write_batch/3` alone, with op assembly outside the timer). " <>
+      "The throughput table above counts wall Actions over the same loop.\n"
   end
 
   defp latency_note(_config) do
@@ -940,8 +964,9 @@ defmodule EbbServer.Bench.Report do
     achieved = overall(result.throughput)
 
     rows = [
+      {"Append engine", Options.engine_description(config.engine)},
       {"Callers (BEAM processes)", "#{config.concurrency}"},
-      {"write_batch sync", sync_label(config.durability)},
+      {"Durable append sync", sync_label(config.durability)},
       {"Actions per call", "#{config.batch_size}"},
       {"Updates per Action", "#{config.updates_per_action}"},
       {"GSN ranges", "disjoint per caller, contiguous per call"},
@@ -951,8 +976,10 @@ defmodule EbbServer.Bench.Report do
     "## Concurrent write_batch (T5)\n\n" <>
       table(["Metric", "Value"], rows) <>
       "\n\n" <>
-      "Each caller is one BEAM process issuing `:rocksdb.write_batch/3` directly at a " <>
-      "synthetic GSN base; only RocksDB's ability to overlap commits is measured. The " <>
+      "Each caller is one BEAM process issuing the selected durable append directly at a " <>
+      "synthetic GSN base; only that append's cost is measured (`current` is " <>
+      "`:rocksdb.write_batch/3`; `log_first` is one window record through " <>
+      "`:file.pwrite/3` plus `:file.datasync/1`). The " <>
       "measured path bypasses the Writer, so its caches, watermark, and fan-out stay idle " <>
       "(the storage tree still boots to open the DB and seed the bench context). Nothing here " <>
       "reflects the production write path's bookkeeping, and GSN holes/watermark lag are " <>

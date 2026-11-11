@@ -170,6 +170,29 @@ defmodule EbbServer.Bench.WriteBatch do
     end
   end
 
+  @doc """
+  Commits one put and returns the wall time of the `write_batch` NIF call.
+
+  P1 prices a window record stored as a single `cf_actions` value, so its
+  commit is one put rather than a batch of per-Action puts.
+  """
+  @spec commit_one(term(), term(), binary(), boolean()) ::
+          {:ok, non_neg_integer()} | {:error, non_neg_integer(), term()}
+  def commit_one(cf, key, value, sync) do
+    {:ok, batch} = :rocksdb.batch()
+    :ok = :rocksdb.batch_put(batch, cf, key, value)
+    started = System.monotonic_time(:microsecond)
+
+    try do
+      case :rocksdb.write_batch(RocksDB.db_ref(), batch, sync: sync) do
+        :ok -> {:ok, elapsed(started)}
+        {:error, reason} -> {:error, elapsed(started), reason}
+      end
+    after
+      :rocksdb.release_batch(batch)
+    end
+  end
+
   defp elapsed(started), do: System.monotonic_time(:microsecond) - started
 
   defp action_ops(action, gsn, ablate) do

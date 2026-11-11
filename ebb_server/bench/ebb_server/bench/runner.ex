@@ -20,6 +20,7 @@ defmodule EbbServer.Bench.Runner do
     Boot,
     Guardrails,
     Http,
+    LogAppend,
     Metrics,
     Options,
     Report,
@@ -31,7 +32,7 @@ defmodule EbbServer.Bench.Runner do
     WriteBatch
   }
 
-  alias EbbServer.Storage.{ActionValidator, Writer}
+  alias EbbServer.Storage.{ActionValidator, RocksDB, Writer}
 
   @latency_cap 200_000
   @await_buffer_ms 120_000
@@ -453,15 +454,53 @@ defmodule EbbServer.Bench.Runner do
     end
   end
 
-  # T5 spikes the NIF itself: the op list and the RocksDB batch are built
-  # before the timer starts, so the sample covers `write_batch` alone. One
-  # worker is one BEAM process and each owns a disjoint GSN range.
-  defp perform(:t5, config, ctx, id, seq) do
+  # T5 spikes the durable append itself. `current` keeps the historical shape,
+  # where the op list and the RocksDB batch are built before the timer starts,
+  # so the sample covers `write_batch` alone. `current_window` charges that
+  # assembly to the sample so it can be compared with `log_first`, which builds
+  # its window inside the timer. One worker is one BEAM process and each owns a
+  # disjoint GSN range.
+  defp perform(:t5, %Options{engine: :current} = config, ctx, id, seq) do
     ops = WriteBatch.build_ops(config, ctx, id, seq)
     batch = WriteBatch.batch(ops)
 
     case WriteBatch.commit(batch, config.durability == :sync) do
       {:ok, latency} -> {latency, config.batch_size, 0, 0}
+      {:error, latency, _reason} -> {latency, 0, 0, config.batch_size}
+    end
+  end
+
+  defp perform(:t5, %Options{engine: :current_window} = config, ctx, id, seq) do
+    started = System.monotonic_time(:microsecond)
+    ops = WriteBatch.build_ops(config, ctx, id, seq)
+    batch = WriteBatch.batch(ops)
+    assembled = System.monotonic_time(:microsecond) - started
+
+    case WriteBatch.commit(batch, config.durability == :sync) do
+      {:ok, latency} -> {assembled + latency, config.batch_size, 0, 0}
+      {:error, latency, _reason} -> {assembled + latency, 0, 0, config.batch_size}
+    end
+  end
+
+  # P1's shape: the same window record, stored as one `cf_actions` value
+  # instead of one record per Action. The engine stays RocksDB, so the sample
+  # prices the framing alone.
+  defp perform(:t5, %Options{engine: :window_record} = config, ctx, id, seq) do
+    started = System.monotonic_time(:microsecond)
+    record = LogAppend.window_record(config, ctx, id, seq)
+    key = RocksDB.encode_gsn_key(WriteBatch.gsn_start(id, seq))
+    assembled = System.monotonic_time(:microsecond) - started
+
+    case WriteBatch.commit_one(RocksDB.cf_actions(), key, record, config.durability == :sync) do
+      {:ok, latency} -> {assembled + latency, config.batch_size, 0, 0}
+      {:error, latency, _reason} -> {assembled + latency, 0, 0, config.batch_size}
+    end
+  end
+
+  defp perform(:t5, %Options{engine: engine} = config, ctx, id, seq)
+       when engine in [:log_first, :log_first_assemble, :log_first_io] do
+    case LogAppend.perform(config, ctx, id, seq) do
+      {:ok, latency, _bytes} -> {latency, config.batch_size, 0, 0}
       {:error, latency, _reason} -> {latency, 0, 0, config.batch_size}
     end
   end

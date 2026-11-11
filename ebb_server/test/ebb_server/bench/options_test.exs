@@ -413,7 +413,7 @@ defmodule EbbServer.Bench.OptionsTest do
     test "describes the tier and the caller count" do
       {:ok, config} = Options.parse(["--tier", "t5", "--concurrency", "2"])
 
-      assert Options.tier_description(:t5) =~ "write_batch"
+      assert Options.tier_description(:t5) =~ "durable append"
       assert Options.tier_description(:t5) =~ "no Writer"
 
       values = Map.new(Options.describe(config))
@@ -487,8 +487,27 @@ defmodule EbbServer.Bench.OptionsTest do
       assert config.concurrency == 4
 
       descriptions = Map.new(Options.describe(config))
-      assert descriptions["Tier"] =~ "raw RocksDB.write_batch/3"
+      assert descriptions["Tier"] =~ "raw durable append"
+      assert descriptions["Append engine"] =~ "write_batch"
       assert Options.command(config) =~ "--tier t5 --duration"
+    end
+
+    test "an engine is t5-only and defaults to the current write_batch" do
+      assert {:ok, config} = Options.parse(["--tier", "t5"])
+      assert config.engine == :current
+
+      assert {:ok, log_first} =
+               Options.parse(["--tier", "t5", "--engine", "log_first"])
+
+      assert log_first.engine == :log_first
+      assert Options.command(log_first) =~ "--engine log_first"
+      refute Options.command(config) =~ "--engine"
+
+      assert {:error, message} = Options.parse(["--tier", "t0", "--engine", "log_first"])
+      assert message =~ "only supported with --tier t5"
+
+      assert {:error, message} = Options.parse(["--tier", "t5", "--engine", "nope"])
+      assert message =~ "invalid engine"
     end
 
     test "bypasses_writer?/1 is true only for t5" do
