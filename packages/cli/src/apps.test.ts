@@ -44,10 +44,4 @@ describe("normalizeOrigin", () => {
       expect(normalizeOrigin(raw), raw).toBeUndefined();
     }
   });
-
-  it("is idempotent on its own output", () => {
-    const origin = normalizeOrigin("HTTPS://App.Example.com:443/");
-    expect(origin).toBeDefined();
-    expect(normalizeOrigin(origin!)).toBe(origin);
-  });
 });

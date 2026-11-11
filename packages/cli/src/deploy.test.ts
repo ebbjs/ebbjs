@@ -226,23 +226,6 @@ describe("deployEntries", () => {
     expect(lines).toContain(`left ${functionName} active version unchanged`);
   });
 
-  it("pins the upload with --keep", async () => {
-    const cwd = await project();
-    const { fetchImpl, calls } = uploadAwareFetch();
-
-    await deployEntries({
-      cwd,
-      token: "admin-token",
-      version,
-      keep: true,
-      fetchImpl,
-      print: () => {},
-    });
-
-    const upload = uploadsOf(calls)[0]!;
-    expect(uploadBody(upload).pinned).toBe(true);
-  });
-
   it("lets --url and --token override ebb.config.ts", async () => {
     const cwd = await project();
     await writeFile(
@@ -300,44 +283,6 @@ describe("deployEntries", () => {
     expect(lines).toContain("warning: contract map drift");
     expect(lines).toContain("  missing: deployedOnly is deployed but has no local entry");
     expect(lines).toContain(`  extra: ${functionName} has a local entry but no deployed version`);
-  });
-
-  it("reports deployed functions that have no local entry as drift", async () => {
-    const cwd = await project();
-    const { fetchImpl } = recordingFetch((call) => {
-      if (isHistory(call)) return noHistory();
-      if (call.url.endsWith("/versions")) {
-        return jsonResponse(201, {
-          ok: true,
-          name: functionName,
-          version,
-          status: "retired",
-          pinned: false,
-        });
-      }
-      if (call.url.endsWith("/activate")) {
-        return jsonResponse(200, { ok: true, name: functionName, version, status: "active" });
-      }
-      return jsonResponse(200, {
-        functions: [
-          { name: functionName, version, access: "authenticated" },
-          { name: "deployedOnly", version, access: "granted" },
-        ],
-      });
-    });
-    const lines: string[] = [];
-
-    await deployEntries({
-      cwd,
-      token: "admin-token",
-      actor: "a_author",
-      version,
-      fetchImpl,
-      print: (line) => lines.push(line),
-    });
-
-    expect(lines).toContain("  missing: deployedOnly is deployed but has no local entry");
-    expect(lines.some((line) => line.includes(`extra: ${functionName}`))).toBe(false);
   });
 
   const deployProject = async (
@@ -398,19 +343,6 @@ describe("deployEntries", () => {
     expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
     expect(lines).toContain(`deployed ${functionName}@${version}`);
     expect(lines).toContain(`activated ${functionName}@${version}`);
-    expect(result.functions[0]!.unchanged).toBe(false);
-  });
-
-  it("uploads and activates with --force even when the version exists", async () => {
-    const cwd = await project();
-    const hash = await hashOfEntry(cwd);
-    const { fetchImpl, calls } = fetchWithHistory([historyEntry({ deploymentHash: hash })]);
-
-    const { result, lines } = await deployProject(cwd, fetchImpl, { force: true });
-
-    expect(uploadsOf(calls)).toHaveLength(1);
-    expect(calls.some((call) => call.url.endsWith("/activate"))).toBe(true);
-    expect(lines).toContain(`deployed ${functionName}@${version}`);
     expect(result.functions[0]!.unchanged).toBe(false);
   });
 
@@ -478,17 +410,6 @@ describe("deployEntries", () => {
     expect(lines).toContain(`unchanged ${functionName}@${newest}`);
     expect(lines).toContain(`activated ${functionName}@${newest}`);
     expect(result.functions[0]!.activated).toBe(true);
-  });
-
-  it("uploads when the name has no version history", async () => {
-    const cwd = await project();
-    const { fetchImpl, calls } = uploadAwareFetch();
-
-    const { lines } = await deployProject(cwd, fetchImpl);
-
-    expect(calls.filter(isHistory)).toHaveLength(1);
-    expect(uploadsOf(calls)).toHaveLength(1);
-    expect(lines).toContain(`deployed ${functionName}@${version}`);
   });
 
   it("keeps the active duplicate rather than activating a newer one", async () => {

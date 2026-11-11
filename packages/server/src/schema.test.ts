@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { p } from "../schema";
-import type { FunctionSchema } from "../schema";
+import { p } from "./schema";
+import type { FunctionSchema } from "./schema";
 
 function issuesOf<T>(schema: FunctionSchema<T>, value: unknown) {
   const result = schema["~standard"].validate(value);
@@ -56,15 +56,11 @@ describe("p.object", () => {
 });
 
 describe("p primitives", () => {
-  it("validates strings, numbers, and booleans", () => {
+  it("validates strings, numbers, and booleans without coercing", () => {
     expect(p.string()["~standard"].validate("ok")).toEqual({ value: "ok" });
     expect(p.number()["~standard"].validate(1)).toEqual({ value: 1 });
     expect(p.boolean()["~standard"].validate(false)).toEqual({ value: false });
     expect(issuesOf(p.number(), "1")).toEqual([{ message: "Expected number" }]);
-  });
-
-  it("does not coerce or default", () => {
-    expect(p.number()["~standard"].validate("1")).toHaveProperty("issues");
     expect(p.string()["~standard"].validate(undefined)).toHaveProperty("issues");
   });
 });

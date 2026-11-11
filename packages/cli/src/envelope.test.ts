@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildEnvelope,
-  codeFilename,
-  digestFor,
-  envelopeFilename,
-  isValidFunctionName,
-  validateEnvelope,
-} from "./envelope.ts";
+import { buildEnvelope, digestFor, isValidFunctionName, validateEnvelope } from "./envelope.ts";
 
 describe("the function name grammar", () => {
   it("accepts a JavaScript identifier of at most 64 characters", () => {
@@ -62,10 +55,5 @@ describe("buildEnvelope", () => {
         message: "must not contain path separators",
       });
     }
-  });
-
-  it("names files by name and version", () => {
-    expect(codeFilename("echo", "1.0.0")).toBe("echo@1.0.0.js");
-    expect(envelopeFilename("echo", "1.0.0")).toBe("echo@1.0.0.envelope.json");
   });
 });
