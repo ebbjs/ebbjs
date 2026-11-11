@@ -121,6 +121,37 @@ defmodule EbbServer.Storage.LogFirst.MembershipIndexTest do
     assert MembershipIndex.scope(index, update, 3) == ["g_1"]
   end
 
+  test "re-putting a live membership row does not grow the entity's row list" do
+    put = fn ->
+      [
+        %{
+          "component" => "entityGroup/entity_id",
+          "subject_id" => "eg_1",
+          "method" => "replace",
+          "data" => %{"value" => "todo_1"}
+        },
+        %{
+          "component" => "entityGroup/group_id",
+          "subject_id" => "eg_1",
+          "method" => "replace",
+          "data" => %{"value" => "g_1"}
+        }
+      ]
+    end
+
+    model = [%{"component" => "todo/title", "subject_id" => "todo_1", "method" => "replace"}]
+
+    index =
+      Enum.reduce(1..100, MembershipIndex.new(), fn gsn, acc ->
+        MembershipIndex.apply_action(acc, gsn, model ++ put.())
+      end)
+
+    assert MembershipIndex.get(index, {:rows, "todo_1"}, 100) == ["eg_1"]
+
+    update = %{"component" => "todo/title", "subject_id" => "todo_1", "method" => "replace"}
+    assert MembershipIndex.scope(index, update, 100) == ["g_1"]
+  end
+
   test "scope order is row insertion order, like the cache's bag lookup" do
     add = fn row, group ->
       [

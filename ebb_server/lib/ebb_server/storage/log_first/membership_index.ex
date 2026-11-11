@@ -307,9 +307,16 @@ defmodule EbbServer.Storage.LogFirst.MembershipIndex do
   # an ETS bag lookup, which returns rows in insertion order, and that order is
   # what the Writer persists in `update_scopes`. A resolver that wants the same
   # bytes has to preserve it (or the format has to normalize).
+  # A re-put of a live row is the hot-path case (the bench's `hot` window
+  # re-puts one membership row every Action), so an already-live row is not
+  # appended again: without this, the row list grows per Action and group
+  # derivation becomes linear in the number of re-puts.
   defp add_row_ref(state, gsn, entity_id, row_id) do
     rows = get(state, {:rows, entity_id}, gsn) || []
-    put(state, {:rows, entity_id}, gsn, rows ++ [row_id])
+
+    if row_id in rows,
+      do: state,
+      else: put(state, {:rows, entity_id}, gsn, rows ++ [row_id])
   end
 
   defp remove_row_ref(state, gsn, entity_id, row_id) do

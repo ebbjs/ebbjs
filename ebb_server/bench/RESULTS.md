@@ -229,6 +229,73 @@ Not measured: relationship and `groupMember` permission rows are recorded but no
 (the authorization surface of §4); I1 is not asserted at submit; the pool was measured for
 cost only, not wired into a writer.
 
+### C1 — segments are truth, every index derived, in memory (build `397ad54f`)
+
+`EbbServer.Bench.MemoryIndexDiff` prototypes option C: the segment log is the only
+synchronous act, the ack returns from the append, and a consumer step then derives ETS read
+models (dense GSN→offset, action id→GSN, entity rows, group→GSN, existence index) from the
+records. All numbers measured, 3 interleaved reps, each arm under the bench lock; the host
+stole 17–34 % and paused 70–90 ms throughout, so p50 is the usable column and rates are
+indicative.
+
+**Ack path — append + sync, p50 (lower is better):**
+
+| shape                                  | b100 µs |  b1000 µs | per 100 Actions at b1000 | Actions/s b100 / b1000 (higher is better) |
+| -------------------------------------- | ------: | --------: | -----------------------: | ----------------------------------------: |
+| one window record (§2 shape)           | **918** | **6,819** |                      682 |                           43,292 / 90,777 |
+| one record per Action                  |   1,135 |     9,609 |                      961 |                           34,417 / 55,043 |
+| one record per Action, frames prebuilt |     470 |     4,494 |                      449 |                           56,543 / 88,973 |
+| D3 `log_first_recycled` (published)    |     960 |     7,349 |                      735 |                           41,410 / 72,300 |
+
+The window record beats one-record-per-Action by 19 % at b100 and 29 % at b1000. The
+"prebuilt" row is a ceiling, not an implementation: it excludes frame construction.
+
+**Consumer apply (higher is better, lower is better):**
+
+| shape                                |         records/s |                 µs/record |
+| ------------------------------------ | ----------------: | ------------------------: |
+| spread (5 Updates, 2 rows), 100k     |             5,797 |                    172.49 |
+| hot content (2 Updates, 1 row), 100k |            20,464 |                     48.87 |
+| spread, decode only                  |            49,543 |                     20.18 |
+| hot membership re-put 1k / 2k / 4k   | 2,621 / 851 / 405 | 381.5 / 1,146.7 / 2,207.2 |
+
+**Reads and catch-up, p50 (lower is better):** point read from the in-memory entity row
+**1.34 µs** vs `EntityStore.get/3` **31.28 µs** (clean) / **309.31 µs** (first touch) and an
+`exqlite` SELECT **19.14 µs**. A 100-record catch-up page at 100k records: group-index seek
+**47.0 µs**, seek + dense offset read **2,181.3 µs**, seek + the segment's sparse
+`Segment.read/2` **110,860 µs**. The dense table is not an optimisation; it is the difference
+between a page and a stall.
+
+**Memory at 100k Actions (lower is better):**
+
+| shape                          | ETS KiB | consumer heap KiB | bytes/action | bytes/entity |
+| ------------------------------ | ------: | ----------------: | -----------: | -----------: |
+| spread (5 Updates, 2 rows)     | 352,371 |            69,660 |    **4,322** |        2,161 |
+| hot content (2 Updates, 1 row) |  26,586 |               295 |      **275** |            — |
+| hot membership re-put, 2k      |     534 |           173,288 |       88,997 |            — |
+
+Spread's memory is entity rows 45 %, existence 33 %, membership 16 %, group 3 %, dedup 2.7 %,
+offsets 1.8 %. An entity row costs ~941 B decoded against ~250 B of JSON in SQLite.
+
+**Rebuild and read-model writes (lower is better):** replaying 100k records rebuilds every
+index in **25.23 s** (scan 4.21 s, replay 19.83 s; 3,963 records/s), repairs `[]`, answers
+identical. One SQLite `upsert_entity/2` costs **798.5 µs/row**, **1,597 µs/action** at two rows
+per Action (1,252 rows/s) — that is a consumer-side cost, not an ack-path cost.
+
+**Verdicts.** Ack gate (≤1,150 µs at b100, lower is better): **pass** at 918 µs with the window
+record; the per-Action shape sits on the gate (1,135 µs). Point-read gate (≤2× today, lower is
+better): **pass by 23×** (1.34 vs 31.28 µs). Memory gate (~1 KB/action, lower is better):
+**fail** at the row-creating shape (4,322 B/action, 4.3×) and **pass** for a hot document
+(275 B/action). Consumer throughput is **5,797 records/s** against a **43,292 Actions/s**
+append, so the design's split into consumers and group partitions is what has to carry the gap;
+one consumer cannot.
+
+Two defects the matrix found, both fixed in the prototype: `Segment`'s sparse index is rebuilt
+by `index ++ [sample]` on every append, so the same b1000 bytes cost **2,287 µs** early in the
+log and **6,015 µs** after 1.7 M records against **1,155 µs** for one contiguous window
+binary; and `MembershipIndex.add_row_ref/4` appended a duplicate row ref per re-put, making the
+`hot` re-put case quadratic (382 → 1,147 → 2,207 µs/record at 1k/2k/4k).
+
 ### P0 — re-baseline of the current writer on this build
 
 `t0`/`t2`/`t4`, b100 u2, `--seed 1`, median of 2 passes unless noted:

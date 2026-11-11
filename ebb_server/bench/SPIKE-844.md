@@ -22,17 +22,17 @@ design — resolution off the serial path, consumers, reads — was not built.
 
 ## Verdict table
 
-| unit                                        | gate                                                                                         | measured                                                                                                                                                                                                                                                                                                                    | verdict                                                                               |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **D1** segment writer + property test       | append, CRC, torn-tail truncate, GSN→offset index; random stream through kill points replays | 20 randomized streams × random batch sizes × random byte cuts: recovery keeps exactly the intact prefix, truncates at the boundary, no half-read record, retry converges. 7 tests.                                                                                                                                          | **pass**                                                                              |
-| **D2** `as_of` membership on current caches | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | 1,200 generated Actions through the real Writer, 3 seeds: `update_scopes` **byte-identical 1,200/1,200**, including moves and deletes. Resolution ~1–2 µs/call for both the index and the current caches, so **no per-call speedup**; the Writer’s 10.3 µs/Action resolve is fold/planning, not the lookup.                 | **correctness pass; speed gate miss**                                                 |
-| **D3** pwrite vs write_batch                | log leg **≤0.4 ms**/flush at b100; falsified if within 1.5× of 1.903 ms                      | sparse append 1.982 ms, **recycled (pre-written) segment 0.960–0.986 ms** p50 matched; `write_batch` matched 1.963–1.965 ms. `disk_log` (D3b) 1.927 ms, i.e. 0.98× today and 1.95× the recycled segment — no win. Component probe: in-place 64 KB `pwrite`+`datasync` 337–381 µs, sparse 811–832 µs, past-EOF 809–1,080 µs. | **owned log: target missed, falsifier not met; `disk_log`: falsifier met, discarded** |
-| **P0** instrument + re-baseline             | timers sum to the measured flush within 10 %                                                 | phases 3,621 µs p50 vs 3,647 µs client p50 = **0.7 %**; server `batch_latency` is 15 % lower by construction (starts after queue/prepare). t0/t2/t4 + component index re-baselined, and the sampler now reports hypervisor steal + longest scheduler pause (18–39 % steal here).                                            | **pass** (absolute rates not reproducible; see Measurement validity)                  |
-| **P1** window record on RocksDB             | log leg ≤0.6 ms/flush at b100; no catch-up or materialization regression                     | one window record as one `cf_actions` put: p50 **2,029 µs** at b100 (vs 2,162 matched), 9,417 µs at b1000 (vs 10,690). Append-shape gate met in direction; catch-up page p50 and materialization **not measured**, so the phase gate is **unmet**.                                                                          | **adopt-in-part** (append shape only)                                                 |
-| **P2** dedicated log                        | H1 by the better backend; R1/R2 decided; I2/I4                                               | not started: H1 is dead at D3, so a dedicated log cannot pay on this host.                                                                                                                                                                                                                                                  | **parked** (depends on H1)                                                            |
-| **P3** membership + resolver pool           | H2 + I1                                                                                      | not started: depends on P2's record format; D2's blocking finding applies.                                                                                                                                                                                                                                                  | **parked**                                                                            |
-| **P4** consumers + reads + tap              | H4 hot-group row; R3                                                                         | not started. Existence-index cost measured instead: +7.2 % at k=2, +20.2 % at k=4, +21.6 % at k=8 (`mix bench.component_index`).                                                                                                                                                                                            | **parked**                                                                            |
-| **P5** matrix + decisions                   | H5 ledger clean; H6 reported                                                                 | matrix produced for the current writer and the three append arms; H5 crash ledger **not run** (needs the prototype's consumers); H6 reported below.                                                                                                                                                                         | **partial**                                                                           |
+| unit                                             | gate                                                                                         | measured                                                                                                                                                                                                                                                                                                                                                                                                                         | verdict                                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **D1** segment writer + property test            | append, CRC, torn-tail truncate, GSN→offset index; random stream through kill points replays | 20 randomized streams × random batch sizes × random byte cuts: recovery keeps exactly the intact prefix, truncates at the boundary, no half-read record, retry converges. 7 tests.                                                                                                                                                                                                                                               | **pass**                                                                              |
+| **D2** `as_of` membership on current caches      | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | 1,200 generated Actions through the real Writer, 3 seeds: `update_scopes` **byte-identical 1,200/1,200**, including moves and deletes. Resolution ~1–2 µs/call for both the index and the current caches, so **no per-call speedup**; the Writer’s 10.3 µs/Action resolve is fold/planning, not the lookup.                                                                                                                      | **correctness pass; speed gate miss**                                                 |
+| **D3** pwrite vs write_batch                     | log leg **≤0.4 ms**/flush at b100; falsified if within 1.5× of 1.903 ms                      | sparse append 1.982 ms, **recycled (pre-written) segment 0.960–0.986 ms** p50 matched; `write_batch` matched 1.963–1.965 ms. `disk_log` (D3b) 1.927 ms, i.e. 0.98× today and 1.95× the recycled segment — no win. Component probe: in-place 64 KB `pwrite`+`datasync` 337–381 µs, sparse 811–832 µs, past-EOF 809–1,080 µs.                                                                                                      | **owned log: target missed, falsifier not met; `disk_log`: falsifier met, discarded** |
+| **P0** instrument + re-baseline                  | timers sum to the measured flush within 10 %                                                 | phases 3,621 µs p50 vs 3,647 µs client p50 = **0.7 %**; server `batch_latency` is 15 % lower by construction (starts after queue/prepare). t0/t2/t4 + component index re-baselined, and the sampler now reports hypervisor steal + longest scheduler pause (18–39 % steal here).                                                                                                                                                 | **pass** (absolute rates not reproducible; see Measurement validity)                  |
+| **P1** window record on RocksDB                  | log leg ≤0.6 ms/flush at b100; no catch-up or materialization regression                     | one window record as one `cf_actions` put: p50 **2,029 µs** at b100 (vs 2,162 matched), 9,417 µs at b1000 (vs 10,690). Append-shape gate met in direction; catch-up page p50 and materialization **not measured**, so the phase gate is **unmet**.                                                                                                                                                                               | **adopt-in-part** (append shape only)                                                 |
+| **P2** dedicated log                             | H1 by the better backend; R1/R2 decided; I2/I4                                               | not started: H1 is dead at D3, so a dedicated log cannot pay on this host.                                                                                                                                                                                                                                                                                                                                                       | **parked** (depends on H1)                                                            |
+| **P3** membership + resolver pool                | H2 + I1                                                                                      | not started: depends on P2's record format; D2's blocking finding applies.                                                                                                                                                                                                                                                                                                                                                       | **parked**                                                                            |
+| **P4/C1** consumers + reads (option C prototype) | H4 hot-group row; ack not blocked by a consumer; reads within 2× today                       | C1 prototype, 100k Actions: ack **918 µs** per 100-action flush (≤1,150 gate, lower better); point read **1.34 µs** vs **31.28 µs** (23× better); catch-up page 100 at 100k: **2,181 µs** with a dense offset table vs **110,860 µs** on the sparse index; memory **4,322 B/action** at 2 rows/action (1 KB gate missed) and **275 B/action** for a hot row; consumer **5,797 records/s** against a **43,292 Actions/s** append. | **ack and reads pass; memory and consumer throughput miss (partitions required)**     |
+| **P5** matrix + decisions                        | H5 ledger clean; H6 reported                                                                 | matrix produced for the current writer and the three append arms; H5 crash ledger **not run** (needs the prototype's consumers); H6 reported below.                                                                                                                                                                                                                                                                              | **partial**                                                                           |
 
 ## Corrections to this ledger
 
@@ -84,18 +84,23 @@ shows what changed the verdict, not only the final number.
   reaching 4× needs the non-append phases (resolve, prepare, fan-out, caches) off the serial
   path, which is P3/P4 and was not built. The earlier claim that 4× was arithmetically
   impossible rested on the retracted 1.2 ms floor and is withdrawn.
-- **H4 (cost of derivation) — partially measured, not gated.** Existence-index write
-  amplification on this build: +7.2 % / +20.2 % / +21.6 % at k = 2 / 4 / 8. The
-  `dedup,dirty,fanout` ablation is the largest single lever (+53 %). No consumer or
-  partition was built, so "consumer lag is the ceiling" is untested.
+- **H4 (cost of derivation) — measured at the store, still not gated on a hot group.** The
+  existence index costs +7.2 % / +20.2 % / +21.6 % of write throughput at k = 2 / 4 / 8
+  (lower is better), and one consumer applying five in-memory indexes runs at **5,797
+  records/s** (higher is better) — 7.5× slower than the 43,292 Actions/s append it feeds, so
+  one consumer cannot keep up and the design's partition split is load-bearing. Memory is the
+  binding constraint: **4,322 B/action** at two rows per Action (lower is better; ~941 B per
+  decoded entity row against ~250 B of JSON in SQLite), **275 B/action** for a hot row. A
+  hot-group SSE + catch-up row was not measured.
 - **H5 (safety) — partially measured.** D1's kill-point property test covers append-level
   loss and replay (no acked record lost, no half record read). Crash injection through
   consumers, the 20-point ledger, and double-apply detection need P2/P4 and were not run.
-- **H6 (complexity) — reported.** +1,164 lines added, −16 changed, **0 deleted** from the
-  production write path (`git show --stat 497de4fd`): segment writer 329, bench append module
-  289, tests 359, harness 180. Config keys: **+1** (`--engine`, bench-only, `t5`-only), **0**
-  on the ack path. Net lines deleted: 0, because nothing was cut over. The design's target
-  (≥2,500 deleted) is untouched, not refuted.
+- **H6 (complexity) — reported.** At `147004ac`: **+4,038 lines added, 0 deleted** from the
+  production write path (spike code and its tests): segment writer 329, bench append modules
+  534, memory-index prototype 745, bench harnesses 1,795, tests 635. Config keys: **+1**
+  (`--engine`, bench-only, `t5`-only), **0** on the ack path. Net lines deleted: 0, because
+  nothing was cut over. D1 plus the C1 prototype is the code a cutover would actually reuse;
+  the design's ≥2,500 deletion target is untouched, not refuted.
 
 ## Contract renegotiations R1–R3
 
@@ -145,6 +150,28 @@ What that means for every row in this ledger:
 - **Any cross-build comparison (including #485's published numbers) is unsupported** until it is
   repeated on a quiet host or with steal reported alongside it. That is why correction 3
   withdraws the "drift since #485" claim rather than keeping it as a regression.
+
+## Decisions taken during the spike
+
+- **Record shape stands as §2 says: one window record.** C1 measured it at 918 µs per
+  100-action flush against 1,135 µs for one record per Action (lower is better), and the
+  per-Action shape was only a measurement convenience for catch-up paging. A catch-up reader
+  slices Actions out of the window body using the per-Action length prefixes §2 already
+  specifies.
+- **A dense GSN→offset table is required, not optional.** The segment's every-64th-record
+  index made a 100-record page cost 110,860 µs against 2,181 µs with a dense table (lower is
+  better). The offset table is per window in production (one entry per 100–1,000 Actions,
+  ~8 B), so it costs about 0.01–0.08 B/Action.
+- **The segment's offset index must live outside the append struct.** `index ++ [sample]` per
+  append made the same b1000 bytes cost 2,287 µs early and 6,015 µs after 1.7 M records
+  against 1,155 µs for one contiguous window (lower is better).
+- **`MembershipIndex.add_row_ref/4` deduplicates a live row** (fixed in this branch, test
+  added): a re-put of the same membership row was quadratic at 382 → 1,147 → 2,207 µs/record
+  (lower is better). For P3 the live set is keyed `{entity_id, row_id}` for O(1) re-puts, and
+  the versioned index stays for `as_of` and pruning.
+- **Entity rows in an in-memory read model must be stored encoded.** Decoded terms cost
+  ~941 B per row against ~250 B of JSON (lower is better); the 4,322 B/action measurement is
+  the decoded shape.
 
 ## Smallest subset that still pays
 

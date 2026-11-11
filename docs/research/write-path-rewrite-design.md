@@ -57,6 +57,14 @@ case for the whole design, so it is recorded here rather than only in the issue.
   every append grows the file — the ~1,080 µs path — and `format: external` files cannot be
   read back with `chunk/3`, so torn-tail detection stays the caller's. The append also runs in
   `disk_log`'s process with `file:sync/1` (fsync) rather than one `fdatasync` in the leader.
+- **Option C works on the ack and reads, and is bounded by memory and one consumer.** With the
+  segment as the only sync and all five indexes derived in ETS, the ack measured **918 µs** per
+  100-action flush (lower is better; gate 1,150), a point read **1.34 µs** against
+  `EntityStore.get/3`'s **31.28 µs** (lower is better), and a 100-record catch-up page
+  **2,181 µs** (lower is better). Memory was **4,322 B/Action** at two rows per Action (lower is
+  better; gate ~1 KB) and a single consumer applied **5,797 records/s** (higher is better)
+  against a 43,292 Actions/s append, so partitions are required. These are the numbers P4 has
+  to design against, not estimates.
 - **D1 is as simple as §5 reads.** The segment writer's recovery (CRC, torn-tail truncate,
   sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
   implemented: random stream, random batch sizes, a cut at any byte, retry converges. That
@@ -132,10 +140,23 @@ so recovery can tell old records from new (not measured; removes the double writ
 reader already stops at the first invalid record, which is what both strategies need.
 
 The per-segment sidecar `00000042.gix` is the group index (`cf_group_actions` today), batched,
-written by the group partitions. A sparse in-memory index every 64th record maps GSN → byte
-offset. Whether that sidecar exists at all is decided in P1: the alternative is reading the
-segment and filtering the per-Update scope snapshot, which is what `CatchUp` already does
-(#473) with a page bounded by index rows (#423).
+written by the group partitions. Whether that sidecar exists at all is decided in P1: the
+alternative is reading the segment and filtering the per-Update scope snapshot, which is what
+`CatchUp` already does (#473) with a page bounded by index rows (#423).
+
+Measured (C1): the GSN → byte offset table must be **dense**, and it must not live in the
+append struct. A 100-record catch-up page at 100k records cost **2,181 µs** with a dense table
+(lower is better) against **110,860 µs** on the segment's every-64th-record index. One entry
+per window is enough for paging (≈0.01–0.08 B/Action) because the window body carries a length
+prefix per Action, which is what lets a reader slice one Action without decoding the rest. And
+`index ++ [sample]` on every append made the same 1,000-Action bytes cost **2,287 µs** early in
+the log and **6,015 µs** after 1.7M records (lower is better) against **1,155 µs** for one
+contiguous window blob, so the production index belongs in a table the appender inserts into,
+not in the value it rewrites.
+
+One window record is also measurably the right unit: **918 µs** per 100-action flush (lower is
+better) against **1,135 µs** for one record per Action. The per-Action shape exists only to
+make paging easy, and the dense offset table makes it unnecessary.
 
 `gsn` stays inside the hashed bytes so a future verifiable layer's leaf is
 `hash(kind ‖ gsn ‖ body)` — no format break, and a dense log means no filler leaves for
@@ -143,14 +164,22 @@ abandoned ranges. No verification work is in scope.
 
 ## 3. What each column family becomes
 
-| today                   | prototype                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------- |
-| `cf_actions`            | `:action_batch` records                                                          |
-| `cf_group_actions`      | `.gix` sidecar, or nothing (P1 decides)                                          |
-| `cf_action_dedup`       | digest rebuilt from the log tail                                                 |
-| `cf_entity_actions`     | **gone** — the entity consumer keeps the log position per row                    |
-| `cf_component_entities` | **kept, derived** — its own consumer, snapshot and retention answer              |
-| `default`               | migration markers only (today `system_cache:component_entities_backfill` = `v2`) |
+| today                   | prototype                                                           |
+| ----------------------- | ------------------------------------------------------------------- |
+| `cf_actions`            | `:action_batch` records                                             |
+| `cf_group_actions`      | `.gix` sidecar, or nothing (P1 decides)                             |
+| `cf_action_dedup`       | digest rebuilt from the log tail                                    |
+| `cf_entity_actions`     | **gone** — the entity consumer keeps the log position per row       |
+| `cf_component_entities` | **kept, derived** — its own consumer, snapshot and retention answer |
+
+Measured (C1) for an in-memory version of this table: entity rows and the existence index are
+the memory ceiling — **4,322 B/Action** at two rows per Action with decoded terms (lower is
+better), **275 B/Action** for a hot row. An encoded entity row is ~250 B against ~941 B
+decoded, so an in-memory read model must store rows encoded, and a single consumer applying
+five indexes ran at **5,797 records/s** (higher is better) against a **43,292 Actions/s**
+append, which is why §1's per-partition consumers are load-bearing rather than an
+optimisation.
+| `default` | migration markers only (today `system_cache:component_entities_backfill` = `v2`) |
 
 `cf_component_entities` is the existence index #799 added: model entries
 `(model, 0x00, entity_id)` and component entries `(<model>/<field>, 0x00, entity_id)`,
@@ -179,6 +208,12 @@ caches":
 {entity_id, from_gsn}       → committed model
 {membership_id, from_gsn}   → {group_id, permissions}    # groupMember rows
 ```
+
+Measured (C1): a re-put of the same membership row is the hot case (the bench re-puts one row
+every Action), so the live row set must be keyed `{entity_id, row_id}` and a re-put must not
+append a second reference. `MembershipIndex` appended one per re-put, which made the hot case
+quadratic (382 → 1,147 → 2,207 µs/record at 1k/2k/4k Actions, lower is better); the module
+deduplicates now.
 
 `membership(entity_id, as_of: gsn)` answers exactly what `EntityIndex.resolve_groups/3`
 answers today, for any GSN. Interval rows are appended by the membership consumer, pruned past
