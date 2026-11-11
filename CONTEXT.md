@@ -112,7 +112,10 @@ _Avoid_: plain field, implicit component
 **Model**:
 The declared component set `defineModel` names, and the unit of permission,
 query source, and projection. Which of its components an entity carries is
-dynamic; which of them it _may_ carry is fixed by the model.
+dynamic; which of them it _may_ carry is fixed by the model. An entity carries
+components of exactly one _user_ model: for a user component the model is the
+namespace, not a tag. `ebb/*` components are the platform's overlay and may sit
+on any row without re-modelling it.
 _Avoid_: entity, type, class, table, collection
 
 **Archetype**:
@@ -179,14 +182,34 @@ Action log.
 _Avoid_: hydrate, denormalize, resolve
 
 **System component**:
-A component in the `ebb/` namespace — `ebb/group`, `ebb/groupMember`,
-`ebb/membership`, `ebb/link` — on a row the platform owns and interprets.
+A component in the `ebb/` namespace the platform owns and interprets:
+`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is atomic, declares
+a scope owner, and carries its own permission.
 _Avoid_: system entity type, built-in type
+
+**Scope owner**:
+The entity whose group set a component's write is authorized and delivered
+against: the entity itself, an entity one of its values names, or the entity
+carrying it. Declared per component, and only in the `ebb/` namespace.
+_Avoid_: fan-out target, ACL subject
+
+**Grant**:
+An `ebb/grant` row giving one actor permissions in one group.
+_Avoid_: membership, role, permission row
 
 **Archive component**:
 A declared component holding superseded values — a document body kept at an
 older codec — so an upgrade needs no new entity id.
 _Avoid_: history, backup, version
+
+### Systems
+
+**System**:
+A deterministic fold or predicate over the Action log: a _predicate_ on the
+write path (validate, scope, authorize) or a _projection_ off the committed log
+(index, cache, read model). Never a scheduler, and never a mutation — only an
+Action changes state.
+_Avoid_: handler, service, processor, job
 
 ### Materialization
 
@@ -255,11 +278,13 @@ A named, typed link from a source entity to a target entity.
 _Avoid_: edge, reference, foreign key
 
 **Membership**:
-The row scoping an entity to a group.
+The row scoping an entity to a group. One row per `(entity, group)`, and the pair
+is immutable after create; groups and grants carry none.
 _Avoid_: scope, acl
 
 **Group**:
-The unit of permission and delivery; every entity belongs to at least one.
+The unit of permission and delivery; every entity belongs to at least one. A
+group's scope is itself, so it carries no membership row.
 _Avoid_: workspace, tenant, room
 
 **App**:

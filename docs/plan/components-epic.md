@@ -1,6 +1,7 @@
 # epic(components): components are the unit of identity
 
-Status: proposal, 2026-11-09. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
+Slices 1–5 landed (#794–#798); 6–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -11,7 +12,7 @@ Ebb has one identity per row and it does six jobs. `entity.type` is simultaneous
 key (`cf_type_entities`), the query source (`query("note")` → `iterate("note")`), the projection
 shape (`projectEntity`), the permission string (`<type>.<verb>`), the residency policy
 (`materialization: "held" | "on-demand"`), and the conflict policy (`conflictScope`, plus the
-hardcoded `STRUCTURAL_SUBJECT_TYPES`). Because it is one immutable string committed by the first
+hardcoded `STRUCTURAL_MODELS`). Because it is one immutable string committed by the first
 write, **variation in a row is expensive**: optional data has to be a tombstone, large data has to
 be a synthetic second entity, and a piece of a row that needs different policy has nowhere to
 declare it.
@@ -28,8 +29,8 @@ four powers.
 
 **The claim this epic can be falsified against:** after it lands, `@ebbjs/core`, `@ebbjs/storage`,
 `@ebbjs/client`, and `ebb_server` contain no site that dispatches on a _row type string_ to decide
-storage, residency, conflict, or existence behaviour. Type names survive in exactly two places —
-the permission string and the query source — and both read from the model.
+storage, residency, conflict, existence, or scope behaviour. Type names survive in exactly two
+places — the permission string and the query source — and both read from the model.
 
 ## The model
 
@@ -37,8 +38,9 @@ the permission string and the query source — and both read from the model.
 leaf        the mergeable position: { value, update_id, hlc } or { map: { <key>: leaf } }
 component   a named value. One leaf (e.string, e.object) or one key space (e.map, e.log).
             Carries: existence, loading, conflict scope, version, optional own permission.
-model     a named component set. What defineModel declares. What client.<name> namespaces.
-            Carries: the permission subject, the query source, the typed projection.
+model     a named component set and the component namespace. What defineModel declares. What
+            client.<name> namespaces. Carries: the permission subject, the query source, the typed
+            projection. An entity carries one model's components.
 row         an entity id plus the components currently attached to it.
 ```
 
@@ -82,10 +84,15 @@ lands.
 
 - `defineModel(name, components, opts)` declares the **reachable** component set. Which of them
   are attached is dynamic; which of them _can_ be attached is static.
-- A write to a component the model does not declare is rejected at validation. **This is the
-  structural fix for #624** — `subject_type` stops being a client-supplied identity claim, because
-  there is no identity claim to make: the component set is a schema fact and the row's existence is
-  the only per-row question.
+- A write to a component the model does not declare is rejected by the **client** at validation
+  (`ModelRegistry.validateAction`). **The server stays schema-free** and never learns the declared
+  set: it checks that every component of a row names the id's committed model, so a component
+  cannot borrow another model's permission. It cannot reject an undeclared leaf and does not try.
+  That closes #624's identity story without giving the server a schema.
+- **The prefix is the brand.** User components are namespaced by their model, so an entity carries
+  exactly one _user_ model. `ebb/*` components are the platform's overlay: they may sit on any row,
+  are authorized by their own permission, and never change the row's committed model or its model
+  entry. Multi-brand _user_ entities are a non-goal.
 - A component declared `optional: true` may be absent. A row with zero components is possible and
   means "an id that exists and has nothing attached"; only `delete` removes the id.
 
@@ -96,9 +103,10 @@ lands.
 - Scale is the model: `<model>.<verb>` and `<model>.*`, checked exactly as
   `PermissionHelper.check_permission/3` does today.
 - A component may opt in to its own permission with `permission: "own"`, yielding
-  `<model>/<component>.<verb>`. **Off by default**, because permissions are about domain objects,
-  not data layout, and a permission per component across a large schema is a table nobody can
-  administer.
+  `<model>/<component>.<verb>`. **Off by default for user components**, because permissions are
+  about domain objects, not data layout, and a permission per component across a large schema is a
+  table nobody can administer. **Required for every `ebb/*` component**, because all four share the
+  `ebb` prefix and the model-level string would collapse them to `ebb.create`.
 - **Field-level permissions are not in this epic.** Read granularity is a fan-out property — a
   replica is a local copy of everything the client was sent — so field-level _read_ permissions
   would require filtering at the delivery boundary, not a new permission string. That is a
@@ -112,50 +120,20 @@ that only reads `status`.
 
 ## Decisions
 
-1. **`type` survives as the model.** It remains the permission subject, the query source, and the
-   projection shape. It stops being the storage, residency, conflict, or existence key. Claims that
-   "ebb no longer has types" are wrong and would produce a worse permission model.
-   **Model is not archetype:** a model is _declared_, an archetype is _actual_. One model's rows
-   occupy one archetype per subset of present components.
-   **Why "model":** `defineEntity` was already misnamed — it declares a _kind_ of row, not a row, and
-   every instance is an entity. `CONTEXT.md` defines Entity as _a row_ and ECS defines it as _a bare
-   id_, so "entity" would be ambiguous in exactly the wrong way. "Model" is the ORM and
-   domain-modelling word for the declaration, which is the lineage ebb belongs to.
-   **Vocabulary split:** a **model** is a declaration (`defineModel`, `ModelDef`, `ModelRegistry`,
-   `modelIndex`); an **entity** is a row (`EntityStore`, `EntityView`, `entityGroup`, `entity_id`).
-   Nothing that means "row" is renamed.
-   **Costs of the rename, accepted:** `defineEntity` → `defineModel`, `EntityDef` → `ModelDef`,
-   `EntityRegistry` → `ModelRegistry`, `defineSchema({ entities })` → `defineSchema({ models })`,
-   across docs, `packages/www`, examples, fixtures, and tests. Greenfield, and mechanical.
-   **Avoid:** _class_, _table_, _collection_ — a model carries data and policy, never behaviour.
-2. **A field builder is an anonymous component.** No existing declaration changes meaning. This is
-   what makes the surface stable.
-3. **`e.object` and a component are the same machinery at two levels of ceremony.** #760's four
-   touch points (`admitsNull`, `stripUnsetEntries`, the `unset`-in-object envelope, query equality
-   and ordering) are exactly a component's four touch points. Build them once.
-4. **Cohesion is declared, not assumed.** A component may hold many fields; the declaration picks
-   how they merge. `e.object({a, b})` is one merge position — the record is replaced whole, so it
-   cannot tear. A keyed component (`e.map({a, b})`, `e.log(entry)`) is N merge positions — each
-   field merges on its own, so a concurrent write to one leaves its siblings alone. This is the
-   value-vs-key-space axis #760 records, and it is chosen **per component**, not per field. It is
-   also the middle rung `conflictScope` is missing.
-5. **Existence is a bit, not a tombstone.** For an `optional` component, absent means absent. The
-   `value: null` tombstone survives only for a _present_ leaf whose value was cleared, and that is
-   a value, not an absence.
-6. **Residency is per component.** `materialization` moves from the model to the component. A
-   component that is on-demand is fetched, pinned, and evicted independently of its row.
-7. **Conflict scope gains a middle rung.** `"field" | "component" | "entity"`, declared per
-   component. A component-scope hold holds one component, not the whole row.
-8. **Indexing is opt-in per component.** A component declared `indexed: true` gets an row in
-   `cf_component_entities`; one that does not is reachable only by id. Today _every_ entity sits in
-   `cf_type_entities` whether or not anything queries by type. This is the decision that keeps the
-   write-amplification cost bounded, and it must be taken in slice 2 (the declaration) even though
-   slice 6 is where it pays off.
-9. **No compatibility.** Ebb is greenfield with no consumers. The client store resets, server data
-   is discarded, and there is no migration, alias, or deprecation path — the same rule #775 and
-   #790 already state.
-10. **Everything lands behind one primitive.** This epic adds no second write path, no second merge
-    rule, and no second envelope. `mergeFieldValue` remains the single definition of convergence.
+Decisions 1–13 live in [`docs/adr/0001-component-model.md`](../adr/0001-component-model.md). This
+epic schedules them; where the two disagree, the ADR wins. Three arrived with the system-component
+contract: 11 (scope is declared per `ebb/*` component), 12 (every `ebb/*` component carries its own
+permission), and 13 (system components are atomic and key-immutable).
+
+Two notes this epic owns rather than the ADR:
+
+- **Model is not archetype.** A model is _declared_; an archetype is _actual_. One model's entities
+  occupy one archetype per subset of present components.
+- **The rename landed in [#795](https://github.com/ebbjs/ebbjs/issues/795).** `defineEntity` was
+  already misnamed — it declares a kind of row, not a row. `defineEntity` → `defineModel`,
+  `EntityDef` → `ModelDef`, `EntityRegistry` → `ModelRegistry`, `defineSchema({ entities })` →
+  `defineSchema({ models })`. Avoid _class_, _table_, _collection_: a model carries data and policy,
+  never behaviour.
 
 ## Target architecture
 
@@ -165,14 +143,17 @@ schema      defineComponent / defineModel(model)       → Model { components, p
 core        Update { subject_id, component, method, data: FieldValue }
             mergeFieldValue unchanged                  → one convergence definition
 protocol    component replaces subject_type            → one Update per (entity, component)
-storage     cf_component_entities (component, id)      → replaces cf_type_entities
-            replica: modelIndex + componentIndex     → replaces typeIndex
-                      (+ archetypeIndex, optional)   → an afterthought, not the model
+systems     scope table + permission table + projections
+            one scope owner per ebb/* component        → replaces resolve_groups_cached/3's cases
+storage     cf_component_entities (component, id)      → replaces cf_type_entities, ebb/* first
+            replica: modelIndex + componentIndex      → replaces typeIndex
+                      (+ archetypeIndex, optional)    → an afterthought, not the model
             ReplicaChange { components }               → replaces { type }
-client      query(model) reads declared components   → set intersection, not one Set lookup
+client      query(model) reads declared components    → set intersection, not one Set lookup
             plan.readComponents                        → replaces readTypes
-            conflictScope "component"                  → replaces STRUCTURAL_SUBJECT_TYPES
-auth        write validated against declared set      → #624 is unrepresentable
+            conflictScope "component"                  → replaces STRUCTURAL_MODELS
+auth        component prefix = committed model         → #624 cannot borrow a model's permission
+            ebb/* component names its permission       → ebb/group.create, not ebb.create
 ```
 
 ## What this supersedes, folds, or leaves alone
@@ -180,14 +161,14 @@ auth        write validated against declared set      → #624 is unrepresentabl
 | Issue                                                                                                                                                                                                   | Disposition                                                                                                                                                                                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **#760** `e.object`                                                                                                                                                                                     | **Folded in** as sub-issue 3. Do not ship it separately.                                                                                                                                                                                                                                                                                   |
-| **#124** schema evolution                                                                                                                                                                               | **Folded in** as sub-issue 11. Per-component `version` replaces per-type.                                                                                                                                                                                                                                                                  |
-| **#195** system-type enumeration                                                                                                                                                                        | **Superseded** by sub-issue 12. The constants module is a patch on the problem.                                                                                                                                                                                                                                                            |
+| **#124** schema evolution                                                                                                                                                                               | **Folded in** as sub-issue 14. Per-component `version` replaces per-type.                                                                                                                                                                                                                                                                  |
+| **#195** system-type enumeration                                                                                                                                                                        | **Superseded** by sub-issue 10. The constants module is a patch on the problem.                                                                                                                                                                                                                                                            |
 | **#781** one generic conflict                                                                                                                                                                           | **Partly folded in** as sub-issue 8 (adds the third scope). Its report/verb decisions stand.                                                                                                                                                                                                                                               |
 | **#775** documents / engine presets                                                                                                                                                                     | **Redirected, not superseded.** Its direction holds, but a preset becomes a `ComponentDef` factory rather than an `ModelDef` factory, and an upgrade archives into an archive component instead of a `versions` relationship. #776, #778, #779, #783, #785, #773, #782 keep their scope; #775 decisions 3 and 11 need amending. See below. |
-| **#790** relationships as entities                                                                                                                                                                      | **Not superseded.** It is the strongest evidence _against_ modelling edges as components. Sub-issue 12 depends on it.                                                                                                                                                                                                                      |
+| **#790** relationships as entities                                                                                                                                                                      | **Not superseded.** Slice 10 keeps the edge row (atomic value, immutable source); slice 13 moves it onto its source as a keyed pair. #790 decides whether 13 proceeds.                                                                                                                                                                     |
 | **#665** out-of-band payloads                                                                                                                                                                           | Depends on sub-issue 9. Payloads become component-valued.                                                                                                                                                                                                                                                                                  |
 | **#664** bytes leaves, **#173** counter fields                                                                                                                                                          | Unaffected — both are leaf-level additions.                                                                                                                                                                                                                                                                                                |
-| **#194** cache accessors                                                                                                                                                                                | Still valid; the cache row shapes change under sub-issue 12.                                                                                                                                                                                                                                                                               |
+| **#194** cache accessors                                                                                                                                                                                | Still valid; the cache row shapes change under sub-issue 10.                                                                                                                                                                                                                                                                               |
 | **#113, #114, #115, #123, #146, #156, #201, #224, #259, #272, #320, #348, #429, #430, #442–#445, #516, #636, #661, #667, #682, #691, #692, #698, #702, #703, #746, #748, #749, #750, #764, #786, #787** | Unaffected. #787 should record this epic's vocabulary.                                                                                                                                                                                                                                                                                     |
 
 **How #775 changes: a document is a component preset, not an entity preset.** An earlier draft of
@@ -245,17 +226,32 @@ Net: this is a real trade, not a clear win. It moves cost from the data model in
 machinery, and it simplifies #775's preset story (a `ComponentDef` factory instead of an
 `ModelDef` factory) at the price of making slice 9 load-bearing.
 
-**Why #790 disproves edges-as-components.** The field's usual answer to relationships is pair
-components — `(Likes, Bob)`. #790 shows why that cannot work here: ebb's edges are permission
-subjects, and membership attaches to _entities_. A component cannot own `entityGroup` rows. Edges
-stay rows. What dies is the special case: the edge row carries an `ebb/link` component that
-declares its own conflict and merge behaviour, instead of `STRUCTURAL_SUBJECT_TYPES` naming it.
+**Why the edge question is two steps, not one.** The field's usual answer to relationships is pair
+components — `(Likes, Bob)`. #790 shows why an edge cannot own its own group set here: ebb's edges
+are permission subjects, and membership attaches to _entities_. Slice 10 therefore keeps the edge
+row and makes its value atomic, which kills tearing with today's semantics. Slice 13 then moves the
+edge onto its source as a keyed pair, which kills the mirrored `entityGroup` rows (#789's cause) and
+the duplicate-edge tolerance layer — an edge then inherits its source's scope by construction.
+Steps, not a contradiction: 10 is the row form, 13 is the pair form, and #790 decides whether 13
+proceeds.
 
 ---
 
 ## Sub-issues
 
-Each is independently shippable. Numbers are assigned on filing.
+Each is independently shippable. Numbers are the current numbering (2026-11-11); the issue that
+carries each is listed below. Old references read "slice 12" for the system-component contract —
+that is now slice 10, with 11 and 13 splitting the scope table and the link follow-on out of it.
+
+| #   | Issue                                                             | #   | Issue                                                               |
+| --- | ----------------------------------------------------------------- | --- | ------------------------------------------------------------------- |
+| 1   | [#794](https://github.com/ebbjs/ebbjs/issues/794) ADR             | 8   | [#801](https://github.com/ebbjs/ebbjs/issues/801) conflict scope    |
+| 2   | [#795](https://github.com/ebbjs/ebbjs/issues/795) schema shape    | 9   | [#802](https://github.com/ebbjs/ebbjs/issues/802) residency         |
+| 3   | [#796](https://github.com/ebbjs/ebbjs/issues/796) `e.object`      | 10  | [#805](https://github.com/ebbjs/ebbjs/issues/805) system components |
+| 4   | [#797](https://github.com/ebbjs/ebbjs/issues/797) wire envelope   | 11  | [#819](https://github.com/ebbjs/ebbjs/issues/819) scope table       |
+| 5   | [#798](https://github.com/ebbjs/ebbjs/issues/798) existence       | 12  | [#803](https://github.com/ebbjs/ebbjs/issues/803) authz             |
+| 6   | [#799](https://github.com/ebbjs/ebbjs/issues/799) component index | 13  | [#820](https://github.com/ebbjs/ebbjs/issues/820) link pair         |
+| 7   | [#800](https://github.com/ebbjs/ebbjs/issues/800) invalidation    | 14  | [#804](https://github.com/ebbjs/ebbjs/issues/804) versioning        |
 
 ### 1. `design(components)`: ADR — the component model, vocabulary, and boundary
 
@@ -264,9 +260,9 @@ vocabulary ADR is the natural home. Every later slice depends on the words being
 two decisions that are expensive to reverse are in this list.
 
 **Scope.** Record in `CONTEXT.md` and an ADR: leaf, component, model, row, existence, loading, residency,
-conflict scope; the value-vs-key-space axis #760 records; the wire envelope from this epic; and the
-boundary rule — _a component inherits its entity's groups, so anything needing its own membership
-is an entity._
+conflict scope, system component, scope owner, grant, system; the value-vs-key-space axis #760
+records; the wire envelope from this epic; and the boundary rule — _a component may not own a group
+set, it may name the entity whose scope it borrows, and anything you paginate must have rows._
 
 **Work.**
 
@@ -274,9 +270,11 @@ is an entity._
       cursor/camera primitive and must not be confused with component existence. Add Component,
       Model, Existence, Leaf; revise Entity, Field, Materialization,
       Conflict.
-- [ ] ADR recording Decisions 1–10, with the `type`-survives-as-model limit stated explicitly.
-- [ ] Record the two reversal-expensive questions: atomic-vs-keyspace per builder, and whether
-      opt-in component permissions are worth the table growth.
+- [ ] ADR recording Decisions 1–13, with the `type`-survives-as-model limit stated explicitly and
+      the `ebb/*` alphabet in Decision 13.
+- [ ] Record the three reversal-expensive questions: atomic-vs-keyspace per builder, whether
+      opt-in component permissions are worth the table growth, and whether an `ebb/*` component
+      may declare its own scope (Decision 11).
 - [ ] Amend #787 to point here.
 
 **Acceptance.** `CONTEXT.md` defines every term the later slices use, and no later slice's
@@ -408,7 +406,7 @@ kept only for a present leaf whose value was cleared.
 - [ ] `has`/`hasNot` planned as an index predicate, not a row filter, so an existence query costs its
       index.
 - [ ] `put` on a row that omits a present component no longer implies "absent" — only `drop` does.
-- [ ] Delete `STRUCTURAL_SUBJECT_TYPES`-style pathing that exists to express "this row has no
+- [ ] Delete `STRUCTURAL_MODELS`-style pathing that exists to express "this row has no
       fields", since existence now says it directly.
 
 **Acceptance.** An entity that drops its only optional component and is re-read reports absent, not
@@ -422,8 +420,8 @@ refuse a declared default (so absence and a cleared leaf both project as `undefi
 ordinary client write, and `has`/`hasNot` are existence predicates backed by an in-memory replica
 component index and planned ahead of filters. The replica row carries an explicit `exists` bit;
 `created_hlc` is the server's first-write stamp and is never a predicate. Three limits are recorded,
-not silently resolved: `drop` on a system component is refused until slice 12's `ebb/*` components
-owner the torn-edge rules (slice 10 refuses undeclared writes as well); `has`/`hasNot` stay
+not silently resolved: `drop` on a system component is refused until slice 10's `ebb/*` components
+owner the torn-edge rules (slice 12 refuses undeclared writes as well); `has`/`hasNot` stay
 builder-only because the wire `Filter` has no component predicate until slice 6 owns the server
 index (and `hasNot` is an index difference against the model scan, so it costs the row count, not
 just an index range); and creating a row with zero components needs a wire `create` (a row-scoped
@@ -506,11 +504,11 @@ the recorded plan; a full-scan query still invalidates on any change to a compon
 ### 8. `refactor(client)`: `conflictScope: "component"`
 
 **Why.** Folds in the scope half of #781, which is landing with `"field" | "entity"` — the two ends
-of a ladder with nothing in between. That missing rung is why `STRUCTURAL_SUBJECT_TYPES` hardcodes
+of a ladder with nothing in between. That missing rung is why `STRUCTURAL_MODELS` hardcodes
 a list of row types that skip conflict detection.
 
 **Scope.** A third scope; the hold keyed per `(entity, component)` instead of per subject;
-`STRUCTURAL_SUBJECT_TYPES` replaced by a declaration. #781's verbs, report, and durable-hold
+`STRUCTURAL_MODELS` replaced by a declaration. #781's verbs, report, and durable-hold
 decisions stand unchanged.
 
 **Work.**
@@ -521,11 +519,11 @@ decisions stand unchanged.
       flush.
 - [ ] `conflict-slots.ts` keys on component instead of `subjectType`; `LwwFieldOracle` becomes
       `(component, leaf) => boolean`.
-- [ ] The `ebb/link`, `ebb/membership`, and `ebb/groupMember` system components declare their own
-      scope, replacing `STRUCTURAL_SUBJECT_TYPES`.
+- [ ] The `ebb/link`, `ebb/membership`, and `ebb/grant` system components declare their own
+      scope, replacing `STRUCTURAL_MODELS`.
 - [ ] `EntityDiff` path reporting gains the component segment.
 
-**Acceptance.** `rg "STRUCTURAL_SUBJECT_TYPES" packages/client/src` returns nothing. Two actors
+**Acceptance.** `rg "STRUCTURAL_MODELS" packages/client/src` returns nothing. Two actors
 editing different components of one row do not hold each other; two actors editing the same
 component do.
 
@@ -562,44 +560,183 @@ benchmark in `503-replica-read-model.md` re-runs with resident bytes attributed 
 
 ---
 
-### 10. `feat(auth)`: the write is validated against the declared component set
+### 10. `refactor(storage)`: the four system types become `ebb/*` components
 
-**Why.** The structural fix for #624. Today `subject_type` is client input that reaches the
-authorizer, the materialized row's type, the type-entity index, the SQLite type column, and the
-client replica's row type, and nothing compares it to the type the id was committed under. Per
-`docs/research/624-committed-type-authz.md` that is a live authorization defect. Under components
-the claim disappears: the component must be one the model declares, existence is the only
-per-row question, and `EntityIndex` stops dispatching on a type string.
+**Why.** #195 exists because the system-entity enumeration is duplicated across `EntityIndex`,
+`PermissionHelper`, `Authorizer`, `Writer`, and `SystemCache`, and a fifth system entity force-edits
+five files. That is the `type`-doing-six-jobs problem in its purest form, and a constants module
+removes one symptom of it. Naming the four as components is also what makes the torn-value defects
+unrepresentable: today `ebb/link` is four independent LWW leaves and `ebb/membership` is two, so a
+concurrent partial write can produce an edge with a new target and an old source, or a membership
+whose `group_id` disagrees with its row id.
 
-**Scope.** Validation that a write's component is declared by the model and allowed on the
-unresolved id (structural #624 close); `EntityIndex.resolve_groups/3` dispatching on the system
-component rather than the type string; opt-in per-component permissions via `permission: "own"`;
-the model→component mapping in the schema hash.
+**Scope.** `ebb/group`, `ebb/grant` (today's `groupMember`), `ebb/membership` (today's
+`entityGroup`), and `ebb/link` (today's `relationship`) as atomic components on ordinary rows; each
+declares `permission: "own"` (Decision 12) and its own conflict scope; dispatch on the component;
+`SYSTEM_ENTITY_NAMES`, `RESERVED_ENTITY_NAMES`, `PermissionHelper.system_models/0`, and
+`GroupListing`'s copy disappear. **Membership and its pair are immutable after create** (Decision
+13): re-pointing an existing `ebb/membership` is refused, and moving an entity between groups is a
+delete plus a create.
+
+**The rows stay.** A membership does not become a key on the member's row, and a grant does not
+become a key on the group's row. Both are tempting — `ebb/membership: {grp1: {}, grp2: {}}` would
+make "which groups is this in?" a field read and cut filing into three groups from three Updates to
+one — and both fail on the same rule: **anything you paginate must have rows.** Group and membership
+listing are keyset pagination over `idx_entities_entity_group_page`, `idx_entities_group_member`, and
+`GroupListing`, and a JSON key set cannot serve an ordered window.
 
 **Work.**
 
-- [ ] Unknown component → rejected at validation, not at authz.
-- [ ] `<model>/<component>.<verb>` checked when the component opts in; `<model>.<verb>`
-      otherwise; `<model>.*` unchanged.
-- [ ] `EntityIndex`: system dispatch becomes component dispatch;
-      `resolve_groups_cached("relationship")` reads the edge's own membership (#790) instead of
-      `source_id`.
-- [ ] Schema hash covers the model→component mapping, so a permission cannot be borrowed across
+- [ ] Name and register the four components; delete the four enumerations.
+- [ ] `ebb/link` carries `source_id`, `target_id`, `type`, `field` as one **atomic** value, so a
+      torn edge is unrepresentable.
+- [ ] `ebb/membership` carries `entity_id`, `group_id` as one atomic value and refuses a re-point;
+      `ebb/grant` carries `actor_id`, `group_id`, `permissions` atomically for the same reason.
+- [ ] `ebb/*` components declare `permission: "own"` and their own conflict scope.
+- [ ] An `ebb/*` write never re-models its host: the existence index's model entry is the row's
+      committed model, so an overlay component adds only its component entry. `RowMutations`'
+      folded model must resolve the committed model for an `ebb/*`-only write instead of reporting
+      `ebb`. (#799 owns the index; this is the rule it recorded as a departure.)
+- [ ] **The SQLite read model stops hardcoding system field names.** Eight generated columns
+      (`source_id`, `target_id`, `rel_type`, `rel_field`, `actor_id`, `entity_id`, `group_id`,
+      `permissions`) and four partial indexes (`WHERE type = 'relationship'` etc.) name both the
+      type _and_ the field layout of the system entities. Each path gains a component segment, and
+      each `WHERE type = …` guard becomes a component-existence guard that has to be indexable —
+      this is the deepest coupling in the slice and the one most likely to be missed.
+- [ ] Re-derive the bespoke caches only where the component makes them redundant:
+      `entity_groups*`, `group_members*`, and `entity_types` survive (membership, grants, and the
+      committed model stay rows); `relationships*`' forward half goes with slice 13.
+
+**Acceptance.** No module in `ebb_server/lib` dispatches on a model string to decide storage,
+conflict, or existence behaviour. A concurrent write cannot produce an edge with a new target and
+an old source, a membership with a mismatched pair, or a membership re-pointed in place.
+
+**Depends on.** 4, 6, 8. **Not blocked by** #790.
+
+---
+
+### 11. `refactor(storage)`: scope resolution is a declared table
+
+**Why.** `EntityIndex.resolve_groups_cached/3` is five function heads — one per system model — and
+`Authorizer` carries ~200 lines of prose explaining which model resolves through which field. That
+is a system layer written as string dispatch. Decision 11 makes the scope owner a declaration on
+the component, so the surface becomes a table read plus one recursion, and a fifth `ebb/*` component
+is added in one place.
+
+**Scope.** `scope: "self" | "<field>"` on `ebb/*` components; `EntityIndex.resolve_groups*` and
+`fan_out_preference` driven by the declaration; `PermissionHelper`'s system-model list gone; the
+`intra_action`/`Overlay` snapshot rule stated once, as the predicate class's read rule (stored state
+plus this Action's own prefix).
+
+| Component        | Scope owner             |
+| ---------------- | ----------------------- |
+| `ebb/group`      | `self`                  |
+| `ebb/grant`      | `group_id`              |
+| `ebb/membership` | `group_id`              |
+| `ebb/link`       | `source_id`             |
+| anything else    | the entity's membership |
+
+Groups and grants carry no membership row: a group's scope is itself and a grant's is the group it
+names. `ebb/membership` is never written for either.
+
+**Work.**
+
+- [ ] `scope:` accepted on `ebb/*` only; a user component that declares one is rejected at schema
+      load, because a component that can name a group could mint its own delivery scope.
+- [ ] `EntityIndex`: one table read plus one recursion, replacing the five clauses.
+- [ ] `fan_out_preference` reads the declaration rather than naming `relationship`/`entityGroup`/
+      `groupMember`.
+- [ ] A membership write's scope is the `old ∪ new` group set; the authorizer checks the entity's
+      `<model>.update` in the old set and `ebb/membership.create` in the new one.
+- [ ] Delete `PermissionHelper.system_models/0` and `GroupListing`'s copy.
+- [ ] Record the snapshot rule: predicates read stored state unioned with the current Action's
+      earlier Updates, never the caches.
+- [ ] Delete the model-string dispatch in `EntityIndex`, `Writer`, `SystemCache`, and `Authorizer`.
+
+**Acceptance.** No module dispatches on a model string to decide scope. Adding a fifth `ebb/*`
+component changes one registration and no dispatch site. Every #624/#623/#789 vector still rejects.
+
+**Depends on.** 10. **Blocks** 12, 13.
+
+---
+
+### 12. `feat(auth)`: per-component permissions, with the server schema-free
+
+**Why.** The declaration half of the identity story, with one hard constraint: **the server stays
+schema-free.** The wire no longer carries `subject_type` (#797), so the forgeable identity claim is
+gone, and #624's committed-model check landed separately in #639. The client refuses a component its
+model does not declare (`ModelRegistry.validateAction`); the server cannot, because it has no schema
+and must not grow one. What the server can enforce is that a component's prefix is the id's
+committed model, so a component cannot borrow another model's permission.
+
+**Scope.** Committed-model enforcement (already in the Authorizer; keep and test it); per-component
+permissions from Decision 12; the model→component mapping in the schema hash (already covered by
+`computeSchemaHash`); the scope table from slice 11 consumed here, not re-derived. No server-side
+schema, registry, or declared-set validation.
+
+**Work.**
+
+- [x] The client rejects a component the model does not declare (`ModelRegistry.validateAction`).
+- [ ] The server rejects a component whose prefix is not the id's committed model, and never
+      consults a schema. A component `note/<anything>` under committed model `note` is accepted;
+      record that as the accepted residual (no privilege escalation — the actor already holds
+      `<model>.<verb>`).
+- [ ] `ebb/<component>.<verb>` checked when the component declares `permission: "own"`;
+      `<model>.<verb>` otherwise; `<model>.*` unchanged.
+- [x] Schema hash covers the model→component mapping, so a permission cannot be borrowed across
       models.
-- [ ] Close #624 with a test per row of its defect table.
+- [ ] Keep #624's committed-model regression tests green (#639), and add a vector for a component
+      whose prefix matches the committed model but whose leaf is undeclared.
 - [ ] Document the read/write asymmetry: field-granular _write_ permissions are available,
       field-granular _read_ permissions are out of scope because read filtering is a fan-out
       property.
 
-**Acceptance.** Every vector in `624-committed-type-authz.md` is a rejected write. `rg
-"subject_type" ebb_server/lib` finds nothing. A component not declared by the model cannot be
-written by any actor holding any permission.
+**Acceptance.** The server reads no schema: no component registry, schema file, or declared-set
+lookup exists in `ebb_server/lib`. Every vector in `624-committed-type-authz.md` stays a rejected
+write. A component whose prefix is not the id's committed model is refused. An undeclared leaf under
+the committed model is refused by the client and accepted by the server; the slice records that as
+an accepted residual, because it grants no authority the actor did not already have.
 
-**Depends on.** 4, 6, 12.
+**Depends on.** 4, 6, 11.
 
 ---
 
-### 11. `feat(schema)`: per-component version and read migrations
+### 13. `refactor(storage)`: `ebb/link` becomes a keyed pair on its source
+
+**Why.** `docs/research/membership-and-links-as-components.md` argues the edge row is a
+denormalized index of its endpoints' scopes, and that #789 is what that denormalization does when
+its input moves. If a link names its source and lives on it, its delivery scope is the source's by
+construction, forward traversal becomes a component read, duplicate edges become unrepresentable,
+and a link a replica missed arrives with its source during backfill — which today it never does.
+
+**Scope.** `ebb/link` moves from an atomic value on its own row to a keyed component of its source;
+the edge row and the `entityGroup` rows it mirrors are deleted; the forward half of
+`RelationshipCache` and the `rowId → yieldedId` layer of `reverse-index.ts` go; the server keeps a
+reverse index `(type, target_id) → source ids`. `contained: true` becomes a resolution-time rule
+(`source ∪ target`).
+
+**The gate.** Price the containment hop inside the authorizer against the ~21k Actions/s budget
+before committing; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+
+**Work.**
+
+- [ ] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
+- [ ] Delete the edge row, the mirrored `entityGroup` rows, `RelationshipCache`'s forward direction,
+      and `reverse-index.ts`'s row layer.
+- [ ] Server reverse index `(type, target_id) → source ids`, rebuilt at boot like the others.
+- [ ] `contained: true` as a resolution-time union; measure the hop.
+- [ ] Backfill: a missed link arrives with its source; assert it.
+- [ ] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a
+      component entry and leaves the source's model entry alone (slice 10's rule).
+
+**Acceptance.** Duplicate `(source, field, type, target)` edges are unrepresentable. Moving a source
+never leaves a link in a stale group (#789). The containment hop is measured and recorded.
+
+**Depends on.** 11. **Blocked by** #790.
+
+---
+
+### 14. `feat(schema)`: per-component version and read migrations
 
 **Why.** Folds in #124. Versioning by entity type means renaming one field bumps the whole type and
 forces one migration function to know every field. Per-component versioning makes read migrations
@@ -625,56 +762,6 @@ the same row; a missing migration step fails at boot, not at read.
 
 ---
 
-### 12. `refactor(storage)`: the four system types become system components
-
-**Why.** #195 exists because the system-entity enumeration is duplicated across `EntityIndex`,
-`PermissionHelper`, `Authorizer`, `Writer`, and `SystemCache`, and a fifth system entity
-force-edits five files. That is the `type`-doing-six-jobs problem in its purest form. Fixing it
-with a constants module keeps the shape and removes one symptom.
-
-**Scope.** `ebb/group`, `ebb/groupMember`, `ebb/membership`, `ebb/link` as components on ordinary
-rows; dispatch on the component; the cache tables keyed by component; `ebb/link` declaring its own
-conflict scope and its own membership rows per #790.
-
-**The rows stay.** A membership does _not_ become a key on the member's row, and a group member does
-not become a key on the group's row. Both are tempting — `ebb/membership: { grp1: {}, grp2: {} }` on
-the entity would make "which groups is this in?" a field read with no cache, and cut adding an
-entity to three groups from three Updates to one. It fails on the paths #790 exists to fix: group
-listing, membership listing, and backfill are **keyset pagination** over ordered rows
-(`idx_entities_entity_group_page`, `idx_entities_group_member`, `GroupListing`), and a JSON key set
-cannot serve an ordered window. It would also move the delivery scope of a membership change from
-the row's own identity to keys inside the payload.
-
-**Rule:** anything you paginate must be a row.
-
-**Work.**
-
-- [ ] Name and register the four system components; `SYSTEM_ENTITY_NAMES` and
-      `system_entity_types/0` become component lookups or disappear.
-- [ ] `EntityIndex`, `Authorizer`, `Writer`, `SystemCache`, `PermissionHelper` dispatch on the
-      component.
-- [ ] `ebb/link` carries `source_id`, `target_id`, `type`, `field` as one **atomic** component, so a
-      torn edge is unrepresentable.
-- [ ] `ebb/membership` carries `entity_id`, `group_id` atomically for the same reason: a torn
-      membership is a permission scope change.
-- [ ] `ebb/link` owns its `entityGroup` rows (#790); groups resolve from the edge's own membership.
-- [ ] **The SQLite read model stops hardcoding system field names.** Eight generated columns
-      (`source_id`, `target_id`, `rel_type`, `rel_field`, `actor_id`, `entity_id`, `group_id`,
-      `permissions`) and four partial indexes (`WHERE type = 'relationship'` etc.) name both the
-      type _and_ the field layout of the system entities. Each path gains a component segment, and
-      each `WHERE type = …` guard becomes a component-existence guard that has to be indexable —
-      this is the deepest coupling in the slice and the one most likely to be missed.
-- [ ] The four bespoke caches (`entity_groups_by_id`, `relationships_by_id`, `group_members_by_id`,
-      `entity_types`) are re-derived or collapse; `CacheTables` stops enumerating them by hand.
-
-**Acceptance.** `rg "resolve_groups_cached\(\"relationship\"\)"` and the literal system-type
-predicates in `ebb_server/lib` return nothing. A concurrent write cannot produce an edge with a
-new target and an old source, or a membership with a mismatched actor and group.
-
-**Depends on.** 4, 8, 10. **Blocked by** #790.
-
----
-
 ## Ordering
 
 ```text
@@ -684,15 +771,23 @@ new target and an old source, or a membership with a mismatched actor and group.
     ├── 4 wire envelope ────────┼── 5 existence ── 6 index ──┬── 7 invalidation
     │                           │                          ├── 8 conflict scope
     │                           │                          ├── 9 residency ── (#665, #775)
-    │                           │                          └── 10 authz ── 12 system components
-    └── 11 versioning
+    │                           │                          └── 10 system components
+    │                           │                                └── 11 scope table
+    │                           │                                      ├── 12 authz
+    │                           │                                      └── 13 link pair ── (#790)
+    └── 14 versioning (parallel)
 ```
 
-Slices 3 and 11 are parallel lanes: neither blocks the critical path and both are useful alone.
+Slices 3 and 14 are parallel lanes: neither blocks the critical path and both are useful alone.
 
 **Slice 9 is on the critical path** because #775's body-as-component is only viable once a component
 can be windowed; it is the one slice that adds machinery rather than removing it. Slice 7 is the
 cheapest win in the epic and should be pulled forward once 6 lands.
+
+**The system-component contract is 10 → 11 → 12.** Naming and atomicity (10) is a pure rename plus
+immutability with today's semantics, so it lands first and unblocks the table (11); authz (12)
+consumes the table instead of re-deriving it, which is why it moved behind them. Slice 13 is the
+follow-on the research note argues for and is gated on #790 and the containment hop.
 
 ## What it buys, and what it costs
 
@@ -700,14 +795,16 @@ Stated plainly, because the two are not the same currency and conflating them is
 refactor gets oversold.
 
 **Buys — correctness.** #624 becomes unrepresentable rather than fixed: a write names a component
-the model declares, so there is no identity claim to forge. A torn `ebb/link` or `ebb/membership`
-becomes unrepresentable, because those components are atomic — today their leaves are four
-independent LWW leaves and only `put` keeps them coherent.
+the model declares, so there is no identity claim to forge. A torn or re-pointed `ebb/link`,
+`ebb/membership`, or `ebb/grant` becomes unrepresentable, because those components are atomic and
+key-immutable. And scope stops being something five modules each derive differently: one
+declaration per `ebb/*` component decides it.
 
-**Buys — deleted special cases.** `STRUCTURAL_SUBJECT_TYPES`, the generated document-entity family
+**Buys — deleted special cases.** `STRUCTURAL_MODELS`, the generated document-entity family
 (the mechanism; #776 still deletes the call sites), the system-type enumeration across five modules
-(#195), the per-type residency plumbing, and `InboundSubject.replaced` all exist because _one_
-string had to serve six jobs. This is where most of the diff is, and it is negative.
+(#195), the five-clause scope dispatch in `EntityIndex` with its ~200 lines of authorizer prose, the
+per-type residency plumbing, and `InboundSubject.replaced` all exist because _one_ string had to
+serve six jobs. This is where most of the diff is, and it is negative.
 
 **Buys — existence as a fact.** Optional data stops being a tombstone that reads like an absence.
 Projection loses two of its four states per optional component, and `has()` becomes an index
@@ -717,9 +814,11 @@ predicate instead of a null filter.
 for, cold reads and backfill sized to a component, and a read cache (#516) that a body write no
 longer evicts. These are the real performance wins and they are all latency, not throughput.
 
-**Costs — throughput, slightly.** More Updates per Action (slice 4 measures the delta), and k
-rows per entity for the components declared `indexed` (slice 6 measures at k = 2/4/8). Both
-are bounded and both are measured before the envelope lands.
+**Costs — throughput, measured, and not slight.** Five components per edit is +50% Action payload
+and, at the hot write path, −28% accepted Actions/s with +70% p95 (slice 4). A single-field write is
+unchanged; creates and multi-component edits pay. The same per-Update cost is why atomic system
+components matter: one Update for a whole membership or edge instead of two or four. The k-rows-per-
+indexed-component cost is the other half, and slice 6 measures it at k = 2/4/8.
 
 **Costs — replica persistence complexity, and it is not optional.** `toRecord` persists held rows on
 one rule; partial rows mean a second store keyed by `(entity, component)`. Slice 9 owns this and it
@@ -763,9 +862,9 @@ edits/s falls by a third, and the payload grows only 50% for five components bec
 Update's fixed envelope is paid once per component. A single-field write is one Update in both
 envelopes, so the common edit is free; the cost is paid exactly by writes that touch many
 components at once — creates, and multi-field edits. That is the throughput figure the epic's
-"costs — throughput, slightly" was guessing at, and it is steeper at the hot write path than
-"slightly": at 8 callers and a 400-Action flush, roughly a quarter of the accepted write rate
-moves from doing useful edits to carrying per-Update overhead. The latency figures are the same
+original guess — "costs — throughput, slightly" — was hedging on, and it is steeper at the hot
+write path than "slightly": at 8 callers and a 400-Action flush, roughly a quarter of the accepted
+write rate moves from doing useful edits to carrying per-Update overhead. The latency figures are the same
 effect at flush granularity, not a second cost. Slice 4 also removed the Writer's per-flush
 quadratic list build, which recovered ~17% of this path on its own; the remaining gap is the
 envelope's fixed cost per component.
@@ -785,7 +884,12 @@ rather than by how much data it carries.
 - **Behaviour on components.** A component with a method is a design failure.
 - **Entity id recycling.** Ids are CRDT keys and are referenced from other rows.
 - **Field-level read permissions.** A separate fan-out design.
-- **Components that carry their own group membership.** That is what entities are for.
+- **Components that own a group set.** A component may name the entity whose scope it borrows —
+  that is how `ebb/link` and `ebb/grant` work — but it never owns memberships of its own.
+- **Membership as a pair component on the member.** Anything you paginate must have rows, and group
+  listing is keyset pagination. Recorded so it is not re-derived.
+- **Multi-brand entities.** One entity carries one model's components; a component name is
+  namespaced by its model. Removing that would give the server a schema.
 
 ## Open questions
 
@@ -799,5 +903,10 @@ rather than by how much data it carries.
 3. Should `replace` exist at all, or is `merge` plus an explicit `drop` sufficient? `replace` is
    the only method a keyspace component must refuse, so removing it removes a rule.
 4. Does `optional` belong on the component or on the model (a model-level "all components
-   optional" default)? Slice 5 decides.
+   optional" default)? Decided in [#798](https://github.com/ebbjs/ebbjs/issues/798): on the
+   component, and `optional` refuses a declared default.
 5. How does per-component residency interact with #123's compaction low-water mark?
+6. What does the containment hop cost when `ebb/link` moves onto its source? Slice 13 is gated on
+   it; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+7. Does the group → members index survive the `ebb/*` rename, or does it collapse into the
+   component index? Slice 11 measures it at k = 2/4/8 alongside the scope table.

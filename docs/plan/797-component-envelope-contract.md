@@ -94,7 +94,7 @@ The server has no schema. It derives what it needs from the two naming invariant
   inside the entity/materialization path, projected by `EntityView`. Only the _wire_ loses
   `data.fields`; the stored row, `/entities/:id`, query filters, and group listing keep the
   row shape they have today. This is deliberate: slice 4 is the wire, slice 6 replaces the
-  existence index, slice 12 renames the system components.
+  existence index, slice 10 renames the system components.
 
 Internal vocabulary:
 
@@ -204,7 +204,7 @@ large component can be excluded without a second read path (ADR "component-scope
   is fetched.
 - **Outbox / conflict slots / history**: `InboundSubject` and `PendingWrite` carry
   **components**, not field maps: a component is the slot key, and a component value's map
-  keys are the paths inside it. `STRUCTURAL_SUBJECT_TYPES` becomes a check on the model
+  keys are the paths inside it. `STRUCTURAL_MODELS` becomes a check on the model
   prefix of the component (slice 8 replaces it with the declared conflict scope).
 - **Schema registry**: `validateAction` resolves the model from the component prefix and
   refuses a component the model does not declare (the field key, today's rule).
@@ -228,10 +228,10 @@ pinned here because reversing them later costs a wire or data-format change:
   change, so it is revisited only if slice 6 (#799) finds no consumer.
 - **`<model>/<field>` is the addressing rule, not an implementation detail.** A component's name leaf
   is the row field it lives at; that is what lets the server stay schema-free. A later slice may
-  rename the _names_ (`ebb/link` in slice 12) but not the shape — a component addressed
+  rename the _names_ (`ebb/link` in slice 10) but not the shape — a component addressed
   independently of a row field is a wire change, not a schema relaxation.
 - **One model per subject per Action** is an invariant of the identity story, enforced at structure
-  validation. Declared-set authorization (slice 10) and the system-component rename (slice 12) both
+  validation. Declared-set authorization (slice 12) and the system-component rename (slice 10) both
   depend on it holding.
 
 These were scaffolding that slice 5 (#798) deletes, listed there so they are not rediscovered:
