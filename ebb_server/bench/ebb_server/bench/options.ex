@@ -109,7 +109,8 @@ defmodule EbbServer.Bench.Options do
   # production `write_batch`; `current_window` adds the op assembly the Writer
   # does before the commit; `log_first*` are the owned-segment contenders
   # (`assemble` is the record build without I/O, `io` is one pwrite+datasync of
-  # a prebuilt record). Nothing here is on the production path.
+  # a prebuilt record); `disk_log` is the same window record through OTP's
+  # `:disk_log`. Nothing here is on the production path.
   @type engine ::
           :current
           | :current_window
@@ -118,6 +119,7 @@ defmodule EbbServer.Bench.Options do
           | :log_first_recycled
           | :log_first_assemble
           | :log_first_io
+          | :disk_log
   @type distribution :: :spread | :hot
 
   @type ablate_phase ::
@@ -206,7 +208,8 @@ defmodule EbbServer.Bench.Options do
     "log_first" => :log_first,
     "log_first_recycled" => :log_first_recycled,
     "log_first_assemble" => :log_first_assemble,
-    "log_first_io" => :log_first_io
+    "log_first_io" => :log_first_io,
+    "disk_log" => :disk_log
   }
   @distributions %{"spread" => :spread, "hot" => :hot}
   # One client OS process per this many connections keeps a single BEAM's
@@ -511,6 +514,9 @@ defmodule EbbServer.Bench.Options do
 
   def engine_description(:log_first_io),
     do: "log_first — one pwrite + one datasync of a prebuilt record (I/O floor)"
+
+  def engine_description(:disk_log),
+    do: "disk_log — one window record: assemble + one balog + one sync through OTP's disk_log"
 
   @doc """
   Whether the run drives the raw storage NIF instead of the Writer.
