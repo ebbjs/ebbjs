@@ -8,7 +8,7 @@
 import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
 import { describe, expect, it } from "vitest";
 
-import { diffEntity } from "../entity-diff";
+import { diffEntity } from "./entity-diff";
 
 const LOCAL_HLC = makeHlc(1_711_036_800_000);
 const PEER_HLC = makeHlc(1_711_036_800_001);
@@ -28,6 +28,7 @@ const row = (fields: Record<string, FieldValue>): Entity => ({
   id: "todo_1",
   type: "todo",
   data: { fields },
+  exists: true,
   created_hlc: LOCAL_HLC,
   updated_hlc: LOCAL_HLC,
   deleted_hlc: null,

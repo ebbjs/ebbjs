@@ -14,7 +14,7 @@ import {
   resultingGroups,
   type LiveGroupMember,
   type MembershipView,
-} from "@ebbjs/write";
+} from "./membership";
 
 const view = (overrides: Partial<MembershipView> = {}): MembershipView => ({
   groupsOf: () => [],

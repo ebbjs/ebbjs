@@ -63,7 +63,9 @@ const commitUpdates = async (
 
 /** The one Update carrying `component`. */
 const componentOf = (updates: readonly Update[], component: string): Update => {
-  const update = updates.find((candidate) => candidate.component === component);
+  const update = updates.find(
+    (candidate) => candidate.method !== "delete" && candidate.component === component,
+  );
   if (update === undefined) throw new Error(`no update for component "${component}"`);
   return update;
 };
@@ -97,11 +99,9 @@ describe("@ebbjs/write", () => {
     expect(result.response.rejected).toEqual([]);
     expect(result.groups).toEqual(["g_project"]);
     expect(submissions).toHaveLength(1);
-    expect(submissions[0]?.map((update) => update.component)).toEqual([
-      "issue/title",
-      "entityGroup/entity_id",
-      "entityGroup/group_id",
-    ]);
+    expect(
+      submissions[0]?.map((update) => (update.method === "delete" ? null : update.component)),
+    ).toEqual(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]);
   });
 
   it("scopes a bootstrapped group to the app that created it", async () => {
@@ -123,7 +123,9 @@ describe("@ebbjs/write", () => {
 
     const updates = await commitUpdates(registry, [bootstrap.call]);
 
-    expect(updates.some((update) => update.component === "group/apps")).toBe(false);
+    expect(
+      updates.some((update) => update.method !== "delete" && update.component === "group/apps"),
+    ).toBe(false);
     expect(componentOf(updates, "group/name")).toMatchObject({ method: "replace" });
   });
 
@@ -190,7 +192,9 @@ describe("@ebbjs/write", () => {
       updateId: "u_1",
     });
 
-    expect(updates.map((update) => update.component).sort()).toEqual([
+    expect(
+      updates.map((update) => (update.method === "delete" ? null : update.component)).sort(),
+    ).toEqual([
       "relationship/field",
       "relationship/source_id",
       "relationship/target_id",
@@ -306,7 +310,9 @@ describe("@ebbjs/write", () => {
 
     expect(result.groups).toEqual(["g_project"]);
     expect(result.updates).toHaveLength(4);
-    expect(result.updates.map((update) => update.component).sort()).toEqual([
+    expect(
+      result.updates.map((update) => (update.method === "delete" ? null : update.component)).sort(),
+    ).toEqual([
       "relationship/field",
       "relationship/source_id",
       "relationship/target_id",
