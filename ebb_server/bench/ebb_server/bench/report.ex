@@ -617,6 +617,15 @@ defmodule EbbServer.Bench.Report do
       "built once before the window, so the sample prices the syscall and the flush alone.\n"
   end
 
+  defp latency_note(%{tier: :t5, engine: :disk_log}) do
+    "Values are wall time around building one window record (Action construction, validation, " <>
+      "ETF encoding, per-Action length/CRC stamping and concatenation) plus one " <>
+      "`:disk_log.balog/2` and one `:disk_log.sync/1`, the same regions the `log_first` arm " <>
+      "times. `balog/2` casts to the `disk_log` process, so with `--durability async` the " <>
+      "sample prices the enqueue only and the write lands off the caller." <>
+      "\n"
+  end
+
   defp latency_note(%{tier: :t5}) do
     "Values are wall time around the selected append in the bench worker " <>
       "(`log_first` includes frame assembly, the CRC, one `pwrite` and one `datasync`; " <>
@@ -979,7 +988,8 @@ defmodule EbbServer.Bench.Report do
       "Each caller is one BEAM process issuing the selected durable append directly at a " <>
       "synthetic GSN base; only that append's cost is measured (`current` is " <>
       "`:rocksdb.write_batch/3`; `log_first` is one window record through " <>
-      "`:file.pwrite/3` plus `:file.datasync/1`). The " <>
+      "`:file.pwrite/3` plus `:file.datasync/1`; `disk_log` is the same record through " <>
+      "`:disk_log.balog/2` plus `:disk_log.sync/1`). The " <>
       "measured path bypasses the Writer, so its caches, watermark, and fan-out stay idle " <>
       "(the storage tree still boots to open the DB and seed the bench context). Nothing here " <>
       "reflects the production write path's bookkeeping, and GSN holes/watermark lag are " <>

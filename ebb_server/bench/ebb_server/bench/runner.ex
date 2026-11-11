@@ -18,6 +18,7 @@ defmodule EbbServer.Bench.Runner do
   alias EbbServer.Bench.{
     Baseline,
     Boot,
+    DiskLogAppend,
     Guardrails,
     Http,
     LogAppend,
@@ -297,13 +298,23 @@ defmodule EbbServer.Bench.Runner do
     stats = new_stats(cap, measure_start)
     depth = Options.depth(config)
 
-    if depth == 1 do
-      loop(id, config, ctx, measure_start, deadline, stats)
-    else
-      call = fn seq -> perform(config.tier, config, ctx, id, seq) end
-      pipelined(depth, measure_start, deadline, stats, call, seq_step: config.batch_size)
-    end
+    stats =
+      if depth == 1 do
+        loop(id, config, ctx, measure_start, deadline, stats)
+      else
+        call = fn seq -> perform(config.tier, config, ctx, id, seq) end
+        pipelined(depth, measure_start, deadline, stats, call, seq_step: config.batch_size)
+      end
+
+    close_append(config)
+    stats
   end
+
+  # `disk_log` keeps the log in its own process, so the owner closes it when
+  # the measured loop ends rather than leaving the last samples to a
+  # descriptor that dies with this process.
+  defp close_append(%Options{tier: :t5, engine: :disk_log}), do: DiskLogAppend.close()
+  defp close_append(_config), do: :ok
 
   defp loop(id, config, ctx, measure_start, deadline, stats) do
     now = System.monotonic_time(:microsecond)
@@ -502,6 +513,13 @@ defmodule EbbServer.Bench.Runner do
     case WriteBatch.commit_one(RocksDB.cf_actions(), key, record, config.durability == :sync) do
       {:ok, latency} -> {assembled + latency, config.batch_size, 0, 0}
       {:error, latency, _reason} -> {assembled + latency, 0, 0, config.batch_size}
+    end
+  end
+
+  defp perform(:t5, %Options{engine: :disk_log} = config, ctx, id, seq) do
+    case DiskLogAppend.perform(config, ctx, id, seq) do
+      {:ok, latency, _bytes} -> {latency, config.batch_size, 0, 0}
+      {:error, latency, _reason} -> {latency, 0, 0, config.batch_size}
     end
   end
 
