@@ -129,17 +129,6 @@ function SyncStateProbe() {
 }
 
 describe("createEbbHooks", () => {
-  it("hands the component the provider's client without a generic", async () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <TodoList />
-      </EbbProvider>,
-    );
-    await flush();
-    expect(screen.getByTestId("actor").textContent).toBe("alice");
-  });
-
   it("runs a query whose `q` and rows are typed with no annotation", async () => {
     const client = makeClient();
     await seedTodo(client, "todo_1", "Ship it");

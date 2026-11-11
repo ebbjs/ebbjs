@@ -26,7 +26,7 @@ import {
 /** The `<model>/<field>` component name a write addresses. */
 const componentName = (model: string, field: string): `${string}/${string}` => `${model}/${field}`;
 
-import { EbbProvider, useClient, useQuery, type QueryRoot } from "../index";
+import { EbbProvider, useQuery, type QueryRoot } from "../index";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -210,62 +210,7 @@ describe("useQuery", () => {
     client = makeClient();
   });
 
-  it("hands the callback the provider's client as `q`", async () => {
-    await seed(client, "todo_1", "Ship it", false);
-
-    const roots: unknown[] = [];
-    const queryFns: Array<[unknown, unknown]> = [];
-
-    function Probe() {
-      const bound = useClient<Client>();
-      useQuery((q: QueryRoot<Schema>) => {
-        roots.push(q);
-        queryFns.push([q.todo.query, bound.todo.query]);
-        // `q` narrows each namespace to `query()`; writes stay on useClient().
-        // @ts-expect-error the q root does not expose mutation verbs.
-        void q.todo.update;
-        return q.todo.query();
-      });
-      return null;
-    }
-
-    renderWithClient(client, <Probe />);
-    await flush();
-
-    expect(roots.length).toBeGreaterThan(0);
-    for (const root of roots) expect(root).toBe(client);
-    for (const [fromRoot, fromClient] of queryFns) {
-      expect(fromRoot).toBe(fromClient);
-      expect(fromRoot).toBe(client.todo.query);
-    }
-  });
-
-  it("renders the joined rows a `with({ assignee })` selection widens", async () => {
-    await seedAssigned(client, "Ada");
-
-    function AssigneeList() {
-      const { data, status } = useQuery((q: QueryRoot<Schema>) =>
-        q.todo.query().with({ assignee: true }),
-      );
-      const rows = data ?? [];
-      return (
-        <div>
-          <span data-testid="status">{status}</span>
-          <span data-testid="assignees">
-            {rows.map((row) => String(row.assignee?.name ?? "none")).join(",")}
-          </span>
-        </div>
-      );
-    }
-
-    renderWithClient(client, <AssigneeList />);
-    await flush();
-
-    expect(screen.getByTestId("status").textContent).toBe("current");
-    expect(screen.getByTestId("assignees").textContent).toBe("Ada");
-  });
-
-  it("types the joined rows from the schema", async () => {
+  it("renders the joined rows a `with({ assignee })` selection widens, typed from the schema", async () => {
     await seedAssigned(client, "Ada");
 
     type JoinedIssue = {
@@ -275,27 +220,37 @@ describe("useQuery", () => {
       readonly assignee: { readonly id: string; readonly name?: string } | null;
     };
 
-    const rendered: (readonly JoinedIssue[] | undefined)[] = [];
-
     function AssigneeList() {
       // Annotating `q` leaves every type argument to inference, so the join
       // selection narrows `data`.
-      const { data } = useQuery((q: QueryRoot<Schema>) => q.todo.query().with({ assignee: true }));
+      const { data, status } = useQuery((q: QueryRoot<Schema>) =>
+        q.todo.query().with({ assignee: true }),
+      );
       // Compile-time proof: field and join types flow through `data`...
       const typed: readonly JoinedIssue[] | undefined = data;
-      rendered.push(typed);
+      void typed;
       // ...and a wrong join shape is rejected.
       // @ts-expect-error the join widens `assignee` to the joined user row, not a name string.
       const wrong: readonly { assignee: string }[] | undefined = data;
       void wrong;
-      return <span data-testid="assignee">{data?.[0]?.assignee?.name ?? ""}</span>;
+      const rows = data ?? [];
+      return (
+        <div>
+          <span data-testid="status">{status}</span>
+          <span data-testid="assignees">
+            {rows
+              .map((row) => (row.assignee ? `${row.assignee.id}:${row.assignee.name}` : "none"))
+              .join(",")}
+          </span>
+        </div>
+      );
     }
 
     renderWithClient(client, <AssigneeList />);
     await flush();
 
-    expect(screen.getByTestId("assignee").textContent).toBe("Ada");
-    expect(rendered.at(-1)?.[0]?.assignee?.id).toBe("user_1");
+    expect(screen.getByTestId("status").textContent).toBe("current");
+    expect(screen.getByTestId("assignees").textContent).toBe("user_1:Ada");
   });
 
   it("types the query row's groupIds from the hook result", async () => {

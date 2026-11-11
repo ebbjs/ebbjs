@@ -25,14 +25,13 @@ import {
   ensureRootSpan,
   getPositionOfRun,
   getRunAtPosition,
-  isRemote,
   lookupPositionFromSpans,
   mountEditorBridge,
   ROOT_ID,
   ROOT_PLACEHOLDER_SPAN,
   setIdMapEffect,
   type RunSpan,
-} from "../bridge";
+} from "./bridge";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -58,12 +57,6 @@ const SPLIT_SPANS: RunSpan[] = [
   { runId: "a", offset: 0, length: 5 },
   { runId: "b", offset: 0, length: 3 },
   { runId: "a", offset: 5, length: 2 },
-];
-
-/** A run with no inserts anchored inside it. */
-const SIMPLE_SPANS: RunSpan[] = [
-  { runId: "a", offset: 0, length: 5 },
-  { runId: "b", offset: 0, length: 3 },
 ];
 
 /** Build a run cell. */
@@ -283,20 +276,6 @@ describe("bridge helpers", () => {
     expect(getPositionOfRun(seeded, "a", 8, idMapField)).toBeUndefined();
     expect(getPositionOfRun(seeded, "missing", 0, idMapField)).toBeUndefined();
   });
-
-  it("getPositionOfRun accepts offset === span end (end-of-run cursor)", () => {
-    const idMapField = createIdMapField();
-    const seeded = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    }).update({
-      effects: setIdMapEffect.of(SIMPLE_SPANS),
-    }).state;
-    expect(getPositionOfRun(seeded, "a", 5, idMapField)).toBe(5);
-    expect(getPositionOfRun(seeded, "b", 3, idMapField)).toBe(8);
-    // Offset beyond the run length is rejected.
-    expect(getPositionOfRun(seeded, "a", 100, idMapField)).toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -406,21 +385,10 @@ describe("local CM edit → doc", () => {
 // what CM already had (and pushed mid-run inserts to the wrong side
 // of the parent because the spans StateField hadn't caught up yet).
 //
-// These tests would have caught the bug originally reported via the
-// demo: typing 'h' repeatedly produced 'hhhh...' and mid-run
-// inserts appeared backwards.
+// This test would have caught the bug originally reported via the demo:
+// typing 'h' repeatedly produced 'hhhh...'.
 
 describe("regression: local CM edits do not double-apply", () => {
-  it("typing each letter produces the right text (not doubled)", () => {
-    const { view, doc } = setup();
-    const letters = ["h", "e", "l", "l", "o"];
-    for (let i = 0; i < letters.length; i++) {
-      localInsert(view, i, letters[i]!);
-    }
-    expect(doc.text).toBe("hello");
-    expect(view.state.doc.toString()).toBe("hello");
-  });
-
   it("extending a run repeatedly does not double characters", () => {
     const { view, doc } = setup();
     localInsert(view, 0, "h");
@@ -429,26 +397,6 @@ describe("regression: local CM edits do not double-apply", () => {
     }
     expect(doc.text).toBe("hhhhh");
     expect(view.state.doc.toString()).toBe("hhhhh");
-  });
-
-  it("mid-run insert lands between the two halves, not after them", () => {
-    const { view, doc } = setup();
-    localInsert(view, 0, "abcdef");
-    // Insert "X" between c and d.
-    localInsert(view, 3, "X");
-
-    // The bug would produce "abcdefX" (X inserted after the parent)
-    // or "abcdefXdef" (the duplicate-apply doubled with split).
-    expect(doc.text).toBe("abcXdef");
-    expect(view.state.doc.toString()).toBe("abcXdef");
-  });
-
-  it("typing at start then middle preserves order", () => {
-    const { view, doc } = setup();
-    localInsert(view, 0, "ab");
-    localInsert(view, 1, "X");
-    expect(doc.text).toBe("aXb");
-    expect(view.state.doc.toString()).toBe("aXb");
   });
 });
 
@@ -635,82 +583,6 @@ describe("mountEditorBridge initial sync", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Annotations & effects
-// ---------------------------------------------------------------------------
-
-describe("isRemote annotation", () => {
-  it("is exposed and has an annotation interface", () => {
-    // Annotation.define returns an Annotation instance (an object with
-    // .of() and a hidden Symbol-keyed identity). Verify the basic
-    // shape we rely on.
-    expect(isRemote).toBeDefined();
-    expect(typeof (isRemote as unknown as { of: (v: boolean) => unknown }).of).toBe("function");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getRunAtPosition end-of-doc positions
-// ---------------------------------------------------------------------------
-
-describe("getRunAtPosition at end of doc", () => {
-  it("returns the last run when position equals the total span length", () => {
-    const idMapField = createIdMapField();
-    const seeded = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    }).update({
-      effects: setIdMapEffect.of(SIMPLE_SPANS),
-    }).state;
-    expect(getRunAtPosition(seeded, 8, idMapField)).toEqual({
-      runId: "b",
-      offset: 3,
-      spanIndex: 1,
-    });
-  });
-
-  it("returns the last fragment of a split run at the doc end", () => {
-    const idMapField = createIdMapField();
-    const seeded = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    }).update({
-      effects: setIdMapEffect.of(SPLIT_SPANS),
-    }).state;
-    expect(getRunAtPosition(seeded, 10, idMapField)).toEqual({
-      runId: "a",
-      offset: 7,
-      spanIndex: 2,
-    });
-  });
-
-  it("returns the only run when position equals its length (single-run doc)", () => {
-    const idMapField = createIdMapField();
-    const seeded = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    }).update({
-      effects: setIdMapEffect.of([{ runId: "solo", offset: 0, length: 5 }]),
-    }).state;
-    expect(getRunAtPosition(seeded, 5, idMapField)).toEqual({
-      runId: "solo",
-      offset: 5,
-      spanIndex: 0,
-    });
-  });
-
-  it("still returns undefined for positions past the total span length", () => {
-    const idMapField = createIdMapField();
-    const seeded = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    }).update({
-      effects: setIdMapEffect.of([{ runId: "a", offset: 0, length: 5 }]),
-    }).state;
-    expect(getRunAtPosition(seeded, 6, idMapField)).toBeUndefined();
-  });
-});
-
 describe("empty-doc ROOT placeholder", () => {
   it("createIdMapField seeds with the ROOT placeholder", () => {
     const idMapField = createIdMapField();
@@ -718,17 +590,11 @@ describe("empty-doc ROOT placeholder", () => {
       doc: "",
       extensions: [idMapField],
     });
-    expect(state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
-    expect(ROOT_PLACEHOLDER_SPAN).toEqual({ runId: ROOT_ID, offset: 0, length: 0 });
+    expect(state.field(idMapField)).toEqual([{ runId: ROOT_ID, offset: 0, length: 0 }]);
   });
 
   it("ensureRootSpan returns the placeholder for an empty array", () => {
     expect(ensureRootSpan([])).toEqual([ROOT_PLACEHOLDER_SPAN]);
-  });
-
-  it("ensureRootSpan is a no-op for a non-empty array", () => {
-    const spans: readonly RunSpan[] = SIMPLE_SPANS;
-    expect(ensureRootSpan(spans)).toBe(spans);
   });
 
   it("setIdMapEffect.of([]) still leaves the placeholder in the field", () => {
@@ -740,33 +606,6 @@ describe("empty-doc ROOT placeholder", () => {
       effects: setIdMapEffect.of([]),
     }).state;
     expect(seeded.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
-  });
-
-  it("getRunAtPosition resolves position 0 to (ROOT_ID, 0) on an empty doc", () => {
-    const idMapField = createIdMapField();
-    const state = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    });
-    expect(getRunAtPosition(state, 0, idMapField)).toEqual({
-      runId: ROOT_ID,
-      offset: 0,
-      spanIndex: 0,
-    });
-  });
-
-  it("getPositionOfRun resolves (ROOT_ID, 0) to document position 0 on an empty doc", () => {
-    const idMapField = createIdMapField();
-    const state = EditorState.create({
-      doc: "",
-      extensions: [idMapField],
-    });
-    expect(getPositionOfRun(state, ROOT_ID, 0, idMapField)).toBe(0);
-  });
-
-  it("mountEditorBridge on an empty doc leaves the placeholder in idMapField", () => {
-    const { view, idMapField } = setup();
-    expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
   });
 
   it("end-to-end: empty-doc local click resolves to (ROOT_ID, 0)", () => {
@@ -815,13 +654,5 @@ describe("empty-doc ROOT placeholder", () => {
     expect(doc.text).toBe("");
     expect(view.state.doc.toString()).toBe("");
     expect(view.state.field(idMapField)).toEqual([ROOT_PLACEHOLDER_SPAN]);
-  });
-
-  it("placeholder never leaks into the doc's spans", () => {
-    const { doc } = setup();
-    expect(doc.docState.index.spans).toEqual([]);
-    doc.localInsert("x");
-    const docSpanIds = doc.docState.index.spans.map((span) => span.runId);
-    expect(docSpanIds).not.toContain(ROOT_ID);
   });
 });

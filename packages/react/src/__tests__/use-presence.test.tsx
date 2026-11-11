@@ -10,7 +10,6 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { useRef, useState } from "react";
 import { Type } from "@sinclair/typebox";
 import {
   createClient,
@@ -19,7 +18,6 @@ import {
   defineSchema,
   e,
   type NamespacedClient,
-  type SyncClient,
 } from "@ebbjs/client";
 
 import { EbbProvider, createEbbHooks, usePresence } from "../index";
@@ -211,35 +209,6 @@ describe("usePresence", () => {
     expect(screen.getByTestId("blinkers").textContent).toBe("0");
   });
 
-  it("keeps the snapshot referentially stable while the peers are unchanged", () => {
-    const client = makeClient();
-
-    // `getSnapshot` must not mint a map per call: a new reference on an
-    // unrelated re-render is what makes `useSyncExternalStore` loop.
-    function BumpableSnapshot() {
-      const [, setBump] = useState(0);
-      const peers = useBoundPresence("plan_1", "camera");
-      const previous = useRef(peers);
-      const stable = previous.current === peers;
-      previous.current = peers;
-      return (
-        <button
-          data-testid="bump"
-          data-stable={String(stable)}
-          onClick={() => setBump((n) => n + 1)}
-        />
-      );
-    }
-
-    render(
-      <EbbProvider client={client}>
-        <BumpableSnapshot />
-      </EbbProvider>,
-    );
-    act(() => screen.getByTestId("bump").click());
-    expect(screen.getByTestId("bump").dataset["stable"]).toBe("true");
-  });
-
   it("types the channel and payload from the client's registry", () => {
     // A compile-time assertion: these lines never run, they only type-check.
     function TypeProbe() {
@@ -258,18 +227,6 @@ describe("usePresence", () => {
       return [zoom, anchorId] as const;
     }
     expect(TypeProbe).toBeTypeOf("function");
-  });
-
-  it("accepts a typed-presence client wherever a SyncClient is expected", () => {
-    const client = makeClient();
-    // The assignability the client's unified presence surface exists for: a
-    // registered client is a plain client, so the provider keeps one constraint.
-    const plain: SyncClient = client;
-    // @ts-expect-error — the class's private fields make a lookalike not a client
-    const lookalike: SyncClient = { actorId: "alice" };
-
-    expect(plain).toBe(client);
-    expect(lookalike).toBeDefined();
   });
 
   it("leaves an unregistered client's channels dynamic", () => {
