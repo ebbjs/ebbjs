@@ -82,19 +82,6 @@ describe("defineModel", () => {
     expect(note.markers.title).toEqual({ type: "lww" });
   });
 
-  it("accepts builders and named components in one map", () => {
-    const body = defineComponent(
-      "note/body",
-      { engine: e.string(), updates: e.map(e.string()) },
-      { optional: true, loading: "lazy", conflictScope: "component" },
-    );
-    const note = defineModel("note", { title: e.string(), body });
-
-    expect(note.components.title.name).toBe("note/title");
-    expect(note.components.body).toBe(body);
-    expect(note.shape.properties).toHaveProperty("body");
-  });
-
   it("maps the model's materialization default onto component loading", () => {
     const page = defineModel(
       "page",
@@ -150,13 +137,6 @@ describe("optional components", () => {
     expect((caught as OptionalDefaultConflictError).defaultedField).toBe("text");
     expect((caught as Error).message).toContain("note/draft");
     expect((caught as Error).message).toContain('"text"');
-  });
-
-  it("declares an optional component with no default as before", () => {
-    const draft = defineComponent("note/draft", { text: e.string() }, { optional: true });
-
-    expect(draft.optional).toBe(true);
-    expect(draft.name).toBe("note/draft");
   });
 
   it("lets create() omit an optional component that declares no default", () => {

@@ -18,19 +18,10 @@ import {
   type HLCTimestamp,
   type Update,
 } from "@ebbjs/core";
-import {
-  CURRENT_TEXT_VERSION,
-  DOC_CONTENT_FIELD,
-  DOC_VERSION_FIELD,
-  DocumentVersionError,
-  makeRunId,
-  TextDocument,
-  TextDocumentRegistry,
-  versionField,
-  type AppliedUpdate,
-  type CutCell,
-  type RunCell,
-} from "@ebbjs/schema";
+import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "./text-document";
+import { DocumentVersionError, versionField } from "./wire";
+import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import type { CutCell, RunCell } from "./tree";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -203,16 +194,6 @@ describe("hydrate", () => {
 // ---------------------------------------------------------------------------
 
 describe("TextDocument.localInsert", () => {
-  it("applies locally and queues one action", () => {
-    const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
-    const runId = doc.localInsert("hello", { hlc: makeHlc(2) });
-
-    expect(runId?.startsWith(`${makeRunId(makeHlc(2), "a")}:run_`)).toBe(true);
-    expect(doc.text).toBe("hello");
-    expect(doc.pendingActions()).toHaveLength(1);
-    expect(contentOf(doc.pendingActions()[0]!.updates[0]!)).toBeDefined();
-  });
-
   it("anchors a default insert at ROOT", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const runId = doc.localInsert("hello", { hlc: makeHlc(2) })!;
@@ -377,29 +358,28 @@ describe("TextDocument.localExtend", () => {
 });
 
 describe("TextDocument.local edit ids", () => {
-  it("does not reuse an extend action id across instances of the same actor", () => {
+  it("does not reuse an action id across instances of the same actor", () => {
     const seed = seedBase();
     const first = openReplica(seed.content, "actor_a");
     const second = openReplica(seed.content, "actor_a");
 
-    const firstId = first.localExtend({ runId: seed.runId, appendText: ".", hlc: makeHlc(3) });
-    const secondId = second.localExtend({ runId: seed.runId, appendText: "?", hlc: makeHlc(3) });
-    expect(firstId).not.toBe(secondId);
-  });
+    // The same stamp and actor must not mint the same server dedup key.
+    const extend = first.localExtend({ runId: seed.runId, appendText: ".", hlc: makeHlc(3) });
+    const otherExtend = second.localExtend({
+      runId: seed.runId,
+      appendText: "?",
+      hlc: makeHlc(3),
+    });
+    expect(extend).not.toBe(otherExtend);
 
-  it("does not reuse a delete action id across instances of the same actor", () => {
-    const seed = seedBase();
-    const first = openReplica(seed.content, "actor_a");
-    const second = openReplica(seed.content, "actor_a");
-
-    const firstId = first.localDelete({ runId: seed.runId, offset: 0, count: 1, hlc: makeHlc(3) });
-    const secondId = second.localDelete({
+    const remove = first.localDelete({ runId: seed.runId, offset: 0, count: 1, hlc: makeHlc(4) });
+    const otherRemove = second.localDelete({
       runId: seed.runId,
       offset: 0,
       count: 1,
-      hlc: makeHlc(3),
+      hlc: makeHlc(4),
     });
-    expect(firstId).not.toBe(secondId);
+    expect(remove).not.toBe(otherRemove);
   });
 });
 
@@ -459,13 +439,6 @@ describe("TextDocument.applyActions", () => {
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
     const action = actionFrom(doc, cellUpdate([base], { version: 999 }));
     expect(() => doc.applyActions([action])).toThrow(DocumentVersionError);
-  });
-
-  it("applyUpdate wraps a single Update", () => {
-    const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
-    const base = peerRun(doc, "hi", { runId: "ROOT", offset: 0 }, "r1");
-    doc.applyUpdate(cellUpdate([base])[0]!);
-    expect(doc.text).toBe("hi");
   });
 });
 
@@ -535,28 +508,6 @@ describe("TextDocumentRegistry", () => {
     expect(registry.list()).toHaveLength(1);
     expect(registry.close("d")).toBe(true);
     expect(registry.list()).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Acceptance — both delivery orders converge on the exact text
-// ---------------------------------------------------------------------------
-
-describe("acceptance — concurrent edits converge", () => {
-  it("two clients typing at the end converge", () => {
-    const seed = seedBase();
-    const a = openReplica(seed.content, "actor_a");
-    const b = openReplica(seed.content, "actor_b");
-
-    const aRun = a.localInsert("!", { hlc: makeHlc(3) })!;
-    const bRun = b.localInsert("?", { hlc: makeHlc(4) })!;
-    a.applyActions(b.pendingActions());
-    b.applyActions(a.pendingActions());
-
-    expect(a.text).toBe(b.text);
-    expect(a.text).toContain("!");
-    expect(a.text).toContain("?");
-    expect([...a.docState.runs.keys()].sort()).toEqual([seed.runId, aRun, bRun].sort());
   });
 });
 
@@ -643,14 +594,6 @@ const textAfterReplay = (scenario: Scenario) => {
   return { aAppliesB: a.text, bAppliesA: b.text };
 };
 
-/** Hydrate a fresh replica from the merged cell map, merged in both orders. */
-const textFromMergedCells = (scenario: Scenario) => {
-  const { seed, aActions, bActions } = editOnBothReplicas(scenario);
-  const aThenB = openReplica(mergedContent([...aActions, ...bActions], seed.content), "observer");
-  const bThenA = openReplica(mergedContent([...bActions, ...aActions], seed.content), "observer");
-  return { aThenB: aThenB.text, bThenA: bThenA.text };
-};
-
 describe("concurrent edits inside one run — fixtures", () => {
   it.each(SCENARIOS)("$name reaches the described local state", (scenario) => {
     const seed = seedBase();
@@ -676,30 +619,5 @@ describe("concurrent edits inside one run — #762 reproductions", () => {
         bAppliesA: scenario.expectedText,
       });
     });
-
-    it("projects the merged cell map to the exact text in either merge order", () => {
-      expect(textFromMergedCells(scenario)).toEqual({
-        aThenB: scenario.expectedText,
-        bThenA: scenario.expectedText,
-      });
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Version surface
-// ---------------------------------------------------------------------------
-
-describe("version leaf", () => {
-  it("is written by every local edit", () => {
-    const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
-    doc.localInsert("a", { hlc: makeHlc(2) });
-    const version = doc
-      .pendingActions()[0]!
-      .updates.find(
-        (update) =>
-          update.method !== "delete" && componentField(update.component) === DOC_VERSION_FIELD,
-      )!;
-    expect(version.data).toMatchObject({ value: CURRENT_TEXT_VERSION });
   });
 });

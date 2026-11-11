@@ -19,7 +19,9 @@ import {
   type FieldValue,
   type HLCTimestamp,
 } from "@ebbjs/core";
-import { DOC_CONTENT_FIELD, lookupPosition, TextDocument, type RunCell } from "@ebbjs/schema";
+import { DOC_CONTENT_FIELD } from "./schema";
+import { TextDocument } from "./text-document";
+import { lookupPosition, type RunCell } from "./tree";
 
 const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
 

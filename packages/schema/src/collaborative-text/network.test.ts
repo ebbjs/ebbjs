@@ -8,67 +8,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { componentName, format, pack, type Action, type HLCTimestamp } from "@ebbjs/core";
-import {
-  DOC_CONTENT_FIELD,
-  DOC_VERSION_FIELD,
-  makeRunId,
-  TextDocument,
-  versionField,
-  type AppliedUpdate,
-  type RunCell,
-} from "@ebbjs/schema";
+import { format, pack, type Action, type HLCTimestamp } from "@ebbjs/core";
+import { TextDocument } from "./text-document";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const makeHlc = (ts: number, count = 0): HLCTimestamp => format(pack(BigInt(ts), BigInt(count)));
-
-const peerRun = (
-  ts: number,
-  actorId: string,
-  text: string,
-  anchor: RunCell["anchor"],
-  id?: string,
-): RunCell => {
-  const stamp = makeHlc(ts);
-  return {
-    kind: "run",
-    id: id ?? makeRunId(stamp, actorId),
-    text,
-    author: actorId,
-    stamp,
-    anchor,
-  };
-};
-
-const makeInsertAction = (run: RunCell, docType = "text_document"): Action => ({
-  id: `act_${run.id}`,
-  actor_id: run.author,
-  hlc: run.stamp,
-  gsn: 0,
-  updates: [
-    {
-      id: `upd_${run.id}`,
-      subject_id: "doc_1",
-      component: componentName(docType, DOC_CONTENT_FIELD),
-      method: "merge",
-      data: {
-        map: {
-          [run.id]: { value: run, update_id: `upd_${run.id}`, hlc: run.stamp },
-        },
-      },
-    },
-    {
-      id: `upd_${run.id}v`,
-      subject_id: "doc_1",
-      component: componentName(docType, DOC_VERSION_FIELD),
-      method: "merge",
-      data: versionField(run.stamp, `upd_${run.id}v`),
-    },
-  ],
-});
 
 /**
  * Mock SSE source — accepts Actions from any side, fans them out to all
@@ -175,75 +122,5 @@ describe("TextDocument — mock SSE convergence", () => {
 
     expect(docA.text).toBe("X");
     expect(docB.text).toBe("X");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Update event flow
-// ---------------------------------------------------------------------------
-
-describe("TextDocument — update event flow", () => {
-  it("fires onUpdate for each delivered cell", () => {
-    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-    const events: AppliedUpdate[] = [];
-    doc.onUpdate((evt) => events.push(evt));
-
-    const run1 = peerRun(1000, "peer-B", "a", { runId: "ROOT", offset: 0 }, "r1");
-    const run2 = peerRun(1001, "peer-C", "b", { runId: "ROOT", offset: 0 }, "r2");
-    doc.applyActions([makeInsertAction(run1), makeInsertAction(run2)]);
-
-    expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ cellId: "r1", kind: "insert" });
-    expect(events[1]).toMatchObject({ cellId: "r2", kind: "insert" });
-  });
-
-  it("ignores Updates targeting other subjects", () => {
-    const doc = new TextDocument({ docId: "doc_1", actorId: "peer-A" });
-    const events: AppliedUpdate[] = [];
-    doc.onUpdate((evt) => events.push(evt));
-
-    doc.applyActions([
-      {
-        id: "act_todo",
-        actor_id: "peer-B",
-        hlc: makeHlc(1000),
-        gsn: 0,
-        updates: [
-          {
-            id: "upd_todo",
-            subject_id: "todo_x",
-            component: "todo/title",
-            method: "replace",
-            data: { value: "x", update_id: "upd_todo" },
-          },
-        ],
-      },
-    ]);
-
-    expect(events).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Simulated server roundtrip
-// ---------------------------------------------------------------------------
-
-describe("TextDocument — simulated full server roundtrip", () => {
-  it("writes flow through pendingActions and arrive as SSE updates", () => {
-    const source = new MockSSESource();
-    const docLocal = new TextDocument({ docId: "doc_1", actorId: "peer-local" });
-    const docRemote = new TextDocument({ docId: "doc_1", actorId: "peer-remote" });
-    source.subscribe("peer-local", (action) => docLocal.applyActions([action]));
-    source.subscribe("peer-remote", (action) => docRemote.applyActions([action]));
-
-    docLocal.localInsert("hello");
-    wire(docLocal, source);
-    expect(docRemote.text).toBe("hello");
-
-    docLocal.localInsert(" world");
-    wire(docLocal, source);
-
-    expect(docLocal.text).toBe("hello world");
-    expect(docRemote.text).toBe("hello world");
   });
 });

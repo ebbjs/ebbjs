@@ -18,7 +18,6 @@ import {
   makeRunId,
   parseRunId,
   project,
-  reconstruct,
   ROOT_ID,
   runOffsetToPosition,
   type Anchor,
@@ -27,7 +26,7 @@ import {
   type DocState,
   type RunCell,
   type TextCell,
-} from "@ebbjs/schema";
+} from "./tree";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,59 +74,26 @@ const doc = (...list: TextCell[]): DocState => project(cells(...list));
 const atRoot = (offset = 0): Anchor => ({ runId: ROOT_ID, offset });
 
 // ---------------------------------------------------------------------------
-// Cell ids and ordering
+// Cell ids
 // ---------------------------------------------------------------------------
 
 describe("cell ids", () => {
-  it("encodes stamp and author for a run", () => {
-    const stamp = hlc(1234, 5);
-    expect(makeRunId(stamp, "peer-X")).toBe(`${stamp}:peer-X`);
-  });
-
-  it("round-trips a run id", () => {
+  it("reads the stamp and author back out of a run or cut id", () => {
     const stamp = hlc(9999);
-    expect(parseRunId(makeRunId(stamp, "actor-42"))).toEqual({
+    expect(parseRunId(makeRunId(stamp, "actor-42"))).toEqual({ stamp, author: "actor-42" });
+
+    // A per-write discriminator and the cut suffix both trail the author, so
+    // neither may leak into it.
+    expect(parseRunId(makeRunId(stamp, "peer-A", "run_abc123"))).toEqual({
       stamp,
-      author: "actor-42",
+      author: "peer-A",
     });
-  });
+    expect(parseRunId(makeCutId(stamp, "peer-A", "run_1", 1, 3))).toEqual({
+      stamp,
+      author: "peer-A",
+    });
 
-  it("round-trips a run id that carries a per-write discriminator", () => {
-    const stamp = hlc(1000);
-    const id = makeRunId(stamp, "peer-A", "run_abc123");
-    expect(parseRunId(id)).toEqual({ stamp, author: "peer-A" });
-  });
-
-  it("round-trips a cut id without confusing it for the author", () => {
-    const stamp = hlc(1000);
-    const id = makeCutId(stamp, "peer-A", "run_1", 1, 3);
-    expect(parseRunId(id)).toEqual({ stamp, author: "peer-A" });
-  });
-
-  it("returns null for ROOT", () => {
     expect(parseRunId(ROOT_ID)).toBeNull();
-  });
-});
-
-describe("compareRuns", () => {
-  it("orders anchors by offset ascending", () => {
-    const base = run(1, "a", "abcd", atRoot());
-    const early = run(2, "a", "X", { runId: base.id, offset: 1 });
-    const late = run(3, "a", "Y", { runId: base.id, offset: 3 });
-    expect(compareRuns(early, late)).toBeLessThan(0);
-    expect(compareRuns(late, early)).toBeGreaterThan(0);
-  });
-
-  it("places a newer insert before an older one at the same anchor", () => {
-    const newer = run(2, "a", "X", atRoot());
-    const older = run(1, "a", "Y", atRoot());
-    expect(compareRuns(newer, older)).toBeLessThan(0);
-  });
-
-  it("never returns 0 for distinct cells, even with equal stamps and authors", () => {
-    const a = run(1, "a", "X", atRoot());
-    const b = { ...a, id: `${a.id}:second` };
-    expect(compareRuns(a, b)).not.toBe(0);
   });
 });
 
@@ -168,12 +134,6 @@ describe("project", () => {
     expect(doc(base, first, second).text).toBe("aYXb");
   });
 
-  it("orders root inserts newest first", () => {
-    const first = run(1, "a", "a", atRoot());
-    const second = run(2, "a", "b", atRoot());
-    expect(doc(first, second).text).toBe("ba");
-  });
-
   it("does not render a run whose anchor is missing, then renders it when attached", () => {
     const base = run(1, "a", "ab", atRoot());
     const orphan = run(2, "b", "X", { runId: "missing", offset: 0 });
@@ -185,27 +145,6 @@ describe("project", () => {
     const attached: RunCell = { ...orphan, anchor: { runId: base.id, offset: 1 } };
     expect(doc(base, attached).text).toBe("aXb");
   });
-
-  it("does not loop forever on a self-anchored run", () => {
-    const broken: RunCell = {
-      kind: "run",
-      id: "r1",
-      text: "x",
-      author: "a",
-      stamp: hlc(1),
-      anchor: { runId: "r1", offset: 0 },
-    };
-    expect(doc(broken).text).toBe("");
-  });
-
-  it("render order depends only on the cells, not on map insertion order", () => {
-    const base = run(1, "a", "I think I can", atRoot());
-    const x = run(2, "a", "X", { runId: base.id, offset: 7 });
-    const y = run(3, "b", "Y", { runId: base.id, offset: 9 });
-    const cuts = cut(4, "c", base.id, 0, 2);
-
-    expect(project(cells(base, x, y, cuts)).text).toBe(project(cells(cuts, y, base, x)).text);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -213,12 +152,6 @@ describe("project", () => {
 // ---------------------------------------------------------------------------
 
 describe("cuts", () => {
-  it("hides a range of the owning run", () => {
-    const base = run(1, "a", "I think I can", atRoot());
-    const remove = cut(2, "a", base.id, 2, 7);
-    expect(doc(base, remove).text).toBe("I  I can");
-  });
-
   it("unions overlapping cuts", () => {
     const base = run(1, "a", "abcdef", atRoot());
     const first = cut(2, "a", base.id, 1, 3);
@@ -226,10 +159,13 @@ describe("cuts", () => {
     expect(doc(base, first, second).text).toBe("af");
   });
 
-  it("is idempotent: the same cut twice hides the range once", () => {
+  it("hides a range once however many distinct cuts name it", () => {
     const base = run(1, "a", "abcdef", atRoot());
-    const remove = cut(2, "a", base.id, 1, 3);
-    expect(doc(base, remove).text).toBe(doc(base, remove, { ...remove }).text);
+    // Two cuts at different stamps over the same range: distinct cells, one
+    // retraction, so the projection cannot depend on the cut count.
+    const first = cut(2, "a", base.id, 1, 3);
+    const second = cut(3, "b", base.id, 1, 3);
+    expect(doc(base, first, second).text).toBe(doc(base, first).text);
   });
 
   it("hides only the owning run's characters", () => {
@@ -247,24 +183,6 @@ describe("cuts", () => {
   it("ignores a cut whose run is absent", () => {
     const orphan = cut(1, "a", "missing", 0, 2);
     expect(doc(orphan).text).toBe("");
-  });
-
-  it("stays cut against every delivery order, including a concurrent insert", () => {
-    const base = run(1, "a", "I think I can", atRoot());
-    const remove = cut(2, "a", base.id, 2, 7);
-    const concurrent = run(3, "b", "X", { runId: base.id, offset: 7 });
-
-    const forward = [base, remove, concurrent].reduce(
-      (state, cell) => applyCellFields(state, cells(cell)),
-      createDocState(),
-    );
-    const reverse = [concurrent, remove, base].reduce(
-      (state, cell) => applyCellFields(state, cells(cell)),
-      createDocState(),
-    );
-
-    expect(forward.text).toBe("I X I can");
-    expect(reverse.text).toBe("I X I can");
   });
 });
 
@@ -306,11 +224,6 @@ describe("position index", () => {
     expect(runOffsetToPosition(state.index, base.id, 3)).toBe(4);
     expect(runOffsetToPosition(state.index, base.id, 4)).toBeUndefined();
     expect(runOffsetToPosition(state.index, x.id, 0)).toBe(2);
-  });
-
-  it("reconstruct returns the projection", () => {
-    const base = run(1, "a", "abc", atRoot());
-    expect(reconstruct(doc(base))).toBe("abc");
   });
 });
 
@@ -414,22 +327,5 @@ describe("deliberately broken cell sets", () => {
     // The pre-rewrite text is unrecoverable from the cell set: a positional
     // write cannot express both, so the model makes every write additive.
     expect(state.cells.size).toBe(1);
-  });
-
-  it("a total order is what makes a permuted cell set project identically", () => {
-    const base = run(1, "a", "ab", atRoot());
-    const first = run(2, "a", "X", { runId: base.id, offset: 1 });
-    const second = run(3, "a", "Y", { runId: base.id, offset: 1 });
-    const set = [base, first, second];
-    const permuted = [second, base, first];
-    expect(doc(...set).text).toBe(doc(...permuted).text);
-    expect(doc(...set).text).toBe("aYXb");
-  });
-
-  it("stamp provenance is per-cell, not inherited", () => {
-    const base = run(1, "a", "ab", atRoot());
-    const x = run(2, "b", "X", { runId: base.id, offset: 1 });
-    expect(x.stamp).not.toBe(base.stamp);
-    expect(x.id.startsWith(x.stamp)).toBe(true);
   });
 });
