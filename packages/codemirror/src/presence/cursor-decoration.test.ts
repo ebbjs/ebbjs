@@ -2,14 +2,14 @@
  * Remote cursor/selection decorations.
  *
  * The extension's seam is `getPresence()` — the demo binds it to
- * `client.presence.forEntity(docId, "cursor")`. So these tests feed a small
- * presence-shaped map and read the rendered DOM: what a peer on the declared
- * `cursor` channel produces, and that a peer on another channel or another
- * entity produces nothing.
+ * `client.presence.forEntity(docId, "cursor")`, which is what narrows the map
+ * to one channel of one entity. So these tests feed a small presence-shaped
+ * map and read the rendered DOM: what a peer produces, and what disappears
+ * when its run stops resolving or the peer leaves.
  *
  * Run positions come from an injected resolver, so the decoration can be
  * tested without a TextDocument; the bridge's run-id mapping has its own
- * tests in `__tests__/bridge.test.ts`.
+ * tests in `../bridge.test.ts`.
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -167,19 +167,6 @@ describe("createPresenceExtension", () => {
     expect(selections(view)).toHaveLength(1);
   });
 
-  it("keeps peers on different channels and entities out of the decorations", () => {
-    const { view, update } = mount("cursor", DOC_ID);
-
-    update("a_bob", DOC_ID, "camera", cursorAt("r_a", 0));
-    expect(labels(view)).toEqual([]);
-
-    update("a_carol", "other_doc", "cursor", cursorAt("r_a", 0));
-    expect(labels(view)).toEqual([]);
-
-    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 1));
-    expect(labels(view)).toEqual(["a_alice"]);
-  });
-
   it("skips a peer whose run no longer resolves", () => {
     const { view, update } = mount();
 
@@ -197,26 +184,5 @@ describe("createPresenceExtension", () => {
 
     update("a_alice", DOC_ID, "cursor", null);
     expect(labels(view)).toEqual([]);
-  });
-});
-
-/** The change payload a consumer receives; used to document the filter seam. */
-const cursorChanges = (presence: FakePresence): PresenceChange[] => {
-  const changes: PresenceChange[] = [];
-  presence.onUpdate((change) => {
-    if (change.channel === "cursor") changes.push(change);
-  });
-  return changes;
-};
-
-describe("presence change filtering", () => {
-  it("reports only the changed channel", () => {
-    const { presence, update } = mount();
-    const changes = cursorChanges(presence);
-
-    update("a_alice", DOC_ID, "camera", cursorAt("r_a", 0));
-    update("a_alice", DOC_ID, "cursor", cursorAt("r_a", 0));
-
-    expect(changes).toEqual([{ entityId: DOC_ID, channel: "cursor" }]);
   });
 });

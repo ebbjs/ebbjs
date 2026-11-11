@@ -58,16 +58,11 @@ function ValueProbeWithRerender({ observable }: { observable: ReadonlyObservable
 }
 
 describe("useSyncObservable", () => {
-  it("renders the observable's current value", () => {
+  it("renders the observable's current value and re-renders when it changes", () => {
     const observable = fakeObservable(3);
     render(<ValueProbe observable={observable} />);
 
     expect(screen.getByTestId("value").textContent).toBe("3");
-  });
-
-  it("re-renders the consumer when the observable changes", () => {
-    const observable = fakeObservable(3);
-    render(<ValueProbe observable={observable} />);
 
     act(() => observable.set(7));
 
