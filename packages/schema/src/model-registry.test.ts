@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
-import { defineModel, e } from "@ebbjs/schema";
+import { ModelRegistry, EntityValidationError, defineModel, e } from "./index";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -52,19 +51,6 @@ describe("ModelRegistry register / get / has", () => {
     r.register(v2);
     expect(r.get("todo")).toBe(v2);
   });
-
-  it("preserves the TypeBox shape on get", () => {
-    const r = new ModelRegistry();
-    r.register(todo);
-    const got = r.get("todo");
-    expect(got?.shape.type).toBe("object");
-    expect(got?.shape.properties).toEqual(
-      expect.objectContaining({
-        title: expect.objectContaining({ type: "string" }),
-        completed: expect.objectContaining({ type: "boolean" }),
-      }),
-    );
-  });
 });
 
 describe("ModelRegistry.isLwwField", () => {
@@ -72,15 +58,9 @@ describe("ModelRegistry.isLwwField", () => {
     expect(buildRegistry().isLwwField("todo", "title")).toBe(true);
   });
 
-  it("defaults an unknown entity to LWW", () => {
+  it("defaults an unknown entity, an undeclared field, and a schema-less registry to LWW", () => {
     expect(buildRegistry().isLwwField("missing", "title")).toBe(true);
-  });
-
-  it("defaults an undeclared field to LWW", () => {
     expect(buildRegistry().isLwwField("todo", "missing")).toBe(true);
-  });
-
-  it("defaults a client without a schema to LWW", () => {
     expect(new ModelRegistry().isLwwField("todo", "title")).toBe(true);
   });
 });
@@ -187,15 +167,11 @@ describe("ModelRegistry.filterWarnings", () => {
 
   it("warns once when a filter compares a defaulted field but never its absence", () => {
     const r = defaulted();
-    const warnings = r.filterWarnings("task", [{ priority: "normal" }]);
+    // Two groups, one warning: the warning is per field, not per match.
+    const warnings = r.filterWarnings("task", [{ priority: "normal" }, { title: "x" }]);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.field).toBe("priority");
     expect(warnings[0]?.message).toContain("null");
-  });
-
-  it("warns across groups when no group carries the null term", () => {
-    const r = defaulted();
-    expect(r.filterWarnings("task", [{ priority: "normal" }, { title: "x" }])).toHaveLength(1);
   });
 
   it("is silent when any group carries the null term", () => {

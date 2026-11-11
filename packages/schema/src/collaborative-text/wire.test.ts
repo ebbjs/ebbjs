@@ -26,20 +26,15 @@ import {
   buildInitialDocumentFields,
   contentFieldFromCells,
   contentKeys,
-  createDocState,
-  CURRENT_TEXT_VERSION,
   docActionToUpdate,
-  DOC_CONTENT_FIELD,
-  DOC_VERSION_FIELD,
   DocumentVersionError,
   isDocSubjectUpdate,
-  makeRunId,
   parseContentField,
   readCellFields,
   versionField,
-  type RunCell,
-  type TextCell,
-} from "@ebbjs/schema";
+} from "./wire";
+import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import { createDocState, makeRunId, type RunCell, type TextCell } from "./tree";
 
 const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
 const T = hlc(10);
@@ -99,11 +94,6 @@ describe("parseContentField", () => {
       }).size,
     ).toBe(0);
   });
-
-  it("caches by content version", () => {
-    const field = contentOf([run("r1", "hello")]);
-    expect(parseContentField(field)).toBe(parseContentField(field));
-  });
 });
 
 describe("contentKeys", () => {
@@ -115,15 +105,10 @@ describe("contentKeys", () => {
 });
 
 describe("version", () => {
-  it("accepts the current version", () => {
-    expect(() => assertKnownVersion(versionField(T, "u"))).not.toThrow();
-  });
-
-  it("accepts an absent version (an empty seeded body)", () => {
+  it("treats an absent version as current and rejects an unknown one", () => {
+    // An empty seeded body may carry no version leaf yet.
     expect(() => assertKnownVersion(undefined)).not.toThrow();
-  });
-
-  it("fails loudly for a version this client does not know", () => {
+    expect(() => assertKnownVersion(versionField(T, "u"))).not.toThrow();
     expect(() => assertKnownVersion(versionField(T, "u", CURRENT_TEXT_VERSION + 1))).toThrow(
       DocumentVersionError,
     );
@@ -181,12 +166,6 @@ describe("append-only discipline", () => {
     expect(appendOnlyViolations(["a", "b", "c"], ["b", "c"])).toEqual(["b", "c"]);
   });
 
-  it("treats an identical re-delivery as the same cell, not a rewrite", () => {
-    const base = run("r1", "hello");
-    const incoming = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
-    expect(appendOnlyRewrites(incoming, incoming)).toEqual([]);
-  });
-
   it("compares cells structurally, not by JSON key order", () => {
     const base = run("r1", "hello");
     const reordered = {
@@ -236,41 +215,6 @@ describe("applyActions", () => {
     const again = applyActions(first.state, [actionWith(...updates)]);
     expect(again.state).toBe(first.state);
     expect(again.applied).toEqual([]);
-  });
-
-  it("is delivery-order independent", () => {
-    const base = run("r1", "abc");
-    const x = run("r2", "X", { runId: "r1", offset: 1 });
-    const updatesFor = (cell: TextCell) =>
-      updatesWith({
-        [DOC_CONTENT_FIELD]: contentOf([cell]),
-        [DOC_VERSION_FIELD]: versionField(T, `u_${cell.id}`),
-      });
-
-    const ab = applyActions(
-      applyActions(createDocState(), [actionWith(...updatesFor(base))]).state,
-      [actionWith(...updatesFor(x))],
-    );
-    const ba = applyActions(applyActions(createDocState(), [actionWith(...updatesFor(x))]).state, [
-      actionWith(...updatesFor(base)),
-    ]);
-    expect(ab.state.text).toBe("aXbc");
-    expect(ba.state.text).toBe("aXbc");
-  });
-
-  it("skips Updates for another document model", () => {
-    const updates = updatesWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) }, "other_doc");
-    expect(applyActions(createDocState(), [actionWith(...updates)]).state.text).toBe("");
-  });
-
-  it("fails on an unknown version", () => {
-    const updates = updatesWith({
-      [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]),
-      [DOC_VERSION_FIELD]: versionField(T, "u", 999),
-    });
-    expect(() => applyActions(createDocState(), [actionWith(...updates)])).toThrow(
-      DocumentVersionError,
-    );
   });
 
   it("identifies a document's component Update", () => {

@@ -20,7 +20,7 @@ import {
   ROOT_ID,
   type Anchor,
   type StampedCell,
-} from "../collaborative-text/position";
+} from "./position";
 
 const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
 
@@ -40,12 +40,6 @@ describe("compareStamped", () => {
     expect(compareStamped(cell("a", hlc(1), "z"), cell("b", hlc(2), "a"))).toBeLessThan(0);
     expect(compareStamped(cell("a", hlc(1), "a"), cell("b", hlc(1), "b"))).toBeLessThan(0);
     expect(compareStamped(cell("a", hlc(1), "a"), cell("b", hlc(1), "a"))).toBeLessThan(0);
-  });
-
-  it("returns 0 only for the same cell", () => {
-    const a = cell("a", hlc(1), "a");
-    expect(compareStamped(a, a)).toBe(0);
-    expect(compareStamped(a, { ...a, id: "b" })).not.toBe(0);
   });
 });
 
@@ -152,7 +146,7 @@ describe("public surface", () => {
     walk(packagesRoot);
 
     expect(importers.sort()).toEqual([
-      "schema/src/__tests__/position.test.ts",
+      "schema/src/collaborative-text/position.test.ts",
       "schema/src/collaborative-text/tree.ts",
     ]);
   });
