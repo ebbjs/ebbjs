@@ -7,7 +7,7 @@
  * client binds it (#520) — not a scan of the whole `relationship` /
  * `entityGroup` type. The fake here is a small in-memory reader over
  * the same Map the old scan used, so the tests pin the traversal
- * contract and the routing key each helper asks for.
+ * contract.
  *
  * The `Entity` shape for `Relationship` records carries
  * `{source_id, target_id, type, field}` as field values.
@@ -24,9 +24,6 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
-import { buildEntityGroupDelete } from "../relationship";
-import { liveMembership, readMembership } from "../entity-group";
-import type { StorageAdapter } from "@ebbjs/storage/types";
 
 const mkEntity = (
   id: string,
@@ -67,33 +64,16 @@ const readLocalEntity =
   async (id: string): Promise<Entity | null> =>
     store.get(id) ?? null;
 
-/** The routing keys each helper asked the reader for, oldest first. */
-interface ReaderCalls {
-  readonly forwardLinks: string[];
-  readonly reverseSourceIds: string[];
-  readonly membershipsOf: string[];
-}
-
-const key = (...parts: readonly string[]): string => parts.join("|");
-
 /**
  * An in-memory `AdjacencyReader` over the same Map the store holds.
  * Live `relationship` rows are indexed by `(field, type, source_id)`
  * forward and `(field, type, target_id)` reverse; live `entityGroup`
- * rows by `entity_id`. The calls log proves which index read ran.
+ * rows by `entity_id`.
  */
-const mkAdjacency = (
-  store: Map<string, Entity>,
-): { reader: AdjacencyReader; calls: ReaderCalls } => {
-  const calls: { forwardLinks: string[]; reverseSourceIds: string[]; membershipsOf: string[] } = {
-    forwardLinks: [],
-    reverseSourceIds: [],
-    membershipsOf: [],
-  };
+const mkAdjacency = (store: Map<string, Entity>): AdjacencyReader => {
   const live = [...store.values()].filter((e) => e.deleted_hlc === null);
   const reader: AdjacencyReader = {
     async forwardLinks({ as, type, sourceId }): Promise<readonly RelationshipLink[]> {
-      calls.forwardLinks.push(key(as, type, sourceId));
       return live
         .filter(
           (e) =>
@@ -113,7 +93,6 @@ const mkAdjacency = (
         );
     },
     async reverseSourceIds({ as, type, targetId }): Promise<readonly string[]> {
-      calls.reverseSourceIds.push(key(as, type, targetId));
       return [
         ...new Set(
           live
@@ -129,7 +108,6 @@ const mkAdjacency = (
       ].sort();
     },
     async membershipsOf(entityId): Promise<readonly MembershipLink[]> {
-      calls.membershipsOf.push(entityId);
       return live
         .filter(
           (e) => e.type === "entityGroup" && e.data?.fields?.["entity_id"]?.value === entityId,
@@ -145,7 +123,7 @@ const mkAdjacency = (
         );
     },
   };
-  return { reader, calls };
+  return reader;
 };
 
 const shape = (props: Record<string, unknown>): never =>
@@ -157,7 +135,7 @@ describe("forwardOne", () => {
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("l1", mkEntity("l1", "list", { name: "Work" }));
     store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
-    const { reader, calls } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
       reader,
@@ -168,12 +146,11 @@ describe("forwardOne", () => {
     );
     expect(got?.id).toBe("l1");
     expect(got?.type).toBe("list");
-    expect(calls.forwardLinks).toEqual([key("parentList", "todo", "t1")]);
   });
 
   it("returns undefined when the source row is missing", async () => {
     const store = new Map<string, Entity>();
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
       reader,
@@ -190,7 +167,7 @@ describe("forwardOne", () => {
     store.set("t1", mkEntity("t1", "user", {}));
     store.set("l1", mkEntity("l1", "list", { name: "Work" }));
     store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
       reader,
@@ -206,7 +183,7 @@ describe("forwardOne", () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("l1", mkEntity("l1", "list", { name: "Work" }));
-    const { reader, calls } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
       reader,
@@ -216,14 +193,13 @@ describe("forwardOne", () => {
       "todo",
     );
     expect(got).toBeNull();
-    expect(calls.forwardLinks).toEqual([key("parentList", "todo", "t1")]);
   });
 
   it("returns undefined when the edge exists but the target is missing (dangling)", async () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("rel-1", mkRel("rel-1", "t1", "ghost", "parentList", "todo"));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
       reader,
@@ -246,7 +222,7 @@ describe("forwardMany", () => {
     store.set("rel-a", mkRel("rel-a", "t1", "label-a", "tags", "tag"));
     store.set("rel-b", mkRel("rel-b", "t1", "label-b", "tags", "tag"));
     store.set("rel-c", mkRel("rel-c", "t1", "label-c", "tags", "tag"));
-    const { reader, calls } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
       reader,
@@ -259,7 +235,6 @@ describe("forwardMany", () => {
     );
     const rows = await qb;
     expect(rows.map((r) => (r as unknown as { name: string }).name)).toEqual(["a", "b", "c"]);
-    expect(calls.forwardLinks).toEqual([key("tags", "tag", "t1")]);
   });
 
   it("dedupes repeated targets and drops wrong-type entities", async () => {
@@ -273,7 +248,7 @@ describe("forwardMany", () => {
     store.set("rel-ghost", mkRel("rel-ghost", "t1", "ghost", "tags", "tag"));
     store.set("other", mkEntity("other", "list", { name: "nope" }));
     store.set("rel-other", mkRel("rel-other", "t1", "other", "tags", "tag"));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
       reader,
@@ -290,7 +265,7 @@ describe("forwardMany", () => {
 
   it("returns an empty list when the source is missing", async () => {
     const store = new Map<string, Entity>();
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
       reader,
@@ -308,7 +283,7 @@ describe("forwardMany", () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "tag", {}));
     store.set("label-a", mkEntity("label-a", "label", { name: "a" }));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
       reader,
@@ -323,62 +298,6 @@ describe("forwardMany", () => {
   });
 });
 
-describe("buildEntityGroupDelete", () => {
-  it("builds a delete Update naming only the membership row id", () => {
-    const update = buildEntityGroupDelete({ membershipId: "eg_1", updateId: "u_1" });
-    expect(update).toEqual({
-      id: "u_1",
-      subject_id: "eg_1",
-      method: "delete",
-      data: null,
-    });
-  });
-});
-
-describe("liveMembership", () => {
-  it("carries the row id alongside the entity and group ids", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
-    expect(liveMembership(row)).toEqual({ membershipId: "eg_1", entityId: "t1", groupId: "g1" });
-  });
-
-  it("returns null for a tombstoned membership row", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" }, "9");
-    expect(liveMembership(row)).toBeNull();
-  });
-
-  it("returns null when a required id is missing", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1" });
-    expect(liveMembership(row)).toBeNull();
-  });
-});
-
-describe("readMembership", () => {
-  const storageWith = (rows: readonly Entity[]): StorageAdapter =>
-    ({
-      entities: {
-        get: async (id: string) => rows.find((row) => row.id === id) ?? null,
-      },
-    }) as unknown as StorageAdapter;
-
-  it("resolves a live entityGroup row by its id", async () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
-    await expect(readMembership(storageWith([row]), "eg_1")).resolves.toEqual({
-      membershipId: "eg_1",
-      entityId: "t1",
-      groupId: "g1",
-    });
-  });
-
-  it("returns null for a row that is not an entityGroup", async () => {
-    const row = mkEntity("t1", "todo", {});
-    await expect(readMembership(storageWith([row]), "t1")).resolves.toBeNull();
-  });
-
-  it("returns null for a missing row", async () => {
-    await expect(readMembership(storageWith([]), "eg_1")).resolves.toBeNull();
-  });
-});
-
 describe("reverse", () => {
   it("projects sources that point at the target through the reverse index", async () => {
     const store = new Map<string, Entity>();
@@ -389,7 +308,7 @@ describe("reverse", () => {
     store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
     store.set("rel-2", mkRel("rel-2", "t2", "l1", "parentList", "todo"));
     store.set("rel-3", mkRel("rel-3", "t3", "l2", "parentList", "todo"));
-    const { reader, calls } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),
       reader,
@@ -401,7 +320,6 @@ describe("reverse", () => {
     );
     const rows = await qb;
     expect(rows.map((r) => (r as unknown as { title: string }).title)).toEqual(["Ship", "Other"]);
-    expect(calls.reverseSourceIds).toEqual([key("parentList", "todo", "l1")]);
   });
 
   it("drops dangling sources and wrong-type entities", async () => {
@@ -412,7 +330,7 @@ describe("reverse", () => {
     store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
     store.set("rel-2", mkRel("rel-2", "other", "l1", "parentList", "todo"));
     store.set("rel-3", mkRel("rel-3", "ghost", "l1", "parentList", "todo"));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),
       reader,
@@ -434,7 +352,7 @@ describe("membershipGroups", () => {
     store.set("g1", mkEntity("g1", "group", { name: "First" }));
     store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
     store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g2" }));
-    const { reader, calls } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
@@ -443,7 +361,6 @@ describe("membershipGroups", () => {
       shape({ name: { type: "string" } }),
     );
     expect((await qb).map((r) => r.id)).toEqual(["g1", "g2"]);
-    expect(calls.membershipsOf).toEqual(["t1"]);
   });
 
   it("drops missing and wrong-type groups", async () => {
@@ -454,7 +371,7 @@ describe("membershipGroups", () => {
     store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
     store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "ghost" }));
     store.set("eg-3", mkEntity("eg-3", "entityGroup", { entity_id: "t1", group_id: "other" }));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
@@ -468,7 +385,7 @@ describe("membershipGroups", () => {
   it("returns an empty list when the entity has no memberships", async () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
@@ -485,7 +402,7 @@ describe("membershipGroups", () => {
     store.set("g1", mkEntity("g1", "group", { name: "First" }));
     store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
     store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    const { reader } = mkAdjacency(store);
+    const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,

@@ -276,20 +276,4 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
 
     unsub();
   });
-
-  it("the callback type narrows to EntitySnapshot<TFields> (bogus field is a compile error)", () => {
-    // Compile-time check: the snapshot's fields flow from the entity's
-    // TypeBox shape. Wrapped in a function so vitest's runtime ignore
-    // doesn't trip when the file loads.
-    const check: () => void = () => {
-      const _onSnapshot: (snapshot: TodoSnapshot) => void = (snapshot) => {
-        void snapshot.title?.toUpperCase();
-        void !snapshot.completed;
-        // @ts-expect-error — `bogus` is not in the field map.
-        void snapshot.bogus;
-      };
-      void _onSnapshot;
-    };
-    globalExpect(typeof check).toBe("function");
-  });
 });

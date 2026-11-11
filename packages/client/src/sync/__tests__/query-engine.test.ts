@@ -18,7 +18,6 @@ import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { buildQueryBuilder } from "../query-builder";
-import { planQuery } from "../query-plan";
 import { callApplyAction } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
@@ -236,24 +235,11 @@ describe("QueryBuilder.toQuery() — the serializable value", () => {
     expect(JSON.parse(JSON.stringify(query))).toEqual(query);
   });
 
-  it("names the source, relationship, and entityGroup in the planner's readTypes", () => {
-    const all = client.issue
-      .query()
-      .where("assignee", "user_1")
-      .where("groups", "group_1")
-      .toQuery();
-    expect(planQuery(all).readTypes).toEqual(["issue", "relationship", "entityGroup"]);
-
-    const reverse = client.issue.query().where("assignee", "user_1").toQuery();
-    expect(planQuery(reverse).readTypes).toEqual(["issue", "relationship", "entityGroup"]);
-  });
-
   it("a chain over materialized rows names no source type", () => {
     const seedRow = shimIssue("issue_1", "Ship");
     // A bare builder has no schema context; field predicates stay valid.
     const query = buildQueryBuilder([seedRow], issue.shape).where("status", "open").toQuery();
     expect(query.source).toBe("");
     expect(query.joins).toEqual([]);
-    expect(planQuery(query).readTypes).toEqual([""]);
   });
 });

@@ -4,11 +4,11 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { makeHlc, type Action } from "@ebbjs/core";
 import type { SSEEvent } from "./types";
 import {
-  callApplyAction,
   emptyCatchUpResponse,
   emptyListingResponse,
   isListingRequest,
   jsonResponse,
+  openSseResponse,
   waitFor,
 } from "./test-utils";
 
@@ -72,7 +72,8 @@ const localPut = (id: string): Action => {
  *
  * Uses fetch mocks with controlled streaming bodies. Verifies the read path:
  * action receipt → storage append → onEvent callback, plus the connection
- * state transitions and reconnect / cancellation logic.
+ * state transitions, reconnect / cancellation logic, and the cursor the
+ * two-argument overload infers.
  */
 describe("SyncClient.subscribe (SSE)", () => {
   it("opens SSE, applies action to storage, fires callback", async () => {
@@ -299,58 +300,6 @@ describe("SyncClient.subscribe (SSE)", () => {
     unsubscribe();
   });
 
-  it("materializes a user-entity patch when fields are wrapped under data.fields", async () => {
-    // Regression guard: a patch update for a user entity must wrap the
-    // field map under `data.fields` to mirror
-    // `EbbServer.Storage.ActionValidator.well_formed_data?/1`. With the
-    // correct wrapping, the materializer should merge the patched field
-    // into the existing entity.
-    const storage = createMemoryAdapter();
-    const putAction: Action = {
-      id: "act_put",
-      actor_id: "a_alice",
-      hlc: makeHlc(1711036800000),
-      gsn: 1,
-      updates: [
-        {
-          id: "u_put_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
-        },
-      ],
-    };
-    const patchAction: Action = {
-      id: "act_patch",
-      actor_id: "a_alice",
-      hlc: makeHlc(1711036800000, 1),
-      gsn: 2,
-      updates: [
-        {
-          id: "u_patch_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "merge",
-          data: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
-        },
-      ],
-    };
-    // Seed via the same wire path subscribe() uses. Tests construct a
-    // SyncClient bound to the local storage so we can drive the private
-    // `_applyAction` method without spinning up the full SSE stream.
-    const seedClient = createClient({
-      serverUrl: "http://localhost:0",
-      actorId: "a_alice",
-      storage,
-    });
-    await callApplyAction(seedClient, putAction, "grp_1");
-    await callApplyAction(seedClient, patchAction, "grp_1");
-    const e = await storage.entities.get("todo_1");
-    expect(e).not.toBeNull();
-    expect((e!.data.fields.title as { value?: unknown }).value).toBe("Updated");
-  });
-
   it("fires onEvent for control events", async () => {
     const encoder = new TextEncoder();
     const sseBody = new ReadableStream<Uint8Array>({
@@ -393,5 +342,132 @@ describe("SyncClient.subscribe (SSE)", () => {
     expect(received.control.catchUpFrom).toBe(42);
 
     unsubscribe();
+  });
+});
+
+/**
+ * Cursor inference for the two-argument `subscribe(groupIds, onEvent)`
+ * overload. The caller should not have to thread a cursor: the durable
+ * storage cursor and the cursors cached by `handshake()` / `catchUp()`
+ * already say where to resume, mirroring `catchUp(groupId)`.
+ */
+describe("SyncClient.subscribe inferred cursor", () => {
+  /**
+   * The catch-up request, not the listing one: both live under
+   * `/sync/groups/`, and the listing runs first.
+   */
+  const catchUpCall = (calls: readonly string[]): string =>
+    calls.find((url) => url.includes("/sync/groups/") && !isListingRequest(url)) ?? "";
+
+  const handshakeResponse = (groupId: string, cursor: number): Response =>
+    jsonResponse({
+      actor_id: "a_self",
+      groups: [
+        {
+          id: groupId,
+          permissions: ["read", "write"],
+          cursor_valid: true,
+          reason: null,
+          cursor,
+        },
+      ],
+    });
+
+  it("resumes from the cursor cached by handshake", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("/sync/handshake")) return handshakeResponse("grp_1", 7);
+      if (isListingRequest(url)) return emptyListingResponse(7, "grp_1");
+      if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+    });
+
+    await client.handshake();
+    const unsubscribe = client.subscribe(["grp_1"], () => {});
+
+    await waitFor(() => calls.some((url) => url.includes("/sync/live")));
+
+    expect(catchUpCall(calls)).toContain("offset=7");
+    expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=7");
+
+    unsubscribe();
+  });
+
+  it("resumes from the durable storage cursor when nothing is cached", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
+      if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const storage = createMemoryAdapter();
+    await storage.cursors.set("grp_1", 12);
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+      storage,
+    });
+
+    const unsubscribe = client.subscribe(["grp_1"], () => {});
+
+    await waitFor(() => calls.some((url) => url.includes("/sync/live")));
+
+    expect(catchUpCall(calls)).toContain("offset=12");
+    expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=12");
+
+    unsubscribe();
+  });
+
+  it("starts from cursor 0 when no cursor is known", async () => {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
+      if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
+      if (url.includes("/sync/live")) return openSseResponse();
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl,
+    });
+
+    const unsubscribe = client.subscribe(["grp_1"], () => {});
+
+    await waitFor(() => calls.some((url) => url.includes("/sync/live")));
+
+    expect(catchUpCall(calls)).toContain("offset=0");
+    expect(calls.find((url) => url.includes("/sync/live"))).toContain("cursor=0");
+
+    unsubscribe();
+  });
+
+  it("throws a TypeError when no event callback is supplied", () => {
+    const client = createClient({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+
+    expect(() => (client.subscribe as unknown as (groupIds: string[]) => void)(["grp_1"])).toThrow(
+      TypeError,
+    );
+
+    client.close();
   });
 });

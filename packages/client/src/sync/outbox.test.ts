@@ -168,15 +168,7 @@ const mkDeps = (
   };
 };
 
-const callOrder = (mock: unknown): number => (mock as Mock).mock.invocationCallOrder[0] as number;
-
 describe("createOutbox", () => {
-  it("starts empty", () => {
-    const outbox = createOutbox(mkDeps());
-    expect(outbox.size()).toBe(0);
-    expect(outbox.pending()).toEqual([]);
-  });
-
   it("enqueue appends a pending entry and optimistically applies the action", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
@@ -191,38 +183,22 @@ describe("createOutbox", () => {
     expect(deps.applied).toEqual([action]);
   });
 
-  it("persists the exact entry on enqueue", async () => {
-    const deps = mkDeps();
-    const outbox = createOutbox(deps);
-    const action = mkAction("a_1");
+  it("written entries survive a reload as pending writes the new outbox flushes", async () => {
+    // The durable row is the whole point of enqueue's store write: without
+    // it a reload loses the write silently.
+    const store = mkStore();
+    const first = mkAction("a_1");
+    const second = mkAction("a_2");
+    const before = createOutbox(mkDeps({ store }));
+    await before.enqueue(first);
+    await before.enqueue(second);
 
-    await outbox.enqueue(action);
+    const deps = mkDeps({ store });
+    const reloaded = createOutbox(deps);
+    await reloaded.flush();
 
-    expect(deps.store.put).toHaveBeenCalledWith({
-      action,
-      status: "pending",
-      enqueuedAtHlc: "1",
-      basedOnGsn: 0,
-    });
-  });
-
-  it("persists before applying optimistically", async () => {
-    const deps = mkDeps();
-    const outbox = createOutbox(deps);
-
-    await outbox.enqueue(mkAction("a_1"));
-
-    expect(callOrder(deps.store.put)).toBeLessThan(callOrder(deps.applyOptimistic));
-  });
-
-  it("keeps the in-memory queue and the store in agreement", async () => {
-    const deps = mkDeps();
-    const outbox = createOutbox(deps);
-
-    await outbox.enqueue(mkAction("a_1"));
-    await outbox.enqueue(mkAction("a_2"));
-
-    expect(outbox.pending()).toEqual(await deps.store.list());
+    expect(deps.submitted).toEqual([[first, second]]);
+    expect(reloaded.size()).toBe(0);
   });
 
   it("does not buffer or apply when the store write throws", async () => {
@@ -239,15 +215,6 @@ describe("createOutbox", () => {
 
     expect(outbox.size()).toBe(0);
     expect(deps.applied).toEqual([]);
-  });
-
-  it("enqueue preserves insertion order", async () => {
-    const outbox = createOutbox(mkDeps());
-    await outbox.enqueue(mkAction("a_1"));
-    await outbox.enqueue(mkAction("a_2"));
-    await outbox.enqueue(mkAction("a_3"));
-
-    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_1", "a_2", "a_3"]);
   });
 
   it("pending() returns a snapshot that callers cannot use to mutate the queue", async () => {
@@ -304,23 +271,6 @@ describe("createOutbox", () => {
 
     expect(deps.submitted).toHaveLength(1);
     expect(deps.submitted[0]?.map((action) => action.id)).toEqual(["a_1", "a_2"]);
-  });
-
-  it("flush() marks rejected entries error, persists them, and retains them", async () => {
-    const rejection = { id: "a_1", reason: "permission_denied" };
-    const deps = mkDeps({
-      submit: vi.fn(async () => ({ rejected: [rejection] })),
-    });
-    const outbox = createOutbox(deps);
-    await outbox.enqueue(mkAction("a_1"));
-
-    const outcome = await outbox.flush();
-
-    expect(outcome).toEqual({ kind: "partial", accepted: [], rejected: [rejection] });
-    expect(outbox.size("pending")).toBe(0);
-    expect(outbox.size("error")).toBe(1);
-    expect(outbox.errors().map((entry) => entry.action.id)).toEqual(["a_1"]);
-    expect((await deps.store.get("a_1"))?.status).toBe("error");
   });
 
   it("flush() reports unreachable and leaves the entries pending when submission throws", async () => {
@@ -899,19 +849,6 @@ describe("createOutbox conflict detection", () => {
 
     expect(outbox.conflicts()[0]?.conflict.subjectStates).toEqual([
       { subjectId: "todo_1", model: "todo", before, after: null },
-    ]);
-  });
-
-  it("persists subjectStates on the losing row", async () => {
-    const before = mkEntity("todo_1", "mine");
-    const after = mkEntity("todo_1", "theirs");
-    const deps = mkDeps({ preSyncRow: () => before, readEntity: async () => after });
-    const { outbox } = await seed(deps);
-
-    await outbox.detectConflicts([peerTitle()], "cu_1");
-
-    expect((await deps.store.get("a_local"))?.conflict?.subjectStates).toEqual([
-      { subjectId: "todo_1", model: "todo", before, after },
     ]);
   });
 

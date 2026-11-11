@@ -75,13 +75,14 @@ const mkClient = async () => {
 
 describe("unset — draft update", () => {
   it("the patch type accepts the marker per field and per map key", () => {
-    // Compile-time proof only: both spellings must typecheck.
-    const patch: EntityPatch<EntityFields<typeof task>> = {
+    // Compile-time proof only: both spellings must typecheck against the
+    // entity's field map, which is what a caller writing an unset sees.
+    const typecheck: () => EntityPatch<EntityFields<typeof task>> = () => ({
       title: unset,
       dueDate: unset,
       tags: { a: unset, b: "kept" },
-    };
-    expect(Object.keys(patch)).toEqual(["title", "dueDate", "tags"]);
+    });
+    expect(typecheck).toBeTypeOf("function");
   });
 
   it("clears a scalar field to a tombstone", async () => {

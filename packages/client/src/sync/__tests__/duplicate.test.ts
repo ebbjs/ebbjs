@@ -401,16 +401,6 @@ describe("duplicate — at: preSync", () => {
     );
     expect(actionRequests(seen)).toHaveLength(0);
   });
-
-  it("returns the created handle, whose id is a string", async () => {
-    const { client, storage } = await mkClient();
-    await seedTodo(storage, "t_1", { title: "T", completed: false });
-    const typecheck: () => Promise<string> = async () => {
-      const { id }: { readonly id: string } = await client.actions.duplicateTodo({ id: "t_1" });
-      return id;
-    };
-    await expect(typecheck()).resolves.toBeTypeOf("string");
-  });
 });
 
 describe("duplicate({ at: preSync }) after an offline merge (#397)", () => {

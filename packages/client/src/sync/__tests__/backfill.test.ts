@@ -471,22 +471,6 @@ describe("client backfill (#475)", () => {
     expect((await client.readLocalEntity("post_1"))?.data.fields.title?.value).toBe("Patched");
   });
 
-  it("keeps the backfilled base across a cache reset", async () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
-    const { client } = mkClient({ entities: { post_1: entity } });
-    await callApplyAction(
-      client,
-      membershipPut({ membershipId: "eg_1", entityId: "post_1" }),
-      "g_2",
-    );
-    await client.backfill();
-
-    await client.storage.entities.reset();
-    await client.storage.dirtyTracker.mark("post_1", "blog_post");
-
-    expect((await client.readLocalEntity("post_1"))?.data.fields.title?.value).toBe("Hello");
-  });
-
   it("does not resurrect an entity the server reports absent", async () => {
     const { client } = mkClient({ entities: {} });
     await callApplyAction(

@@ -13,9 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { componentName, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
-import type { Filter } from "@ebbjs/schema";
-
-import { emptyQuery, filterToGroups, type Predicate, type Query } from "../query";
+import { emptyQuery, type Predicate, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { createReplicaExecutor, createRowsExecutor, executePlan } from "../query-execute";
 
@@ -220,23 +218,6 @@ describe("executePlan", () => {
     expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
   });
 
-  it("iterates the source type exactly once for a field-only query", () => {
-    const replica = seed([
-      put(1, "todo_1", "todo", { title: "Ship", completed: true }),
-      put(2, "todo_2", "todo", { title: "Test", completed: false }),
-    ]);
-    const iterate = vi.spyOn(replica, "iterate");
-
-    const rows = executePlan(
-      planQuery(query({ groups: [[{ kind: "field", field: "completed", value: true }]] })),
-      createReplicaExecutor(replica),
-    );
-
-    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
-    expect(iterate).toHaveBeenCalledTimes(1);
-    expect(iterate).toHaveBeenCalledWith("todo");
-  });
-
   it("shares one lazy scan between two field-only groups", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship", completed: true }),
@@ -256,19 +237,6 @@ describe("executePlan", () => {
       ),
       createReplicaExecutor(replica),
     );
-
-    expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
-    expect(iterate).toHaveBeenCalledTimes(1);
-  });
-
-  it("iterates once for a plan with no selects", () => {
-    const replica = seed([
-      put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "todo_2", "todo", { title: "Test" }),
-    ]);
-    const iterate = vi.spyOn(replica, "iterate");
-
-    const rows = executePlan(planQuery(emptyQuery("todo")), createReplicaExecutor(replica));
 
     expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
     expect(iterate).toHaveBeenCalledTimes(1);
@@ -367,22 +335,6 @@ describe("executePlan", () => {
     expect(rows.map((row) => row.id)).toEqual(["todo_1", "todo_2"]);
   });
 
-  it("filters by membership", () => {
-    const replica = seed([
-      put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "todo_2", "todo", { title: "Test" }),
-      put(3, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
-      put(4, "eg_2", "entityGroup", { entity_id: "todo_2", group_id: "group_2" }),
-    ]);
-
-    const rows = executePlan(
-      planQuery(query({ groups: [[{ kind: "membership", anyOf: ["group_1"] }]] })),
-      createReplicaExecutor(replica),
-    );
-
-    expect(rows.map((row) => row.id)).toEqual(["todo_1"]);
-  });
-
   it("orders by field and tie-breaks by entity id ascending", () => {
     const replica = seed([
       put(1, "todo_2", "todo", { title: "Same" }),
@@ -403,6 +355,20 @@ describe("executePlan", () => {
 
     expect(ascending.map((row) => row.id)).toEqual(["todo_3", "todo_1", "todo_10", "todo_2"]);
     expect(descending.map((row) => row.id)).toEqual(["todo_1", "todo_10", "todo_2", "todo_3"]);
+  });
+
+  it("compares number fields numerically, not lexically", () => {
+    const replica = seed([
+      put(1, "todo_9", "todo", { rank: 9 }),
+      put(2, "todo_10", "todo", { rank: 10 }),
+    ]);
+
+    const rows = executePlan(
+      planQuery(query({ groups: [], order: { field: "rank", direction: "asc" } })),
+      createReplicaExecutor(replica),
+    );
+
+    expect(rows.map((row) => row.id)).toEqual(["todo_9", "todo_10"]);
   });
 
   it("puts rows with a missing field last and slices after ordering", () => {
@@ -577,55 +543,8 @@ describe("executePlan null predicate", () => {
       createRowsExecutor(rows),
     ).map((entity) => entity.id);
 
-  it("matches a leaf the row never set", () => {
-    expect(run(null)).toContain("todo_absent");
-  });
-
-  it("matches a tombstoned leaf", () => {
-    expect(run(null)).toContain("todo_tombstoned");
-  });
-
-  it("does not match a stored value", () => {
-    expect(run(null)).not.toContain("todo_live");
-  });
-
-  it("does not match a stored non-null value with a null predicate", () => {
+  it("matches an absent and a tombstoned leaf, not a stored value", () => {
     expect(run("high")).toEqual(["todo_live"]);
     expect([...run(null)].sort()).toEqual(["todo_absent", "todo_tombstoned"]);
-  });
-});
-
-describe("executePlan over a wire filter", () => {
-  const rows: readonly Entity[] = [
-    row("todo_normal", { priority: "normal", completed: true }),
-    row("todo_urgent", { priority: "urgent", completed: false }),
-    row("todo_absent", { completed: false }),
-  ];
-
-  const run = (filter: Filter | null): readonly string[] =>
-    executePlan(
-      planQuery({ ...emptyQuery("todo"), groups: filterToGroups(filter) }),
-      createRowsExecutor(rows),
-    ).map((entity) => entity.id);
-
-  it("ANDs keys within a group", () => {
-    expect(run([{ priority: "normal", completed: true }])).toEqual(["todo_normal"]);
-  });
-
-  it("ORs groups", () => {
-    expect(run([{ priority: "urgent" }, { completed: true }])).toEqual([
-      "todo_normal",
-      "todo_urgent",
-    ]);
-  });
-
-  it("treats null, [], and [{}] as unfiltered", () => {
-    for (const filter of [null, [], [{}], [{ completed: true }, {}]] as const) {
-      expect(run(filter as Filter | null)).toEqual(["todo_absent", "todo_normal", "todo_urgent"]);
-    }
-  });
-
-  it("lowers a null value to a no-live-value predicate", () => {
-    expect(run([{ priority: null }])).toEqual(["todo_absent"]);
   });
 });

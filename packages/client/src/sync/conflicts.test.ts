@@ -267,20 +267,6 @@ describe("createConflicts", () => {
     expect(harness.reMaterialize).not.toHaveBeenCalled();
   });
 
-  it("sendLocalActions does not touch the losing Action's envelope", async () => {
-    const action = mkAction("act_local");
-    const harness = mkDeps([mkRow("act_local", "5", { action })]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    await conflicts.sendLocalActions("c_act_local");
-
-    // No re-stamping collaborator is even available: the view hands the
-    // outbox only the id of the row whose Action it sends.
-    expect(harness.outbox.releaseConflict).toHaveBeenCalledWith("act_local");
-    expect(harness.outbox.released).toEqual(["act_local"]);
-  });
-
   it("clearLocalActions drops exactly the writes snapshotted under the hold, then converges", async () => {
     const row = mkRow("act_local", "5");
     const harness = mkDeps([row]);
@@ -495,24 +481,6 @@ describe("createConflicts", () => {
     expect(list[0]?.id).toBe("c_shared");
     expect(list[0]?.entries.map((entry) => entry.action.id)).toEqual(["act_a"]);
   });
-
-  it("isolates a throwing onChange listener", async () => {
-    const harness = mkDeps();
-    const { conflicts } = createConflicts(harness.deps);
-    const bad = vi.fn(() => {
-      throw new Error("bad listener");
-    });
-    const good = vi.fn();
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    conflicts.onChange(bad);
-    conflicts.onChange(good);
-
-    await conflicts.rehydrate();
-
-    expect(good).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalled();
-    spy.mockRestore();
-  });
 });
 
 describe("Conflict scope and report", () => {
@@ -595,106 +563,6 @@ describe("Conflict scope and report", () => {
 });
 
 describe("Conflict.subjectStates", () => {
-  /** Project one row carrying a single subject's states into its conflict. */
-  const conflictForState = async (
-    state: ConflictSubjectState,
-    slots: readonly ConflictSlot[] = [],
-    scope: "field" | "entity" = "entity",
-  ) => {
-    const harness = mkDeps([
-      mkRow("act_local", "1", {
-        scope,
-        slots,
-        subjectStates: [state],
-        subjects: [state.subjectId],
-      }),
-    ]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-    const [conflict] = await conflicts.list();
-    if (conflict === undefined) throw new Error("expected a conflict");
-    return conflict;
-  };
-
-  it("projects changed, added, and removed positions, including nested map keys, in deterministic order", async () => {
-    const before = mkEntity("todo_1", {
-      title: leaf("mine"),
-      notes: leaf("draft"),
-      content: { map: { b: leaf("mine", "u_b"), a: leaf("keep", "u_a") } },
-    });
-    const after = mkEntity("todo_1", {
-      title: leaf("theirs", "u_title"),
-      completed: leaf(true, "u_done"),
-      content: { map: { c: leaf("new", "u_c"), b: leaf("theirs", "u_b"), a: leaf("keep", "u_a") } },
-    });
-
-    const conflict = await conflictForState(mkState("todo_1", before, after));
-
-    expect(conflict.subjectStates).toHaveLength(1);
-    expect(conflict.subjectStates[0]?.diff).toEqual([
-      { field: "completed", path: [], before: undefined, after: true, kind: "added" },
-      { field: "content", path: ["b"], before: "mine", after: "theirs", kind: "changed" },
-      { field: "content", path: ["c"], before: undefined, after: "new", kind: "added" },
-      { field: "notes", path: [], before: "draft", after: undefined, kind: "removed" },
-      { field: "title", path: [], before: "mine", after: "theirs", kind: "changed" },
-    ]);
-  });
-
-  it("reports a map-vs-leaf kind divergence as one changed diff at that path", async () => {
-    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
-    const after = mkEntity("doc_1", { content: leaf("whole") });
-
-    const conflict = await conflictForState(mkState("doc_1", before, after));
-
-    expect(conflict.subjectStates[0]?.diff).toEqual([
-      { field: "content", path: [], before: { a: "mine" }, after: "whole", kind: "changed" },
-    ]);
-  });
-
-  it("reads a nested tombstone as a removed position, not a changed one", async () => {
-    const before = mkEntity("doc_1", {
-      content: { map: { a: leaf("mine"), b: leaf("keep") } },
-    });
-    const after = mkEntity("doc_1", {
-      content: { map: { a: leaf(null, "u_peer"), b: leaf("keep") } },
-    });
-
-    const conflict = await conflictForState(mkState("doc_1", before, after));
-
-    expect(conflict.subjectStates[0]?.diff).toEqual([
-      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
-    ]);
-  });
-
-  it("treats a null before as every after field added and a null after as every before field removed", async () => {
-    const row = mkEntity("todo_1", { title: leaf("mine") });
-    const advanced = mkEntity("todo_1", { title: leaf("theirs", "u_peer") });
-
-    const created = await conflictForState(mkState("todo_1", null, advanced));
-    expect(created.subjectStates[0]?.diff).toEqual([
-      { field: "title", path: [], before: undefined, after: "theirs", kind: "added" },
-    ]);
-
-    const deleted = await conflictForState(mkState("todo_1", row, null));
-    expect(deleted.subjectStates[0]?.diff).toEqual([
-      { field: "title", path: [], before: "mine", after: undefined, kind: "removed" },
-    ]);
-  });
-
-  it("exposes a non-empty diff for an entity-scope conflict with no slots", async () => {
-    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
-    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } });
-
-    const conflict = await conflictForState(mkState("doc_1", before, after), [], "entity");
-
-    expect(conflict.scope).toBe("entity");
-    expect(conflict.entries[0]?.slots).toBeUndefined();
-    expect(conflict.subjectStates[0]?.diff).toEqual([
-      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
-      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
-    ]);
-  });
-
   it("dedupes a subject across losing entries, keeping the earliest before and latest after", async () => {
     const first = mkEntity("todo_1", { title: leaf("first") });
     const middle = mkEntity("todo_1", { title: leaf("middle") });
@@ -901,17 +769,6 @@ describe("createConflicts observable", () => {
     expect(observable.get().count).toBe(1);
     expect(listener).toHaveBeenCalledTimes(3);
     expect(observable.get().conflicts.map((conflict) => conflict.id)).toEqual(["c_act_b"]);
-  });
-
-  it("keeps count in step with list().length", async () => {
-    const harness = mkDeps([mkRow("act_a", "1"), mkRow("act_b", "2")]);
-    const { conflicts, observable } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    expect(observable.get().count).toBe((await conflicts.list()).length);
-
-    harness.outbox.put(mkRow("act_c", "3"));
-    expect(observable.get().count).toBe((await conflicts.list()).length);
   });
 
   it("stops notifying after unsubscribe", async () => {

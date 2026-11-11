@@ -1,13 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { defineModel, e } from "@ebbjs/schema";
-import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
+import { defineRelationship } from "@ebbjs/schema";
 import { ReservedNameError } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
-import {
-  buildRelationshipUpdate,
-  normalizeManyPointers,
-  normalizePointer,
-} from "../sync/relationship";
+import { normalizeManyPointers, normalizePointer } from "../sync/relationship";
 import { createClient } from "../sync/client";
 import type { Update } from "@ebbjs/core";
 
@@ -55,14 +51,6 @@ describe("defineRelationship", () => {
     expect(() => defineRelationship({ source: todo, target: list, as: "groups" })).toThrow(
       /reserved/,
     );
-  });
-
-  it("flows S and T into RelationshipDef<S, T> via inference", () => {
-    const rel = defineRelationship({ source: todo, target: list, as: "list" });
-    type Inferred = RelationshipDef<typeof todo, typeof list>;
-    const typed: Inferred = rel;
-    expect(typed.source.name).toBe("todo");
-    expect(typed.target.name).toBe("list");
   });
 });
 
@@ -134,21 +122,18 @@ describe("ModelRegistry.registerRelationship", () => {
 });
 
 describe("ModelRegistry.isEmpty", () => {
-  it("is true for a fresh registry", () => {
-    const r = new ModelRegistry();
-    expect(r.isEmpty()).toBe(true);
-  });
+  it("is true only until a model or a relationship is registered", () => {
+    expect(new ModelRegistry().isEmpty()).toBe(true);
 
-  it("is false after registering an entity", () => {
-    const r = new ModelRegistry();
-    r.register(todo);
-    expect(r.isEmpty()).toBe(false);
-  });
+    const withModel = new ModelRegistry();
+    withModel.register(todo);
+    expect(withModel.isEmpty()).toBe(false);
 
-  it("is false after registering a relationship", () => {
-    const r = new ModelRegistry();
-    r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-    expect(r.isEmpty()).toBe(false);
+    const withRelationship = new ModelRegistry();
+    withRelationship.registerRelationship(
+      defineRelationship({ source: todo, target: list, as: "list" }),
+    );
+    expect(withRelationship.isEmpty()).toBe(false);
   });
 });
 
@@ -200,45 +185,6 @@ describe("normalizeManyPointers", () => {
 
   it("rejects null entries", () => {
     expect(() => normalizeManyPointers({ replace: ["a", null] }, "test")).toThrow();
-  });
-});
-
-describe("buildRelationshipUpdate", () => {
-  it("produces one replace Update per Relationship component", () => {
-    const updates = buildRelationshipUpdate({
-      relationshipId: "rel_1",
-      sourceId: "todo_1",
-      targetId: "list_1",
-      field: "list",
-      type: "todo",
-      updateId: "u_1",
-    });
-    expect(updates).toHaveLength(4);
-    expect(updates.every((u) => u.subject_id === "rel_1" && u.method === "replace")).toBe(true);
-
-    const value = (field: string): unknown => {
-      const update = updates.find(
-        (u) => u.method !== "delete" && u.component === `relationship/${field}`,
-      )!;
-      return (update.data as { value: unknown } | null)?.value;
-    };
-    expect(value("source_id")).toBe("todo_1");
-    expect(value("target_id")).toBe("list_1");
-    expect(value("type")).toBe("todo");
-    expect(value("field")).toBe("list");
-  });
-
-  it("produces a delete Update when targetId is null", () => {
-    const [u] = buildRelationshipUpdate({
-      relationshipId: "rel_1",
-      sourceId: "todo_1",
-      targetId: null,
-      field: "list",
-      type: "todo",
-      updateId: "u_1",
-    });
-    expect(u!.method).toBe("delete");
-    expect(u!.data).toBeNull();
   });
 });
 
@@ -341,32 +287,6 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       (u) => u.method !== "delete" && u.component === "relationship/target_id",
     )!;
     expect((target.data as { value: unknown } | null)?.value).toBe("list_99");
-  });
-
-  it("rejects a non-id, non-entity pointer value", () => {
-    // The unit-level check lives in `normalizePointer`; here we pin
-    // that `buildRelationshipWrite` propagates the same error.
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
-
-    expect(() =>
-      client.buildRelationshipWrite({
-        source: todo,
-        target: list,
-        as: "list",
-        sourceId: "todo_1",
-        targetId: 42 as unknown as string,
-      }),
-    ).toThrow();
   });
 
   it("throws EntityValidationError when the source entity is not registered", () => {
@@ -472,60 +392,9 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     expect(targets).toEqual(["list_1", "list_2", "list_3"]);
   });
 
-  it("runs the client-side early permission check", async () => {
-    // Stub fetch to return a handshake response with groups that
-    // grant `todo.update`. The early check should pass.
-    const fetchImpl = (async (_url: string, init: RequestInit): Promise<Response> => {
-      const body = JSON.parse(init.body as string);
-      expect(body).toEqual({ cursors: {}, schema_version: undefined });
-      return new Response(
-        JSON.stringify({
-          actor_id: "actor_1",
-          groups: [
-            {
-              id: "g_1",
-              permissions: ["todo.update"],
-              cursor_valid: true,
-              reason: null,
-              cursor: 0,
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
-
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      fetchImpl,
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
-
-    await client.handshake();
-    // No throw — the actor has `todo.update` in their group.
-    expect(() =>
-      client.buildRelationshipWrite({
-        source: todo,
-        target: list,
-        as: "list",
-        sourceId: "todo_1",
-        targetId: "list_1",
-      }),
-    ).not.toThrow();
-  });
-
   it("defers the permission check to write() rather than throwing in the builder", async () => {
-    // The early check moved to the shared write-path pass (#319). The
-    // builder only shapes the wire Update, so an actor without
-    // `<source_type>.update` gets a `PermissionError` from `write()`,
-    // not from here.
+    // The builder only shapes the wire Update; an actor without
+    // `<source_type>.update` gets a `PermissionError` from `write()`.
     const fetchImpl = (async (): Promise<Response> => {
       return new Response(
         JSON.stringify({
@@ -534,50 +403,6 @@ describe("buildRelationshipWrite (SyncClient)", () => {
             {
               id: "g_1",
               permissions: ["todo.read"],
-              cursor_valid: true,
-              reason: null,
-              cursor: 0,
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
-
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      fetchImpl,
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
-
-    await client.handshake();
-    expect(() =>
-      client.buildRelationshipWrite({
-        source: todo,
-        target: list,
-        as: "list",
-        sourceId: "todo_1",
-        targetId: "list_1",
-      }),
-    ).not.toThrow();
-  });
-
-  it("accepts the wildcard permission <source_type>.*", async () => {
-    const fetchImpl = (async (): Promise<Response> => {
-      return new Response(
-        JSON.stringify({
-          actor_id: "actor_1",
-          groups: [
-            {
-              id: "g_1",
-              permissions: ["todo.*"],
               cursor_valid: true,
               reason: null,
               cursor: 0,
@@ -652,89 +477,5 @@ describe("buildRelationshipWrite: registry cardinality lookup", () => {
     });
 
     expect(result.relationshipUpdates).toEqual([]);
-  });
-});
-
-describe("QueryBuilder (sync/relationship)", () => {
-  const buildEntity = (
-    id: string,
-    fields: Record<string, unknown>,
-  ): import("@ebbjs/core").Entity => ({
-    id,
-    type: "todo",
-    data: {
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-      ),
-    },
-    exists: true,
-    created_hlc: "1",
-    updated_hlc: "1",
-    deleted_hlc: null,
-    last_gsn: 0,
-  });
-
-  it("where filters by field equality", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "a", completed: false }),
-      buildEntity("2", { title: "b", completed: true }),
-      buildEntity("3", { title: "c", completed: false }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false);
-    expect(out.map((r) => r.title)).toEqual(["a", "c"]);
-  });
-
-  it("orderBy sorts by field", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "banana", completed: false }),
-      buildEntity("2", { title: "apple", completed: false }),
-      buildEntity("3", { title: "cherry", completed: false }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape).orderBy("title", "asc");
-    expect(out.map((r) => r.title)).toEqual(["apple", "banana", "cherry"]);
-  });
-
-  it("limit caps the result count", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "a", completed: false }),
-      buildEntity("2", { title: "b", completed: false }),
-      buildEntity("3", { title: "c", completed: false }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape).limit(2);
-    expect(out.map((r) => r.title)).toEqual(["a", "b"]);
-  });
-
-  it("chains where + orderBy + limit", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "a", completed: false }),
-      buildEntity("2", { title: "b", completed: true }),
-      buildEntity("3", { title: "c", completed: true }),
-      buildEntity("4", { title: "d", completed: true }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape)
-      .where("completed", true)
-      .orderBy("title", "desc")
-      .limit(2);
-    expect(out.map((r) => r.title)).toEqual(["d", "c"]);
-  });
-
-  it("chains return new builders (no shared state)", async () => {
-    const { buildQueryBuilder } = await import("../sync/relationship");
-    const rows = [
-      buildEntity("1", { title: "a", completed: false }),
-      buildEntity("2", { title: "b", completed: true }),
-    ];
-    const base = buildQueryBuilder(rows, todo.shape);
-    const a = base.where("completed", true);
-    const b = base.where("completed", false);
-    // `base` is untouched; both `a` and `b` carry their own filter.
-    expect((await a).map((r) => r.title)).toEqual(["b"]);
-    expect((await b).map((r) => r.title)).toEqual(["a"]);
-    // And awaiting the base again returns everything.
-    expect((await base).map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
 });

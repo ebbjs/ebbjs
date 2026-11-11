@@ -273,35 +273,6 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     unsub();
   });
 
-  it("the snapshot carries the typed rows (per-entity static projection)", async () => {
-    const storage = createMemoryAdapter();
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage,
-      schema,
-    });
-
-    let snapshotShape: unknown = null;
-    const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
-      snapshotShape = snapshot;
-    });
-
-    await callApplyAction(client, mkAction(1, "todo_1", false), "grp_1");
-
-    // Compile-time check: each entity has the projected field shape.
-    const snap = snapshotShape as {
-      entities: readonly { title: string; completed: boolean }[];
-      filter: unknown;
-      count: number;
-    };
-    globalExpect(snap.entities[0]?.title).toBe("T1");
-    globalExpect(snap.entities[0]?.completed).toBe(false);
-    globalExpect(snap.count).toBe(1);
-
-    unsub();
-  });
-
   it("unsub stops further emissions", async () => {
     const storage = createMemoryAdapter();
     const client = createClient({

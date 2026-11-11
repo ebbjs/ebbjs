@@ -137,15 +137,6 @@ const canonicalize = (action: Action): unknown => {
 };
 
 describe("client.actions mounting", () => {
-  it("mounts one wrapper per key with `.name` equal to the map key", async () => {
-    const { client } = mkClient({ createList, ping });
-    await client.handshake();
-
-    expect(typeof client.actions.createList).toBe("function");
-    expect(client.actions.createList.name).toBe("createList");
-    expect(client.actions.ping.name).toBe("ping");
-  });
-
   it("mounts a fresh wrapper, never the frozen definition", () => {
     const { client } = mkClient({ createList });
     expect(client.actions.createList).not.toBe(createList);

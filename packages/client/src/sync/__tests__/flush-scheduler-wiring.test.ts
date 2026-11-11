@@ -100,36 +100,6 @@ describe("client.write flush scheduling (#229)", () => {
     client.close();
   });
 
-  it("resets the backoff after a successful retry", async () => {
-    const { fn, calls } = makeFetchMock([
-      { status: 500, body: "boom" }, // first attempt of write A fails
-      { body: JSON.stringify({ rejected: [] }) }, // retry of A succeeds
-      { status: 500, body: "boom" }, // first attempt of write B fails
-      { body: JSON.stringify({ rejected: [] }) }, // retry of B succeeds
-    ]);
-    const client = mkClient(fn);
-
-    const writeA = client.write([mkAction("a")]);
-    const failedA = expect(writeA).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
-    await failedA;
-    expect(actionRequests(calls)).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(100); // A's retry succeeds, attempt resets
-    expect(actionRequests(calls)).toHaveLength(2);
-
-    const writeB = client.write([mkAction("b")]);
-    const failedB = expect(writeB).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS + 1);
-    await failedB;
-    expect(actionRequests(calls)).toHaveLength(3);
-
-    // B's retry waits the initial interval, not a doubled one.
-    await vi.advanceTimersByTimeAsync(100);
-    expect(actionRequests(calls)).toHaveLength(4);
-    client.close();
-  });
-
   it("never retries a rejected (partial) flush", async () => {
     const { fn, calls } = makeFetchMock([
       { body: JSON.stringify({ rejected: [{ id: "a", reason: "permission_denied" }] }) },

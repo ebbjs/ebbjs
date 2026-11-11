@@ -674,18 +674,18 @@ describe("client.group read path", () => {
 });
 
 describe("client.membership typing", () => {
-  it("exports GroupMemberFields and rejects an undeclared field on create", async () => {
+  it("rejects an undeclared field on create", async () => {
     const { client } = await mkClient();
 
+    // The field map must be a TypeBox field record carrying exactly the wire keys.
     type FieldKeys = keyof GroupMemberFields;
     const keys: FieldKeys[] = ["group_id", "actor_id", "permissions"];
-    expect(keys).toHaveLength(3);
-    // The field map must be a TypeBox field record.
     type IsFieldMap = GroupMemberFields extends Record<string, TSchema> ? true : false;
     const isFieldMap: IsFieldMap = true;
-    expect(isFieldMap).toBe(true);
+    void keys;
+    void isFieldMap;
 
-    // Never invoked: the @ts-expect-error line below is the assertion.
+    // Never invoked: the @ts-expect-error lines below are the assertion.
     const guard = (): void => {
       // @ts-expect-error — `bogus` is not declared on the groupMember shape.
       void client.actions.createMembership({ bogus: 1 });

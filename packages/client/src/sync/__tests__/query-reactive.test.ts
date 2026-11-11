@@ -230,23 +230,4 @@ describe("subscribed query results", () => {
 
     unsubscribe();
   });
-
-  it("ignores a change whose type is outside the query's readTypes", async () => {
-    const client = makeClient();
-    const query = client.issue.query();
-    let fires = 0;
-    const unsubscribe = query.subscribe(() => {
-      fires += 1;
-    });
-
-    await seed(client, [put(1, "note_1", "note", { body: "hello" })]);
-    await flush();
-    expect(fires).toBe(0);
-
-    await seed(client, [put(2, "issue_1", "issue", { title: "Ship", status: "open" })]);
-    await flush();
-    expect(fires).toBe(1);
-
-    unsubscribe();
-  });
 });

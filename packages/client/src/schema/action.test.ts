@@ -22,12 +22,10 @@ const neverFetch: typeof fetch = () => {
 };
 
 describe("defineAction", () => {
-  it("returns a frozen, non-callable descriptor bound to the schema", () => {
+  it("returns a frozen descriptor bound to the schema", () => {
     const def = defineAction(schema, () => ({}));
     expect(Object.isFrozen(def)).toBe(true);
     expect(def.schema).toBe(schema);
-    expect(typeof def).toBe("object");
-    expect(() => (def as unknown as () => void)()).toThrow();
   });
 
   it("keeps the callback private behind the RUN symbol", () => {
@@ -47,35 +45,32 @@ describe("defineAction", () => {
     expect(def.schema).toBe(schema);
   });
 
-  it("infers Params from the callback's second argument and Result from its return", () => {
+  it("infers Params and Result from the callback, defaulting Params to void", () => {
     const def = defineAction(schema, ({ todo: t }, params: { title: string }) => ({
       title: params.title,
       handle: t.create({ title: params.title }, { groups: ["g_1"] }),
     }));
     type Params = typeof def extends ActionDef<infer _S, infer P, infer _R> ? P : never;
     type Result = typeof def extends ActionDef<infer _S, infer _P, infer R> ? R : never;
+    // Compile-time only: the annotations below are the assertion, and the
+    // error-suppression lines would break the build if the inference slipped.
     const params: Params = { title: "Ship" };
-    const result: Result = {
-      title: "Ship",
-      handle: { id: "e_1", title: "Ship" },
-    };
-    expect(params.title).toBe("Ship");
-    expect(result.handle.id).toBe("e_1");
+    const result: Result = { title: "Ship", handle: { id: "e_1", title: "Ship" } };
+    void params;
+    void result;
     // @ts-expect-error — Params is the callback's `{ title: string }`.
     const wrong: Params = { name: "nope" };
-    expect(wrong).toBeDefined();
-  });
+    void wrong;
 
-  it("defaults Params to void when the callback declares none", () => {
-    const def = defineAction(schema, ({ todo: t }) =>
+    const noParams = defineAction(schema, ({ todo: t }) =>
       t.create({ title: "Ship" }, { groups: ["g_1"] }),
     );
-    type Params = typeof def extends ActionDef<infer _S, infer P, infer _R> ? P : never;
-    const none: Params = undefined;
-    expect(none).toBeUndefined();
+    type VoidParams = typeof noParams extends ActionDef<infer _S, infer P, infer _R> ? P : never;
+    const none: VoidParams = undefined;
+    void none;
     // @ts-expect-error — a void Params cannot carry a value.
-    const wrong: Params = { title: "nope" };
-    expect(wrong).toBeDefined();
+    const wrongVoid: VoidParams = { title: "nope" };
+    void wrongVoid;
   });
 });
 

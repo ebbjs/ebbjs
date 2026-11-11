@@ -23,6 +23,7 @@ import type { RelationshipDef } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
+import { entityGroupId } from "@ebbjs/write";
 import { ActionRejectedError, ActionResolutionError, resolveReferences } from "../drafts";
 import type { Rejection } from "../types";
 import { createClient } from "../client";
@@ -203,32 +204,38 @@ describe("drafts — one Action, forward references", () => {
     );
   });
 
-  it("emits one entityGroup row per group into the same Action", async () => {
+  it("emits one entityGroup row per distinct group into the same Action", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
     const created = await client.actions.run(({ todo }) =>
-      todo.create({ title: "Ship" }, { groups: ["g_1", "g_2"] }),
+      // A handle shape and a bare id naming one group collapse to one row.
+      todo.create({ title: "Ship" }, { groups: ["g_1", { id: "g_1" }, { id: "g_2" }] }),
     );
 
     const actions = actionCalls(seen);
     expect(actions).toHaveLength(1);
     const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "entityGroup");
     expect(membershipRows).toHaveLength(2);
+    // Each membership row is two Updates; a repeated id filing the group twice
+    // would add a third pair under the same subject.
+    expect(membershipRows.flat()).toHaveLength(4);
     for (const row of membershipRows) {
       expect(valueOf(row, "entity_id")).toBe(created.id);
     }
     expect(membershipRows.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
   });
 
-  it("rejects a missing groups option before any network call", async () => {
+  it("rejects a missing, empty, or malformed groups option before any network call", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
     const before = seen.length;
 
-    await expect(
-      client.actions.run(({ todo }) => todo.create({ title: "Ship" }, undefined as never)),
-    ).rejects.toBeInstanceOf(EntityValidationError);
+    for (const opts of [undefined, { groups: [] }, { groups: [42] }] as const) {
+      await expect(
+        client.actions.run(({ todo }) => todo.create({ title: "Ship" }, opts as never)),
+      ).rejects.toBeInstanceOf(EntityValidationError);
+    }
     expect(seen.length).toBe(before);
   });
 
@@ -389,78 +396,6 @@ describe("drafts — per-Update delivery (#473)", () => {
     version: 1,
   });
 
-  it("accepts an Action whose writes all carry the same group set", async () => {
-    const { client, seen } = mkClient(deliverySchema);
-    await client.handshake();
-
-    const created = await client.actions.run(({ todo, list }) => {
-      const today = list.create({ name: "Today" }, { groups: ["g_1"] });
-      return { todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }), list: today };
-    });
-
-    expect(created.todo.id).toMatch(/^e_/);
-    const calls = actionCalls(seen);
-    expect(calls).toHaveLength(1);
-    const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = rowsOf(updates, "entityGroup");
-    expect(membershipRows).toHaveLength(2);
-    for (const row of membershipRows) expect(valueOf(row, "group_id")).toBe("g_1");
-  });
-
-  it("accepts an Action whose writes share a multi-group membership set", async () => {
-    const { client, seen } = mkClient(deliverySchema);
-    await client.handshake();
-
-    await client.actions.run(({ todo, list }) => ({
-      todo: todo.create({ title: "Ship it" }, { groups: ["g_2", "g_1"] }),
-      list: list.create({ name: "Today" }, { groups: ["g_1", "g_2"] }),
-    }));
-
-    // Two entityGroup rows per write, in one Action.
-    const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(4);
-  });
-
-  it("submits a cross-group Action as one Action, each write keeping its own group", async () => {
-    const { client, seen } = mkClient(deliverySchema);
-    await client.handshake();
-
-    await client.actions.run(({ todo, list }) => ({
-      list: list.create({ name: "Today" }, { groups: ["g_1"] }),
-      todo: todo.create({ title: "Ship it" }, { groups: ["g_2"] }),
-    }));
-
-    const calls = actionCalls(seen);
-    expect(calls).toHaveLength(1);
-    const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = rowsOf(updates, "entityGroup");
-    expect(membershipRows.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
-  });
-
-  it("emits one membership row per write, each carrying its own group", async () => {
-    const { client, seen } = mkClient(deliverySchema);
-    await client.handshake();
-
-    let handles: Record<string, { id: string }> = {};
-    await client.actions.run(({ todo, list }) => {
-      handles = {
-        todo: todo.create({ title: "Ship it" }, { groups: ["g_1"] }),
-        list: list.create({ name: "Today" }, { groups: ["g_2"] }),
-      };
-      return handles;
-    });
-
-    const calls = actionCalls(seen);
-    expect(calls).toHaveLength(1);
-    const updates = decodeActions(calls[0]!)[0]!.updates;
-    const membershipRows = rowsOf(updates, "entityGroup");
-    const groupByEntity = new Map(
-      membershipRows.map((row) => [valueOf(row, "entity_id"), valueOf(row, "group_id")]),
-    );
-    expect(groupByEntity.get(handles.todo!.id)).toBe("g_1");
-    expect(groupByEntity.get(handles.list!.id)).toBe("g_2");
-  });
-
   it("submits a narrow write alongside a wider write in the same Action", async () => {
     const { client, seen } = mkClient(deliverySchema);
     await client.handshake();
@@ -553,6 +488,30 @@ describe("drafts — per-Update delivery (#473)", () => {
   });
 });
 
+describe("drafts — setGroups delta", () => {
+  it("deletes only the membership rows the new set drops", async () => {
+    const { client, seen } = mkClient();
+    await client.handshake();
+    const created = await client.actions.create({
+      entity: "todo",
+      input: { title: "Ship" },
+      groups: ["g_1", "g_2"],
+    });
+    const before = actionCalls(seen).length;
+
+    await client.actions.setGroups({ entity: "todo", id: created.id, groups: ["g_2"] });
+
+    const calls = actionCalls(seen);
+    expect(calls).toHaveLength(before + 1);
+    const updates = decodeActions(calls.at(-1)!)[0]!.updates;
+    // g_2 survives the swap, so only g_1's row may be deleted.
+    expect(
+      updates.filter((update) => update.method === "delete").map((update) => update.subject_id),
+    ).toEqual([entityGroupId(created.id, "g_1")]);
+    expect(rowsOf(updates, "entityGroup")).toEqual([]);
+  });
+});
+
 describe("resolveReferences", () => {
   it("walks arrays and nested objects, preserving structure", () => {
     const input = { a: [{ b: 1 }, 2], c: { d: "e" } };
@@ -568,12 +527,6 @@ describe("resolveReferences", () => {
   it("rejects a cycle reached through an array", () => {
     const cyclic: Record<string, unknown> = { items: [] };
     (cyclic["items"] as unknown[]).push({ back: cyclic });
-    expect(() => resolveReferences(cyclic)).toThrow(ActionResolutionError);
-  });
-
-  it("rejects a self-referential array", () => {
-    const cyclic: unknown[] = [];
-    cyclic.push(cyclic);
     expect(() => resolveReferences(cyclic)).toThrow(ActionResolutionError);
   });
 

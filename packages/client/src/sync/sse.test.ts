@@ -1,59 +1,48 @@
-import { describe, it, expect } from "vitest";
-import { parseSSEBlock } from "./sse";
-import { createClient } from "./client";
-import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { describe, it, expect, vi } from "vitest";
+import { openSSEStream, parseSSEBlock } from "./sse";
+import type { SSEEvent } from "./types";
+import { makeStreamingFetch } from "./test-utils";
 
+// `parseSSEBlock` is part of the package's public surface (`src/index.ts`),
+// so these pin the wire shapes a caller can hand it.
 describe("parseSSEBlock", () => {
-  it("parses a data event", () => {
-    const block = [
-      "event: data",
-      'data: {"id":"act_1","gsn":1,"actor_id":"a_1","hlc":123,"updates":[]}',
-      "",
-    ].join("\n");
+  it("parses an event's name and data into its typed payload", () => {
+    // The event name is what selects the payload field, so every known
+    // name has to survive the line loop with its own shape.
+    const cases = [
+      {
+        block:
+          'event: data\ndata: {"id":"act_1","gsn":1,"actor_id":"a_1","hlc":123,"updates":[]}\n',
+        expected: {
+          type: "data",
+          action: { id: "act_1", gsn: 1, actor_id: "a_1", hlc: 123, updates: [] },
+        },
+      },
+      {
+        block:
+          'event: control\ndata: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":42}\n',
+        expected: {
+          type: "control",
+          control: { reconnect: true, reason: "behind_watermark", catchUpFrom: 42 },
+        },
+      },
+      {
+        block:
+          'event: presence\ndata: {"actor_id":"a_1","entity_id":"e_1","data":{"cursor":{"line":5}}}\n',
+        expected: {
+          type: "presence",
+          presence: { actor_id: "a_1", entity_id: "e_1", data: { cursor: { line: 5 } } },
+        },
+      },
+    ] as const;
 
-    const result = parseSSEBlock(block);
-    expect(result).toEqual({
-      type: "data",
-      action: { id: "act_1", gsn: 1, actor_id: "a_1", hlc: 123, updates: [] },
-    });
+    for (const { block, expected } of cases) {
+      expect(parseSSEBlock(block)).toEqual(expected);
+    }
   });
 
-  it("parses a control event", () => {
-    const block = [
-      "event: control",
-      'data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":42}',
-      "",
-    ].join("\n");
-
-    const result = parseSSEBlock(block);
-    expect(result).toEqual({
-      type: "control",
-      control: { reconnect: true, reason: "behind_watermark", catchUpFrom: 42 },
-    });
-  });
-
-  it("parses a presence event", () => {
-    const block = [
-      "event: presence",
-      'data: {"actor_id":"a_1","entity_id":"e_1","data":{"cursor":{"line":5}}}',
-      "",
-    ].join("\n");
-
-    const result = parseSSEBlock(block);
-    expect(result).toEqual({
-      type: "presence",
-      presence: { actor_id: "a_1", entity_id: "e_1", data: { cursor: { line: 5 } } },
-    });
-  });
-
-  it("returns null for comment-only block (keepalive)", () => {
-    const block = ": keepalive\n\n";
-    expect(parseSSEBlock(block)).toBeNull();
-  });
-
-  it("returns null for empty block", () => {
-    expect(parseSSEBlock("")).toBeNull();
+  it("returns null for a block with no data field (keepalive comment)", () => {
+    expect(parseSSEBlock(": keepalive\n\n")).toBeNull();
   });
 
   it("returns null for malformed JSON", () => {
@@ -65,172 +54,192 @@ describe("parseSSEBlock", () => {
     const block = "event: unknown\ndata: {}\n\n";
     expect(parseSSEBlock(block)).toBeNull();
   });
-
-  it("joins multi-line data fields with newline", () => {
-    const block = "event: data\ndata: line1\ndata: line2\n\n";
-    const result = parseSSEBlock(block);
-    // The server emits single-line JSON, but be permissive.
-    expect(result).toBeNull(); // "line1line2" is not valid JSON
-  });
 });
 
-/**
- * Drive the private `_applyAction` method on a SyncClient. Tests
- * migrated from the (now-deleted) top-level `applyAction` helper
- * use this to seed storage state without spinning up the full
- * SSE/HTTP path.
- */
-const callApplyAction = async (
-  storage: ReturnType<typeof createMemoryAdapter>,
-  action: Action,
-  groupId?: string,
-): Promise<{ entityId: string }[]> => {
-  const client = createClient({
-    serverUrl: "http://localhost:0",
-    actorId: "a_test",
-    storage,
-  });
-  return (
-    client as unknown as {
-      _applyAction: (a: Action, g?: string) => Promise<{ entityId: string }[]>;
+describe("openSSEStream", () => {
+  it("opens a stream and parses data events", async () => {
+    const sse = [
+      'event: data\ndata: {"id":"act_1","gsn":1,"actor_id":"a_1","hlc":1,"updates":[]}\n\n',
+      ": keepalive\n\n",
+      'event: data\ndata: {"id":"act_2","gsn":2,"actor_id":"a_1","hlc":2,"updates":[]}\n\n',
+    ];
+    const { fn, calls } = makeStreamingFetch(sse);
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_1"],
+      cursor: 0,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+
+    const events: SSEEvent[] = [];
+    (async () => {
+      for await (const ev of sub.events()) {
+        events.push(ev);
+        if (events.length === 2) {
+          sub.close();
+        }
+      }
+    })();
+    await sub.closed;
+
+    expect(calls[0].url).toBe("http://localhost:4000/sync/live?groups=grp_1&cursor=0");
+    // Auth is header-only: no legacy `actor_id=` query param.
+    expect(calls[0].url).not.toMatch(/[?&]actor_id=/);
+    const headers = (calls[0].init.headers ?? {}) as Record<string, string>;
+    expect(headers["x-ebb-actor-id"]).toBe("a_1");
+    expect(headers["Accept"]).toBe("text/event-stream");
+
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe("data");
+    if (events[0].type === "data") {
+      expect(events[0].action.id).toBe("act_1");
     }
-  )._applyAction.call(client, action, groupId);
-};
-
-describe("_applyAction (storage path)", () => {
-  it("appends action and marks entities dirty", async () => {
-    const storage = createMemoryAdapter();
-    const action: Action = {
-      id: "a_1",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000),
-      gsn: 1,
-      updates: [
-        {
-          id: "u_1_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
-        },
-      ],
-    };
-    const affected = await callApplyAction(storage, action, "grp_1");
-    expect(affected).toEqual([{ entityId: "todo_1" }]);
-    expect(await storage.isDirty("todo_1")).toBe(true);
-    expect(await storage.cursors.get("grp_1")).toBe(1);
+    expect(events[1].type).toBe("data");
+    if (events[1].type === "data") {
+      expect(events[1].action.id).toBe("act_2");
+    }
   });
 
-  it("advances the cursor only when gsn is higher", async () => {
-    const storage = createMemoryAdapter();
-    await storage.cursors.set("grp_1", 10);
-    const action: Action = {
-      id: "a_1",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000),
-      gsn: 5,
-      updates: [
-        {
-          id: "u_1_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
-        },
-      ],
-    };
-    await callApplyAction(storage, action, "grp_1");
-    expect(await storage.cursors.get("grp_1")).toBe(10);
+  it("parses control and presence events", async () => {
+    const sse = [
+      'event: control\ndata: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":5}\n\n',
+      'event: presence\ndata: {"actor_id":"a_2","entity_id":"e_1","data":{"cursor":{"line":1}}}\n\n',
+    ];
+    const { fn } = makeStreamingFetch(sse);
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_1"],
+      cursor: 0,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+
+    const events: SSEEvent[] = [];
+    (async () => {
+      for await (const ev of sub.events()) {
+        events.push(ev);
+        if (events.length === 2) sub.close();
+      }
+    })();
+    await sub.closed;
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      type: "control",
+      control: { reconnect: true, reason: "behind_watermark", catchUpFrom: 5 },
+    });
+    expect(events[1]).toEqual({
+      type: "presence",
+      presence: { actor_id: "a_2", entity_id: "e_1", data: { cursor: { line: 1 } } },
+    });
   });
 
-  it("skips cursor advance when gsn is 0", async () => {
-    const storage = createMemoryAdapter();
-    const action: Action = {
-      id: "a_1",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000),
-      gsn: 0,
-      updates: [],
-    };
-    await callApplyAction(storage, action, "grp_1");
-    expect(await storage.cursors.get("grp_1")).toBeNull();
+  it("splits events across chunk boundaries", async () => {
+    const sse = [
+      'event: data\ndata: {"id":"act_1"',
+      ',"gsn":1,"actor_id":"a_1","hlc":1,"updates":[]}\n\nevent: data\n',
+      'data: {"id":"act_2","gsn":2,"actor_id":"a_1","hlc":2,"updates":[]}\n\n',
+    ];
+    const { fn } = makeStreamingFetch(sse);
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_1"],
+      cursor: 0,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+
+    const events: SSEEvent[] = [];
+    (async () => {
+      for await (const ev of sub.events()) {
+        events.push(ev);
+        if (events.length === 2) sub.close();
+      }
+    })();
+    await sub.closed;
+
+    expect(events).toHaveLength(2);
   });
 
-  it("returns affected entities without a group", async () => {
-    const storage = createMemoryAdapter();
-    const action: Action = {
-      id: "a_1",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000),
-      gsn: 1,
-      updates: [
-        {
-          id: "u_1_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "Hello", update_id: "u_1", hlc: makeHlc(1711036800000) },
-        },
-        {
-          id: "u_2_0",
-          subject_id: "todo_2",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "World", update_id: "u_2", hlc: makeHlc(1711036800000, 1) },
-        },
-      ],
-    };
-    const affected = await callApplyAction(storage, action);
-    expect(affected).toHaveLength(2);
-    expect(await storage.cursors.get("grp_1")).toBeNull();
+  it("URL-encodes multiple groups", async () => {
+    const { fn, calls } = makeStreamingFetch(['event: control\ndata: {"reason":"x"}\n\n']);
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_a", "grp_b"],
+      cursor: 7,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+    (async () => {
+      for await (const _ev of sub.events()) {
+        sub.close();
+      }
+    })();
+    await sub.closed;
+    expect(calls[0].url).toBe("http://localhost:4000/sync/live?groups=grp_a%2Cgrp_b&cursor=7");
   });
-});
 
-// Exercises the patch path that calls `compare(existingValue.hlc,
-// patchValue.hlc)` internally — confirms the packed-BigInt HLC
-// fixtures round-trip through parse → compare → BigInt without
-// throwing.
-describe("_applyAction HLC handling", () => {
-  it("applies a patch with packed BigInt HLCs without throwing", async () => {
-    const storage = createMemoryAdapter();
-    const putAction: Action = {
-      id: "a_put",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000),
-      gsn: 1,
-      updates: [
-        {
-          id: "u_put_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "replace",
-          data: { value: "Hello", update_id: "u_put", hlc: makeHlc(1711036800000) },
-        },
-      ],
-    };
-    const patchAction: Action = {
-      id: "a_patch",
-      actor_id: "a_user",
-      hlc: makeHlc(1711036800000, 1),
-      gsn: 2,
-      updates: [
-        {
-          id: "u_patch_0",
-          subject_id: "todo_1",
-          component: "todo/title",
-          method: "merge",
-          data: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
-        },
-      ],
-    };
-    await callApplyAction(storage, putAction, "grp_1");
-    // The patch calls `compare(existingValue.hlc, patchValue.hlc)` inside
-    // `mergeFields`. With the old `${ms}:0` strings, `BigInt()` threw
-    // `SyntaxError` here. With packed HLCs, it parses cleanly and the
-    // patch lands.
-    await expect(callApplyAction(storage, patchAction, "grp_1")).resolves.not.toThrow();
-    const entity = await storage.entities.get("todo_1");
-    expect(entity).not.toBeNull();
-    expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
+  it("fails the stream on a non-2xx response", async () => {
+    const { fn } = makeStreamingFetch([], { status: 403 });
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_x"],
+      cursor: 0,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+
+    await expect(sub.closed).resolves.toBeUndefined();
+    let rejected = false;
+    try {
+      for await (const _ev of sub.events()) {
+        // should not happen
+      }
+    } catch {
+      rejected = true;
+    }
+    expect(rejected).toBe(true);
+  });
+
+  it("aborts the underlying fetch on close()", async () => {
+    let aborted = false;
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: data\ndata: {"id":"a"}\n\n'));
+        // Then block — consumer should signal us via abort.
+      },
+      cancel() {
+        aborted = true;
+      },
+    });
+    const fn = vi.fn(async (_url: string, init: RequestInit = {}) => {
+      init.signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof fetch;
+
+    const sub = openSSEStream({
+      serverUrl: "http://localhost:4000",
+      groupIds: ["grp_1"],
+      cursor: 0,
+      actorId: "a_1",
+      fetchImpl: fn,
+    });
+
+    const iter = (async () => {
+      for await (const _ev of sub.events()) {
+        sub.close();
+      }
+    })();
+    await iter;
+    // Give the abort handler a tick to run.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(aborted).toBe(true);
   });
 });

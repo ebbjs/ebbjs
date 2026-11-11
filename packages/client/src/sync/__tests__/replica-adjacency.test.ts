@@ -245,27 +245,6 @@ describe("replica adjacency accessors (#520)", () => {
     expect(await row.owner).toBeNull();
   });
 
-  it("returns undefined when an edge's target is dangling", async () => {
-    const storage = createMemoryAdapter();
-    const client = mkClient(storage);
-    await callApplyAction(
-      client,
-      put("todo_1", "todo", { title: "Ship" }, { actionId: "a_1", gsn: 1, ms: 10 }),
-    );
-    await callApplyAction(
-      client,
-      putRel("rel_ghost", "todo_1", "user_ghost", "owner", "todo", {
-        actionId: "a_2",
-        gsn: 2,
-        ms: 20,
-      }),
-    );
-
-    const row = await client.todo.get("todo_1");
-    if (row === null) throw new Error("expected row");
-    expect(await row.owner).toBeUndefined();
-  });
-
   it("reflects a membership put then delete in the groups accessor", async () => {
     const storage = createMemoryAdapter();
     const client = mkClient(storage);

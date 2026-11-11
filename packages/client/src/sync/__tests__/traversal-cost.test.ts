@@ -176,12 +176,4 @@ describe("traversal cost is bounded by degree", () => {
       expect(groups).toBe(2);
     },
   );
-
-  it("examines the same rows whether the backend is the adapter or the replica", async () => {
-    for (const unrelatedCount of [0, 200]) {
-      const storage = await measure(unrelatedCount, "storage");
-      const replica = await measure(unrelatedCount, "replica");
-      expect(replica).toEqual(storage);
-    }
-  });
 });

@@ -112,9 +112,12 @@ describe("client.invokeFunction", () => {
     await expect(client.invokeFunction("count")).resolves.toEqual({ result: 3, replayed: true });
   });
 
-  it("throws ActionRejectedError for a rejected commit", async () => {
+  it("throws ActionRejectedError carrying a one-line-per-rejection message", async () => {
+    // One rejection names its model and details, the other carries only the
+    // id; the message is what a caller logs, so both shapes appear here.
     const rejected = [
       { id: "u_1", model: "todo", reason: "permission_denied", details: "todo.create" },
+      { id: "u_2", reason: "duplicate" },
     ];
     const { client } = mkClient(() => jsonResponse({ error: "rejected", rejected }, 422));
 
@@ -122,6 +125,13 @@ describe("client.invokeFunction", () => {
 
     expect(error).toBeInstanceOf(ActionRejectedError);
     expect((error as ActionRejectedError).rejections).toEqual(rejected);
+    expect((error as ActionRejectedError).message).toBe(
+      [
+        "ActionRejectedError: 2 rejected update(s)",
+        "  - todo u_1: permission_denied (todo.create)",
+        "  - u_2: duplicate",
+      ].join("\n"),
+    );
   });
 
   it("throws FunctionCallError carrying the failure envelope", async () => {

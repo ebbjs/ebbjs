@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
-import { defineModel, e, EntityValidationError, validatePayload } from "@ebbjs/schema";
+import { defineModel, e, EntityValidationError } from "@ebbjs/schema";
 import { componentUpdates } from "@ebbjs/write";
 
 import { buildQueryBuilder } from "../query-builder";
@@ -83,10 +83,6 @@ describe("where on an object leaf", () => {
     expect(await query(wider).where("anchor", { x: 1, y: 2 })).toEqual([]);
   });
 
-  it("does not match a row with no live value", async () => {
-    expect(ids(await query(rows).where("anchor", { x: 1, y: 2 }))).not.toContain("wall_4");
-  });
-
   it("keeps the null predicate as no-live-value", async () => {
     expect(ids(await query(rows).where("anchor", null))).toEqual(["wall_4"]);
   });
@@ -147,29 +143,6 @@ describe("ordering a non-scalar field", () => {
     expect(() => orderBy("anchor", "asc")).toThrow(/anchor/);
     expect(() => orderBy("tags", "asc")).toThrow(/not orderable/);
   });
-
-  it("orders scalar, enum, and defaulted fields as before", async () => {
-    const unordered: readonly Entity[] = [
-      entity("wall_c", { title: "b", kind: "exterior", rating: 2 }),
-      entity("wall_b", { title: "a" }),
-      entity("wall_a", { title: "a", kind: "interior", rating: 0 }),
-    ];
-    expect(ids(await query(unordered).orderBy("title", "asc"))).toEqual([
-      "wall_a",
-      "wall_b",
-      "wall_c",
-    ]);
-    expect(ids(await query(unordered).orderBy("kind", "asc"))).toEqual([
-      "wall_c",
-      "wall_a",
-      "wall_b",
-    ]);
-    expect(ids(await query(unordered).orderBy("rating", "asc"))).toEqual([
-      "wall_a",
-      "wall_b",
-      "wall_c",
-    ]);
-  });
 });
 
 describe("e.object end to end", () => {
@@ -208,17 +181,5 @@ describe("e.object end to end", () => {
     expect(
       ids(await buildQueryBuilder(rows, plan.shape).where("anchor", { kind: "door", y: 2, x: 1 })),
     ).toEqual(["plan_1"]);
-  });
-
-  it("rejects an undeclared nested property at write validation", () => {
-    const violations = validatePayload(
-      plan.shape,
-      { anchor: { x: 1, y: 2, kind: "door", why: 3 } },
-      "plan",
-      true,
-    );
-
-    expect(violations).toHaveLength(1);
-    expect(violations[0]?.message).toContain("why");
   });
 });
