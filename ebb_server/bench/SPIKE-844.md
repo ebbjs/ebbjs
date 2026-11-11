@@ -48,7 +48,9 @@ shows what changed the verdict, not only the final number.
    appended past EOF into a sparse preallocated file, so every `datasync` also committed ext4
    block allocation and an inode-size change. In place, the same 64 KB write+datasync costs
    337–381 µs. Pre-writing the segment (`log_first_recycled`) halves the append to 960 µs and the
-   stop rule is not met. `RESULTS.md` carries the probe table.
+   stop rule is not met. `RESULTS.md` carries the probe table. The gap also holds under
+   concurrency (c=8, three interleaved passes): 1.6× the rate and 2.4× better p50
+   (`log_first_recycled` 2,343–2,364 µs vs `current_window` 5,444–6,380 µs).
 3. **"t0 regressed 45 % since #485 (20,320 → 11,105 Actions/s)."** Withdrawn as a code claim.
    The runs now report hypervisor steal from `/proc/stat`: 25.3 % → 10,855 Actions/s, 26.8 % →
    10,730, **39.4 % → 8,070**, while per-flush cost is unchanged (20.4 ms per 399 Actions at

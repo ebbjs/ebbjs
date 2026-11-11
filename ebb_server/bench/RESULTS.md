@@ -99,6 +99,19 @@ The A/B repeats under the noise gauge below; three interleaved passes, same host
 The 2× p50 gap and the ~1.45× rate gap hold in every pass; the absolute rates move with the
 host (see "Host noise").
 
+Under concurrency the gap persists — eight raw callers, each owning a segment, b100, 20 s, three
+interleaved passes (`current_window` commits from eight processes at once; this is the append,
+not the coalescing Writer):
+
+| engine               |                Actions/s |                    p50 µs | p95 µs |     hypervisor steal |
+| -------------------- | -----------------------: | ------------------------: | -----: | -------------------: |
+| `current_window`     | 32,930 / 30,970 / 34,440 |     5,537 / 6,380 / 5,444 | ~86 ms | 48.7 / 48.8 / 46.2 % |
+| `log_first_recycled` | 54,905 / 55,415 / 54,320 | **2,346 / 2,343 / 2,364** | ~86 ms | 53.9 / 53.0 / 54.2 % |
+
+1.6× the rate and 2.4× better p50 at c=8. The p95/p99 are ~86–90 ms in both arms and move with
+the steal, which nearly doubled during this group — a direct illustration of why only p50 is
+usable here.
+
 The shape of the answer changes: the append is **not** pinned at 1.15 ms by the device, H1's
 ≤400 µs target is still missed at b100 (960 µs with assembly, ~406 µs for the append alone),
 but the issue's own falsifier — "falsified if the leg stays within 1.5× of today", i.e.

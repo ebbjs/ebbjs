@@ -269,7 +269,11 @@ defmodule EbbServer.Bench.LogAppend do
         {:ok, fd} = :file.open(path, [:raw, :binary, :read, :write])
         {:ok, _} = :file.position(fd, {:bof, @preallocate_bytes})
         :ok = :file.truncate(fd)
-        :ok = if config.engine == :log_first_recycled, do: zero_fill(fd), else: :ok
+
+        :ok =
+          if config.engine == :log_first_recycled,
+            do: zero_fill(fd, zeroed_bytes(config)),
+            else: :ok
 
         prebuilt =
           if config.engine == :log_first_io,
@@ -296,14 +300,20 @@ defmodule EbbServer.Bench.LogAppend do
 
   # Written once per pass, before the window: it makes every later append an
   # in-place write instead of an allocation plus size extension.
-  defp zero_fill(fd) do
+  defp zero_fill(fd, zeroed_bytes) do
     zeros = :binary.copy(<<0>>, 1024 * 1024)
 
-    for i <- 0..(div(@zeroed_bytes, byte_size(zeros)) - 1) do
+    for i <- 0..(div(zeroed_bytes, byte_size(zeros)) - 1) do
       :ok = :file.pwrite(fd, i * byte_size(zeros), zeros)
     end
 
     :file.datasync(fd)
+  end
+
+  # Each caller gets its own file, so the zeroing budget is shared across the
+  # run: a fixed total keeps a c=8 pass from writing eight times the bytes.
+  defp zeroed_bytes(%Options{concurrency: concurrency}) do
+    max(div(@zeroed_bytes, max(concurrency, 1)), 64 * 1024 * 1024)
   end
 
   defp dir, do: Path.join(System.tmp_dir!(), @segment_dir)
