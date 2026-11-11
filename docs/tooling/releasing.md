@@ -31,6 +31,20 @@ Pick the bump type and describe the change in the `.changeset/*.md` file it
 writes; commit that file with the PR. `pnpm changeset status` shows what the
 next release would contain.
 
+## Versioning policy
+
+The packages are **pre-alpha**. Until the maintainer says otherwise:
+
+- **Every changeset is `minor`.** Not `major`, and not `patch` either; a
+  breaking change is recorded as a minor step (the removals in #799 and #800
+  are the precedent).
+- **The release train never crosses `2.0.0`.** If a release would reach it,
+  stop and ask before merging the version PR.
+
+The rule exists so a reader cannot mistake `1.x` for an API-stability promise.
+`1.0.0` is historical — it was published before this policy — and does not
+change the rule.
+
 ## What CI does
 
 - **Every PR** runs the pack verification (see Guardrails below), so a broken

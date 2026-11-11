@@ -237,14 +237,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * Append one observable change. `components` is what the change touched in the
    * composed view, which is what a derived reader invalidates against.
    */
-  const bump = (
-    id: string,
-    type: string,
-    deleted: boolean,
-    components: readonly string[],
-  ): void => {
+  const bump = (id: string, deleted: boolean, components: readonly string[]): void => {
     revision += 1;
-    journal.push({ revision, id, type, deleted, components });
+    journal.push({ revision, id, deleted, components });
     trimJournal();
   };
 
@@ -400,16 +395,14 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
     reconcileIndex(previous, retained);
 
-    const journalChange = (model: string, deleted: boolean): void =>
-      bump(id, model, deleted, touchedComponents(previous, retained));
+    const journalChange = (deleted: boolean): void =>
+      bump(id, deleted, touchedComponents(previous, retained));
     if (retained === null) {
-      if (next !== null) journalChange(next.type, next.deleted_hlc !== null);
-      else if (previous !== null) journalChange(previous.type, true);
+      if (next !== null) journalChange(next.deleted_hlc !== null);
+      else if (previous !== null) journalChange(true);
       return;
     }
-    if (contentChanged(previous, retained)) {
-      journalChange(retained.type, retained.deleted_hlc !== null);
-    }
+    if (contentChanged(previous, retained)) journalChange(retained.deleted_hlc !== null);
   };
 
   const rememberView = (before: Map<string, Entity | null>, id: string): void => {
@@ -500,7 +493,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const row = previous ?? base ?? null;
       if (row === null) continue;
       removed = true;
-      bump(id, row.type, true, componentsOf(row));
+      bump(id, true, componentsOf(row));
     }
     if (removed) notify();
     return revision;

@@ -3,8 +3,8 @@
  *
  * Turns a {@link Query} into an executable op pipeline: one scan of the
  * source type, one select per DNF group, one order, and an optional
- * limit. The plan also carries `readTypes`, the invalidation record #512
- * intersects with the replica's revision journal.
+ * limit. The plan also carries the component reads #512 intersects with the
+ * replica's revision journal, per result surface.
  *
  * Pure by construction: no registry, no storage, no replica. Indexed
  * predicates (existence, adjacency, membership) are placed ahead of field
@@ -13,6 +13,7 @@
  * decision 12).
  */
 
+import { componentName } from "@ebbjs/core";
 import { entityGroupSystemEntity, relationshipSystemEntity } from "@ebbjs/schema";
 
 import type { Join, Predicate, Query } from "./query";
@@ -40,7 +41,15 @@ export interface Plan {
   readonly ops: readonly PlanOp[];
   /** One-level projections the builder applies after the narrowing ops. */
   readonly joins: readonly Join[];
-  readonly readTypes: readonly string[];
+  /**
+   * The components the plan's operations read: the fields its predicates and
+   * ordering name, the components its existence tests name, and the row models
+   * its edge, membership, and join indices read. A `collection` result keeps
+   * only the matching ids, so this set is its whole invalidation record; a
+   * `rows` result also projects whole rows and reads more — see
+   * {@link rowReadComponentsFor}.
+   */
+  readonly readComponents: readonly string[];
 }
 
 const toPlanPredicate = (predicate: Predicate): PlanPredicate => {
@@ -76,27 +85,113 @@ const orderPredicates = (predicates: readonly PlanPredicate[]): readonly PlanPre
 const isReplicaBacked = (query: Query): boolean => query.source !== "";
 
 /**
- * Source first, then each join target, then the system row types the
- * query reads: `relationship` rows for an adjacency predicate or join
- * and always `entityGroup` rows because every replica-backed projected
- * row carries its live group ids. Those are the subject types the
- * replica's journal reports, so #512 can intersect them with a revision
- * window. A relationship's `type` is the adjacency index key, not a row
- * type, so it never belongs here. A existence predicate names a component of
- * the source type, which the scan already covers.
+ * The read that matches every component of `model`. A query that cannot name
+ * the components it depends on reads a model whole rather than dropping the
+ * dependency; a change that names no component invalidates it.
  */
-const readTypesFor = (query: Query): readonly string[] => {
-  const types = new Set<string>([query.source]);
-  for (const join of query.joins) types.add(join.target);
-  if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
-    types.add(relationshipSystemEntity.name);
+export const modelComponents = (model: string): string => `${model}/*`;
+
+/**
+ * A branch that constrains a component of the source row: a non-null equality
+ * (it requires the row to carry the field) or a positive existence test. A
+ * `hasNot`, a null equality, a membership, or an adjacency constrains no source
+ * component, so a row can enter such a branch through a component the plan does
+ * not read.
+ */
+const namesSourceComponent = (predicate: Predicate): boolean => {
+  switch (predicate.kind) {
+    case "field":
+      return predicate.value !== null && predicate.value !== undefined;
+    case "existence":
+      return predicate.present;
+    default:
+      return false;
   }
-  // A query row's `groupIds` follows membership, so an entityGroup change
-  // invalidates the row even when the query filters or joins no membership.
-  // Collection subscriptions over the same plans inherit that
-  // over-invalidation; accepted so a cached row's ids cannot go stale.
-  if (isReplicaBacked(query)) types.add(entityGroupSystemEntity.name);
-  return [...types];
+};
+
+/**
+ * Whether every disjunction branch requires a source component, so a row can
+ * only enter the result through a component the plan reads. A query with no
+ * branches is a full scan, which names none.
+ */
+const everyBranchNamesComponent = (query: Query): boolean =>
+  query.groups.length > 0 && query.groups.every((group) => group.some(namesSourceComponent));
+
+/** The source components the predicates and ordering name. */
+const sourceComponentsFor = (query: Query): readonly string[] => {
+  const source = new Set<string>();
+  for (const group of query.groups) {
+    for (const predicate of group) {
+      if (predicate.kind === "field") source.add(componentName(query.source, predicate.field));
+      else if (predicate.kind === "existence") source.add(predicate.component);
+    }
+  }
+  if (query.order !== null) source.add(componentName(query.source, query.order.field));
+  return [...source];
+};
+
+/**
+ * The components a change must touch to alter the query's matching-id result,
+ * derived from the query alone because the plan holds no schema. A candidate
+ * chain (`source === ""`) reads no replica row and returns an empty set.
+ *
+ * A predicate names a source field component; existence names its component;
+ * ordering reads its field; an adjacency or membership predicate reads the
+ * edge/membership rows. The source itself is read whole — `<source>/*` — unless
+ * every branch names a source component, because only then does a row's arrival
+ * depend on a component the plan watches.
+ */
+export const readComponentsFor = (query: Query): readonly string[] => {
+  if (!isReplicaBacked(query)) return [];
+  const reads = new Set<string>(
+    everyBranchNamesComponent(query) ? sourceComponentsFor(query) : [modelComponents(query.source)],
+  );
+  if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
+    reads.add(modelComponents(relationshipSystemEntity.name));
+  }
+  if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
+    reads.add(modelComponents(entityGroupSystemEntity.name));
+  }
+  return [...reads];
+};
+
+/**
+ * A read set split for matching a change: the exact components it names and the
+ * models it reads whole. Compiling once keeps a change a pair of membership tests
+ * instead of a rebuilt intersection.
+ */
+export interface CompiledReadComponents {
+  readonly components: ReadonlySet<string>;
+  readonly models: ReadonlySet<string>;
+}
+
+/**
+ * Split a read set beside the {@link modelComponents} encoder, so the
+ * `<model>/*` suffix is parsed in exactly one place.
+ */
+export const compileReadComponents = (components: readonly string[]): CompiledReadComponents => {
+  const exact = new Set<string>();
+  const models = new Set<string>();
+  for (const component of components) {
+    if (component.endsWith("/*")) models.add(component.slice(0, -2));
+    else exact.add(component);
+  }
+  return { components: exact, models };
+};
+
+/**
+ * The components a `rows` result depends on: the plan's own reads plus every
+ * component of the source and of each joined model, because a projected row
+ * carries the whole shape, and membership for the `groupIds` it carries. Kept
+ * out of {@link Plan} so the execution path never computes it.
+ */
+export const rowReadComponentsFor = (query: Query): readonly string[] => {
+  if (!isReplicaBacked(query)) return [];
+  const reads = new Set(readComponentsFor(query));
+  reads.add(modelComponents(query.source));
+  for (const join of query.joins) reads.add(modelComponents(join.target));
+  reads.add(modelComponents(entityGroupSystemEntity.name));
+  return [...reads];
 };
 
 export function planQuery(query: Query): Plan {
@@ -113,5 +208,5 @@ export function planQuery(query: Query): Plan {
   if (query.limit !== null && query.limit >= 0) {
     ops.push({ kind: "limit", limit: query.limit });
   }
-  return { ops, joins: query.joins, readTypes: readTypesFor(query) };
+  return { ops, joins: query.joins, readComponents: readComponentsFor(query) };
 }

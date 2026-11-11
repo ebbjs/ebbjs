@@ -2,17 +2,18 @@
  * Unit tests for the reactive query-result cache (#512).
  *
  * The cache is keyed by the lowered query, derives its status from the
- * replica's revision, and invalidates coarse-first: a replica change re-runs
- * only entries whose `readTypes` intersect the change's type. A re-run that
- * produces an equal result does not notify.
+ * replica's revision, and invalidates on components: a replica change re-runs
+ * only entries whose read set it touches. A re-run that produces an equal
+ * result does not notify.
  */
 
 import { describe, expect, it } from "vitest";
-import { componentName, makeHlc, type Entity } from "@ebbjs/core";
+import { componentName, makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { emptyQuery, type Query } from "../query";
+import { planQuery, rowReadComponentsFor } from "../query-plan";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
@@ -53,12 +54,66 @@ const ingest = (
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
-const sourceWith = (rows: () => readonly Entity[]): QuerySource<Entity> & { runs: number } => {
+/** Write the named components in one action, so the journal reports exactly them. */
+const write = (
+  replica: ReturnType<typeof createReplica>,
+  id: string,
+  type: string,
+  fields: Record<string, unknown>,
+): void => {
+  gsn += 1;
+  replica.ingest(
+    { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
+    Object.entries(fields).map(([field, value]) => ({
+      id: `u_${gsn}_${field}`,
+      subject_id: id,
+      component: componentName(type, field),
+      method: "replace" as const,
+      data: { value, update_id: `u_${gsn}`, hlc: makeHlc(gsn) } as FieldValue,
+    })),
+    gsn,
+  );
+};
+
+/** Detach one component; the row survives with its siblings. */
+const detach = (
+  replica: ReturnType<typeof createReplica>,
+  id: string,
+  type: string,
+  field: string,
+): void => {
+  gsn += 1;
+  replica.ingest(
+    { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
+    [
+      {
+        id: `u_${gsn}`,
+        subject_id: id,
+        component: componentName(type, field),
+        method: "drop",
+        data: null,
+      },
+    ],
+    gsn,
+  );
+};
+
+/** Tombstone a row; a delete names no component. */
+const remove = (replica: ReturnType<typeof createReplica>, id: string): void => {
+  gsn += 1;
+  replica.ingest(
+    { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
+    [{ id: `u_${gsn}`, subject_id: id, method: "delete", data: null }],
+    gsn,
+  );
+};
+
+const sourceWith = <T>(rows: () => readonly T[]): QuerySource<T> & { runs: number } => {
   const source = {
     runs: 0,
     ready: async (): Promise<void> => {},
     isReady: (): boolean => true,
-    execute: async (): Promise<readonly Entity[]> => {
+    execute: async (): Promise<readonly T[]> => {
       source.runs += 1;
       return rows();
     },
@@ -247,8 +302,8 @@ describe("query cache: status and subscription", () => {
   });
 });
 
-describe("query cache: coarse invalidation", () => {
-  it("re-runs on a readTypes hit, keeps data usable while stale, and notifies on the status change", async () => {
+describe("query cache: invalidation", () => {
+  it("re-runs on a read-component hit, keeps data usable while stale, and notifies on the status change", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
     const cache = createQueryCache(replica);
@@ -309,7 +364,7 @@ describe("query cache: coarse invalidation", () => {
     expect(notified).toBe(3);
   });
 
-  it("advances the revision and stays silent when no change touches readTypes", async () => {
+  it("advances the revision and stays silent when no change touches its reads", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
     const cache = createQueryCache(replica);
@@ -366,6 +421,151 @@ describe("query cache: coarse invalidation", () => {
     expect(store.getSnapshot().data).toBe(beforeData);
     expect(store.getSnapshot().status).toBe("current");
     expect(notified).toBe(1);
+  });
+});
+
+describe("query cache: component-granular invalidation", () => {
+  const statusQuery = (): Query => ({
+    ...emptyQuery("todo"),
+    groups: [[{ kind: "field", field: "status", value: "open" }]],
+  });
+
+  it("does not re-run a plan that reads another component", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
+    const cache = createQueryCache(replica);
+    const query = statusQuery();
+    expect(planQuery(query).readComponents).toEqual(["todo/status"]);
+    const source = sourceWith(() => ["todo_1"]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    // A collection result is the matching id set, so a title write is not a
+    // component the plan read.
+    write(replica, "todo_1", "todo", { title: "Ship it" });
+    expect(source.runs).toBe(1);
+    expect(store.getSnapshot()).toMatchObject({ status: "current", loading: false });
+
+    write(replica, "todo_1", "todo", { status: "done" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("re-runs a full scan on any component of the model it scans", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
+    const cache = createQueryCache(replica);
+    const query = emptyQuery("todo");
+    expect(planQuery(query).readComponents).toEqual(["todo/*"]);
+    const source = sourceWith(() => [row("todo_1")]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "todo_1", "todo", { title: "Ship it" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("reads the whole source model for a projected-row result", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
+    const cache = createQueryCache(replica);
+    const query = statusQuery();
+    expect(rowReadComponentsFor(query)).toContain("todo/*");
+    const source = sourceWith(() => [row("todo_1")]);
+    const store = cache.watch("rows", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    // The cached result carries the title, so a title write must re-run it.
+    write(replica, "todo_1", "todo", { title: "Ship it" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("re-runs a plan when a row gains a component it excluded", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open" });
+    const cache = createQueryCache(replica);
+    const query: Query = {
+      ...emptyQuery("todo"),
+      groups: [
+        [
+          { kind: "field", field: "status", value: "open" },
+          { kind: "existence", component: "todo/draft", present: false },
+        ],
+      ],
+    };
+    // `hasNot` reads the component even though it does not require it: the
+    // component appearing is what removes the row from the result.
+    expect(planQuery(query).readComponents).toEqual(["todo/status", "todo/draft"]);
+    const source = sourceWith(() => ["todo_1"]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "todo_1", "todo", { draft: "wip" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("re-runs a membership-only plan when membership changes", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open" });
+    const cache = createQueryCache(replica);
+    const query: Query = {
+      ...emptyQuery("todo"),
+      groups: [[{ kind: "membership", anyOf: ["group_1"] }]],
+    };
+    expect(planQuery(query).readComponents).toEqual(["todo/*", "entityGroup/*"]);
+    const source = sourceWith(() => ["todo_1"]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("invalidates a whole-model read on a change that names no component", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open" });
+    const cache = createQueryCache(replica);
+    const source = sourceWith(() => [row("todo_1")]);
+    const store = cache.watch("rows", emptyQuery("todo"), source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    // Detaching the last component leaves a row that exists with nothing
+    // attached; tombstoning it touches no component, so only a whole-model
+    // read can see it leave.
+    detach(replica, "todo_1", "todo", "status");
+    const before = replica.revision;
+    remove(replica, "todo_1");
+    expect(replica.changesSince(before)).toMatchObject([{ components: [] }]);
+    await flush();
+    expect(source.runs).toBe(3);
+  });
+
+  it("matches a whole-model read when a cross-model write renames the row", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
+    const cache = createQueryCache(replica);
+    // Writing an `ebb/*` component moves the row's model, so the change reports
+    // every field under both prefixes; the `todo/*` read still sees its old
+    // components.
+    const source = sourceWith(() => [row("todo_1")]);
+    const store = cache.watch("rows", emptyQuery("todo"), source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "todo_1", "ebb", { link: "x" });
+    expect(source.runs).toBe(2);
   });
 });
 
@@ -494,7 +694,7 @@ describe("query cache: change-journal floor (#499)", () => {
     expect(replica.changeFloor).toBeGreaterThan(2);
 
     // The run settles at revision 2, which is now below the floor. Without the
-    // floor the note-only window would not intersect `readTypes`; the gap
+    // floor the note-only window would not intersect the reads; the gap
     // forces the full re-run instead.
     source.resolve([row("todo_1", "todo_1 next")]);
     await flush();
