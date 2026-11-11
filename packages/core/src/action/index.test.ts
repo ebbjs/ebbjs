@@ -1,7 +1,7 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { Value } from "@sinclair/typebox/value";
 import { createClock } from "../hlc/clock";
-import { ActionSchema } from "../types/action";
+import { ActionSchema, type UpdateInput } from "../types/action";
 import { createAction } from "./index";
 
 describe("createAction", () => {
@@ -9,7 +9,7 @@ describe("createAction", () => {
     vi.useFakeTimers();
   });
 
-  it("produces a valid Action", () => {
+  it("produces an Action that validates against the wire schema", () => {
     const clock = createClock();
     vi.setSystemTime(1000);
     const { action } = createAction({
@@ -37,20 +37,7 @@ describe("createAction", () => {
     expect(action.actor_id).toBe("a_actor123");
   });
 
-  it("generates an HLC timestamp", () => {
-    const clock = createClock();
-    vi.setSystemTime(5000);
-    const { hlc } = createAction({
-      actorId: "a_me",
-      updates: [],
-      clock,
-    });
-    expect(hlc).toBeDefined();
-    expect(typeof hlc).toBe("string");
-    expect(hlc.length).toBeGreaterThan(0);
-  });
-
-  it("sets gsn to 0", () => {
+  it("leaves gsn at 0, for the server to assign", () => {
     const clock = createClock();
     const { action } = createAction({
       actorId: "a_me",
@@ -58,6 +45,18 @@ describe("createAction", () => {
       clock,
     });
     expect(action.gsn).toBe(0);
+  });
+
+  it("stamps the action with the HLC it returns", () => {
+    const clock = createClock();
+    vi.setSystemTime(12345);
+    const { action, hlc } = createAction({
+      actorId: "a_me",
+      updates: [],
+      clock,
+    });
+    expect(hlc).toBe((12345n << 16n).toString());
+    expect(action.hlc).toBe(hlc);
   });
 
   it("generates unique IDs for updates when not provided", () => {
@@ -92,24 +91,23 @@ describe("createAction", () => {
     expect(action.updates[0].id).toBe("u_mycustomid");
   });
 
-  it("generates an action ID", () => {
+  it("strips a component from a delete, which names only the row", () => {
+    // The union forbids a `delete` carrying a component, but a JS caller or a
+    // decoded payload can still send one, so `createAction` normalizes it
+    // rather than stamping the extra key onto the wire.
+    const untypedDelete = {
+      subject_id: "a_target",
+      component: "group/name",
+      method: "delete",
+      data: null,
+    } as unknown as UpdateInput;
     const clock = createClock();
     const { action } = createAction({
       actorId: "a_me",
-      updates: [],
+      updates: [untypedDelete],
       clock,
     });
-    expect(action.id).toMatch(/^a_[a-z0-9]{16}$/);
-  });
-
-  it("returns the generated HLC", () => {
-    const clock = createClock();
-    vi.setSystemTime(12345);
-    const { hlc } = createAction({
-      actorId: "a_me",
-      updates: [],
-      clock,
-    });
-    expect(hlc).toBe((12345n << 16n).toString());
+    expect(action.updates[0]).not.toHaveProperty("component");
+    expect(Value.Check(ActionSchema, action)).toBe(true);
   });
 });

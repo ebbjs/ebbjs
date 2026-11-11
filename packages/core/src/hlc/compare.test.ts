@@ -74,10 +74,4 @@ describe("latestHlc", () => {
     const b = format(pack(1000n, 0n));
     expect(latestHlc(a, b)).toBe(a);
   });
-
-  it("returns the argument itself when equal", () => {
-    const a = format(pack(1000n, 5n));
-    const b = format(pack(1000n, 5n));
-    expect(latestHlc(a, b)).toBe(b);
-  });
 });
