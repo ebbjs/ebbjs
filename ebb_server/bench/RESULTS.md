@@ -139,6 +139,42 @@ scheduling; only interleaved p50 comparisons are usable, and absolute rates are 
 reproducible.** The append A/B was run interleaved for that reason. A run on a quiet host
 should be repeated before any absolute number here is quoted.
 
+### D3b — OTP `disk_log` as the durable append (build `fcdd7936`)
+
+`t5 --engine disk_log` runs the same window record construction as `log_first`, then one
+`:disk_log.balog/2` plus one `:disk_log.sync/1` (halt log, `format: external`, `repair: true`),
+each caller owning one file. This block ran alongside another measurement child, so the host's
+steal swung **15–69 %**; p50 medians are usable, Actions/s and p95/p99 are not.
+
+| arm, b100 c=1 `hot`, `sync: true`              | p50 µs (lower is better) |   p50 range | Actions/s (higher is better, indicative) |
+| ---------------------------------------------- | -----------------------: | ----------: | ---------------------------------------: |
+| **`disk_log`** (build + `balog` + `sync`)      |                **1,927** | 1,535–2,572 |                                   27,795 |
+| `current_window` (assembly + `write_batch`)    |                    1,965 | 1,569–2,266 |                                   22,813 |
+| `log_first` (sparse `pwrite` + `datasync`)     |                    2,038 | 1,995–2,040 |                                   24,170 |
+| **`log_first_recycled`** (pre-written segment) |                  **986** |   967–1,053 |                                   36,438 |
+
+| b1000, 15 s window   | p50 µs (lower is better) | Actions/s (higher is better) |
+| -------------------- | -----------------------: | ---------------------------: |
+| `disk_log`           |                    8,650 |                       55,167 |
+| `log_first_recycled` |                    7,489 |                       63,900 |
+
+| `--durability async`, b100 | p50 µs (lower is better) | what the sample covers                                               |
+| -------------------------- | -----------------------: | -------------------------------------------------------------------- |
+| `disk_log`                 |                      584 | record build + a **cast**; the write happens in `disk_log`'s process |
+| `log_first`                |                      676 | record build + the `pwrite`, no flush                                |
+
+Durable bytes per Action are **509–515 B** for both arms (lower is better for the same window):
+`format: external` with `head: none` adds **zero** framing bytes, and the file is exactly the
+concatenation of the window records. But a halt log **preallocates nothing** — `{size, N}` is
+only a ceiling and the file grows by one record per append — so every sample lands past EOF,
+allocating blocks and moving `i_size`: the ~1,080 µs path, not the ~337 µs in-place path.
+
+**Verdict: discard `disk_log`.** At 1,927 µs it is 0.98× the matched `write_batch` (1,965) and
+1.95× the recycled segment (986), and it **meets H1's falsifier** (≥1.27 ms, i.e. within 1.5× of
+today). It also cannot replace D1's recovery: `chunk/3` refuses an external-format file, so a
+torn tail is only visible to the caller's own scanner. The reason is the file's block state and
+`file:sync/1` (fsync, not `datasync`), not the flush primitive.
+
 ### Window-size ladder (c=1, `hot`, p50 µs, per-100-Action equivalent)
 
 | batch | `current_window` | `window_record` |   `log_first` | `log_first_recycled` |

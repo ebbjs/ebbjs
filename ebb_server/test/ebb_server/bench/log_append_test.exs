@@ -116,7 +116,8 @@ defmodule EbbServer.Bench.LogAppendTest do
   describe "perform/4" do
     test "appends one datasync'd window and verifies", %{config: config, ctx: ctx} do
       config = %{config | durability: :async}
-      before = LogAppend.verify_all() |> Enum.map(& &1.path) |> MapSet.new()
+      since = System.os_time(:second) - 2
+      before = LogAppend.verify_all(since: since) |> Enum.map(& &1.path) |> MapSet.new()
 
       assert {:ok, latency, bytes} = LogAppend.perform(config, ctx, 7, 0)
       assert latency >= 0
@@ -125,7 +126,7 @@ defmodule EbbServer.Bench.LogAppendTest do
       assert {:ok, _latency, _bytes} = LogAppend.perform(config, ctx, 7, 10)
 
       [summary] =
-        Enum.reject(LogAppend.verify_all(), &MapSet.member?(before, &1.path))
+        Enum.reject(LogAppend.verify_all(since: since), &MapSet.member?(before, &1.path))
 
       assert summary.errors == []
       assert summary.frames == 20

@@ -177,11 +177,19 @@ defmodule EbbServer.Bench.LogAppend do
   Verifies every segment in the run directory and returns one summary per
   file: window count, frame count, bytes, and any CRC/GSN/monotonicity error.
   """
-  @spec verify_all() :: [map()]
-  def verify_all do
+  @spec verify_all(keyword()) :: [map()]
+  def verify_all(opts \\ []) do
+    since = Keyword.get(opts, :since, 0)
+
     dir()
     |> Path.join("*")
     |> Path.wildcard()
+    |> Enum.filter(fn path ->
+      case File.stat(path, time: :posix) do
+        {:ok, %{mtime: mtime}} -> mtime >= since
+        _ -> false
+      end
+    end)
     |> Enum.map(&verify/1)
   end
 

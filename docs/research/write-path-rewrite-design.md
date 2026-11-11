@@ -51,6 +51,12 @@ case for the whole design, so it is recorded here rather than only in the issue.
   and per-flush cost is unchanged since #485. The "45 % regression since #799" reading is
   withdrawn: interleaved p50 comparisons are the only usable numbers on this box, and any
   cross-build comparison needs a repeat with steal reported.
+- **OTP's `disk_log` cannot stand in for the segment (D3b, build `fcdd7936`).** One record
+  through `balog/2` + `sync/1` costs 1,927 µs per 100-action flush (lower is better), 0.98× the
+  matched `write_batch` and 1.95× the recycled segment (986 µs). It preallocates nothing, so
+  every append grows the file — the ~1,080 µs path — and `format: external` files cannot be
+  read back with `chunk/3`, so torn-tail detection stays the caller's. The append also runs in
+  `disk_log`'s process with `file:sync/1` (fsync) rather than one `fdatasync` in the leader.
 - **D1 is as simple as §5 reads.** The segment writer's recovery (CRC, torn-tail truncate,
   sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
   implemented: random stream, random batch sizes, a cut at any byte, retry converges. That
