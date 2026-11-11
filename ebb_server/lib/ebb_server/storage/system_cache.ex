@@ -39,9 +39,9 @@ defmodule EbbServer.Storage.SystemCache do
 
   On init, the supervisor populates `GroupCache`, `EntityGroupCache`,
   `GroupAppsCache` and `RelationshipCache` from the system entities in
-  RocksDB before returning. The same `cf_type_entities` walk re-marks every
-  indexed row dirty; dirty marks are in-memory and would otherwise be lost on
-  a restart, leaving patch-only rows clean-but-stale and never-materialized
+  RocksDB before returning. The same `cf_component_entities` walk re-marks
+  every indexed row dirty; dirty marks are in-memory and would otherwise be
+  lost on a restart, leaving patch-only rows clean-but-stale and never-materialized
   rows missing (#564). The eager system-type populators clear their marks by
   materializing; user types stay marked until their first read. The outer
   `Storage.Supervisor`
@@ -82,11 +82,11 @@ defmodule EbbServer.Storage.SystemCache do
     propagates out of `init/1`; there is no rescue that turns a partial
     rebuild into a healthy-looking cache. The Writer then cannot serve
     reads derived from a diverged cache.
-  - **One-time type-entities backfill.** The `cf_actions` walk that
-    repairs `cf_type_entities` is a migration, not a per-boot step: a
-    successful run writes a durable marker in the default column family
-    and later boots skip the scan (which is O(all Updates) and a memory
-    cliff for the append-only log).
+  - **One-time component-entities backfill.** The `cf_actions` walk that
+    rebuilds `cf_component_entities` is a migration, not a per-boot step: a
+    successful run writes a durable marker in the default column family and
+    later boots skip the scan (which is O(all Updates) and a memory cliff for
+    the append-only log).
 
   ## Child start arguments
 
@@ -114,7 +114,6 @@ defmodule EbbServer.Storage.SystemCache do
   alias EbbServer.Storage.{
     ActionFormat,
     CacheTables,
-    Component,
     DirtyTracker,
     EntityGroupCache,
     EntityStore,
@@ -123,21 +122,23 @@ defmodule EbbServer.Storage.SystemCache do
     GroupAppsCache,
     GroupCache,
     RelationshipCache,
-    RocksDB
+    RocksDB,
+    RowMutations
   }
 
   alias EbbServer.Telemetry
 
   @default_gsn_counter_name :ebb_gsn_counter
 
-  # Durable marker written once a full type-entities backfill has
+  # Durable marker written once a full component-entities backfill has
   # completed, in the default column family so the migration adds no
   # column family and an older binary can still open the database. Its
   # presence is what makes later boots skip the action-log scan; the value
   # is the migration version, so bumping it forces the backfill to run
-  # again.
-  @type_entities_backfill_marker "system_cache:type_entities_backfill"
-  @type_entities_backfill_version "v1"
+  # again. `v2` is the index that carries component entries as well as the
+  # model entries `v1` rebuilt.
+  @component_entities_backfill_marker "system_cache:component_entities_backfill"
+  @component_entities_backfill_version "v2"
 
   # Boot re-marking writes one mark per indexed entity, so the batches are
   # bounded to keep a large index from ever being collected into one list.
@@ -173,9 +174,9 @@ defmodule EbbServer.Storage.SystemCache do
 
   @doc """
   Public entry point for the startup cache-rebuild flow, and what
-  `init/1` runs. It fills `EntityTypeCache` from `cf_type_entities`,
-  runs the one-time `cf_type_entities` backfill if this database has
-  never completed it, then materializes every system entity into
+  `init/1` runs. It fills `EntityTypeCache` from the `cf_component_entities`
+  model entries, runs the one-time `cf_component_entities` backfill if this
+  database has never completed it, then materializes every system entity into
   `GroupCache`, `EntityGroupCache`, `GroupAppsCache` and
   `RelationshipCache`.
 
@@ -370,7 +371,7 @@ defmodule EbbServer.Storage.SystemCache do
   # read the index.
   defp populate_caches_from_indexes(rocks_name, tables, dirty_set, opts) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
-    backfilled? = type_entities_backfilled?(rocks_name)
+    backfilled? = component_entities_backfilled?(rocks_name)
 
     with {:ok, existing_keys, m1} <-
            phase(@empty_measurements, :entity_types, fn counter ->
@@ -384,7 +385,7 @@ defmodule EbbServer.Storage.SystemCache do
            end),
          {:ok, _backfilled, m2} <-
            phase(m1, :backfilled, fn counter ->
-             maybe_backfill_type_entities(
+             maybe_backfill_component_entities(
                backfilled?,
                rocks_name,
                tables.entity_types,
@@ -431,7 +432,7 @@ defmodule EbbServer.Storage.SystemCache do
     end
   end
 
-  defp maybe_backfill_type_entities(
+  defp maybe_backfill_component_entities(
          true,
          _rocks_name,
          _entity_types_table,
@@ -441,7 +442,7 @@ defmodule EbbServer.Storage.SystemCache do
        ),
        do: :ok
 
-  defp maybe_backfill_type_entities(
+  defp maybe_backfill_component_entities(
          false,
          rocks_name,
          entity_types_table,
@@ -449,9 +450,9 @@ defmodule EbbServer.Storage.SystemCache do
          dirty_set,
          counter
        ) do
-    count = backfill_type_entities(rocks_name, entity_types_table, existing_keys, dirty_set)
+    count = backfill_component_entities(rocks_name, entity_types_table, existing_keys, dirty_set)
     :atomics.add(counter, 1, count)
-    mark_type_entities_backfilled(rocks_name)
+    mark_component_entities_backfilled(rocks_name)
     :ok
   end
 
@@ -562,7 +563,7 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp populate_type(type, rocks_name, dirty_set, insert_fn, opts, counter) do
     prefix = type <> <<0>>
-    cf = RocksDB.cf_type_entities(rocks_name)
+    cf = RocksDB.cf_component_entities(rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
     cf
@@ -586,19 +587,20 @@ defmodule EbbServer.Storage.SystemCache do
     end)
   end
 
-  # The authorizer resolves an existing entity's type for membership
-  # permissions, so every `cf_type_entities` pair must be in ETS before
-  # the first write is authorized. When a full backfill is still pending
-  # the same walk also collects the keys it must diff against, so the
-  # migration pays for one `cf_type_entities` walk rather than two.
+  # The authorizer resolves an existing entity's model for membership
+  # permissions, so every model entry must be in ETS before the first write is
+  # authorized. When a full backfill is still pending the same walk also
+  # collects every key it must diff against, model and component entries
+  # alike, so the migration pays for one `cf_component_entities` walk rather
+  # than two.
   #
-  # The walk also re-marks every pair dirty: marks are ETS-only, so without
-  # this a restart leaves a row clean-but-stale or missing (#564). Eager types
-  # are marked too; their populators run next and clear the marks by
-  # materializing, so a surviving mark is a genuine repair candidate.
+  # The walk also re-marks every model entry dirty: marks are ETS-only, so
+  # without this a restart leaves a row clean-but-stale or missing (#564).
+  # Eager models are marked too; their populators run next and clear the marks
+  # by materializing, so a surviving mark is a genuine repair candidate.
   defp populate_entity_types(rocks_name, table, collect_existing?, dirty_set, counter) do
     rocks_name
-    |> RocksDB.cf_type_entities()
+    |> RocksDB.cf_component_entities()
     |> RocksDB.full_iterator(name: rocks_name)
     |> Stream.chunk_every(@dirty_mark_chunk_size)
     |> Enum.reduce(if(collect_existing?, do: MapSet.new()), fn chunk, existing_keys ->
@@ -610,16 +612,31 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp index_and_collect_marks(chunk, table, existing_keys, counter) do
     Enum.reduce(chunk, {existing_keys, []}, fn {key, _value}, {keys, marks} ->
-      case :binary.split(key, <<0>>) do
-        [type, entity_id] ->
-          EntityTypeCache.put_type(entity_id, type, entity_types: table)
+      case model_entry(key) do
+        {:ok, model, entity_id} ->
+          EntityTypeCache.put_type(entity_id, model, entity_types: table)
           :atomics.add(counter, 1, 1)
-          {put_existing_key(keys, key), [{entity_id, type} | marks]}
+          {put_existing_key(keys, key), [{entity_id, model} | marks]}
 
-        _ ->
-          {keys, marks}
+        :error ->
+          # A component entry is still part of the diff: a drop in the log
+          # emits `:delete`, and it can only remove an entry the walk saw.
+          {put_existing_key(keys, key), marks}
       end
     end)
+  end
+
+  # Only a model entry names the row's committed model. A component entry's
+  # first segment always carries the `/` of `<model>/<field>`, and a key with
+  # no separator at all is half-written garbage.
+  defp model_entry(key) do
+    case :binary.split(key, <<0>>) do
+      [name, entity_id] ->
+        if :binary.match(name, "/") == :nomatch, do: {:ok, name, entity_id}, else: :error
+
+      _ ->
+        :error
+    end
   end
 
   # One generation per chunk. The boundary only bounds the batch built for a
@@ -633,97 +650,147 @@ defmodule EbbServer.Storage.SystemCache do
   defp put_existing_key(nil, _key), do: nil
   defp put_existing_key(%MapSet{} = keys, key), do: MapSet.put(keys, key)
 
-  # Walk every action in `cf_actions` and ensure each (model, entity_id)
-  # pair has an entry in `cf_type_entities`. Runs once per database: the
-  # marker written on success makes later boots skip the O(all Updates)
-  # scan. A raise here is deliberately not rescued — a half-backfilled
-  # index must neither be marked complete nor served.
-  defp backfill_type_entities(rocks_name, entity_types_table, existing_keys, dirty_set) do
-    cf_actions = RocksDB.cf_actions(rocks_name)
-    cf_type_entities = RocksDB.cf_type_entities(rocks_name)
+  # Rebuild both key kinds of `cf_component_entities` by replaying the action
+  # log in GSN order with the Writer's own rules: a component Update puts or
+  # deletes its entry, and each folded subject puts its model entry. The
+  # replay folds per key so the last write wins, which is what the flush does.
+  # The result is diffed against the keys already present: a missing put and a
+  # still-present delete are the only ops written, so a clean index costs
+  # nothing. Runs once per database: the marker written on success makes later
+  # boots skip the O(all Updates) scan. A raise here is deliberately not
+  # rescued — a half-backfilled index must neither be marked complete nor
+  # served.
+  defp backfill_component_entities(rocks_name, entity_types_table, existing_keys, dirty_set) do
+    cf = RocksDB.cf_component_entities(rocks_name)
 
-    {marks, ops} =
-      cf_actions
-      |> RocksDB.range_iterator(
-        <<0::unsigned-big-integer-size(64)>>,
-        <<0xFFFFFFFFFFFFFFFF::unsigned-big-integer-size(64)>>,
-        name: rocks_name
-      )
-      |> Stream.map(fn {gsn_key, action_etf} ->
-        # The backfill only needs each Update's subject, so it decodes the
-        # payload half of the frame and skips the delivery scopes.
-        ActionFormat.decode_payload(action_etf, RocksDB.decode_gsn_key(gsn_key))
+    {_models, expected} =
+      rocks_name
+      |> action_log()
+      |> Enum.reduce({%{}, %{}}, fn action, acc ->
+        replay_action(action["updates"] || [], acc, entity_types_table)
       end)
-      |> Stream.flat_map(fn action ->
-        # Each Update contributes at most one (model, entity_id) pair.
-        # Tombstones (method == "delete") still imply a prior create,
-        # so we index them too — the materialize path handles
-        # deleted_hlc by returning :not_found and the cache populate
-        # gracefully no-ops on those. A delete names no component, so its
-        # model is the one already recorded for the id; an id with no record
-        # has nothing to index.
-        action["updates"] || []
-      end)
-      |> Stream.map(fn update ->
-        {update["subject_id"], update_model(update, entity_types_table)}
-      end)
-      |> Stream.reject(fn {_id, model} -> is_nil(model) end)
-      |> Stream.map(fn {id, model} -> {RocksDB.encode_type_entity_key(model, id), model, id} end)
-      |> Stream.filter(fn {key, _type, _id} -> not MapSet.member?(existing_keys, key) end)
-      |> Stream.uniq_by(fn {key, _, _} -> key end)
-      |> Enum.map(fn {key, type, id} ->
-        EntityTypeCache.put_type(id, type, entity_types: entity_types_table)
-        {{id, type}, {:put, cf_type_entities, key, <<>>}}
-      end)
-      |> Enum.unzip()
 
-    case ops do
+    {marks, writes} = index_diff(expected, existing_keys, cf, entity_types_table)
+
+    case writes do
       [] ->
         0
 
-      ops ->
-        Logger.info("Backfilling #{length(ops)} missing cf_type_entities entries")
+      writes ->
+        Logger.info("Backfilling #{length(writes)} cf_component_entities entries")
 
-        case RocksDB.write_batch(ops, name: rocks_name) do
+        case RocksDB.write_batch(writes, name: rocks_name) do
           :ok ->
-            # The type walk above never saw these pairs, so without a mark the
-            # migration boot would re-index the entity but still serve it as
-            # missing until something wrote it again.
+            # The index walk above never saw these entries, so without a mark
+            # the migration boot would re-index the entity but still serve it
+            # as missing until something wrote it again.
             mark_dirty_in_chunks(marks, dirty_set)
-            length(ops)
+            length(writes)
 
           {:error, reason} ->
-            raise "cf_type_entities backfill write failed: #{inspect(reason)}"
+            raise "cf_component_entities backfill write failed: #{inspect(reason)}"
         end
     end
   end
 
-  # A component names the model in its prefix. A delete names none, so the
-  # recorded model is the only one there is.
-  defp update_model(%{"component" => component}, _entity_types_table)
-       when is_binary(component) do
-    Component.model(component)
+  defp action_log(rocks_name) do
+    rocks_name
+    |> RocksDB.cf_actions()
+    |> RocksDB.range_iterator(
+      <<0::unsigned-big-integer-size(64)>>,
+      <<0xFFFFFFFFFFFFFFFF::unsigned-big-integer-size(64)>>,
+      name: rocks_name
+    )
+    |> Stream.map(fn {gsn_key, action_etf} ->
+      # The backfill only needs the Updates, so it decodes the payload half of
+      # the frame and skips the delivery scopes.
+      ActionFormat.decode_payload(action_etf, RocksDB.decode_gsn_key(gsn_key))
+    end)
   end
 
-  defp update_model(update, entity_types_table) do
-    EntityTypeCache.get_type(update["subject_id"], entity_types_table)
+  # The replay carries the last model each id was committed under, so a delete
+  # that names no component still writes the model entry. An id the log never
+  # modeled falls back to the index walk's record; an id nothing knows has no
+  # entry to rebuild.
+  defp replay_action(raw_updates, {models, ops}, entity_types_table) do
+    updates = Enum.map(raw_updates, &RowMutations.from_stored/1)
+
+    {models, ops} =
+      Enum.reduce(updates, {models, ops}, fn update, {models, ops} ->
+        model =
+          update.model || Map.get(models, update.subject_id) ||
+            EntityTypeCache.get_type(update.subject_id, entity_types_table)
+
+        models = if model, do: Map.put(models, update.subject_id, model), else: models
+        {models, replay_update(update, ops)}
+      end)
+
+    model_ops =
+      updates
+      |> Enum.map(& &1.subject_id)
+      |> Enum.uniq()
+      |> Enum.reduce(ops, fn subject_id, ops ->
+        case Map.get(models, subject_id) do
+          nil -> ops
+          model -> Map.put(ops, RocksDB.encode_component_entity_key(model, subject_id), :put)
+        end
+      end)
+
+    {models, model_ops}
   end
 
-  defp type_entities_backfilled?(rocks_name) do
+  defp replay_update(%{method: method, component: component, subject_id: subject_id}, ops)
+       when method in [:merge, :replace] do
+    Map.put(ops, RocksDB.encode_component_entity_key(component, subject_id), :put)
+  end
+
+  defp replay_update(%{method: :drop, component: component, subject_id: subject_id}, ops) do
+    Map.put(ops, RocksDB.encode_component_entity_key(component, subject_id), :delete)
+  end
+
+  defp replay_update(%{method: :delete}, ops), do: ops
+
+  defp index_diff(expected, existing_keys, cf, entity_types_table) do
+    {marks, writes} =
+      expected
+      |> Enum.sort_by(fn {key, _op} -> key end)
+      |> Enum.reduce({[], []}, fn {key, op}, {marks, writes} ->
+        case {op, MapSet.member?(existing_keys, key)} do
+          {:put, false} -> add_index_entry(key, cf, entity_types_table, marks, writes)
+          {:delete, true} -> {marks, [{:delete, cf, key} | writes]}
+          _ -> {marks, writes}
+        end
+      end)
+
+    {marks, Enum.reverse(writes)}
+  end
+
+  defp add_index_entry(key, cf, entity_types_table, marks, writes) do
+    [name, entity_id] = :binary.split(key, <<0>>)
+
+    if :binary.match(name, "/") == :nomatch do
+      EntityTypeCache.put_type(entity_id, name, entity_types: entity_types_table)
+      {[{entity_id, name} | marks], [{:put, cf, key, <<>>} | writes]}
+    else
+      {marks, [{:put, cf, key, <<>>} | writes]}
+    end
+  end
+
+  defp component_entities_backfilled?(rocks_name) do
     case RocksDB.get(
            RocksDB.cf_default(rocks_name),
-           @type_entities_backfill_marker,
+           @component_entities_backfill_marker,
            name: rocks_name
          ) do
-      {:ok, @type_entities_backfill_version} -> true
+      {:ok, @component_entities_backfill_version} -> true
       _ -> false
     end
   end
 
-  defp mark_type_entities_backfilled(rocks_name) do
+  defp mark_component_entities_backfilled(rocks_name) do
     op =
-      {:put, RocksDB.cf_default(rocks_name), @type_entities_backfill_marker,
-       @type_entities_backfill_version}
+      {:put, RocksDB.cf_default(rocks_name), @component_entities_backfill_marker,
+       @component_entities_backfill_version}
 
     case RocksDB.write_batch([op], name: rocks_name) do
       :ok -> :ok

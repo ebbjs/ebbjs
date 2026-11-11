@@ -61,9 +61,11 @@ defmodule EbbServer.EntityComponentsParamIntegrationTest do
     conn = get_entity("/entities/#{entity_id}")
     assert conn.status == 200
 
-    fields = Jason.decode!(conn.resp_body)["data"]["fields"]
+    body = Jason.decode!(conn.resp_body)
+    fields = body["data"]["fields"]
 
     assert Map.keys(fields) |> Enum.sort() == ["completed", "title"]
+    refute Map.has_key?(body["data"], "components")
   end
 
   test "a present parameter filters the fields to the requested components", %{

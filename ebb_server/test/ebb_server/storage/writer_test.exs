@@ -28,6 +28,8 @@ defmodule EbbServer.Storage.WriterTest do
   alias EbbServer.Storage.{
     ActionFormat,
     ActionLog,
+    ActionScope,
+    ComponentEntityIndex,
     DirtyTracker,
     EntityGroupCache,
     EntityTypeCache,
@@ -165,12 +167,12 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert RocksDB.decode_gsn_list(entity_gsns) == [1]
 
-      type_entity_key = RocksDB.encode_type_entity_key("todo", "todo_test_123")
+      cf = RocksDB.cf_component_entities(rocks_name)
+      model_key = RocksDB.encode_component_entity_key("todo", "todo_test_123")
+      component_key = RocksDB.encode_component_entity_key("todo/title", "todo_test_123")
 
-      assert {:ok, <<>>} =
-               RocksDB.get(RocksDB.cf_type_entities(rocks_name), type_entity_key,
-                 name: rocks_name
-               )
+      assert {:ok, <<>>} = RocksDB.get(cf, model_key, name: rocks_name)
+      assert {:ok, <<>>} = RocksDB.get(cf, component_key, name: rocks_name)
 
       assert {:ok, ^gsn_key} =
                RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
@@ -217,13 +219,104 @@ defmodule EbbServer.Storage.WriterTest do
       end
     end
 
-    test "dedups repeated (model, subject_id) index puts across the flush", ctx do
+    test "scopes a later write to a row its create committed in the same flush (#813)", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      # The create and the permissions-only write are two Actions of one
+      # flush. The by-id cache only holds committed rows, so the second
+      # Action's scope must come from the row the flush already folded — not
+      # from a cache miss, which would commit it undeliverably.
+      create =
+        validated_action(%{
+          id: "act_813_create",
+          updates: [
+            validated_component("eg_813", "entityGroup/entity_id", %{"value" => "todo_813"}),
+            validated_component("eg_813", "entityGroup/group_id", %{"value" => "group_813"})
+          ]
+        })
+
+      permissions =
+        validated_action(%{
+          id: "act_813_permissions",
+          updates: [
+            validated_component("eg_813", "entityGroup/permissions", %{
+              "value" => ["todo.*"]
+            })
+          ]
+        })
+
+      assert {:ok, {1, 2}, []} = Writer.write_actions([create, permissions], writer_name)
+
+      {:ok, binary} =
+        RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2), name: rocks_name)
+
+      decoded = ActionFormat.decode(binary, 2)
+      assert %{"update_scopes" => [["group_813"]]} = decoded
+
+      # The same scope catch-up and live fan-out filter on.
+      assert [%{"component" => "entityGroup/permissions"}] =
+               ActionScope.updates_for_group(decoded, "group_813")
+
+      key = RocksDB.encode_group_action_key("group_813", 2)
+
+      assert {:ok, "act_813_permissions"} =
+               RocksDB.get(RocksDB.cf_group_actions(rocks_name), key, name: rocks_name)
+    end
+
+    test "reads the candidate rows carrying a component in one index range", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      write =
+        validated_action(%{
+          id: "act_component_read",
+          updates: [
+            validated_component("todo_read_a", "todo/title", %{"value" => "a"}),
+            validated_component("todo_read_b", "todo/title", %{"value" => "b"}),
+            validated_component("todo_read_b", "todo/status", %{"value" => "open"})
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
+
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+               "todo_read_a",
+               "todo_read_b"
+             ]
+
+      drop =
+        validated_action(%{
+          id: "act_component_drop",
+          updates: [validated_component("todo_read_a", "todo/title", nil, method: :drop)]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
+
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+               "todo_read_b"
+             ]
+
+      # A delete names the row and cannot name the components to detach, so
+      # its entries stay as candidates; the tombstone is the liveness filter.
+      delete =
+        validated_action(%{
+          id: "act_component_delete",
+          updates: [validated_update(%{subject_id: "todo_read_b", method: :delete})]
+        })
+
+      assert {:ok, {3, 3}, []} = Writer.write_actions([delete], writer_name)
+
+      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+               "todo_read_b"
+             ]
+    end
+
+    test "dedups repeated index puts across the flush", ctx do
       %{name: writer_name} =
         start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
 
       action1 =
         validated_action(%{
-          id: "act_type_1",
+          id: "act_index_1",
           updates: [
             validated_update(%{subject_id: "todo_shared"}),
             validated_update(%{subject_id: "todo_unique_1"})
@@ -232,7 +325,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       action2 =
         validated_action(%{
-          id: "act_type_2",
+          id: "act_index_2",
           updates: [
             validated_update(%{subject_id: "todo_shared"}),
             validated_update(%{subject_id: "todo_unique_2"})
@@ -243,17 +336,132 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert_receive {:captured_ops, ops}
 
-      cf = RocksDB.cf_type_entities(ctx.rocks_name)
+      cf = RocksDB.cf_component_entities(ctx.rocks_name)
       puts = puts_to(ops, cf)
 
-      # `todo_shared` repeats across both Actions; only the three unique
-      # keys are written.
-      assert length(puts) == 3
+      # `todo_shared` repeats across both Actions; only its model entry and
+      # component entry, plus the same pair for the two unique rows, are
+      # written: 6 puts, one op per key.
+      assert length(puts) == 6
 
       for subject_id <- ["todo_shared", "todo_unique_1", "todo_unique_2"] do
-        key = RocksDB.encode_type_entity_key("todo", subject_id)
-        assert {:ok, <<>>} = RocksDB.get(cf, key, name: ctx.rocks_name)
+        assert {:ok, <<>>} =
+                 RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
+                   name: ctx.rocks_name
+                 )
+
+        assert {:ok, <<>>} =
+                 RocksDB.get(
+                   cf,
+                   RocksDB.encode_component_entity_key("todo/title", subject_id),
+                   name: ctx.rocks_name
+                 )
       end
+    end
+
+    test "a k-component write indexes k component entries plus one model entry", ctx do
+      %{name: writer_name} =
+        start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
+
+      for k <- [1, 2, 3] do
+        subject_id = "todo_k_#{k}"
+
+        updates =
+          Enum.map(1..k, fn i ->
+            validated_component(subject_id, "todo/field_#{i}", %{"value" => i})
+          end)
+
+        action = validated_action(%{id: "act_k_#{k}", updates: updates})
+        assert {:ok, {_start, _end}, []} = Writer.write_actions([action], writer_name)
+        assert_receive {:captured_ops, ops}
+
+        cf = RocksDB.cf_component_entities(ctx.rocks_name)
+        puts = puts_to(ops, cf)
+
+        # Write amplification is the pinned shape: k component entries plus
+        # the constant model entry.
+        assert length(puts) == k + 1
+
+        for i <- 1..k do
+          key = RocksDB.encode_component_entity_key("todo/field_#{i}", subject_id)
+          assert {:ok, <<>>} = RocksDB.get(cf, key, name: ctx.rocks_name)
+        end
+
+        assert {:ok, <<>>} =
+                 RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
+                   name: ctx.rocks_name
+                 )
+      end
+    end
+
+    test "a drop deletes the component entry and keeps the model entry", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      subject_id = "todo_dropped"
+
+      write =
+        validated_action(%{
+          updates: [validated_component(subject_id, "todo/title", %{"value" => "x"})]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
+
+      drop =
+        validated_action(%{
+          updates: [validated_update(%{subject_id: subject_id, method: :drop, data: nil})]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
+
+      cf = RocksDB.cf_component_entities(rocks_name)
+
+      assert :not_found =
+               RocksDB.get(
+                 cf,
+                 RocksDB.encode_component_entity_key("todo/title", subject_id),
+                 name: rocks_name
+               )
+
+      assert {:ok, <<>>} =
+               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
+                 name: rocks_name
+               )
+    end
+
+    test "a delete leaves the model entry and the row's stale component entries", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      subject_id = "todo_deleted"
+
+      write =
+        validated_action(%{
+          updates: [validated_component(subject_id, "todo/title", %{"value" => "x"})]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
+
+      delete =
+        validated_action(%{
+          updates: [validated_update(%{subject_id: subject_id, method: :delete})]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([delete], writer_name)
+
+      cf = RocksDB.cf_component_entities(rocks_name)
+
+      # A delete names the row, not its components, so the component entries
+      # stay behind. Existence is the model entry, which survives (#799).
+      assert {:ok, <<>>} =
+               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
+                 name: rocks_name
+               )
+
+      assert {:ok, <<>>} =
+               RocksDB.get(
+                 cf,
+                 RocksDB.encode_component_entity_key("todo/title", subject_id),
+                 name: rocks_name
+               )
     end
   end
 

@@ -50,7 +50,7 @@ defmodule EbbServer.Storage.EntityView do
   as it is; this is a read filter, not a wire change.
   """
   @spec filter_components(view(), MapSet.t(String.t()) | nil) :: view()
-  def filter_components(view, nil), do: view
+  def filter_components(view, nil), do: project_view(view)
 
   def filter_components(%{"data" => %{"fields" => fields}} = view, components)
       when is_map(fields) do
@@ -61,10 +61,10 @@ defmodule EbbServer.Storage.EntityView do
         MapSet.member?(components, component_name(model, field))
       end)
 
-    Map.put(view, "data", Map.put(view["data"], "fields", kept))
+    Map.put(view, "data", %{"fields" => kept})
   end
 
-  def filter_components(view, _components), do: view
+  def filter_components(view, _components), do: project_view(view)
 
   defp component_name(model, field) when is_binary(model) and is_binary(field),
     do: model <> "/" <> field
@@ -76,11 +76,22 @@ defmodule EbbServer.Storage.EntityView do
     %{
       "id" => entity.id,
       "type" => entity.type,
-      "data" => entity.data,
+      "data" => project_data(entity.data),
       "created_hlc" => entity.created_hlc,
       "updated_hlc" => entity.updated_hlc,
       "deleted_hlc" => entity.deleted_hlc,
       "last_gsn" => entity.last_gsn
     }
   end
+
+  # `data.components` is the read model's derived existence index. The client's
+  # closed `EntityDataSchema` accepts only `fields`, so the wire view drops it.
+  defp project_data(%{"fields" => fields}), do: %{"fields" => fields}
+  defp project_data(data), do: data
+
+  # `filter_components/2` takes a view while `project_data/1` takes its data;
+  # projecting the view here keeps a hand-built one from leaking the derived
+  # key onto the wire.
+  defp project_view(%{"data" => data} = view), do: Map.put(view, "data", project_data(data))
+  defp project_view(view), do: view
 end

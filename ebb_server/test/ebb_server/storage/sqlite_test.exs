@@ -45,10 +45,21 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
 
+  defp component_row(id, type, fields, components, overrides \\ %{}) do
+    data = Jason.encode!(%{"fields" => fields, "components" => components})
+
+    entity_row(
+      id,
+      type,
+      fields,
+      Map.merge(%{data: data, components: components}, overrides)
+    )
+  end
+
   describe "DDL" do
     test "runs without error and creates the entities table", context do
       dir = tmp_dir(context)
-      %{name: name} = start_sqlite(dir)
+      %{name: _name} = start_sqlite(dir)
 
       db = open_readonly(dir)
 
@@ -59,6 +70,32 @@ defmodule EbbServer.Storage.SQLiteTest do
         )
 
       {:row, ["entities"]} = Sqlite3.step(db, stmt)
+      :ok = Sqlite3.release(db, stmt)
+    end
+
+    test "creates the entity_components table and its component index", context do
+      dir = tmp_dir(context)
+      %{name: _name} = start_sqlite(dir)
+
+      db = open_readonly(dir)
+
+      {:ok, stmt} =
+        Sqlite3.prepare(
+          db,
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_components'"
+        )
+
+      {:row, ["entity_components"]} = Sqlite3.step(db, stmt)
+      :ok = Sqlite3.release(db, stmt)
+
+      {:ok, stmt} =
+        Sqlite3.prepare(
+          db,
+          "SELECT name FROM sqlite_master WHERE type='index' " <>
+            "AND name='idx_entity_components_component'"
+        )
+
+      {:row, ["idx_entity_components_component"]} = Sqlite3.step(db, stmt)
       :ok = Sqlite3.release(db, stmt)
     end
   end
@@ -407,6 +444,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"new","hlc":2})},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -436,6 +474,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"new","hlc":2})},
+          [],
           %{
             type: "todo",
             created_hlc: 7000,
@@ -466,6 +505,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"stale","hlc":9})},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -493,6 +533,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"title" => ~s({"value":"second","hlc":6})},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -520,6 +561,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -549,6 +591,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -565,7 +608,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert row.updated_hlc == 7000
       assert row.deleted_hlc == nil
       assert row.last_gsn == 7
-      assert Jason.decode!(row.data) == %{"fields" => %{}}
+      assert Jason.decode!(row.data) == %{"fields" => %{}, "components" => []}
     end
 
     test "a patched nested map key survives alongside its siblings", context do
@@ -582,6 +625,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.patch_entity(
           "doc_1",
           %{"content.map.\"b\"" => ~s({"value":9,"hlc":2})},
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -617,6 +661,7 @@ defmodule EbbServer.Storage.SQLiteTest do
             "content" => ~s({"map":{"run_1":{"value":"z","hlc":9}}}),
             "source_id" => ~s({"value":"src_new","hlc":2})
           },
+          [],
           %{
             type: "doc",
             created_hlc: 1000,
@@ -642,6 +687,184 @@ defmodule EbbServer.Storage.SQLiteTest do
       :ok = Sqlite3.bind(stmt, ["doc_1"])
       assert {:row, ["z", "src_new"]} = Sqlite3.step(db, stmt)
       :ok = Sqlite3.release(db, stmt)
+    end
+  end
+
+  describe "component existence index" do
+    test "an upsert writes the canonical list and one mirror row per component", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      row =
+        component_row(
+          "doc_1",
+          "doc",
+          %{"title" => lww("t"), "body" => lww("b")},
+          ["doc/body", "doc/title"]
+        )
+
+      :ok = SQLite.upsert_entity(row, name)
+
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/body", 10, name)
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/title", 10, name)
+
+      assert {:ok, stored} = SQLite.get_entity("doc_1", name)
+      assert Jason.decode!(stored.data)["components"] == ["doc/body", "doc/title"]
+    end
+
+    test "a patch that adds a component updates the list and the mirror together", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(
+        name,
+        "doc_1",
+        ~s({"fields":{"title":{"value":"t","hlc":1}},"components":["doc/title"]})
+      )
+
+      :ok =
+        SQLite.patch_entity(
+          "doc_1",
+          %{"body" => Jason.encode!(lww("b"))},
+          ["doc/body", "doc/title"],
+          %{
+            type: "doc",
+            created_hlc: 1000,
+            updated_hlc: 2000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 2
+          },
+          name
+        )
+
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/body", 10, name)
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/title", 10, name)
+
+      assert {:ok, stored} = SQLite.get_entity("doc_1", name)
+      assert Jason.decode!(stored.data)["components"] == ["doc/body", "doc/title"]
+    end
+
+    test "a later upsert replaces the mirror, so a dropped component disappears", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_1",
+            "doc",
+            %{"title" => lww("t"), "body" => lww("b")},
+            ["doc/body", "doc/title"]
+          ),
+          name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_1",
+            "doc",
+            %{"title" => lww("t")},
+            ["doc/title"],
+            %{last_gsn: 2}
+          ),
+          name
+        )
+
+      assert {:ok, []} = SQLite.query_component_ids("doc/body", 10, name)
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/title", 10, name)
+
+      assert {:ok, stored} = SQLite.get_entity("doc_1", name)
+      assert Jason.decode!(stored.data)["components"] == ["doc/title"]
+    end
+
+    test "a rejected stale upsert leaves the mirror alone", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_1",
+            "doc",
+            %{"title" => lww("newer")},
+            ["doc/title"],
+            %{last_gsn: 5}
+          ),
+          name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_1",
+            "doc",
+            %{"body" => lww("older")},
+            ["doc/body"],
+            %{last_gsn: 3}
+          ),
+          name
+        )
+
+      assert {:ok, []} = SQLite.query_component_ids("doc/body", 10, name)
+      assert {:ok, ["doc_1"]} = SQLite.query_component_ids("doc/title", 10, name)
+    end
+
+    test "a tombstoned row keeps its mirror rows but is not returned", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_live",
+            "doc",
+            %{"title" => lww("live")},
+            ["doc/title"]
+          ),
+          name
+        )
+
+      :ok =
+        SQLite.upsert_entity(
+          component_row(
+            "doc_deleted",
+            "doc",
+            %{"title" => lww("gone")},
+            ["doc/title"],
+            %{deleted_hlc: 5, deleted_by: "a_1"}
+          ),
+          name
+        )
+
+      assert {:ok, ["doc_live"]} = SQLite.query_component_ids("doc/title", 10, name)
+
+      db = open_readonly(dir)
+
+      {:ok, stmt} =
+        Sqlite3.prepare(
+          db,
+          "SELECT entity_id FROM entity_components WHERE component = 'doc/title' " <>
+            "ORDER BY entity_id"
+        )
+
+      :ok = Sqlite3.bind(stmt, [])
+      {:row, ["doc_deleted"]} = Sqlite3.step(db, stmt)
+      {:row, ["doc_live"]} = Sqlite3.step(db, stmt)
+      :done = Sqlite3.step(db, stmt)
+      :ok = Sqlite3.release(db, stmt)
+    end
+
+    test "the reader plans through the component index", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      assert {:ok, details} = SQLite.explain_component_ids("doc/title", name)
+
+      assert Enum.any?(details, fn detail ->
+               String.contains?(detail, "idx_entity_components_component")
+             end)
     end
   end
 

@@ -27,9 +27,11 @@ defmodule EbbServer.Storage.PreparedAction do
     contract.
   - `groups` — the union of `update_scopes`; each group is indexed once
     per Action in `cf_group_actions`.
-  - `type_entity_keys` — `cf_type_entities` keys for the Action's rows,
-    empty when the bench-only `:type_entities` (or its combined
-    `:entity_index` alias) phase is ablated.
+  - `component_entity_ops` — ordered `cf_component_entities` ops the
+    Action's Updates imply: one put or delete per component Update, then one
+    put per folded subject's model. The Committer reduces them last-wins
+    across the flush. Empty when the bench-only `:component_entities` (or its
+    combined `:entity_index` alias) phase is ablated.
   - `affected_entities` — `{subject_id, model}` pairs to mark dirty, one per
     row. The sequencer unions them across a batch for the provisional and
     settled marks.
@@ -51,7 +53,7 @@ defmodule EbbServer.Storage.PreparedAction do
     :payload_etf,
     :update_scopes,
     groups: [],
-    type_entity_keys: [],
+    component_entity_ops: [],
     affected_entities: []
   ]
 
@@ -65,7 +67,7 @@ defmodule EbbServer.Storage.PreparedAction do
           payload_etf: binary(),
           update_scopes: [[String.t()]],
           groups: [String.t()],
-          type_entity_keys: [binary()],
+          component_entity_ops: [{:put | :delete, binary()}],
           affected_entities: [entity_mark()]
         }
 end

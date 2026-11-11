@@ -1,5 +1,5 @@
 import type { IDBPDatabase } from "idb";
-import type { Entity } from "@ebbjs/core";
+import { componentModel, type Entity } from "@ebbjs/core";
 import type {
   EntityStore,
   MembershipLink,
@@ -9,6 +9,7 @@ import type {
 } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
+import { componentsOf } from "../internal/component-index";
 import { foldEntityActions } from "../internal/materialize";
 import {
   addIndexRow,
@@ -27,16 +28,17 @@ import {
   type IndexEntry,
   type IndexRows,
 } from "../internal/reverse-index";
-import type { EbbDBSchema } from "./schema";
+import type { EbbDBSchema, StoredEntity } from "./schema";
 
 /**
  * IndexedDBEntityStore — IndexedDB implementation of EntityStore.
  *
  * Stores materialized entities in the `entities` object store, keyed by
- * entityId, with an index on `type` for O(log n) type queries. The
- * `entities` store is the materialized cache; the `actions` store holds
- * the source-of-truth log. Materialization is driven by the same
- * DirtyTracker that drives the in-memory adapter.
+ * entityId, with an index on `type` for O(log n) type queries and a
+ * multiEntry index on the row's denormalized component names for O(log n)
+ * component existence reads. The `entities` store is the materialized cache;
+ * the `actions` store holds the source-of-truth log. Materialization is
+ * driven by the same DirtyTracker that drives the in-memory adapter.
  *
  * The `relationships` object store is the shared adjacency index: one
  * record per composite key mapping each live row id to its yielded id.
@@ -66,7 +68,26 @@ export const createIndexedDBEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): EntityStore => {
-  const copyEntity = (entity: Entity): Entity => structuredClone(entity);
+  /**
+   * The stored row is the in-memory row plus the component names the
+   * multiEntry index reads; the property never survives a read, so the row
+   * shape every caller sees is unchanged.
+   */
+  const storedEntity = (entity: Entity): StoredEntity => ({
+    ...structuredClone(entity),
+    components: componentsOf(entity),
+  });
+
+  const readEntity = (stored: StoredEntity): Entity => {
+    const { components: _components, ...entity } = stored;
+    return entity;
+  };
+
+  /** The stored row with its denormalized property stripped, or undefined. */
+  const previousRow = async (id: string): Promise<Entity | undefined> => {
+    const stored = await db.get("entities", id);
+    return stored === undefined ? undefined : readEntity(stored);
+  };
 
   const writeRows = async (key: string, rows: IndexRows | null): Promise<void> => {
     if (rows === null) await db.delete("relationships", key);
@@ -112,8 +133,8 @@ export const createIndexedDBEntityStore = (
 
     if (entity === null) return;
 
-    const previous = await db.get("entities", entityId);
-    await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
+    const previous = await previousRow(entityId);
+    await db.put("entities", storedEntity(entity));
     await updateIndex(previous, entity);
 
     await dirtyTracker.clear(entityId);
@@ -134,14 +155,14 @@ export const createIndexedDBEntityStore = (
   const store: EntityStore = {
     async get(id: string): Promise<Entity | null> {
       await replay(id);
-      const entity = await db.get("entities", id);
+      const stored = await db.get("entities", id);
 
-      return entity ? copyEntity(entity) : null;
+      return stored === undefined ? null : readEntity(stored);
     },
 
     async set(entity: Entity): Promise<void> {
-      const previous = await db.get("entities", entity.id);
-      await db.put("entities", copyEntity(entity) as EbbDBSchema["entities"]["value"]);
+      const previous = await previousRow(entity.id);
+      await db.put("entities", storedEntity(entity));
       await updateIndex(previous, entity);
     },
 
@@ -150,7 +171,20 @@ export const createIndexedDBEntityStore = (
 
       const entities = await db.getAllFromIndex("entities", "type", type);
 
-      return entities.map(copyEntity);
+      return entities.map(readEntity);
+    },
+
+    async queryByComponent(component: string): Promise<readonly string[]> {
+      await materializeDirtyType(componentModel(component));
+
+      const rows = await db.getAllFromIndex("entities", "components", component);
+
+      // A tombstoned row keeps its fields, so its index entries outlive its
+      // liveness: existence is only ever a question about live rows.
+      return rows
+        .filter((row) => row.deleted_hlc === null)
+        .map((row) => row.id)
+        .sort();
     },
 
     async queryByRelationship({

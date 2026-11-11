@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
 import { buildPatchAction, buildPutAction } from "../testing/fixtures";
+import { openTestDb } from "./test-db";
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
 import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
 import {
@@ -19,6 +20,7 @@ import {
  */
 const LEGACY_SCHEMA_VERSION = 7;
 const PRE_RESET_SCHEMA_VERSION = 8;
+const PRE_COMPONENT_INDEX_SCHEMA_VERSION = 10;
 
 interface LegacyStoredAction extends Action {
   subject_ids: readonly string[];
@@ -105,6 +107,11 @@ const expectEmptyCurrentSchema = async (database: IDBPDatabase<EbbDBSchema>): Pr
     expect.arrayContaining(["subject_id", "position"]),
   );
 
+  const entities = database.transaction("entities", "readonly").store;
+  expect(Array.from(entities.indexNames)).toEqual(expect.arrayContaining(["type", "components"]));
+  expect(entities.index("components").multiEntry).toBe(true);
+  expect(entities.index("type").multiEntry).toBe(false);
+
   expect(await database.get("sequence", ACTION_POSITION_SEQUENCE_ID)).toEqual({
     id: ACTION_POSITION_SEQUENCE_ID,
     value: 0,
@@ -182,11 +189,11 @@ describe("IndexedDB v7/v8 → v9 reset", () => {
   });
 });
 
-describe("IndexedDB v9 → v10 additive upgrade", () => {
-  it("keeps rows and leaves a pre-v10 conflict payload readable", async () => {
-    const dbName = legacyDbName();
+describe("IndexedDB pre-v10 conflict payload", () => {
+  it("normalizes a legacy payload on read instead of handing back a row it would throw on", async () => {
+    const db = await openTestDb("legacy-conflict");
     const action = buildPutAction();
-    // A v9 payload carries neither field added at v10.
+    // A v9 payload carries neither field that arrived at v10.
     const v9Conflict = {
       subjects: ["todo_1"],
       subjectStates: [],
@@ -195,34 +202,52 @@ describe("IndexedDB v9 → v10 additive upgrade", () => {
       conflictId: "c_1",
       detectedAtHlc: action.hlc,
     };
-
-    const v9 = await openDB<EbbDBSchema>(dbName, 9, { upgrade: createEbbStores });
-    await v9.put("actions", { ...action, subject_ids: ["todo_1"], position: 1 });
-    await v9.put("sequence", { id: ACTION_POSITION_SEQUENCE_ID, value: 1 });
-    await v9.put("outbox", {
+    await db.put("outbox", {
       action,
       status: "conflicted",
       enqueuedAtHlc: action.hlc,
       basedOnGsn: 0,
       conflict: v9Conflict,
     });
-    v9.close();
+
+    const raw = await db.get("outbox", action.id);
+    expect(raw?.status).toBe("conflicted");
+    expect(raw?.conflict?.conflictId).toBe("c_1");
+
+    const entry = await createIndexedDBOutboxStore(db).get(action.id);
+    expect(entry?.conflict?.scope).toBe("field");
+    expect(entry?.conflict?.remoteActions).toEqual([]);
+  });
+});
+
+describe("IndexedDB v10 → v11 component index reset", () => {
+  it("discards a v10 database rather than reusing rows the index cannot see", async () => {
+    const dbName = legacyDbName();
+    const action = buildPutAction();
+    const outboxEntry = {
+      action,
+      status: "pending" as const,
+      enqueuedAtHlc: action.hlc,
+      basedOnGsn: 0,
+    };
+
+    const v10 = await openDB<LegacyDBSchema>(dbName, PRE_COMPONENT_INDEX_SCHEMA_VERSION, {
+      upgrade: createLegacyStores,
+    });
+    await v10.put("actions", { ...action, subject_ids: ["todo_1"], position: 1 });
+    await v10.put("sequence", { id: ACTION_POSITION_SEQUENCE_ID, value: 1 });
+    await v10.put("entities", { id: "todo_1", type: "todo" });
+    await v10.put("outbox", outboxEntry);
+    expect(await v10.count("entities")).toBe(1);
+    v10.close();
 
     const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
       upgrade: createEbbStores,
     });
 
-    // Additive version: no reset, no data loss.
-    expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(1);
-    const raw = await upgraded.get("outbox", action.id);
-    expect(raw?.status).toBe("conflicted");
-    expect(raw?.conflict?.conflictId).toBe("c_1");
-    expect(upgraded.objectStoreNames.contains("replica")).toBe(true);
-
-    // Reading through the store normalizes the legacy payload rather than
-    // handing the conflict view a row it would throw on.
-    const entry = await createIndexedDBOutboxStore(upgraded).get(action.id);
-    expect(entry?.conflict?.scope).toBe("field");
-    expect(entry?.conflict?.remoteActions).toEqual([]);
+    await expectEmptyCurrentSchema(upgraded);
+    expect(await upgraded.count("entities")).toBe(0);
+    expect(await upgraded.get("outbox", action.id)).toBeUndefined();
+    expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(0);
   });
 });

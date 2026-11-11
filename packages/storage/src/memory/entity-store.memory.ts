@@ -1,4 +1,4 @@
-import type { Entity } from "@ebbjs/core";
+import { componentModel, type Entity } from "@ebbjs/core";
 import type {
   EntityStore,
   MembershipLink,
@@ -8,6 +8,12 @@ import type {
 } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
+import {
+  applyComponentDelta,
+  componentDelta,
+  componentIds,
+  type ComponentIndex,
+} from "../internal/component-index";
 import { foldEntityActions } from "../internal/materialize";
 import {
   applyIndexDelta,
@@ -31,6 +37,8 @@ import {
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
  * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
+ * - `components` — component → member ids — O(1) component existence reads,
+ *   derived from the rows like the adjacency index
  * - `index` — Record<indexKey, rowId → yieldedId> — O(1) adjacency lookup
  *   for relationship edges (both the `(field, type, target_id)` reverse
  *   key and the `(field, type, source_id)` forward key) and group
@@ -54,6 +62,7 @@ import {
 interface EntityStoreState {
   entities: Record<string, Entity>;
   typeIndex: Record<string, Set<string>>;
+  components: ComponentIndex;
   index: ReverseIndex;
 }
 
@@ -85,6 +94,19 @@ const updateTypeIndexOnSet = (
 };
 
 /**
+ * Move a row's component names in and out of the existence index. The deltas
+ * are the ones the replica uses, so both stores agree on what a row carries.
+ */
+const updateComponentIndex = (
+  components: ComponentIndex,
+  previous: Entity | undefined,
+  next: Entity | undefined,
+): ComponentIndex => {
+  const delta = componentDelta(previous, next);
+  return delta === null ? components : applyComponentDelta(components, delta);
+};
+
+/**
  * Rebuild the adjacency index around a single entity write. The deltas
  * come from the previous and next versions of the row, so a patch that
  * re-points or re-keys a row, or a tombstone that hides one, leaves no
@@ -105,7 +127,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): EntityStore => {
-  let state: EntityStoreState = { entities: {}, typeIndex: {}, index: {} };
+  let state: EntityStoreState = { entities: {}, typeIndex: {}, components: new Map(), index: {} };
 
   /**
    * Replay the action log for `entityId` into the cache when the dirty
@@ -127,6 +149,7 @@ export const createMemoryEntityStore = (
     state = {
       entities: { ...state.entities, [entityId]: copyEntity(entity) },
       typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+      components: updateComponentIndex(state.components, oldEntity, entity),
       index: updateIndex(state.index, oldEntity, entity),
     };
 
@@ -154,6 +177,7 @@ export const createMemoryEntityStore = (
       state = {
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
         typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+        components: updateComponentIndex(state.components, oldEntity, entity),
         index: updateIndex(state.index, oldEntity, entity),
       };
     },
@@ -164,6 +188,16 @@ export const createMemoryEntityStore = (
       const entityIds = state.typeIndex[type] ?? new Set();
 
       return [...entityIds].map((id) => copyEntity(state.entities[id]));
+    },
+
+    async queryByComponent(component: string): Promise<readonly string[]> {
+      await materializeDirtyType(componentModel(component));
+
+      // A tombstoned row keeps its fields, so it stays in the index; existence
+      // is only ever a question about live rows.
+      return componentIds(state.components, component).filter(
+        (id) => state.entities[id]?.deleted_hlc === null,
+      );
     },
 
     async queryByRelationship({
@@ -195,7 +229,7 @@ export const createMemoryEntityStore = (
     },
 
     async reset(): Promise<void> {
-      state = { entities: {}, typeIndex: {}, index: {} };
+      state = { entities: {}, typeIndex: {}, components: new Map(), index: {} };
     },
   };
 

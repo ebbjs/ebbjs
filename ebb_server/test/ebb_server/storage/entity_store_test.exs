@@ -2024,13 +2024,13 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert dropped.created_hlc == create_hlc
       assert dropped.updated_hlc == drop_hlc
       assert dropped.deleted_hlc == nil
-      assert dropped.data == %{"fields" => %{}}
+      assert dropped.data == %{"fields" => %{}, "components" => []}
       assert dropped.last_gsn == 2
       refute DirtyTracker.dirty?(entity_id, ctx.dirty_set)
 
       # Clean read: the same answer comes back from the decoded blob.
       assert {:ok, clean} = EntityStore.get(entity_id, "a_test", opts)
-      assert clean.data == %{"fields" => %{}}
+      assert clean.data == %{"fields" => %{}, "components" => []}
       assert clean.created_hlc == create_hlc
       assert clean.last_gsn == 2
 
@@ -2039,7 +2039,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert cached.deleted_hlc == nil
       assert cached.created_hlc == create_hlc
       assert cached.last_gsn == 2
-      assert Jason.decode!(cached.data) == %{"fields" => %{}}
+      assert Jason.decode!(cached.data) == %{"fields" => %{}, "components" => []}
     end
 
     test "a later drop of an already-dropped component keeps the empty row", ctx do
@@ -2068,14 +2068,14 @@ defmodule EbbServer.Storage.EntityStoreTest do
       )
 
       assert {:ok, again} = EntityStore.get(entity_id, "a_test", opts)
-      assert again.data == %{"fields" => %{}}
+      assert again.data == %{"fields" => %{}, "components" => []}
       assert again.created_hlc == create_hlc
       assert again.deleted_hlc == nil
       assert again.last_gsn == 3
 
       assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
       assert cached.last_gsn == 3
-      assert Jason.decode!(cached.data) == %{"fields" => %{}}
+      assert Jason.decode!(cached.data) == %{"fields" => %{}, "components" => []}
     end
 
     test "a drop removes the field and keeps the row's metadata", ctx do
@@ -2161,6 +2161,139 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert :not_found = EntityStore.get(entity_id, "a_test", opts)
       assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
       assert cached.deleted_hlc == deleted_hlc
+    end
+  end
+
+  describe "component existence index" do
+    test "materializing a two-component row writes the canonical list and both index rows", ctx do
+      entity_id = "todo_components_two"
+      opts = store_opts(ctx)
+      hlc = hlc_from(1_000)
+
+      action =
+        put_action(
+          "act_two_components",
+          entity_id,
+          %{"title" => leaf("Two", hlc), "completed" => leaf(false, hlc)},
+          hlc
+        )
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert entity.data["components"] == ["todo/completed", "todo/title"]
+
+      assert {:ok, [^entity_id]} =
+               SQLite.query_component_ids("todo/completed", 10, ctx.sqlite_name)
+
+      assert {:ok, [^entity_id]} = SQLite.query_component_ids("todo/title", 10, ctx.sqlite_name)
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+
+      assert Jason.decode!(cached.data)["components"] == [
+               "todo/completed",
+               "todo/title"
+             ]
+    end
+
+    test "a drop removes the component from the list, the mirror, and the reader", ctx do
+      entity_id = "todo_components_drop"
+      opts = store_opts(ctx)
+      hlc = hlc_from(1_000)
+
+      create =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("kept", hlc), "body" => leaf("detached", hlc)},
+          hlc
+        )
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      assert {:ok, {2, 2}, []} =
+               Writer.write_actions(
+                 [drop_action("act_drop_body", entity_id, "todo/body", hlc_from(2_000))],
+                 ctx.writer_name
+               )
+
+      assert {:ok, dropped} = EntityStore.get(entity_id, "a_test", opts)
+      assert dropped.data["components"] == ["todo/title"]
+      assert {:ok, []} = SQLite.query_component_ids("todo/body", 10, ctx.sqlite_name)
+      assert {:ok, [^entity_id]} = SQLite.query_component_ids("todo/title", 10, ctx.sqlite_name)
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert Jason.decode!(cached.data)["components"] == ["todo/title"]
+    end
+
+    test "a patch that adds a component updates the list and the mirror together", ctx do
+      entity_id = "todo_components_patch"
+      opts = store_opts(ctx)
+      hlc = hlc_from(1_000)
+
+      create = put_action("act_create", entity_id, %{"title" => leaf("Patch", hlc)}, hlc)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"completed" => leaf(true, hlc_from(2_000))},
+          hlc_from(2_000)
+        )
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([patch], ctx.writer_name)
+
+      assert {:ok, patched} = EntityStore.get(entity_id, "a_test", opts)
+      assert patched.data["components"] == ["todo/completed", "todo/title"]
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+
+      assert Jason.decode!(cached.data)["components"] == [
+               "todo/completed",
+               "todo/title"
+             ]
+
+      assert {:ok, [^entity_id]} =
+               SQLite.query_component_ids("todo/completed", 10, ctx.sqlite_name)
+
+      assert {:ok, [^entity_id]} = SQLite.query_component_ids("todo/title", 10, ctx.sqlite_name)
+    end
+
+    test "a tombstoned row is not returned by the component reader", ctx do
+      entity_id = "todo_components_tombstone"
+      opts = store_opts(ctx)
+      deleted_hlc = hlc_from(2_000)
+
+      create =
+        put_action(
+          "act_create",
+          entity_id,
+          %{"title" => leaf("t", hlc_from(1_000))},
+          hlc_from(1_000)
+        )
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      delete =
+        validated_action(%{
+          "id" => "act_delete_components",
+          "hlc" => deleted_hlc,
+          "updates" => [validated_update(%{"subject_id" => entity_id, "method" => "delete"})]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([delete], ctx.writer_name)
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+
+      assert {:ok, []} = SQLite.query_component_ids("todo/title", 10, ctx.sqlite_name)
+
+      # The mirror keeps the tombstone's components; only the reader filters.
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.deleted_hlc == deleted_hlc
+      assert Jason.decode!(cached.data)["components"] == ["todo/title"]
     end
   end
 

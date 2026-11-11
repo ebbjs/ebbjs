@@ -47,10 +47,13 @@ import type { IndexRows } from "../internal/reverse-index";
  * empty. Version 10 adds `scope` and `remoteActions` to the persisted
  * conflict payload (issue #781). It is additive and has no reset: a row
  * written before it reads as a field-scope conflict with no recorded remote
- * context. Bump this when adding or changing object stores, or when a
- * persisted row shape changes.
+ * context. Version 11 adds the `components` multiEntry index to `entities`
+ * (issue #799): rows now carry a denormalized component-name array, so there
+ * is no migration from a lower version — an existing database below 11 is
+ * discarded at open and rebuilt empty. Bump this when adding or changing
+ * object stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 10;
+export const EBB_SCHEMA_VERSION = 11;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -58,6 +61,14 @@ export const EBB_SCHEMA_VERSION = 10;
  * declare its own migration instead of inheriting this one.
  */
 const TEXT_CELL_FORMAT_RESET_VERSION = 9;
+
+/**
+ * The version at which stored entity rows gained the denormalized component
+ * names the `components` index reads. A database below it is reset at open,
+ * like the cell-format reset above and for the same reason: there is no way to
+ * infer the index entries of a row written before it.
+ */
+const COMPONENT_INDEX_RESET_VERSION = 11;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -86,6 +97,17 @@ export interface StoredAction extends Action {
 }
 
 /**
+ * Stored entity shape: the public Entity plus a denormalized
+ * `components` array (`<model>/<field>` per present field). The
+ * `components` multiEntry index is keyed on the array so
+ * `queryByComponent` is one index read; the property is stripped on the
+ * way back out so the in-memory row shape is unchanged.
+ */
+export interface StoredEntity extends Entity {
+  components: readonly string[];
+}
+
+/**
  * Structural schema for the object stores the IndexedDB adapter uses.
  * Component factories (`action-log.indexeddb`, etc.) are typed against this
  * interface so the production schema and any test schema satisfying the same
@@ -99,8 +121,13 @@ export interface EbbDBSchema extends DBSchema {
   };
   entities: {
     key: string;
-    value: Entity;
-    indexes: { type: string };
+    value: StoredEntity;
+    indexes: {
+      /** The row's model; the query and listing source. */
+      type: string;
+      /** Every `<model>/<field>` the row carries, as a multiEntry index. */
+      components: string;
+    };
   };
   /**
    * Shared adjacency index: one record per composite key, mapping each
@@ -185,8 +212,9 @@ export interface EbbDBSchema extends DBSchema {
  * From v9 an existing database is reset rather than upgraded: the text
  * cell format changed incompatibly, so every store is deleted before the
  * current stores are created and the action-position counter is opened at
- * zero. Only a genuinely fresh database (`oldVersion === 0`) skips the
- * reset.
+ * zero. v11 resets for the same reason (stored rows lack the denormalized
+ * component names), so a database below either version is discarded. Only a
+ * genuinely fresh database (`oldVersion === 0`) skips the reset.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,
@@ -194,10 +222,12 @@ export const createEbbStores = (
   _newVersion: number | null,
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
-  // The text cell format changed incompatibly at v9, so an older database is
-  // discarded instead of migrated. Gated explicitly: a later version bump must
-  // decide its own migration rather than inheriting this reset.
-  const reset = oldVersion > 0 && oldVersion < TEXT_CELL_FORMAT_RESET_VERSION;
+  // Two incompatible persisted shapes are discarded instead of migrated: the
+  // text cell format (v9) and the denormalized component names (v11). Each gate
+  // is declared explicitly, so a later version bump must decide its own
+  // migration rather than inheriting one of these resets.
+  const resetVersions = [TEXT_CELL_FORMAT_RESET_VERSION, COMPONENT_INDEX_RESET_VERSION];
+  const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {
     // `objectStoreNames` is live while stores are deleted, so iterate a copy.
     for (const name of Array.from(database.objectStoreNames)) {
@@ -223,6 +253,10 @@ export const createEbbStores = (
   if (!database.objectStoreNames.contains("entities")) {
     const store = database.createObjectStore("entities", { keyPath: "id" });
     if (!store.indexNames.contains("type")) store.createIndex("type", "type");
+    // multiEntry on `components`: each element of the denormalized
+    // component-name array becomes its own index entry, so a row carrying
+    // `todo/title` and `todo/status` is returned by a lookup for either.
+    store.createIndex("components", "components", { multiEntry: true });
   }
   if (!database.objectStoreNames.contains("relationships")) {
     database.createObjectStore("relationships", { keyPath: "key" });

@@ -382,22 +382,32 @@ defmodule EbbServer.Storage.EntityIndex do
           {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, model()}
   def fan_out_preference(update, opts) do
     case update.model do
-      "relationship" ->
-        source_id = Fields.get(update.data, "source_id")
+      "relationship" -> relationship_preference(update, opts)
+      model when model in ["entityGroup", "groupMember"] -> group_preference(model, update, opts)
+      model -> {:by_id, model}
+    end
+  end
 
-        case scope_source(update.method, source_id, update.subject_id, opts) do
-          nil -> {:by_id, "relationship"}
-          source -> {:source, source}
-        end
+  # The current Action's value wins: that is the value the authorizer bound
+  # (#624). The flush row supplies what an earlier Action of the same commit
+  # wrote, which the by-id caches cannot see yet (#813).
+  defp scope_field(update, field, opts) do
+    Fields.get(update.data, field) || flush_field(update.subject_id, field, opts)
+  end
 
-      model when model in ["entityGroup", "groupMember"] ->
-        case Fields.get(update.data, "group_id") do
-          nil -> {:by_id, model}
-          group_id -> {:wire, [group_id]}
-        end
+  defp relationship_preference(update, opts) do
+    source_id = scope_field(update, "source_id", opts)
 
-      model ->
-        {:by_id, model}
+    case scope_source(update.method, source_id, update.subject_id, opts) do
+      nil -> {:by_id, "relationship"}
+      source -> {:source, source}
+    end
+  end
+
+  defp group_preference(model, update, opts) do
+    case scope_field(update, "group_id", opts) do
+      nil -> {:by_id, model}
+      group_id -> {:wire, [group_id]}
     end
   end
 
@@ -415,6 +425,17 @@ defmodule EbbServer.Storage.EntityIndex do
       {:wire, group_ids} -> group_ids
       {:source, source_id} -> source_groups(source_id, opts)
       {:by_id, model} -> resolve_groups(model, update.subject_id, opts)
+    end
+  end
+
+  # The row shape an earlier Action of the same flush left behind. The Writer
+  # threads it through `:flush_rows`; a caller without it falls back to the
+  # by-id caches exactly as before. A field the current Action carries still
+  # wins, because that is the value the authorizer bound (#624).
+  defp flush_field(subject_id, field, opts) do
+    case Keyword.get(opts, :flush_rows) do
+      %{} = rows -> Fields.get(Map.get(rows, subject_id), field)
+      _ -> nil
     end
   end
 

@@ -29,6 +29,42 @@ export interface ComponentDelta {
   readonly add: readonly string[];
 }
 
+const tombstoned = (entity: Entity): boolean => entity.deleted_hlc !== null;
+
+/**
+ * The components a previous→next write touched, which is what a journal entry
+ * carries so a derived reader can invalidate on the components it read rather
+ * than on the whole row. A component is touched when it is attached, detached,
+ * or carries a new value; a tombstone transition touches every component the
+ * row carries, because a delete invalidates every reader of the row.
+ *
+ * "New value" is a reference comparison: the merge returns the losing side by
+ * reference, so a distinct object is a write and the same object is not, even
+ * for a keyed component whose untouched keys are shared.
+ */
+export const touchedComponents = (
+  previous: Entity | null | undefined,
+  next: Entity | null | undefined,
+): readonly string[] => {
+  if (previous === next) return [];
+  if (previous === null || previous === undefined) {
+    return next === null || next === undefined ? [] : componentsOf(next);
+  }
+  if (next === null || next === undefined) return componentsOf(previous);
+  if (previous.type !== next.type || tombstoned(previous) !== tombstoned(next)) {
+    return [...new Set([...componentsOf(previous), ...componentsOf(next)])];
+  }
+  const previousFields = previous.data?.fields ?? {};
+  const nextFields = next.data?.fields ?? {};
+  const touched: string[] = [];
+  const fields = new Set([...Object.keys(previousFields), ...Object.keys(nextFields)]);
+  for (const field of fields) {
+    if (previousFields[field] === nextFields[field]) continue;
+    touched.push(componentName(next.type, field));
+  }
+  return touched;
+};
+
 /**
  * Derive the delta from two versions of the SAME row: a component present on
  * one side only is added or removed, and a shared component is untouched.

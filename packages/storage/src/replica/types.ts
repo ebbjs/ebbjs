@@ -18,8 +18,18 @@ export type Revision = number;
 export interface ReplicaChange {
   readonly revision: Revision;
   readonly id: string;
+  /**
+   * The row's model at the change. Slice 7 (#800) removes it once a reader can
+   * invalidate on `components` alone.
+   */
   readonly type: string;
   readonly deleted: boolean;
+  /**
+   * The components this change touched, so a derived reader invalidates on what
+   * it read rather than on the row's whole model. A tombstone transition touches
+   * every component the row carries.
+   */
+  readonly components: readonly string[];
 }
 
 /**
@@ -126,7 +136,11 @@ export interface Replica {
    * with gsn 0, which would hide the row's folded position.
    */
   base(id: string): Entity | undefined;
-  iterate(type: string): readonly Entity[];
+  /**
+   * Every row of `model`, whatever optional components it carries. Served by
+   * the model index with the overlay's model overrides layered on top.
+   */
+  iterate(model: string): readonly Entity[];
   /** Whether the materialization policy holds `type` in full. */
   isHeld(type: string): boolean;
   /**

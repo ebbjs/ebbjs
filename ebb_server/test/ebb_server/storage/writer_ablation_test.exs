@@ -49,27 +49,42 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert_receive {:captured_ops, ops}
       assert puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name)) == []
-      assert length(puts_to(ops, RocksDB.cf_type_entities(ctx.rocks_name))) == 1
+
+      # One model entry plus one component entry for the one component Update.
+      assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 2
     end
 
-    test ":type_entities drops only cf_type_entities", ctx do
-      writer = start_capturing_writer(ctx, [:type_entities])
+    test ":component_entries drops only the per-component entries", ctx do
+      writer = start_capturing_writer(ctx, [:component_entries])
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
 
       assert_receive {:captured_ops, ops}
-      assert puts_to(ops, RocksDB.cf_type_entities(ctx.rocks_name)) == []
+
+      # The model entry is the pre-#799 one-row-per-row shape; only the
+      # component entry is gone.
+      assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 1
       assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
     end
 
-    test ":entity_index drops cf_entity_actions and cf_type_entities", ctx do
+    test ":component_entities drops only cf_component_entities", ctx do
+      writer = start_capturing_writer(ctx, [:component_entities])
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+
+      assert_receive {:captured_ops, ops}
+      assert puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name)) == []
+      assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
+    end
+
+    test ":entity_index drops cf_entity_actions and cf_component_entities", ctx do
       writer = start_capturing_writer(ctx, [:entity_index])
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
 
       assert_receive {:captured_ops, ops}
       assert puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name)) == []
-      assert puts_to(ops, RocksDB.cf_type_entities(ctx.rocks_name)) == []
+      assert puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name)) == []
       assert length(puts_to(ops, RocksDB.cf_actions(ctx.rocks_name))) == 1
     end
 
@@ -233,7 +248,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
       :build,
       :encode,
       :entity_actions,
-      :type_entities,
+      :component_entities,
       :entity_index,
       :group_index,
       :dirty,

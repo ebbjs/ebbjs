@@ -44,7 +44,7 @@ defmodule EbbServer.Storage.Committer do
 
   use GenServer
 
-  alias EbbServer.Storage.{ActionFormat, PreparedAction, RocksDB}
+  alias EbbServer.Storage.{ActionFormat, ComponentEntityIndex, PreparedAction, RocksDB}
   alias EbbServer.Telemetry
 
   @type result ::
@@ -152,21 +152,21 @@ defmodule EbbServer.Storage.Committer do
   # Source order is part of the batch: each Action's log record, dedup row,
   # and group index first; then the flush-scoped indexes. Both are sorted for
   # a reproducible batch: the entity rows are one per subject keyed at that
-  # subject's highest GSN in the flush, and the type rows have no GSN
-  # component and are written once per unique key.
+  # subject's highest GSN in the flush, and the component-entity ops have no
+  # GSN component and are written once per unique key.
   defp build_ops(prepared, gsn_start, state) do
-    {action_ops, {type_entity_keys, subject_gsns}} =
+    {action_ops, {index_ops, subject_gsns}} =
       prepared
       |> Enum.with_index(gsn_start)
-      |> Enum.map_reduce({MapSet.new(), %{}}, fn {action, gsn}, {keys, subject_gsns} ->
+      |> Enum.map_reduce({[], %{}}, fn {action, gsn}, {index_ops, subject_gsns} ->
         {build_action_ops(action, gsn, state),
-         {MapSet.union(keys, MapSet.new(action.type_entity_keys)),
+         {[action.component_entity_ops | index_ops],
           add_subject_gsns(action, gsn, subject_gsns, state)}}
       end)
 
     :lists.append(action_ops) ++
       entity_ops(subject_gsns, state) ++
-      type_entity_ops(type_entity_keys, state)
+      component_entity_ops(index_ops, state)
   end
 
   defp build_action_ops(action, gsn, state) do
@@ -227,15 +227,19 @@ defmodule EbbServer.Storage.Committer do
     end
   end
 
-  defp type_entity_ops(keys, state) do
-    if type_entities_ablated?(state) do
+  # One op per key for the whole flush. Reversal restores the Actions' order
+  # before the reduction, so a key put by one Action and dropped by a later
+  # one is deleted rather than left behind.
+  defp component_entity_ops([], _state), do: []
+
+  defp component_entity_ops(index_ops, state) do
+    if component_entities_ablated?(state) do
       []
     else
-      keys
-      |> Enum.sort()
-      |> Enum.map(fn key ->
-        {:put, RocksDB.cf_type_entities(state.rocks_name), key, <<>>}
-      end)
+      ComponentEntityIndex.reduce_batch_ops(
+        index_ops,
+        RocksDB.cf_component_entities(state.rocks_name)
+      )
     end
   end
 
@@ -244,6 +248,6 @@ defmodule EbbServer.Storage.Committer do
   defp entity_actions_ablated?(state),
     do: ablate?(:entity_actions, state) or ablate?(:entity_index, state)
 
-  defp type_entities_ablated?(state),
-    do: ablate?(:type_entities, state) or ablate?(:entity_index, state)
+  defp component_entities_ablated?(state),
+    do: ablate?(:component_entities, state) or ablate?(:entity_index, state)
 end

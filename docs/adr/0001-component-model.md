@@ -72,7 +72,10 @@ becomes the name of a declared component set.**
    component. A component-scope hold holds one component, not the whole row.
 8. **Indexing is opt-in per component.** A component declared `indexed: true` gets an existence row;
    one that is not is reachable only by id. Today _every_ entity sits in `cf_type_entities` whether
-   or not anything queries by type; this inverts that default.
+   or not anything queries by type; this inverts that default. **As shipped in #799 the server indexes
+   every component**, because it has no schema (#803) and must not grow one; `indexed` remains a
+   schema-level intent whose server-side enforcement needs a declared set this design forbids the
+   server to hold. The client's component index follows presence, not the flag, for the same reason.
 9. **No compatibility.** Ebb is greenfield with no consumers. The client store resets, server data is
    discarded, and there is no migration, alias, or deprecation path.
 10. **Everything lands behind one primitive.** No second write path, no second merge rule, no second

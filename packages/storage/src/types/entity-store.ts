@@ -58,6 +58,9 @@ export interface MembershipLink {
  * - `get(id)` — returns entity by ID, materializes if dirty
  * - `set(entity)` — directly sets an entity (bypasses materialization)
  * - `query(type)` — returns all materialized entities of a type
+ * - `queryByComponent(component)` — returns the live ids carrying that
+ *   `<model>/<field>` component in ascending order, materializing dirty rows
+ *   of the component's model first
  * - `queryByRelationship({ as, type, targetId })` — returns the distinct
  *   source ids indexed under that triple in ascending order,
  *   materializing dirty relationship rows first
@@ -76,6 +79,18 @@ export interface EntityStore {
   get(id: string): Promise<Entity | null>;
   set(entity: Entity): Promise<void>;
   query(type: string): Promise<readonly Entity[]>;
+  /**
+   * Live rows currently carrying `component` (`<model>/<field>`), ascending by
+   * id. Existence is the set of present fields on a row, so this is an index
+   * read rather than a row filter; a tombstoned row's components are not
+   * existence.
+   *
+   * The dirty rows materialized first are the component prefix's model. That is
+   * the current `<model>/<field>` addressing rule (#797); a component namespace
+   * that is not the row's model (#805's `ebb/*` components on ordinary rows)
+   * has to decode the model differently and revisit this step.
+   */
+  queryByComponent(component: string): Promise<readonly string[]>;
   queryByRelationship(query: RelationshipIndexQuery): Promise<readonly string[]>;
   queryByRelationshipSource(query: RelationshipSourceQuery): Promise<readonly RelationshipLink[]>;
   queryByMembership(groupId: string): Promise<readonly string[]>;

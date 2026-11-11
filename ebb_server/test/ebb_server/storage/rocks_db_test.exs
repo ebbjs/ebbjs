@@ -11,7 +11,7 @@ defmodule EbbServer.Storage.RocksDBTest do
       refute is_nil(RocksDB.db_ref(name))
       refute is_nil(RocksDB.cf_actions(name))
       refute is_nil(RocksDB.cf_entity_actions(name))
-      refute is_nil(RocksDB.cf_type_entities(name))
+      refute is_nil(RocksDB.cf_component_entities(name))
       refute is_nil(RocksDB.cf_action_dedup(name))
       refute is_nil(RocksDB.cf_default(name))
     end
@@ -24,7 +24,7 @@ defmodule EbbServer.Storage.RocksDBTest do
       assert_raise ArgumentError, fn -> RocksDB.db_ref(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_actions(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_entity_actions(name) end
-      assert_raise ArgumentError, fn -> RocksDB.cf_type_entities(name) end
+      assert_raise ArgumentError, fn -> RocksDB.cf_component_entities(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_action_dedup(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_group_actions(name) end
       assert_raise ArgumentError, fn -> RocksDB.cf_default(name) end
@@ -54,6 +54,65 @@ defmodule EbbServer.Storage.RocksDBTest do
 
       refute File.exists?(rocks_dir)
       refute File.exists?(Path.join(rocks_dir, "LOCK"))
+    end
+  end
+
+  describe "component entity keys" do
+    test "a model entry and a component entry round-trip through the same encoding" do
+      model_key = RocksDB.encode_component_entity_key("todo", "todo_1")
+      component_key = RocksDB.encode_component_entity_key("todo/title", "todo_1")
+
+      assert model_key == <<"todo", 0, "todo_1">>
+      assert component_key == <<"todo/title", 0, "todo_1">>
+
+      # The two key kinds cannot collide: a model name has no `/`.
+      refute model_key == component_key
+
+      # A model prefix scan matches only its own model entries, never a
+      # component entry whose model is the same.
+      refute String.starts_with?(component_key, "todo" <> <<0>>)
+    end
+
+    test "a name is required and cannot contain the separator" do
+      assert_raise ArgumentError, ~r/name must be a non-empty binary/, fn ->
+        RocksDB.encode_component_entity_key("", "todo_1")
+      end
+
+      assert_raise ArgumentError, ~r/entity_id must be a non-empty binary/, fn ->
+        RocksDB.encode_component_entity_key("todo", nil)
+      end
+
+      assert_raise ArgumentError, ~r/name must not contain null bytes/, fn ->
+        RocksDB.encode_component_entity_key(<<0>>, "todo_1")
+      end
+    end
+
+    test "the column family stores both key kinds and reads them back", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_component_entities(name)
+
+      model_key = RocksDB.encode_component_entity_key("todo", "todo_1")
+      component_key = RocksDB.encode_component_entity_key("todo/title", "todo_1")
+
+      assert :ok =
+               RocksDB.write_batch(
+                 [{:put, cf, model_key, <<>>}, {:put, cf, component_key, <<>>}],
+                 name: name
+               )
+
+      assert {:ok, <<>>} = RocksDB.get(cf, model_key, name: name)
+      assert {:ok, <<>>} = RocksDB.get(cf, component_key, name: name)
+    end
+
+    test "write_batch deletes an entry", context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_component_entities(name)
+      key = RocksDB.encode_component_entity_key("todo/title", "todo_1")
+
+      :ok = RocksDB.write_batch([{:put, cf, key, <<>>}], name: name)
+      :ok = RocksDB.write_batch([{:delete, cf, key}], name: name)
+
+      assert :not_found = RocksDB.get(cf, key, name: name)
     end
   end
 

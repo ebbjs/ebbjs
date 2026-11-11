@@ -284,9 +284,9 @@ defmodule EbbServer.Telemetry do
   leaves the cursor where it was.
 
   `ebb.system_cache.populated` describes the startup cache rebuild. Counts are
-  the entities materialized into each cache plus the `cf_type_entities` keys
-  repaired by the one-time backfill migration (0 once the marker is written),
-  and `duration` is native. `outcome` is `:ok` on a clean rebuild and `:error`
+  the entities materialized into each cache plus the `cf_component_entities`
+  entries repaired by the one-time backfill migration (0 once the marker is
+  written), and `duration` is native. `outcome` is `:ok` on a clean rebuild and `:error`
   when a phase raised; on failure the counts reached so far are still reported,
   so a half-populated cache is observable even though the node refuses to start
   serving. `reason` is the failure class — an exception module or the atom an

@@ -212,6 +212,58 @@ const seedMembership = async (
   await dirtyTracker.mark(row.id, "entityGroup");
 };
 
+/** A whole-row write for an arbitrary row: one component Update per field. */
+const buildRowAction = (
+  rowId: string,
+  type: string,
+  updateId: string,
+  fields: Record<string, FieldValue>,
+  hlc: string,
+  gsn: number,
+): Action => ({
+  id: `a_${updateId}`,
+  actor_id: "a_user1",
+  hlc,
+  gsn,
+  updates: Object.entries(fields).map(([field, value]) => ({
+    id: `${updateId}_${field}`,
+    subject_id: rowId,
+    component: componentName(type, field),
+    method: isFieldMap(value) ? "merge" : "replace",
+    data: value,
+  })),
+});
+
+const buildRowDeleteAction = (rowId: string, hlc: string, gsn: number): Action => ({
+  id: `a_del_${rowId}`,
+  actor_id: "a_user1",
+  hlc,
+  gsn,
+  updates: [{ id: `u_del_${rowId}`, subject_id: rowId, method: "delete", data: null }],
+});
+
+const buildRowDropAction = (
+  rowId: string,
+  type: string,
+  field: string,
+  hlc: string,
+  gsn: number,
+): Action => ({
+  id: `a_drop_${rowId}_${field}`,
+  actor_id: "a_user1",
+  hlc,
+  gsn,
+  updates: [
+    {
+      id: `u_drop_${rowId}_${field}`,
+      subject_id: rowId,
+      component: componentName(type, field),
+      method: "drop",
+      data: null,
+    },
+  ],
+});
+
 export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOptions): void => {
   describe(`${name} EntityStore`, () => {
     describe("get", () => {
@@ -544,6 +596,122 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
         const docs = await entityStore.query("document");
         expect(docs.map((e) => e.id)).toEqual(["doc_1"]);
+      });
+    });
+
+    describe("queryByComponent", () => {
+      it("returns the live ids carrying a component, ascending", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        const hlc = makeHlc(100);
+        await actionLog.append(
+          buildRowAction("todo_b", "todo", "u_b", { title: leaf("b", "u_b", hlc) }, hlc, 1),
+        );
+        await actionLog.append(
+          buildRowAction("todo_a", "todo", "u_a", { title: leaf("a", "u_a", hlc) }, hlc, 2),
+        );
+        await actionLog.append(
+          buildRowAction("todo_c", "todo", "u_c", { title: leaf("c", "u_c", hlc) }, hlc, 3),
+        );
+        await actionLog.append(
+          buildRowAction("todo_c", "todo", "u_c2", { status: leaf("open", "u_c2", hlc) }, hlc, 4),
+        );
+        await dirtyTracker.mark("todo_a", "todo");
+        await dirtyTracker.mark("todo_b", "todo");
+        await dirtyTracker.mark("todo_c", "todo");
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual([
+          "todo_a",
+          "todo_b",
+          "todo_c",
+        ]);
+        expect(await entityStore.queryByComponent("todo/status")).toEqual(["todo_c"]);
+      });
+
+      it("materializes the component's model before reading the index", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await dirtyTracker.mark("todo_1", "todo");
+        expect(await dirtyTracker.isDirty("todo_1")).toBe(true);
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_1"]);
+        expect(await dirtyTracker.isDirty("todo_1")).toBe(false);
+      });
+
+      it("returns empty for a component nothing carries", async () => {
+        const { entityStore } = await factory();
+        expect(await entityStore.queryByComponent("todo/missing")).toEqual([]);
+      });
+
+      it("returns empty for a model it has no rows of", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await dirtyTracker.mark("todo_1", "todo");
+        await entityStore.queryByComponent("todo/title");
+
+        expect(await entityStore.queryByComponent("note/title")).toEqual([]);
+      });
+
+      it("omits a tombstoned row's components", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await dirtyTracker.mark("todo_1", "todo");
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_1"]);
+
+        await actionLog.append(buildRowDeleteAction("todo_1", makeHlc(200), 2));
+        await dirtyTracker.mark("todo_1", "todo");
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual([]);
+      });
+
+      it("omits a component a drop detached and keeps its siblings", async () => {
+        const hlc = makeHlc(100);
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(
+          buildRowAction(
+            "todo_1",
+            "todo",
+            "u_1",
+            { title: leaf("a", "u_1", hlc), draft: leaf("d", "u_1_draft", hlc) },
+            hlc,
+            1,
+          ),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+        expect(await entityStore.queryByComponent("todo/draft")).toEqual(["todo_1"]);
+
+        await actionLog.append(buildRowDropAction("todo_1", "todo", "draft", makeHlc(200), 2));
+        await dirtyTracker.mark("todo_1", "todo");
+
+        expect(await entityStore.queryByComponent("todo/draft")).toEqual([]);
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_1"]);
+      });
+
+      it("indexes rows written through set()", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(makeEntity({ id: "todo_2" }));
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_2"]);
+      });
+
+      it("drops the components of a row set() tombstones", async () => {
+        const { entityStore } = await factory();
+        await entityStore.set(makeEntity({ id: "todo_2" }));
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_2"]);
+
+        await entityStore.set(makeEntity({ id: "todo_2", deleted_hlc: makeHlc(2) }));
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual([]);
+      });
+
+      it("clears the index on reset", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await dirtyTracker.mark("todo_1", "todo");
+        expect(await entityStore.queryByComponent("todo/title")).toEqual(["todo_1"]);
+
+        await entityStore.reset();
+
+        expect(await entityStore.queryByComponent("todo/title")).toEqual([]);
       });
     });
 

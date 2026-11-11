@@ -206,7 +206,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       assert row.id == todo_id
       assert row.type == "todo"
       assert row.deleted_hlc == nil
-      assert row.data == %{"fields" => %{}}
+      assert row.data == %{"fields" => %{}, "components" => []}
     end
 
     test "query emits one decode sample with the row count and summed blob size", %{
