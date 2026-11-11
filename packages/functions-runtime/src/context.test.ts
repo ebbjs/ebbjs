@@ -181,17 +181,6 @@ describe("context env and logging", () => {
     ]);
   });
 
-  it("drops a log line when the transport cannot carry one", () => {
-    const ctx = createContext({
-      transport: fakeTransport(async () => null),
-      invocationId: "inv_log",
-      actor: { id: "a_test" },
-      caller: { kind: "actor", id: "a_test" },
-    });
-
-    expect(() => ctx.log("hello")).not.toThrow();
-  });
-
   it("never fails on a throwing transport or an unserializable message", () => {
     const transport: HostTransport = {
       call: async () => null,

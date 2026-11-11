@@ -49,27 +49,8 @@ describe("planner reference fixtures — ctx path", () => {
     expect(host.commits).toHaveLength(1);
     expect(stable(host.commits[0])).toBe(stable(fixture.action));
     expect(actionIdForInvocation(fixture.invocation_id)).toBe(fixture.action.id);
-    expect(ids.exhausted()).toBe(true);
-  });
-
-  it.each(names)("%s consumes exactly the pinned ids and clock stamps", async (name) => {
-    const fixture = loadFixture(name);
-    // Running out of a pinned id throws, so committing with nothing left
-    // proves both paths consume the same sequence in the same order.
-    const ids = idsFrom(fixture.ids);
-    const host = fakeHost();
-    const ctx = createContext({
-      transport: host.transport,
-      invocationId: fixture.invocation_id,
-      actor: { id: fixture.actor_id },
-      caller: { kind: "actor", id: fixture.actor_id },
-      registry: registryFrom(loadSpec(fixture.schema)),
-      ids,
-    });
-
-    for (const verb of fixture.calls) await applyVerb(ctx, verb);
-    await ctx.commit();
-
+    // Running out of a pinned id throws, so an exhausted sequence also proves
+    // the verbs consumed the same ids and HLCs in the same order.
     expect(ids.exhausted()).toBe(true);
   });
 });

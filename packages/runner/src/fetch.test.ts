@@ -193,7 +193,19 @@ describe("createGuardedFetch", () => {
     await expect(guarded("https://anywhere.example/x")).resolves.toBeDefined();
   });
 
-  it("defaults the response cap to 10 MiB", () => {
-    expect(DEFAULT_MAX_FETCH_RESPONSE_BYTES).toBe(10 * 1024 * 1024);
+  it("refuses a response past the default 10 MiB cap", async () => {
+    const { fetch } = stub(
+      async () =>
+        new Response("x", {
+          status: 200,
+          headers: { "content-length": String(DEFAULT_MAX_FETCH_RESPONSE_BYTES + 1) },
+        }),
+    );
+    const guarded = guard(fetch);
+
+    await expect(guarded("https://anywhere.example/x")).rejects.toMatchObject({
+      name: "FetchResponseTooLargeError",
+      limit: DEFAULT_MAX_FETCH_RESPONSE_BYTES,
+    });
   });
 });

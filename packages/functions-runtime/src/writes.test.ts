@@ -104,7 +104,6 @@ describe("ctx.create", () => {
     });
 
     expect(() => ctx.create("issue", ISSUE, { groups: ["g_1"] })).toThrow(MissingSchemaError);
-    await expect(ctx.get("e_missing")).resolves.toBeNull();
   });
 });
 

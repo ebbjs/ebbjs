@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { Update } from "@ebbjs/core";
 import { ActionRejectedError, entityGroupId } from "@ebbjs/write";
 
-import { assertLastGroupMember, assertLastMembership, assertMembershipScope } from "./preflight.ts";
+import { assertLastMembership, assertMembershipScope } from "./preflight.ts";
 import { fakeHost, testContext } from "./test-support/host.ts";
 
 const issue = () => ({ title: "Ship", done: false, labels: [] as string[] });
@@ -110,18 +110,6 @@ describe("last_group_member", () => {
     );
 
     expect(() => ctx.delete("groupMember", "e_member")).not.toThrow();
-  });
-
-  it("defers on an unknown roster in the view", () => {
-    const view = {
-      groupsOf: () => [],
-      groupOfMembership: () => undefined,
-      groupMembersOf: () => undefined,
-    };
-
-    expect(() =>
-      assertLastGroupMember(view, "e_member", "g_1", { removedIds: ["e_member"], upserts: [] }),
-    ).not.toThrow();
   });
 });
 

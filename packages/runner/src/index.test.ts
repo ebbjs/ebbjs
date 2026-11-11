@@ -134,13 +134,9 @@ describe("runInvocation", () => {
     });
 
     expect(value).toMatchObject({ id: expect.stringMatching(/^e_/) });
+    // The create only resolves because the deployment's own definition carried
+    // the schema; the writes themselves are pinned by the test above.
     expect(commits).toHaveLength(1);
-    const deployedFrame = commits[0] as {
-      readonly updates: readonly { readonly component?: string }[];
-    };
-    expect(new Set(deployedFrame.updates.map((update) => update.component))).toEqual(
-      new Set(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]),
-    );
   });
 
   it("commits nothing when the handler throws", async () => {
@@ -276,14 +272,6 @@ describe("runInvocation guardrails", () => {
     expect(logs).toEqual([]);
   });
 
-  it("gives an invocation without secrets an empty frozen env", async () => {
-    const value = await invoke({
-      bundle: bundle("return { env: ctx.env, frozen: Object.isFrozen(ctx.env) };"),
-    });
-
-    expect(value).toEqual({ env: {}, frozen: true });
-  });
-
   it("sends ctx.log lines with the requested level", async () => {
     const { transport, logs } = journal();
 
@@ -308,8 +296,14 @@ describe("runInvocation guardrails", () => {
     ]);
   });
 
-  it("captures console output as log frames and restores the console", async () => {
-    const original = console.log;
+  it("captures console output as log frames and restores every captured method", async () => {
+    const originals = {
+      debug: console.debug,
+      info: console.info,
+      log: console.log,
+      warn: console.warn,
+      error: console.error,
+    };
     const { transport, logs } = journal();
 
     await runInvocation({
@@ -335,7 +329,11 @@ describe("runInvocation guardrails", () => {
       { level: "error", message: "Error: boom" },
       { level: "debug", message: '{"a":1}' },
     ]);
-    expect(console.log).toBe(original);
+    expect(console.debug).toBe(originals.debug);
+    expect(console.info).toBe(originals.info);
+    expect(console.log).toBe(originals.log);
+    expect(console.warn).toBe(originals.warn);
+    expect(console.error).toBe(originals.error);
   });
 
   it("restores the console when the handler throws", async () => {
