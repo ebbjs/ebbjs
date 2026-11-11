@@ -3,7 +3,7 @@
 Spike: [#844](https://github.com/ebbjs/ebbjs/issues/844). Design under test:
 [`docs/research/write-path-rewrite-design.md`](../docs/research/write-path-rewrite-design.md).
 Numbers: `bench/RESULTS.md` → "Log-first spike (#844) — D3, P0, P1"; raw reports in
-`bench/results/spike-844/`.
+`bench/results/spike-844/`. PR: [#846](https://github.com/ebbjs/ebbjs/pull/846).
 
 **Build:** `497de4fd` on `spike/844-log-first-write-path` (base `main` `0f7292f4`).
 **Host:** `recsy-vps`, 4 schedulers, AMD EPYC 7763, 15 GiB, ext4, Elixir 1.17.3 / OTP 27,
