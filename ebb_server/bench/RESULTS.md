@@ -89,16 +89,42 @@ per b100 window amortised, so the production-shaped append is 960–1,100 µs, n
 Recycling dropped segments (write records over an expired segment, epoch in the header) would
 remove the double write; that variant was not measured.
 
+The A/B repeats under the noise gauge below; three interleaved passes, same host, same hour:
+
+| engine               |                Actions/s |                p50 µs |     hypervisor steal |
+| -------------------- | -----------------------: | --------------------: | -------------------: |
+| `current_window`     | 28,065 / 28,370 / 27,350 | 1,694 / 1,863 / 1,935 | 19.4 / 18.1 / 18.2 % |
+| `log_first_recycled` | 41,435 / 40,755 / 38,440 |   **998 / 989 / 991** | 18.7 / 19.5 / 21.8 % |
+
+The 2× p50 gap and the ~1.45× rate gap hold in every pass; the absolute rates move with the
+host (see "Host noise").
+
 The shape of the answer changes: the append is **not** pinned at 1.15 ms by the device, H1's
 ≤400 µs target is still missed at b100 (960 µs with assembly, ~406 µs for the append alone),
 but the issue's own falsifier — "falsified if the leg stays within 1.5× of today", i.e.
 ≥1.27 ms — is **not** met.
 
-The ~50 ms p99 tail is not the disk and not CPU: it survives when the same arms run on tmpfs
-(`TMPDIR=/dev/shm`: `current_window` p50 763 µs / 51,540 Actions/s, `log_first` p50 633 µs /
-68,600 Actions/s, both p99 ≈ 55 ms) and runs at 2.8 % scheduler utilisation on ext4. It is a
-VM/harness tail that depresses mean Actions/s by 2–3× while p50 stays stable; short-run
-throughput is therefore tail-dominated and should be read next to p50.
+### Host noise — the tail is the hypervisor, measured
+
+Every run now reports the host's CPU steal from `/proc/stat` and the longest gap seen by a
+1 ms watchdog. On this host both are large:
+
+| run                              |         hypervisor steal | longest scheduler pause |      p99 |
+| -------------------------------- | -----------------------: | ----------------------: | -------: |
+| `t5` the two arms above          |              18.1–21.8 % |          up to 1,001 ms | 53–59 ms |
+| `t0` c=1 `hot` (3 passes)        | 25.3 / 26.8 / **39.4 %** |                       — | 65–80 ms |
+| standalone 1 ms sleep loop, 20 s |            — (same host) |               max 50 ms |        — |
+| standalone busy loop, 20 s       |                        — |          max **456 ms** |        — |
+
+`t0` throughput tracks the steal: 10,855 Actions/s at 25.3 %, 10,730 at 26.8 %, **8,070 at
+39.4 %**. The same tail appears on tmpfs (`TMPDIR=/dev/shm`, no device): `current_window`
+p50 763 µs / 51,540 Actions/s, `log_first` p50 633 µs / 68,600, p99 ≈ 55 ms. Scheduler
+utilisation in these runs is 3–9 %, so the VM is not CPU-bound; it is being descheduled.
+
+Consequence for reading this section: **p95, p99 and mean Actions/s are contaminated by host
+scheduling; only interleaved p50 comparisons are usable, and absolute rates are not
+reproducible.** The append A/B was run interleaved for that reason. A run on a quiet host
+should be repeated before any absolute number here is quoted.
 
 ### Window-size ladder (c=1, `hot`, p50 µs, per-100-Action equivalent)
 
@@ -155,11 +181,13 @@ Ablation on this build (`t0` c=1 `hot`, one pass each): full 11,255; −`compone
 `mix bench.component_index` on this build: k=2 4,529 Actions/s with components vs 4,880 model
 only (+7.2 %); k=4 3,240 vs 4,058 (+20.2 %); k=8 2,700 vs 3,445 (+21.6 %).
 
-**Drift since #485.** `t0` c=1 `hot` b100 was 20,320 Actions/s at p50 4.62 ms; it is 11,105 at
-p50 3.6 ms now — p50 improved while mean throughput fell 45 %, which is the tail above, not a
-per-flush regression. `t2` c=8 `hot` was 19,150 Actions/s at p50 40.2 ms; it is 6,885 at p50
-103 ms, with an unchanged per-flush cost (20.4 ms per 399 Actions now vs 20.8 ms then). The
-`t2` loss is caller queueing behind the same tail, not a slower flush.
+**Drift since #485 — withdrawn as a code claim.** `t0` c=1 `hot` b100 was 20,320 Actions/s at
+p50 4.62 ms; it measured 8,070–10,855 at p50 3.5–3.9 ms here, and the passes with the highest
+hypervisor steal had the lowest rate (39.4 % steal → 8,070/s). The per-flush cost is unchanged
+(`t2` flush 20.4 ms per 399 Actions now vs 20.8 ms then), and p50 _improved_, so the earlier
+reading — a 45 % regression since #799 — is not supported by these runs: a 25→40 % steal swing
+covers the whole spread. What remains true is that `t2` c=8 loses caller-visible latency to
+queueing behind the host's pauses.
 
 ## Refresh (#485)
 

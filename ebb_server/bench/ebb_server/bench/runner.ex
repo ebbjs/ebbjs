@@ -210,11 +210,19 @@ defmodule EbbServer.Bench.Runner do
 
       timeout = (config.warmup + config.duration) * 1000 + @await_buffer_ms
       worker_stats = Enum.map(workers, &Task.await(&1, timeout))
-      resource_samples = Sampler.stop(sampler)
+      {resource_samples, max_pause_us} = Sampler.stop(sampler)
       fanout = stop_fanout(source, subscribers)
       server = Telemetry.stop(telemetry)
 
-      Metrics.analyze(config, ctx, worker_stats, resource_samples, fanout, server)
+      Metrics.analyze(
+        config,
+        ctx,
+        worker_stats,
+        resource_samples,
+        fanout,
+        server,
+        max_pause_us: max_pause_us
+      )
     after
       Telemetry.detach(telemetry)
     end

@@ -1037,6 +1037,8 @@ defmodule EbbServer.Bench.Report do
       {"Peak process memory", format_bytes(resources.peak_memory_bytes)},
       {"Peak dirty-set size", format_integer(resources.peak_dirty)},
       {"Scheduler utilization", format_ratio(resources.scheduler_utilization)},
+      {"Hypervisor steal", format_ratio(Map.get(resources, :steal_ratio))},
+      {"Longest scheduler pause", format_pause(Map.get(resources, :max_pause_us))},
       {"Resource samples", format_integer(resources.sample_count)}
     ]
 
@@ -1117,7 +1119,9 @@ defmodule EbbServer.Bench.Report do
 
   defp durability_note(%{durability: :sync}) do
     "Durability is the production default (`sync: true`): every commit is fsynced before the " <>
-      "GSN range is acknowledged."
+      "GSN range is acknowledged. `Hypervisor steal` and `Longest scheduler pause` come from " <>
+      "`/proc/stat` and a 1 ms watchdog: a non-zero value means part of every p95/p99 — and of " <>
+      "the mean rate — is host scheduling, not this code."
   end
 
   defp durability_note(%{durability: :async}) do
@@ -1194,6 +1198,10 @@ defmodule EbbServer.Bench.Report do
   defp format_bytes(bytes) do
     "#{:erlang.float_to_binary(bytes / 1_048_576, decimals: 1)} MiB"
   end
+
+  defp format_pause(nil), do: "not measured"
+  defp format_pause(us) when us < 1_000, do: "#{us} µs"
+  defp format_pause(us), do: "#{Float.round(us / 1_000, 1)} ms"
 
   defp format_ratio(nil), do: "not measured"
 
@@ -1314,6 +1322,11 @@ defmodule EbbServer.Bench.Report do
         "p50" => summary.p50,
         "p95" => summary.p95,
         "p99" => summary.p99
+      },
+      "resources" => %{
+        "scheduler_utilization" => get_in(run, [:metrics, :resources, :scheduler_utilization]),
+        "steal_ratio" => get_in(run, [:metrics, :resources, :steal_ratio]),
+        "max_pause_us" => get_in(run, [:metrics, :resources, :max_pause_us])
       },
       "correctness" => %{
         "accepted" => summary.accepted,

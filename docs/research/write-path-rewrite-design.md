@@ -44,6 +44,13 @@ case for the whole design, so it is recorded here rather than only in the issue.
   `fallocate`/recycle option. The 2× comes from owning the segment's block state. If the spike
   continues, it continues as a segment log with a stated retention/recycling policy — P2, not
   P1.
+- **The host itself is noisy, and it was mistaken for a regression.** Every run now reports
+  hypervisor steal: 18–22 % during the append arms and 25–39 % during `t0`, with pauses up to
+  456 ms measured in a 20 s busy loop and 50 ms in a 1 ms sleep loop. Throughput tracked the
+  steal (39.4 % steal → 8,070 Actions/s; 25.3 % → 10,855), the p99 tail is the same on tmpfs,
+  and per-flush cost is unchanged since #485. The "45 % regression since #799" reading is
+  withdrawn: interleaved p50 comparisons are the only usable numbers on this box, and any
+  cross-build comparison needs a repeat with steal reported.
 - **D1 is as simple as §5 reads.** The segment writer's recovery (CRC, torn-tail truncate,
   sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
   implemented: random stream, random batch sizes, a cut at any byte, retry converges. That

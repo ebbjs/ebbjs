@@ -22,17 +22,17 @@ design — resolution off the serial path, consumers, reads — was not built.
 
 ## Verdict table
 
-| unit                                        | gate                                                                                         | measured                                                                                                                                                                                                                                                                                                                                        | verdict                                            |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| **D1** segment writer + property test       | append, CRC, torn-tail truncate, GSN→offset index; random stream through kill points replays | 20 randomized streams × random batch sizes × random byte cuts: recovery keeps exactly the intact prefix, truncates at the boundary, no half-read record, retry converges. 7 tests.                                                                                                                                                              | **pass**                                           |
-| **D2** `as_of` membership on current caches | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | not implemented (scope + time). The apparent blocker was a **harness workload bug**, not an authorizer limit: `spread × u2` drops both content Updates after the entity's two ownership Updates, so the Action files an entity it never creates; the authorizer refuses to guess its model (fail-closed, #623/#625). `spread × u5` is accepted. | **parked** (not attempted)                         |
-| **D3** pwrite vs write_batch                | log leg **≤0.4 ms**/flush at b100; falsified if within 1.5× of 1.903 ms                      | sparse append 1.982 ms, **recycled (pre-written) segment 0.960 ms** p50 matched; `write_batch` matched 1.963–2.162 ms. Component probe: in-place 64 KB `pwrite`+`datasync` 337–381 µs, sparse 811–832 µs, past-EOF 809–1,080 µs.                                                                                                                | **target missed, falsifier not met** — H1 survives |
-| **P0** instrument + re-baseline             | timers sum to the measured flush within 10 %                                                 | phases sum 3,621 µs p50 vs 3,647 µs client p50 (**0.7 %**); server `batch_latency` is 15 % lower by construction (starts after queue/prepare). Re-baselined `t0`/`t2`/`t4` and `mix bench.component_index`.                                                                                                                                     | **pass**                                           |
-| **P1** window record on RocksDB             | log leg ≤0.6 ms/flush at b100; no catch-up or materialization regression                     | one window record as one `cf_actions` put: p50 **2,029 µs** at b100 (vs 2,162 matched), 9,417 µs at b1000 (vs 10,690). Append-shape gate met in direction; catch-up page p50 and materialization **not measured**, so the phase gate is **unmet**.                                                                                              | **adopt-in-part** (append shape only)              |
-| **P2** dedicated log                        | H1 by the better backend; R1/R2 decided; I2/I4                                               | not started: H1 is dead at D3, so a dedicated log cannot pay on this host.                                                                                                                                                                                                                                                                      | **parked** (depends on H1)                         |
-| **P3** membership + resolver pool           | H2 + I1                                                                                      | not started: depends on P2's record format; D2's blocking finding applies.                                                                                                                                                                                                                                                                      | **parked**                                         |
-| **P4** consumers + reads + tap              | H4 hot-group row; R3                                                                         | not started. Existence-index cost measured instead: +7.2 % at k=2, +20.2 % at k=4, +21.6 % at k=8 (`mix bench.component_index`).                                                                                                                                                                                                                | **parked**                                         |
-| **P5** matrix + decisions                   | H5 ledger clean; H6 reported                                                                 | matrix produced for the current writer and the three append arms; H5 crash ledger **not run** (needs the prototype's consumers); H6 reported below.                                                                                                                                                                                             | **partial**                                        |
+| unit                                        | gate                                                                                         | measured                                                                                                                                                                                                                                                                                                                                        | verdict                                                              |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **D1** segment writer + property test       | append, CRC, torn-tail truncate, GSN→offset index; random stream through kill points replays | 20 randomized streams × random batch sizes × random byte cuts: recovery keeps exactly the intact prefix, truncates at the boundary, no half-read record, retry converges. 7 tests.                                                                                                                                                              | **pass**                                                             |
+| **D2** `as_of` membership on current caches | H2: byte-identical `update_scopes` for the corpus, resolution ≥3× serial                     | not implemented (scope + time). The apparent blocker was a **harness workload bug**, not an authorizer limit: `spread × u2` drops both content Updates after the entity's two ownership Updates, so the Action files an entity it never creates; the authorizer refuses to guess its model (fail-closed, #623/#625). `spread × u5` is accepted. | **parked** (not attempted)                                           |
+| **D3** pwrite vs write_batch                | log leg **≤0.4 ms**/flush at b100; falsified if within 1.5× of 1.903 ms                      | sparse append 1.982 ms, **recycled (pre-written) segment 0.960 ms** p50 matched; `write_batch` matched 1.963–2.162 ms. Component probe: in-place 64 KB `pwrite`+`datasync` 337–381 µs, sparse 811–832 µs, past-EOF 809–1,080 µs.                                                                                                                | **target missed, falsifier not met** — H1 survives                   |
+| **P0** instrument + re-baseline             | timers sum to the measured flush within 10 %                                                 | phases 3,621 µs p50 vs 3,647 µs client p50 = **0.7 %**; server `batch_latency` is 15 % lower by construction (starts after queue/prepare). t0/t2/t4 + component index re-baselined, and the sampler now reports hypervisor steal + longest scheduler pause (18–39 % steal here).                                                                | **pass** (absolute rates not reproducible; see Measurement validity) |
+| **P1** window record on RocksDB             | log leg ≤0.6 ms/flush at b100; no catch-up or materialization regression                     | one window record as one `cf_actions` put: p50 **2,029 µs** at b100 (vs 2,162 matched), 9,417 µs at b1000 (vs 10,690). Append-shape gate met in direction; catch-up page p50 and materialization **not measured**, so the phase gate is **unmet**.                                                                                              | **adopt-in-part** (append shape only)                                |
+| **P2** dedicated log                        | H1 by the better backend; R1/R2 decided; I2/I4                                               | not started: H1 is dead at D3, so a dedicated log cannot pay on this host.                                                                                                                                                                                                                                                                      | **parked** (depends on H1)                                           |
+| **P3** membership + resolver pool           | H2 + I1                                                                                      | not started: depends on P2's record format; D2's blocking finding applies.                                                                                                                                                                                                                                                                      | **parked**                                                           |
+| **P4** consumers + reads + tap              | H4 hot-group row; R3                                                                         | not started. Existence-index cost measured instead: +7.2 % at k=2, +20.2 % at k=4, +21.6 % at k=8 (`mix bench.component_index`).                                                                                                                                                                                                                | **parked**                                                           |
+| **P5** matrix + decisions                   | H5 ledger clean; H6 reported                                                                 | matrix produced for the current writer and the three append arms; H5 crash ledger **not run** (needs the prototype's consumers); H6 reported below.                                                                                                                                                                                             | **partial**                                                          |
 
 ## Corrections to this ledger
 
@@ -49,6 +49,11 @@ shows what changed the verdict, not only the final number.
    block allocation and an inode-size change. In place, the same 64 KB write+datasync costs
    337–381 µs. Pre-writing the segment (`log_first_recycled`) halves the append to 960 µs and the
    stop rule is not met. `RESULTS.md` carries the probe table.
+3. **"t0 regressed 45 % since #485 (20,320 → 11,105 Actions/s)."** Withdrawn as a code claim.
+   The runs now report hypervisor steal from `/proc/stat`: 25.3 % → 10,855 Actions/s, 26.8 % →
+   10,730, **39.4 % → 8,070**, while per-flush cost is unchanged (20.4 ms per 399 Actions at
+   `t2` now vs 20.8 ms then) and p50 improved (3.6 vs 4.62 ms). A 25→40 % steal swing covers the
+   whole spread, so the drop cannot be attributed to #799 from these runs.
 
 ## Per-hypothesis verdict
 
@@ -114,6 +119,24 @@ Client-visible delta for each: none shipped, because the prototype never reached
 - **Window sizes** — measured: 10 / 100 / 1000. Larger windows amortise the fsync (b1000 is
   0.89–1.07 ms per 100 Actions) and are the only lever that reaches the H1 per-Action band.
 
+## Measurement validity on this host
+
+The harness now reports **hypervisor steal** (`/proc/stat`) and the **longest scheduler pause**
+(a 1 ms watchdog) for every pass. On `recsy-vps` both are material: 18–22 % steal during the
+`t5` arms, 25–39 % during `t0`, a 456 ms pause in a 20 s busy loop, and a 50 ms pause even in a
+1 ms sleep loop. The p99 of 53–80 ms that every tier shows is that, not the code: it survives
+on tmpfs and at 3–9 % scheduler utilisation.
+
+What that means for every row in this ledger:
+
+- **p50 from interleaved A/B passes is usable.** The append comparison was run A/B/A/B/A/B; its
+  ~2× p50 gap held in all three pairs while the host's steal moved.
+- **Absolute Actions/s, p95 and p99 are not reproducible here.** Two passes of the same config
+  differed by 26 % with steal moving 25→39 %.
+- **Any cross-build comparison (including #485's published numbers) is unsupported** until it is
+  repeated on a quiet host or with steal reported alongside it. That is why correction 3
+  withdraws the "drift since #485" claim rather than keeping it as a regression.
+
 ## Smallest subset that still pays
 
 1. **Recycled (pre-written) segments for the append.** 960 µs vs 1,963 µs at b100 and 7,349
@@ -124,8 +147,9 @@ Client-visible delta for each: none shipped, because the prototype never reached
    content), so it measures a rejected Action at `t2` and an unauthorized write at `t0`.
 3. **Re-run the append matrix against the recycled segment before anything else.** The
    published matrix was measured on the sparse append; its append rows are 2× pessimistic.
-4. **The ~50 ms p99 tail.** It costs 2–3× mean throughput on every tier and survives on tmpfs
-   at 2.8 % CPU. Until it is explained, throughput cannot separate a design from a stall.
+4. **A quiet host for absolute numbers.** The tail is now explained — 18–39 % hypervisor steal
+   plus 50–456 ms pauses — so the action is measurement, not code: repeat the matrix on a host
+   that reports near-zero steal before quoting Actions/s or p99, and keep A/B interleaved.
 
 ## Tests that survive the spike
 

@@ -180,8 +180,16 @@ defmodule EbbServer.Bench.Metrics do
   Aggregates worker stats, resource samples, and fan-out stats into the
   shape `EbbServer.Bench.Report` renders.
   """
-  @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map()) :: map()
-  def analyze(%Options{} = config, ctx, worker_stats, resource_samples, fanout, telemetry \\ %{}) do
+  @spec analyze(Options.t(), map(), [map()], [map()], [map()] | nil, map(), keyword()) :: map()
+  def analyze(
+        %Options{} = config,
+        ctx,
+        worker_stats,
+        resource_samples,
+        fanout,
+        telemetry \\ %{},
+        opts \\ []
+      ) do
     merged = merge_stats(worker_stats)
 
     %{
@@ -189,7 +197,7 @@ defmodule EbbServer.Bench.Metrics do
       throughput: throughput(config.duration, merged),
       latency: latency(config.duration, merged.samples),
       correctness: correctness(merged, resource_samples, config),
-      resources: resources(resource_samples),
+      resources: resources(resource_samples, Keyword.get(opts, :max_pause_us)),
       fanout: fanout_summary(fanout),
       fanout_metrics: fanout_metrics(config, resource_samples, telemetry),
       fanout_series: fanout_series(samples(telemetry, :fanout_push), config.duration),
@@ -380,24 +388,36 @@ defmodule EbbServer.Bench.Metrics do
     }
   end
 
-  defp resources([]) do
+  defp resources([], max_pause_us) do
     %{
       sample_count: 0,
       peak_rss_kb: nil,
       peak_memory_bytes: nil,
       peak_dirty: nil,
-      scheduler_utilization: nil
+      scheduler_utilization: nil,
+      steal_ratio: nil,
+      max_pause_us: max_pause_us
     }
   end
 
-  defp resources(samples) do
+  defp resources(samples, max_pause_us) do
     %{
       sample_count: length(samples),
       peak_rss_kb: samples_max(samples, & &1.rss_kb),
       peak_memory_bytes: samples_max(samples, & &1.memory),
       peak_dirty: samples_max(samples, & &1.dirty),
-      scheduler_utilization: utilization(samples)
+      scheduler_utilization: utilization(samples),
+      steal_ratio: steal_ratio(samples),
+      max_pause_us: max_pause_us
     }
+  end
+
+  # Host CPU the hypervisor took away, over the host CPU accounted to the run.
+  # Non-zero means the p95/p99 tails contain pauses the code did not cause.
+  defp steal_ratio(samples) do
+    steal = Enum.reduce(samples, 0, &(&2 + (Map.get(&1, :steal_ticks) || 0)))
+    total = Enum.reduce(samples, 0, &(&2 + (Map.get(&1, :cpu_ticks) || 0)))
+    if total > 0, do: steal / total, else: nil
   end
 
   defp lag(sample), do: sample.max_gsn - sample.watermark
