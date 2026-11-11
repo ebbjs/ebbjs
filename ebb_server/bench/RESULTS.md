@@ -8,6 +8,118 @@ below go through the real `ebb_server` pipeline, not a storage primitive.
 Raw per-run Markdown output lands in `bench/results/` (gitignored); the
 tables here are the published subset.
 
+## Log-first spike (#844) — D3, P0, P1
+
+Measured **2026-11-11** on `recsy-vps` (AMD EPYC 7763, **4 schedulers**, 15 GiB,
+ext4 `/dev/sda1`), Elixir 1.17.3 / OTP 27, `sync: true` (hardcoded,
+`storage/rocks_db.ex:424`), build **`497de4fd`** on `spike/844-log-first-write-path`
+(base `main` `0f7292f4`). 3 s warmup, 20 s measured window (15 s on the window-size
+ladder), `--seed 1`, a freshly booted and seeded DB per pass, one pass at a time on an
+otherwise idle host. Raw reports: `bench/results/spike-844/`.
+
+**Not comparable to any section below.** The published marginals predate #799's component
+existence index and the prepare/committer split, so this section re-measures the current
+writer on this build (P0) and never mixes a pre-spike row with a post-spike one.
+
+`t5` gained `--engine`, a `t5`-only selector for the durable append under test. Every arm
+below prices the same 100-Action, 2-Update `hot` window and writes the same
+`ActionFormat` frames; only the append shape and the edge of the timed region differ.
+
+### D3 — one `pwrite` vs one `write_batch` (b100, c=1, median of 3 interleaved passes)
+
+| engine (timed region)                                                      | Actions/s | p50 µs | p95 µs | p99 µs |
+| -------------------------------------------------------------------------- | --------: | -----: | -----: | -----: |
+| `current` — `write_batch/3` only (NIF time, assembly outside)              |    26,595 |  1,474 |  2,238 | 43,715 |
+| `current_window` — op assembly + `write_batch/3` (matched)                 |    23,175 |  2,162 |  3,395 | 54,565 |
+| `window_record` — one window record as **one** `cf_actions` put (P1 shape) |    25,690 |  2,029 |  3,038 | 65,705 |
+| `log_first` — window record + one `pwrite` + one `datasync`                |    29,115 |  1,982 |  2,813 | 44,683 |
+
+Only `current_window`, `window_record` and `log_first` are matched comparisons: all three
+build the window inside the timer. The historical 1.903 ms "log-only" rung was measured with
+assembly inside the flush, so it is compared against the 1,982 µs row, not the 1,474 µs one.
+
+### Where the 1.9 ms went — decomposition (b100, c=1)
+
+| arm                               | p50 µs | Actions/s | meaning                                           |
+| --------------------------------- | -----: | --------: | ------------------------------------------------- |
+| `log_first_assemble` (no I/O)     |    554 |   123,515 | 100 frames: encode, GSN/length/CRC stamp, concat  |
+| `log_first_io` (prebuilt record)  |  1,254 |    53,200 | one 51 KB `pwrite` + one `datasync`               |
+| `current`, `--durability async`   |    201 |    46,925 | 100 `batch_put` crossings + memtable insert       |
+| `log_first`, `--durability async` |    659 |    59,450 | the same record build plus the `pwrite`, no flush |
+
+| derived                                 |    µs |
+| --------------------------------------- | ----: |
+| `datasync` of one window                | 1,145 |
+| WAL fsync in `write_batch`              | 1,273 |
+| one 51 KB `pwrite` (no flush)           |   105 |
+| window assembly                         |   554 |
+| op assembly + 100 `batch_put` crossings |  ~690 |
+
+The append floor is the **flush**, not the shape of the durable write: at b100 both arms pay
+~1.15–1.27 ms of `fdatasync` per window. Replacing 100 per-Action puts with one sequential
+write saves ~130 µs at b100. So a 1.9 ms log leg decomposes to roughly 65 % fsync, 30 %
+assembly, 5 % the write itself — H1's premise that assembly and NIF crossings are the floor
+does not hold on this host.
+
+The ~50 ms p99 tail is not the disk and not CPU: it survives when the same arms run on tmpfs
+(`TMPDIR=/dev/shm`: `current_window` p50 763 µs / 51,540 Actions/s, `log_first` p50 633 µs /
+68,600 Actions/s, both p99 ≈ 55 ms) and runs at 2.8 % scheduler utilisation on ext4. It is a
+VM/harness tail that depresses mean Actions/s by 2–3× while p50 stays stable; short-run
+throughput is therefore tail-dominated and should be read next to p50.
+
+### Window-size ladder (c=1, `hot`, p50 µs, per-100-Action equivalent)
+
+| batch | `current_window` | `window_record` |   `log_first` |
+| ----: | ---------------: | --------------: | ------------: |
+|    10 |      822 (8,220) |     814 (8,140) |   788 (7,880) |
+|   100 |    2,162 (2,162) |   2,029 (2,029) | 1,982 (1,982) |
+|  1000 |   10,690 (1,069) |     9,417 (942) |   8,855 (886) |
+
+Actions/s at b1000: 54,767 / 65,800 / 75,467. The log-first advantage grows with window size
+(within noise at b10, 8 % at b100, 17 % at b1000), but the fsync is per window at every size:
+framing the window is what makes the fsync affordable, owning the log is not.
+
+### P0 — re-baseline of the current writer on this build
+
+`t0`/`t2`/`t4`, b100 u2, `--seed 1`, median of 2 passes unless noted:
+
+| run                                         |              Actions/s | p50 ms | Actions/flush | flush p50 µs |
+| ------------------------------------------- | ---------------------: | -----: | ------------: | -----------: |
+| `t0` c=1 `hot`                              |                 11,105 |    3.6 |           100 |        3,063 |
+| `t0` c=1 `spread`                           |                  7,933 |    6.0 |           100 |            — |
+| `t2` c=8 `hot`                              |                  6,885 |    103 |           399 |       20,368 |
+| `t2` c=8 `spread` u2                        | **0 (100 % rejected)** |      — |             — |            — |
+| `t0` c=1 `hot`, `--in-flight 2`             |                  7,725 |    6.1 |             — |            — |
+| `t2` c=8 `hot`, `--in-flight 2`             |                  6,658 |    243 |             — |            — |
+| `t4` 1000 subscribers, target 300 Actions/s |           250 achieved |    2.2 |            10 |            — |
+
+`t4` delivered 243 k deliveries/s at commit → broadcast p50 3.9–4.1 ms, p95 36–65 ms.
+
+`t2 --distribution spread` at `--updates-per-action 2` is **entirely rejected** on this build
+with `not_authorized: cannot resolve the model of the entity being added to a group`: the
+authorizer reads committed state for an entity the Action itself creates. `t0` bypasses
+authorization, so `spread` at `t2` needs `--updates-per-action 1 --entities 1000` (7,500
+Actions/s, p50 100 ms at c=8, measured as a 5 s probe, not a published row). This is a
+measurement blocker for any `t2 × spread × u2` cell.
+
+Flush phases (`t0` c=1 `hot`, p50/p95 µs): queue 58/104, prepare 161/278, resolve
+1,031/1,995, commit_wait 2,211/3,330, apply 76/130, notify 37/75; the phases sum to 3,621 µs
+p50 against a 3,647 µs client p50 (0.7 %). The server's own `batch_latency_ms` p50 is
+3,063 µs, 15 % below the phase sum, because it starts after the queue and prepare phases.
+
+Ablation on this build (`t0` c=1 `hot`, one pass each): full 11,255; −`component_entities`
+12,168; −`entity_index` 12,948; −`cache` 11,848; −`group_index` 11,548; −`watermark` 10,952;
+−`dedup,dirty,fanout` 17,270.
+
+`mix bench.component_index` on this build: k=2 4,529 Actions/s with components vs 4,880 model
+only (+7.2 %); k=4 3,240 vs 4,058 (+20.2 %); k=8 2,700 vs 3,445 (+21.6 %).
+
+**Drift since #485.** `t0` c=1 `hot` b100 was 20,320 Actions/s at p50 4.62 ms; it is 11,105 at
+p50 3.6 ms now — p50 improved while mean throughput fell 45 %, which is the tail above, not a
+per-flush regression. `t2` c=8 `hot` was 19,150 Actions/s at p50 40.2 ms; it is 6,885 at p50
+103 ms, with an unchanged per-flush cost (20.4 ms per 399 Actions now vs 20.8 ms then). The
+`t2` loss is caller queueing behind the same tail, not a slower flush.
+
 ## Refresh (#485)
 
 Refreshed **2026-10-16** on `recsy-vps` (AMD EPYC 7763, 4 schedulers for

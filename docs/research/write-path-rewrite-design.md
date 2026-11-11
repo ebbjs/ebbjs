@@ -22,6 +22,41 @@ sync tree (`fan_out_router.ex`, `fan_out_frontier.ex`, `group_server.ex`, `catch
 Numbers quoted here are from `bench/RESULTS.md` and predate #799's per-component entries;
 they are a directional prior, and the spike re-baselines in P0.
 
+## 0. What the spike measured (build `497de4fd`)
+
+D3 ran before any prototype: one window record through `pwrite` + `datasync` against one
+`write_batch` over the same frames, on `recsy-vps` with `sync: true`. The result changes the
+case for the whole design, so it is recorded here rather than only in the issue.
+
+- **The durable floor is the flush, not the shape of the write.** At b100 the matched
+  append is 1.982 ms p50 (`current_window`: 2.162 ms); the decomposition is `fdatasync`
+  1.15–1.27 ms, frame/op assembly 0.55–0.69 ms, and the 51 KB write itself 0.105 ms.
+  Replacing 100 per-Action puts with one sequential write is worth ~130 µs. H1's ≤0.4 ms
+  gate is not reachable with one fsync per window at this window size.
+- **The design's direction is right, its size is not.** The log-first append is 8 % cheaper
+  at b100 and 17 % at b1000; the gap grows with window size because the fsync amortises, not
+  because per-key work disappears. At b1000 the `cf_actions`-only commit NIF is 0.36 ms per
+  100 Actions (1.07 ms with assembly), so the per-Action band H1 targets is reachable by
+  window size alone, without leaving RocksDB.
+- **Framing the window is the lever; owning the log is not.** `window_record` (one window as
+  one `cf_actions` value) is within 0.5 % of the owned append at b100 and 6 % at b1000. If
+  the spike continues, it should continue as P1, not P2.
+- **D1 is as simple as §5 reads.** The segment writer's recovery (CRC, torn-tail truncate,
+  sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
+  implemented: random stream, random batch sizes, a cut at any byte, retry converges. That
+  part of the design can be reused without a new idea.
+- **§4's authorizer surface is wider than versioning entity→group rows.** `t2` with
+  `--distribution spread --updates-per-action 2` is 100 % rejected today
+  (`not_authorized: cannot resolve the model of the entity being added to a group`) because
+  authorization reads committed state for an entity the Action itself creates. An `as_of:`
+  resolver has the same problem; resolution needs the Action's own Updates (the "intra-action
+  context" clause in §1), and that is now a measurement blocker, not a design detail.
+
+Consequences for this note: §1's pipeline, §4's interval index and §6's deletions describe
+the **candidate**, not a plan that has been validated end to end. P2–P5 were not built. The
+sections are kept because they are the best statement of the candidate the spike started
+from, and D1's code now exists as `storage/log_first/segment.ex`.
+
 ## 1. The shape
 
 ```
@@ -47,9 +82,9 @@ Update. Fan-out hangs directly off the group partition — there is no router ho
 #841 describes. Reads are answered at a revision; a caller that needs read-your-writes applies
 the log tail between its revision and the frontier.
 
-GSN assignment *is* the append, so there is no claim to own, abandon or reconcile. That is
+GSN assignment _is_ the append, so there is no claim to own, abandon or reconcile. That is
 what removes the orphan-claim failure class: the abandon/reprepare machinery, the in-flight
-ownership guard as a *claim mechanism*, and the startup reconcile go with it.
+ownership guard as a _claim mechanism_, and the startup reconcile go with it.
 
 ## 2. Record format
 
@@ -65,6 +100,10 @@ unchanged, with an internal length-prefix per Action so a catch-up reader can sl
 without decoding the rest. `:reject` and `:duplicate` are first-class records, so **holes are
 bytes** and the resolution frontier is the log tail.
 
+Measured (D3): the window header costs 17 bytes and each frame 16 bytes over the stored
+`cf_actions` value, 509 B/Action vs 494 B/Action at b100 (+3.2 %). One record per window is
+cheap to frame; whether the sidecar exists is still open.
+
 The per-segment sidecar `00000042.gix` is the group index (`cf_group_actions` today), batched,
 written by the group partitions. A sparse in-memory index every 64th record maps GSN → byte
 offset. Whether that sidecar exists at all is decided in P1: the alternative is reading the
@@ -77,14 +116,14 @@ abandoned ranges. No verification work is in scope.
 
 ## 3. What each column family becomes
 
-| today | prototype |
-| --- | --- |
-| `cf_actions` | `:action_batch` records |
-| `cf_group_actions` | `.gix` sidecar, or nothing (P1 decides) |
-| `cf_action_dedup` | digest rebuilt from the log tail |
-| `cf_entity_actions` | **gone** — the entity consumer keeps the log position per row |
-| `cf_component_entities` | **kept, derived** — its own consumer, snapshot and retention answer |
-| `default` | migration markers only (today `system_cache:component_entities_backfill` = `v2`) |
+| today                   | prototype                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `cf_actions`            | `:action_batch` records                                                          |
+| `cf_group_actions`      | `.gix` sidecar, or nothing (P1 decides)                                          |
+| `cf_action_dedup`       | digest rebuilt from the log tail                                                 |
+| `cf_entity_actions`     | **gone** — the entity consumer keeps the log position per row                    |
+| `cf_component_entities` | **kept, derived** — its own consumer, snapshot and retention answer              |
+| `default`               | migration markers only (today `system_cache:component_entities_backfill` = `v2`) |
 
 `cf_component_entities` is the existence index #799 added: model entries
 `(model, 0x00, entity_id)` and component entries `(<model>/<field>, 0x00, entity_id)`,
@@ -127,7 +166,7 @@ The `groupMember` row shape is not optional. Authorization is not one cache read
   `EntityGroupCache.entity_group_entries/2`.
 - The read path is `EntityView.for_actor/3` → `PermissionChecker.can_read?/3` →
   `EntityIndex.source_groups/2` + `GroupCache.get_permissions/3`.
-- `GroupCache` holds actor→group membership *and* permissions, and the Writer mutates it.
+- `GroupCache` holds actor→group membership _and_ permissions, and the Writer mutates it.
 
 Versioning entity→group rows alone therefore cannot make authorization fresh; the permission
 rows need a version too. This is the scope growth #799 and the current `Authorizer` impose on
@@ -136,7 +175,9 @@ P3, and it is why I1 is a submit-time assertion and not only a corpus diff.
 ## 5. Recovery model
 
 - **Crash before the append** — nothing durable, nobody acked, no GSN consumed; the stamper
-  takes its base from the log tail on boot.
+  takes its base from the log tail on boot. D1's kill-point test covers the tail side of
+  this: a cut at any byte leaves the intact prefix readable and the retry lands on the
+  boundary.
 - **Torn append** — the last record fails CRC; truncate to the previous boundary and
   republish the frontier. That window's callers were never acked; the outbox retries.
 - **Crash after `fdatasync`, before a consumer** — consumers resume from their own positions.
@@ -175,16 +216,16 @@ mirrored in `packages/core` and must stay identical on both sides.
 
 **Read APIs whose signature may stay while their source moves** (P3/P4):
 
-| surface | answers | property |
-| --- | --- | --- |
-| `EntityIndex.resolve_groups/3` | scope for an Update | I1, I2 |
-| `EntityIndex.source_groups/2` | read permission's groups | I1 |
-| `GroupCache.get_permissions/3` | actor → group permissions | I1 |
-| `EntityGroupCache.entity_group_entries/2` | membership rows | I1 |
-| `EntityTypeCache.get_type/2` | committed model for an id (monotonic, fail-closed) | I1, I3 |
-| `EntityStore.get/3` | materialized row + `last_gsn` | I3 |
-| `ActionLog` | GSN-ordered reads (#367 export, later #113) | I4 |
-| `SSEHandler.write_stale_cursor_response/2` | cursor recovery | I2, R2 |
+| surface                                    | answers                                            | property |
+| ------------------------------------------ | -------------------------------------------------- | -------- |
+| `EntityIndex.resolve_groups/3`             | scope for an Update                                | I1, I2   |
+| `EntityIndex.source_groups/2`              | read permission's groups                           | I1       |
+| `GroupCache.get_permissions/3`             | actor → group permissions                          | I1       |
+| `EntityGroupCache.entity_group_entries/2`  | membership rows                                    | I1       |
+| `EntityTypeCache.get_type/2`               | committed model for an id (monotonic, fail-closed) | I1, I3   |
+| `EntityStore.get/3`                        | materialized row + `last_gsn`                      | I3       |
+| `ActionLog`                                | GSN-ordered reads (#367 export, later #113)        | I4       |
+| `SSEHandler.write_stale_cursor_response/2` | cursor recovery                                    | I2, R2   |
 
 **Decisions the doc leaves to the spike.** Whether the versioned model row keeps
 `EntityTypeCache`'s monotonic, fail-closed existence semantics; whether the existence index
@@ -197,7 +238,7 @@ above already assumes them.
 
 1. **The existence index landed (#799).** `cf_type_entities` no longer exists: it is
    `cf_component_entities`, with model and component key kinds. `CONTEXT.md` calls it an
-   *Existence index* and lists "type index" as the word to avoid.
+   _Existence index_ and lists "type index" as the word to avoid.
 2. **Five data column families per flush**, not six; `default` holds only migration markers.
 3. **Authorization surface is wider than `EntityIndex`** (§4).
 4. **Fan-out already receives committed payloads (#584)**, so the tap is not a re-read
