@@ -115,6 +115,7 @@ defmodule EbbServer.Bench.Options do
           | :current_window
           | :window_record
           | :log_first
+          | :log_first_recycled
           | :log_first_assemble
           | :log_first_io
   @type distribution :: :spread | :hot
@@ -203,6 +204,7 @@ defmodule EbbServer.Bench.Options do
     "current_window" => :current_window,
     "window_record" => :window_record,
     "log_first" => :log_first,
+    "log_first_recycled" => :log_first_recycled,
     "log_first_assemble" => :log_first_assemble,
     "log_first_io" => :log_first_io
   }
@@ -499,6 +501,10 @@ defmodule EbbServer.Bench.Options do
 
   def engine_description(:log_first),
     do: "log_first — one window record: assemble + one pwrite + one datasync"
+
+  def engine_description(:log_first_recycled),
+    do:
+      "log_first — same, into a zero-filled segment so appends never allocate or extend the file"
 
   def engine_description(:log_first_assemble),
     do: "log_first — window record assembly only (no I/O)"

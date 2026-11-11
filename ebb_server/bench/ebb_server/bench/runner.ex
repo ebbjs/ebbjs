@@ -498,7 +498,12 @@ defmodule EbbServer.Bench.Runner do
   end
 
   defp perform(:t5, %Options{engine: engine} = config, ctx, id, seq)
-       when engine in [:log_first, :log_first_assemble, :log_first_io] do
+       when engine in [
+              :log_first,
+              :log_first_recycled,
+              :log_first_assemble,
+              :log_first_io
+            ] do
     case LogAppend.perform(config, ctx, id, seq) do
       {:ok, latency, _bytes} -> {latency, config.batch_size, 0, 0}
       {:error, latency, _reason} -> {latency, 0, 0, config.batch_size}

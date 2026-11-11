@@ -28,6 +28,8 @@ defmodule EbbServer.Bench.LogAppend do
   # from extending the file's metadata in the measured region; the written
   # extents are allocated by the writes themselves, as an appender's would be.
   @preallocate_bytes 32 * 1024 * 1024 * 1024
+  # Enough for a 20 s window at the fastest arm measured (~300 MB).
+  @zeroed_bytes 512 * 1024 * 1024
   @segment_dir "ebb_spike_844_d3"
   @magic "E844"
   @version 1
@@ -55,6 +57,26 @@ defmodule EbbServer.Bench.LogAppend do
           {:ok, non_neg_integer(), non_neg_integer()}
           | {:error, non_neg_integer(), term()}
   def perform(%Options{engine: :log_first} = config, ctx, caller_id, seq) do
+    state = state(config, ctx, caller_id)
+    started = now()
+
+    record = window_record(config, ctx, caller_id, seq)
+
+    with :ok <- :file.pwrite(state.fd, state.offset, record),
+         :ok <- datasync(config, state.fd) do
+      advance(config, caller_id, state, byte_size(record))
+      {:ok, elapsed(started), byte_size(record)}
+    else
+      {:error, reason} -> {:error, elapsed(started), reason}
+    end
+  end
+
+  # The production-shaped variant: the segment's blocks are allocated and
+  # written once before the measured window, so every append lands inside
+  # already-written space and neither allocates blocks nor moves `i_size`.
+  # The 64 KB probe on this host prices that at 337 µs against 811 µs for a
+  # sparse write and 1,080 µs for an append past EOF.
+  def perform(%Options{engine: :log_first_recycled} = config, ctx, caller_id, seq) do
     state = state(config, ctx, caller_id)
     started = now()
 
@@ -247,6 +269,7 @@ defmodule EbbServer.Bench.LogAppend do
         {:ok, fd} = :file.open(path, [:raw, :binary, :read, :write])
         {:ok, _} = :file.position(fd, {:bof, @preallocate_bytes})
         :ok = :file.truncate(fd)
+        :ok = if config.engine == :log_first_recycled, do: zero_fill(fd), else: :ok
 
         prebuilt =
           if config.engine == :log_first_io,
@@ -269,6 +292,18 @@ defmodule EbbServer.Bench.LogAppend do
         records: state.records + 1,
         bytes: state.bytes + bytes
     })
+  end
+
+  # Written once per pass, before the window: it makes every later append an
+  # in-place write instead of an allocation plus size extension.
+  defp zero_fill(fd) do
+    zeros = :binary.copy(<<0>>, 1024 * 1024)
+
+    for i <- 0..(div(@zeroed_bytes, byte_size(zeros)) - 1) do
+      :ok = :file.pwrite(fd, i * byte_size(zeros), zeros)
+    end
+
+    :file.datasync(fd)
   end
 
   defp dir, do: Path.join(System.tmp_dir!(), @segment_dir)

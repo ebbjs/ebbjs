@@ -28,25 +28,28 @@ D3 ran before any prototype: one window record through `pwrite` + `datasync` aga
 `write_batch` over the same frames, on `recsy-vps` with `sync: true`. The result changes the
 case for the whole design, so it is recorded here rather than only in the issue.
 
-- **The durable floor is the flush, not the shape of the write.** At b100 the matched
-  append is 1.982 ms p50 (`current_window`: 2.162 ms); the decomposition is `fdatasync`
-  1.15–1.27 ms, frame/op assembly 0.55–0.69 ms, and the 51 KB write itself 0.105 ms.
-  Replacing 100 per-Action puts with one sequential write is worth ~130 µs. H1's ≤0.4 ms
-  gate is not reachable with one fsync per window at this window size.
-- **The design's direction is right, its size is not.** The log-first append is 8 % cheaper
-  at b100 and 17 % at b1000; the gap grows with window size because the fsync amortises, not
-  because per-key work disappears. At b1000 the `cf_actions`-only commit NIF is 0.36 ms per
-  100 Actions (1.07 ms with assembly), so the per-Action band H1 targets is reachable by
-  window size alone, without leaving RocksDB.
-- **Framing the window is the lever; owning the log is not.** `window_record` (one window as
-  one `cf_actions` value) is within 0.5 % of the owned append at b100 and 6 % at b1000. If
-  the spike continues, it should continue as P1, not P2.
+- **The durable floor is the file's block state, not the record shape.** At b100 the matched
+  append into a sparse file is 1.982 ms; the same append into a segment whose blocks are
+  already written is **0.960 ms** (41,410 Actions/s vs 27,140 for the matched `write_batch`).
+  A 64 KB `pwrite`+`datasync` probe splits the difference: 337–381 µs in place, 811–832 µs when
+  the write allocates blocks, 809–1,080 µs when it also extends `i_size`. The ext4 metadata for an
+  append, not the device flush, was the ~0.7 ms the first pass misread as "fsync".
+- **The design's direction is right; the gate is still missed.** One append per window is
+  2.0× the current commit at b100 and 1.7× at b1000, but H1 asked for 4.75× (≤0.4 ms per
+  100 Actions): 0.406 ms for the append alone, 0.960 ms including assembly. It does not meet
+  the gate and does not meet the issue's stop rule either (≥1.27 ms), so H1 survives.
+- **Framing the window on RocksDB does not capture the win.** `window_record` (one window as
+  one `cf_actions` value) is 2,008 µs, indistinguishable from 100 puts (1,963 µs): RocksDB's
+  WAL still allocates and extends its file on every commit, and the binding offers no
+  `fallocate`/recycle option. The 2× comes from owning the segment's block state. If the spike
+  continues, it continues as a segment log with a stated retention/recycling policy — P2, not
+  P1.
 - **D1 is as simple as §5 reads.** The segment writer's recovery (CRC, torn-tail truncate,
   sparse GSN→offset index) passed a 60-seed kill-point property test on the first shape
   implemented: random stream, random batch sizes, a cut at any byte, retry converges. That
   part of the design can be reused without a new idea.
 - **§4's authorizer surface already threads per-Action context, and any resolver must keep
-  doing so.** `Authorizer` resolves an entity's model from the committed index *or* from the
+  doing so.** `Authorizer` resolves an entity's model from the committed index _or_ from the
   models the same Action creates (`PermissionHelper.created_models/1`), and folds membership
   against `intra_action` context. A `spread` Action that creates an entity and files it into a
   group authorizes (`u5`), while one that files an entity it never creates is refused
@@ -106,6 +109,14 @@ bytes** and the resolution frontier is the log tail.
 Measured (D3): the window header costs 17 bytes and each frame 16 bytes over the stored
 `cf_actions` value, 509 B/Action vs 494 B/Action at b100 (+3.2 %). One record per window is
 cheap to frame; whether the sidecar exists is still open.
+
+The segment's **block state** is now a first-class decision, not an implementation detail. An
+append that allocates blocks or extends the file costs 811–1,080 µs per 64 KB on the spike
+host; the same bytes into already-written space cost 337 µs. Two strategies were named and one
+measured: zero-fill the segment before use (measured; 0.960 ms per b100 window, at ~1.7 bytes
+zeroed per byte logged) or recycle a segment dropped by retention, with an epoch in the header
+so recovery can tell old records from new (not measured; removes the double write). D1's
+reader already stops at the first invalid record, which is what both strategies need.
 
 The per-segment sidecar `00000042.gix` is the group index (`cf_group_actions` today), batched,
 written by the group partitions. A sparse in-memory index every 64th record maps GSN → byte

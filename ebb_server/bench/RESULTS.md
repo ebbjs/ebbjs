@@ -27,16 +27,19 @@ below prices the same 100-Action, 2-Update `hot` window and writes the same
 
 ### D3 — one `pwrite` vs one `write_batch` (b100, c=1, median of 3 interleaved passes)
 
-| engine (timed region)                                                      | Actions/s | p50 µs | p95 µs | p99 µs |
-| -------------------------------------------------------------------------- | --------: | -----: | -----: | -----: |
-| `current` — `write_batch/3` only (NIF time, assembly outside)              |    26,595 |  1,474 |  2,238 | 43,715 |
-| `current_window` — op assembly + `write_batch/3` (matched)                 |    23,175 |  2,162 |  3,395 | 54,565 |
-| `window_record` — one window record as **one** `cf_actions` put (P1 shape) |    25,690 |  2,029 |  3,038 | 65,705 |
-| `log_first` — window record + one `pwrite` + one `datasync`                |    29,115 |  1,982 |  2,813 | 44,683 |
+| engine (timed region)                                                      |  Actions/s |  p50 µs | p95 µs | p99 µs |
+| -------------------------------------------------------------------------- | ---------: | ------: | -----: | -----: |
+| `current` — `write_batch/3` only (NIF time, assembly outside)              |     26,595 |   1,474 |  2,238 | 43,715 |
+| `current_window` — op assembly + `write_batch/3` (matched)                 |     23,175 |   2,162 |  3,395 | 54,565 |
+| `window_record` — one window record as **one** `cf_actions` put (P1 shape) |     25,690 |   2,029 |  3,038 | 65,705 |
+| `log_first` — window record + one `pwrite` + one `datasync`                |     29,115 |   1,982 |  2,813 | 44,683 |
+| `log_first_recycled` — same, into a zero-filled (already-written) segment  | **41,410** | **960** |  1,455 | 58,736 |
 
-Only `current_window`, `window_record` and `log_first` are matched comparisons: all three
-build the window inside the timer. The historical 1.903 ms "log-only" rung was measured with
-assembly inside the flush, so it is compared against the 1,982 µs row, not the 1,474 µs one.
+Only `current_window`, `window_record` and the two `log_first` arms are matched comparisons:
+all build the window inside the timer. The historical 1.903 ms "log-only" rung was measured
+with assembly inside the flush, so it is compared against the 1,966–1,982 µs rows, not the
+1,474 µs one. The recycled arm is the same writer as `log_first`; only the segment's block
+state differs (see below).
 
 ### Where the 1.9 ms went — decomposition (b100, c=1)
 
@@ -55,11 +58,41 @@ assembly inside the flush, so it is compared against the 1,982 µs row, not the 
 | window assembly                         |   554 |
 | op assembly + 100 `batch_put` crossings |  ~690 |
 
-The append floor is the **flush**, not the shape of the durable write: at b100 both arms pay
-~1.15–1.27 ms of `fdatasync` per window. Replacing 100 per-Action puts with one sequential
-write saves ~130 µs at b100. So a 1.9 ms log leg decomposes to roughly 65 % fsync, 30 %
-assembly, 5 % the write itself — H1's premise that assembly and NIF crossings are the floor
-does not hold on this host.
+**Retraction.** An earlier revision of this section concluded from these rows that the append
+floor was ~1.15–1.27 ms of `fdatasync` and that H1 was falsified. That was wrong, and the
+error was the segment's block state, not the flush: the `log_first` arm appends past EOF into
+a sparse preallocated file, so every `datasync` also commits ext4 block allocation and an
+inode-size change. A 64 KB probe on the same host separates the components:
+
+| 64 KB `pwrite` + `datasync`, 200 samples                                |       p50 µs |    p95 µs |
+| ----------------------------------------------------------------------- | -----------: | --------: |
+| in place, inside already-written blocks (no allocation, no size change) |      **337** |       502 |
+| inside a sparse region (allocates blocks, size unchanged)               |          811 |     1,121 |
+| past EOF (allocates blocks and extends `i_size`)                        |        1,080 |     1,385 |
+| 4 independent files, one process each, in place                         | 322–331 each |   467–504 |
+| 8 independent files, one process each, in place                         | 440–465 each | 805–1,335 |
+
+So the "1.2 ms fsync" was ~0.5–0.7 ms of filesystem metadata for extending a file and
+~0.34 ms of device commit. The device also commits independent flushes in parallel (4 syncs at the same
+latency as one), so the serial cost is the window's own flush, not a global channel.
+
+`log_first_recycled` zero-fills its segment before the measured window (512 MB, one
+`datasync`), so every append lands in already-written space: b100 p50 falls from 1,982 µs to
+**960 µs** and Actions/s rises from 29,115 to 41,410 — 2.0× the matched `write_batch` arm
+(1,963 µs) and 2.0× the pre-spike 1.903 ms log leg, with the same record format and one
+append per window. Subtracting assembly (554 µs) leaves ~406 µs of append+flush: the ~350 µs
+in-place commit plus ~70 µs for 51 KB.
+
+The zero-fill is real work and it is outside the timer: 512 MB written per pass against
+~300 MB of records, roughly 1.7 bytes zeroed per byte logged. At ~400 MB/s that is ~150 µs
+per b100 window amortised, so the production-shaped append is 960–1,100 µs, not 960.
+Recycling dropped segments (write records over an expired segment, epoch in the header) would
+remove the double write; that variant was not measured.
+
+The shape of the answer changes: the append is **not** pinned at 1.15 ms by the device, H1's
+≤400 µs target is still missed at b100 (960 µs with assembly, ~406 µs for the append alone),
+but the issue's own falsifier — "falsified if the leg stays within 1.5× of today", i.e.
+≥1.27 ms — is **not** met.
 
 The ~50 ms p99 tail is not the disk and not CPU: it survives when the same arms run on tmpfs
 (`TMPDIR=/dev/shm`: `current_window` p50 763 µs / 51,540 Actions/s, `log_first` p50 633 µs /
@@ -69,15 +102,16 @@ throughput is therefore tail-dominated and should be read next to p50.
 
 ### Window-size ladder (c=1, `hot`, p50 µs, per-100-Action equivalent)
 
-| batch | `current_window` | `window_record` |   `log_first` |
-| ----: | ---------------: | --------------: | ------------: |
-|    10 |      822 (8,220) |     814 (8,140) |   788 (7,880) |
-|   100 |    2,162 (2,162) |   2,029 (2,029) | 1,982 (1,982) |
-|  1000 |   10,690 (1,069) |     9,417 (942) |   8,855 (886) |
+| batch | `current_window` | `window_record` |   `log_first` | `log_first_recycled` |
+| ----: | ---------------: | --------------: | ------------: | -------------------: |
+|    10 |      822 (8,220) |     814 (8,140) |   788 (7,880) |              not run |
+|   100 |    2,162 (2,162) |   2,029 (2,029) | 1,982 (1,982) |        **960 (960)** |
+|  1000 |   10,690 (1,069) |     9,417 (942) |   8,855 (886) |      **7,349 (735)** |
 
-Actions/s at b1000: 54,767 / 65,800 / 75,467. The log-first advantage grows with window size
-(within noise at b10, 8 % at b100, 17 % at b1000), but the fsync is per window at every size:
-framing the window is what makes the fsync affordable, owning the log is not.
+Actions/s at b1000: 57,233 / — / 68,300 / 72,300. The append's advantage grows with window
+size, and the recycled arm is 1.7× `current_window` at b1000. At b100 the sparse and recycled
+arms sit close; the difference is the per-append metadata, which is a fixed ~0.7 ms and
+therefore matters most at small windows.
 
 ### P0 — re-baseline of the current writer on this build
 
@@ -88,7 +122,7 @@ framing the window is what makes the fsync affordable, owning the log is not.
 | `t0` c=1 `hot`                              |                 11,105 |    3.6 |           100 |        3,063 |
 | `t0` c=1 `spread` u5                        |                  4,498 |   10.6 |           100 |            — |
 | `t2` c=8 `hot`                              |                  6,885 |    103 |           399 |       20,368 |
-| `t2` c=8 `spread` u5                        |                  2,445 |   304 |           400 |            — |
+| `t2` c=8 `spread` u5                        |                  2,445 |    304 |           400 |            — |
 | `t2` c=8 `spread` u2 (invalid workload)     | **0 (100 % rejected)** |      — |             — |            — |
 | `t0` c=1 `hot`, `--in-flight 2`             |                  7,725 |    6.1 |             — |            — |
 | `t2` c=8 `hot`, `--in-flight 2`             |                  6,658 |    243 |             — |            — |
