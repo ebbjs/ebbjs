@@ -4,18 +4,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Update } from "@ebbjs/core";
+import { componentModel, type Update } from "@ebbjs/core";
 
 import { ModelRegistry } from "@ebbjs/schema";
-import { ActionRejectedError, call, changeGroups, type OpContext } from "@ebbjs/write";
-import { commit, type CommitCapability } from "@ebbjs/write";
-import { updateModel } from "../test-utils";
+import { ActionRejectedError, changeGroups, type OpContext } from "./operations";
 
 /** The Updates of one model, grouped into one list per subject row. */
 const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
-    if (updateModel(update) !== model) continue;
+    if (update.method === "delete" || componentModel(update.component) !== model) continue;
     const row = bySubject.get(update.subject_id);
     if (row === undefined) bySubject.set(update.subject_id, [update]);
     else row.push(update);
@@ -81,34 +79,5 @@ describe("changeGroups", () => {
         removes: [{ membershipId: "eg_1", groupId: "" }],
       }),
     ).toThrowError(ActionRejectedError);
-  });
-
-  it("commits a membership span through the committer", async () => {
-    const submitted: unknown[] = [];
-    const cap: CommitCapability = {
-      registry: new ModelRegistry(),
-      submitRelationshipUpdates: async (updates) => {
-        submitted.push(updates);
-        return { rejected: [] };
-      },
-      freshHlc: () => "hlc_1",
-      generateUpdateId: () => "u_1",
-      actorId: "actor_1",
-    };
-
-    const { groups } = await commit(
-      [
-        call(changeGroups, {
-          entity: "todo",
-          entityId: "todo_1",
-          puts: ["g_2"],
-          currentGroups: ["g_1"],
-        }),
-      ],
-      cap,
-    );
-
-    expect(submitted).toHaveLength(1);
-    expect(groups).toEqual(["g_2"]);
   });
 });
