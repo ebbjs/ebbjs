@@ -4,8 +4,9 @@ Design investigation. No code changed. The question: **should membership, links,
 membership stop being their own rows and become components on the entities they describe?**
 
 This is not a new question — #790 is mid-design on exactly it, and has already decided the part
-that turns out to be decisive (§1). Slice 12 of [#793](https://github.com/ebbjs/ebbjs/issues/793)
-deliberately does _not_ do this; this note is what would have to be true to change that.
+that turns out to be decisive (§1). Slice 10 of [#793](https://github.com/ebbjs/ebbjs/issues/793)
+deliberately does _not_ do this; this note is what would have to be true to change that, and slice
+13 is the issue that does it.
 
 Evidence labels: **[source]** = `file:line` or a quoted design decision; **[derived]** = arithmetic
 or inference over sourced facts; **[judgment]** = mine, and contestable; **[open]** = not
@@ -38,11 +39,11 @@ established, with what would settle it.
 
 ## 1. The three candidates, and why one is already decided
 
-| Candidate         | Today                                        | As a component                                                             |
-| ----------------- | -------------------------------------------- | -------------------------------------------------------------------------- |
-| `ebb/link`        | a row: `{source_id, target_id, type, field}` | a keyspace on the **source**: `ebb/link: { <field>: { <targetId>: {} } }`  |
-| `ebb/membership`  | a row: `{entity_id, group_id}`               | a keyspace on the **entity**: `ebb/membership: { <groupId>: {} }`          |
-| `ebb/groupMember` | a row: `{group_id, actor_id, permissions}`   | a keyspace on the **group**: `ebb/groupMember: { <actorId>: permissions }` |
+| Candidate        | Today                                        | As a component                                                             |
+| ---------------- | -------------------------------------------- | -------------------------------------------------------------------------- |
+| `ebb/link`       | a row: `{source_id, target_id, type, field}` | a keyspace on the **source**: `ebb/link: { <field>: { <targetId>: {} } }`  |
+| `ebb/membership` | a row: `{entity_id, group_id}`               | a keyspace on the **entity**: `ebb/membership: { <groupId>: {} }`          |
+| `ebb/grant`      | a row: `{group_id, actor_id, permissions}`   | a keyspace on the **group**: `ebb/groupMember: { <actorId>: permissions }` |
 
 The rule that separates them is **which end owns the relation's visibility**, because that is what
 the delivery scope is computed from:
@@ -228,7 +229,7 @@ that decides this half of the question.
 | -------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ebb/link` as a keyspace on the source       | **Yes — worth prototyping** | Source-owned visibility is already decided; forward traversal becomes free; duplicate edges become unrepresentable; missed links become backfillable; #789's class disappears. Costs one resolution hop for `contained`.                                       |
 | `ebb/membership` as a keyspace on the entity | **No**                      | Group-owned scope; the group → entity index survives regardless; you would trade a row for payload-derived delivery scope.                                                                                                                                     |
-| `ebb/groupMember` as a keyspace on the group | **Not yet**                 | Group-owned and bounded in cardinality (dozens to hundreds per the README), so it _would_ fit. But it is the authorization primitive, the payoff is two ETS tables, and the blast radius is every permission check. Defer until links have proven the pattern. |
+| `ebb/grant` as a keyspace on the group       | **Not yet**                 | Group-owned and bounded in cardinality (dozens to hundreds per the README), so it _would_ fit. But it is the authorization primitive, the payoff is two ETS tables, and the blast radius is every permission check. Defer until links have proven the pattern. |
 
 **[judgment] The asymmetry is the finding.** "Make the relations components" sounds like one change
 and is three, and only the one whose visibility is owned by the entity holding it is a clear win.
@@ -248,12 +249,14 @@ and is three, and only the one whose visibility is owned by the entity holding i
 ## 7. Relationship to the plan
 
 This note does **not** change
-[#805 `refactor(storage)`: the four system types become system components](https://github.com/ebbjs/ebbjs/issues/805),
-which keeps every row and renames the type. It proposes a **follow-on** to it, and it makes
+[#805 `refactor(storage)`: the four system types become `ebb/*` components](https://github.com/ebbjs/ebbjs/issues/805),
+which keeps every row, renames the type, and makes the values atomic and key-immutable. It is the
+**follow-on** to it (slice 13 of #793), and it makes
 [#790 epic(relationships): relationships are first-class entities — they own their group membership](https://github.com/ebbjs/ebbjs/issues/790)
 the place to decide, since #790 currently specifies the opposite for links (own `entityGroup` rows).
 
 Sequencing: #790 must land first either way, because it fixes the derivation bug. Whether links then
 _keep_ their own membership rows or lose them entirely is a decision #790 should record rather than
-discover later. Doing links-as-components before #793's component plumbing exists would mean writing
-the keyspace merge twice.
+discover later. Slice 10's row-preserving `ebb/link` is recorded as intermediate, not as the
+endpoint. Doing links-as-components before #793's component plumbing exists would mean writing the
+keyspace merge twice.
