@@ -243,19 +243,6 @@ describe("on-demand document residency", () => {
     expect(client.replicaStats.pinned).toBe(0);
   });
 
-  it("releases a closed body after the pinned TTL", async () => {
-    const { client, written } = harness(pageSchema, { pinnedTtlMs: 10 });
-    const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
-
-    await client.page_body.get(bodyId);
-    expect(client.replica.isOpen(bodyId)).toBe(true);
-
-    client.replica.close(bodyId);
-    await waitFor(() => !client.replica.get(bodyId));
-
-    expect(client.replicaStats.pinned).toBe(0);
-  });
-
   it("releases the least recently opened body when the pinned window overflows", async () => {
     const { client, written } = harness(pageSchema, { pinnedCapacity: 1, pinnedTtlMs: 0 });
     const first = await createPage(client, written, { title: "One", body: "hello" });

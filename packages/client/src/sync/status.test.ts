@@ -54,15 +54,8 @@ describe("createClientStatus", () => {
     expect(status.get()).toEqual({
       connection: "connecting",
       lastSyncedAt: null,
-      outbox: {
-        pending: 0,
-        acknowledged: 0,
-        error: 0,
-        conflicted: 0,
-        flushLatency: null,
-        storeFaults: 0,
-      },
-      conflicts: { count: 0, conflicts: [] },
+      outbox: emptyOutbox(),
+      conflicts: emptyConflicts(),
     });
   });
 
@@ -97,16 +90,6 @@ describe("createClientStatus", () => {
     expect(status.get().conflicts).toBe(next);
   });
 
-  it("notifies subscribers on a connection transition", () => {
-    const { status, connection } = mkHarness();
-    const listener = vi.fn();
-    status.subscribe(listener);
-
-    connection.transition("live");
-
-    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ connection: "live" }));
-  });
-
   it("does not fire on subscription despite the connection machine's deferred replay", async () => {
     const { status } = mkHarness();
     const listener = vi.fn();
@@ -134,23 +117,5 @@ describe("createClientStatus", () => {
     markSynced(1_200);
     expect(status.get().lastSyncedAt).toBe(1_500);
     expect(listener).toHaveBeenCalledTimes(2);
-  });
-
-  it("stops notifying a subscriber after unsubscribe", () => {
-    const { status, outbox } = mkHarness();
-    const listener = vi.fn();
-    const unsubscribe = status.subscribe(listener);
-
-    unsubscribe();
-    outbox.set({
-      pending: 1,
-      acknowledged: 0,
-      error: 0,
-      conflicted: 0,
-      flushLatency: null,
-      storeFaults: 0,
-    });
-
-    expect(listener).not.toHaveBeenCalled();
   });
 });

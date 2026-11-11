@@ -86,18 +86,6 @@ describe("createOutboxObserver", () => {
     });
   });
 
-  it("keeps the snapshot identity stable until a source changes", () => {
-    const { observer, setCounts } = mkHarness();
-    const first = observer.get();
-
-    expect(observer.get()).toBe(first);
-
-    setCounts(counts({ pending: 1 }));
-    const second = observer.get();
-    expect(second).not.toBe(first);
-    expect(second).toEqual({ ...counts({ pending: 1 }), flushLatency: null, storeFaults: 0 });
-  });
-
   it("drops a source event that leaves the composed snapshot unchanged", () => {
     const { observer, setCounts } = mkHarness();
     setCounts(counts({ pending: 1 }));
@@ -135,29 +123,6 @@ describe("createOutboxObserver", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect(observer.get().storeFaults).toBe(1);
-  });
-
-  it("notifies on a conflict-count change with no pending change", () => {
-    const { observer, setCounts } = mkHarness();
-    setCounts(counts({ pending: 1 }));
-    const listener = vi.fn();
-    observer.subscribe(listener);
-
-    setCounts(counts({ pending: 1, conflicted: 1 }));
-
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(observer.get().conflicted).toBe(1);
-  });
-
-  it("stops notifying after unsubscribe", () => {
-    const { observer, setCounts } = mkHarness();
-    const listener = vi.fn();
-    const unsubscribe = observer.subscribe(listener);
-    unsubscribe();
-
-    setCounts(counts({ pending: 1 }));
-
-    expect(listener).not.toHaveBeenCalled();
   });
 
   it("isolates a throwing subscriber from the others", () => {

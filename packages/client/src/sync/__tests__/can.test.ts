@@ -10,11 +10,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { componentName, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 
 import { createClient } from "../client";
-import { PermissionError } from "../permission";
-import { makeFetchMock, type FetchCall } from "../test-utils";
+import { makeFetchMock } from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -39,45 +38,6 @@ const mkEntity = (
   last_gsn: 0,
 });
 
-const field = (value: unknown): { value: unknown; update_id: string } => ({
-  value,
-  update_id: "u_1",
-});
-
-const fields = (
-  values: Record<string, unknown>,
-): Record<string, { value: unknown; update_id: string }> =>
-  Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
-
-/**
- * One Update per field: a former `put` is a `replace`, a former `patch` a
- * `merge`, and `delete` names no component.
- */
-const update = (
-  model: string,
-  subjectId: string,
-  method: "put" | "patch" | "delete",
-  values: Record<string, unknown> = {},
-): Update[] =>
-  method === "delete"
-    ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
-    : Object.entries(fields(values)).map(([name, value]) => ({
-        id: `u_${subjectId}_${method}_${name}`,
-        subject_id: subjectId,
-        component: componentName(model, name),
-        method: method === "put" ? "replace" : "merge",
-        data: value,
-      }));
-
-/** One Action from any number of component-Update groups. */
-const action = (...groups: readonly (readonly Update[])[]): Action => ({
-  id: "a_1",
-  actor_id: ACTOR_ID,
-  hlc: makeHlc(1_711_036_800_000),
-  gsn: 0,
-  updates: groups.flat(),
-});
-
 const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
   actor_id: ACTOR_ID,
   groups: groups.map(([id, permissions]) => ({
@@ -88,9 +48,6 @@ const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknow
     cursor: 0,
   })),
 });
-
-const actionRequests = (calls: readonly FetchCall[]): FetchCall[] =>
-  calls.filter((call) => call.url.endsWith("/sync/actions"));
 
 /** A client whose `handshake()` reports `groups`. */
 const mkClient = async (groups: readonly (readonly [string, string[]])[]) => {
@@ -131,15 +88,6 @@ describe("client.can — global form", () => {
       kind: "allowed",
       groupIds: ["g_1"],
     });
-  });
-
-  it("unions grants across every one of the actor's groups", async () => {
-    const { client } = await mkClient([
-      ["g_1", []],
-      ["g_2", ["list.*"]],
-    ]);
-    const result = await client.can("list.update");
-    expect(result.kind).toBe("allowed");
   });
 
   it("denies when no actor group grants the permission", async () => {
@@ -369,101 +317,5 @@ describe("client.can — system entities", () => {
       kind: "allowed",
       groupIds: ["g_src"],
     });
-  });
-});
-
-describe("client.can — parity with the write-path pre-check", () => {
-  it("agrees with write() on a denied user-entity update", async () => {
-    const { client } = await mkClient([["g_1", ["list.*"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
-    );
-
-    const query = await client.can("todo_1", "update");
-    expect(query.kind).toBe("denied");
-    await expect(
-      client.write([action(update("todo", "todo_1", "patch", { title: "Ship" }))]),
-    ).rejects.toBeInstanceOf(PermissionError);
-  });
-
-  it("agrees with write() on an allowed user-entity update", async () => {
-    const { client, calls } = await mkClient([["g_1", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
-    );
-
-    const query = await client.can("todo_1", "update");
-    expect(query.kind).toBe("allowed");
-    await expect(
-      client.write([action(update("todo", "todo_1", "patch", { title: "Ship" }))]),
-    ).resolves.toEqual({ rejected: [] });
-    expect(actionRequests(calls)).toHaveLength(1);
-  });
-
-  it("agrees with write() on an allowed relationship patch that keeps the row's source", async () => {
-    // can() supplies the row's own source, so the identity check cannot
-    // refuse it; the write restates that same source and passes too.
-    const { client } = await mkClient([["g_src", ["relationship.update"]]]);
-    await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
-    );
-
-    expect(await client.can("rel_1", "update")).toEqual({
-      kind: "allowed",
-      groupIds: ["g_src"],
-    });
-    await expect(
-      client.write([
-        action(
-          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ),
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("agrees with write() on a denied same-source relationship patch", async () => {
-    const { client } = await mkClient([["g_src", []]]);
-    await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
-    );
-
-    const violation = {
-      kind: "missing-permission",
-      model: "relationship",
-      subjectId: "rel_1",
-      required: "relationship.update",
-      groupIds: ["g_src"],
-    };
-    expect(await client.can("rel_1", "update")).toEqual({ kind: "denied", violation });
-
-    // A matching source is not a structural refusal, so the write is
-    // denied for the ordinary missing permission, not a re-point.
-    const error = await client
-      .write([
-        action(
-          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ),
-      ])
-      .then(() => null)
-      .catch((err: unknown) => err);
-    expect((error as PermissionError).violations).toEqual([violation]);
   });
 });

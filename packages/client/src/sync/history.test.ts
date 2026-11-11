@@ -12,12 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { componentName, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
-import {
-  DEFAULT_HISTORY_LIMIT as DEFAULT_FROM_ENTRY,
-  type HistoryEvent,
-  type HistoryOptions,
-  type ReplayOptions,
-} from "../index";
+import type { HistoryEvent, HistoryOptions, ReplayOptions } from "../index";
 import { createClient } from "./client";
 import { DEFAULT_HISTORY_LIMIT, readEntityHistory, replayEntity } from "./history";
 
@@ -180,10 +175,20 @@ describe("paging", () => {
     expect(events.map((event) => event.actionId)).toEqual(["a_four", "a_three"]);
   });
 
-  it("defaults to DEFAULT_HISTORY_LIMIT", async () => {
-    const events = await readEntityHistory(await pagedLog(), { entityId: WALL });
-    expect(events).toHaveLength(4);
-    expect(DEFAULT_HISTORY_LIMIT).toBe(50);
+  it("returns the newest DEFAULT_HISTORY_LIMIT events when no limit is given", async () => {
+    const many = await logWith(
+      Array.from({ length: DEFAULT_HISTORY_LIMIT + 1 }, (_, index) =>
+        action(`a_${index + 1}`, index + 1, [
+          write("patch", { title: leaf(`v${index + 1}`, index + 1) }),
+        ]),
+      ),
+    );
+
+    const events = await readEntityHistory(many, { entityId: WALL });
+
+    expect(events).toHaveLength(DEFAULT_HISTORY_LIMIT);
+    expect(events[0]?.gsn).toBe(DEFAULT_HISTORY_LIMIT + 1);
+    expect(events.at(-1)?.gsn).toBe(2);
   });
 
   it("returns only events strictly older than `beforeGsn`, still folded from the start", async () => {
@@ -345,9 +350,5 @@ describe("SyncClient history surface", () => {
     expect(await client.history({ entityId: "wall_unknown" })).toEqual([]);
     expect(await client.replay({ entityId: WALL, at: { actionId: "a_missing" } })).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("exports the history surface and its default limit from the package entry", () => {
-    expect(DEFAULT_FROM_ENTRY).toBe(50);
   });
 });

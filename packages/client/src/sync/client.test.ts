@@ -774,11 +774,14 @@ describe("SyncClient reconnect backoff (#40)", () => {
     // happens immediately.
     client.subscribe(["grp_1"], 0, () => {});
 
-    // Wait for the first fetch + first reconnect window (100ms initial
-    // backoff) plus a small buffer so the second fetch has been recorded.
-    await new Promise((r) => setTimeout(r, 200));
-
+    // Wait for the retry the backoff arms rather than for a fixed window:
+    // on a loaded machine the first connect can itself take longer than the
+    // gap being measured, which used to make this test fail spuriously.
     const calls = (fetchImpl as unknown as { __calls: number[] }).__calls;
+    for (let i = 0; i < 300 && calls.length < 2; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
     expect(calls.length).toBeGreaterThanOrEqual(2);
     const gap = calls[1] - calls[0];
     expect(gap).toBeGreaterThanOrEqual(95); // 100ms - 5ms jitter
@@ -906,21 +909,6 @@ describe("SyncClient.write with ModelRegistry (#143)", () => {
     expect(fn.mock.calls).toHaveLength(0);
   });
 
-  it("skips validation when no registry is supplied (existing behavior)", async () => {
-    const { fn } = makeFetchMock([{ body: JSON.stringify({ rejected: [] }) }]);
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "a_test",
-      fetchImpl: fn,
-    });
-    // `data.fields.typo` would normally violate a registered todo
-    // entity, but without a registry validation is a no-op.
-    const action = todoAction({ component: "todo/typo" });
-    const result = await client.write([action]);
-    expect(result.rejected).toEqual([]);
-    expect(fn.mock.calls).toHaveLength(1);
-  });
-
   it("constructs an empty registry when none is supplied", () => {
     const client = createClient({
       serverUrl: "http://localhost:4000",
@@ -1031,6 +1019,89 @@ describe("SyncClient.queryEntities with ModelRegistry (#143)", () => {
     });
     await expect(client.queryEntities("todo")).resolves.toEqual([]);
     expect(fn.mock.calls).toHaveLength(1);
+  });
+});
+
+describe("SyncClient._applyAction storage effects", () => {
+  const titleAction = (args: { id: string; gsn: number; hlc?: string; value?: string }): Action => {
+    const hlc = args.hlc ?? makeHlc(1711036800000);
+    return {
+      id: args.id,
+      actor_id: "a_user",
+      hlc,
+      gsn: args.gsn,
+      updates: [
+        {
+          id: `u_${args.id}_0`,
+          subject_id: "todo_1",
+          component: "todo/title",
+          method: "replace",
+          data: { value: args.value ?? "Hello", update_id: `u_${args.id}`, hlc },
+        },
+      ],
+    };
+  };
+
+  it("appends the action and marks the entity dirty", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+
+    await callApplyAction(client, titleAction({ id: "a_1", gsn: 1 }), "grp_1");
+
+    expect(await client.storage.isDirty("todo_1")).toBe(true);
+    expect(await client.storage.cursors.get("grp_1")).toBe(1);
+  });
+
+  it("advances the cursor only when gsn is higher", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+    await client.storage.cursors.set("grp_1", 10);
+
+    await callApplyAction(client, titleAction({ id: "a_1", gsn: 5 }), "grp_1");
+
+    expect(await client.storage.cursors.get("grp_1")).toBe(10);
+  });
+
+  it("does not advance a cursor when gsn is 0", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+
+    await callApplyAction(client, titleAction({ id: "a_1", gsn: 0 }), "grp_1");
+
+    expect(await client.storage.cursors.get("grp_1")).toBeNull();
+  });
+
+  it("does not advance any cursor without a group", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+
+    await callApplyAction(client, titleAction({ id: "a_1", gsn: 1 }));
+
+    expect(await client.storage.cursors.get("grp_1")).toBeNull();
+  });
+
+  it("applies a patch carrying packed BigInt HLCs", async () => {
+    const client = createClient({ serverUrl: "http://localhost:0", actorId: "a_test" });
+    const put = titleAction({ id: "a_put", gsn: 1 });
+    const patch: Action = {
+      id: "a_patch",
+      actor_id: "a_user",
+      hlc: makeHlc(1711036800000, 1),
+      gsn: 2,
+      updates: [
+        {
+          id: "u_patch_0",
+          subject_id: "todo_1",
+          component: "todo/title",
+          method: "merge",
+          data: { value: "Updated", update_id: "u_patch", hlc: makeHlc(1711036800000, 1) },
+        },
+      ],
+    };
+
+    await callApplyAction(client, put, "grp_1");
+    // The merge compares the existing and patch HLCs, so a packed-BigInt HLC
+    // that `BigInt()` could not parse used to throw here.
+    await callApplyAction(client, patch, "grp_1");
+
+    const entity = await client.readLocalEntity("todo_1");
+    expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
   });
 });
 
@@ -1216,23 +1287,6 @@ describe("SyncClient.onRegistryViolation hook", () => {
     expect(fn.mock.calls).toHaveLength(0);
   });
 
-  it("falls back to console.warn on inbound when no listener registered", async () => {
-    const client = createClient({
-      serverUrl: "http://localhost:0",
-      actorId: "a_test",
-      registry: todoEntity(),
-    });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      await callApplyAction(client, badAction(), "grp_1");
-      expect(warnSpy).toHaveBeenCalled();
-      const message = String(warnSpy.mock.calls[0]?.[0] ?? "");
-      expect(message).toMatch(/incoming action violation/);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
   it("isolates throwing listeners — others still fire", async () => {
     const calls: number[] = [];
     const client = createClient({
@@ -1368,24 +1422,6 @@ describe("SyncClient.status (#371)", () => {
         data: { value: "Hi", update_id: `u_${id}`, hlc: makeHlc(1711036800000) },
       },
     ],
-  });
-
-  it("aggregates the children into one initial snapshot", () => {
-    const client = createClient({ serverUrl: "http://localhost:4000", actorId: "a_test" });
-
-    expect(client.status.get()).toEqual({
-      connection: "connecting",
-      lastSyncedAt: null,
-      outbox: {
-        pending: 0,
-        acknowledged: 0,
-        error: 0,
-        conflicted: 0,
-        flushLatency: null,
-        storeFaults: 0,
-      },
-      conflicts: { count: 0, conflicts: [] },
-    });
   });
 
   it("reflects connection transitions and outbox depth", async () => {

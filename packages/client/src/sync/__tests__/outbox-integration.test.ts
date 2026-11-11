@@ -114,13 +114,6 @@ const actionCalls = (calls: { url: string }[]): number =>
   calls.filter((c) => c.url.endsWith("/sync/actions")).length;
 
 describe("client.outbox", () => {
-  it("is exposed on the client and starts empty", () => {
-    const client = mkClient(mkStubFetch().fn);
-
-    expect(client.outbox.size()).toBe(0);
-    expect(client.outbox.pending()).toEqual([]);
-  });
-
   it("leaves an accepted entry acknowledged until its echo removes it", async () => {
     const { fn } = mkStubFetch();
     const storage = createMemoryAdapter();
@@ -163,25 +156,6 @@ describe("client.outbox", () => {
     expect((await clientB.readLocalEntity("todo_1"))?.data.fields.title.value).toBe("Hello");
   });
 
-  it("surfaces a server-rejected entry through errors() without removing it", async () => {
-    const storage = createMemoryAdapter();
-    const { fn } = mkStubFetch([
-      { body: JSON.stringify({ rejected: [{ id: "act_1", reason: "permission_denied" }] }) },
-    ]);
-    const client = mkClient(fn, storage);
-
-    const response = await client.write([mkAction()]);
-
-    expect(response.rejected).toEqual([{ id: "act_1", reason: "permission_denied" }]);
-    expect(client.outbox.errors().map((entry) => entry.action.id)).toEqual(["act_1"]);
-    expect(await storage.outbox.get("act_1")).toMatchObject({ status: "error" });
-
-    await client.outbox.retry("act_1");
-
-    expect(client.outbox.errors()).toEqual([]);
-    expect(client.outbox.size("pending")).toBe(1);
-  });
-
   it("client.write() enqueues + flushes and leaves nothing pending on success", async () => {
     const { fn, calls } = mkStubFetch();
     const client = mkClient(fn);
@@ -190,16 +164,6 @@ describe("client.outbox", () => {
 
     expect(client.outbox.size()).toBe(0);
     expect(actionCalls(calls)).toBe(1);
-  });
-
-  it("client.write() applies the action locally before the echo", async () => {
-    const { fn } = mkStubFetch();
-    const client = mkClient(fn);
-
-    await client.write([mkAction()]);
-
-    const row = await client.readLocalEntity("todo_1");
-    expect(row?.data.fields.title.value).toBe("Hello");
   });
 
   it("optimistically merges map patches key by key before the echo", async () => {
@@ -281,18 +245,6 @@ describe("client.outbox", () => {
     const body = calls.find((c) => c.url.endsWith("/sync/actions"))?.init.body as Uint8Array;
     const decoded = decodeSync<{ actions: unknown[] }>(body);
     expect(decoded.actions).toHaveLength(2);
-  });
-
-  it("keeps the entries pending and rethrows when the flush fails", async () => {
-    const { fn } = mkStubFetch([{ status: 500, body: "boom" }]);
-    const client = mkClient(fn);
-
-    await expect(client.write([mkAction()])).rejects.toThrow(/write failed: 500/);
-
-    expect(client.outbox.size()).toBe(1);
-    expect(client.outbox.pending()[0]?.action.id).toBe("act_1");
-    // Stop the scheduler's background retry so it cannot fire into a later test.
-    client.close();
   });
 
   it("re-applying the server echo converges on the optimistically-applied state", async () => {

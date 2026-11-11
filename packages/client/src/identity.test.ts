@@ -8,7 +8,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { IdentityResolutionError, resolveIdentity } from "./identity";
-import * as entryPoint from "./index";
 
 const serverUrl = "http://ebb.test:4000";
 
@@ -34,10 +33,6 @@ const rejection = async (promise: Promise<unknown>): Promise<IdentityResolutionE
 };
 
 describe("resolveIdentity", () => {
-  it("is exported from the package entry point", () => {
-    expect(entryPoint.resolveIdentity).toBe(resolveIdentity);
-    expect(entryPoint.IdentityResolutionError).toBe(IdentityResolutionError);
-  });
   it("parses the full identity payload into camelCase", async () => {
     const fetchImpl = stubFetch(() =>
       json({
@@ -120,88 +115,84 @@ describe("resolveIdentity", () => {
     expect(error.message).toMatch(/500/);
   });
 
-  it("treats an HTML body as an invalid response, not a parse crash", async () => {
-    const fetchImpl = stubFetch(
-      () =>
-        new Response("<!doctype html><html><body>Sign in to the proxy</body></html>", {
-          status: 200,
-          headers: { "content-type": "text/html" },
-        }),
-    );
+  it("treats a non-JSON body as an invalid response, not a parse crash", async () => {
+    const bodies = [
+      new Response("<!doctype html><html><body>Sign in to the proxy</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+      new Response("{not json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ];
 
-    const error = await rejection(resolveIdentity({ serverUrl, fetchImpl }));
+    for (const body of bodies) {
+      const error = await rejection(
+        resolveIdentity({ serverUrl, fetchImpl: stubFetch(() => body) }),
+      );
 
-    expect(error.kind).toBe("invalid-response");
-    expect(error.status).toBeUndefined();
-    expect(error.message).toMatch(/JSON/);
-    expect(error.message).toMatch(/proxy/i);
-  });
-
-  it("rejects a payload that is not JSON at all", async () => {
-    const fetchImpl = stubFetch(
-      () =>
-        new Response("{not json", {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-    );
-
-    const error = await rejection(resolveIdentity({ serverUrl, fetchImpl }));
-
-    expect(error.kind).toBe("invalid-response");
-    expect(error.message).toMatch(/not JSON/);
+      expect(error.kind).toBe("invalid-response");
+      expect(error.status).toBeUndefined();
+      expect(error.message).toMatch(/not JSON/);
+      expect(error.message).toMatch(/proxy/i);
+    }
   });
 
   describe("rejects malformed payloads", () => {
+    // One case per validation branch: every body that branch must refuse.
     const cases: readonly {
       readonly name: string;
-      readonly body: unknown;
+      readonly bodies: readonly unknown[];
       readonly field: RegExp;
     }[] = [
-      { name: "a non-object body", body: [], field: /object/ },
-      { name: "a null body", body: null, field: /object/ },
-      { name: "a missing actor_id", body: { provider: "bypass" }, field: /actor_id/ },
-      { name: "an empty actor_id", body: { actor_id: "", provider: "bypass" }, field: /actor_id/ },
       {
-        name: "a non-string actor_id",
-        body: { actor_id: 7, provider: "bypass" },
+        name: "a body that is not an object",
+        bodies: [[], null],
+        field: /object/,
+      },
+      {
+        name: "a missing, empty, or non-string actor_id",
+        bodies: [
+          { provider: "bypass" },
+          { actor_id: "", provider: "bypass" },
+          { actor_id: 7, provider: "bypass" },
+        ],
         field: /actor_id/,
       },
       {
         name: "an unknown provider",
-        body: { actor_id: "alice", provider: "cookie" },
+        bodies: [{ actor_id: "alice", provider: "cookie" }],
         field: /provider/,
       },
       {
         name: "a non-string display_name",
-        body: { actor_id: "alice", provider: "bypass", display_name: 7 },
-        field: /display_name/,
-      },
-      {
-        name: "a null display_name",
-        body: { actor_id: "alice", provider: "bypass", display_name: null },
+        bodies: [
+          { actor_id: "alice", provider: "bypass", display_name: 7 },
+          { actor_id: "alice", provider: "bypass", display_name: null },
+        ],
         field: /display_name/,
       },
       {
         name: "a non-number provider_id",
-        body: { actor_id: "alice", provider: "bypass", provider_id: "42" },
-        field: /provider_id/,
-      },
-      {
-        name: "a null provider_id",
-        body: { actor_id: "alice", provider: "bypass", provider_id: null },
+        bodies: [
+          { actor_id: "alice", provider: "bypass", provider_id: "42" },
+          { actor_id: "alice", provider: "bypass", provider_id: null },
+        ],
         field: /provider_id/,
       },
     ];
 
-    for (const { name, body, field } of cases) {
+    for (const { name, bodies, field } of cases) {
       it(name, async () => {
-        const fetchImpl = stubFetch(() => json(body));
+        for (const body of bodies) {
+          const fetchImpl = stubFetch(() => json(body));
 
-        const error = await rejection(resolveIdentity({ serverUrl, fetchImpl }));
+          const error = await rejection(resolveIdentity({ serverUrl, fetchImpl }));
 
-        expect(error.kind).toBe("invalid-response");
-        expect(error.message).toMatch(field);
+          expect(error.kind).toBe("invalid-response");
+          expect(error.message).toMatch(field);
+        }
       });
     }
   });

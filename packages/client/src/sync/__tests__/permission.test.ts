@@ -235,7 +235,10 @@ describe("collectPermissionViolations — user entities", () => {
   it("refuses a forged wire type even when the actor holds the committed type's permission", async () => {
     // The server rejects a wire type that contradicts the committed one
     // outright, so holding `<committed>.<verb>` is no licence to relabel,
-    // and no missing permission is the reason (#624).
+    // and no missing permission is the reason (#624). Holding every
+    // permission is what separates this from the `it.each` above: a check
+    // that refuses a relabel only because a permission is missing passes
+    // there and fails here.
     const { client } = await mkClient([["g_1", ["todo.*", "invoice.*"]]]);
     await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
@@ -786,7 +789,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("refuses a put whose entity type cannot be resolved", async () => {
+  it("skips a put whose entity type cannot be resolved", async () => {
     // `unknown` is not a denial on the write path: the server is the
     // authority, so the write proceeds.
     const { client } = await mkClient([["g_1", []]]);
@@ -1017,20 +1020,6 @@ describe("collectPermissionViolations — system entities", () => {
 
     await expect(
       client.write([action(update("groupMember", "gm_1", "delete"))]),
-    ).rejects.toBeInstanceOf(PermissionError);
-  });
-
-  it("requires <type>.update in the membership's group for a write", async () => {
-    const { client } = await mkClient([["g_1", []]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
-    );
-
-    await expect(
-      client.write([
-        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
-      ]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 

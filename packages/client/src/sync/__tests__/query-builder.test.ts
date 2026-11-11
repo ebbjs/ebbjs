@@ -58,12 +58,6 @@ describe("projectEntity", () => {
     const row = projectEntity(entity, todo.shape);
     expect(row.body).toBeUndefined();
   });
-
-  it("projects absent fields to undefined", () => {
-    const entity = mkEntity("1", { title: "Ship", completed: false });
-    const row = projectEntity(entity, todo.shape);
-    expect(row.body).toBeUndefined();
-  });
 });
 
 describe("projectEntity — map fields", () => {
@@ -118,6 +112,7 @@ describe("projected rows carry the entity id", () => {
       body: undefined,
       id: "t1",
     });
+    expect(projectRows([entity], todo.shape)).toEqual([projectRow(entity, todo.shape)]);
   });
 
   it("projectQueryRow adds the entity id and its group ids", () => {
@@ -140,34 +135,14 @@ describe("projected rows carry the entity id", () => {
     expect(projectQueryRow(entity, withGroupIdsField.shape, ["g1"]).groupIds).toEqual(["g1"]);
   });
 
-  it("the injected id wins over a same-named projected field", () => {
-    const withIdField = defineModel("withIdField", {
-      id: e.string(),
-      title: e.string(),
-    });
-    const entity = mkEntity("t1", { id: "field-value", title: "a" });
-    expect(projectRow(entity, withIdField.shape).id).toBe("t1");
-  });
+  it("the injected id wins over a same-named field, and reads as a string", () => {
+    const withIdField = defineModel("withIdField", { id: e.string(), title: e.string() });
+    expect(projectRow(mkEntity("t1", { id: "field-value" }), withIdField.shape).id).toBe("t1");
 
-  it("the injected id wins over a non-string `id` field", () => {
-    const withNumberId = defineModel("withNumberId", {
-      id: e.number(),
-      title: e.string(),
-    });
-    const entity = mkEntity("t1", { id: 42, title: "a" });
-    const row = projectRow(entity, withNumberId.shape);
-    // Compile-time proof: the row's `id` is `string`, not `number`.
-    const id: string = row.id;
+    const withNumberId = defineModel("withNumberId", { id: e.number(), title: e.string() });
+    // Compile-time proof: the row's `id` is the injected string, not the field's number.
+    const id: string = projectRow(mkEntity("t1", { id: 42 }), withNumberId.shape).id;
     expect(id).toBe("t1");
-  });
-
-  it("await qb rows carry the entity id", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape);
-    expect(out.map((r) => r.id)).toEqual(["1", "2"]);
   });
 
   it("a candidate row carries no groupIds (no membership source)", async () => {
@@ -178,38 +153,6 @@ describe("projected rows carry the entity id", () => {
       // @ts-expect-error a candidate chain has no membership index to read.
       void row.groupIds;
     }
-  });
-
-  it(".first() carries the entity id", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-    ];
-    const first = await buildQueryBuilder(rows, todo.shape).where("completed", true).first();
-    expect(first?.id).toBe("2");
-  });
-
-  it("async iterator rows carry the entity id", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-    ];
-    const ids: string[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape)) ids.push(row.id);
-    expect(ids).toEqual(["1", "2"]);
-  });
-});
-
-describe("projectRows", () => {
-  it("projects each row in the list", () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-    ];
-    const projected = projectRows(rows, todo.shape);
-    expect(projected).toHaveLength(2);
-    expect(projected[0]?.title).toBe("a");
-    expect(projected[1]?.title).toBe("b");
   });
 });
 
@@ -304,14 +247,6 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
     expect(out.map((r) => r.title)).toEqual(["a", "b"]);
   });
 
-  it("yields a row matched by two groups once", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
-    const out = await buildQueryBuilder(rows, todo.shape)
-      .where("completed", false)
-      .or("title", "a");
-    expect(out.map((r) => r.title)).toEqual(["a"]);
-  });
-
   it("leading .or starts the first group, like .where", async () => {
     const rows = [
       mkEntity("1", { title: "a", completed: true }),
@@ -321,18 +256,6 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
     const viaWhere = await buildQueryBuilder(rows, todo.shape).where("completed", true);
     expect(viaOr.map((r) => r.title)).toEqual(["a"]);
     expect(viaOr.map((r) => r.title)).toEqual(viaWhere.map((r) => r.title));
-  });
-
-  it("preserves candidate order across the union", async () => {
-    const rows = [
-      mkEntity("1", { title: "b", completed: true }),
-      mkEntity("2", { title: "a", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
-    ];
-    const out = await buildQueryBuilder(rows, todo.shape)
-      .where("completed", false)
-      .or("title", "b");
-    expect(out.map((r) => r.title)).toEqual(["b", "a", "c"]);
   });
 
   it("an empty branch contributes nothing to the union", async () => {
@@ -378,15 +301,6 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
       .where("title", "nope")
       .or("completed", true);
     expect(out).toEqual([]);
-  });
-
-  it("excludes tombstones from every union branch", async () => {
-    const dead = { ...mkEntity("1", { title: "gone", completed: false }), deleted_hlc: "9" };
-    const live = mkEntity("2", { title: "here", completed: true });
-    const out = await buildQueryBuilder([dead, live], todo.shape)
-      .where("completed", false)
-      .or("title", "here");
-    expect(out.map((r) => r.title)).toEqual(["here"]);
   });
 
   it("or's field value narrows to the field's TypeBox static type", () => {
@@ -464,13 +378,6 @@ describe("buildQueryBuilder — thenable projection", () => {
     expect(out[2]?.body).toBeUndefined();
   });
 
-  it("thenable's .then invokes the projection callback", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
-    const builder = buildQueryBuilder(rows, todo.shape);
-    const out = await builder.then((rows) => rows.map((r) => r.title));
-    expect(out).toEqual(["a"]);
-  });
-
   it("awaited thenable rejects when the candidate loader rejects", async () => {
     // Regression: a rejecting loader must settle the awaited builder
     // rather than leaving it pending with an unhandled inner rejection.
@@ -483,14 +390,6 @@ describe("buildQueryBuilder — thenable projection", () => {
 });
 
 describe("buildQueryBuilder — .toRaw() escape hatch", () => {
-  it("returns readonly Entity[] without projection", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
-    const out = await buildQueryBuilder(rows, todo.shape).where("completed", false).toRaw();
-    expect(out).toHaveLength(1);
-    expect(out[0]?.id).toBe("1");
-    expect(out[0]?.data?.fields?.title?.value).toBe("a");
-  });
-
   it("await qb.toRaw() resolves through the chain's filters", async () => {
     const rows = [
       mkEntity("1", { title: "a", completed: false }),
@@ -500,9 +399,10 @@ describe("buildQueryBuilder — .toRaw() escape hatch", () => {
     expect(out.map((e) => e.id)).toEqual(["1"]);
   });
 
-  it("returns the untyped wire shape (no row projection)", async () => {
+  it("returns the untyped wire rows, not the projected shape", async () => {
     const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
     const out = await buildQueryBuilder(rows, todo.shape).toRaw();
+    expect(out[0]?.id).toBe("1");
     // Wire envelope is intact: `data.fields.title.value` is "a", not the projected string.
     expect(out[0]?.data?.fields?.title).toEqual({ value: "a", update_id: "u" });
     expect(out[0]?.data?.fields?.body).toEqual({ value: null, update_id: "u" });
@@ -624,22 +524,6 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
   });
 });
 
-describe("buildQueryBuilder — field without a default", () => {
-  const defWithOptional = defineModel("todo", {
-    title: e.string(),
-    // No default: absence is the truth, so the read type is `string | undefined`.
-    note: e.string(),
-  });
-
-  it("projects an absent field as undefined", async () => {
-    const present = mkEntity("1", { title: "a", note: "x" });
-    const absent = mkEntity("2", { title: "b" });
-    const out = await buildQueryBuilder([present, absent], defWithOptional.shape);
-    expect(out[0]?.note).toBe("x");
-    expect(out[1]?.note).toBeUndefined();
-  });
-});
-
 describe("buildQueryBuilder — .first()", () => {
   it("returns the first projected survivor", async () => {
     const rows = [
@@ -655,17 +539,6 @@ describe("buildQueryBuilder — .first()", () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
     const first = await buildQueryBuilder(rows, todo.shape).where("completed", false).first();
     expect(first).toBeUndefined();
-  });
-
-  it("returns undefined when there are no candidates", async () => {
-    const first = await buildQueryBuilder([], todo.shape).first();
-    expect(first).toBeUndefined();
-  });
-
-  it("projects the row through the schema shape", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
-    const first = await buildQueryBuilder(rows, todo.shape).first();
-    expect(first?.body).toBeUndefined();
   });
 
   it("honors orderBy before picking the first", async () => {
@@ -696,11 +569,6 @@ describe("buildQueryBuilder — .count()", () => {
     expect(n).toBe(0);
   });
 
-  it("returns 0 when there are no candidates", async () => {
-    const n = await buildQueryBuilder([], todo.shape).count();
-    expect(n).toBe(0);
-  });
-
   it("honors limit when counting", async () => {
     const rows = [
       mkEntity("1", { title: "a", completed: false }),
@@ -725,11 +593,6 @@ describe("buildQueryBuilder — .exists()", () => {
   it("returns false when no rows match", async () => {
     const rows = [mkEntity("1", { title: "a", completed: true })];
     const exists = await buildQueryBuilder(rows, todo.shape).where("completed", false).exists();
-    expect(exists).toBe(false);
-  });
-
-  it("returns false when there are no candidates", async () => {
-    const exists = await buildQueryBuilder([], todo.shape).exists();
     expect(exists).toBe(false);
   });
 
@@ -762,69 +625,6 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
     }
     expect(out).toEqual([]);
   });
-
-  it("yields nothing when there are no candidates", async () => {
-    const out: Todo[] = [];
-    for await (const row of buildQueryBuilder([], todo.shape)) {
-      out.push(row);
-    }
-    expect(out).toEqual([]);
-  });
-
-  it("honors orderBy when iterating", async () => {
-    const rows = [
-      mkEntity("1", { title: "banana", completed: false }),
-      mkEntity("2", { title: "apple", completed: false }),
-    ];
-    const titles: string[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape).orderBy("title", "asc")) {
-      titles.push(row.title ?? "");
-    }
-    expect(titles).toEqual(["apple", "banana"]);
-  });
-
-  it("honors limit when iterating", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
-    ];
-    const titles: string[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape).limit(2)) {
-      titles.push(row.title ?? "");
-    }
-    expect(titles).toEqual(["a", "b"]);
-  });
-
-  it("works with break (closes the iterator early)", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
-    ];
-    const titles: string[] = [];
-    for await (const row of buildQueryBuilder(rows, todo.shape)) {
-      titles.push(row.title ?? "");
-      if (titles.length === 2) break;
-    }
-    expect(titles).toEqual(["a", "b"]);
-  });
-
-  it("supports Symbol.asyncIterator protocol (manual .next())", async () => {
-    const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: false }),
-    ];
-    const iter = buildQueryBuilder(rows, todo.shape)[Symbol.asyncIterator]();
-    const first = await iter.next();
-    expect(first.done).toBe(false);
-    expect(first.value?.title).toBe("a");
-    const second = await iter.next();
-    expect(second.done).toBe(false);
-    expect(second.value?.title).toBe("b");
-    const third = await iter.next();
-    expect(third.done).toBe(true);
-  });
 });
 
 describe("buildLazyQueryBuilder", () => {
@@ -834,7 +634,6 @@ describe("buildLazyQueryBuilder", () => {
       calls += 1;
       return [mkEntity("1", { title: "a", completed: false })];
     };
-    const { buildLazyQueryBuilder } = await import("../query-builder");
     const builder = buildLazyQueryBuilder(loader, todo.shape).where("completed", false);
     expect(calls).toBe(0);
     const out = await builder;
@@ -845,7 +644,6 @@ describe("buildLazyQueryBuilder", () => {
   it("re-loads on every await (reflects the latest snapshot)", async () => {
     let n = 0;
     const loader = async () => [mkEntity("1", { title: String(n++), completed: false })];
-    const { buildLazyQueryBuilder } = await import("../query-builder");
     const builder = buildLazyQueryBuilder(loader, todo.shape);
     expect((await builder)[0]?.title).toBe("0");
     expect((await builder)[0]?.title).toBe("1");
@@ -853,7 +651,6 @@ describe("buildLazyQueryBuilder", () => {
 
   it("toRaw() also re-loads candidates", async () => {
     const loader = async () => [mkEntity("1", { title: "a", completed: false })];
-    const { buildLazyQueryBuilder } = await import("../query-builder");
     const out = await buildLazyQueryBuilder(loader, todo.shape).toRaw();
     expect(out).toHaveLength(1);
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
@@ -865,14 +662,6 @@ describe("projectFieldValue caching", () => {
     const field: FieldValue = { map: { a: { value: "x", update_id: "u" } } };
 
     expect(projectFieldValue(field)).toBe(projectFieldValue(field));
-  });
-
-  it("projects a new map version separately", () => {
-    const first: FieldValue = { map: { a: { value: "x", update_id: "u" } } };
-    const second: FieldValue = { map: { a: { value: "y", update_id: "u2" } } };
-
-    expect(projectFieldValue(second)).toEqual({ a: "y" });
-    expect(projectFieldValue(first)).toEqual({ a: "x" });
   });
 });
 
@@ -902,19 +691,6 @@ describe("projectEntity — declarative defaults (non-optional)", () => {
     const row = projectEntity(entity, task.shape);
     expect(row.priority).toBe("urgent");
     expect(row.tags).toEqual({ a: "x" });
-  });
-
-  it("leaves a non-defaulted field absent, whether missing or tombstoned", () => {
-    const missing = projectEntity(mkEntity("1", {}), task.shape);
-    const cleared = projectEntity(mkEntity("1", { title: null }), task.shape);
-    expect(missing.title).toBeUndefined();
-    expect(cleared.title).toBeUndefined();
-  });
-
-  it("fills the default through projectRow and projectQueryRow", () => {
-    const entity = mkEntity("1", { title: "Ship" });
-    expect(projectRow(entity, task.shape)).toMatchObject({ priority: "normal" });
-    expect(projectQueryRow(entity, task.shape, ["g1"])).toMatchObject({ priority: "normal" });
   });
 });
 

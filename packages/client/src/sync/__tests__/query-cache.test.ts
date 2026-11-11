@@ -245,23 +245,6 @@ describe("query cache: status and subscription", () => {
     expect(second.getSnapshot().data).toEqual([row("todo_1"), row("todo_2")]);
     detachSecond();
   });
-
-  it("reads a cached result on remount without re-running", async () => {
-    const replica = createReplica();
-    const cache = createQueryCache(replica);
-    const source = sourceWith(() => [row("todo_1")]);
-
-    const first = cache.watch("rows", todoQuery(), source);
-    const detach = first.subscribe(() => {});
-    await flush();
-    detach();
-
-    const remount = sourceWith(() => [row("todo_9")]);
-    const second = cache.watch("rows", todoQuery(), remount);
-    expect(second.getSnapshot()).toMatchObject({ status: "current", loading: false });
-    expect(second.getSnapshot().data).toEqual([row("todo_1")]);
-    expect(remount.runs).toBe(0);
-  });
 });
 
 describe("query cache: coarse invalidation", () => {

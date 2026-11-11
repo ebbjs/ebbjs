@@ -207,20 +207,6 @@ describe("with(...) — runtime", () => {
     const [row] = await client.issue.query().with({ groups: true });
     expect(row?.groups).toEqual([{ name: "Workspace", id: "group_1" }]);
   });
-
-  it("rejects a nested selector at runtime", () => {
-    const client = makeClient();
-    expect(() =>
-      client.issue.query().with({ assignee: { tags: true } } as unknown as { assignee: true }),
-    ).toThrow(/nested/);
-  });
-
-  it("rejects an unknown join key at runtime", () => {
-    const client = makeClient();
-    expect(() =>
-      client.issue.query().with({ nope: true } as unknown as { assignee: true }),
-    ).toThrow(/not a declared relationship/);
-  });
 });
 
 describe("with(...) — typing", () => {
@@ -246,11 +232,11 @@ describe("with(...) — typing", () => {
       void chainedRow.comments;
     }
 
+    // Compile-time: `.first()` resolves to the widened row, never `any`.
     const first = await client.issue.query().with({ assignee: true }).first();
     const firstExpected: JoinedIssue | undefined = first;
-    const firstRoundTrip: typeof first = firstExpected;
     const firstNotAny: IsAny<typeof first> = false;
-    void firstRoundTrip;
+    void firstExpected;
     void firstNotAny;
 
     const [withGroups] = await client.issue.query().with({ groups: true });

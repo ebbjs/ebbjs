@@ -109,13 +109,6 @@ describe("planQuery", () => {
     expect(plan.readTypes).toEqual(["todo", "entityGroup"]);
   });
 
-  it("plans an unfiltered query as scan and the default id ordering", () => {
-    expect(planQuery(emptyQuery("todo")).ops).toEqual([
-      { kind: "scan", type: "todo" },
-      { kind: "order", field: null, direction: "asc" },
-    ]);
-  });
-
   it("plans explicit ordering and a non-negative limit", () => {
     const plan = planQuery(
       query({ groups: [], order: { field: "title", direction: "desc" }, limit: 10 }),

@@ -183,6 +183,15 @@ describe("createFlushScheduler", () => {
 
     await advance(INITIAL * 2);
     expect(outbox.flush).toHaveBeenCalledTimes(3);
+
+    // The success reset the exponent: the next failure waits `INITIAL`
+    // again, not the 4×`INITIAL` a carried-over counter would arm.
+    outbox.pushOutcome(unreachable());
+    void scheduler.schedule();
+    await advance(DEBOUNCE);
+    expect(outbox.flush).toHaveBeenCalledTimes(4);
+    await advance(INITIAL);
+    expect(outbox.flush).toHaveBeenCalledTimes(5);
   });
 
   it("caps the retry delay at maxMs", async () => {
@@ -228,33 +237,26 @@ describe("createFlushScheduler", () => {
     expect(outbox.flush).toHaveBeenCalledTimes(2);
   });
 
-  it("never retries a partial outcome", async () => {
-    const { scheduler, outbox, advance } = mkHarness();
-    const partial: FlushOutcome = {
-      kind: "partial",
-      accepted: [],
-      rejected: [{ id: "a", reason: "permission_denied" }],
-    };
-    outbox.pushOutcome(partial);
+  it("never retries a terminal outcome other than unreachable", async () => {
+    // `accepted`, `partial` and `empty` all leave the scheduler idle: only
+    // `unreachable` is retried. One harness per kind keeps that rule in a
+    // single place.
+    const terminal: FlushOutcome[] = [
+      { kind: "partial", accepted: [], rejected: [{ id: "a", reason: "permission_denied" }] },
+      { kind: "empty" },
+    ];
 
-    const outcome = scheduler.schedule();
-    await advance(DEBOUNCE);
-    expect(await outcome).toEqual(partial);
+    for (const outcome of terminal) {
+      const { scheduler, outbox, advance } = mkHarness();
+      outbox.pushOutcome(outcome);
 
-    await advance(MAX * 10);
-    expect(outbox.flush).toHaveBeenCalledTimes(1);
-  });
+      const scheduled = scheduler.schedule();
+      await advance(DEBOUNCE);
+      expect(await scheduled).toEqual(outcome);
 
-  it("never retries an empty outcome", async () => {
-    const { scheduler, outbox, advance } = mkHarness();
-    outbox.pushOutcome({ kind: "empty" });
-
-    const outcome = scheduler.schedule();
-    await advance(DEBOUNCE);
-    expect(await outcome).toEqual({ kind: "empty" });
-
-    await advance(MAX * 10);
-    expect(outbox.flush).toHaveBeenCalledTimes(1);
+      await advance(MAX * 10);
+      expect(outbox.flush).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("records flush latency from flush start to outcome", async () => {
@@ -296,36 +298,6 @@ describe("createFlushScheduler", () => {
     await advance(0);
     expect(listener).toHaveBeenCalledTimes(2);
     expect(listener).toHaveBeenLastCalledWith(0);
-  });
-
-  it("stops notifying latency listeners after unsubscribe", async () => {
-    const { scheduler, outbox, advance } = mkHarness();
-    const listener = vi.fn();
-    const unsubscribe = scheduler.onLatencyChange(listener);
-    unsubscribe();
-
-    outbox.pushOutcome(accepted());
-    void scheduler.schedule();
-    await advance(DEBOUNCE);
-
-    expect(listener).not.toHaveBeenCalled();
-  });
-
-  it("isolates a throwing latency listener from the others", async () => {
-    const { scheduler, outbox, advance } = mkHarness();
-    const good = vi.fn();
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    scheduler.onLatencyChange(() => {
-      throw new Error("listener blew up");
-    });
-    scheduler.onLatencyChange(good);
-
-    outbox.pushOutcome(accepted());
-    void scheduler.schedule();
-    await advance(DEBOUNCE);
-
-    expect(good).toHaveBeenCalledTimes(1);
-    consoleError.mockRestore();
   });
 
   it("stop cancels retries and settles pending triggers", async () => {

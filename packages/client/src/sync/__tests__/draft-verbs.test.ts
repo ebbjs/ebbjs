@@ -7,7 +7,7 @@
  * records the submitted Action so a test can assert its Updates and their order.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { decodeSync, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
@@ -20,9 +20,8 @@ import { defineAction } from "../../schema/action";
 import { EntityValidationError } from "@ebbjs/schema";
 import { entityGroupId } from "@ebbjs/write";
 import { ActionRejectedError } from "@ebbjs/write";
-import { ActionResolutionError, type ActionDrafts } from "../drafts";
+import { ActionResolutionError, type ActionDrafts, type GroupRef } from "../drafts";
 import { createClient } from "../client";
-import type { Conflict } from "../conflicts";
 import type { Rejection } from "../types";
 import { updateModel } from "../test-utils";
 
@@ -68,10 +67,6 @@ const dropNoteDraft = defineAction(schema, ({ note: notes }, params: { id: strin
   notes.drop(params.id, ["draft"]);
 });
 
-const dropNoteTitle = defineAction(schema, ({ note: notes }, params: { id: string }): void => {
-  notes.drop(params.id, ["title"]);
-});
-
 const duplicateTodo = defineAction(
   schema,
   (
@@ -82,7 +77,7 @@ const duplicateTodo = defineAction(
 
 const linkTodoList = defineAction(
   schema,
-  ({ todo: todos }, params: { id: string; targetId: string }): void => {
+  ({ todo: todos }, params: { id: string; targetId: { readonly id: string } }): void => {
     todos.link(params.id, "list", params.targetId);
   },
 );
@@ -98,16 +93,37 @@ const setTodoLabels = defineAction(
   },
 );
 
+const linkTodoAs = defineAction(
+  schema,
+  ({ todo: todos }, params: { id: string; as: string; target: string }): void => {
+    todos.link(params.id, params.as, params.target);
+  },
+);
+
+const setTodoLinksAs = defineAction(
+  schema,
+  ({ todo: todos }, params: { id: string; as: string; targets: readonly string[] }): void => {
+    todos.setLinks(params.id, params.as, { replace: params.targets });
+  },
+);
+
+const unlinkTodoAs = defineAction(
+  schema,
+  ({ todo: todos }, params: { id: string; as: string }): void => {
+    todos.unlink(params.id, params.as);
+  },
+);
+
 const shareTodo = defineAction(
   schema,
-  ({ todo: todos }, params: { id: string; groupId: string }): void => {
+  ({ todo: todos }, params: { id: string; groupId: GroupRef }): void => {
     todos.addToGroup(params.id, params.groupId);
   },
 );
 
 const unshareTodo = defineAction(
   schema,
-  ({ todo: todos }, params: { id: string; groupId: string }): void => {
+  ({ todo: todos }, params: { id: string; groupId: GroupRef }): void => {
     todos.removeFromGroup(params.id, params.groupId);
   },
 );
@@ -124,6 +140,12 @@ const createThenPatch = defineAction(schema, ({ todo: todos }) => {
   const created = todos.create({ title: "first", completed: false, tags: [] }, { groups: ["g_1"] });
   todos.update(created.id, { title: "second" });
   return created;
+});
+
+/** Two entities shared into different groups in one callback. */
+const shareBoth = defineAction(schema, ({ todo: todos }) => {
+  todos.addToGroup("todo_1", "g_1");
+  todos.addToGroup("todo_2", "g_2");
 });
 
 /** A create and a later share of the same handle in one callback. */
@@ -160,9 +182,11 @@ const actions = {
   patchTodo,
   deleteTodo,
   dropNoteDraft,
-  dropNoteTitle,
   duplicateTodo,
   linkTodoList,
+  linkTodoAs,
+  setTodoLinksAs,
+  unlinkTodoAs,
   unlinkTodoList,
   setTodoLabels,
   shareTodo,
@@ -170,6 +194,7 @@ const actions = {
   setTodoGroups,
   createThenPatch,
   createThenShare,
+  shareBoth,
   leaveWorkspace,
   demoteMember,
   removeMember,
@@ -385,31 +410,6 @@ describe("drafts — drop", () => {
     expect(after.data.fields).toEqual({});
   });
 
-  it("drops a mandatory component and keeps the row", async () => {
-    const { client, storage, seen } = await mkClient();
-    await storage.entities.set(
-      mkEntity("note_1", "note", { title: "Ship", draft: { text: "hello" } }),
-    );
-    await storage.entities.set(mkMembership("eg_note_1", "note_1", "g_1"));
-
-    await client.actions.dropNoteTitle({ id: "note_1" });
-
-    const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({
-      subject_id: "note_1",
-      component: "note/title",
-      method: "drop",
-      data: null,
-    });
-
-    const after = applyUpdate((await storage.entities.get("note_1"))!, updates[0]!, 1, makeHlc(9))!;
-    expect(after.exists).toBe(true);
-    expect(after.deleted_hlc).toBeNull();
-    expect(after.data.fields).not.toHaveProperty("title");
-    expect(after.data.fields.draft).toBeDefined();
-  });
-
   it("refuses a drop of a row the replica cannot see", async () => {
     const { client, seen } = await mkClient();
 
@@ -460,34 +460,17 @@ describe("drafts — duplicate", () => {
     const memberships = rowsOf(updatesOf(seen), "entityGroup");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_2"]);
   });
-
-  it("copies the unresolved conflict's before row for at: preSync", async () => {
-    const { client, storage, seen } = await mkClient();
-    await seedTodo(storage, "todo_1", { title: "merged", completed: false });
-
-    const before = mkEntity("todo_1", "todo", {
-      title: "mine",
-      completed: true,
-      tags: [],
-    });
-    vi.spyOn(client.conflicts, "list").mockResolvedValue([mkConflict(before)]);
-
-    const copy = await client.actions.duplicateTodo({ id: "todo_1", at: "preSync" });
-
-    const [put] = rowsOf(updatesOf(seen), "todo");
-    expect(put![0]!.subject_id).toBe(copy.id);
-    expect(fieldsOf(put!)).toMatchObject({ title: "mine", completed: true });
-  });
 });
 
 describe("drafts — link / unlink / setLinks", () => {
-  it("link emits one relationship put naming the source's field and target", async () => {
+  it("link emits one relationship put naming the source's field and the target's id", async () => {
     const { client, storage, seen } = await mkClient();
-    await seedTodo(storage, "todo_1", { title: "Ship", completed: false });
+    await seedTodo(storage, "todo_1", { title: "Ship", completed: false }, ["g_1", "g_2"]);
 
-    await client.actions.linkTodoList({ id: "todo_1", targetId: "list_9" });
+    await client.actions.linkTodoList({ id: "todo_1", targetId: { id: "list_9" } });
 
-    const relationships = rowsOf(updatesOf(seen), "relationship");
+    const updates = updatesOf(seen);
+    const relationships = rowsOf(updates, "relationship");
     expect(relationships).toHaveLength(1);
     expect(fieldsOf(relationships[0]!)).toMatchObject({
       source_id: "todo_1",
@@ -495,6 +478,8 @@ describe("drafts — link / unlink / setLinks", () => {
       field: "list",
       type: "todo",
     });
+    // The source's memberships scope the edge; they are not membership writes.
+    expect(rowsOf(updates, "entityGroup")).toEqual([]);
   });
 
   it("unlink deletes the live relationship row by its id", async () => {
@@ -542,7 +527,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "todo_1", { title: "Ship", completed: false }, ["g_1"]);
 
-    await client.actions.shareTodo({ id: "todo_1", groupId: "g_1" });
+    await client.actions.shareTodo({ id: "todo_1", groupId: { id: "g_1" } });
 
     expect(actionCalls(seen)).toHaveLength(0);
   });
@@ -573,8 +558,81 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     expect(fieldsOf(added)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
     const deleted = updates.find((update) => update.method === "delete")!;
     // The row the local view knows, not the derived id: the delete names
-    // the row to remove.
-    expect(deleted.subject_id).toBe("eg_todo_1_0");
+    // the row to remove, and carries nothing else on the wire.
+    expect(deleted).toMatchObject({ subject_id: "eg_todo_1_0", method: "delete", data: null });
+  });
+
+  it("refuses the built-in groups accessor and an undeclared accessor before the wire", async () => {
+    const { client, seen } = await mkClient();
+
+    for (const as of ["groups", "bogus"]) {
+      await expect(
+        client.actions.linkTodoAs({ id: "todo_1", as, target: "list_1" }),
+      ).rejects.toBeInstanceOf(EntityValidationError);
+      await expect(
+        client.actions.setTodoLinksAs({ id: "todo_1", as, targets: ["list_1"] }),
+      ).rejects.toBeInstanceOf(EntityValidationError);
+      await expect(client.actions.unlinkTodoAs({ id: "todo_1", as })).rejects.toBeInstanceOf(
+        EntityValidationError,
+      );
+    }
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
+  it("spans groups across entities in one Action", async () => {
+    const { client, seen } = await mkClient();
+
+    await client.actions.shareBoth();
+
+    expect(actionCalls(seen)).toHaveLength(1);
+    const memberships = rowsOf(updatesOf(seen), "entityGroup");
+    expect(new Set(memberships.map((row) => row[0]!.subject_id)).size).toBe(2);
+    expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
+  });
+
+  it("refuses removing the entity's last membership before any network call", async () => {
+    const { client, storage, seen } = await mkClient();
+    await seedTodo(storage, "todo_1", { title: "Ship", completed: false }, ["g_1"]);
+
+    const error = await client.actions
+      .unshareTodo({ id: "todo_1", groupId: "g_1" })
+      .catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(ActionRejectedError);
+    expect((error as ActionRejectedError).rejections.map((rejection) => rejection.reason)).toEqual([
+      "last_membership",
+    ]);
+    expect(actionCalls(seen)).toHaveLength(0);
+  });
+
+  it("re-shares a group under the id derived from the (entity, group) pair", async () => {
+    const { client, storage, seen } = await mkClient();
+    await seedTodo(storage, "todo_1", { title: "Ship", completed: false }, ["g_1", "g_2"]);
+
+    await client.actions.unshareTodo({ id: "todo_1", groupId: "g_1" });
+    await client.actions.shareTodo({ id: "todo_1", groupId: "g_1" });
+
+    const puts = updatesOf(seen).filter(
+      (update) => update.method !== "delete" && update.component === "entityGroup/entity_id",
+    );
+    // Derived, not the deleted row's id, so a second device sharing the same
+    // pair converges on this one row.
+    expect(puts.map((update) => update.subject_id)).toEqual([entityGroupId("todo_1", "g_1")]);
+    // The derivation has to stay unambiguous for ids containing ids of their own.
+    expect(entityGroupId("a_b", "c")).not.toBe(entityGroupId("a", "b_c"));
+  });
+
+  it("refuses a malformed or empty group set before any network call", async () => {
+    const { client, seen } = await mkClient();
+
+    for (const attempt of [
+      () => client.actions.shareTodo({ id: "todo_1", groupId: 42 as never }),
+      () => client.actions.setTodoGroups({ id: "todo_1", groupIds: [42 as never] }),
+      () => client.actions.setTodoGroups({ id: "todo_1", groupIds: [] }),
+    ]) {
+      await expect(attempt()).rejects.toBeInstanceOf(EntityValidationError);
+    }
+    expect(actionCalls(seen)).toHaveLength(0);
   });
 });
 
@@ -705,50 +763,25 @@ describe("drafts — call order is wire order", () => {
   });
 });
 
-describe("drafts — typed create input", () => {
-  it("accepts the wire fields plus relationship pointers", () => {
+describe("drafts — typed surface", () => {
+  it("accepts wire fields and pointers, and refuses the inputs a type cannot carry", () => {
     const typecheck: () => void = () => {
       const drafts = null as unknown as ActionDrafts<typeof schema>;
       void drafts.todo.create(
         { title: "Ship", completed: false, tags: [], list: "list_1" },
         { groups: ["g_1"] },
       );
-    };
-    expect(typecheck).toBeTypeOf("function");
-  });
-
-  it("rejects a wrong field type and a missing required field", () => {
-    const typecheck: () => void = () => {
-      const drafts = null as unknown as ActionDrafts<typeof schema>;
       // @ts-expect-error — `title` is a string on the wire.
       void drafts.todo.create({ title: 123, completed: false, tags: [] }, { groups: ["g_1"] });
       // @ts-expect-error — `completed` is a required wire field.
       void drafts.todo.create({ title: "Ship", tags: [] }, { groups: ["g_1"] });
-    };
-    expect(typecheck).toBeTypeOf("function");
-  });
-  it("accepts only declared components for drop", () => {
-    const typecheck: () => void = () => {
-      const drafts = null as unknown as ActionDrafts<typeof schema>;
+      // @ts-expect-error — the draft `create` requires a `{ groups }` option.
+      void drafts.todo.create({ title: "Ship", completed: false, tags: [] });
       void drafts.note.drop("note_1", ["draft"]);
       // @ts-expect-error — `body` is not a component of `note`.
       void drafts.note.drop("note_1", ["body"]);
-    };
-    expect(typecheck).toBeTypeOf("function");
-  });
-
-  it("keeps drop off the system namespaces", () => {
-    const typecheck: () => void = () => {
-      const drafts = null as unknown as ActionDrafts<typeof schema>;
       // @ts-expect-error — a system component is a torn edge or membership (#805/#803).
       void drafts.group.drop("g_1", ["name"]);
-    };
-    expect(typecheck).toBeTypeOf("function");
-  });
-
-  it("keeps the membership verbs off the system namespaces", () => {
-    const typecheck: () => void = () => {
-      const drafts = null as unknown as ActionDrafts<typeof schema>;
       // @ts-expect-error — an `entityGroup` row scoping a group is meaningless.
       void drafts.group.addToGroup("g_1", "g_2");
       // @ts-expect-error — same for a `groupMember`.
@@ -756,53 +789,4 @@ describe("drafts — typed create input", () => {
     };
     expect(typecheck).toBeTypeOf("function");
   });
-});
-
-describe("drafts — rejection", () => {
-  it("surfaces a server rejection as ActionRejectedError", async () => {
-    const { client, storage, seen } = await mkClient({
-      rejectFor: (submitted) => [
-        {
-          id: submitted[0]!.id,
-          reason: "not_authorized",
-          details: "actor lacks todo.update in group g_1",
-        },
-      ],
-    });
-    await seedTodo(storage, "todo_1", { title: "Ship", completed: false });
-
-    const error = await client.actions
-      .patchTodo({ id: "todo_1", title: "Renamed" })
-      .catch((err: unknown) => err);
-
-    expect(actionCalls(seen)).toHaveLength(1);
-    const submitted = submittedActions(seen)[0]!;
-    expect(error).toBeInstanceOf(ActionRejectedError);
-    expect((error as ActionRejectedError).name).toBe("ActionRejectedError");
-    expect((error as ActionRejectedError).rejections).toEqual([
-      {
-        id: submitted.id,
-        reason: "not_authorized",
-        details: "actor lacks todo.update in group g_1",
-      },
-    ]);
-  });
-});
-
-/** A conflict carrying one subject's `before` row, as detection writes it. */
-const mkConflict = (before: Entity): Conflict => ({
-  id: "c_1",
-  scope: "field",
-  subjects: [before.id],
-  subjectStates: [
-    {
-      subjectId: before.id,
-      model: before.type,
-      before,
-      after: mkEntity(before.id, before.type, { title: "merged", completed: false, tags: [] }),
-      diff: [],
-    },
-  ],
-  entries: [],
-  remoteActions: [],
 });

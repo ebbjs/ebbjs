@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
-import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
@@ -14,41 +14,10 @@ import { defineRelationship } from "@ebbjs/schema";
 import { groupSystemEntity } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
-import { ActionRejectedError } from "@ebbjs/write";
-import type { ActionDrafts, GroupRef } from "../drafts";
 import type { EntityFields } from "../namespace";
-import type { PointerValue, QueryBuilder } from "../query-builder";
-import type { ManyPointerValue } from "../relationship";
+import type { QueryBuilder } from "../query-builder";
 import { createClient } from "../client";
-import { seedReplicaRow, updateModel } from "../test-utils";
-
-/** The Updates of one model, grouped into one list per subject row. */
-const rowsOf = (
-  updates: readonly Action["updates"][number][],
-  model: string,
-): readonly (readonly Action["updates"][number][])[] => {
-  const bySubject = new Map<string, Action["updates"][number][]>();
-  for (const update of updates) {
-    if (updateModel(update) !== model) continue;
-    const row = bySubject.get(update.subject_id);
-    if (row === undefined) bySubject.set(update.subject_id, [update]);
-    else row.push(update);
-  }
-  return [...bySubject.values()];
-};
-
-/** One component's value on a row. */
-const valueOf = (row: readonly Action["updates"][number][], field: string): unknown => {
-  const update = row.find(
-    (candidate) =>
-      candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
-      candidate.component.endsWith(`/${field}`),
-  );
-  return update === undefined || update.method === "drop" || update.method === "delete"
-    ? undefined
-    : update.data.value;
-};
+import { seedReplicaRow } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -80,7 +49,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 describe("client.<entity>.query()", () => {
-  it("a tombstoned leaf projects as absent, same as a missing one", async () => {
+  it("a tombstoned leaf projects as absent, same as a missing one, through query() and get()", async () => {
     const todoWithBody = defineModel("todo", {
       title: e.string(),
       body: e.string(),
@@ -109,6 +78,12 @@ describe("client.<entity>.query()", () => {
     expect(rows.find((r) => r.title === "a")?.body).toBe("note");
     expect(rows.find((r) => r.title === "b")?.body).toBeUndefined();
     expect(rows.find((r) => r.title === "c")?.body).toBeUndefined();
+
+    // `get()` projects through its own path; a tombstone and a missing
+    // component must read the same there too.
+    expect((await client.todo.get("t1"))?.body).toBe("note");
+    expect((await client.todo.get("t2"))?.body).toBeUndefined();
+    expect((await client.todo.get("t3"))?.body).toBeUndefined();
   });
 
   it("fills a declared default through query() and get()", async () => {
@@ -145,25 +120,6 @@ describe("client.<entity>.query()", () => {
     const out = await client.todo.query().where("completed", false).toRaw();
     expect(out[0]?.type).toBe("todo");
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
-  });
-
-  it("client.todo.query() awaits to typed todo rows", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t1", "todo", { title: "a", completed: false }),
-    );
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t2", "todo", { title: "b", completed: true }),
-    );
-
-    const out = await client.todo.query();
-    expect(out.map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
 
   it("query rows carry the entity id", async () => {
@@ -218,44 +174,6 @@ describe("client.<entity>.query()", () => {
     // @ts-expect-error — `bogus` is not in the field map.
     rows.map((r) => r.bogus);
     expect(true).toBe(true);
-  });
-
-  it("filters via chain mutators and projects to the entity shape", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t1", "todo", { title: "a", completed: false }),
-    );
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t2", "todo", { title: "b", completed: true }),
-    );
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t3", "todo", { title: "c", completed: false }),
-    );
-
-    const out = await client.todo.query().where("completed", false).orderBy("title", "asc");
-    expect(out.map((r) => r.title)).toEqual(["a", "c"]);
-  });
-
-  it(".toRaw() returns the untyped wire shape", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    await seedQueryRow(
-      storage,
-      client.replica,
-      mkEntity("t1", "todo", { title: "a", completed: false }),
-    );
-
-    const out = await client.todo.query().where("completed", false).toRaw();
-    expect(out[0]?.data?.fields?.title?.value).toBe("a");
   });
 
   it("exposes a separate namespace per schema entity", async () => {
@@ -324,20 +242,6 @@ describe("client.<entity>.get(id)", () => {
     expect(row?.completed).toBe(false);
   });
 
-  it("carries the entity id", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    const row = await client.todo.get("t1");
-    expect(row?.id).toBe("t1");
-    // Compile-time proof: `row.id` narrows to `string` with no cast.
-    if (row !== null) {
-      const id: string = row.id;
-      expect(id).toBe("t1");
-    }
-  });
-
   it("the entity id wins over a relationship accessor named `id`", async () => {
     const idAccessorSchema = defineSchema({
       models: { todo, user },
@@ -384,57 +288,6 @@ describe("client.<entity>.get(id)", () => {
     // ask for "t1" under the `user` namespace — wrong type, must reject.
     const row = await client.user.get("t1");
     expect(row).toBeNull();
-  });
-
-  it("projects a stored value, and a tombstone the same as absence", async () => {
-    const todoWithBody = defineModel("todo", {
-      title: e.string(),
-      body: e.string(),
-    });
-    const schemaWithBody = defineSchema({
-      models: { todo: todoWithBody },
-      version: 1,
-    });
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    await storage.entities.set(mkEntity("t1", "todo", { title: "a", body: "note" }));
-    await storage.entities.set(mkEntity("t2", "todo", { title: "b", body: null }));
-    await storage.entities.set(mkEntity("t3", "todo", { title: "c" }));
-    const client = createClient({
-      serverUrl: "http://x",
-      actorId: "a",
-      storage,
-      schema: schemaWithBody,
-    });
-    expect((await client.todo.get("t1"))?.body).toBe("note");
-    expect((await client.todo.get("t2"))?.body).toBeUndefined();
-    expect((await client.todo.get("t3"))?.body).toBeUndefined();
-  });
-
-  it("the untyped wire shape stays reachable via client.readLocalEntity(id)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-    const raw = await client.readLocalEntity("t1");
-    expect(raw?.type).toBe("todo");
-    expect(raw?.data?.fields?.title?.value).toBe("Ship");
-  });
-
-  it("projected row's field names are typed; bogus fields are a compile error", () => {
-    // Compile-time check: `bogus` is not in the field map.
-    // Wrapped in a function so vitest's runtime ignore (`@ts-expect-error`)
-    // doesn't trip when the file is loaded.
-    const check: () => void = () => {
-      const _typecheck: (row: { title: string; completed: boolean }) => void = (row) => {
-        // @ts-expect-error — `bogus` is not in the field map.
-        void row.bogus;
-        void row.title;
-        void row.completed;
-      };
-      void _typecheck;
-    };
-    expect(typeof check).toBe("function");
   });
 
   it("does not expose the untyped wire envelope on the projected row", async () => {
@@ -1006,26 +859,6 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
 });
 
 describe("client.<entity>.get(id) — row with relationship accessors", () => {
-  it("row.<field> types flow from the entity's field map (no FK fields required)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    const client = createClient({
-      serverUrl: "http://x",
-      actorId: "a",
-      storage,
-      schema: schemaWithRels,
-    });
-    type Todo = Static<typeof schemaWithRels.models.todo.shape>;
-    const row: Todo | null = await client.todo.get("t1");
-    expect(row).not.toBeNull();
-    if (row === null) throw new Error("unreachable");
-    const _title: string | undefined = row.title;
-    const _completed: boolean | undefined = row.completed;
-    void _title;
-    void _completed;
-  });
-
   it("forward-many accessor awaits to readonly TargetShape[]", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -1124,7 +957,6 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    await storage.entities.set(mkEntity("l1", "list", { name: "Work" }));
     // No Relationship record for t1.parentList.
     const client = createClient({
       serverUrl: "http://x",
@@ -1139,14 +971,6 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const list: Entity | null | undefined = await parentList;
     // No edge in metadata → null.
     expect(list).toBeNull();
-    // Add the edge and the accessor surfaces the target.
-    await storage.entities.set(mkRelEntity("rel-parentList", "t1", "l1", "parentList", "todo"));
-    await syncAdjacency(storage, client.replica);
-    const row2 = await client.todo.get("t1");
-    if (row2 === null) throw new Error("expected row");
-    const list2: Entity | null | undefined = await row2.parentList;
-    expect(list2?.id).toBe("l1");
-    expect(list2?.type).toBe("list");
   });
 
   it("forward-one accessor returns undefined when the edge target is missing (dangling)", async () => {
@@ -1331,30 +1155,6 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     };
     void check;
   });
-
-  it("row is null when the id is unknown (no accessor leak)", async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({
-      serverUrl: "http://x",
-      actorId: "a",
-      storage,
-      schema: schemaWithRels,
-    });
-    const row = await client.todo.get("missing");
-    expect(row).toBeNull();
-  });
-
-  it("row.title.toUpperCase() compiles (Path A types)", () => {
-    // Compile-time check: the field types flow from the entity's
-    // TypeBox shape — `title` is `string`. Wrapped in a function so
-    // vitest's runtime ignore doesn't trip.
-    const check: () => void = () => {
-      const _row: { title: string } = { title: "" };
-      void _row.title.toUpperCase();
-    };
-    expect(typeof check).toBe("function");
-  });
 });
 
 describe("doc.groups — built-in membership accessor", () => {
@@ -1378,35 +1178,6 @@ describe("doc.groups — built-in membership accessor", () => {
     const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
     const resolved: readonly { name?: string }[] = await groups;
     expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
-  });
-
-  it("attaches groups when a relationship targets the group system entity", async () => {
-    const todoOwnedBy = defineRelationship({
-      source: todoEntity,
-      target: groupSystemEntity,
-      as: "ownedBy",
-      sourceCardinality: "many",
-    });
-    const schemaWithOwnedBy = defineSchema({
-      models: { todo: todoEntity },
-      relationships: { todo_ownedBy: todoOwnedBy },
-      version: 1,
-    });
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    await storage.entities.set(mkEntity("g1", "group", { name: "Demo" }));
-    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
-    const client = createClient({
-      serverUrl: "http://x",
-      actorId: "a",
-      storage,
-      schema: schemaWithOwnedBy,
-    });
-    await syncAdjacency(storage, client.replica);
-    const row = await client.todo.get("t1");
-    if (row === null) throw new Error("expected row");
-    expect((await row.groups).map((g) => g.name)).toEqual(["Demo"]);
   });
 
   it("awaits an empty list for an entity with no membership rows", async () => {
@@ -1439,472 +1210,18 @@ describe("doc.groups — built-in membership accessor", () => {
     expect(namespaces["membership"]).toBeDefined();
     expect(namespaces["entityGroup"]).toBeUndefined();
   });
-
-  it("keeps the groups accessor out of the entity's data fields on the wire", () => {
-    // `groups` is an accessor, not a field: the field map has no
-    // `groups` key, so a row's projected shape can't shadow it.
-    expect(Object.keys(todoEntity.shape.properties)).not.toContain("groups");
-  });
 });
 
 /**
- * The draft `link(id, "as", target)` / `unlink(id, "as")` /
- * `setLinks(id, "as", { replace | add | remove })` verbs.
+ * The draft `create` / `update` runtime validation the sibling draft
+ * suites do not reach: the `validate: false` opt-out, the empty-patch
+ * refusal, a create that omits a defaulted field, the strict create
+ * rule, and one error carrying every violation.
  *
- * They let callers mutate relationships without hand-rolling Update[]
- * arrays; each records its work for the enclosing Action. The
- * link/unlink pair is one-cardinality, setLinks many-cardinality. The
- * split matches the wire shape (one Update for one-cardinality, one
- * entity Update + N Relationship Updates for many-cardinality).
- *
- * Tests stub `fetch` so the wire Action is acknowledged without a
- * live server. The handshake stub returns groups with `todo.*,
- * list.*` so the early permission check passes.
+ * The stub records every URL so a test can prove a rejection never
+ * reached the wire.
  */
-describe("draft link / unlink / setLinks", () => {
-  const list = defineModel("list", { name: e.string() });
-
-  // `todo` declares a `tags` field carrying the canonical FK set
-  // so the many-cardinality `setLinks` entity Update validates.
-  const todoWithTags = defineModel("todo", {
-    title: e.string(),
-    completed: e.boolean(),
-    tags: { type: "array", items: { type: "string" } } as never,
-  });
-
-  const schemaWithRels = defineSchema({
-    models: { todo: todoWithTags, user, list },
-    relationships: {
-      todo_list: defineRelationship({ source: todoWithTags, target: list, as: "list" }),
-      todo_tags: defineRelationship({
-        source: todoWithTags,
-        target: list,
-        as: "tags",
-        sourceCardinality: "many",
-      }),
-    },
-    version: 1,
-  });
-
-  /**
-   * Stub fetch for the link/unlink/setLinks tests. Handshake
-   * returns groups with `todo.*, list.*` so the early permission
-   * check passes; `/sync/actions` always accepts (returns
-   * `rejected: []`).
-   */
-  const mkStubFetch = (seen: string[] = []): typeof fetch => {
-    return (async (url: string, _init: RequestInit): Promise<Response> => {
-      seen.push(url);
-      if (url.endsWith("/sync/handshake")) {
-        return new Response(
-          JSON.stringify({
-            actor_id: "actor_1",
-            groups: [
-              {
-                id: "g_1",
-                permissions: ["todo.*", "list.*"],
-                cursor_valid: true,
-                reason: null,
-                cursor: 0,
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/sync/actions")) {
-        return new Response(JSON.stringify({ rejected: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
-  };
-
-  const linkTodo = defineAction(
-    schemaWithRels,
-    ({ todo: todos }, params: { id: string; as: string; target: PointerValue }): void => {
-      todos.link(params.id, params.as, params.target);
-    },
-  );
-
-  const unlinkTodo = defineAction(
-    schemaWithRels,
-    ({ todo: todos }, params: { id: string; as: string }): void => {
-      todos.unlink(params.id, params.as);
-    },
-  );
-
-  const setTodoLinks = defineAction(
-    schemaWithRels,
-    ({ todo: todos }, params: { id: string; as: string; patch: ManyPointerValue }): void => {
-      todos.setLinks(params.id, params.as, params.patch);
-    },
-  );
-
-  const mkClient = async (seen: string[] = []) => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage,
-      schema: schemaWithRels,
-      actions: { linkTodo, unlinkTodo, setTodoLinks },
-      fetchImpl: mkStubFetch(seen),
-    });
-    await client.handshake();
-    return { client, storage, seen };
-  };
-
-  it("link() submits a single Relationship Update for one-cardinality", async () => {
-    const { client } = await mkClient();
-    await expect(
-      client.actions.linkTodo({ id: "todo_1", as: "list", target: "list_1" }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("link() accepts an entity-shape pointer and normalizes to .id", async () => {
-    const { client } = await mkClient();
-    await expect(
-      client.actions.linkTodo({ id: "todo_1", as: "list", target: { id: "list_99" } }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("unlink() submits a single Relationship Delete Update", async () => {
-    const { client, storage } = await mkClient();
-    // Pre-seed the materialized Relationship cache with a row
-    // keyed at the same `(source, field, type)` the wire unlink()
-    // is about to address — unlink() must look up the existing
-    // relationship's id from the local cache so the wire Update's
-    // `subject_id` matches the row to delete.
-    await storage.entities.set(
-      mkEntity("rel_seeded_1", "relationship", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await expect(client.actions.unlinkTodo({ id: "todo_1", as: "list" })).resolves.toBeUndefined();
-  });
-
-  it("unlink() is a no-op when no relationship exists locally", async () => {
-    const { client, seen } = await mkClient();
-    // Empty materialized cache — nothing to address, so no Action is submitted.
-    await expect(client.actions.unlinkTodo({ id: "todo_1", as: "list" })).resolves.toBeUndefined();
-    expect(seen.filter((url) => url.endsWith("/sync/actions"))).toEqual([]);
-  });
-
-  it("unlink() is a no-op when the edge is locally tombstoned", async () => {
-    const { client, storage, seen } = await mkClient();
-    await storage.entities.set({
-      ...mkEntity("rel_seeded_1", "relationship", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-      deleted_hlc: "2",
-    });
-    await expect(client.actions.unlinkTodo({ id: "todo_1", as: "list" })).resolves.toBeUndefined();
-    expect(seen.filter((url) => url.endsWith("/sync/actions"))).toEqual([]);
-  });
-
-  it("reads the source's live memberships to scope the write, without emitting them", async () => {
-    const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
-
-    const before = seen.filter((url) => url.endsWith("/sync/actions")).length;
-    await client.actions.linkTodo({ id: "todo_1", as: "list", target: "list_1" });
-
-    // The membership read scopes the write's fan-out; it must not add Updates to the Action.
-    expect(seen.filter((url) => url.endsWith("/sync/actions")).length).toBe(before + 1);
-  });
-
-  it("setLinks({ replace }) emits one entity Update + N Relationship Updates", async () => {
-    const { client } = await mkClient();
-    await expect(
-      client.actions.setTodoLinks({
-        id: "todo_1",
-        as: "tags",
-        patch: { replace: ["list_1", "list_2", { id: "list_3" }] },
-      }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("setLinks({ add, remove }) emits the patch shape", async () => {
-    const { client } = await mkClient();
-    await expect(
-      client.actions.setTodoLinks({
-        id: "todo_1",
-        as: "tags",
-        patch: { add: ["list_1"], remove: ["list_2"] },
-      }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("throws EntityValidationError when the relationship's `as` is not declared on the entity", async () => {
-    const { client } = await mkClient();
-    await expect(
-      client.actions.linkTodo({ id: "todo_1", as: "bogus", target: "list_1" }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-  });
-
-  // #127 defers membership mutation (share/unshare). The injected
-  // `groups` accessor must not be reachable through the generic
-  // relationship-write path, and the reject must happen before any
-  // network call.
-  describe("rejects membership mutation on the deferred link/unlink/setLinks path", () => {
-    const expectDeferred = async (
-      call: (client: Awaited<ReturnType<typeof mkClient>>["client"]) => Promise<unknown>,
-    ): Promise<void> => {
-      const { client, seen } = await mkClient();
-      const seenBefore = seen.length;
-      let caught: unknown;
-      try {
-        await call(client);
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(EntityValidationError);
-      expect((caught as EntityValidationError).violations[0]?.message).toMatch(
-        /addToGroup\/removeFromGroup\/setGroups/,
-      );
-      expect(seen.length).toBe(seenBefore);
-    };
-
-    it("link()", async () => {
-      await expectDeferred((client) =>
-        client.actions.linkTodo({ id: "todo_1", as: "groups", target: "g_1" }),
-      );
-    });
-
-    it("unlink()", async () => {
-      await expectDeferred((client) => client.actions.unlinkTodo({ id: "todo_1", as: "groups" }));
-    });
-
-    it("setLinks()", async () => {
-      await expectDeferred((client) =>
-        client.actions.setTodoLinks({
-          id: "todo_1",
-          as: "groups",
-          patch: { replace: ["g_1", "g_2"] },
-        }),
-      );
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #264: membership mutation (addToGroup / removeFromGroup / setGroups)
-// ---------------------------------------------------------------------------
-
-/**
- * The draft membership verbs go straight through the outbox: a put is
- * one `entityGroup` row, a remove is one delete naming the local row id,
- * and `setGroups` is the target-minus-current delta in one Action. The
- * stub fetch records decoded Actions so each test asserts the wire
- * shape.
- */
-describe("draft addToGroup / removeFromGroup / setGroups", () => {
-  const memberTodo = defineModel("todo", { title: e.string() });
-  const memberSchema = defineSchema({ models: { todo: memberTodo }, version: 1 });
-
-  const jsonResponse = (body: unknown): Response =>
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-
-  const addTodoToGroup = defineAction(
-    memberSchema,
-    ({ todo: todos }, params: { id: string; group: GroupRef }): void => {
-      todos.addToGroup(params.id, params.group);
-    },
-  );
-
-  const removeTodoFromGroup = defineAction(
-    memberSchema,
-    ({ todo: todos }, params: { id: string; group: GroupRef }): void => {
-      todos.removeFromGroup(params.id, params.group);
-    },
-  );
-
-  const setTodoGroups = defineAction(
-    memberSchema,
-    ({ todo: todos }, params: { id: string; groups: readonly GroupRef[] }): void => {
-      todos.setGroups(params.id, params.groups);
-    },
-  );
-
-  const mkMembershipClient = async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const actions: Action[][] = [];
-    const fetchImpl = (async (url: string, init: RequestInit): Promise<Response> => {
-      if (url.endsWith("/sync/handshake")) {
-        return jsonResponse({
-          actor_id: "actor_1",
-          groups: [
-            {
-              id: "g_1",
-              permissions: ["todo.*"],
-              cursor_valid: true,
-              reason: null,
-              cursor: 0,
-            },
-          ],
-        });
-      }
-      if (url.endsWith("/sync/actions")) {
-        actions.push(decodeSync<{ actions: Action[] }>(init.body as unknown as Uint8Array).actions);
-        return jsonResponse({ rejected: [] });
-      }
-      return jsonResponse({});
-    }) as unknown as typeof fetch;
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage,
-      schema: memberSchema,
-      actions: { addTodoToGroup, removeTodoFromGroup, setTodoGroups },
-      fetchImpl,
-    });
-    await client.handshake();
-    return { client, storage, actions };
-  };
-
-  const membershipUpdates = (actions: readonly Action[][]): Action["updates"] =>
-    actions.flatMap((batch) => batch.flatMap((action) => action.updates));
-
-  it("addToGroup() emits one entityGroup put", async () => {
-    const { client, actions } = await mkMembershipClient();
-    await expect(
-      client.actions.addTodoToGroup({ id: "todo_1", group: "g_1" }),
-    ).resolves.toBeUndefined();
-    expect(actions).toHaveLength(1);
-    expect(actions[0]).toHaveLength(1);
-    const [row] = rowsOf(actions[0]![0]!.updates, "entityGroup");
-    expect(row).toHaveLength(2);
-    expect(row!.every((update) => update.method === "replace")).toBe(true);
-    expect(row![0]!.subject_id).toMatch(/^eg_/);
-    expect(valueOf(row!, "entity_id")).toBe("todo_1");
-    expect(valueOf(row!, "group_id")).toBe("g_1");
-  });
-
-  it("addToGroup() accepts an entity-shape group ref", async () => {
-    const { client, actions } = await mkMembershipClient();
-    await client.actions.addTodoToGroup({ id: "todo_1", group: { id: "g_9" } });
-    const [row] = rowsOf(membershipUpdates(actions), "entityGroup");
-    expect(valueOf(row!, "group_id")).toBe("g_9");
-  });
-
-  it("addToGroup() on an existing local membership is a no-op with no network", async () => {
-    const { client, storage, actions } = await mkMembershipClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    await expect(
-      client.actions.addTodoToGroup({ id: "todo_1", group: "g_1" }),
-    ).resolves.toBeUndefined();
-    expect(actions).toHaveLength(0);
-  });
-
-  it("removeFromGroup() emits one delete naming the existing row id", async () => {
-    const { client, storage, actions } = await mkMembershipClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    await storage.entities.set(mkEntityGroup("eg_2", "todo_1", "g_2"));
-    await expect(
-      client.actions.removeTodoFromGroup({ id: "todo_1", group: "g_1" }),
-    ).resolves.toBeUndefined();
-    const updates = membershipUpdates(actions);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.subject_id).toBe("eg_1");
-    expect(updates[0]!.method).toBe("delete");
-    expect(updates[0]!.data).toBeNull();
-  });
-
-  it("removeFromGroup() with no local row throws before any network call", async () => {
-    const { client, actions } = await mkMembershipClient();
-    await expect(
-      client.actions.removeTodoFromGroup({ id: "todo_1", group: "g_1" }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    expect(actions).toHaveLength(0);
-  });
-
-  it("removeFromGroup() of the entity's last membership is refused with last_membership", async () => {
-    const { client, storage, actions } = await mkMembershipClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    const error = await client.actions
-      .removeTodoFromGroup({ id: "todo_1", group: "g_1" })
-      .catch((err: unknown) => err);
-    expect(error).toBeInstanceOf(ActionRejectedError);
-    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual([
-      "last_membership",
-    ]);
-    expect(actions).toHaveLength(0);
-  });
-
-  it("setGroups() emits target-minus-current puts then current-minus-target deletes in one Action", async () => {
-    const { client, storage, actions } = await mkMembershipClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    await expect(
-      client.actions.setTodoGroups({ id: "todo_1", groups: ["g_2", "g_3"] }),
-    ).resolves.toBeUndefined();
-    expect(actions).toHaveLength(1);
-    const updates = actions[0]![0]!.updates;
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(2);
-    expect(updates.map((u) => u.method)).toEqual([
-      "replace",
-      "replace",
-      "replace",
-      "replace",
-      "delete",
-    ]);
-    const added = rowsOf(updates, "entityGroup").map((row) => valueOf(row, "group_id"));
-    expect(added.sort()).toEqual(["g_2", "g_3"]);
-    expect(updates.at(-1)!.subject_id).toBe("eg_1");
-    expect(updates.at(-1)!.data).toBeNull();
-  });
-
-  it("setGroups() swap emits exactly one put and one delete", async () => {
-    const { client, storage, actions } = await mkMembershipClient();
-    await storage.entities.set(mkEntityGroup("eg_1", "todo_1", "g_1"));
-    await client.actions.setTodoGroups({ id: "todo_1", groups: ["g_2"] });
-    const updates = membershipUpdates(actions);
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
-    expect(updates.filter((u) => u.method === "replace")).toHaveLength(2);
-    expect(updates.filter((u) => u.method === "delete")).toHaveLength(1);
-    expect(updates.at(-1)!.subject_id).toBe("eg_1");
-  });
-
-  it("setGroups([]) throws EntityValidationError before any network call", async () => {
-    const { client, actions } = await mkMembershipClient();
-    await expect(client.actions.setTodoGroups({ id: "todo_1", groups: [] })).rejects.toBeInstanceOf(
-      EntityValidationError,
-    );
-    expect(actions).toHaveLength(0);
-  });
-
-  it("a malformed group ref throws EntityValidationError before any network call", async () => {
-    const { client, actions } = await mkMembershipClient();
-    await expect(
-      client.actions.addTodoToGroup({ id: "todo_1", group: 42 as never }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    await expect(
-      client.actions.setTodoGroups({ id: "todo_1", groups: [42 as never] }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    expect(actions).toHaveLength(0);
-  });
-});
-
 describe("draft create / update — runtime validation", () => {
-  /**
-   * The recording fetch stub asserts validation rejects before
-   * any network call — `seen` captures every URL, so a passing
-   * `/sync/actions` count proves the wire was actually reached.
-   */
   const todoForCreate = defineModel("todo", {
     title: e.string(),
     completed: e.boolean(),
@@ -1912,50 +1229,11 @@ describe("draft create / update — runtime validation", () => {
     priority: e.string().default("normal"),
   });
 
-  const schemaForCreate = defineSchema({
-    models: { todo: todoForCreate, user, list: defineModel("list", { name: e.string() }) },
-    version: 1,
-  });
-
-  /**
-   * Build a stub fetch that records every URL it sees in
-   * `seen` and accepts handshakes / writes. The `create` /
-   * `update` tests assert that a validation failure never causes a
-   * URL to land in `seen`.
-   */
-  const mkRecordingStubFetch = (seen: string[]): typeof fetch => {
-    return (async (url: string, _init: RequestInit): Promise<Response> => {
-      seen.push(url);
-      if (url.endsWith("/sync/handshake")) {
-        return new Response(
-          JSON.stringify({
-            actor_id: "actor_1",
-            groups: [
-              {
-                id: "g_1",
-                permissions: ["todo.*", "list.*"],
-                cursor_valid: true,
-                reason: null,
-                cursor: 0,
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/sync/actions")) {
-        return new Response(JSON.stringify({ rejected: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
-  };
+  const schemaForCreate = defineSchema({ models: { todo: todoForCreate }, version: 1 });
 
   interface CreateParams {
     readonly input: Record<string, unknown>;
-    readonly groups: readonly GroupRef[];
+    readonly groups: readonly string[];
     readonly validate?: boolean;
   }
 
@@ -1977,6 +1255,27 @@ describe("draft create / update — runtime validation", () => {
     },
   );
 
+  /** Stub `fetch` recording every URL it sees; handshakes and writes both succeed. */
+  const mkRecordingStubFetch = (seen: string[]): typeof fetch => {
+    return (async (url: string): Promise<Response> => {
+      seen.push(url);
+      const body = url.endsWith("/sync/handshake")
+        ? {
+            actor_id: "actor_1",
+            groups: [
+              { id: "g_1", permissions: ["todo.*"], cursor_valid: true, reason: null, cursor: 0 },
+            ],
+          }
+        : url.endsWith("/sync/actions")
+          ? { rejected: [] }
+          : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+  };
+
   const mkClient = async (seen: string[]) => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
@@ -1994,93 +1293,6 @@ describe("draft create / update — runtime validation", () => {
 
   /** Membership option every `create()` in this block carries (#244). */
   const createOpts = { groups: ["g_1"] } as const;
-
-  it("create() accepts a conforming payload and submits to /sync/actions", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-    await expect(
-      client.actions.createTodo({
-        input: { title: "Ship", completed: false },
-        ...createOpts,
-      }),
-    ).resolves.toBeDefined();
-    // handshake + actions: validation passed, the wire saw the call.
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
-  });
-
-  it("create() rejects a literal null and names unset instead", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-    const seenBefore = seen.length;
-
-    try {
-      await client.actions.createTodo({
-        input: { title: null, completed: false },
-        ...createOpts,
-      });
-      expect.fail("expected EntityValidationError");
-    } catch (err) {
-      expect(err).toBeInstanceOf(EntityValidationError);
-      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
-      expect(violations[0]?.message).toContain("unset");
-    }
-
-    // The validation failure must not have reached the wire.
-    expect(seen.length).toBe(seenBefore);
-  });
-
-  it("create() throws EntityValidationError with the bad field name when value type is wrong", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-    const seenBefore = seen.length;
-
-    try {
-      // The payload is deliberately wrong so it reaches `Value.Check`.
-      await client.actions.createTodo({
-        input: { title: 42, completed: false },
-        ...createOpts,
-      });
-      expect.fail("expected EntityValidationError");
-    } catch (err) {
-      expect(err).toBeInstanceOf(EntityValidationError);
-      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
-      expect(violations.length).toBeGreaterThanOrEqual(1);
-      const titleViolation = violations.find((v) => v.field === "title");
-      expect(titleViolation).toBeDefined();
-      expect(titleViolation!.entityName).toBe("todo");
-      expect(titleViolation!.message).toMatch(/title/i);
-    }
-
-    // No fetch for /sync/actions after the failed create — the
-    // validator rejected before any network call.
-    const newActionsCalls = seen.filter((u) => u.endsWith("/sync/actions")).length;
-    expect(newActionsCalls).toBe(0);
-    expect(seen.length).toBe(seenBefore);
-  });
-
-  it("create() throws EntityValidationError for an unknown field", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-
-    try {
-      await client.actions.createTodo({
-        input: { title: "Ship", completed: false, bogus: "x" },
-        ...createOpts,
-      });
-      expect.fail("expected EntityValidationError");
-    } catch (err) {
-      expect(err).toBeInstanceOf(EntityValidationError);
-      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
-      expect(violations.length).toBeGreaterThanOrEqual(1);
-      // TypeBox reports unknown properties as `Unexpected property`
-      // (additional-properties rejection) — the field name surfaces
-      // in the violation path or message.
-      const offending = violations.find((v) => /bogus/i.test(v.message));
-      expect(offending).toBeDefined();
-    }
-
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
-  });
 
   it("create() reports every violation in a single EntityValidationError", async () => {
     const seen: string[] = [];
@@ -2119,60 +1331,12 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
   });
 
-  it("update(id, patch) validates the patch and submits when valid", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-    await expect(
-      client.actions.updateTodo({ id: "todo_1", patch: { completed: true } }),
-    ).resolves.toBeUndefined();
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
-  });
-
   it("update() rejects an empty patch as a no-op", async () => {
     const seen: string[] = [];
     const { client } = await mkClient(seen);
     await expect(client.actions.updateTodo({ id: "todo_1", patch: {} })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
-  });
-
-  it("update() throws EntityValidationError on a type mismatch", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-
-    try {
-      await client.actions.updateTodo({ id: "todo_1", patch: { title: 99 } });
-      expect.fail("expected EntityValidationError");
-    } catch (err) {
-      expect(err).toBeInstanceOf(EntityValidationError);
-      const violations = (err as InstanceType<typeof EntityValidationError>).violations;
-      const titleViolation = violations.find((v) => v.field === "title");
-      expect(titleViolation).toBeDefined();
-    }
-
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
-  });
-
-  it("update() throws EntityValidationError on an unknown patch field", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-
-    await expect(
-      client.actions.updateTodo({ id: "todo_1", patch: { bogus: "x" } }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-
-    expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
-  });
-
-  it("update() rejects a literal null and names unset instead", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-
-    await expect(
-      client.actions.updateTodo({ id: "todo_1", patch: { title: null } }),
-    ).rejects.toMatchObject({ violations: [{ message: expect.stringContaining("unset") }] });
-
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(false);
   });
 
@@ -2185,31 +1349,7 @@ describe("draft create / update — runtime validation", () => {
     expect(seen.some((u) => u.endsWith("/sync/actions"))).toBe(true);
   });
 
-  it("create() validation throws before any /sync/actions fetch (no network on bad input)", async () => {
-    const seen: string[] = [];
-    const { client } = await mkClient(seen);
-    const before = seen.length;
-    await expect(
-      client.actions.createTodo({ input: { title: 42, completed: false }, ...createOpts }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    expect(seen.length).toBe(before);
-  });
-
-  it("create() input type flow: title and completed types are inferred from the entity shape", () => {
-    // The wrapping in `() => void` keeps `@ts-expect-error` from
-    // tripping when the file loads.
-    const typecheck: () => void = () => {
-      const _input: { title: string; completed: boolean } = { title: "", completed: false };
-      void _input.title.toUpperCase();
-      void !_input.completed;
-      // @ts-expect-error — `bogus` is not in the field map.
-      void _input.bogus;
-    };
-    void typecheck;
-    expect(true).toBe(true);
-  });
-
-  it("create() omits a defaulted field and fills it", async () => {
+  it("create() omits a defaulted field from the wire so the default stands", async () => {
     const seen: string[] = [];
     const { client, storage } = await mkClient(seen);
     await expect(
@@ -2232,268 +1372,6 @@ describe("draft create / update — runtime validation", () => {
         ...createOpts,
       }),
     ).rejects.toBeInstanceOf(EntityValidationError);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #244: canonical entityGroup rows on create()
-// ---------------------------------------------------------------------------
-
-describe("draft create — entityGroup rows", () => {
-  interface RecordedRequest {
-    readonly url: string;
-    readonly body: Uint8Array | undefined;
-  }
-
-  /** Handshake + actions stub that records request bodies for decoding. */
-  const mkFetch = (seen: RecordedRequest[]): typeof fetch => {
-    return (async (url: string, init: RequestInit): Promise<Response> => {
-      const body =
-        init.body instanceof Uint8Array
-          ? init.body
-          : typeof init.body === "string"
-            ? new TextEncoder().encode(init.body)
-            : undefined;
-      seen.push({ url, body });
-      if (url.endsWith("/sync/handshake")) {
-        return new Response(
-          JSON.stringify({
-            actor_id: "actor_1",
-            groups: [
-              {
-                id: "g_1",
-                permissions: ["todo.*"],
-                cursor_valid: true,
-                reason: null,
-                cursor: 0,
-              },
-              {
-                id: "g_2",
-                permissions: ["todo.*"],
-                cursor_valid: true,
-                reason: null,
-                cursor: 0,
-              },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      if (url.endsWith("/sync/actions")) {
-        return new Response(JSON.stringify({ rejected: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
-  };
-
-  const memberTodo = defineModel("todo", { title: e.string() });
-  const memberSchema = defineSchema({ models: { todo: memberTodo }, version: 1 });
-
-  /**
-   * The draft create under test. An omitted `groups` becomes the empty
-   * list, which the planner refuses exactly as a missing option did.
-   */
-  const createMemberTodo = defineAction(
-    memberSchema,
-    ({ todo: todos }, params: { input: Record<string, unknown>; groups?: readonly GroupRef[] }) =>
-      todos.create(params.input as never, { groups: params.groups ?? [] }),
-  );
-
-  const mkMemberClient = async () => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const seen: RecordedRequest[] = [];
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage: createMemoryAdapter(),
-      schema: memberSchema,
-      actions: { createMemberTodo },
-      fetchImpl: mkFetch(seen),
-    });
-    await client.handshake();
-    return { client, seen };
-  };
-
-  const actionRequests = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
-    seen.filter((r) => r.url.endsWith("/sync/actions"));
-
-  const decodeFirstAction = (request: RecordedRequest): Action =>
-    decodeSync<{ actions: Action[] }>(request.body!).actions[0]!;
-
-  it("emits the entity put plus one entityGroup row per group in one Action", async () => {
-    const { client, seen } = await mkMemberClient();
-    await expect(
-      client.actions.createMemberTodo({ input: { title: "Ship" }, groups: ["g_1", "g_2"] }),
-    ).resolves.toBeDefined();
-
-    const actions = actionRequests(seen);
-    expect(actions).toHaveLength(1);
-    const updates = decodeFirstAction(actions[0]!).updates;
-    // 1 entity row (one component per field) + 2 membership rows.
-    const [entityRow] = rowsOf(updates, "todo");
-    expect(entityRow![0]!.method).toBe("replace");
-    expect(valueOf(entityRow!, "title")).toBe("Ship");
-
-    const memberships = rowsOf(updates, "entityGroup");
-    expect(memberships).toHaveLength(2);
-    for (const row of memberships) {
-      expect(row[0]!.method).toBe("replace");
-      expect(valueOf(row, "entity_id")).toBe(entityRow![0]!.subject_id);
-    }
-    expect(memberships.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
-  });
-
-  it("accepts entity-shape group refs and de-duplicates ids", async () => {
-    const { client, seen } = await mkMemberClient();
-    await client.actions.createMemberTodo({
-      input: { title: "Ship" },
-      groups: ["g_1", { id: "g_1" }, { id: "g_2" }],
-    });
-    const updates = decodeFirstAction(actionRequests(seen)[0]!).updates;
-    const memberships = rowsOf(updates, "entityGroup");
-    expect(memberships.map((row) => valueOf(row, "group_id")).sort()).toEqual(["g_1", "g_2"]);
-  });
-
-  it("rejects a missing or empty groups option before any network call", async () => {
-    const { client, seen } = await mkMemberClient();
-    await expect(
-      client.actions.createMemberTodo({ input: { title: "Ship" } }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    await expect(
-      client.actions.createMemberTodo({ input: { title: "Ship" }, groups: [] }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    expect(actionRequests(seen)).toHaveLength(0);
-  });
-
-  it("rejects a malformed group ref with EntityValidationError", async () => {
-    const { client, seen } = await mkMemberClient();
-    await expect(
-      client.actions.createMemberTodo({ input: { title: "Ship" }, groups: [42 as never] }),
-    ).rejects.toBeInstanceOf(EntityValidationError);
-    expect(actionRequests(seen)).toHaveLength(0);
-  });
-
-  it("requires the groups option at the draft's type level", () => {
-    const typecheck: () => void = () => {
-      const drafts = null as unknown as ActionDrafts<typeof memberSchema>;
-      // @ts-expect-error — the draft create() requires a `{ groups }` option.
-      void drafts.todo.create({ title: "Ship" });
-      void drafts.todo.create({ title: "Ship" }, { groups: ["g_1"] });
-    };
-    expect(typeof typecheck).toBe("function");
-  });
-});
-
-describe("draft delete", () => {
-  const todoForDelete = defineModel("todo", {
-    title: e.string(),
-    completed: e.boolean(),
-  });
-  const schemaForDelete = defineSchema({ models: { todo: todoForDelete }, version: 1 });
-
-  const jsonResponse = (body: unknown): Response =>
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-
-  /** Handshake payload; `todo.*` is the permission the delete path needs. */
-  const handshakeBody = {
-    actor_id: "actor_1",
-    groups: [{ id: "g_1", permissions: ["todo.*"], cursor_valid: true, reason: null, cursor: 0 }],
-  };
-
-  /**
-   * Stub fetch that answers the handshake and routes every other
-   * request to `handle`, so each test only states the response it
-   * cares about.
-   */
-  const mkFetch = (handle: (url: string, init: RequestInit) => Response): typeof fetch => {
-    return (async (url: string, init: RequestInit): Promise<Response> => {
-      if (url.endsWith("/sync/handshake")) return jsonResponse(handshakeBody);
-      return handle(url, init);
-    }) as unknown as typeof fetch;
-  };
-
-  const deleteTodo = defineAction(
-    schemaForDelete,
-    ({ todo: todos }, params: { id: string }): void => {
-      todos.delete(params.id);
-    },
-  );
-
-  const mkClient = async (fetchImpl: typeof fetch) => {
-    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
-    const storage = createMemoryAdapter();
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      storage,
-      schema: schemaForDelete,
-      actions: { deleteTodo },
-      fetchImpl,
-    });
-    await client.handshake();
-    return { client, storage };
-  };
-
-  /** Wraps a fetch so every `POST /sync/actions` body lands in `captured`. */
-  const captureActions = (captured: Action[][]): typeof fetch =>
-    mkFetch((url, init) => {
-      if (url.endsWith("/sync/actions")) {
-        const body = init.body as unknown as Uint8Array;
-        captured.push(decodeSync<{ actions: Action[] }>(body).actions);
-      }
-      return jsonResponse({ rejected: [] });
-    });
-
-  it("delete(id) ships one method:'delete' Update with data null", async () => {
-    const captured: Action[][] = [];
-    const { client } = await mkClient(captureActions(captured));
-
-    await expect(client.actions.deleteTodo({ id: "todo_1" })).resolves.toBeUndefined();
-
-    expect(captured).toHaveLength(1);
-    expect(captured[0]).toHaveLength(1);
-    const updates = captured[0]![0]!.updates;
-    expect(updates).toHaveLength(1);
-    const update = updates[0]!;
-    expect(update.subject_id).toBe("todo_1");
-    expect(update.method).toBe("delete");
-    expect(update.data).toBeNull();
-  });
-
-  it("delete(id) scopes the server's rejection list to the submitted Action", async () => {
-    let submittedId = "";
-    const { client } = await mkClient(
-      mkFetch((_url, init) => {
-        const actions = decodeSync<{ actions: Action[] }>(init.body as Uint8Array).actions;
-        submittedId = actions[0]!.id;
-        return jsonResponse({
-          rejected: [
-            { id: "act_someone_else", reason: "not_authorized" },
-            { id: submittedId, reason: "permission_denied" },
-          ],
-        });
-      }),
-    );
-
-    const error = await client.actions.deleteTodo({ id: "todo_1" }).catch((err: unknown) => err);
-
-    expect(error).toBeInstanceOf(ActionRejectedError);
-    expect((error as ActionRejectedError).rejections).toEqual([
-      { id: submittedId, reason: "permission_denied" },
-    ]);
-  });
-
-  it("delete(id) is typed as Promise<void>", async () => {
-    const captured: Action[][] = [];
-    const { client } = await mkClient(captureActions(captured));
-    const result: Promise<void> = client.actions.deleteTodo({ id: "todo_1" });
-    await expect(result).resolves.toBeUndefined();
   });
 });
 
@@ -2606,12 +1484,5 @@ describe("client.<entity>.query().has() / hasNot() — component existence", () 
   it("refuses a field the source model does not declare", async () => {
     const { client } = await buildClient();
     expect(() => client.note.query().has("drafting" as never)).toThrow(/not a component on "note"/);
-  });
-
-  it("refuses a full component name where a field key is expected", async () => {
-    const { client } = await buildClient();
-    expect(() => client.note.query().has("note/draft" as never)).toThrow(
-      /not a component on "note"/,
-    );
   });
 });
