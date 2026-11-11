@@ -619,7 +619,9 @@ defmodule EbbServer.Storage.SystemCache do
           {put_existing_key(keys, key), [{entity_id, model} | marks]}
 
         :error ->
-          {keys, marks}
+          # A component entry is still part of the diff: a drop in the log
+          # emits `:delete`, and it can only remove an entry the walk saw.
+          {put_existing_key(keys, key), marks}
       end
     end)
   end

@@ -68,4 +68,18 @@ defmodule EbbServer.Storage.EntityViewComponentsTest do
              "fields" => %{"title" => 1}
            }
   end
+
+  test "nil and filtered projections strip a derived components key from a raw view" do
+    view = %{
+      "id" => "note_1",
+      "type" => "note",
+      "data" => %{"fields" => %{"title" => 1}, "components" => ["note/title"]}
+    }
+
+    assert EntityView.filter_components(view, nil)["data"] == %{"fields" => %{"title" => 1}}
+
+    assert EntityView.filter_components(view, MapSet.new(["note/title"]))["data"] == %{
+             "fields" => %{"title" => 1}
+           }
+  end
 end

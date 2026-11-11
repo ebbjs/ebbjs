@@ -578,20 +578,22 @@ defmodule EbbServer.Storage.SQLite do
       entity_row.last_gsn
     ]
 
-    :ok = Sqlite3.bind(stmt, values)
-    :done = Sqlite3.step(db, stmt)
-    # A rejected stale upsert must not rewrite the index from its old row.
-    applied? = write_applied?(db)
-    :ok = Sqlite3.reset(stmt)
+    in_transaction(db, fn ->
+      :ok = Sqlite3.bind(stmt, values)
+      :done = Sqlite3.step(db, stmt)
+      # A rejected stale upsert must not rewrite the index from its old row.
+      applied? = write_applied?(db)
+      :ok = Sqlite3.reset(stmt)
 
-    if applied? do
-      replace_entity_components(
-        db,
-        state.stmts,
-        entity_row.id,
-        Map.get(entity_row, :components, [])
-      )
-    end
+      if applied? do
+        replace_entity_components(
+          db,
+          state.stmts,
+          entity_row.id,
+          Map.get(entity_row, :components, [])
+        )
+      end
+    end)
 
     {:reply, :ok, state}
   end
@@ -642,13 +644,15 @@ defmodule EbbServer.Storage.SQLite do
     {:ok, stmt} = Sqlite3.prepare(db, sql)
 
     try do
-      :ok = Sqlite3.bind(stmt, params)
-      :done = Sqlite3.step(db, stmt)
-      # A rejected stale patch must not rewrite the index from its old row.
-      applied? = write_applied?(db)
-      :ok = Sqlite3.reset(stmt)
+      in_transaction(db, fn ->
+        :ok = Sqlite3.bind(stmt, params)
+        :done = Sqlite3.step(db, stmt)
+        # A rejected stale patch must not rewrite the index from its old row.
+        applied? = write_applied?(db)
+        :ok = Sqlite3.reset(stmt)
 
-      if applied?, do: replace_entity_components(db, state.stmts, id, components)
+        if applied?, do: replace_entity_components(db, state.stmts, id, components)
+      end)
     after
       Sqlite3.release(db, stmt)
     end
@@ -1004,6 +1008,28 @@ defmodule EbbServer.Storage.SQLite do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # The row and its component mirror are one unit. They are separate
+  # statements, so without a transaction a crash between them would leave the
+  # mirror describing a row it no longer matches, and no boot step repairs it:
+  # the row carries no unapplied GSNs to replay.
+  defp in_transaction(db, fun) do
+    :ok = Sqlite3.execute(db, "BEGIN IMMEDIATE")
+
+    try do
+      result = fun.()
+      :ok = Sqlite3.execute(db, "COMMIT")
+      result
+    rescue
+      error ->
+        _ = Sqlite3.execute(db, "ROLLBACK")
+        reraise error, __STACKTRACE__
+    catch
+      kind, reason ->
+        _ = Sqlite3.execute(db, "ROLLBACK")
+        :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
 

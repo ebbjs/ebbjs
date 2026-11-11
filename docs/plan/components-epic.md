@@ -496,9 +496,10 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
 accepted or the design is amended. An existence query touches one index range per component named
 and filters the row-level tombstone: `ComponentEntityIndex.component_entry_ids/2` is the raw range
 on RocksDB (a delete leaves its entries as candidates), and `SQLite.query_component_ids/2` joins
-`deleted_hlc IS NULL` on the read model. No path reads `type` to find an entity's rows: `iterate`
-reads `modelIndex`, and the server's model entries are existence/committed-model lookups, not row
-scans.
+`deleted_hlc IS NULL` on the read model. No scan path reads `type` to find an entity's rows:
+`iterate` reads `modelIndex`, and the server's model entries are existence and committed-model
+lookups, not row scans. The SQLite listing paths keep `idx_entities_type`, as this slice's scope
+says they do.
 
 **Depends on.** 4, 5.
 

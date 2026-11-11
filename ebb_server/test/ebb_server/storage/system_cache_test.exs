@@ -794,6 +794,71 @@ defmodule EbbServer.Storage.SystemCacheTest do
                )
     end
 
+    test "removes a stale component entry the log dropped", ctx do
+      entity_id = "todo_stale_backfill_#{System.unique_integer([:positive])}"
+      hlc = TestHelpers.generate_hlc()
+
+      create =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_component(entity_id, "todo/title", %{
+              "value" => "Title",
+              "hlc" => hlc
+            }),
+            TestHelpers.validated_component(entity_id, "todo/draft", %{
+              "value" => "Draft",
+              "hlc" => hlc
+            })
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([create], ctx.writer_name)
+
+      drop =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_update(%{
+              subject_id: entity_id,
+              component: "todo/draft",
+              method: :drop,
+              data: nil
+            })
+          ]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([drop], ctx.writer_name)
+
+      cf = RocksDB.cf_component_entities(ctx.rocks_name)
+      stale_key = RocksDB.encode_component_entity_key("todo/draft", entity_id)
+
+      # The drop removed the entry; a run that died before its marker landed
+      # leaves it behind for the next backfill to reconcile against the log.
+      assert :not_found = RocksDB.get(cf, stale_key, name: ctx.rocks_name)
+
+      :ok = :rocksdb.put(RocksDB.db_ref(ctx.rocks_name), cf, stale_key, <<>>, [])
+
+      :ok =
+        :rocksdb.put(
+          RocksDB.db_ref(ctx.rocks_name),
+          RocksDB.cf_default(ctx.rocks_name),
+          "system_cache:component_entities_backfill",
+          "v1",
+          []
+        )
+
+      EntityTypeCache.reset(entity_types: ctx.entity_types_table)
+      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
+
+      assert :not_found = RocksDB.get(cf, stale_key, name: ctx.rocks_name)
+
+      assert {:ok, <<>>} =
+               RocksDB.get(
+                 cf,
+                 RocksDB.encode_component_entity_key("todo/title", entity_id),
+                 name: ctx.rocks_name
+               )
+    end
+
     test "backfills from an Action stored in a frame", ctx do
       entity_id = "todo_frame_#{:erlang.unique_integer([:positive])}"
       action_id = "act_frame_#{:erlang.unique_integer([:positive])}"

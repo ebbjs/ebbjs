@@ -457,23 +457,16 @@ defmodule EbbServer.Storage.EntityStore do
       last_gsn: max_gsn
     }
 
-    # Every apply maintains `data.components` from the fields it leaves
-    # behind; a pre-#799 cache row is the only one that arrives without it.
-    components =
-      case merged_data do
-        %{"components" => components} when is_list(components) ->
-          components
-
-        _ ->
-          component_names(fields_of(merged_data), type)
-      end
+    # `data.components` is derived, so it is recomputed from the fields this
+    # apply leaves behind rather than trusted from the stored blob.
+    components = component_names(fields_of(merged_data), type)
 
     merged_data = Map.put(merged_data, "components", components)
 
     # The write — whole-blob or per-key — persists the tombstone columns;
-    # that is what stops a later clean read from resurrecting the entity. The
-    # component mirror is replaced in the same write so the index is never a
-    # separate, losable step.
+    # that is what stops a later clean read from resurrecting the entity.
+    # SQLite replaces the component mirror in the same transaction as the row
+    # write, so the index cannot describe a row it does not match.
     if data_mode == :patch and base_present? and safe_changed_paths?(changed) do
       changed_json =
         timed(:encode, fn -> build_patch_fields(changed, current_data, merged_data) end)
