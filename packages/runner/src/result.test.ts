@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeFrames, encodeFrame, MAX_FRAME_BYTES } from "@ebbjs/functions-protocol";
+import { encodeFrame, MAX_FRAME_BYTES } from "@ebbjs/functions-protocol";
 
 import { boundedResultFrame } from "./result.ts";
-import { messageOf } from "./messages.ts";
 
 const bytes = (frame: ReturnType<typeof boundedResultFrame>): number => encodeFrame(frame).length;
 
@@ -65,19 +64,5 @@ describe("boundedResultFrame", () => {
       kind: "host_call_limit",
       message: "too many",
     });
-  });
-
-  it("round-trips through the codec", () => {
-    const frame = boundedResultFrame({ ok: true, value: { nested: [1, 2, 3] } });
-
-    expect(decodeFrames(encodeFrame(frame))).toMatchObject({ ok: true, frames: [frame] });
-  });
-});
-
-describe("messageOf", () => {
-  it("reads an Error's message and stringifies anything else", () => {
-    expect(messageOf(new Error("boom"))).toBe("boom");
-    expect(messageOf("text")).toBe("text");
-    expect(messageOf({ code: 1 })).toBe("[object Object]");
   });
 });

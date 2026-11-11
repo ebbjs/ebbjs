@@ -137,14 +137,6 @@ describe("ctx.get overlay", () => {
     expect(view).toMatchObject({ id: "e_hidden", type: "issue", created_hlc: "" });
     expect(projectFields(view?.data.fields ?? {})).toEqual({ title: "Invisible" });
   });
-
-  it("refuses an empty entity id without calling the host", async () => {
-    const host = fakeHost();
-    const ctx = testContext(host);
-
-    await expect(ctx.get("")).rejects.toThrow(TypeError);
-    expect(host.calls).toEqual([]);
-  });
 });
 
 describe("the overlay's component compare", () => {

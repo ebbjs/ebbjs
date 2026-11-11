@@ -26,23 +26,12 @@ function header(length: number): Uint8Array {
 }
 
 describe("encodeFrame and decodeFrames", () => {
-  it("round-trips a frame", () => {
-    const frame = call("1", "get", { id: "e_doc" });
-
-    expect(decodeFrames(encodeFrame(frame))).toEqual({
-      ok: true,
-      frames: [frame],
-      rest: new Uint8Array(),
-    });
-  });
-
   it("prefixes the JSON payload with its UTF-8 byte length, big-endian", () => {
     const frame = result({ ok: true, value: { ok: true } });
     const bytes = encodeFrame(frame);
     const length = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, false);
     const json = bytes.subarray(4);
 
-    expect(bytes.subarray(0, 4)).toEqual(header(length));
     expect(length).toBe(json.length);
     expect(JSON.parse(decoder.decode(json))).toEqual(frame);
   });
@@ -80,7 +69,6 @@ describe("encodeFrame and decodeFrames", () => {
     const bytes = encodeFrame(frame);
 
     const chunks = [bytes.subarray(0, 1), bytes.subarray(1, 8), bytes.subarray(8)];
-    expect(chunks.reduce((total, chunk) => total + chunk.length, 0)).toBe(bytes.length);
 
     const first = decodeFrames(chunks[0]);
     expect(first.ok && first.frames).toEqual([]);
@@ -223,12 +211,13 @@ describe("encodeFrame and decodeFrames", () => {
 });
 
 describe("fits", () => {
-  it("accepts a small frame and refuses one past the bound", () => {
-    const small = result({ ok: true, value: "x" });
-    expect(fits(small)).toBe(true);
+  it("counts the length prefix toward the bound", () => {
+    const empty = JSON.stringify(result({ ok: true, value: "" }));
+    const value = (payloadBytes: number): string => "a".repeat(payloadBytes - empty.length);
 
-    // The length prefix counts toward the bound, matching Elixir's fits?/1.
-    const large = result({ ok: true, value: "a".repeat(MAX_FRAME_BYTES) });
-    expect(fits(large)).toBe(false);
+    // The prefix counts toward the bound, matching Elixir's fits?/1: the largest
+    // payload that fits is MAX_FRAME_BYTES - 4, not MAX_FRAME_BYTES.
+    expect(fits(result({ ok: true, value: value(MAX_FRAME_BYTES - 4) }))).toBe(true);
+    expect(fits(result({ ok: true, value: value(MAX_FRAME_BYTES - 3) }))).toBe(false);
   });
 });

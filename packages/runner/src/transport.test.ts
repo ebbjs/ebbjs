@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_FRAME_BYTES, reply, type Frame } from "@ebbjs/functions-protocol";
+import type { LogEntry } from "@ebbjs/functions-runtime";
 
 import { evaluateBundle } from "./index.ts";
-import { FrameTooLargeError, SocketHostTransport } from "./transport.ts";
+import { HostCallLimitError } from "./limits.ts";
+import {
+  FrameTooLargeError,
+  guardTransport,
+  SocketHostTransport,
+  type RunnerTransport,
+} from "./transport.ts";
 
 const view = { id: "e_doc" };
 
@@ -80,5 +87,50 @@ describe("evaluateBundle", () => {
 
   it("returns an empty module when the bundle exports nothing", () => {
     expect(evaluateBundle("var unrelated = 1;")).toEqual({});
+  });
+});
+
+describe("guardTransport", () => {
+  const counting = () => {
+    const calls: string[] = [];
+    const transport: RunnerTransport = {
+      call: (op) => {
+        calls.push(op);
+        return Promise.resolve(null);
+      },
+    };
+    return { transport, calls };
+  };
+
+  it("passes calls through under the budget", async () => {
+    const { transport, calls } = counting();
+    const guarded = guardTransport({ transport, maxHostCalls: 2, log: () => undefined });
+
+    await guarded.call("get", { id: "e_1" });
+    await guarded.call("commit", {});
+
+    expect(calls).toEqual(["get", "commit"]);
+  });
+
+  it("refuses past the budget without sending a frame", async () => {
+    const { transport, calls } = counting();
+    const guarded = guardTransport({ transport, maxHostCalls: 1, log: () => undefined });
+
+    await guarded.call("get", { id: "e_1" });
+    await expect(guarded.call("get", { id: "e_2" })).rejects.toBeInstanceOf(HostCallLimitError);
+    expect(calls).toEqual(["get"]);
+  });
+
+  it("routes log entries to the invocation's sink", () => {
+    const logs: LogEntry[] = [];
+    const guarded = guardTransport({
+      transport: counting().transport,
+      maxHostCalls: 1,
+      log: (entry) => logs.push(entry),
+    });
+
+    guarded.log?.({ level: "warn", message: "hi" });
+
+    expect(logs).toEqual([{ level: "warn", message: "hi" }]);
   });
 });

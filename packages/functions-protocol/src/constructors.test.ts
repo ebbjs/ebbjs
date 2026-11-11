@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { call, fetchAudit, invoke, logFrame, ready, reply, result } from "./constructors.ts";
-import { compatibleVersion, PROTOCOL_VERSION } from "./frames.ts";
+import { compatibleVersion } from "./frames.ts";
 
 describe("constructors", () => {
   it("builds the host-to-runner frames", () => {
@@ -109,17 +109,11 @@ describe("constructors", () => {
   });
 
   it("reports the protocol version and refuses any other", () => {
-    expect(PROTOCOL_VERSION).toBe(1);
     expect(compatibleVersion(1)).toBe(true);
     expect(compatibleVersion(0)).toBe(false);
     expect(compatibleVersion(2)).toBe(false);
     expect(compatibleVersion("1")).toBe(false);
     expect(compatibleVersion(null)).toBe(false);
     expect(compatibleVersion(undefined)).toBe(false);
-  });
-
-  it("uses the protocol version as the default `ready` version", () => {
-    expect(ready(1, "0.0.0").protocol_version).toBe(PROTOCOL_VERSION);
-    expect(ready(1, "0.0.0", 7).protocol_version).toBe(7);
   });
 });

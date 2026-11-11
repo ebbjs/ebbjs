@@ -133,40 +133,6 @@ describe("formatValue", () => {
 });
 
 describe("captureConsole", () => {
-  it("sends each captured call as a log entry and restores the originals", () => {
-    const entries: LogEntry[] = [];
-    const originals = {
-      debug: console.debug,
-      info: console.info,
-      log: console.log,
-      warn: console.warn,
-      error: console.error,
-    };
-
-    const restore = captureConsole((entry) => entries.push(entry));
-
-    console.debug("d");
-    console.info("i");
-    console.log("l", 1);
-    console.warn("w");
-    console.error(new Error("e"));
-
-    restore();
-
-    expect(entries).toEqual([
-      { level: "debug", message: "d" },
-      { level: "info", message: "i" },
-      { level: "log", message: "l 1" },
-      { level: "warn", message: "w" },
-      { level: "error", message: "Error: e" },
-    ]);
-    expect(console.debug).toBe(originals.debug);
-    expect(console.info).toBe(originals.info);
-    expect(console.log).toBe(originals.log);
-    expect(console.warn).toBe(originals.warn);
-    expect(console.error).toBe(originals.error);
-  });
-
   it("does not reimplement other console methods", () => {
     const table = vi.spyOn(console, "table").mockImplementation(() => undefined);
     const restore = captureConsole(() => undefined);

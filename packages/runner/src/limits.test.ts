@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_FRAME_BYTES } from "@ebbjs/functions-protocol";
-import type { LogEntry } from "@ebbjs/functions-runtime";
 
 import { HostCallLimitError, resolveLimits } from "./limits.ts";
-import { guardTransport, type HostTransport, type RunnerTransport } from "./transport.ts";
 
 describe("resolveLimits", () => {
   it("uses the documented defaults when the host states nothing", () => {
@@ -77,65 +75,5 @@ describe("HostCallLimitError", () => {
     expect(error.name).toBe("HostCallLimitError");
     expect(error.limit).toBe(3);
     expect(error.message).toContain("3");
-  });
-});
-
-describe("guardTransport", () => {
-  const counting = () => {
-    const calls: string[] = [];
-    const transport: RunnerTransport = {
-      call: (op) => {
-        calls.push(op);
-        return Promise.resolve(null);
-      },
-    };
-    return { transport, calls };
-  };
-
-  it("passes calls through under the budget", async () => {
-    const { transport, calls } = counting();
-    const logs: LogEntry[] = [];
-    const guarded = guardTransport({
-      transport,
-      maxHostCalls: 2,
-      log: (entry) => logs.push(entry),
-    });
-
-    await guarded.call("get", { id: "e_1" });
-    await guarded.call("commit", {});
-
-    expect(calls).toEqual(["get", "commit"]);
-  });
-
-  it("refuses past the budget without sending a frame", async () => {
-    const { transport, calls } = counting();
-    const guarded = guardTransport({ transport, maxHostCalls: 1, log: () => undefined });
-
-    await guarded.call("get", { id: "e_1" });
-    await expect(guarded.call("get", { id: "e_2" })).rejects.toBeInstanceOf(HostCallLimitError);
-    expect(calls).toEqual(["get"]);
-  });
-
-  it("routes log entries to the invocation's sink", () => {
-    const logs: LogEntry[] = [];
-    const guarded = guardTransport({
-      transport: counting().transport,
-      maxHostCalls: 1,
-      log: (entry) => logs.push(entry),
-    });
-
-    guarded.log?.({ level: "warn", message: "hi" });
-
-    expect(logs).toEqual([{ level: "warn", message: "hi" }]);
-  });
-
-  it("is a HostTransport", () => {
-    const guarded: HostTransport = guardTransport({
-      transport: counting().transport,
-      maxHostCalls: 1,
-      log: () => undefined,
-    });
-
-    expect(typeof guarded.call).toBe("function");
   });
 });

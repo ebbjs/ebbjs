@@ -302,4 +302,27 @@ describe("failure kinds", () => {
       message: "boom",
     });
   });
+
+  // A handler can throw anything; a thrown non-Error has no `.message` to read.
+  it("reports a thrown non-Error by its text", async () => {
+    const { session, frames } = harness(runInvocation);
+
+    session.receive(
+      encodeFrame(
+        invoke({
+          invocation_id: "inv_throw_string",
+          bundle: bundle('throw "boom";'),
+          entry: "handler",
+        }),
+      ),
+    );
+    await session.idle();
+
+    expect(results(frames)[0]).toEqual({
+      type: "result",
+      ok: false,
+      kind: "handler_error",
+      message: "boom",
+    });
+  });
 });
