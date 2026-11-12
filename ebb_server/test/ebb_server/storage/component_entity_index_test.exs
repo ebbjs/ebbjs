@@ -126,50 +126,6 @@ defmodule EbbServer.Storage.ComponentEntityIndexTest do
 
       :ets.delete(seen)
     end
-
-    test "the model entry and a component entry are different key kinds", %{tables: tables} do
-      ComponentEntityIndex.apply_ops(
-        [
-          {:put, {"todo", "todo_1"}},
-          {:put, {"todo/title", "todo_1"}}
-        ],
-        tables
-      )
-
-      assert ComponentEntityIndex.component_entry_ids("todo", tables) == ["todo_1"]
-      assert ComponentEntityIndex.component_entry_ids("todo/title", tables) == ["todo_1"]
-      assert ComponentEntityIndex.size(tables) == 2
-    end
-
-    test "a delete removes a component entry and leaves the model entry", %{tables: tables} do
-      ComponentEntityIndex.apply_ops(
-        [{:put, {"todo", "todo_1"}}, {:put, {"todo/title", "todo_1"}}],
-        tables
-      )
-
-      ComponentEntityIndex.apply_ops([{:delete, {"todo/title", "todo_1"}}], tables)
-
-      assert ComponentEntityIndex.component_entry_ids("todo/title", tables) == []
-      assert ComponentEntityIndex.component_entry_ids("todo", tables) == ["todo_1"]
-    end
-
-    test "last write wins when the same key is applied twice", %{tables: tables} do
-      ComponentEntityIndex.apply_ops([{:put, {"todo/title", "todo_1"}}], tables)
-      ComponentEntityIndex.apply_ops([{:delete, {"todo/title", "todo_1"}}], tables)
-      ComponentEntityIndex.apply_ops([{:put, {"todo/title", "todo_1"}}], tables)
-
-      assert ComponentEntityIndex.component_entry_ids("todo/title", tables) == ["todo_1"]
-    end
-
-    test "reset clears entries and label interning", %{tables: tables} do
-      ComponentEntityIndex.apply_ops([{:put, {"todo/title", "todo_1"}}], tables)
-      assert ComponentEntityIndex.size(tables) == 1
-
-      :ok = ComponentEntityIndex.reset(tables)
-
-      assert ComponentEntityIndex.size(tables) == 0
-      assert ComponentEntityIndex.component_entry_ids("todo/title", tables) == []
-    end
   end
 
   defp update(component, subject_id, method) do

@@ -54,7 +54,6 @@ defmodule EbbServer.Bench.ComponentIndex do
   @spec report() :: [
           %{
             k: pos_integer(),
-            index: %{ops: pos_integer(), bytes: pos_integer()},
             baseline: [measurement()],
             indexed: [measurement()],
             ablated: [measurement()]
@@ -79,7 +78,6 @@ defmodule EbbServer.Bench.ComponentIndex do
 
       %{
         k: k,
-        index: index_shape(k),
         baseline: Enum.map(runs, & &1.baseline),
         indexed: Enum.map(runs, & &1.indexed),
         ablated: Enum.map(runs, & &1.ablated)
@@ -120,25 +118,6 @@ defmodule EbbServer.Bench.ComponentIndex do
     after
       Boot.stop(boot)
     end
-  end
-
-  @doc """
-  The per-entity index cost of a k-component row: k component entries and
-  the bytes of their keys. The membership row an Action also writes is not
-  part of the entity's amplification.
-  """
-  @spec index_shape(pos_integer()) :: %{ops: pos_integer(), bytes: pos_integer()}
-  def index_shape(k) do
-    # Same id width as a nanoid, so the key bytes report the real shape rather
-    # than a benchmark-shortened id.
-    entity_id = "todo_" <> String.duplicate("x", 21)
-
-    keys =
-      for field <- 1..k do
-        encode_key("todo/f#{field}", entity_id)
-      end
-
-    %{ops: k, bytes: keys |> Enum.map(&byte_size/1) |> Enum.sum()}
   end
 
   @doc """
@@ -222,9 +201,6 @@ defmodule EbbServer.Bench.ComponentIndex do
   end
 
   defp table_bytes(table), do: :ets.info(table, :memory) * :erlang.system_info(:wordsize)
-
-  # The pre-#849 durable key, kept for the index-bytes column only.
-  defp encode_key(name, entity_id), do: <<name::binary, 0, entity_id::binary>>
 
   defp rss_delta(nil, _after_kb), do: nil
   defp rss_delta(_before_kb, nil), do: nil

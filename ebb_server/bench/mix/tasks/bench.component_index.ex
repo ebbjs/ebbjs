@@ -17,11 +17,9 @@ defmodule Mix.Tasks.Bench.ComponentIndex do
     - `model + components` — the shipped index;
     - `no index` — `--ablate component_entities`, for context.
 
-  `Index ops` and `Pre-#849 key bytes` are the per-entity amplification of
-  the old durable index over the model-only shape: k component entries for a
-  k-component row, where the pre-#799 index had none. The column is kept for
-  comparison; the derived store's key shape is priced by the resident-set
-  table below.
+  `Index ops` is the per-entity amplification over the model-only shape: k
+  component entries for a k-component row, where the pre-#799 index had none.
+  The derived store's key shape is priced by the resident-set table below.
 
   The resident-set table prices the derived in-memory index (#849): the same
   keys, a label interned to an integer and the id kept whole, one model entry
@@ -49,8 +47,8 @@ defmodule Mix.Tasks.Bench.ComponentIndex do
 
       One Action = one k-component `todo` row + its `entityGroup` row, through the real Writer.
 
-      | k | Index ops | Pre-#849 key bytes | Actions/s (model only) | Actions/s (model + components) | Added cost | Actions/s (no index) |
-      | -: | --------: | ----------: | ---------------------: | -----------------------------: | ---------: | -------------------: |
+      | k | Index ops | Actions/s (model only) | Actions/s (model + components) | Added cost | Actions/s (no index) |
+      | -: | --------: | ---------------------: | -----------------------------: | ---------: | -------------------: |
     #{Enum.map_join(rows, "\n", &row/1)}
 
     Component-index resident set (#849)
@@ -69,13 +67,13 @@ defmodule Mix.Tasks.Bench.ComponentIndex do
     """)
   end
 
-  defp row(%{k: k, index: index, baseline: baseline, indexed: indexed, ablated: ablated}) do
+  defp row(%{k: k, baseline: baseline, indexed: indexed, ablated: ablated}) do
     {baseline_median, baseline_range} = median(baseline)
     {indexed_median, indexed_range} = median(indexed)
     {ablated_median, ablated_range} = median(ablated)
     cost = 1 - indexed_median / baseline_median
 
-    "| #{k} | #{index.ops} | #{index.bytes} | #{rate(baseline_median)} #{baseline_range} | " <>
+    "| #{k} | #{k} | #{rate(baseline_median)} #{baseline_range} | " <>
       "#{rate(indexed_median)} #{indexed_range} | #{Float.round(cost * 100, 1)}% | " <>
       "#{rate(ablated_median)} #{ablated_range} |"
   end

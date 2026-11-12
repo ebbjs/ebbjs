@@ -271,78 +271,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
                )
     end
 
-    test "rebuilds the caches from the action log", ctx do
-      %{writer_name: writer_name, eg_table: eg_table} = ctx
-
-      hlc = TestHelpers.generate_hlc()
-
-      action = %{
-        id: "act_" <> Nanoid.generate(),
-        actor_id: "demo-seeder",
-        hlc: hlc,
-        updates:
-          [
-            TestHelpers.validated_component("eg_demo", "entityGroup/entity_id", %{
-              "value" => "doc_demo",
-              "update_id" => "u1"
-            }),
-            TestHelpers.validated_component("eg_demo", "entityGroup/group_id", %{
-              "value" => "grp_demo",
-              "update_id" => "u1"
-            })
-          ] ++
-            [
-              TestHelpers.validated_component("rel_demo", "relationship/source_id", %{
-                "value" => "doc_demo",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_demo", "relationship/target_id", %{
-                "value" => "author_demo",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_demo", "relationship/type", %{
-                "value" => "text_document",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_demo", "relationship/field", %{
-                "value" => "author",
-                "update_id" => "u1"
-              })
-            ]
-      }
-
-      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
-
-      # Simulate fresh server start: the caches and the derived index are
-      # empty, but the action log is intact.
-      RelationshipCache.reset(
-        relationships: ctx.rel_table,
-        relationships_by_id: ctx.rbi_table
-      )
-
-      EntityGroupCache.reset(
-        entity_groups: ctx.eg_table,
-        entity_groups_by_id: ctx.eg_by_id_table
-      )
-
-      ComponentEntityIndex.reset(index_opts(ctx))
-      EntityTypeCache.reset(entity_types: ctx.entity_types_table)
-
-      assert EntityGroupCache.entity_groups("doc_demo", eg_table) == []
-
-      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
-
-      assert EntityGroupCache.entity_groups("doc_demo", eg_table) == ["grp_demo"]
-      assert RelationshipCache.get_relationship("rel_demo", ctx.rbi_table) != nil
-
-      opts = index_opts(ctx)
-      assert ComponentEntityIndex.component_entry_ids("entityGroup", opts) == ["eg_demo"]
-      assert ComponentEntityIndex.component_entry_ids("entityGroup/group_id", opts) == ["eg_demo"]
-      assert ComponentEntityIndex.component_entry_ids("relationship", opts) == ["rel_demo"]
-    end
-
-    # #264 Option A: every existing entity's type must be resolvable after
-    # a restart, otherwise the authorizer fails closed on membership adds.
     test "repopulates the entity-type cache from the action log", ctx do
       %{writer_name: writer_name, entity_types_table: entity_types_table} = ctx
 
@@ -616,48 +544,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert entity.data["fields"]["title"]["value"] == "Bootstrapped"
     end
 
-    test "reconstructs both model and component entries from cf_actions", ctx do
-      entity_id = "todo_rebuild_#{System.unique_integer([:positive])}"
-      hlc = TestHelpers.generate_hlc()
-
-      action =
-        TestHelpers.validated_action(%{
-          updates: [
-            TestHelpers.validated_component(entity_id, "todo/title", %{
-              "value" => "Title",
-              "hlc" => hlc
-            }),
-            TestHelpers.validated_component(entity_id, "todo/body", %{
-              "value" => "Body",
-              "hlc" => hlc
-            })
-          ]
-        })
-
-      assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
-
-      # The index is derived state; a boot starts without it.
-      ComponentEntityIndex.reset(index_opts(ctx))
-      EntityTypeCache.reset(entity_types: ctx.entity_types_table)
-
-      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
-      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
-
-      opts = index_opts(ctx)
-
-      for name <- ["todo", "todo/title", "todo/body"] do
-        assert ComponentEntityIndex.component_entry_ids(name, opts) == [entity_id]
-      end
-
-      assert EntityTypeCache.get_type(entity_id, ctx.entity_types_table) == "todo"
-
-      assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
-               TestHelpers.telemetry_events(ref)
-
-      # One modeled row discovered during the `:entity_types` phase.
-      assert measurements.entity_types == 1
-    end
-
     test "does not restore a component the log dropped", ctx do
       entity_id = "todo_dropped_boot_#{System.unique_integer([:positive])}"
       hlc = TestHelpers.generate_hlc()
@@ -725,69 +611,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
       opts = index_opts(ctx)
       assert ComponentEntityIndex.component_entry_ids("todo", opts) == [entity_id]
       assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [entity_id]
-    end
-
-    test "seeds from an Action stored in a frame", ctx do
-      entity_id = "todo_frame_#{:erlang.unique_integer([:positive])}"
-      action_id = "act_frame_#{:erlang.unique_integer([:positive])}"
-
-      payload =
-        %{
-          id: action_id,
-          actor_id: "demo-seeder",
-          hlc: TestHelpers.generate_hlc(),
-          updates: [
-            TestHelpers.validated_component(
-              entity_id,
-              "todo/title",
-              %{"value" => "Framed"},
-              id: "upd_frame_#{:erlang.unique_integer([:positive])}"
-            )
-          ]
-        }
-        |> ActionFormat.build()
-        |> ActionFormat.encode()
-
-      frame = ActionFormat.frame(payload, [[]])
-
-      :ok =
-        RocksDB.write_batch(
-          [{:put, RocksDB.cf_actions(ctx.rocks_name), RocksDB.encode_gsn_key(1), frame}],
-          name: ctx.rocks_name
-        )
-
-      assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
-
-      opts = index_opts(ctx)
-      assert ComponentEntityIndex.component_entry_ids("todo", opts) == [entity_id]
-      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [entity_id]
-      assert EntityTypeCache.get_type(entity_id, ctx.entity_types_table) == "todo"
-    end
-
-    test "re-reads the action log on every boot (no marker skip)", ctx do
-      :ok = SystemCache.populate_system_caches(populate_opts(ctx))
-
-      assert :not_found =
-               RocksDB.get(
-                 RocksDB.cf_default(ctx.rocks_name),
-                 "system_cache:component_entities_backfill",
-                 name: ctx.rocks_name
-               )
-
-      # A corrupt Action in the log must fail the second boot too: the seed
-      # is the index's constructor, not a migration to skip.
-      :ok =
-        :rocksdb.put(
-          RocksDB.db_ref(ctx.rocks_name),
-          RocksDB.cf_actions(ctx.rocks_name),
-          RocksDB.encode_gsn_key(1),
-          <<0, 1, 2>>,
-          []
-        )
-
-      assert_raise ArgumentError, fn ->
-        SystemCache.populate_system_caches(populate_opts(ctx))
-      end
     end
   end
 

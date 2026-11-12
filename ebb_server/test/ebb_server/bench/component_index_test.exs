@@ -39,9 +39,4 @@ defmodule EbbServer.Bench.ComponentIndexTest do
     assert Enum.map(warmup, & &1.id) == ["a_ci_1", "a_ci_2"]
     assert Enum.map(measured, & &1.id) == ["a_ci_3", "a_ci_4"]
   end
-
-  test "index_shape reports k component entries and their key bytes" do
-    assert %{ops: 4, bytes: bytes} = ComponentIndex.index_shape(4)
-    assert bytes > 4 * byte_size("todo/f1")
-  end
 end
