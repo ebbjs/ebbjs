@@ -39,7 +39,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.in_flight_batches`            | `count`                               | —                                                   |
   | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                 | —                                                   |
   | `ebb.writer.flush_phase_ms`               | one native measurement per phase (`writer_flush_phases/0`) | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only) |
-  | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships`, `backfilled` | `outcome` (`:ok` / `:error`), `reason` |
+  | `ebb.system_cache.populated`              | `duration` (native), `entity_types`, `group_members`, `entity_groups`, `relationships` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (durability: max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.writer.in_flight_action_ids`         | `size`                                | —                                                   |
@@ -284,9 +284,8 @@ defmodule EbbServer.Telemetry do
   leaves the cursor where it was.
 
   `ebb.system_cache.populated` describes the startup cache rebuild. Counts are
-  the entities materialized into each cache plus the `cf_component_entities`
-  entries repaired by the one-time backfill migration (0 once the marker is
-  written), and `duration` is native. `outcome` is `:ok` on a clean rebuild and `:error`
+  the entities materialized into each cache plus the modeled rows the action
+  log seeded into the derived component index, and `duration` is native. `outcome` is `:ok` on a clean rebuild and `:error`
   when a phase raised; on failure the counts reached so far are still reported,
   so a half-populated cache is observable even though the node refuses to start
   serving. `reason` is the failure class — an exception module or the atom an

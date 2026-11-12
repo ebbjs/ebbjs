@@ -1,7 +1,8 @@
 defmodule EbbServer.Bench.ComponentIndex do
   @moduledoc """
-  Write amplification of `cf_component_entities` at k = 2, 4, 8 components
-  per entity (#799).
+  Write amplification of the component existence index at k = 2, 4, 8
+  components per entity (#799), and the resident set of the keys the derived
+  in-memory index holds (#849).
 
   Each measured Action creates one `todo` row carrying k components and one
   `entityGroup` row filing it into the bench group. That is the canonical
@@ -15,10 +16,16 @@ defmodule EbbServer.Bench.ComponentIndex do
   `Writer` (sync durability, no HTTP) with the index enabled and with
   `--ablate component_entities`, so the difference is the index's share of
   the commit cost rather than a storage primitive's.
+
+  The resident-set table is not a throughput run: it fills an ETS
+  `:ordered_set` with the derived index's keys — a label interned to an
+  integer, the id kept whole — at the #503 document-set row count and one
+  order of magnitude above it, and reports both the table's allocated bytes
+  and the process RSS delta.
   """
 
   alias EbbServer.Bench.{Boot, Options}
-  alias EbbServer.Storage.{RocksDB, Writer}
+  alias EbbServer.Storage.{ComponentEntityIndex, Writer}
 
   @k_values [2, 4, 8]
   @runs 5
@@ -30,6 +37,9 @@ defmodule EbbServer.Bench.ComponentIndex do
   @action_budget 20_000
   @warmup_actions 2_000
   @batch_size 25
+  # The #503 document set holds 10,000 documents; 100,000 is the headroom
+  # check the resident-set gate extrapolates from.
+  @resident_row_counts [10_000, 100_000]
   @port 4971
 
   @type measurement :: %{
@@ -125,10 +135,112 @@ defmodule EbbServer.Bench.ComponentIndex do
 
     keys =
       for field <- 1..k do
-        RocksDB.encode_component_entity_key("todo/f#{field}", entity_id)
+        encode_key("todo/f#{field}", entity_id)
       end
 
     %{ops: k, bytes: keys |> Enum.map(&byte_size/1) |> Enum.sum()}
+  end
+
+  @doc """
+  The in-memory index's resident set at the #503 document-set row count and
+  one order of magnitude above it, at every k.
+
+  Each row holds one model entry plus k component entries, keyed exactly as
+  the derived index keys them (`{label_id, entity_id}`). Tables stay resident
+  until every measurement is taken, so allocator page reuse from a deleted
+  table cannot hide one fill's cost. `rss_bytes` is the process RSS delta
+  across that fill; `ets_bytes` is the table's own allocator accounting and
+  is the cleaner signal when page reuse still makes the former noisy.
+  """
+  @spec resident_set() :: [
+          %{
+            rows: pos_integer(),
+            k: pos_integer(),
+            entries: pos_integer(),
+            labels: pos_integer(),
+            entries_bytes: non_neg_integer(),
+            labels_bytes: non_neg_integer(),
+            rss_bytes: non_neg_integer() | nil
+          }
+        ]
+  def resident_set do
+    measurements = for rows <- @resident_row_counts, k <- @k_values, do: {rows, k}
+
+    :erlang.garbage_collect()
+    rss_before = rss_kb()
+
+    {results, {tables, _rss}} =
+      Enum.map_reduce(measurements, {[], rss_before}, fn {rows, k}, {tables, previous_rss} ->
+        table_opts = resident_tables()
+        ComponentEntityIndex.reset(table_opts)
+
+        Enum.each(1..rows, fn seq ->
+          ComponentEntityIndex.apply_ops(resident_ops(k, seq), table_opts)
+        end)
+
+        rss_after = rss_kb()
+        {entries_table, labels_table} = ComponentEntityIndex.tables(table_opts)
+
+        result = %{
+          rows: rows,
+          k: k,
+          entries: :ets.info(entries_table, :size),
+          labels: :ets.info(labels_table, :size) - 1,
+          entries_bytes: table_bytes(entries_table),
+          labels_bytes: table_bytes(labels_table),
+          rss_bytes: rss_delta(previous_rss, rss_after)
+        }
+
+        {result, {[table_opts | tables], rss_after}}
+      end)
+
+    Enum.each(tables, fn opts ->
+      {entries, labels} = ComponentEntityIndex.tables(opts)
+      :ets.delete(entries)
+      :ets.delete(labels)
+    end)
+
+    results
+  end
+
+  defp resident_tables do
+    unique = :erlang.unique_integer([:positive])
+
+    [
+      component_index: :"component_index_bench_#{unique}",
+      component_entity_labels: :"component_entity_labels_bench_#{unique}"
+    ]
+  end
+
+  defp resident_ops(k, seq) do
+    # A nanoid's width, so the resident set is the one the server would hold
+    # rather than a benchmark-shortened key.
+    entity_id = "todo_" <> String.duplicate("x", 16) <> Integer.to_string(seq)
+
+    components = for field <- 1..k, do: {:put, {"todo/f#{field}", entity_id}}
+    [{:put, {"todo", entity_id}} | components]
+  end
+
+  defp table_bytes(table), do: :ets.info(table, :memory) * :erlang.system_info(:wordsize)
+
+  # The pre-#849 durable key, kept for the index-bytes column only.
+  defp encode_key(name, entity_id), do: <<name::binary, 0, entity_id::binary>>
+
+  defp rss_delta(nil, _after_kb), do: nil
+  defp rss_delta(_before_kb, nil), do: nil
+  defp rss_delta(before_kb, after_kb), do: max(after_kb - before_kb, 0) * 1024
+
+  defp rss_kb do
+    case File.read("/proc/self/status") do
+      {:ok, content} ->
+        case Regex.run(~r/^VmRSS:\s+(\d+)\s+kB/m, content) do
+          [_, kb] -> String.to_integer(kb)
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   @doc """

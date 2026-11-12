@@ -18,19 +18,18 @@ defmodule EbbServer.Bench.Options do
   readers.
 
   `t5` runs no Writer, so it honours only the phases that name an op group:
-  `:dedup`, `:entity_actions`, `:component_entries`, `:component_entities`
-  and `:group_index`. Ablating those drops the corresponding `cf_*` puts from
-  the spike's batch, which is how the bench prices the stored shape of an
-  Action (`--ablate dedup,entity_actions,component_entities,group_index`
-  leaves a `cf_actions`-only batch). `:component_entries` drops only the
-  per-component half, leaving the model entry: the pre-#799 index shape.
+  `:dedup`, `:entity_actions`, `:entity_index` and `:group_index`. Ablating
+  those drops the corresponding `cf_*` puts from the spike's batch, which is
+  how the bench prices the stored shape of an Action
+  (`--ablate dedup,entity_actions,group_index` leaves a `cf_actions`-only
+  batch).
 
-  `:entity_index` is kept as the combined alias for the two halves of the
-  entity index: it ablates both `cf_entity_actions` and
-  `cf_component_entities`, so commands that used it keep meaning what they did.
-  The `:type_entities` half is not aliased: #799 renamed it to
-  `:component_entities`, so a command that names the old phase must be updated.
-  Use `:entity_actions` and `:component_entities` to price the halves apart.
+  The component index is derived state (#849), so `:component_entries` and
+  `:component_entities` no longer name a `t5` op group: they price the Writer's
+  in-memory apply, which is all `bench.actions` has to measure for them.
+  `:entity_index` remains the combined alias on the Writer path, but on `t5`
+  it only drops `cf_entity_actions` because there is no `cf_component_entities`
+  batch op left to drop.
 
   ## Pipeline depth
 
@@ -216,8 +215,6 @@ defmodule EbbServer.Bench.Options do
   @t5_op_phases [
     :dedup,
     :entity_actions,
-    :component_entries,
-    :component_entities,
     :entity_index,
     :group_index
   ]

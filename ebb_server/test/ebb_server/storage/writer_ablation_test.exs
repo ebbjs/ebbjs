@@ -10,7 +10,13 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{EntityTypeCache, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{
+    ComponentEntityIndex,
+    EntityTypeCache,
+    RocksDB,
+    WatermarkTracker,
+    Writer
+  }
 
   import EbbServer.TestHelpers
 
@@ -44,47 +50,61 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
     test ":entity_actions drops only cf_entity_actions", ctx do
       writer = start_capturing_writer(ctx, [:entity_actions])
+      subject_id = "todo_ablated_entity_actions"
+      action = action_for(subject_id)
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
       assert_receive {:captured_ops, ops}
       assert puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name)) == []
 
-      # One model entry plus one component entry for the one component Update.
-      assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 2
+      # The in-memory index is untouched by the ablation: one model entry plus
+      # one component entry for the one component Update.
+      assert ComponentEntityIndex.component_entry_ids("todo", index_opts(ctx)) == [subject_id]
+
+      assert ComponentEntityIndex.component_entry_ids("todo/title", index_opts(ctx)) == [
+               subject_id
+             ]
     end
 
-    test ":component_entries drops only the per-component entries", ctx do
+    test ":component_entries keeps model entries and drops component entries", ctx do
       writer = start_capturing_writer(ctx, [:component_entries])
+      subject_id = "todo_ablated_component_entries"
+      action = action_for(subject_id)
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
       assert_receive {:captured_ops, ops}
 
       # The model entry is the pre-#799 one-row-per-row shape; only the
       # component entry is gone.
-      assert length(puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name))) == 1
+      assert ComponentEntityIndex.component_entry_ids("todo", index_opts(ctx)) == [subject_id]
+      assert ComponentEntityIndex.component_entry_ids("todo/title", index_opts(ctx)) == []
       assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
     end
 
-    test ":component_entities drops only cf_component_entities", ctx do
+    test ":component_entities leaves the in-memory index empty", ctx do
       writer = start_capturing_writer(ctx, [:component_entities])
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+      action = action_for("todo_ablated_component_entities")
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
       assert_receive {:captured_ops, ops}
-      assert puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name)) == []
+      assert ComponentEntityIndex.size(index_opts(ctx)) == 0
       assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
     end
 
-    test ":entity_index drops cf_entity_actions and cf_component_entities", ctx do
+    test ":entity_index drops cf_entity_actions and leaves the index empty", ctx do
       writer = start_capturing_writer(ctx, [:entity_index])
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([validated_action()], writer)
+      action = action_for("todo_ablated_entity_index")
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
       assert_receive {:captured_ops, ops}
       assert puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name)) == []
-      assert puts_to(ops, RocksDB.cf_component_entities(ctx.rocks_name)) == []
+      assert ComponentEntityIndex.size(index_opts(ctx)) == 0
       assert length(puts_to(ops, RocksDB.cf_actions(ctx.rocks_name))) == 1
     end
 
@@ -260,6 +280,19 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
   defp puts_to(ops, cf) do
     for {:put, ^cf, _key, _value} <- ops, do: :ok
+  end
+
+  defp index_opts(ctx) do
+    [
+      component_index: ctx.component_index,
+      component_entity_labels: ctx.component_entity_labels
+    ]
+  end
+
+  defp action_for(subject_id) do
+    validated_action(%{
+      updates: [validated_component(subject_id, "todo/title", %{"value" => "x"})]
+    })
   end
 
   defp stored_scopes(ops, rocks_name) do

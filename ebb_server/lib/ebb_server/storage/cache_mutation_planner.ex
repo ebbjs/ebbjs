@@ -138,11 +138,11 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     Enum.reverse(kept)
   end
 
-  # The entity-type cache mirrors the model entries of
-  # `cf_component_entities`, which the Writer writes for every row (including
-  # deletes, whose entry stays). A delete's model is the committed one the
-  # fold resolved; an id nothing records has nothing to index, and an Action
-  # cannot invent a model for it.
+  # The entity-type cache mirrors the derived component index's model entries,
+  # which the Writer applies for every row (including deletes, whose entry
+  # stays). A delete's model is the committed one the fold resolved; an id
+  # nothing records has nothing to index, and an Action cannot invent a model
+  # for it.
   defp plan_update(%{model: nil} = update, tables, {mutations, overlay}) do
     plan_system_mutation(update, tables, mutations, overlay)
   end

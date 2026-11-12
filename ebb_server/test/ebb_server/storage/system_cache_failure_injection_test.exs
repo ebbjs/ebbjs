@@ -1,14 +1,12 @@
 defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   @moduledoc """
-  A failed backfill or materialization must stop the rebuild instead of
-  serving a half-built index (ebbjs/ebbjs#421, #641 slice 7).
+  A failed materialization during the boot seed must stop the rebuild instead
+  of serving a half-built cache (ebbjs/ebbjs#421, #641 slice 7).
 
-  Every failure below is produced by the real store: an entity the action
-  log cannot materialize, a malformed index key, and a database opened
-  read-only so reads succeed and every write genuinely fails. Each test
-  asserts what a caller observes — the rebuild raises or exits, the caches
-  it was filling are not served, and the durable marker that would skip the
-  migration next boot is not written.
+  Every failure below is produced by the real store: the action log cannot
+  materialize an indexed row, a dependency call crashes, or a registry exits.
+  Each test asserts what a caller observes — the rebuild raises or exits and
+  the caches it was filling are not served.
   """
 
   # Stands in for the read dependency at the one seam the rebuild reaches it
@@ -47,6 +45,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
 
   alias EbbServer.Storage.{
     ActionFormat,
+    ComponentEntityIndex,
     EntityTypeCache,
     GroupCache,
     RocksDB,
@@ -55,21 +54,6 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   }
 
   alias EbbServer.TestHelpers
-
-  @marker_key "system_cache:component_entities_backfill"
-
-  # Mirrors `RocksDB.@handle_keys`. The read-only database below has to
-  # publish handles the module's accessors can read, and `RocksDB` only opens
-  # read-write; this is the smallest way to make its writes fail for real.
-  @handle_keys %{
-    db: :ebb_rocksdb_db,
-    default: :ebb_cf_default,
-    actions: :ebb_cf_actions,
-    entity_actions: :ebb_cf_entity_actions,
-    component_entities: :ebb_cf_component_entities,
-    action_dedup: :ebb_cf_action_dedup,
-    group_actions: :ebb_cf_group_actions
-  }
 
   setup do
     unique = System.unique_integer([:positive])
@@ -113,80 +97,31 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     end
   end
 
-  describe "component-entities index walking" do
-    test "a key without a model separator is dropped, and a component entry is not a model",
-         ctx do
+  describe "component index walking" do
+    test "the seed indexes the models the log names, not the component names", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      db = RocksDB.db_ref(ctx.rocks.name)
-      cf = RocksDB.cf_component_entities(ctx.rocks.name)
+      entity_id = "todo_seeded_#{System.unique_integer([:positive])}"
 
-      # A half-written key: `cf_component_entities` keys are `name <> 0 <> id`.
-      :ok = :rocksdb.put(db, cf, "groupMembe", <<>>, [])
-      seed_model_entry(ctx, "todo", "todo_well_formed")
+      action =
+        TestHelpers.validated_action(%{
+          updates: [
+            TestHelpers.validated_component(entity_id, "todo/title", %{"value" => "Title"})
+          ]
+        })
 
-      :ok =
-        :rocksdb.put(
-          db,
-          cf,
-          RocksDB.encode_component_entity_key("todo/title", "todo_component_only"),
-          <<>>,
-          []
-        )
+      seed_actions(ctx, [action])
+      ComponentEntityIndex.reset(index_opts(ctx))
 
       assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
-      assert EntityTypeCache.get_type("todo_well_formed", ctx.tables.entity_types) == "todo"
-      assert EntityTypeCache.get_type("groupMembe", ctx.tables.entity_types) == nil
-      assert EntityTypeCache.get_type("todo_component_only", ctx.tables.entity_types) == nil
+      assert EntityTypeCache.get_type(entity_id, ctx.tables.entity_types) == "todo"
+      assert EntityTypeCache.get_type("todo/title", ctx.tables.entity_types) == nil
 
       assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
                TestHelpers.telemetry_events(ref)
 
       assert measurements.entity_types == 1
-    end
-  end
-
-  describe "backfill writes" do
-    test "a missing index entry that cannot be written fails the rebuild", ctx do
-      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
-
-      seed_action(ctx, "todo_backfill_unwritable")
-      reopen_read_only(ctx)
-
-      assert_raise RuntimeError, ~r/cf_component_entities backfill write failed/, fn ->
-        SystemCache.populate_system_caches(populate_opts(ctx))
-      end
-
-      assert [
-               {[:ebb, :system_cache, :populated], measurements,
-                %{outcome: :error, reason: RuntimeError}}
-             ] =
-               TestHelpers.telemetry_events(ref)
-
-      assert measurements.backfilled == 0
-      assert measurements.group_members == 0
-      assert marker(ctx) == :not_found
-    end
-
-    test "a marker that cannot be written fails the rebuild", ctx do
-      ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
-
-      reopen_read_only(ctx)
-
-      assert_raise RuntimeError, ~r/default column family marker write failed/, fn ->
-        SystemCache.populate_system_caches(populate_opts(ctx))
-      end
-
-      assert [
-               {[:ebb, :system_cache, :populated], measurements,
-                %{outcome: :error, reason: RuntimeError}}
-             ] =
-               TestHelpers.telemetry_events(ref)
-
-      assert measurements.backfilled == 0
-      assert measurements.group_members == 0
-      assert marker(ctx) == :not_found
     end
   end
 
@@ -251,6 +186,8 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
         entity_groups_by_id: tables.entity_groups_by_id,
         entity_groups_by_group: tables.entity_groups_by_group,
         entity_types: tables.entity_types,
+        component_index: tables.component_index,
+        component_entity_labels: tables.component_entity_labels,
         relationships: tables.relationships,
         relationships_by_id: tables.relationships_by_id
       ],
@@ -258,41 +195,33 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     )
   end
 
-  defp seed_model_entry(ctx, model, entity_id) do
-    :ok =
-      :rocksdb.put(
-        RocksDB.db_ref(ctx.rocks.name),
-        RocksDB.cf_component_entities(ctx.rocks.name),
-        RocksDB.encode_component_entity_key(model, entity_id),
-        <<>>,
-        []
-      )
+  defp index_opts(ctx) do
+    [
+      component_index: ctx.tables.component_index,
+      component_entity_labels: ctx.tables.component_entity_labels
+    ]
   end
 
-  defp seed_action(ctx, entity_id) do
-    payload =
-      %{
-        id: "act_#{System.unique_integer([:positive])}",
-        actor_id: "demo-seeder",
-        hlc: TestHelpers.generate_hlc(),
-        updates: [
-          TestHelpers.validated_component(
-            entity_id,
-            "todo/title",
-            %{"value" => "seeded"},
-            id: "upd_#{System.unique_integer([:positive])}"
-          )
-        ]
-      }
+  defp seed_model_entry(ctx, model, entity_id) do
+    ComponentEntityIndex.apply_ops([{:put, {model, entity_id}}], index_opts(ctx))
+  end
+
+  defp seed_actions(ctx, actions) do
+    actions
+    |> Enum.with_index(1)
+    |> Enum.each(fn {action, gsn} -> seed_action(ctx, action, gsn) end)
+  end
+
+  defp seed_action(ctx, action, gsn) do
+    frame =
+      action
       |> ActionFormat.build()
       |> ActionFormat.encode()
+      |> then(&ActionFormat.frame(&1, [[]]))
 
     :ok =
       RocksDB.write_batch(
-        [
-          {:put, RocksDB.cf_actions(ctx.rocks.name), RocksDB.encode_gsn_key(1),
-           ActionFormat.frame(payload, [[]])}
-        ],
+        [{:put, RocksDB.cf_actions(ctx.rocks.name), RocksDB.encode_gsn_key(gsn), frame}],
         name: ctx.rocks.name
       )
   end
@@ -318,48 +247,5 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
         "permissions" => %{"value" => ["group.read"]}
       }
     })
-  end
-
-  defp marker(ctx) do
-    RocksDB.get(RocksDB.cf_default(ctx.rocks.name), @marker_key, name: ctx.rocks.name)
-  end
-
-  # Close the writable database, then reopen the same directory read-only and
-  # publish its handles under the same name. Reads then work and every write
-  # returns a real RocksDB "not supported in read only mode" error.
-  defp reopen_read_only(ctx) do
-    dir = ctx.rocks.dir
-    name = ctx.rocks.name
-
-    :ok = GenServer.stop(ctx.rocks.pid, :normal)
-
-    path = dir |> Path.join("rocksdb") |> String.to_charlist()
-    {:ok, cf_names} = :rocksdb.list_column_families(path, [])
-    {:ok, db, cf_handles} = :rocksdb.open_readonly(path, [], Enum.map(cf_names, &{&1, []}))
-
-    handles =
-      cf_names
-      |> Enum.zip(cf_handles)
-      |> Map.new(fn {cf_name, handle} -> {List.to_string(cf_name), handle} end)
-
-    published = %{
-      db: db,
-      default: handles["default"],
-      actions: handles["cf_actions"],
-      entity_actions: handles["cf_entity_actions"],
-      component_entities: handles["cf_component_entities"],
-      action_dedup: handles["cf_action_dedup"],
-      group_actions: handles["cf_group_actions"]
-    }
-
-    Enum.each(@handle_keys, fn {key, term_key} ->
-      :persistent_term.put({term_key, name}, Map.fetch!(published, key))
-    end)
-
-    on_exit(fn ->
-      Enum.each(@handle_keys, fn {_key, term_key} ->
-        :persistent_term.erase({term_key, name})
-      end)
-    end)
   end
 end
