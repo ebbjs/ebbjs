@@ -179,11 +179,17 @@ defmodule EbbServer.Storage.ActionValidator do
         {:error, "invalid_structure", "action updates must be a non-empty list"}
 
       true ->
-        with :ok <- validate_updates_structure(action["updates"]) do
-          with :ok <- validate_subject_models(action["updates"]) do
-            validate_subject_components(action["updates"])
-          end
-        end
+        validate_updates(action["updates"])
+    end
+  end
+
+  # Ordered: the per-Update shape first, so every component below is well
+  # formed; the model check next, because it reads the prefix; and the
+  # platform-component count last.
+  defp validate_updates(updates) do
+    with :ok <- validate_updates_structure(updates),
+         :ok <- validate_subject_models(updates) do
+      validate_subject_components(updates)
     end
   end
 
