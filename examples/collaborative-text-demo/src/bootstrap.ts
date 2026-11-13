@@ -61,7 +61,7 @@ export interface DemoTestConfig {
   exposeState?: boolean;
   /**
    * Override the demo's seed group id. Each Playwright spec that sets
-   * this gets a fresh group (with its own member / relationship / doc)
+   * this gets a fresh group (with its own `ebb/grant`, `ebb/link`, and doc)
    * so actions from prior specs don't leak into the next via catchUp.
    * See #197 for the latent bug this isolates.
    */

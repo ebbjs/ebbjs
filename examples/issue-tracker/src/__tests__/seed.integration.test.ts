@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "@ebbjs/client";
 import { schema } from "../schema";
 import {
+  APP_ID,
   SAMPLE_ISSUE_ID,
   SEED_PERMISSIONS,
   SEEDER_ACTOR_ID,
@@ -98,11 +99,12 @@ describe("integration: issue-tracker seed", () => {
     expect(row!.avatar_url).toBe("");
   });
 
-  it("the actor's group reads back with the seeded name", async () => {
+  it("the actor's group reads back with the seeded name and app scope", async () => {
     if (!(await serverIsReachable())) return;
     const row = findRow(await actor!.group.query(), IDS.groupId);
     expect(row).toBeDefined();
     expect(row!.name).toBe(`${ACTOR_ID}'s Workspace`);
+    expect(row!.apps).toEqual([APP_ID]);
   });
 
   it("the actor's own membership reads back with the seed permissions", async () => {

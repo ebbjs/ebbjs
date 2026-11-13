@@ -1,7 +1,7 @@
 /**
  * Workspace membership controls for the shared workspace.
  *
- * Membership is the reserved `groupMember` store; this panel reads the
+ * Membership is the platform's `ebb/grant` rows; this panel reads the
  * actor's own row out of it to decide what to show. Joining is two writes
  * by two actors (#623): the workspace's service actor (`demo-seeder`)
  * invites — groups are closed by default (#126) — and then this actor's

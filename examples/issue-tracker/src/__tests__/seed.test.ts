@@ -50,9 +50,7 @@ describe("buildActorSeed", () => {
   const seed = buildActorSeed(actorId);
 
   it("creates the actor's group and own membership with the seed permissions", () => {
-    expect(seed.groups).toEqual([
-      { id: ids.groupId, name: "alice's Workspace", apps: { [APP_ID]: true } },
-    ]);
+    expect(seed.groups).toEqual([{ id: ids.groupId, name: "alice's Workspace", apps: [APP_ID] }]);
     expect(seed.groupMembers).toEqual([
       {
         id: ids.memberId,
@@ -109,7 +107,7 @@ describe("buildSharedSeed", () => {
 
   it("creates the shared group and the seeder's membership", () => {
     expect(seed.groups).toEqual([
-      { id: SHARED_GROUP_ID, name: "Shared Workspace", apps: { [APP_ID]: true } },
+      { id: SHARED_GROUP_ID, name: "Shared Workspace", apps: [APP_ID] },
     ]);
     expect(seed.groupMembers).toEqual([
       {

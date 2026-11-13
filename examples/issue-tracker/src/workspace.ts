@@ -1,11 +1,11 @@
 /**
  * Workspace membership for the issue-tracker demo.
  *
- * A workspace is a Group; an actor joins through a `groupMember` row, and their
- * group-scoped `profile` is made visible by an `entityGroup` row. Those two
+ * A workspace is a Group; an actor joins through an `ebb/grant` row, and their
+ * group-scoped `profile` is made visible by an `ebb/membership` row. Those two
  * writes belong to different actors, so they cannot share an Action:
  *
- * 1. **Invite** — a workspace member puts the invitee's `groupMember` row
+ * 1. **Invite** — a workspace member puts the invitee's `ebb/grant` row
  *    (`inviteMember`, run by the `demo-seeder` service actor since groups are
  *    closed by default, #126).
  * 2. **Share** — the invitee's own client files their profile
@@ -17,7 +17,7 @@
  * Between the two Actions the member exists and the profile does not: the
  * `profile-pending` window. Leaving is self-service with the same owner-side
  * authority, and one `leaveWorkspace` Action, drafted profile first — that write
- * is authorized in the personal group, which survives the `groupMember` delete.
+ * is authorized in the personal group, which survives the `ebb/grant` delete.
  *
  * The helpers here sequence reads and Actions; the Actions themselves live in
  * `./actions`.
@@ -40,7 +40,7 @@ export interface InviteToWorkspaceInput {
 }
 
 /**
- * Invite `actorId` into `groupId` unless a live `groupMember` row already names
+ * Invite `actorId` into `groupId` unless a live `ebb/grant` row already names
  * them. Catching up first matters: a membership removed since the inviter's last
  * read otherwise looks like a live one, and a leave-then-rejoin becomes a
  * duplicate invite.
@@ -89,7 +89,7 @@ export interface LeaveWorkspaceInput {
 }
 
 /**
- * Drop the actor's `groupMember` row and their profile's membership in
+ * Drop the actor's `ebb/grant` row and their profile's membership in
  * `groupId` as one Action.
  */
 export async function leaveWorkspace(input: LeaveWorkspaceInput): Promise<boolean> {

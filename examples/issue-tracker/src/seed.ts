@@ -5,9 +5,9 @@
  * `client.seed()`:
  *
  * 1. The signed-in actor's personal workspace (`grp_<actorId>`) with
- *    their own `groupMember` row, a `workspace` and a `profile`, and one
- *    `entityGroup` per user entity. Attributed to the actor, so the
- *    server's group-bootstrap exemption sees the actor bootstrapping
+ *    their own `ebb/grant` row, a `workspace` and a `profile`, and one
+ *    `ebb/membership` row per user entity. Attributed to the actor, so
+ *    the server's group-bootstrap exemption sees the actor bootstrapping
  *    their own group.
  * 2. A shared workspace seeded by the dedicated service actor
  *    `demo-seeder` (the invite/service-account pattern from #126),
@@ -17,8 +17,8 @@
  * Every id is derived from the actor id (or a fixed literal for the
  * shared fixtures), so re-running on reload is idempotent: the same rows
  * are re-`put`, and the seed permissions cover the re-put path (a
- * committed group is authorized by `group.create` in that group, not by
- * the bootstrap exemption).
+ * committed group is authorized by `ebb/group.create` in that group, not
+ * by the bootstrap exemption).
  *
  * Browser-safe by construction: this module imports only
  * `@ebbjs/core/seed`.
@@ -31,23 +31,23 @@ import { issue, profile, workspace } from "./schema";
 export const SEEDER_ACTOR_ID = "demo-seeder";
 
 /**
- * App label the demo's groups are scoped to (#732). A client created
- * with this id syncs only the groups whose scope names it, plus any
- * unscoped group.
+ * App id the demo's groups are scoped to (#732). A client created with
+ * this id syncs only the groups whose `ebb/group` value lists it, plus
+ * any unscoped group.
  */
 export const APP_ID = "issue-tracker";
 
 /**
  * Permissions the seed grants each actor in their own group. Broad enough
  * that the idempotent re-seed passes the permission table on reload: the
- * group, its own membership, and every user entity it files are all
- * writable by the actor that created them.
+ * group, its own grant, and every user entity it files are all writable by
+ * the actor that created them.
  */
 export const SEED_PERMISSIONS = [
-  "group.*",
-  "groupMember.*",
-  "entityGroup.*",
-  "relationship.*",
+  "ebb/group.*",
+  "ebb/grant.*",
+  "ebb/membership.*",
+  "ebb/link.*",
   "workspace.*",
   "profile.*",
   "issue.*",
@@ -57,16 +57,16 @@ export const SEED_PERMISSIONS = [
  * Permissions the workspace grants an invited member.
  *
  * Deliberately not {@link SEED_PERMISSIONS}: a member needs to read and
- * write issues, drop their own `groupMember` row to leave, and file their
- * own profile (`profile.create` in the target group). `profile.update`,
- * `entityGroup.*` and `group.*` are what let a member file *another*
- * actor's entity into the workspace before #623 closed it, and nothing in
- * the demo needs them here: profile writes authorize over the union of the
- * profile's groups, which includes the actor's personal group.
+ * write issues, drop their own `ebb/grant` row to leave, and file their
+ * own profile (`profile.create` in the target group). `profile.update` in
+ * another actor's group is what let a member file that actor's entity into
+ * the workspace before #623 closed it; nothing in the demo needs it, since
+ * a profile write authorizes over the union of the profile's groups, which
+ * includes the actor's personal group.
  */
 export const MEMBER_PERMISSIONS = [
-  "groupMember.*",
-  "relationship.*",
+  "ebb/grant.*",
+  "ebb/link.*",
   "workspace.*",
   "issue.*",
   "profile.create",
@@ -116,7 +116,7 @@ export function buildActorSeed(actorId: string): SeedData {
   const workspaceName = `${actorId}'s Workspace`;
 
   return {
-    groups: [{ id: ids.groupId, name: workspaceName, apps: { [APP_ID]: true } }],
+    groups: [{ id: ids.groupId, name: workspaceName, apps: [APP_ID] }],
     groupMembers: [
       {
         id: ids.memberId,
@@ -147,7 +147,7 @@ export function buildActorSeed(actorId: string): SeedData {
 /** The shared workspace fixtures, attributed to `demo-seeder`. */
 export function buildSharedSeed(): SeedData {
   return {
-    groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace", apps: { [APP_ID]: true } }],
+    groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace", apps: [APP_ID] }],
     groupMembers: [
       {
         id: SHARED_MEMBER_ID,

@@ -62,7 +62,7 @@ export const deleteIssue = defineAction(schema, ({ issue }, params: { id: string
 });
 
 /**
- * Put the joining actor's `groupMember` row for a workspace group. Groups are
+ * Put the joining actor's `ebb/grant` row for a workspace group. Groups are
  * closed by default (#126), so the demo's service actor runs this to invite.
  */
 export const inviteMember = defineAction(
@@ -96,9 +96,9 @@ export const shareProfile = defineAction(
 );
 
 /**
- * Leave a workspace: the profile's membership and the actor's `groupMember` row
+ * Leave a workspace: the profile's membership and the actor's `ebb/grant` row
  * in one Action. Both are the member's own rows, and the profile write is
- * authorized in the personal group, which survives the `groupMember` deletion.
+ * authorized in the personal group, which survives the `ebb/grant` deletion.
  */
 export const leaveWorkspace = defineAction(
   schema,

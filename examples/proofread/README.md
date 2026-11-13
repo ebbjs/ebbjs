@@ -63,7 +63,7 @@ in the Action; the external call is outside it by construction.
 
 `ctx.create` requires the groups the row is filed into, so the example files
 every comment into the caller's workspace group. One invocation is one Action:
-the comments and their `entityGroup` rows commit together.
+the comments and their `ebb/membership` rows commit together.
 
 ## Run it
 
@@ -110,7 +110,7 @@ CLI is the `@ebbjs/cli` workspace package, so the root build below links its
    unpinned versions. The admin token is
    only the deploy credential; it is never an invoke grant.
 
-4. Grant the caller. The invoking actor needs a `groupMember` row whose
+4. Grant the caller. The invoking actor needs an `ebb/grant` row whose
    permissions include:
    - `function.proofreadDocument` — the invocation itself;
    - `comment.create` — the write the handler performs in the workspace group.
