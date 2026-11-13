@@ -45,7 +45,7 @@ const schema = defineSchema({
 - `"field"` surfaces a same-position race, and a concurrent `delete` or `drop` of a component the local write holds (the component is reverted on the server).
 - `"component"` surfaces any concurrent touch of the same component, even one that writes a different map key, and holds only that component.
 - `"entity"` surfaces any concurrent touch of an entity that has buffered local writes.
-- `"none"` marks a structural component whose writes are never surfaced and never hold another write. The SDK's edge (`relationship`), membership (`entityGroup`), and grant (`groupMember`) components declare it.
+- A component declared `structural: true` opts out of detection entirely: its writes converge last-writer-wins and never surface or hold. The SDK's edge (`relationship`), membership (`entityGroup`), and grant (`groupMember`) components declare it.
 - Unknown components default to `"field"`.
 
 A component-scope hold does not block a sibling component's flush. An Action cannot be sent in part, so an Action that writes a held component and a free one waits whole. `conflictScope` is declared on each component, so one document can mix scope granularities. Every document is its own entity ([#398](https://github.com/ebbjs/ebbjs/issues/398)), so a blanket `text_document.*` grant becomes one grant per document entity.

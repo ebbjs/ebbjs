@@ -29,9 +29,8 @@ import type { ConflictHold, ConflictSide, ConflictSlot } from "@ebbjs/storage/ty
 
 import { projectFieldValue } from "./query-builder";
 
-/** Granularity ordering for a conflict: `none` < `field` < `component` < `entity`. */
+/** Granularity ordering for a conflict: `field` < `component` < `entity`. */
 const SCOPE_RANK: Readonly<Record<ConflictScope, number>> = {
-  none: 0,
   field: 1,
   component: 2,
   entity: 3,
@@ -41,7 +40,7 @@ const SCOPE_RANK: Readonly<Record<ConflictScope, number>> = {
 export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
   scopes.reduce<ConflictScope>(
     (coarsest, scope) => (SCOPE_RANK[scope] > SCOPE_RANK[coarsest] ? scope : coarsest),
-    "none",
+    "field",
   );
 
 /** The component-kind oracle the outbox injects; `undefined` defaults to LWW. */

@@ -170,10 +170,10 @@ _Avoid_: tier, cache policy, eviction policy
 
 **Conflict scope**:
 The granularity at which a concurrent write is surfaced as a conflict: _field_,
-_component_, or _entity_ (and _none_ for a structural component that never
-surfaces). Declared per component. A field- or component-scope conflict holds
-the contested component; an entity-scope conflict holds every pending write to
-the row.
+_component_, or _entity_. Declared per component. A field- or component-scope
+conflict holds the contested component; an entity-scope conflict holds every
+pending write to the row. A _structural_ component opts out of detection
+entirely rather than declaring a scope.
 _Avoid_: conflict level, conflict granularity
 
 **Project**:
@@ -186,8 +186,9 @@ _Avoid_: hydrate, denormalize, resolve
 
 **System component**:
 A component in the `ebb/` namespace the platform owns and interprets:
-`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is atomic, declares
-a scope owner, and carries its own permission.
+`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is atomic,
+structural (never surfaced as a conflict), declares a scope owner, and carries
+its own permission.
 _Avoid_: system entity type, built-in type
 
 **Scope owner**:

@@ -118,10 +118,9 @@ export interface OutboxConflict {
    * The looser of the losing positions' declared scopes. `"entity"` when
    * any losing position declared entity scope, else the next coarsest of
    * `"component"` and `"field"`. The union is spelled inline so storage
-   * stays independent of the schema package; `"none"` never appears on a
-   * persisted loss because such a component is never surfaced.
+   * stays independent of the schema package.
    */
-  readonly scope: "none" | "field" | "component" | "entity";
+  readonly scope: "field" | "component" | "entity";
   /**
    * The concurrent missed Actions that touched the losing subjects,
    * deduped by action id, in window order. The remote half of the
@@ -150,7 +149,7 @@ export interface StoredOutboxConflict extends Omit<
   OutboxConflict,
   "scope" | "remoteActions" | "holds"
 > {
-  readonly scope?: "none" | "field" | "component" | "entity";
+  readonly scope?: "field" | "component" | "entity";
   readonly remoteActions?: readonly ConflictRemoteAction[];
   /** Absent on a row written before the component hold; the whole subject is held. */
   readonly holds?: readonly ConflictHold[];

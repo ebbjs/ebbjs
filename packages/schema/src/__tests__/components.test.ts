@@ -26,6 +26,7 @@ describe("defineComponent", () => {
         loading: "eager",
         conflictScope: "field",
         indexed: false,
+        structural: false,
         permission: undefined,
         version: 1,
       }),
@@ -42,6 +43,7 @@ describe("defineComponent", () => {
         loading: "lazy",
         conflictScope: "component",
         indexed: true,
+        structural: true,
         permission: "own",
         version: 2,
       },
@@ -51,6 +53,7 @@ describe("defineComponent", () => {
     expect(body.loading).toBe("lazy");
     expect(body.conflictScope).toBe("component");
     expect(body.indexed).toBe(true);
+    expect(body.structural).toBe(true);
     expect(body.permission).toBe("own");
     expect(body.version).toBe(2);
     expect(body.shape.properties).toHaveProperty("engine");

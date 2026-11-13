@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { ModelRegistry, EntityValidationError, defineModel, e } from "./index";
+import { ModelRegistry, EntityValidationError, defineComponent, defineModel, e } from "./index";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -62,6 +62,24 @@ describe("ModelRegistry.isLwwField", () => {
     expect(buildRegistry().isLwwField("missing", "title")).toBe(true);
     expect(buildRegistry().isLwwField("todo", "missing")).toBe(true);
     expect(new ModelRegistry().isLwwField("todo", "title")).toBe(true);
+  });
+});
+
+describe("ModelRegistry.isStructural", () => {
+  const structural = defineModel("edge", {
+    link: defineComponent("edge/link", e.string(), { structural: true }),
+  });
+  const r = new ModelRegistry();
+  r.register(structural);
+
+  it("reports a component that opted out of detection", () => {
+    expect(r.isStructural("edge", "link")).toBe(true);
+  });
+
+  it("defaults an ordinary, unknown, and undeclared component to detectable", () => {
+    expect(buildRegistry().isStructural("todo", "title")).toBe(false);
+    expect(r.isStructural("edge", "missing")).toBe(false);
+    expect(new ModelRegistry().isStructural("edge", "link")).toBe(false);
   });
 });
 

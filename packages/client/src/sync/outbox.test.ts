@@ -1199,6 +1199,7 @@ describe("createOutbox conflict detection", () => {
     seedRegistry(registry, {}, undefined);
     const deps = mkDeps({
       conflictScope: (model, component) => registry.conflictScopeOf(model, component),
+      isStructural: (model, component) => registry.isStructural(model, component),
     });
     const outbox = createOutbox(deps);
     const structural: readonly (readonly [model: string, field: string])[] = [

@@ -112,11 +112,13 @@ const diffFieldValue = (
 export const diffEntity = (before: Entity | null, after: Entity | null): readonly EntityDiff[] => {
   const beforeFields = rowFields(before);
   const afterFields = rowFields(after);
+  // A row's model is committed and does not change, so either side names it.
   const model = after?.type ?? before?.type ?? "";
   const names = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])].sort();
   const out: EntityDiff[] = [];
   for (const field of names) {
-    diffFieldValue(componentName(model, field), [], beforeFields[field], afterFields[field], out);
+    const component = model === "" ? field : componentName(model, field);
+    diffFieldValue(component, [], beforeFields[field], afterFields[field], out);
   }
   return out;
 };

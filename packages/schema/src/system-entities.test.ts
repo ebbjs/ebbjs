@@ -32,12 +32,13 @@ describe("system components declare structural conflict scope", () => {
       groupMemberSystemEntity,
     ]) {
       for (const component of Object.values(model.components)) {
-        expect(component.conflictScope).toBe("none");
+        expect(component.structural).toBe(true);
       }
     }
   });
 
   it("leaves group rows on the ordinary default", () => {
+    expect(groupSystemEntity.components.name.structural).toBe(false);
     expect(groupSystemEntity.components.name.conflictScope).toBe("field");
   });
 });

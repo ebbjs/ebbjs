@@ -161,7 +161,7 @@ storage     derived index (component, id) in ETS    → replaces cf_type_entitie
             ReplicaChange { components }               → replaces { type }
 client      query(model) reads declared components    → set intersection, not one Set lookup
             plan.readComponents                        → replaces readTypes
-            conflictScope per component ("component" | "none") → replaces STRUCTURAL_MODELS
+            structural component declaration           → replaces STRUCTURAL_MODELS
 auth        component prefix = committed model         → #624 cannot borrow a model's permission
             ebb/* component names its permission       → ebb/group.create, not ebb.create
 ```
@@ -321,7 +321,7 @@ const note  = defineModel("note", { title, status: e.enum([…]), body });
 - [ ] `defineModel` accepts builders and components in one map; normalisation is total and
       reversible.
 - [ ] `ModelRegistry`: `componentsOf(model)`, `componentOf(model, name)`,
-      `isOptional`, `loadingOf`, `conflictScopeOf`, `permissionOf`.
+      `isOptional`, `loadingOf`, `isStructural`, `conflictScopeOf`, `permissionOf`.
 - [ ] `ModelDef.shape` is derived from the attached components, so `Static<shape>` and every
       projection keep working unchanged.
 - [ ] Schema hash includes the model→component mapping (permission integrity; see sub-issue 10).
@@ -590,15 +590,15 @@ decisions stand unchanged.
 
 **Work.**
 
-- [ ] `conflictScope: "component"` accepted on a component; the default for anonymous components
+- [x] `conflictScope: "component"` accepted on a component; the default for anonymous components
       stays whatever the model declares today.
-- [ ] Subject hold becomes a component hold: a held component does not block a sibling component's
+- [x] Subject hold becomes a component hold: a held component does not block a sibling component's
       flush.
-- [ ] `conflict-slots.ts` keys on component instead of `subjectType`; `LwwFieldOracle` becomes
-      `(component, leaf) => boolean`.
-- [ ] The `ebb/link`, `ebb/membership`, and `ebb/grant` system components declare their own
+- [x] `conflict-slots.ts` keys on component instead of `subjectType`; `LwwFieldOracle` stays
+      `(model, component) => boolean` and the hold key becomes `(subject, component)`.
+- [x] The `ebb/link`, `ebb/membership`, and `ebb/grant` system components declare their own
       scope, replacing `STRUCTURAL_MODELS`.
-- [ ] `EntityDiff` path reporting gains the component segment.
+- [x] `EntityDiff` path reporting gains the component segment.
 
 **Acceptance.** `rg "STRUCTURAL_MODELS" packages/client/src` returns nothing. Two actors
 editing different components of one row do not hold each other; two actors editing the same
@@ -612,7 +612,7 @@ hold by `(subject, component)`: a field- or component-scope loss holds the conte
 entity-scope loss holds the whole subject, and a record written before the component hold still
 holds its subjects whole. A component-scope slot names the component as a whole (`path: []`), while
 a field-scope slot keeps its map-key path. `STRUCTURAL_MODELS` is gone: `relationship`,
-`entityGroup`, and `groupMember` declare `conflictScope: "none"` on every component, and a
+`entityGroup`, and `groupMember` declare `structural: true` on every component, and a
 schema-less client resolves those static declarations without a per-client registry. `EntityDiff`
 now reports `component` (the full `<model>/<field>` name) beside `path`. `LwwFieldOracle` stays
 `(model, component) => boolean`, as the issue required; the epic's `(component, leaf)` sketch was

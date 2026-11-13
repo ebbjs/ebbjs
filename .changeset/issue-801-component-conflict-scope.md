@@ -17,11 +17,12 @@ row keeps flushing; an entity-scope loss holds the whole subject. The hold
 is still derived from the durable `conflicted` rows, and a row written
 before the component hold keeps holding its subjects whole.
 
-`"none"` is the exemption the system rows declare. `STRUCTURAL_MODELS` is
-gone: every component of `relationship`, `entityGroup`, and `groupMember`
-declares `conflictScope: "none"`, so an offline edge, membership, or grant
-write converges and is never surfaced or held. A schema-less client
-resolves those static declarations without a per-client registry.
+`structural: true` is the exemption the system rows declare. `STRUCTURAL_MODELS`
+is gone: every component of `relationship`, `entityGroup`, and `groupMember`
+opts out of detection, so an offline edge, membership, or grant write
+converges and is never surfaced or held. A schema-less client resolves those
+static declarations without a per-client registry. The exemption is a
+component flag, not a fourth scope.
 
 `EntityDiff` now reports `component` — the full `<model>/<field>` name —
 beside `path`, matching the slot vocabulary, instead of a bare field name.

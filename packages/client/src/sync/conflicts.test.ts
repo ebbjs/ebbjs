@@ -92,7 +92,7 @@ const mkRow = (
     readonly subjectStates?: readonly ConflictSubjectState[];
     readonly slots?: readonly ConflictSlot[];
     readonly holds?: readonly { readonly subjectId: string; readonly component?: string }[];
-    readonly scope?: "none" | "field" | "component" | "entity";
+    readonly scope?: "field" | "component" | "entity";
     readonly remoteActions?: readonly ConflictRemoteAction[];
     readonly action?: Action;
   } = {},

@@ -28,7 +28,7 @@ import {
  * last-writer-wins; they are never surfaced and never hold another write.
  */
 const structuralComponent = (name: string, shape: ComponentShapeInput) =>
-  defineComponent(name, shape, { conflictScope: "none" });
+  defineComponent(name, shape, { structural: true });
 
 /**
  * Names of the wire-level entities the SDK owns. They are internal rows

@@ -250,11 +250,16 @@ export interface OutboxDependencies {
   /**
    * Conflict granularity declared by a component: `"field"` surfaces a
    * same-position race, `"component"` any concurrent touch of that
-   * component, `"entity"` any concurrent touch of the row, and `"none"` a
-   * structural component whose writes are never surfaced. Unknown
+   * component, `"entity"` any concurrent touch of the row. Unknown
    * components default to `"field"`.
    */
   conflictScope: (model: string, component: string) => ConflictScope;
+  /**
+   * Whether a component opts out of detection entirely. Structural
+   * components converge last-writer-wins and never surface or hold. Defaults
+   * to every declared component being detectable.
+   */
+  isStructural?: (model: string, component: string) => boolean;
   /**
    * Component-kind oracle: `true` when `component` merges last-writer-wins,
    * so an inbound write can silently overwrite a buffered local one. A keyed
@@ -460,8 +465,8 @@ export interface Outbox {
    * An entry loses when a missed Action with `gsn > entry.basedOnGsn`
    * touches the same position (declared `"field"` scope), the same
    * component (declared `"component"` scope), or the same entity (declared
-   * `"entity"` scope). A `"none"` component is structural and never
-   * surfaces. `pending` entries are candidates;
+   * `"entity"` scope). A structural component never surfaces. `pending`
+   * entries are candidates;
    * `acknowledged`, `error`, and already-`conflicted` entries are not —
    * an acknowledged write is already on the server and must never be
    * re-held. A conflict is recorded even when the local value would win
@@ -895,9 +900,8 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         let holdsWholeSubject = false;
         for (const [component, pendingValue] of pending.components) {
           const declared = deps.conflictScope(inbound.model, component);
-          // A `"none"` component is structural: its writes converge and are
-          // never surfaced.
-          if (declared === "none") continue;
+          // A structural component's writes converge and are never surfaced.
+          if (deps.isStructural?.(inbound.model, component) ?? false) continue;
           if (declared === "entity") {
             // An entity-scope component surfaces any concurrent touch of the
             // row, whatever component the peer wrote.

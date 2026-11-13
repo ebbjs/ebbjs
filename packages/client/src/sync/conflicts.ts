@@ -109,9 +109,9 @@ export interface Conflict {
   readonly id: string;
   /**
    * How detection classified this conflict. `"field"` surfaced an
-   * overlapping position; `"entity"` surfaced any concurrent touch of a
-   * subject. An entity-scope conflict has no slots — read the per-subject
-   * diff.
+   * overlapping position; `"component"` surfaced any concurrent touch of a
+   * component; `"entity"` surfaced any concurrent touch of a subject. An
+   * entity-scope conflict has no slots — read the per-subject diff.
    */
   readonly scope: ConflictScope;
   /** Union of the entries' losing subjects, first-seen order. */
