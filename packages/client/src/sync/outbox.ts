@@ -906,7 +906,9 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         const entityScoped =
           (pending.components.size === 0 && deps.modelConflictScope(inbound.model) === "entity") ||
           [...pending.components.keys()].some(
-            (component) => deps.conflictScope(inbound.model, component) === "entity",
+            (component) =>
+              !(deps.isStructural?.(inbound.model, component) ?? false) &&
+              deps.conflictScope(inbound.model, component) === "entity",
           );
         let holdsWholeSubject = entityScoped;
         if (entityScoped) subjectScopes.push("entity");
