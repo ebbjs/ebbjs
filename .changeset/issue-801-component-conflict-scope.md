@@ -14,8 +14,8 @@ position, `"component"` any concurrent touch of the same component, and
 `"entity"` any concurrent touch of the row. A field- or component-scope
 loss holds only the contested component, so a sibling component of the same
 row keeps flushing; an entity-scope loss holds the whole subject. The hold
-is still derived from the durable `conflicted` rows, and a row written
-before the component hold keeps holding its subjects whole.
+is still derived from the durable `conflicted` rows. The persisted conflict
+payload changed shape, so a store from an earlier release is discarded.
 
 `structural: true` is the exemption the system rows declare. `STRUCTURAL_MODELS`
 is gone: every component of `relationship`, `entityGroup`, and `groupMember`

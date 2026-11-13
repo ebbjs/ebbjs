@@ -331,24 +331,6 @@ describe("createConflicts", () => {
     expect(harness.outbox.rows.map((row) => row.action.id)).toEqual(["act_local"]);
   });
 
-  it("reads a pre-v10 conflicted row as field scope with no remote context", async () => {
-    const legacy = mkRow("act_local", "1");
-    const { scope: _scope, remoteActions: _remoteActions, ...rest } = legacy.conflict;
-    const harness = mkDeps([{ ...legacy, conflict: rest as unknown as OutboxConflict }]);
-    const { conflicts } = createConflicts(harness.deps);
-    await conflicts.rehydrate();
-
-    const [projected] = await conflicts.list();
-    expect(projected?.scope).toBe("field");
-    expect(projected?.remoteActions).toEqual([]);
-    expect(projected?.holds).toEqual([
-      { kind: "component", subjectId: "todo_1", component: "todo/title" },
-    ]);
-    expect(projected?.entries[0]?.scope).toBe("field");
-    expect(projected?.entries[0]?.slots).toHaveLength(1);
-    expect(conflicts.count()).toBe(1);
-  });
-
   it("rejects when the send's final flush faults, after the rows moved", async () => {
     const harness = mkDeps([mkRow("act_local", "5")]);
     harness.flush.mockRejectedValueOnce(new Error("store fault"));

@@ -32,8 +32,6 @@ export type {
   OutboxEntry,
   OutboxStatus,
   OutboxStore,
-  StoredOutboxConflict,
-  StoredOutboxEntry,
   OutboxConflict,
   ConflictSide,
   ConflictSlot,

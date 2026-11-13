@@ -570,7 +570,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
             status: entry.status,
             enqueuedAtHlc: entry.enqueuedAtHlc,
             // Absent base means "always concurrent", never a silent drop.
-            basedOnGsn: entry.basedOnGsn ?? 0,
+            basedOnGsn: entry.basedOnGsn,
             conflict: entry.conflict,
           }));
         emit();

@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
 import { buildPatchAction, buildPutAction } from "../testing/fixtures";
-import { openTestDb } from "./test-db";
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
-import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
 import {
   ACTION_POSITION_SEQUENCE_ID,
   createEbbStores,
@@ -21,6 +19,7 @@ import {
 const LEGACY_SCHEMA_VERSION = 7;
 const PRE_RESET_SCHEMA_VERSION = 8;
 const PRE_COMPONENT_INDEX_SCHEMA_VERSION = 10;
+const PRE_COMPONENT_HOLD_SCHEMA_VERSION = 11;
 
 interface LegacyStoredAction extends Action {
   subject_ids: readonly string[];
@@ -189,36 +188,28 @@ describe("IndexedDB v7/v8 → v9 reset", () => {
   });
 });
 
-describe("IndexedDB pre-v10 conflict payload", () => {
-  it("normalizes a legacy payload on read instead of handing back a row it would throw on", async () => {
-    const db = await openTestDb("legacy-conflict");
+describe("IndexedDB v11 → v12 component-hold reset", () => {
+  it("discards a v11 database rather than reading conflicts without holds", async () => {
+    const dbName = legacyDbName();
     const action = buildPutAction();
-    // A v9 payload carries none of the fields that arrived later: no
-    // scope or remote context (v10) and no component hold (v12).
-    const v9Conflict = {
-      subjects: ["todo_1"],
-      subjectStates: [],
-      slots: [],
-      catchUpId: "cu_1",
-      conflictId: "c_1",
-      detectedAtHlc: action.hlc,
-    };
-    await db.put("outbox", {
+
+    const v11 = await openDB<LegacyDBSchema>(dbName, PRE_COMPONENT_HOLD_SCHEMA_VERSION, {
+      upgrade: createLegacyStores,
+    });
+    await v11.put("outbox", {
       action,
-      status: "conflicted",
+      status: "pending",
       enqueuedAtHlc: action.hlc,
       basedOnGsn: 0,
-      conflict: v9Conflict,
+    });
+    expect(await v11.count("outbox")).toBe(1);
+    v11.close();
+
+    const current = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
+      upgrade: createEbbStores,
     });
 
-    const raw = await db.get("outbox", action.id);
-    expect(raw?.status).toBe("conflicted");
-    expect(raw?.conflict?.conflictId).toBe("c_1");
-
-    const entry = await createIndexedDBOutboxStore(db).get(action.id);
-    expect(entry?.conflict?.scope).toBe("field");
-    expect(entry?.conflict?.remoteActions).toEqual([]);
-    expect(entry?.conflict?.holds).toEqual([{ kind: "subject", subjectId: "todo_1" }]);
+    expect(await current.get("outbox", action.id)).toBeUndefined();
   });
 });
 

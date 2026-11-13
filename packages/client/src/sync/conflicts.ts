@@ -339,17 +339,14 @@ const toSlotView = (slot: ConflictSlot): ConflictSlotView => ({
 
 /** Project a conflicted outbox row into the entry the application reads. */
 const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => {
-  // A row written before IndexedDB schema v10 carries neither field. It is
-  // still a field-scope conflict with no recorded remote context, not a
-  // reason to make the whole view unreachable.
-  const scope = entry.conflict.scope ?? "field";
+  const scope = entry.conflict.scope;
   return {
     action: entry.action,
     subjects: entry.conflict.subjects,
     slots: scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
     holds: entry.conflict.holds,
     scope,
-    remoteActions: entry.conflict.remoteActions ?? [],
+    remoteActions: entry.conflict.remoteActions,
     basedOnGsn: entry.basedOnGsn,
     catchUpId: entry.conflict.catchUpId,
     conflictId: entry.conflict.conflictId,

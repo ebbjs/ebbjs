@@ -608,9 +608,10 @@ component do.
 
 **Current state.** Shipped in [#801](https://github.com/ebbjs/ebbjs/issues/801). Scope resolves per
 component from the registry (`conflictScopeOf(model, component)`), and the outbox keys its durable
-hold by `(subject, component)`: a field- or component-scope loss holds the contested component, an
-entity-scope loss holds the whole subject, and a record written before the component hold still
-holds its subjects whole. A component-scope slot names the component as a whole (`path: []`), while
+hold by `(subject, component)`: a field- or component-scope loss holds the contested component, and
+an entity-scope loss holds the whole subject. The persisted conflict payload changed shape, so a
+store from an earlier release is discarded at v12 rather than read. A component-scope slot names
+the component as a whole (`path: []`), while
 a field-scope slot keeps its map-key path. `STRUCTURAL_MODELS` is gone: `relationship`,
 `entityGroup`, and `groupMember` declare `structural: true` on every component, and a
 schema-less client resolves those static declarations without a per-client registry. `EntityDiff`

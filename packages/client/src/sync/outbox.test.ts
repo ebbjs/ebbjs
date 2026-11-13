@@ -13,7 +13,7 @@ import type {
   ConflictSide,
   ConflictSlot,
   OutboxConflict,
-  OutboxEntry as StoredOutboxEntry,
+  OutboxEntry as StorageOutboxEntry,
   OutboxStore,
 } from "@ebbjs/storage/types";
 
@@ -83,10 +83,10 @@ const side = (value: unknown, updateId?: string, hlc?: string): ConflictSide => 
 const stored = (
   action: Action,
   enqueuedAtHlc: string,
-  status: StoredOutboxEntry["status"] = "pending",
+  status: StorageOutboxEntry["status"] = "pending",
   basedOnGsn = 0,
   conflict?: OutboxConflict,
-): StoredOutboxEntry => ({
+): StorageOutboxEntry => ({
   action,
   status,
   enqueuedAtHlc,
@@ -99,15 +99,15 @@ const stored = (
  * test can seed an order the outbox must re-sort by `enqueuedAtHlc`.
  */
 const mkStore = (
-  initial: readonly StoredOutboxEntry[] = [],
-): OutboxStore & { rows: Map<string, StoredOutboxEntry> } => {
+  initial: readonly StorageOutboxEntry[] = [],
+): OutboxStore & { rows: Map<string, StorageOutboxEntry> } => {
   const rows = new Map(initial.map((entry) => [entry.action.id, entry]));
   return {
     rows,
-    put: vi.fn(async (entry: StoredOutboxEntry) => {
+    put: vi.fn(async (entry: StorageOutboxEntry) => {
       rows.set(entry.action.id, structuredClone(entry));
     }),
-    putAndDelete: vi.fn(async (entry: StoredOutboxEntry, deleteId: string) => {
+    putAndDelete: vi.fn(async (entry: StorageOutboxEntry, deleteId: string) => {
       rows.delete(deleteId);
       rows.set(entry.action.id, structuredClone(entry));
     }),
@@ -399,7 +399,7 @@ describe("createOutbox lifecycle", () => {
     const base = mkStore();
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         // Delay only the flush transition, not the enqueue write.
         if (entry.status !== "pending") {
           await new Promise<void>((resolve) => {
@@ -431,7 +431,7 @@ describe("createOutbox lifecycle", () => {
     let puts = 0;
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         puts += 1;
         if (puts > 1) throw new Error("disk full");
         await base.put(entry);
@@ -455,7 +455,7 @@ describe("createOutbox lifecycle", () => {
     let puts = 0;
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         puts += 1;
         // Two enqueues, then fail the second flush transition.
         if (puts > 3) throw new Error("disk full");
@@ -1939,11 +1939,11 @@ describe("createOutbox releaseConflict", () => {
     });
 
   /** A store whose `put` faults for a `conflicted` row, as a disk fault would. */
-  const faultingStore = (): OutboxStore & { rows: Map<string, StoredOutboxEntry> } => {
+  const faultingStore = (): OutboxStore & { rows: Map<string, StorageOutboxEntry> } => {
     const store = mkStore();
     return {
       ...store,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         if (entry.status === "conflicted") throw new Error("disk full");
         store.rows.set(entry.action.id, structuredClone(entry));
       }),
@@ -2006,7 +2006,7 @@ describe("createOutbox releaseConflict", () => {
       mkDeps({
         store: {
           ...store,
-          put: vi.fn(async (entry: StoredOutboxEntry) => {
+          put: vi.fn(async (entry: StorageOutboxEntry) => {
             puts += 1;
             // enqueue, detection, then the release.
             if (puts === 3) throw new Error("disk full");
