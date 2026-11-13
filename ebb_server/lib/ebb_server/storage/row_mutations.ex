@@ -37,7 +37,7 @@ defmodule EbbServer.Storage.RowMutations do
   model `nil` rather than inventing one.
   """
 
-  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge}
+  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge, SystemComponent}
 
   @typedoc """
   One whole-row projection of an Action's component Updates.
@@ -50,6 +50,8 @@ defmodule EbbServer.Storage.RowMutations do
           id: String.t(),
           subject_id: String.t(),
           model: String.t() | nil,
+          kind: SystemComponent.kind() | nil,
+          components: [String.t()],
           method: :put | :patch | :delete,
           data: %{String.t() => %{String.t() => term()}} | nil
         }
@@ -131,6 +133,8 @@ defmodule EbbServer.Storage.RowMutations do
       id: update.id,
       subject_id: update.subject_id,
       model: update.model,
+      component: update.component,
+      components: [],
       deleted?: false,
       fields: %{}
     }
@@ -138,13 +142,22 @@ defmodule EbbServer.Storage.RowMutations do
   end
 
   defp fold_update(entry, %{method: :delete}) do
-    %{entry | deleted?: true, fields: %{}}
+    %{entry | deleted?: true, components: [], fields: %{}}
   end
 
   # The first component Update names the row's model. A delete carries none,
   # so a sibling component writes down what the row was committed as.
+  #
+  # The component names travel with the fold because the system vocabulary is
+  # stated in components, not models: all four platform components share the
+  # model `ebb`, so the model alone cannot say which kind of row this is.
   defp fold_update(entry, %{method: method} = update) do
-    entry = %{entry | model: entry.model || update.model}
+    entry = %{
+      entry
+      | model: entry.model || update.model,
+        component: entry.component || update.component,
+        components: [update.component | entry.components] |> Enum.uniq()
+    }
 
     case method do
       :merge -> %{entry | fields: merge_field(entry.fields, update.field, update.data)}
@@ -162,19 +175,35 @@ defmodule EbbServer.Storage.RowMutations do
       id: entry.id,
       subject_id: entry.subject_id,
       model: resolve_model.(entry.subject_id) || entry.model,
+      kind: SystemComponent.kind(entry.component),
+      components: entry.components,
       method: :delete,
       data: nil
     }
   end
 
-  defp finish(entry, created, exists?, _resolve_model) do
+  defp finish(entry, created, exists?, resolve_model) do
     %{
       id: entry.id,
       subject_id: entry.subject_id,
-      model: entry.model,
+      model: row_model(entry, resolve_model),
+      kind: SystemComponent.kind(entry.component),
+      components: entry.components,
       method: if(new_row?(entry.subject_id, created, exists?), do: :put, else: :patch),
       data: %{"fields" => entry.fields}
     }
+  end
+
+  # A row's model is the model it was **committed** under. A platform
+  # component's prefix is always `ebb`, which would re-model a user row that
+  # carries an overlay component onto the platform namespace; the committed
+  # model wins there, and `ebb` stands only for a row that has none yet.
+  defp row_model(entry, resolve_model) do
+    if SystemComponent.component?(entry.component) do
+      resolve_model.(entry.subject_id) || SystemComponent.model()
+    else
+      entry.model
+    end
   end
 
   defp new_row?(subject_id, created, exists?) do

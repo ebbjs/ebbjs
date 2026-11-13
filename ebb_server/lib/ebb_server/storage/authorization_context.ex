@@ -14,6 +14,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
             entity_groups_by_id_table: :ebb_entity_groups_by_id,
             entity_types_table: :ebb_entity_types,
             relationships_by_id_table: :ebb_relationships_by_id,
+            group_apps_table: :ebb_group_apps,
             now_ms: nil
 
   @type t :: %__MODULE__{
@@ -24,6 +25,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
           entity_groups_by_id_table: atom(),
           entity_types_table: atom(),
           relationships_by_id_table: atom(),
+          group_apps_table: atom(),
           now_ms: non_neg_integer() | nil
         }
 
@@ -34,6 +36,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @default_entity_groups_by_id :ebb_entity_groups_by_id
   @default_entity_types :ebb_entity_types
   @default_relationships_by_id :ebb_relationships_by_id
+  @default_group_apps :ebb_group_apps
 
   @doc """
   Builds an AuthorizationContext from keyword options.
@@ -55,6 +58,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
       entity_types_table: resolve_table(opts, :entity_types, @default_entity_types),
       relationships_by_id_table:
         resolve_table(opts, :relationships_by_id, @default_relationships_by_id),
+      group_apps_table: resolve_table(opts, :group_apps, @default_group_apps),
       now_ms: Keyword.get(opts, :now_ms)
     }
   end
@@ -80,7 +84,8 @@ defmodule EbbServer.Storage.AuthorizationContext do
       entity_types: ctx.entity_types_table,
       relationships_by_id: ctx.relationships_by_id_table,
       group_members_by_id: ctx.group_members_by_id_table,
-      group_members_by_group: ctx.group_members_by_group_table
+      group_members_by_group: ctx.group_members_by_group_table,
+      group_apps: ctx.group_apps_table
     ]
   end
 end

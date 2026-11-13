@@ -81,6 +81,17 @@ defmodule EbbServer.Storage.GroupAppsCache do
   end
 
   @doc """
+  Whether a group's app scope has been cached at all.
+
+  A group row is cached even when it declares no `apps` field (unscoped), so
+  presence is how the by-id caches answer "is this id a group row?".
+  """
+  @spec known?(String.t(), atom() | nil) :: boolean()
+  def known?(group_id, table \\ nil) do
+    :ets.member(table || CacheTables.group_apps(), group_id)
+  end
+
+  @doc """
   Returns the raw stored `apps` field, or `nil` when none is cached.
 
   The planner reads this as the pre-plan value a patch merges over.

@@ -4,11 +4,11 @@ Ebb is one data store across many apps. App scope answers one question:
 **which groups does this client app pull into its replica?** It is a property
 of the group, not an authority over it.
 
-A group declares the apps it belongs to in `group.apps`, a map from app id to
-boolean. A client presents a local app id, keeps the groups in scope, and
-subscribes to whichever of those it needs. Cross-app integration is a shared
-group whose scope names both apps, with individual entities filed into it
-through the existing `entityGroup` membership.
+A group declares the apps it belongs to in `ebb/group`'s `apps` list — the app
+ids it is in scope for. A client presents a local app id, keeps the groups in
+scope, and subscribes to whichever of those it needs. Cross-app integration is
+a shared group whose scope names both apps, with individual entities filed into
+it through the existing `ebb/membership` row.
 
 App scope is deliberately **not an authorization boundary**. The actor's group
 grants remain the only boundary. A client that ignores its app scope, claims
@@ -18,14 +18,18 @@ the actor can reach. App scope is the default view, not a fence.
 ## Group metadata, not a grant
 
 ```ts
-groupSystemEntity = buildModelDef("group", {
-  name: e.string(),
-  apps: e.map(e.boolean()),
-});
+ebbSystemEntity.components.group = defineComponent(
+  "ebb/group",
+  e.object({
+    name: e.string(),
+    apps: Type.Optional(e.array(e.string())),
+  }),
+  { optional: true, permission: "own" },
+);
 ```
 
-- **In scope iff `apps[id] === true`.** `false` removes an app; keys are not
-  deleted. A present-but-empty map scopes the group to nobody.
+- **In scope iff `apps` contains the app id.** Removing an app drops its id.
+  A present-but-empty list scopes the group to nobody.
 - **Absent scope means every app.** An existing group without the field, and a
   client without an `appId`, behave exactly as they did before. No data
   migration, no server flag.
@@ -33,15 +37,15 @@ groupSystemEntity = buildModelDef("group", {
   request header, token, or auth exchange. Nothing is trusted because nothing
   is granted.
 
-The server reads the raw merged field. The projection rule is: a key is in
-scope only when its leaf value is `true`. Removal is written as `false`, never
-as a tombstone (`null`), because the server reads the raw merged field while
-the client projects nulls away — `false` is the one value both sides agree on.
+The list is not a map because `ebb/group` is an **atomic** component (#805): an
+atomic value may not contain a map, since a nested map would lose its per-key
+merge. The server reads the value whole, so "in scope" is membership in the
+list.
 
 ## Wire and storage
 
-`POST /sync/handshake` returns each group's `apps` as the sorted truthy keys,
-or `null` for an unscoped group:
+`POST /sync/handshake` returns each group's `apps` as the sorted list of app
+ids, or `null` for an unscoped group:
 
 ```json
 {
@@ -54,26 +58,24 @@ or `null` for an unscoped group:
 ```
 
 Group rows are otherwise materialized on first read, so the handshake cannot
-read `data.fields.apps` per group from SQLite without a scan. A
+read `data.fields.group.value.apps` per group from SQLite without a scan. A
 `GroupAppsCache` alongside `GroupCache` fills `group_id → apps` on the boot
-walk over `group` entities — which makes `group` one of the eager system
-types, paying full materialization once at boot — and `CacheMutationPlanner`
-merges incoming `apps` envelopes with the wire's `FieldMerge` rule so per-key
-and same-Action semantics match the client.
+walk over the `ebb/group` component entries — which makes a group row one of
+the eagerly materialized system rows, paying full materialization once at boot.
 
-Writes are `group.update` in the group. A new group's scope rides the
-bootstrap-exempt `group` put (creation via `client.seed()` or
-`group.create()` writes the creating app's scope automatically). Later edits
-are **single-key patches** — `apps.notes = true`, `apps.docs = false` — so the
-per-key merge makes concurrent edits by two admins safe. A whole-map write
-from a stale replica is the only hazard, and the convention avoids it. A
-map-typed patch field is written as the wire's `map` envelope, so
-`group.update(id, { apps: { docs: false } })` touches only `docs`.
+Writes are `ebb/group.update` in the group. A new group's scope rides the
+bootstrap-exempt `ebb/group` put (creation via `client.seed()` or
+`group.create()` writes the creating app's scope automatically). A later edit
+writes the **whole** `ebb/group` value, because it is one atomic component:
 
-Seeding is the exception to the patch convention: `client.seed()` submits
-`group` rows as a **put**, so a re-seed replaces the whole scope map with the
-one it is given rather than merging it. Use single-key patches for scope
-changes after creation.
+```ts
+group.update(id, { name: group.name, apps: [...group.apps, "docs"] });
+```
+
+That is the cost of the atomic form: two admins editing scope concurrently
+converge on one whole value rather than merging per app id, so a write made
+from a stale replica can drop an app it never saw. Read the group, edit the
+list, write it back.
 
 The Action log is unchanged: `actor_id` remains the user and no `app_id` is
 recorded. A client-declared label is not trustworthy attribution; if trusted
@@ -85,19 +87,19 @@ decision.
 Alice uses `notes` (https://notes.example.com) and `issues`
 (https://issues.example.com).
 
-| group      | `apps`                          | alice's `groupMember.permissions`     |
-| ---------- | ------------------------------- | ------------------------------------- |
-| `g_notes`  | `{ notes: true }`               | `note.*`, `group.*`, `groupMember.*`  |
-| `g_issues` | `{ issues: true }`              | `issue.*`, `group.*`, `groupMember.*` |
-| `g_bridge` | `{ notes: true, issues: true }` | `note.*`, `issue.*`                   |
+| group      | `apps`               | alice's `ebb/grant` permissions         |
+| ---------- | -------------------- | --------------------------------------- |
+| `g_notes`  | `["notes"]`          | `note.*`, `ebb/group.*`, `ebb/grant.*`  |
+| `g_issues` | `["issues"]`         | `issue.*`, `ebb/group.*`, `ebb/grant.*` |
+| `g_bridge` | `["notes","issues"]` | `note.*`, `issue.*`                     |
 
 1. **Isolation.** The notes app handshakes → `[g_notes]`; the issues app →
    `[g_issues]`. Each replica holds only its own group.
 2. **Integration.** From the notes app, Alice creates `g_bridge` in one
-   Action: the `group` put carries `apps: { notes: true, issues: true }`, and
-   her `groupMember` row carries `note.*` and `issue.*` — the write contract
-   for bidirectional editing. The group put needs no extra permission.
-3. **Share.** Alice files note `N` into `g_bridge` (an `entityGroup` put).
+   Action: the `ebb/group` put carries `apps: ["notes", "issues"]`, and her
+   `ebb/grant` row carries `note.*` and `issue.*` — the write contract for
+   bidirectional editing. The group put needs no extra permission.
+3. **Share.** Alice files note `N` into `g_bridge` (an `ebb/membership` put).
    The share is gated by `note.create` in `g_bridge` and `note.update` where
    `N` already lives (`g_notes`).
 4. **Pickup.** The issues app learns of `g_bridge` on its next handshake,
@@ -106,7 +108,7 @@ Alice uses `notes` (https://notes.example.com) and `issues`
    (her membership covers it). The entity's group set is `{g_notes, g_bridge}`,
    so the write fans out to both and the notes app receives it through
    `g_notes`.
-6. **Unshare.** Deleting the `entityGroup` row stops future updates. The
+6. **Unshare.** Deleting the `ebb/membership` row stops future updates. The
    issues replica keeps `N` until it re-subscribes and evicts. Revocation is
    forward-only.
 7. **Not scoped.** If `g_bridge.apps` omitted `issues`, the issues app never
@@ -115,10 +117,10 @@ Alice uses `notes` (https://notes.example.com) and `issues`
 
 ## What does not change
 
-- **Authorization.** `Authorizer`, `PermissionChecker`, the query SQL, and the
-  Action format are untouched. `packages/client/src/sync/permission.ts` needs
-  no new rule: a scope write is a `group` patch, already resolved as
-  `group.update` in the group.
+- **Authorization.** `Authorizer`, `PermissionChecker` and the query SQL keep
+  their rules. `packages/client/src/sync/permission.ts` needs no new rule: a
+  scope write is an `ebb/group` write, resolved as `ebb/group.update` in the
+  group because the component declares `permission: "own"`.
 - **Presence and functions.** Presence scope is already the subscribed group
   set, which is now the app's subset. Functions run as the subject actor with
   its own grants; there is no app dimension.
@@ -128,7 +130,7 @@ Alice uses `notes` (https://notes.example.com) and `issues`
 - **Revocation is forward-only.** Bytes already synced stay on a device until
   its subscription changes and eviction runs.
 
-A live membership change now reaches a connected client: a `groupMember`
+A live membership change now reaches a connected client: an `ebb/grant`
 put, patch, or delete pushes a `groups_changed` control event, and the
 client re-handshakes and reconciles its subscription. A group the actor
 gained joins the subscription and is seeded from its listing; a group the
@@ -136,7 +138,7 @@ actor lost leaves it and its rows are evicted. Only the membership
 difference is applied, so a group whose membership did not change keeps
 the subscription the app chose.
 
-A `group.apps` edit on its own is not a trigger: it wakes nobody. The scope
+An `ebb/group` edit on its own is not a trigger: it wakes nobody. The scope
 is re-read on the next handshake, which a membership change or a reconnect
 now causes, and that handshake applies both directions — a group leaving
 the app's scope is dropped and evicted, and a group the actor already

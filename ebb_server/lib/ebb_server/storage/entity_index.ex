@@ -53,8 +53,10 @@ defmodule EbbServer.Storage.EntityIndex do
     EntityGroupCache,
     EntityTypeCache,
     Fields,
+    GroupAppsCache,
     GroupCache,
-    RelationshipCache
+    RelationshipCache,
+    SystemComponent
   }
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
@@ -197,6 +199,45 @@ defmodule EbbServer.Storage.EntityIndex do
       groups
     else
       _ -> EntityGroupCache.entity_groups_from_entries(entries)
+    end
+  end
+
+  @doc """
+  Answers which platform component a stored row carries.
+
+  A `delete` names no component, so this is how the authorizer, the cache
+  planner, and the fan-out learn a row's kind from its id. The four rows all
+  commit under the model `ebb`, so the model entry cannot answer it; the by-id
+  caches can, because each is written by exactly one kind.
+
+  Returns `nil` for a user row and for an id nothing knows.
+  """
+  @spec kind(subject_id(), keyword()) :: SystemComponent.kind() | nil
+  def kind(entity_id, opts) do
+    cond do
+      cached_by_id?(entity_id, opts, :group_members_by_id, &GroupCache.get_group_member/2) ->
+        :grant
+
+      cached_by_id?(entity_id, opts, :entity_groups_by_id, &EntityGroupCache.get_entity_group/2) ->
+        :membership
+
+      cached_by_id?(entity_id, opts, :relationships_by_id, &RelationshipCache.get_relationship/2) ->
+        :link
+
+      group_cached?(entity_id, opts) ->
+        :group
+
+      true ->
+        nil
+    end
+  end
+
+  # A group row's cache entry exists even when the row declares no app scope,
+  # so presence — not a field value — is the signal.
+  defp group_cached?(entity_id, opts) do
+    case Keyword.fetch(opts, :group_apps) do
+      {:ok, table} -> GroupAppsCache.known?(entity_id, table)
+      :error -> false
     end
   end
 
