@@ -31,9 +31,9 @@ defmodule Mix.Tasks.Bench.Envelope do
     * bytes per Action — the stored `cf_actions` value, plus the companion's
       second record, plus durable puts per Action.
 
-  Shapes are `:wrapper` (`term_to_binary({payload_etf, update_scopes})`, what
+  Shapes are `:wrapper` (`term_to_binary({payload_etf, subject_scopes})`, what
   `origin/main` stores), `:versioned_wrapper` (the same tuple plus a version
-  integer, `{1, payload_etf, update_scopes}`), `:companion` (bare
+  integer, `{1, payload_etf, subject_scopes}`), `:companion` (bare
   `payload_etf` with the scopes in a second record), and `:frame`
   (`ActionFormat.frame/2`, the shape this build stores). The version tag in
   `:versioned_wrapper` was priced and then dropped: with nothing to migrate

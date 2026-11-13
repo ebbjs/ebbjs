@@ -1,19 +1,32 @@
 defmodule EbbServer.Storage.ActionScope do
   @moduledoc """
-  Reads the per-Update delivery scopes persisted with a committed Action.
+  Reads the per-subject delivery scopes persisted with a committed Action.
 
-  The Writer stores `"update_scopes"`, one group list per Update,
-  index-aligned with `"updates"` (#473). Fan-out and catch-up use this so
-  an Update reaches exactly the groups it scopes to.
+  The Writer stores `"subject_scopes"`, one `{subject_id, [group_id]}` entry
+  per folded subject, in first-appearance order (#814). An Update is
+  delivered through its own subject's entry, so the C component Updates of
+  one row share one scope decision instead of repeating it. Fan-out and
+  catch-up use this so an Update reaches exactly the groups its subject
+  scopes to.
 
-  A stored Action always carries them, so an absent or unaligned list means
-  the record is corrupt, and resolving it from the caches is not safe: a
+  ## Fallbacks
+
+  A stored Action always carries the list, so a missing or non-list value
+  means the record is corrupt. Resolving it from the caches is not safe: a
   `relationship`/`entityGroup` delete's by-id entry is already gone. Such a
-  record is treated as unscoped and returned whole rather than dropped.
+  record, and any Update whose subject is absent from a present list, is
+  treated as unscoped and delivered to every group the Action is indexed
+  under (fail open) rather than dropped.
+
+  A subject listed with `[]` is neither fallback: it means "deliver to
+  nobody", and its Updates are withheld.
   """
 
+  alias EbbServer.Storage.ActionFormat
+
   @doc """
-  Returns the Updates of `action` whose own scope includes `group_id`.
+  Returns the Updates of `action` whose own subject's scope includes
+  `group_id`.
 
   Unscoped Actions return every Update.
   """
@@ -21,20 +34,20 @@ defmodule EbbServer.Storage.ActionScope do
   def updates_for_group(action, group_id) do
     updates = action["updates"] || []
 
-    scopes = action["update_scopes"]
-
-    if is_list(scopes) and length(scopes) == length(updates) do
-      scoped_updates(updates, scopes, group_id)
-    else
-      updates
+    case subject_scopes_by_subject(action["subject_scopes"]) do
+      {:ok, scopes} -> Enum.filter(updates, &delivered_to?(&1, scopes, group_id))
+      :error -> updates
     end
   end
 
-  defp scoped_updates(updates, scopes, group_id) do
-    updates
-    |> Enum.zip(scopes)
-    |> Enum.flat_map(fn {update, scope} ->
-      if group_id in scope, do: [update], else: []
-    end)
+  defp delivered_to?(update, scopes, group_id) do
+    case Map.fetch(scopes, update["subject_id"]) do
+      {:ok, group_ids} -> group_id in group_ids
+      :error -> true
+    end
+  end
+
+  defp subject_scopes_by_subject(scopes) do
+    if ActionFormat.subject_scopes?(scopes), do: {:ok, Map.new(scopes)}, else: :error
   end
 end

@@ -185,17 +185,21 @@ defmodule EbbServer.Bench.WriteBatchTest do
       # and the scopes ETF. None of them carries the GSN, which lives only in
       # the cf_actions key.
       assert <<size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
-      assert :erlang.binary_to_term(scopes_etf) == [[Workbook.group_id()], [Workbook.group_id()]]
+      # Two component Updates on one subject: the stored scopes hold one
+      # entry for that subject, not one per Update.
+      assert [{subject_id, [group_id]}] = :erlang.binary_to_term(scopes_etf)
+      assert group_id == Workbook.group_id()
 
       payload = :erlang.binary_to_term(payload_etf)
       refute Map.has_key?(payload, "gsn")
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
 
       stored = ActionFormat.decode(value, 1_000_000_000)
 
       assert stored["gsn"] == 1_000_000_000
       assert stored["actor_id"] == Workbook.actor_id()
-      assert stored["update_scopes"] == [[Workbook.group_id()], [Workbook.group_id()]]
+      assert stored["subject_scopes"] == [{subject_id, [Workbook.group_id()]}]
+      assert Enum.all?(stored["updates"], &(&1["subject_id"] == subject_id))
       assert length(stored["updates"]) == 2
       assert Enum.all?(stored["updates"], &is_map_key(&1, "component"))
     end

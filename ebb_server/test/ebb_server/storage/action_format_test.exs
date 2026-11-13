@@ -43,13 +43,13 @@ defmodule EbbServer.Storage.ActionFormatTest do
       actor_id: action.actor_id,
       hlc: action.hlc,
       updates: updates,
-      update_scopes: [["g_1"], ["g_1", "g_2"]],
+      subject_scopes: [{"todo_1", ["g_1"]}, {"todo_2", ["g_1", "g_2"]}],
       payload_etf: action |> ActionFormat.build() |> ActionFormat.encode()
     }
   end
 
   defp payload_etf, do: prepared_action() |> ActionFormat.build() |> ActionFormat.encode()
-  defp scopes, do: [["g_1"], ["g_1", "g_2"]]
+  defp scopes, do: [{"todo_1", ["g_1"]}, {"todo_2", ["g_1", "g_2"]}]
 
   defp expected_action(gsn) do
     %{
@@ -57,7 +57,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
       "actor_id" => "a_1",
       "hlc" => 123,
       "gsn" => gsn,
-      "update_scopes" => scopes(),
+      "subject_scopes" => scopes(),
       "updates" => [
         %{
           "id" => "upd_1",
@@ -88,13 +88,25 @@ defmodule EbbServer.Storage.ActionFormatTest do
 
     test "refuses a payload that is not ETF" do
       assert_raise ArgumentError, ~r/holds an ETF payload/, fn ->
-        ActionFormat.frame("not an ETF", [[]])
+        ActionFormat.frame("not an ETF", [])
       end
     end
 
-    test "refuses scopes that are not a list of group lists" do
-      assert_raise ArgumentError, ~r/one group list per Update/, fn ->
+    test "refuses scopes that are not a list of subject scopes" do
+      assert_raise ArgumentError, ~r/one group list per subject/, fn ->
         ActionFormat.frame(payload_etf(), "g_1")
+      end
+    end
+
+    test "refuses the pre-#814 per-Update scope list instead of decoding it as unscoped" do
+      assert_raise ArgumentError, ~r/one group list per subject/, fn ->
+        ActionFormat.frame(payload_etf(), [["g_1"], ["g_1", "g_2"]])
+      end
+    end
+
+    test "refuses an entry whose group list is not a list of binaries" do
+      assert_raise ArgumentError, ~r/one group list per subject/, fn ->
+        ActionFormat.frame(payload_etf(), [{"todo_1", :g_1}])
       end
     end
   end
@@ -112,7 +124,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
       value = ActionFormat.frame(payload_etf(), scopes())
 
       assert ActionFormat.decode_payload(value, 42) ==
-               Map.delete(expected_action(42), "update_scopes")
+               Map.delete(expected_action(42), "subject_scopes")
     end
   end
 
@@ -123,7 +135,13 @@ defmodule EbbServer.Storage.ActionFormatTest do
 
     test "rejects a carried payload that is not an Action" do
       assert_raise ArgumentError, ~r/does not hold an Action payload/, fn ->
-        ActionFormat.decode_carried(:erlang.term_to_binary([1, 2, 3]), [[]], 42)
+        ActionFormat.decode_carried(:erlang.term_to_binary([1, 2, 3]), [], 42)
+      end
+    end
+
+    test "rejects carried scopes in the pre-#814 per-Update shape" do
+      assert_raise ArgumentError, ~r/one group list per subject/, fn ->
+        ActionFormat.decode_carried(payload_etf(), [["g_1"]], 42)
       end
     end
   end
@@ -157,6 +175,18 @@ defmodule EbbServer.Storage.ActionFormatTest do
       end
     end
 
+    test "rejects a stored frame whose scopes are the pre-#814 per-Update list" do
+      # The old frame kept one group list per Update. It must raise rather
+      # than decode as unscoped: there is no migration or read-through.
+      payload = payload_etf()
+      scopes_etf = :erlang.term_to_binary([["g_1"], ["g_1", "g_2"]])
+      value = <<byte_size(payload)::32, payload::binary, scopes_etf::binary>>
+
+      assert_raise ArgumentError, ~r/one group list per subject/, fn ->
+        ActionFormat.decode(value, 42)
+      end
+    end
+
     test "rejects a payload whose Updates still use the pre-component shape" do
       # The stored Update is the component envelope. A row record from the
       # pre-component wire is unreadable rather than half-understood.
@@ -175,7 +205,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
         ]
       }
 
-      value = ActionFormat.frame(:erlang.term_to_binary(payload), [[]])
+      value = ActionFormat.frame(:erlang.term_to_binary(payload), [])
 
       assert_raise ArgumentError, ~r/not a component envelope/, fn ->
         ActionFormat.decode_payload(value, 42)
@@ -183,7 +213,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
     end
 
     test "rejects a payload that does not decode to an Action" do
-      value = ActionFormat.frame(:erlang.term_to_binary([1, 2, 3]), [[]])
+      value = ActionFormat.frame(:erlang.term_to_binary([1, 2, 3]), [])
 
       assert_raise ArgumentError, ~r/does not hold an Action payload/, fn ->
         ActionFormat.decode_payload(value, 42)
@@ -192,12 +222,12 @@ defmodule EbbServer.Storage.ActionFormatTest do
   end
 
   describe "build/1" do
-    test "omits gsn and update_scopes and stringifies an atom method" do
+    test "omits gsn and subject_scopes and stringifies an atom method" do
       payload = ActionFormat.build(prepared_action())
 
       assert Map.keys(payload) |> Enum.sort() == ["actor_id", "hlc", "id", "updates"]
       refute Map.has_key?(payload, "gsn")
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
       assert Enum.map(payload["updates"], & &1["method"]) == ["merge", "delete"]
     end
 
@@ -219,7 +249,7 @@ defmodule EbbServer.Storage.ActionFormatTest do
         prepared
         |> ActionFormat.build()
         |> ActionFormat.encode()
-        |> ActionFormat.frame(prepared.update_scopes)
+        |> ActionFormat.frame(prepared.subject_scopes)
         |> ActionFormat.decode(99)
 
       assert action == expected_action(99)

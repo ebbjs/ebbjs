@@ -146,7 +146,8 @@ existing row", which is the epic's verb rule.
 - **`update_scopes`**: still one group list per stored Update, index-aligned with
   `action.updates`. Scope cannot differ from the entity's in this slice (the ADR's boundary
   rule), so every component Update of a row gets the row's scope. The per-`(entity,
-component)` keying is slice 8/9's.
+component)` keying is slice 8/9's. ([#814](https://github.com/ebbjs/ebbjs/issues/814) later
+  replaced this frame half with one entry per subject; see §6.)
 - **`cf_entity_actions`** still coalesces per subject per flush; `cf_type_entities` keeps
   `(model, 0x00, id)`, written once per row from the derived model.
 - **`DirtyTracker`** marks `{entity_id, model}`; all of one row's Updates carry one model,
@@ -264,14 +265,18 @@ Ebb is greenfield: there is no migration. The old wire is simply unreadable. Thi
 one place the old names are recorded, so nothing in `packages/core/src` or `ebb_server/lib`
 has to mention them.
 
-| Old                                   | New                                                             |
-| ------------------------------------- | --------------------------------------------------------------- |
-| `subject_type: "note"`                | `component: "note/title"` — the model is the component's prefix |
-| `data: { fields: { title: <leaf> } }` | `data: <leaf>` — the component's own value                      |
-| `method: "put"`                       | `method: "replace"` (or `"merge"` for a keyed component)        |
-| `method: "patch"`                     | `method: "merge"`                                               |
-| `method: "delete"`                    | `method: "delete"` (still names no component)                   |
-| —                                     | `method: "drop"` — detaches one component, row survives         |
+| Old                                                       | New                                                                         |
+| --------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `subject_type: "note"`                                    | `component: "note/title"` — the model is the component's prefix             |
+| `data: { fields: { title: <leaf> } }`                     | `data: <leaf>` — the component's own value                                  |
+| `method: "put"`                                           | `method: "replace"` (or `"merge"` for a keyed component)                    |
+| `method: "patch"`                                         | `method: "merge"`                                                           |
+| `method: "delete"`                                        | `method: "delete"` (still names no component)                               |
+| —                                                         | `method: "drop"` — detaches one component, row survives                     |
+| `update_scopes` — one group list per stored Update (#473) | `subject_scopes` — one `{subject_id, [group_id]}` per folded subject (#814) |
+
+The pre-#814 `update_scopes` frame half is unreadable: a stored frame in that shape raises rather
+than decoding as unscoped, and there is no migration or read-through.
 
 A row that was one Update carrying five fields is now five Updates carrying one component
 each. The client store is reset and server data is discarded; there is no alias, no

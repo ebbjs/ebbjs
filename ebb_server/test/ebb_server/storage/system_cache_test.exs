@@ -421,7 +421,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
           })
           |> ActionFormat.build()
           |> ActionFormat.encode()
-          |> then(&ActionFormat.frame(&1, [[]]))
+          |> then(&ActionFormat.frame(&1, [{id, []}]))
 
         :ok =
           RocksDB.write_batch(

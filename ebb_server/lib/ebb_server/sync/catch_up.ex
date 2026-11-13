@@ -6,7 +6,7 @@ defmodule EbbServer.Sync.CatchUp do
   retrieve a group's Actions in GSN order, regardless of how many entities
   the group contains. A page consumes at most `limit` index rows (#423), so
   the cost of one page does not grow with the group's backlog. Each Action
-  is filtered to the Updates whose persisted per-Update scope includes the
+  is filtered to the Updates whose subject's persisted scope includes the
   group, so a spanning Action contributes to a group's stream only what
   belongs to it (#473).
   """

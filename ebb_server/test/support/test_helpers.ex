@@ -35,6 +35,7 @@ defmodule EbbServer.TestHelpers do
   - `validated_component/4` - Build one validated component update
   - `validated_row_updates/4` - Build one validated update per row field
   - `stored_update/1` - Project a validated update into its stored (string-keyed) form
+  - `subject_scopes/1` - The scopes half of a stored frame for a set of updates
 
   **Telemetry**
   - `attach_telemetry/1` - Forward emitted `:telemetry` events to the test process
@@ -860,5 +861,18 @@ defmodule EbbServer.TestHelpers do
     |> then(fn stored ->
       if update.component, do: Map.put(stored, "component", update.component), else: stored
     end)
+  end
+
+  @doc """
+  The scopes half of a stored frame for `updates`: one `{subject_id, []}` entry
+  per distinct subject, in first-appearance order, as the Writer builds it.
+
+  An empty group list is the honest fixture for a test that does not exercise
+  delivery: these frames are read back, not fanned out.
+  """
+  def subject_scopes(updates) do
+    updates
+    |> Enum.map(&{&1.subject_id, []})
+    |> Enum.uniq()
   end
 end

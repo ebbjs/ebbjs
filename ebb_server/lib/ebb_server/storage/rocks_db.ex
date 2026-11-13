@@ -41,7 +41,7 @@ defmodule EbbServer.Storage.RocksDB do
 
     default           - RocksDB default; holds internal metadata (migration markers)
     cf_actions        - GSN (64-bit big-endian) -> frame of {payload_etf,
-                        update_scopes} (see `EbbServer.Storage.ActionFormat`)
+                        subject_scopes} (see `EbbServer.Storage.ActionFormat`)
     cf_entity_actions - (entity_id, max_gsn_in_flush) -> the subject's GSNs
                         in that flush, sorted ascending and unique, each as
                         an 8-byte big-endian integer (see `encode_gsn_list/1`)

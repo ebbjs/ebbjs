@@ -32,7 +32,7 @@ defmodule EbbServer.Storage.ActionLogTest do
     test "returns a stored Action with its payload, key gsn, and scopes", %{
       rocks_name: rocks_name
     } do
-      put_action(rocks_name, 1, "act_1", [["g_1"]])
+      put_action(rocks_name, 1, "act_1", [{"todo_1", ["g_1"]}])
 
       assert [action] = ActionLog.read(1, 1, rocks_name: rocks_name)
 
@@ -41,7 +41,7 @@ defmodule EbbServer.Storage.ActionLogTest do
                "actor_id" => "a_1",
                "hlc" => 1,
                "gsn" => 1,
-               "update_scopes" => [["g_1"]],
+               "subject_scopes" => [{"todo_1", ["g_1"]}],
                "updates" => []
              }
     end
@@ -75,12 +75,16 @@ defmodule EbbServer.Storage.ActionLogTest do
     end
   end
 
-  defp put_action(rocks_name, gsn, id, update_scopes \\ [[]]) do
+  defp put_action(rocks_name, gsn, id, subject_scopes \\ []) do
     payload =
       %{"id" => id, "actor_id" => "a_1", "hlc" => gsn, "updates" => []}
       |> ActionFormat.encode()
 
-    put_value(rocks_name, RocksDB.encode_gsn_key(gsn), ActionFormat.frame(payload, update_scopes))
+    put_value(
+      rocks_name,
+      RocksDB.encode_gsn_key(gsn),
+      ActionFormat.frame(payload, subject_scopes)
+    )
   end
 
   defp put_value(rocks_name, key, value) do

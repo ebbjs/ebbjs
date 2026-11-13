@@ -5,14 +5,14 @@ defmodule EbbServer.Bench.Envelope.Shapes do
 
   A stored Action is always the same payload minus the GSN: the ETF of
   `EbbServer.Storage.ActionFormat.build/1` (id, actor, hlc, updates), which
-  is GSN-independent by design, plus the per-Update `update_scopes` that are
-  only known at claim time. The shapes differ in where the scopes live and
+  is GSN-independent by design, plus the per-subject `subject_scopes` that
+  are only known at claim time. The shapes differ in where the scopes live and
   whether the value carries a format version.
 
   | shape | `cf_actions` value | scopes |
   | --- | --- | --- |
-  | `:wrapper` | `term_to_binary({payload_etf, update_scopes})` | inside the term |
-  | `:versioned_wrapper` | `term_to_binary({1, payload_etf, update_scopes})` | inside the term |
+  | `:wrapper` | `term_to_binary({payload_etf, subject_scopes})` | inside the term |
+  | `:versioned_wrapper` | `term_to_binary({1, payload_etf, subject_scopes})` | inside the term |
   | `:companion` | `payload_etf` | second key, second durable put |
   | `:frame` | `ActionFormat.frame/2` (`<<size::32, payload_etf, scopes_etf>>`) | inside the frame |
 
@@ -65,7 +65,7 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   alias EbbServer.Storage.{ActionFormat, RocksDB}
 
   @type shape :: :wrapper | :versioned_wrapper | :companion | :frame
-  @type scopes :: [[String.t()]]
+  @type scopes :: [{String.t(), [String.t()]}]
 
   @typedoc """
   What a read path hands the decoders: the `cf_actions` value plus, for the
@@ -79,7 +79,7 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   """
   @type input :: %{
           payload_etf: binary(),
-          update_scopes: scopes(),
+          subject_scopes: scopes(),
           gsn: non_neg_integer()
         }
 
@@ -100,15 +100,15 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   The `cf_actions` value for one Action, encoded in `shape`.
   """
   @spec cf_actions_value(shape(), input()) :: binary()
-  def cf_actions_value(:wrapper, %{payload_etf: payload, update_scopes: scopes}),
+  def cf_actions_value(:wrapper, %{payload_etf: payload, subject_scopes: scopes}),
     do: :erlang.term_to_binary({payload, scopes})
 
-  def cf_actions_value(:versioned_wrapper, %{payload_etf: payload, update_scopes: scopes}),
+  def cf_actions_value(:versioned_wrapper, %{payload_etf: payload, subject_scopes: scopes}),
     do: :erlang.term_to_binary({1, payload, scopes})
 
   def cf_actions_value(:companion, %{payload_etf: payload}), do: payload
 
-  def cf_actions_value(:frame, %{payload_etf: payload, update_scopes: scopes}),
+  def cf_actions_value(:frame, %{payload_etf: payload, subject_scopes: scopes}),
     do: ActionFormat.frame(payload, scopes)
 
   @doc """
@@ -123,7 +123,7 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   def extra_ops(:versioned_wrapper, _input), do: []
   def extra_ops(:frame, _input), do: []
 
-  def extra_ops(:companion, %{gsn: gsn, update_scopes: scopes}) do
+  def extra_ops(:companion, %{gsn: gsn, subject_scopes: scopes}) do
     [{:put, RocksDB.cf_actions(), scopes_key(gsn), scopes_value(scopes)}]
   end
 
@@ -164,21 +164,21 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   """
   @spec decode(stored(), non_neg_integer()) :: map()
   def decode({:wrapper, value, _scopes}, gsn) do
-    {payload_etf, update_scopes} = :erlang.binary_to_term(value, [:safe])
+    {payload_etf, subject_scopes} = :erlang.binary_to_term(value, [:safe])
 
     payload_etf
     |> decode_term()
     |> Map.put_new("gsn", gsn)
-    |> Map.put("update_scopes", update_scopes)
+    |> Map.put("subject_scopes", subject_scopes)
   end
 
   def decode({:versioned_wrapper, value, _scopes}, gsn) do
-    {1, payload_etf, update_scopes} = :erlang.binary_to_term(value, [:safe])
+    {1, payload_etf, subject_scopes} = :erlang.binary_to_term(value, [:safe])
 
     payload_etf
     |> decode_term()
     |> Map.put_new("gsn", gsn)
-    |> Map.put("update_scopes", update_scopes)
+    |> Map.put("subject_scopes", subject_scopes)
   end
 
   def decode({:frame, value, _scopes}, gsn), do: ActionFormat.decode(value, gsn)
@@ -193,17 +193,17 @@ defmodule EbbServer.Bench.Envelope.Shapes do
     value
     |> decode_term()
     |> Map.put_new("gsn", gsn)
-    |> Map.put("update_scopes", scopes)
+    |> Map.put("subject_scopes", scopes)
   end
 
   @doc """
-  Decodes only the payload half, leaving `"update_scopes"` out.
+  Decodes only the payload half, leaving `"subject_scopes"` out.
 
   This is what materialization, query, and group listing read.
   """
   @spec decode_payload(stored(), non_neg_integer()) :: map()
   def decode_payload({:wrapper, value, _scopes}, gsn) do
-    {payload_etf, _update_scopes} = :erlang.binary_to_term(value, [:safe])
+    {payload_etf, _subject_scopes} = :erlang.binary_to_term(value, [:safe])
 
     payload_etf
     |> decode_term()
@@ -211,7 +211,7 @@ defmodule EbbServer.Bench.Envelope.Shapes do
   end
 
   def decode_payload({:versioned_wrapper, value, _scopes}, gsn) do
-    {1, payload_etf, _update_scopes} = :erlang.binary_to_term(value, [:safe])
+    {1, payload_etf, _subject_scopes} = :erlang.binary_to_term(value, [:safe])
 
     payload_etf
     |> decode_term()

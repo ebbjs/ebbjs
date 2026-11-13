@@ -165,7 +165,7 @@ defmodule EbbServer.Storage.Committer do
 
   defp build_action_ops(action, gsn, state) do
     rocks_name = state.rocks_name
-    action_etf = ActionFormat.frame(action.payload_etf, action.update_scopes)
+    action_etf = ActionFormat.frame(action.payload_etf, action.subject_scopes)
 
     [{:put, RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), action_etf}] ++
       dedup_ops(action, gsn, state) ++

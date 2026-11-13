@@ -20,10 +20,9 @@ defmodule EbbServer.Sync.FanOutRouter do
   3. Takes each Action's group set from the Writer's commit snapshot,
      falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
      via `EntityIndex`) only when the notifier did not annotate the GSN.
-  4. Filters each Action's Updates to the ones whose persisted
-     per-Update scope includes the recipient group. An Update scoped to
-     one group is never delivered to another group that the same Action
-     also touches.
+  4. Filters each Action's Updates to the ones whose subject's persisted
+     scope includes the recipient group. An Update scoped to one group is
+     never delivered to another group that the same Action also touches.
   5. Encodes the range's frames once per (Action, distinct Update subset)
      for the groups with a live GroupServer, via
      `FanOutRouter.Frames.build/1`, then dispatches bytes. Groups that
@@ -42,9 +41,10 @@ defmodule EbbServer.Sync.FanOutRouter do
   `cf_group_actions` index catch-up reads: the cache has already moved
   by dispatch time, so re-resolving an `ebb/link`/`ebb/grant` delete there
   finds no by-id entry, and the wire form carries no component for a delete.
-  Each Action is stored with its per-Update scopes (`"update_scopes"`) for
-  the same reason; an Action committed before those scopes were persisted has
-  none and is delivered whole, as it was before per-Update delivery (#473).
+  Each Action is stored with its per-subject scopes (`"subject_scopes"`) for
+  the same reason. Every frame this build writes carries them, and a frame
+  whose scopes half is not one `{subject_id, [group_id]}` entry per subject
+  raises on read rather than delivering whole (#814).
 
   ## Resolved holes
 
@@ -625,8 +625,8 @@ defmodule EbbServer.Sync.FanOutRouter do
         {:ok,
          payloads
          |> Enum.with_index(from_gsn)
-         |> Enum.map(fn {{payload_etf, update_scopes}, gsn} ->
-           ActionFormat.decode_carried(payload_etf, update_scopes, gsn)
+         |> Enum.map(fn {{payload_etf, subject_scopes}, gsn} ->
+           ActionFormat.decode_carried(payload_etf, subject_scopes, gsn)
          end)}
 
       actual ->

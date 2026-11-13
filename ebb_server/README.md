@@ -532,7 +532,7 @@ sequenceDiagram
   W->>E: claim action ids, idempotent-retry guard
   W->>DB: multi_get cf_action_dedup, drop duplicates
   W->>E: :atomics.add_get, claim a GSN range
-  W->>E: memoized group resolution per Update
+  W->>E: memoized group resolution per subject
   W->>PP: build payload + ETF encode
   Note over PP: GSN-free and cache-free, so it runs in a pooled<br/>worker instead of on the Writer's call path
   PP-->>W: one payload_etf per Action
@@ -566,7 +566,7 @@ sequenceDiagram
   WP-->>F: frontier
   Note over F: Plan buffers each range until the frontier covers it,<br/>then releases in claim order
   alt live hand-off
-    F->>F: ActionFormat.decode_carried per Action (payload_etf + update_scopes)
+    F->>F: ActionFormat.decode_carried per Action (payload_etf + subject_scopes)
   else recovered range
     F->>DB: range_iterator cf_actions
     DB-->>F: payload ETF per Action
@@ -628,7 +628,7 @@ it runs, so one stale row costs the whole query.
 flowchart LR
   subgraph rocks["RocksDB: synchronously committed"]
     direction TB
-    A1["cf_actions: GSN to payload ETF + update_scopes"]
+    A1["cf_actions: GSN to payload ETF + subject_scopes"]
     A2["cf_group_actions: group, GSN to action id"]
     A3["cf_entity_actions: entity, GSN to action id"]
     A4["cf_action_dedup: action id to GSN"]
@@ -660,7 +660,7 @@ flowchart LR
 stateDiagram-v2
   [*] --> idle
   idle --> claimed: GSN range claimed, ids guarded
-  claimed --> prepared: group resolution, update_scopes, provisional dirty
+  claimed --> prepared: group resolution, subject_scopes, provisional dirty
   prepared --> committing: handed to a Committer worker
   committing --> committed: write_batch returns ok, durable
   committed --> applying: ordered release allows it

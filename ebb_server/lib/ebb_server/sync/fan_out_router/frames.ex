@@ -60,7 +60,7 @@ defmodule EbbServer.Sync.FanOutRouter.Frames do
     end
   end
 
-  # Partial subsets are the strict case (per-Update scopes differ), so the key
+  # Partial subsets are the strict case (per-subject scopes differ), so the key
   # is the exact subset: its Update ids complete the Action id, and the frame
   # and the key cannot disagree.
   defp partial_frame(action, updates, action_memo) do

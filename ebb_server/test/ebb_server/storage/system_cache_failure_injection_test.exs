@@ -215,11 +215,13 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   end
 
   defp seed_action(ctx, action, gsn) do
+    subject_scopes = TestHelpers.subject_scopes(action.updates)
+
     frame =
       action
       |> ActionFormat.build()
       |> ActionFormat.encode()
-      |> then(&ActionFormat.frame(&1, [[]]))
+      |> then(&ActionFormat.frame(&1, subject_scopes))
 
     :ok =
       RocksDB.write_batch(

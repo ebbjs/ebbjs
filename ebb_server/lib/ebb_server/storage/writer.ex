@@ -55,7 +55,7 @@ defmodule EbbServer.Storage.Writer do
   The flush is split across processes. This GenServer is the
   **sequencer**: it owns everything that needs the live caches or the
   resolution frontier — coalescing, dedup, the GSN claim, group resolution
-  and `update_scopes`, the provisional dirty marks, apply, the watermark,
+  and `subject_scopes`, the provisional dirty marks, apply, the watermark,
   the fan-out notification, and every reply. The linked
   `EbbServer.Storage.PreparePool` owns the GSN-free, cache-free payload
   build and ETF encode, so that work runs as calls arrive without blocking
@@ -175,13 +175,12 @@ defmodule EbbServer.Storage.Writer do
   GSN list, however many Updates or Actions touched it. `cf_group_actions`
   is emitted once per Action from the union of resolved group ids.
 
-  Every resolved per-Update scope is also persisted as the scopes half of
-  the stored `cf_actions` frame: one group list per Update,
-  index-aligned with the payload's Updates. Fan-out and catch-up filter
-  an Action by those scopes so each Update is delivered only to the groups
-  it belongs to. The scopes cannot be re-derived later (an `ebb/link` or
-  `ebb/membership` delete's by-id cache entry is gone by then), so this
-  snapshot is the delivery contract.
+  Every resolved per-subject scope is also persisted as the scopes half of
+  the stored `cf_actions` frame: one group list per folded subject. Fan-out
+  and catch-up filter an Action by those scopes so each Update is delivered
+  only to the groups its subject belongs to. The scopes cannot be re-derived
+  later (an `ebb/link` or `ebb/membership` delete's by-id cache entry is gone
+  by then), so this snapshot is the delivery contract.
 
   System-cache writes are deduplicated the same way. The pre-commit pass
   hands the flush's flattened Updates to
@@ -936,11 +935,11 @@ defmodule EbbServer.Storage.Writer do
      (`EbbServer.Storage.InFlightActions`).
   2. Claims one GSN range for the remaining fresh actions.
   3. Prepares one `PreparedAction` per fresh Action (group resolution and
-     `update_scopes`), hands the batch to the Committer, and once the
+     `subject_scopes`), hands the batch to the Committer, and once the
      Committer reports the durable write builds a single WriteBatch across
      the written column families:
      - cf_actions: GSN → frame of the pre-encoded payload and its
-       per-Update group scopes
+       per-subject group scopes
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, max GSN in this flush) → the
        subject's sorted GSN list for the flush (materialization index)
@@ -2190,25 +2189,22 @@ defmodule EbbServer.Storage.Writer do
         {{mutation.subject_id, group_ids}, memo}
       end)
 
-    # Index-aligned with `action.updates`: the durable record of which
-    # groups each Update is delivered to. Every component Update of a row gets
-    # the row's scope. Computed here, from the same snapshot
-    # `cf_group_actions` is built from, because the by-id caches for an
-    # `ebb/link`/`ebb/membership` delete are gone by fan-out time.
-    scope_by_subject = Map.new(scopes)
-    update_scopes = Enum.map(action.updates, &Map.fetch!(scope_by_subject, &1.subject_id))
-
+    # One entry per folded subject, in first-appearance order: the durable
+    # record of which groups each subject's Updates are delivered to. Computed
+    # here, from the same snapshot `cf_group_actions` is built from, because
+    # the by-id caches for an `ebb/link`/`ebb/membership` delete are gone by
+    # fan-out time.
     prepared = %PreparedAction{
       id: action.id,
       actor_id: action.actor_id,
       hlc: action.hlc,
       updates: action.updates,
       payload_etf: payload_etf,
-      update_scopes: update_scopes,
+      subject_scopes: scopes,
       # The union of resolved groups is indexed once per Action, not once
-      # per Update, so repeated memberships cannot write the same
+      # per subject, so repeated memberships cannot write the same
       # `{group_id, gsn}` row twice.
-      groups: update_scopes |> :lists.append() |> Enum.uniq(),
+      groups: scopes |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq(),
       component_entity_ops: component_entity_ops(action.updates, mutations, state),
       affected_entities: affected_entities(mutations)
     }
@@ -2572,7 +2568,7 @@ defmodule EbbServer.Storage.Writer do
   # The range supplies each GSN by position, so the list is in claim order:
   # index 0 is `gsn_start`.
   defp carried_payloads(prepared) do
-    Enum.map(prepared, &{&1.payload_etf, &1.update_scopes})
+    Enum.map(prepared, &{&1.payload_etf, &1.subject_scopes})
   end
 
   defp notify_range_resolved(state, gsn_start, gsn_end) do

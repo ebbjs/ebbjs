@@ -35,7 +35,7 @@ defmodule EbbServer.ActionExport do
   `ebb/membership`) are stripped by default, and an Action left with no
   Updates is dropped entirely. The exclusion names the components, not the
   model `ebb`: excluding the model would strip the `ebb/group` creates too.
-  A `delete` names no component, so it is always exported. The per-Update
+  A `delete` names no component, so it is always exported. The per-subject
   delivery scopes (#473) are internal routing metadata, not part of the
   Action contract, so they are stripped too.
 
@@ -216,7 +216,7 @@ defmodule EbbServer.ActionExport do
             {kept, dropped + removed}
 
           _ ->
-            exported = action |> Map.put("updates", updates) |> Map.delete("update_scopes")
+            exported = action |> Map.put("updates", updates) |> Map.delete("subject_scopes")
             {[exported | kept], dropped + removed}
         end
       end)

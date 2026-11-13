@@ -55,17 +55,17 @@ defmodule EbbServer.Bench.WriteBatch do
   @doc """
   The production frame's `cf_actions` puts for one Action.
 
-  Every Update here resolves to the single bench group, so the stored scopes
-  are the same one-element list per Update.
+  Every subject here resolves to the single bench group, so the stored
+  scopes are one entry per distinct subject.
   """
   @spec stored_frame(map(), non_neg_integer()) :: [{:put, term(), binary(), binary()}]
   def stored_frame(action, gsn) do
-    update_scopes = Enum.map(action.updates, fn _ -> [Workbook.group_id()] end)
+    subject_scopes = Workbook.subject_scopes(action.updates)
     payload = action |> ActionFormat.build() |> ActionFormat.encode()
 
     [
       {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn),
-       ActionFormat.frame(payload, update_scopes)}
+       ActionFormat.frame(payload, subject_scopes)}
     ]
   end
 

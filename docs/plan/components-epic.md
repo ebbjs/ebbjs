@@ -382,8 +382,9 @@ and the fixtures move with it.
       than `isLogField(subjectType, field)` (#778). A log now sits at a named position inside a
       component instead of being the whole field, so the guard — and the `refuseContentRewrites`
       special case it replaces — both key on a path.
-- [ ] `update_scopes` and `cf_entity_actions` keyed per `(entity, component)` where scope differs
-      from the entity's; `cf_entity_actions` still coalesces per subject per flush.
+- [ ] `cf_entity_actions` still coalesces per subject per flush. (#814 superseded the per-component
+      scope keying this bullet originally planned: scope belongs to the subject, so the stored frame
+      carries one `subject_scopes` entry per subject and nothing is keyed per component.)
 - [ ] Catch-up frames carry components-of-row rather than whole rows when the request names them.
 - [ ] Measure Update-count growth: a 5-component `update()` is 5 Updates; record payload delta and
       commit throughput through the real Writer pipeline, not a storage primitive.
@@ -497,7 +498,7 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
 - [x] #813's empty-scope delivery hole: the Writer's `fan_out_preference` now reads the row shape
       earlier Actions of the same flush left behind (`:flush_rows`), so a `groupMember`/`entityGroup`
       or `relationship` write that names only one component still carries its group/source. It is no
-      longer committed undeliverable, and the stored `update_scopes` / `cf_group_actions` row are
+      longer committed undeliverable, and the stored `subject_scopes` / `cf_group_actions` row are
       what catch-up and fan-out read. The issue's second clause — reject an Action whose scope is
       still `[]` — is **not** taken: a row that genuinely belongs to no group (an unshared user row)
       is legal today, and rejecting would change authorization rather than delivery. A system row

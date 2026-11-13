@@ -10,7 +10,14 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionFormat, DirtyTracker, EntityGroupCache, RocksDB, Writer}
+  alias EbbServer.Storage.{
+    ActionFormat,
+    ActionScope,
+    DirtyTracker,
+    EntityGroupCache,
+    RocksDB,
+    Writer
+  }
 
   import EbbServer.TestHelpers
 
@@ -54,7 +61,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     assert Enum.map(stored["updates"], & &1["component"]) == ["ebb/membership"]
 
-    assert stored["update_scopes"] == [["g_1"]]
+    assert stored["subject_scopes"] == [{"eg_1", ["g_1"]}]
   end
 
   # A delete names no component, so its model is the committed one — the
@@ -80,7 +87,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
 
-    assert stored_action(1, ctx.rocks_name)["update_scopes"] == [["g_1"]]
+    assert stored_action(1, ctx.rocks_name)["subject_scopes"] == [{"eg_1", ["g_1"]}]
     # The row's committed model is the platform model, which is what the
     # dirty mark has to carry for a later materialization to find it.
     assert DirtyTracker.dirty_entity_ids_for_model("ebb", ctx.dirty_set) == ["eg_1"]
@@ -116,7 +123,32 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     stored = stored_action(1, ctx.rocks_name)
 
-    assert stored["update_scopes"] == [["g_1"]]
+    assert stored["subject_scopes"] == [{"rel_1", ["g_1"]}]
     assert Enum.map(stored["updates"], & &1["component"]) == ["ebb/link"]
+  end
+
+  test "a delete uses its own subject's scope", ctx do
+    EntityGroupCache.put_entity_group(
+      %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
+      entity_groups: ctx.entity_groups,
+      entity_groups_by_id: ctx.entity_groups_by_id,
+      entity_groups_by_group: ctx.entity_groups_by_group
+    )
+
+    :ets.insert(ctx.entity_types, {"todo_1", "todo"})
+
+    action =
+      validated_action(%{updates: [validated_update(%{subject_id: "todo_1", method: :delete})]})
+
+    assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
+
+    stored = stored_action(1, ctx.rocks_name)
+
+    assert [%{"subject_id" => "todo_1", "method" => "delete"} = update] = stored["updates"]
+    refute Map.has_key?(update, "component")
+    assert stored["subject_scopes"] == [{"todo_1", ["g_1"]}]
+
+    assert ActionScope.updates_for_group(stored, "g_1") == stored["updates"]
+    assert ActionScope.updates_for_group(stored, "g_2") == []
   end
 end

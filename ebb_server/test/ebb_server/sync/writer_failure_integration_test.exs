@@ -197,7 +197,7 @@ defmodule EbbServer.Sync.FanOutRouterRangeResolvedTest do
     :ok =
       RocksDB.write_batch([
         {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(2),
-         ActionFormat.frame(payload, [[group_id]])}
+         ActionFormat.frame(payload, [{"todo_282_drain", [group_id]}])}
       ])
 
     :sys.replace_state(FanOutRouter, fn state ->

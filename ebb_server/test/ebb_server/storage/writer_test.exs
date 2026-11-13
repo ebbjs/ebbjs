@@ -200,11 +200,26 @@ defmodule EbbServer.Storage.WriterTest do
       {:ok, binary} =
         RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), name: rocks_name)
 
-      # The Action spans group_1 (todo_a) and group_2 (the new todo_b and its
-      # membership row); the stored per-Update scopes keep them apart. The
-      # membership is one atomic Update, so the row costs one scope.
-      assert %{"update_scopes" => [["group_1"], ["group_2"], ["group_2"]]} =
-               ActionFormat.decode(binary, 1)
+      # The Action spans group_1 (todo_a) and group_2 (todo_b and its
+      # membership row); the stored per-subject scopes keep them apart. One
+      # entry per subject, in first-appearance order.
+      decoded = ActionFormat.decode(binary, 1)
+
+      assert %{
+               "subject_scopes" => [
+                 {"todo_a", ["group_1"]},
+                 {"todo_b", ["group_2"]},
+                 {"eg_b", ["group_2"]}
+               ]
+             } = decoded
+
+      # The join each group's delivery reads: group_1 gets todo_a's Update,
+      # group_2 gets todo_b's and the membership row's, and neither leaks.
+      assert Enum.map(ActionScope.updates_for_group(decoded, "group_1"), & &1["subject_id"]) ==
+               ["todo_a"]
+
+      assert Enum.map(ActionScope.updates_for_group(decoded, "group_2"), & &1["subject_id"]) ==
+               ["todo_b", "eg_b"]
 
       for group_id <- ["group_1", "group_2"] do
         key = RocksDB.encode_group_action_key(group_id, 1)
@@ -214,6 +229,53 @@ defmodule EbbServer.Storage.WriterTest do
 
         assert action_id == action.id
       end
+    end
+
+    test "one row's five components store one scope list, indexed once per group", ctx do
+      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+
+      for group_id <- ["group_1", "group_2"] do
+        :ok =
+          EntityGroupCache.put_entity_group(
+            %{id: "eg_#{group_id}_c", entity_id: "todo_c", group_id: group_id},
+            entity_groups: ctx.entity_groups,
+            entity_groups_by_id: ctx.entity_groups_by_id,
+            entity_groups_by_group: ctx.entity_groups_by_group
+          )
+      end
+
+      updates =
+        for field <- ["title", "body", "due", "tags", "meta"] do
+          validated_component("todo_c", "todo/#{field}", %{"value" => field, "hlc" => 1})
+        end
+
+      action = validated_action(%{updates: updates})
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
+
+      {:ok, binary} =
+        RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), name: rocks_name)
+
+      decoded = ActionFormat.decode(binary, 1)
+
+      # Five component Updates, one folded subject: one scope entry, not five.
+      assert length(decoded["updates"]) == 5
+      assert decoded["subject_scopes"] == [{"todo_c", ["group_1", "group_2"]}]
+
+      # The union is still indexed once per group, not once per Update.
+      rows =
+        RocksDB.range_iterator(RocksDB.cf_group_actions(rocks_name), <<>>, :none,
+          name: rocks_name
+        )
+        |> Enum.map(fn {key, action_id} -> {RocksDB.decode_group_action_key(key), action_id} end)
+
+      assert rows == [
+               {{"group_1", 1}, action.id},
+               {{"group_2", 1}, action.id}
+             ]
+
+      # Every component of the row is delivered through that one entry.
+      assert length(ActionScope.updates_for_group(decoded, "group_1")) == 5
     end
 
     test "scopes a later write to a row its create committed in the same flush (#813)", ctx do
@@ -247,7 +309,7 @@ defmodule EbbServer.Storage.WriterTest do
         RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(2), name: rocks_name)
 
       decoded = ActionFormat.decode(binary, 2)
-      assert %{"update_scopes" => [["group_813"]]} = decoded
+      assert %{"subject_scopes" => [{"eg_813", ["group_813"]}]} = decoded
 
       # The same scope catch-up and live fan-out filter on.
       assert [%{"component" => "ebb/membership"}] =
@@ -465,7 +527,7 @@ defmodule EbbServer.Storage.WriterTest do
   end
 
   describe "stored value shape (#532/#552)" do
-    test "writes a frame whose payload carries no gsn or update_scopes", %{
+    test "writes a frame whose payload carries no gsn or subject_scopes", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
@@ -483,13 +545,13 @@ defmodule EbbServer.Storage.WriterTest do
       # The frame is a version byte, the payload's length, the payload ETF,
       # and the scopes ETF — not one term, so the halves are read separately.
       assert <<size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
-      assert :erlang.binary_to_term(scopes_etf, [:safe]) == [[]]
+      assert :erlang.binary_to_term(scopes_etf, [:safe]) == [{"todo_frame", []}]
 
       payload = :erlang.binary_to_term(payload_etf, [:safe])
 
       assert payload["id"] == action.id
       refute Map.has_key?(payload, "gsn")
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
     end
 
     test "the new shape round-trips through ActionLog.read/3", %{
@@ -505,7 +567,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert stored["id"] == action.id
       assert stored["gsn"] == 1
-      assert stored["update_scopes"] == [[]]
+      assert stored["subject_scopes"] == [{"todo_action_log", []}]
       assert [%{"id" => update_id, "subject_id" => "todo_action_log"}] = stored["updates"]
       assert update_id == update.id
     end

@@ -20,7 +20,7 @@ defmodule EbbServer.Storage.CommitPipeline do
                     `----------`-------------`------------`--> abandoned
 
   `claimed` means the range exists and its action ids are guarded against a
-  second claim. `prepared` means group resolution, `update_scopes`, and the
+  second claim. `prepared` means group resolution, `subject_scopes`, and the
   provisional dirty marks are attached. `committing` means the batch is at
   a Committer worker and `owner` names that worker. `committed` is the
   durable point of no return; from there the batch may still be abandoned

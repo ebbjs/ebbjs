@@ -79,12 +79,92 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
       decoded = ActionFormat.decode(frame_value, gsn2)
 
       assert decoded["gsn"] == gsn2
-      assert decoded["update_scopes"] == [[group_id]]
+      assert decoded["subject_scopes"] == [{"todo_#{second_id}", [group_id]}]
 
       sync_router()
       assert FanOutFrontier.get() == {:ok, gsn2}
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
+    end
+
+    test "a spanning Action reaches each group with only its own subject's Updates" do
+      g1 = "g_534_span_a_#{:erlang.unique_integer([:positive])}"
+      g2 = "g_534_span_b_#{:erlang.unique_integer([:positive])}"
+      actor_id = "a_534_span_#{:erlang.unique_integer([:positive])}"
+
+      {:ok, sse1} = SSEConnection.start_link(self(), [g1], %{g1 => 0})
+      {:ok, sse2} = SSEConnection.start_link(self(), [g2], %{g2 => 0})
+      :ok = FanOutRouter.subscribe([g1], sse1, actor_id)
+      :ok = FanOutRouter.subscribe([g2], sse2, actor_id)
+
+      gsn = RocksDB.get_max_gsn() + 1
+      action_id = "act_534_span_#{:erlang.unique_integer([:positive])}"
+      hlc = generate_hlc()
+
+      updates = [
+        update_for("upd_#{action_id}_a", "todo_#{action_id}_a", hlc),
+        update_for("upd_#{action_id}_b", "todo_#{action_id}_b", hlc)
+      ]
+
+      payload_etf =
+        %{id: action_id, actor_id: actor_id, hlc: hlc, updates: updates}
+        |> ActionFormat.build()
+        |> ActionFormat.encode()
+
+      subject_scopes = [
+        {"todo_#{action_id}_a", [g1]},
+        {"todo_#{action_id}_b", [g2]}
+      ]
+
+      :ok =
+        RocksDB.write_batch([
+          {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn),
+           ActionFormat.frame(payload_etf, subject_scopes)},
+          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(g1, gsn), action_id},
+          {:put, RocksDB.cf_group_actions(), RocksDB.encode_group_action_key(g2, gsn), action_id}
+        ])
+
+      :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
+      WatermarkTracker.advance_watermark()
+
+      # The live hand-off carries the payload and its per-subject scopes;
+      # each group's frame is the join over its own scope entry.
+      send(
+        FanOutRouter,
+        {:batch_committed, gsn, gsn, %{gsn => [g1, g2]}, System.monotonic_time(),
+         [{payload_etf, subject_scopes}], []}
+      )
+
+      delivered =
+        1..2
+        |> Enum.map(fn _ -> receive_data_payloads(1) |> hd() |> Jason.decode!() end)
+        |> Map.new(fn action -> {hd(action["updates"])["subject_id"], action["updates"]} end)
+
+      assert delivered == %{
+               "todo_#{action_id}_a" => [
+                 %{
+                   "id" => "upd_#{action_id}_a",
+                   "subject_id" => "todo_#{action_id}_a",
+                   "component" => "todo/title",
+                   "method" => "replace",
+                   "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
+                 }
+               ],
+               "todo_#{action_id}_b" => [
+                 %{
+                   "id" => "upd_#{action_id}_b",
+                   "subject_id" => "todo_#{action_id}_b",
+                   "component" => "todo/title",
+                   "method" => "replace",
+                   "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
+                 }
+               ]
+             }
+
+      sync_router()
+
+      :ok = FanOutRouter.unsubscribe(sse1)
+      :ok = FanOutRouter.unsubscribe(sse2)
     end
 
     test "a push persisted behind its frontier is re-pushed on resume (at-least-once)" do
@@ -221,9 +301,19 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
   # range, so the persisted frontier reflects that push.
   defp sync_router, do: :sys.get_state(FanOutRouter)
 
+  defp update_for(update_id, subject_id, hlc) do
+    %{
+      id: update_id,
+      subject_id: subject_id,
+      component: "todo/title",
+      method: :replace,
+      data: %{"type" => "lww", "value" => "x", "hlc" => hlc}
+    }
+  end
+
   defp framed(group_id, actor_id, action_id) do
     hlc = generate_hlc()
-    scopes = [[group_id]]
+    scopes = [{"todo_#{action_id}", [group_id]}]
 
     payload_etf =
       %{

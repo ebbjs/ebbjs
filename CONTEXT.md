@@ -344,6 +344,10 @@ _Avoid_: call, request, execution
 **Subject**:
 The actor an Invocation runs as, whose grants decide whether it may invoke and
 what it may read and write.
+
+In the Action log, an Update's `subject_id` is the row it writes — the entity
+whose components it names — and an Action stores one delivery scope per
+subject id, not one per component (#814).
 _Avoid_: caller, user, principal
 
 **Bundle**:

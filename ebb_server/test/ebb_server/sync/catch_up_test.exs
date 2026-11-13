@@ -162,9 +162,10 @@ defmodule EbbServer.Sync.CatchUpTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      # The second Update scopes to another group, so catch-up must use the
-      # frame's scopes and drop it.
-      frame = ActionFormat.frame(payload, [[group_id], ["g_other"]])
+      # The second Update's subject scopes to another group, so catch-up
+      # must use the frame's per-subject scopes and drop it.
+      frame =
+        ActionFormat.frame(payload, [{"todo_frame", [group_id]}, {"todo_other", ["g_other"]}])
 
       :ok =
         RocksDB.write_batch([
@@ -510,7 +511,7 @@ defmodule EbbServer.Sync.CatchUpTest do
       |> ActionFormat.build()
       |> ActionFormat.encode()
 
-    ActionFormat.frame(payload, [[group_id]])
+    ActionFormat.frame(payload, [{"todo_seed", [group_id]}])
   end
 
   # Pages from 0 until the stream reports up_to_date, asserting that a page
