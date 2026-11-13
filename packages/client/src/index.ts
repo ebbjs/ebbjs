@@ -240,7 +240,12 @@ export { type ReadonlyObservable } from "./sync/observable";
 export { type ClientStatus } from "./sync/status";
 
 export type { ConflictEntry } from "./sync/conflicts";
-export type { ConflictSide, ConflictSlot, ConflictRemoteAction } from "@ebbjs/storage/types";
+export type {
+  ConflictHold,
+  ConflictSide,
+  ConflictSlot,
+  ConflictRemoteAction,
+} from "@ebbjs/storage/types";
 
 export {
   openSSEStream,

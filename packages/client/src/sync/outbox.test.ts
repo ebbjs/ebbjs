@@ -8,11 +8,12 @@
 
 import { describe, it, expect, vi, type Mock } from "vitest";
 import { componentName, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import { ModelRegistry, seedRegistry } from "@ebbjs/schema";
 import type {
   ConflictSide,
   ConflictSlot,
   OutboxConflict,
-  OutboxEntry as StoredOutboxEntry,
+  OutboxEntry as StorageOutboxEntry,
   OutboxStore,
 } from "@ebbjs/storage/types";
 
@@ -82,10 +83,10 @@ const side = (value: unknown, updateId?: string, hlc?: string): ConflictSide => 
 const stored = (
   action: Action,
   enqueuedAtHlc: string,
-  status: StoredOutboxEntry["status"] = "pending",
+  status: StorageOutboxEntry["status"] = "pending",
   basedOnGsn = 0,
   conflict?: OutboxConflict,
-): StoredOutboxEntry => ({
+): StorageOutboxEntry => ({
   action,
   status,
   enqueuedAtHlc,
@@ -98,15 +99,15 @@ const stored = (
  * test can seed an order the outbox must re-sort by `enqueuedAtHlc`.
  */
 const mkStore = (
-  initial: readonly StoredOutboxEntry[] = [],
-): OutboxStore & { rows: Map<string, StoredOutboxEntry> } => {
+  initial: readonly StorageOutboxEntry[] = [],
+): OutboxStore & { rows: Map<string, StorageOutboxEntry> } => {
   const rows = new Map(initial.map((entry) => [entry.action.id, entry]));
   return {
     rows,
-    put: vi.fn(async (entry: StoredOutboxEntry) => {
+    put: vi.fn(async (entry: StorageOutboxEntry) => {
       rows.set(entry.action.id, structuredClone(entry));
     }),
-    putAndDelete: vi.fn(async (entry: StoredOutboxEntry, deleteId: string) => {
+    putAndDelete: vi.fn(async (entry: StorageOutboxEntry, deleteId: string) => {
       rows.delete(deleteId);
       rows.set(entry.action.id, structuredClone(entry));
     }),
@@ -160,6 +161,7 @@ const mkDeps = (
     store: mkStore(),
     baseGsn: () => 0,
     conflictScope: () => "field" as const,
+    modelConflictScope: () => "field" as const,
     conflictId: vi.fn(() => `c_${++conflicts}`),
     hlc: vi.fn(() => String(++clock)),
     preSyncRow: vi.fn(() => null),
@@ -397,7 +399,7 @@ describe("createOutbox lifecycle", () => {
     const base = mkStore();
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         // Delay only the flush transition, not the enqueue write.
         if (entry.status !== "pending") {
           await new Promise<void>((resolve) => {
@@ -429,7 +431,7 @@ describe("createOutbox lifecycle", () => {
     let puts = 0;
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         puts += 1;
         if (puts > 1) throw new Error("disk full");
         await base.put(entry);
@@ -453,7 +455,7 @@ describe("createOutbox lifecycle", () => {
     let puts = 0;
     const store: OutboxStore = {
       ...base,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         puts += 1;
         // Two enqueues, then fail the second flush transition.
         if (puts > 3) throw new Error("disk full");
@@ -880,6 +882,101 @@ describe("createOutbox conflict detection", () => {
     expect(outbox.conflicts()).toEqual([]);
   });
 
+  it("component scope flags a different map key and holds only that component", async () => {
+    const deps = mkDeps({
+      conflictScope: (_model, component) => (component === "todo/content" ? "component" : "field"),
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { content: { map: { a: { value: "mine", update_id: "u_local", hlc: "10" } } } },
+      }),
+    );
+
+    const detected = await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { content: { map: { b: { value: "theirs", update_id: "u_peer", hlc: "20" } } } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    // The whole component is the contested position, so a disjoint key is
+    // still a conflict and the slot carries the component value.
+    expect(detected).toEqual([
+      {
+        actionId: "a_local",
+        subjects: ["todo_1"],
+        slots: [
+          slot({
+            component: "todo/content",
+            path: [],
+            local: side({ a: "mine" }),
+            remote: side({ b: "theirs" }),
+          }),
+        ],
+      },
+    ]);
+    const conflict = outbox.conflicts()[0]?.conflict;
+    expect(conflict?.scope).toBe("component");
+    expect(conflict?.holds).toEqual([
+      { kind: "component", subjectId: "todo_1", component: "todo/content" },
+    ]);
+  });
+
+  it("holds the contested component without blocking a sibling component's flush", async () => {
+    const deps = mkDeps({
+      conflictScope: (_model, component) => (component === "todo/content" ? "component" : "field"),
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_local",
+        subjectId: "todo_1",
+        fields: { content: { map: { a: { value: "mine", update_id: "u_local", hlc: "10" } } } },
+      }),
+    );
+    await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { content: { map: { b: { value: "theirs", update_id: "u_peer", hlc: "20" } } } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    const laterContent = mkFieldAction({
+      id: "a_content_later",
+      subjectId: "todo_1",
+      fields: { content: { map: { c: { value: "later", update_id: "u_later", hlc: "21" } } } },
+    });
+    const laterTitle = mkFieldAction({
+      id: "a_title",
+      subjectId: "todo_1",
+      fields: { title: { value: "sibling", update_id: "u_title", hlc: "21" } },
+    });
+    await outbox.enqueue(laterContent);
+    await outbox.enqueue(laterTitle);
+
+    // The sibling component is a different position, so it flushes while
+    // the contested component and a later write to it stay held.
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_title"]);
+    await expect(outbox.flush()).resolves.toEqual({
+      kind: "accepted",
+      actionIds: ["a_title"],
+    });
+    expect(deps.submitted.map((batch) => batch.map((action) => action.id))).toEqual([["a_title"]]);
+  });
+
   it("flags only the map key the inbound write shares", async () => {
     const deps = mkDeps();
     const outbox = createOutbox(deps);
@@ -1101,26 +1198,36 @@ describe("createOutbox conflict detection", () => {
   });
 
   it("never flags structural relationship, group, or membership edges", async () => {
-    const deps = mkDeps();
+    const registry = new ModelRegistry();
+    seedRegistry(registry, {}, undefined);
+    const deps = mkDeps({
+      conflictScope: (model, component) => registry.conflictScopeOf(model, component),
+      isStructural: (model, component) => registry.isStructural(model, component),
+    });
     const outbox = createOutbox(deps);
-    for (const subjectType of ["relationship", "entityGroup", "groupMember"]) {
+    const structural: readonly (readonly [model: string, field: string])[] = [
+      ["relationship", "source_id"],
+      ["entityGroup", "entity_id"],
+      ["groupMember", "group_id"],
+    ];
+    for (const [subjectType, field] of structural) {
       await outbox.enqueue(
         mkFieldAction({
           id: `a_${subjectType}`,
           subjectId: `row_${subjectType}`,
           subjectType,
-          fields: { value: { value: "mine", update_id: "u_local", hlc: "10" } },
+          fields: { [field]: { value: "mine", update_id: "u_local", hlc: "10" } },
         }),
       );
     }
 
     const detected = await outbox.detectConflicts(
-      ["relationship", "entityGroup", "groupMember"].map((subjectType) =>
+      structural.map(([subjectType, field]) =>
         mkFieldAction({
           id: `a_peer_${subjectType}`,
           subjectId: `row_${subjectType}`,
           subjectType,
-          fields: { value: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+          fields: { [field]: { value: "theirs", update_id: "u_peer", hlc: "20" } },
           gsn: 5,
         }),
       ),
@@ -1149,6 +1256,38 @@ describe("createOutbox conflict detection", () => {
     );
 
     expect(detected).toEqual([{ actionId: "a_local", subjects: ["todo_1"], slots: [] }]);
+  });
+
+  it("entity scope surfaces a delete-only local write on a concurrent touch", async () => {
+    const deps = mkDeps({
+      conflictScope: () => "field",
+      modelConflictScope: () => "entity",
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue({
+      id: "a_local",
+      actor_id: "actor_1",
+      hlc: "10",
+      gsn: 0,
+      updates: [{ id: "u_local", subject_id: "todo_1", method: "delete", data: null }],
+    });
+
+    const detected = await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    expect(detected).toEqual([{ actionId: "a_local", subjects: ["todo_1"], slots: [] }]);
+    expect(outbox.conflicts()[0]?.conflict.holds).toEqual([
+      { kind: "subject", subjectId: "todo_1" },
+    ]);
   });
 
   it("entity scope does not surface a subject whose only inbound touch is not concurrent", async () => {
@@ -1800,11 +1939,11 @@ describe("createOutbox releaseConflict", () => {
     });
 
   /** A store whose `put` faults for a `conflicted` row, as a disk fault would. */
-  const faultingStore = (): OutboxStore & { rows: Map<string, StoredOutboxEntry> } => {
+  const faultingStore = (): OutboxStore & { rows: Map<string, StorageOutboxEntry> } => {
     const store = mkStore();
     return {
       ...store,
-      put: vi.fn(async (entry: StoredOutboxEntry) => {
+      put: vi.fn(async (entry: StorageOutboxEntry) => {
         if (entry.status === "conflicted") throw new Error("disk full");
         store.rows.set(entry.action.id, structuredClone(entry));
       }),
@@ -1867,7 +2006,7 @@ describe("createOutbox releaseConflict", () => {
       mkDeps({
         store: {
           ...store,
-          put: vi.fn(async (entry: StoredOutboxEntry) => {
+          put: vi.fn(async (entry: StorageOutboxEntry) => {
             puts += 1;
             // enqueue, detection, then the release.
             if (puts === 3) throw new Error("disk full");
@@ -1915,7 +2054,7 @@ describe("createOutbox releaseConflict", () => {
   });
 });
 
-describe("createOutbox subject hold", () => {
+describe("createOutbox component hold", () => {
   /** A peer `patch` concurrent with a base-0 `todo_1` write. */
   const peer = (): Action =>
     mkFieldAction({
@@ -2071,7 +2210,7 @@ describe("createOutbox heldPending + dropHeld", () => {
     await outbox.enqueue(heldWrite);
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    const held = outbox.heldPending(["todo_1"]);
+    const held = outbox.heldPending([{ kind: "subject", subjectId: "todo_1" }]);
     expect(held.map((entry) => entry.action.id)).toEqual(["a_held"]);
 
     // A write made after the snapshot was never held; even though it names
@@ -2102,7 +2241,7 @@ describe("createOutbox heldPending + dropHeld", () => {
     };
     await outbox.enqueue(both);
 
-    const held = outbox.heldPending(["todo_1"]);
+    const held = outbox.heldPending([{ kind: "subject", subjectId: "todo_1" }]);
     expect(held.map((entry) => entry.action.id)).toEqual(["a_both"]);
     const dropped = await outbox.dropHeld(held.map((entry) => entry.action.id));
 
@@ -2110,11 +2249,31 @@ describe("createOutbox heldPending + dropHeld", () => {
     expect(outbox.pending()).toEqual([]);
   });
 
+  it("holds and snapshots by component, leaving a sibling component free", async () => {
+    const deps = mkDeps();
+    const outbox = createOutbox(deps);
+    await outbox.enqueue(writeTo("a_title", "todo_1"));
+    await outbox.enqueue(
+      mkFieldAction({
+        id: "a_status",
+        subjectId: "todo_1",
+        fields: { completed: { value: true, update_id: "u_status", hlc: "12" } },
+      }),
+    );
+
+    const held = outbox.heldPending([
+      { kind: "component", subjectId: "todo_1", component: "todo/title" },
+    ]);
+
+    expect(held.map((entry) => entry.action.id)).toEqual(["a_title"]);
+    expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_title", "a_status"]);
+  });
+
   it("no-ops for an unheld subject and for an unknown id", async () => {
     const { deps, outbox } = await seed();
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    expect(outbox.heldPending(["todo_4"])).toEqual([]);
+    expect(outbox.heldPending([{ kind: "subject", subjectId: "todo_4" }])).toEqual([]);
     await expect(outbox.dropHeld(["a_missing"])).resolves.toEqual([]);
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);

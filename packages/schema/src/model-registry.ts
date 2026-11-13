@@ -163,6 +163,11 @@ export class ModelRegistry {
     return this.componentOf(model, name)?.loading ?? "eager";
   }
 
+  /** Whether a component opts out of conflict detection. Unknown components do not. */
+  isStructural(model: string | ModelDef<Record<string, TSchema>>, name: string): boolean {
+    return this.componentOf(model, name)?.structural ?? false;
+  }
+
   /** Conflict scope declared by a component, falling back to the model's default. */
   conflictScopeOf(model: string | ModelDef<Record<string, TSchema>>, name: string): ConflictScope {
     return (
@@ -170,6 +175,15 @@ export class ModelRegistry {
       this.models.get(modelNameOf(model))?.conflictScope ??
       "field"
     );
+  }
+
+  /**
+   * The model's declared default. A row-scoped write (a `delete`) names no
+   * component, so it falls back to this rather than a component declaration.
+   * Unknown models default to `"field"`.
+   */
+  modelConflictScope(model: string | ModelDef<Record<string, TSchema>>): ConflictScope {
+    return this.models.get(modelNameOf(model))?.conflictScope ?? "field";
   }
 
   /**
@@ -193,14 +207,6 @@ export class ModelRegistry {
   isLwwField(model: string, name: string): boolean {
     const marker = this.componentOf(model, name)?.marker as FieldMarker | undefined;
     return marker === undefined || marker.type === "lww";
-  }
-
-  /**
-   * Conflict granularity declared by `model`. Unknown models default to
-   * `"field"`, matching a client without a schema.
-   */
-  getConflictScope(model: string): ConflictScope {
-    return this.models.get(model)?.conflictScope ?? "field";
   }
 
   /**

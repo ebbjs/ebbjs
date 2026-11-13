@@ -29,23 +29,19 @@ import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 import { projectFieldValue } from "./query-builder";
 
-/**
- * The coarsest scope wins: an entity-scope subject holds the whole conflict,
- * whether the scopes are per subject or per grouped losing Action.
- */
-export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
-  scopes.includes("entity") ? "entity" : "field";
+/** Granularity ordering for a conflict: `field` < `component` < `entity`. */
+const SCOPE_RANK: Readonly<Record<ConflictScope, number>> = {
+  field: 1,
+  component: 2,
+  entity: 3,
+};
 
-/**
- * Models whose rows carry structural edges, not LWW component writes: a
- * `relationship` edge, an `entityGroup` membership, and a `groupMember`
- * permission row. Concurrent writes to edges are never surfaced as conflicts.
- */
-export const STRUCTURAL_MODELS: ReadonlySet<string> = new Set([
-  "relationship",
-  "entityGroup",
-  "groupMember",
-]);
+/** The coarsest scope wins: an entity-scope loss holds the whole conflict. */
+export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
+  scopes.reduce<ConflictScope>(
+    (coarsest, scope) => (SCOPE_RANK[scope] > SCOPE_RANK[coarsest] ? scope : coarsest),
+    "field",
+  );
 
 /** The component-kind oracle the outbox injects; `undefined` defaults to LWW. */
 export type LwwFieldOracle = ((model: string, component: string) => boolean) | undefined;
@@ -146,16 +142,6 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   }
   return writes;
 };
-
-/**
- * True when an inbound write to `component` can silently overwrite a local
- * one. A structural model's rows are edges, never LWW component writes.
- */
-export const isConflictableField = (
-  isLwwField: LwwFieldOracle,
-  model: string,
-  component: string,
-): boolean => !STRUCTURAL_MODELS.has(model) && (isLwwField?.(model, component) ?? true);
 
 /**
  * The `ConflictSide` view of a FieldValue: a leaf carries its LWW triple,

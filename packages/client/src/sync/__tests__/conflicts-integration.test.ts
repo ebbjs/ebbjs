@@ -5,7 +5,7 @@
  * the #308 inbound sweep: how it is surfaced and counted as an
  * entity-level {@link Conflict}, how `sendLocalActions` submits the held
  * Actions unchanged, how `clearLocalActions` converges the local cache on
- * the server's view, how the subject hold keeps later writes off the wire
+ * the server's view, how the component hold keeps later writes off the wire
  * until resolution, and that the hold survives a reload over the same
  * durable storage.
  */
@@ -18,7 +18,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createClient } from "../client";
 import { callApplyAction } from "../test-utils";
 import { testActions } from "./test-actions";
-import { defineModel, e } from "@ebbjs/schema";
+import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { Conflict, ConflictEntry } from "../conflicts";
 
@@ -416,7 +416,7 @@ describe("client.conflicts (#781)", () => {
     expect(state?.before?.data.fields.title.value).toBe("mine");
     expect(state?.after?.data.fields.title.value).toBe("theirs");
     expect(state?.diff).toEqual([
-      { field: "title", path: [], before: "mine", after: "theirs", kind: "changed" },
+      { component: "todo/title", path: [], before: "mine", after: "theirs", kind: "changed" },
     ]);
   });
 
@@ -674,8 +674,8 @@ describe("client.conflicts (#781)", () => {
       map: { b: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } },
     });
     expect(state?.diff).toEqual([
-      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
-      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
+      { component: "doc/content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { component: "doc/content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
     ]);
 
     await client.conflicts.sendLocalActions(conflict.id);
@@ -684,6 +684,94 @@ describe("client.conflicts (#781)", () => {
     expect(actions).toHaveLength(1);
     // Sent verbatim: the local update id and HLC are untouched.
     expect(actions[0]).toEqual(local);
+  });
+
+  it("component scope holds one component while a sibling component flushes", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const board = defineModel("board", {
+      tags: defineComponent("board/tags", e.map(e.string()), { conflictScope: "component" }),
+      title: e.string(),
+    });
+    const boardSchema = defineSchema({ models: { board }, version: 4 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ACTOR_ID,
+      schema: boardSchema,
+      fetchImpl: stub.fn,
+      storage,
+    });
+
+    const local: Action = {
+      id: "act_local",
+      actor_id: ACTOR_ID,
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local_0",
+          subject_id: "board_1",
+          component: "board/tags",
+          method: "merge",
+          data: { map: { a: { value: "mine", update_id: "u_local", hlc: LOCAL_HLC } } },
+        },
+      ],
+    };
+    await client.outbox.enqueue(local);
+
+    // A peer edits a different key of the same component. At component
+    // scope that is a conflict, unlike the field-scope map case.
+    const peer: Action = {
+      id: "act_peer",
+      actor_id: ACTOR_ID,
+      hlc: PEER_HLC,
+      gsn: 9,
+      updates: [
+        {
+          id: "u_peer_0",
+          subject_id: "board_1",
+          component: "board/tags",
+          method: "merge",
+          data: { map: { b: { value: "theirs", update_id: "u_peer", hlc: PEER_HLC } } },
+        },
+      ],
+    };
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
+
+    const conflict = await onlyConflict(client);
+    expect(conflict.scope).toBe("component");
+    expect(conflict.holds).toEqual([
+      { kind: "component", subjectId: "board_1", component: "board/tags" },
+    ]);
+    expect(slotPaths(conflict.entries[0])).toEqual([
+      { subjectId: "board_1", component: "board/tags", path: [] },
+    ]);
+
+    // A write to the sibling component is not held by the contested one.
+    const sibling: Action = {
+      id: "act_title",
+      actor_id: ACTOR_ID,
+      hlc: LATER_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_title_0",
+          subject_id: "board_1",
+          component: "board/title",
+          method: "replace",
+          data: { value: "sibling", update_id: "u_title", hlc: LATER_HLC },
+        },
+      ],
+    };
+    await client.outbox.enqueue(sibling);
+
+    expect(client.outbox.pending().map((entry) => entry.action.id)).toEqual(["act_title"]);
+    await expect(client.outbox.flush()).resolves.toEqual({
+      kind: "accepted",
+      actionIds: ["act_title"],
+    });
+    expect(allPostedActions(stub.calls).map((action) => action.id)).toEqual(["act_title"]);
   });
 
   it("reports per-entry send failures and leaves the failed entry resolvable", async () => {

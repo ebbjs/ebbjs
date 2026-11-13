@@ -2,27 +2,27 @@
  * Entity diff — the projection of a before/after row pair into the
  * positions that differ.
  *
- * Shared by every reader that compares two rows at the field-position
- * level: the conflict view's subject states and entity history. Positions
- * are the vocabulary the merge uses — a top-level field, then ordered map
- * keys — so the diff reads like the merge's verdict rather than a
- * structural object walk.
+ * Shared by every reader that compares two rows at the position level: the
+ * conflict view's subject states and entity history. Positions are the
+ * vocabulary the merge uses — a component, then ordered map keys — so the
+ * diff reads like the merge's verdict rather than a structural object walk.
  */
 
-import { isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
+import { componentName, isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
 
 import { projectFieldValue } from "./field-projection";
 
 /**
- * One position that differs between a before and after row. `path` is the
- * map-key path from the field root, empty for a whole non-map field. The
- * values are projected through {@link projectFieldValue}, the same rule
- * the merge and the conflict slots use.
+ * One position that differs between a before and after row. `component` is
+ * the full `<model>/<field>` component name, matching the conflict slots;
+ * `path` is the map-key path from the component root, empty for a whole
+ * component. The values are projected through {@link projectFieldValue},
+ * the same rule the merge and the conflict slots use.
  */
 export interface EntityDiff {
-  /** The top-level field the differing position belongs to. */
-  readonly field: string;
-  /** Ordered map keys from the field root to the position; empty at the root. */
+  /** The `<model>/<field>` component the differing position belongs to. */
+  readonly component: string;
+  /** Ordered map keys from the component root to the position; empty at the root. */
   readonly path: readonly string[];
   /** The projected value on the before row; `undefined` when absent. */
   readonly before: unknown;
@@ -71,7 +71,7 @@ const presentChild = (child: FieldValue | undefined): FieldValue | undefined =>
  * one diff when the projected values differ.
  */
 const diffFieldValue = (
-  field: string,
+  component: string,
   path: readonly string[],
   before: FieldValue | undefined,
   after: FieldValue | undefined,
@@ -82,7 +82,7 @@ const diffFieldValue = (
     const keys = [...new Set([...Object.keys(before.map), ...Object.keys(after.map)])].sort();
     for (const key of keys) {
       diffFieldValue(
-        field,
+        component,
         [...path, key],
         presentChild(before.map[key]),
         presentChild(after.map[key]),
@@ -96,7 +96,7 @@ const diffFieldValue = (
   const afterValue = after === undefined ? undefined : (projectFieldValue(after) ?? undefined);
   if (projectedEqual(beforeValue, afterValue)) return;
   out.push({
-    field,
+    component,
     path,
     before: beforeValue,
     after: afterValue,
@@ -105,18 +105,20 @@ const diffFieldValue = (
 };
 
 /**
- * Project a before/after pair into the positions that differ, top-level
- * fields sorted by name and paths sorted by key name. A null row reads
- * as an empty field map, so a null `before` makes every after field
- * `added`.
+ * Project a before/after pair into the positions that differ, components
+ * sorted by field name and paths sorted by key name. A null row reads as an
+ * empty field map, so a null `before` makes every after component `added`.
  */
 export const diffEntity = (before: Entity | null, after: Entity | null): readonly EntityDiff[] => {
   const beforeFields = rowFields(before);
   const afterFields = rowFields(after);
+  // A row's model is committed and does not change, so either side names it.
+  const model = after?.type ?? before?.type ?? "";
   const names = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])].sort();
   const out: EntityDiff[] = [];
   for (const field of names) {
-    diffFieldValue(field, [], beforeFields[field], afterFields[field], out);
+    const component = model === "" ? field : componentName(model, field);
+    diffFieldValue(component, [], beforeFields[field], afterFields[field], out);
   }
   return out;
 };

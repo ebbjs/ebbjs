@@ -1,35 +1,8 @@
 import { compare } from "@ebbjs/core";
 import type { IDBPDatabase } from "idb";
 
-import type {
-  OutboxConflict,
-  OutboxEntry,
-  OutboxStore,
-  StoredOutboxConflict,
-  StoredOutboxEntry,
-} from "../types/outbox-store";
+import type { OutboxEntry, OutboxStore } from "../types/outbox-store";
 import type { EbbDBSchema } from "./schema";
-
-/**
- * Normalize a conflict payload read back from a pre-v10 row. The payload
- * gained `scope` and `remoteActions` at version 10; a legacy row is still
- * a field-scope conflict with no recorded remote context.
- */
-const toConflict = (conflict: StoredOutboxConflict): OutboxConflict => ({
-  ...conflict,
-  scope: conflict.scope ?? "field",
-  remoteActions: conflict.remoteActions ?? [],
-});
-
-const toEntry = (row: StoredOutboxEntry): OutboxEntry => ({
-  action: row.action,
-  status: row.status,
-  enqueuedAtHlc: row.enqueuedAtHlc,
-  // A row predating the field reads as "always concurrent", never
-  // silently dropped.
-  basedOnGsn: row.basedOnGsn ?? 0,
-  conflict: row.conflict === undefined ? undefined : toConflict(row.conflict),
-});
 
 /**
  * IndexedDB-backed OutboxStore.
@@ -43,36 +16,23 @@ const toEntry = (row: StoredOutboxEntry): OutboxEntry => ({
 export const createIndexedDBOutboxStore = (db: IDBPDatabase<EbbDBSchema>): OutboxStore => {
   return {
     async put(entry: OutboxEntry): Promise<void> {
-      await db.put("outbox", {
-        action: entry.action,
-        status: entry.status,
-        enqueuedAtHlc: entry.enqueuedAtHlc,
-        basedOnGsn: entry.basedOnGsn,
-        conflict: entry.conflict,
-      });
+      await db.put("outbox", entry);
     },
 
     async putAndDelete(entry: OutboxEntry, deleteId: string): Promise<void> {
       const tx = db.transaction("outbox", "readwrite");
-      tx.store.put({
-        action: entry.action,
-        status: entry.status,
-        enqueuedAtHlc: entry.enqueuedAtHlc,
-        basedOnGsn: entry.basedOnGsn,
-        conflict: entry.conflict,
-      });
+      tx.store.put(entry);
       tx.store.delete(deleteId);
       await tx.done;
     },
 
     async list(): Promise<readonly OutboxEntry[]> {
       const rows = await db.getAll("outbox");
-      return rows.map(toEntry).sort((a, b) => compare(a.enqueuedAtHlc, b.enqueuedAtHlc));
+      return rows.sort((a, b) => compare(a.enqueuedAtHlc, b.enqueuedAtHlc));
     },
 
     async get(actionId: string): Promise<OutboxEntry | null> {
-      const row = await db.get("outbox", actionId);
-      return row === undefined ? null : toEntry(row);
+      return (await db.get("outbox", actionId)) ?? null;
     },
 
     async delete(actionId: string): Promise<void> {

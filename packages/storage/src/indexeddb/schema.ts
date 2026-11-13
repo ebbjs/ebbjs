@@ -6,7 +6,7 @@ import {
   type StoreNames,
 } from "idb";
 import type { Action, Entity } from "@ebbjs/core";
-import type { StoredOutboxEntry } from "../types/outbox-store";
+import type { OutboxEntry } from "../types/outbox-store";
 import type { SeedMarker } from "../types/cursor-store";
 import type { IndexRows } from "../internal/reverse-index";
 
@@ -44,16 +44,18 @@ import type { IndexRows } from "../internal/reverse-index";
  * immutable run cells plus additive cut cells and declare a `version` leaf.
  * The encoding changed incompatibly, so there is no migration from a lower
  * version — an existing database below 9 is discarded at open and rebuilt
- * empty. Version 10 adds `scope` and `remoteActions` to the persisted
- * conflict payload (issue #781). It is additive and has no reset: a row
- * written before it reads as a field-scope conflict with no recorded remote
- * context. Version 11 adds the `components` multiEntry index to `entities`
- * (issue #799): rows now carry a denormalized component-name array, so there
- * is no migration from a lower version — an existing database below 11 is
- * discarded at open and rebuilt empty. Bump this when adding or changing
- * object stores, or when a persisted row shape changes.
+ * empty. Version 10 added `scope` and `remoteActions` to the persisted
+ * conflict payload (issue #781). Version 11 added the `components` multiEntry
+ * index to `entities` (issue #799): rows now carry a denormalized
+ * component-name array, so there is no migration from a lower version — an
+ * existing database below 11 is discarded at open and rebuilt empty. Version
+ * 12 adds `holds` to the persisted conflict payload (issue #801): the
+ * positions a detected conflict keeps off the wire. The payload shape changed,
+ * so a database below 12 is discarded rather than reading a conflict without
+ * its holds. Bump this when adding or changing object stores, or when a
+ * persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 11;
+export const EBB_SCHEMA_VERSION = 12;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -69,6 +71,9 @@ const TEXT_CELL_FORMAT_RESET_VERSION = 9;
  * infer the index entries of a row written before it.
  */
 const COMPONENT_INDEX_RESET_VERSION = 11;
+
+/** The version at which a persisted conflict gained its component holds. */
+const COMPONENT_HOLD_RESET_VERSION = 12;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -168,7 +173,7 @@ export interface EbbDBSchema extends DBSchema {
    */
   outbox: {
     key: string;
-    value: StoredOutboxEntry;
+    value: OutboxEntry;
   };
   /**
    * Generic monotonic counters, keyed by a fixed id. Holds the action
@@ -213,8 +218,9 @@ export interface EbbDBSchema extends DBSchema {
  * cell format changed incompatibly, so every store is deleted before the
  * current stores are created and the action-position counter is opened at
  * zero. v11 resets for the same reason (stored rows lack the denormalized
- * component names), so a database below either version is discarded. Only a
- * genuinely fresh database (`oldVersion === 0`) skips the reset.
+ * component names), and v12 resets because a persisted conflict gained the
+ * positions it holds. A database below any of those versions is discarded.
+ * Only a genuinely fresh database (`oldVersion === 0`) skips the reset.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,
@@ -222,11 +228,16 @@ export const createEbbStores = (
   _newVersion: number | null,
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
-  // Two incompatible persisted shapes are discarded instead of migrated: the
-  // text cell format (v9) and the denormalized component names (v11). Each gate
-  // is declared explicitly, so a later version bump must decide its own
-  // migration rather than inheriting one of these resets.
-  const resetVersions = [TEXT_CELL_FORMAT_RESET_VERSION, COMPONENT_INDEX_RESET_VERSION];
+  // Incompatible persisted shapes are discarded instead of migrated: the text
+  // cell format (v9), the denormalized component names (v11), and the conflict
+  // component holds (v12). Each gate is declared explicitly, so a later version
+  // bump must decide its own migration rather than inheriting one of these
+  // resets.
+  const resetVersions = [
+    TEXT_CELL_FORMAT_RESET_VERSION,
+    COMPONENT_INDEX_RESET_VERSION,
+    COMPONENT_HOLD_RESET_VERSION,
+  ];
   const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {
     // `objectStoreNames` is live while stores are deleted, so iterate a copy.

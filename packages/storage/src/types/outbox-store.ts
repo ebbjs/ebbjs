@@ -75,6 +75,20 @@ export interface ConflictSubjectState {
 }
 
 /**
+ * One position an open conflict holds off the wire. A component-scope or
+ * field-scope loss holds just the contested component; an entity-scope loss
+ * holds the whole subject.
+ */
+export type ConflictHold =
+  | { readonly kind: "subject"; readonly subjectId: string }
+  | {
+      readonly kind: "component";
+      readonly subjectId: string;
+      /** The `<model>/<field>` component held. */
+      readonly component: string;
+    };
+
+/**
  * The conflict payload detection stamps onto a losing Action's outbox
  * row. It travels with the row rather than in a second store, so the
  * hold and the record are the same durable write and cannot disagree.
@@ -98,9 +112,16 @@ export interface OutboxConflict {
    */
   readonly slots: readonly ConflictSlot[];
   /**
-   * The looser of the losing subjects' declared scopes: `"entity"` when
-   * any losing subject declared entity scope, else `"field"`. The union is
-   * spelled inline so storage stays independent of the schema package.
+   * The positions this conflict holds off the wire: one component for a
+   * field- or component-scope loss, the whole subject for an entity-scope
+   * loss. Pending writes that touch none of these flush past the hold.
+   */
+  readonly holds: readonly ConflictHold[];
+  /**
+   * The looser of the losing positions' declared scopes. `"entity"` when
+   * any losing position declared entity scope, else the next coarsest of
+   * `"component"` and `"field"`. The union is spelled inline so storage
+   * stays independent of the schema package.
    */
   readonly scope: "field" | "component" | "entity";
   /**
@@ -122,17 +143,6 @@ export interface OutboxConflict {
 }
 
 /**
- * The conflict payload as a row written before IndexedDB schema v10
- * persisted it: `scope` and `remoteActions` were added at v10. The store's
- * read path fills both in; a legacy row is still a field-scope conflict
- * with no recorded remote context.
- */
-export interface StoredOutboxConflict extends Omit<OutboxConflict, "scope" | "remoteActions"> {
-  readonly scope?: "field" | "component" | "entity";
-  readonly remoteActions?: readonly ConflictRemoteAction[];
-}
-
-/**
  * One locally-authored Action awaiting acknowledgement, plus the HLC at
  * which it entered the outbox. A `conflicted` entry carries its
  * {@link OutboxConflict} payload; the field is absent for every other
@@ -150,20 +160,11 @@ export interface OutboxEntry {
   /**
    * Highest server GSN the client had applied when the Action was
    * authored. Catch-up detection treats an inbound Action as concurrent
-   * when its GSN is greater; `0` means "always concurrent", so a legacy
-   * or base-less entry is never silently dropped.
+   * when its GSN is greater; `0` means "always concurrent".
    */
   readonly basedOnGsn: number;
   /** Present iff `status === "conflicted"`. */
   readonly conflict?: OutboxConflict;
-}
-
-/**
- * The persisted form of an outbox entry. Identical to {@link OutboxEntry}
- * except that a conflict payload may predate the v10 fields.
- */
-export interface StoredOutboxEntry extends Omit<OutboxEntry, "conflict"> {
-  readonly conflict?: StoredOutboxConflict;
 }
 
 /**

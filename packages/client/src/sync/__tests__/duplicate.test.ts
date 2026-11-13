@@ -364,6 +364,7 @@ const mkConflict = (before: Entity): Conflict => ({
   id: "c_1",
   scope: "field",
   subjects: [before.id],
+  holds: [{ kind: "subject", subjectId: before.id }],
   subjectStates: [
     {
       subjectId: before.id,

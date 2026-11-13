@@ -42,7 +42,8 @@ export type FieldMarker = {
  * Granularity at which a concurrent write is surfaced as a conflict.
  * `"field"` scopes detection to a shared map position; `"component"` holds
  * one component; `"entity"` surfaces any touch of an entity with offline
- * writes.
+ * writes. A component declared `structural` opts out of detection entirely,
+ * which is how the SDK's edge, membership, and grant rows behave.
  */
 export type ConflictScope = "field" | "component" | "entity";
 
@@ -412,10 +413,16 @@ export interface ComponentOptions {
   readonly optional?: boolean;
   /** Replica loading. Defaults to `"eager"`, which keeps the component held. */
   readonly loading?: Loading;
-  /** Conflict granularity. Defaults to `"field"`. */
+  /** Conflict granularity. Defaults to the model's `conflictScope`. */
   readonly conflictScope?: ConflictScope;
   /** Whether this component participates in existence indexes. Defaults to `false`. */
   readonly indexed?: boolean;
+  /**
+   * Structural components converge last-writer-wins and are never surfaced as
+   * conflicts. The SDK declares its edge, membership, and grant components
+   * this way. Defaults to `false`.
+   */
+  readonly structural?: boolean;
   /** Opt in to `<model>/<component>.<verb>` permissions. Defaults to the model. */
   readonly permission?: "own";
   /** Component version for read migrations. Defaults to `1`. */
@@ -432,8 +439,10 @@ export interface ComponentDef<TShape extends TSchema = TSchema, TName extends st
   readonly marker: FieldMarker;
   readonly optional: boolean;
   readonly loading: Loading;
-  readonly conflictScope: ConflictScope;
+  /** Declared granularity; `undefined` inherits the model's default. */
+  readonly conflictScope: ConflictScope | undefined;
   readonly indexed: boolean;
+  readonly structural: boolean;
   readonly permission: "own" | undefined;
   readonly version: number;
 }
@@ -593,8 +602,9 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     marker: deriveMarker(shape),
     optional: options.optional ?? false,
     loading: options.loading ?? "eager",
-    conflictScope: options.conflictScope ?? "field",
+    conflictScope: options.conflictScope,
     indexed: options.indexed ?? false,
+    structural: options.structural ?? false,
     permission: options.permission,
     version: options.version ?? 1,
   });

@@ -104,18 +104,18 @@ describe("readEntityHistory", () => {
 
     // One top-level position changed by the field patch.
     expect(events[1].changes).toEqual([
-      { field: "title", path: [], before: "wall", after: "moved", kind: "changed" },
+      { component: "wall/title", path: [], before: "wall", after: "moved", kind: "changed" },
     ]);
 
     // The map-key patch moved one key, not the whole map.
     expect(events[2].changes).toEqual([
-      { field: "plan", path: ["x"], before: 0, after: 10, kind: "changed" },
+      { component: "wall/plan", path: ["x"], before: 0, after: 10, kind: "changed" },
     ]);
 
     // The create reports every top-level field as added.
     expect(events[3].changes).toEqual([
-      { field: "plan", path: [], before: undefined, after: { x: 0, y: 0 }, kind: "added" },
-      { field: "title", path: [], before: undefined, after: "wall", kind: "added" },
+      { component: "wall/plan", path: [], before: undefined, after: { x: 0, y: 0 }, kind: "added" },
+      { component: "wall/title", path: [], before: undefined, after: "wall", kind: "added" },
     ]);
   });
 
@@ -138,7 +138,7 @@ describe("readEntityHistory", () => {
     expect(newest.actionId).toEqual("a_mixed");
     expect(newest.methods).toEqual(["merge"]);
     expect(newest.changes).toEqual([
-      { field: "title", path: [], before: "wall", after: "moved", kind: "changed" },
+      { component: "wall/title", path: [], before: "wall", after: "moved", kind: "changed" },
     ]);
   });
 
@@ -155,8 +155,8 @@ describe("readEntityHistory", () => {
 
     expect(event.methods).toEqual(["replace", "merge"]);
     expect(event.changes).toEqual([
-      { field: "plan", path: [], before: undefined, after: { x: 2 }, kind: "added" },
-      { field: "title", path: [], before: undefined, after: "moved", kind: "added" },
+      { component: "wall/plan", path: [], before: undefined, after: { x: 2 }, kind: "added" },
+      { component: "wall/title", path: [], before: undefined, after: "moved", kind: "added" },
     ]);
   });
 });
@@ -198,7 +198,7 @@ describe("paging", () => {
     // The fold starts at the oldest Action even though the create is filtered
     // out, so `a_two` reports a change from "wall" rather than an addition.
     expect(events[0].changes).toEqual([
-      { field: "title", path: [], before: "wall", after: "two", kind: "changed" },
+      { component: "wall/title", path: [], before: "wall", after: "two", kind: "changed" },
     ]);
   });
 
@@ -340,7 +340,7 @@ describe("SyncClient history surface", () => {
 
     expect(events.map((event) => event.actionId)).toEqual(["a_field", "a_put"]);
     expect(events[0].changes).toEqual([
-      { field: "title", path: [], before: "wall", after: "moved", kind: "changed" },
+      { component: "wall/title", path: [], before: "wall", after: "moved", kind: "changed" },
     ]);
 
     const at: ReplayOptions = { entityId: WALL, at: { actionId: "a_put" } };
