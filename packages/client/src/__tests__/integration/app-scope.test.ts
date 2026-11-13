@@ -2,7 +2,7 @@
  * Two apps, one actor, one store (#732 acceptance).
  *
  * Each client declares a local `appId`; the handshake keeps only the
- * groups whose `apps` map names it (plus unscoped groups). A bridge
+ * groups whose `apps` list names it (plus unscoped groups). A bridge
  * group names both apps, and an entity filed into it is delivered to
  * both replicas. Scope is a residency filter, not authority: both apps
  * write as the same actor, and the actor's grants decide what lands.
@@ -13,7 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAction, createClock, localEvent } from "@ebbjs/core";
+import { createAction, createClock, EBB_COMPONENTS, localEvent } from "@ebbjs/core";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createClient, defineAction, type SyncClient } from "../..";
 
@@ -41,7 +41,7 @@ const MEMBER_PERMISSIONS = [
   "issue.*",
 ];
 
-/** A schema-bearing client: `group.update` needs the map marker to write scope. */
+/** A schema-bearing client: `group.update` writes the atomic group value. */
 const note = defineModel("note", { title: e.string() });
 const appScopeSchema = defineSchema({ models: { note }, version: 1 });
 const appScopeActions = {
@@ -102,6 +102,10 @@ const notePatch = (title: string) => {
   }).action;
 };
 
+/**
+ * One `ebb/membership` put. The pair rides as one atomic value, so the share
+ * cannot arrive half-written.
+ */
 const fileInto = (entityId: string, groupId: string) => {
   const clock = createClock();
   const updateId = `u_share_${RUN_ID}`;
@@ -112,16 +116,9 @@ const fileInto = (entityId: string, groupId: string) => {
       {
         id: `${updateId}_0`,
         subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
-        component: "entityGroup/entity_id",
+        component: EBB_COMPONENTS.membership,
         method: "replace",
-        data: leaf(entityId, updateId, clock),
-      },
-      {
-        id: `${updateId}_1`,
-        subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
-        component: "entityGroup/group_id",
-        method: "replace",
-        data: leaf(groupId, updateId, clock),
+        data: leaf({ entity_id: entityId, group_id: groupId }, updateId, clock),
       },
     ],
   }).action;
@@ -236,7 +233,7 @@ describe("app scope integration", () => {
     await handshakeIds(notes!);
     await handshakeIds(issues!);
 
-    // Notes files its note into the bridge (the share is an entityGroup put).
+    // Notes files its note into the bridge (the share is an `ebb/membership` put).
     expect((await notes!.write([fileInto(NOTE, G_BRIDGE)])).rejected).toEqual([]);
 
     // The issues replica learns the note through the bridge listing.
