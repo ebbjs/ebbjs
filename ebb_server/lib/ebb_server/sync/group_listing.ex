@@ -335,7 +335,9 @@ defmodule EbbServer.Sync.GroupListing do
       {:ok,
        ids
        |> Enum.flat_map(&typed_row(rows_by_id, &1, :link))
-       |> Enum.filter(&MapSet.member?(page_sources, source_of(&1)))}
+       |> Enum.filter(
+         &MapSet.member?(page_sources, SystemComponent.path(&1.data, :link, "source_id"))
+       )}
     end
   end
 
@@ -404,7 +406,7 @@ defmodule EbbServer.Sync.GroupListing do
       rows =
         taken
         |> Enum.flat_map(fn {id, _actor_id} -> typed_row(by_id, id, :grant) end)
-        |> Enum.filter(&(group_field(&1) == group_id))
+        |> Enum.filter(&(SystemComponent.path(&1.data, :grant, "group_id") == group_id))
 
       {:ok, rows}
     end
@@ -466,10 +468,6 @@ defmodule EbbServer.Sync.GroupListing do
   defp rows_after?(group_id, {:memberships, after_id}, opts) do
     SQLite.list_entity_group_memberships(group_id, after_id, 1, sqlite_name(opts)) != []
   end
-
-  defp group_field(row), do: SystemComponent.path(row.data, :grant, "group_id")
-
-  defp source_of(row), do: SystemComponent.path(row.data, :link, "source_id")
 
   defp decode_row(%{data: data} = row) when is_binary(data),
     do: %{row | data: Jason.decode!(data)}

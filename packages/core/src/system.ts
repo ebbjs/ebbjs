@@ -18,7 +18,7 @@
  * component's value — never of four separate row fields.
  */
 
-import { componentName, type Entity } from "./types";
+import { componentName, type ComponentName, type Entity, type FieldValue } from "./types";
 
 /** The model every platform row is committed under. */
 export const EBB_MODEL_NAME = "ebb";
@@ -38,7 +38,7 @@ export type EbbComponentKind = keyof typeof EBB_COMPONENTS;
 export const EBB_COMPONENT_KINDS = Object.freeze(Object.keys(EBB_COMPONENTS) as EbbComponentKind[]);
 
 /** The component name for one kind. */
-export const ebbComponent = (kind: EbbComponentKind): string => EBB_COMPONENTS[kind];
+export const ebbComponent = (kind: EbbComponentKind): ComponentName => EBB_COMPONENTS[kind];
 
 /** The row field a kind's value is stored at (the leaf after the `/`). */
 export const ebbComponentField = (kind: EbbComponentKind): string =>
@@ -59,22 +59,30 @@ export const isEbbComponent = (component: string): boolean => KINDS_BY_COMPONENT
 export type SystemValue = Readonly<Record<string, unknown>>;
 
 /**
+ * The whole value an atomic component's leaf carries, or `null` when the leaf
+ * is absent or does not hold an object.
+ *
+ * The one decoder for that shape: a leaf is `{value, update_id, hlc}`, and an
+ * atomic component's `value` is the whole record.
+ */
+export const componentValue = (leaf: FieldValue | null | undefined): SystemValue | null => {
+  if (leaf === null || leaf === undefined) return null;
+  const value = (leaf as { value?: unknown }).value;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as SystemValue;
+};
+
+/**
  * The value a row carries for `kind`, or `null` when it does not carry it.
  *
- * Reads the component's leaf and returns its `value`, which is the whole
- * object. A tombstoned leaf, a missing field, and a row of another kind all
- * read as absent.
+ * A missing field, a tombstoned leaf, and a row of another kind all read as
+ * absent.
  */
 export const systemValue = (
   row: Pick<Entity, "data"> | null | undefined,
   kind: EbbComponentKind,
-): SystemValue | null => {
-  const field = row?.data?.fields?.[ebbComponentField(kind)];
-  if (field === undefined || field === null) return null;
-  const value = (field as { value?: unknown }).value;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as SystemValue;
-};
+): SystemValue | null =>
+  componentValue(row?.data?.fields?.[ebbComponentField(kind)] as FieldValue | undefined);
 
 /** Whether a row carries `kind`. */
 export const carriesComponent = (

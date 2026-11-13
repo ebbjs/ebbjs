@@ -56,20 +56,19 @@
 
 import {
   carriesComponent,
-  componentModel,
   componentName,
+  componentValue,
   EBB_COMPONENTS,
+  EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
-  ebbComponentKind,
   isFieldMap,
   systemValueField,
   systemValueString,
   type Action,
   type EbbComponentKind,
   type Entity,
-  type FieldValue,
-  type Update,
 } from "@ebbjs/core";
+import { foldSubjects, type SubjectWrites } from "@ebbjs/write";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { readEntityMemberships, readMembership, type LiveMembership } from "./entity-group";
@@ -350,74 +349,16 @@ const asString = (value: unknown): string | null => (typeof value === "string" ?
 const asStringArray = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 
-/** One subject's folded writes in an Action. */
-interface SubjectWrites {
-  /** The model its components name; `undefined` for a delete-only row. */
-  readonly model?: string;
-  /** The component values it carries, keyed by full component name. */
-  readonly components: ReadonlyMap<string, FieldValue>;
-  readonly deleted: boolean;
-  /**
-   * Whether the write carries a `replace`. The planner writes a create that
-   * way, so the verb a create is authorized as is the wire's own statement of
-   * intent; a `merge` is an update.
-   */
-  readonly replaced: boolean;
-}
-
-/** Fold one Action's Updates into one entry per subject, in first-seen order. */
-const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
-  const subjects = new Map<string, SubjectWrites>();
-  for (const update of updates) {
-    const entry: SubjectWrites = subjects.get(update.subject_id) ?? {
-      components: new Map<string, FieldValue>(),
-      deleted: false,
-      replaced: false,
-    };
-    if (update.method === "delete") {
-      subjects.set(update.subject_id, { ...entry, deleted: true });
-      continue;
-    }
-    const components = new Map(entry.components);
-    if (update.method !== "drop") components.set(update.component, update.data);
-    subjects.set(update.subject_id, {
-      model: componentModel(update.component),
-      components,
-      deleted: entry.deleted,
-      replaced: entry.replaced || update.method === "replace",
-    });
-  }
-  return subjects;
-};
-
 /** One wire field's value from a subject's component values, or `undefined`. */
-const componentValue = (writes: SubjectWrites, name: string): unknown => {
+const rowFieldValue = (writes: SubjectWrites, name: string): unknown => {
   if (writes.model === undefined) return undefined;
   const value = writes.components.get(componentName(writes.model, name));
   return value === undefined || isFieldMap(value) ? undefined : value.value;
 };
 
-/**
- * The platform component kind a subject's writes carry, or `null` for a user
- * row. Every platform row is committed under `ebb`, so the component is the
- * only thing that names its kind.
- */
-const writesKind = (writes: SubjectWrites): EbbComponentKind | null => {
-  for (const component of writes.components.keys()) {
-    const kind = ebbComponentKind(component);
-    if (kind !== null) return kind;
-  }
-  return null;
-};
-
 /** One field of the platform value a subject's writes carry, or `undefined`. */
-const systemField = (writes: SubjectWrites, kind: EbbComponentKind, field: string): unknown => {
-  const entry = writes.components.get(EBB_COMPONENTS[kind]);
-  if (entry === undefined || isFieldMap(entry)) return undefined;
-  const value = entry.value;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return (value as Record<string, unknown>)[field];
-};
+const systemField = (writes: SubjectWrites, kind: EbbComponentKind, field: string): unknown =>
+  componentValue(writes.components.get(EBB_COMPONENTS[kind]))?.[field];
 
 /**
  * The platform kind a stored row carries, or `null` for a user row. Every
@@ -425,7 +366,7 @@ const systemField = (writes: SubjectWrites, kind: EbbComponentKind, field: strin
  */
 const platformKindOf = (row: Entity | null | undefined): EbbComponentKind | null => {
   if (row === null || row === undefined) return null;
-  for (const kind of ["group", "grant", "membership", "link"] as const) {
+  for (const kind of EBB_COMPONENT_KINDS) {
     if (carriesComponent(row, kind)) return kind;
   }
   return null;
@@ -433,8 +374,8 @@ const platformKindOf = (row: Entity | null | undefined): EbbComponentKind | null
 
 /** One field of a subject's row, read through whichever kind it carries. */
 const subjectField = (writes: SubjectWrites, name: string): unknown => {
-  const kind = writesKind(writes);
-  return kind === null ? componentValue(writes, name) : systemField(writes, kind, name);
+  const kind = writes.kind;
+  return kind === null ? rowFieldValue(writes, name) : systemField(writes, kind, name);
 };
 
 /** One field of a stored platform row's value, or `null` when it carries no such kind. */
@@ -936,7 +877,7 @@ const releasedByDeletes = async (
     if (!writes.deleted) continue;
     // A delete names no component, so the stored row is the only place its
     // kind can come from.
-    const kind = writesKind(writes) ?? platformKindOf(await rowOf(id));
+    const kind = writes.kind ?? platformKindOf(await rowOf(id));
     if (kind === "link") ids.push(id);
   }
   if (ids.length === 0) return released;
@@ -1008,14 +949,14 @@ const collectActionViolations = async (
   // cached, so the Action's declared grant stands in.
   const newGroupIds = new Set<string>();
   for (const [id, writes] of subjects) {
-    if (writes.deleted || writesKind(writes) !== "group") continue;
+    if (writes.deleted || writes.kind !== "group") continue;
     const existing = await exists(id);
     if (existing === null || !carriesComponent(existing, "group")) newGroupIds.add(id);
   }
 
   const bootstrap = new Map<string, readonly string[]>();
   for (const writes of subjects.values()) {
-    if (writes.deleted || writesKind(writes) !== "grant") continue;
+    if (writes.deleted || writes.kind !== "grant") continue;
     if (systemField(writes, "grant", "actor_id") !== ctx.actorId) continue;
     const groupId = asString(systemField(writes, "grant", "group_id"));
     if (groupId === null || !newGroupIds.has(groupId)) continue;
@@ -1034,7 +975,7 @@ const collectActionViolations = async (
     const memberships = await readEntityMemberships(ctx.storage, entityId);
     const groupIds = new Set(memberships.map((m) => m.groupId));
     for (const [, writes] of subjects) {
-      if (writes.deleted || writesKind(writes) !== "membership") continue;
+      if (writes.deleted || writes.kind !== "membership") continue;
       if (asString(systemField(writes, "membership", "entity_id")) !== entityId) continue;
       const groupId = asString(systemField(writes, "membership", "group_id"));
       if (groupId !== null) groupIds.add(groupId);
@@ -1048,7 +989,7 @@ const collectActionViolations = async (
     // `bootstrap` only holds groups the Action also puts the actor's
     // own membership into, matching the server's exemption exactly.
     if (writes.deleted) return false;
-    const kind = writesKind(writes);
+    const kind = writes.kind;
     if (kind === "group") return bootstrap.has(subjectId);
     if (kind === "grant") {
       const groupId = asString(systemField(writes, "grant", "group_id"));
@@ -1072,7 +1013,7 @@ const collectActionViolations = async (
     subjectId: string,
     writes: SubjectWrites,
   ): Promise<PermissionViolation | null> => {
-    const writtenKind = writesKind(writes);
+    const writtenKind = writes.kind;
     // A platform write is atomic, so its `replace` is the patch method too and
     // cannot state the verb; existence answers it. A user write keeps the
     // wire's statement of intent. A delete names no component, so its kind is

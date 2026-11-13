@@ -2171,9 +2171,7 @@ defmodule EbbServer.Storage.Writer do
     # row's `group_id`/`source_id` lives in its one atomic component value,
     # so the folded row decides for its every Update (`RowMutations`).
     mutations =
-      action.updates
-      |> RowMutations.fold(Keyword.put(resolve_opts, :created, created))
-      |> Enum.map(&%{&1 | kind: EntityIndex.kind_of(&1, resolve_opts)})
+      RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
 
     intra_action_context = PermissionHelper.build_intra_action_context(mutations)
 

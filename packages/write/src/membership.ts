@@ -14,9 +14,10 @@
 
 import {
   carriesComponent,
+  componentModel,
+  componentValue,
   ebbComponent,
   ebbComponentKind,
-  isFieldMap,
   systemValue,
   systemValueString,
   type EbbComponentKind,
@@ -44,13 +45,7 @@ export interface MembershipView {
 const platformValue = (
   components: ReadonlyMap<string, FieldValue>,
   kind: EbbComponentKind,
-): Readonly<Record<string, unknown>> | null => {
-  const field = components.get(ebbComponent(kind));
-  if (field === undefined || isFieldMap(field)) return null;
-  const value = field.value;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Readonly<Record<string, unknown>>;
-};
+): Readonly<Record<string, unknown>> | null => componentValue(components.get(ebbComponent(kind)));
 
 /** One subject's writes in a batch, folded to the components it carries. */
 export interface SubjectWrites {
@@ -60,23 +55,40 @@ export interface SubjectWrites {
    * as the row's committed model.
    */
   kind: EbbComponentKind | null;
+  /** The prefix its components name; `undefined` for a delete-only row. */
+  model?: string;
   readonly components: Map<string, FieldValue>;
   deleted: boolean;
+  /**
+   * Whether the batch carries a `replace`, which is how a create states itself
+   * on the wire: an atomic value's `replace` is also its update, so the method
+   * alone cannot tell the two apart.
+   */
+  replaced: boolean;
 }
 
-/** Fold a batch's Updates into one entry per subject. */
-const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
+/**
+ * Fold a batch's Updates into one entry per subject, in first-seen order.
+ *
+ * Shared by the membership checker and the client's permission pass, which
+ * both have to answer one row's question from an Action's per-component
+ * Updates.
+ */
+export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
   const subjects = new Map<string, SubjectWrites>();
   for (const update of updates) {
     const entry: SubjectWrites = subjects.get(update.subject_id) ?? {
       kind: null,
       components: new Map(),
       deleted: false,
+      replaced: false,
     };
     if (update.method === "delete") {
       entry.deleted = true;
     } else {
       entry.kind = ebbComponentKind(update.component) ?? entry.kind;
+      entry.model = componentModel(update.component);
+      entry.replaced = entry.replaced || update.method === "replace";
       if (update.method !== "drop") entry.components.set(update.component, update.data);
     }
     subjects.set(update.subject_id, entry);

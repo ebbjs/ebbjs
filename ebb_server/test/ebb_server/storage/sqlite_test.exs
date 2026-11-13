@@ -996,6 +996,21 @@ defmodule EbbServer.Storage.SQLiteTest do
       {:ok, version_stmt} = Sqlite3.prepare(db, "PRAGMA user_version")
       assert {:row, [2]} = Sqlite3.step(db, version_stmt)
       :ok = Sqlite3.release(db, version_stmt)
+
+      # The rebuilt table answers the reads it exists for: a grant written
+      # through the same API the materializer uses is found by the grant
+      # listing, and the membership listing does not see it.
+      grant =
+        platform_row("gm_1", :grant, %{
+          "actor_id" => "a_1",
+          "group_id" => "g_1",
+          "permissions" => ["ebb/grant.read"]
+        })
+
+      assert :ok = SQLite.upsert_entity(grant, name)
+
+      assert [{"gm_1", "a_1"}] = SQLite.list_group_members("g_1", nil, 10, name)
+      assert [] = SQLite.list_entity_group_memberships("g_1", nil, 10, name)
     end
 
     test "a current read model keeps its rows across a restart", context do

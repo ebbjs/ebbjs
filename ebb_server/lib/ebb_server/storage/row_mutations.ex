@@ -96,6 +96,9 @@ defmodule EbbServer.Storage.RowMutations do
     against `:entity_types` and the by-id caches in the same options.
   - `:entity_types`, `:overlay` — the existence and committed-model reads,
     passed through to `EntityIndex`.
+  - `:kind_resolver` — `(mutation -> platform kind | nil)` used for a delete,
+    whose Update names no component. Defaults to the by-id caches
+    (`EntityIndex.kind_of/2`) against the same options.
 
   One of `:entity_types`, or both predicates, is required: without an
   existence signal every row would fold to `:put`, which the rule engine
@@ -122,7 +125,16 @@ defmodule EbbServer.Storage.RowMutations do
     order
     |> Enum.reverse()
     |> Enum.map(&finish(by_subject[&1], created, exists?, resolve_model))
+    |> Enum.map(&resolve_kind(&1, opts))
   end
+
+  # A delete names no component, so its kind exists only in the by-id caches.
+  # Resolving it inside the fold means every consumer dispatches on one thing —
+  # the row's kind — and none of them has to remember this step.
+  defp resolve_kind(%{kind: nil} = mutation, opts),
+    do: %{mutation | kind: kind_resolver!(opts).(mutation)}
+
+  defp resolve_kind(mutation, _opts), do: mutation
 
   # A delete names the row and carries no component.
   defp split_component(component) when is_binary(component), do: Component.split(component)
@@ -238,6 +250,21 @@ defmodule EbbServer.Storage.RowMutations do
       other ->
         raise ArgumentError,
               "RowMutations.fold/2 :model_resolver must be a 1-arity function, " <>
+                "got: #{inspect(other, limit: 4)}"
+    end
+  end
+
+  defp kind_resolver!(opts) do
+    case Keyword.get(opts, :kind_resolver) do
+      fun when is_function(fun, 1) ->
+        fun
+
+      nil ->
+        fn mutation -> EntityIndex.kind_of(mutation, opts) end
+
+      other ->
+        raise ArgumentError,
+              "RowMutations.fold/2 :kind_resolver must be a 1-arity function, " <>
                 "got: #{inspect(other, limit: 4)}"
     end
   end

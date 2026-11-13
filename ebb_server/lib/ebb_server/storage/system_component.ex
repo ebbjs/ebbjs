@@ -54,10 +54,6 @@ defmodule EbbServer.Storage.SystemComponent do
   @spec component(kind()) :: String.t()
   def component(kind), do: Map.fetch!(@components, kind)
 
-  @doc "Every platform component name."
-  @spec names() :: [String.t()]
-  def names, do: Enum.map(@kinds, &component/1)
-
   @doc "The kind a component name names, or `nil` for a non-platform component."
   @spec kind(term()) :: kind() | nil
   def kind(component) when is_binary(component), do: Map.get(@kinds_by_component, component)
@@ -107,20 +103,6 @@ defmodule EbbServer.Storage.SystemComponent do
   @doc "Whether a row carries `kind` at all (a present component with any value)."
   @spec present?(map() | nil, kind()) :: boolean()
   def present?(data, kind), do: component_data(data, kind) != nil
-
-  @doc """
-  The kinds a folded row mutation carries, in the order they appear.
-
-  A row carries one platform component, so this is a one-element list for a
-  platform row and empty for a user row.
-  """
-  @spec kinds_of(map() | nil) :: [kind()]
-  def kinds_of(%{"fields" => %{} = fields}) do
-    @kinds
-    |> Enum.filter(&Map.has_key?(fields, field(&1)))
-  end
-
-  def kinds_of(_data), do: []
 
   # A raw Update names its field and carries the component's own value; a row
   # record nests the same value one level down.

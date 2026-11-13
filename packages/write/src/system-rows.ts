@@ -12,7 +12,7 @@
  */
 
 import {
-  EBB_COMPONENTS,
+  ebbComponent,
   generateId,
   type EbbComponentKind,
   type FieldValue,
@@ -55,7 +55,7 @@ export const systemRowUpdate = (
   return {
     id: updateId,
     subject_id: subjectId,
-    component: EBB_COMPONENTS[kind],
+    component: ebbComponent(kind),
     method: "replace",
     data: (hlc === undefined
       ? { value, update_id: updateId }

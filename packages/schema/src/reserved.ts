@@ -21,6 +21,14 @@ export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
  */
 export const RESERVED_MEMBERSHIP_NAMES = ["groups"] as const;
 
+/**
+ * Model names the SDK reserves. `ebb` is the platform namespace; `group` and
+ * `membership` are the two names `client.group` and `client.membership` are
+ * keyed by, so an app model of either name would shadow a namespace the SDK
+ * injects onto every client.
+ */
+export const RESERVED_MODEL_NAMES = [PLATFORM_NAMESPACE, "group", "membership"] as const;
+
 /** Raised when an app declares a name the SDK reserves. */
 export class ReservedNameError extends Error {
   /** The reserved name the caller collided with. */
@@ -33,15 +41,16 @@ export class ReservedNameError extends Error {
   }
 }
 
-/** Reject a `defineModel` name that claims the platform namespace. */
+/** Reject a `defineModel` name the SDK's own surface already answers to. */
 export const assertEntityNameAvailable = (name: string): void => {
-  if (name === PLATFORM_NAMESPACE) {
-    throw new ReservedNameError(
-      name,
-      `Entity name "${name}" is reserved: the \`${PLATFORM_NAMESPACE}/\` namespace holds the ` +
-        `platform's own components.`,
-    );
-  }
+  if (!(RESERVED_MODEL_NAMES as readonly string[]).includes(name)) return;
+
+  const why =
+    name === PLATFORM_NAMESPACE
+      ? `the \`${PLATFORM_NAMESPACE}/\` namespace holds the platform's own components`
+      : `the SDK's built-in \`client.${name}\` namespace answers to it`;
+
+  throw new ReservedNameError(name, `Entity name "${name}" is reserved: ${why}.`);
 };
 
 /** Reject a `defineModel` field name that collides with the membership accessor. */

@@ -78,8 +78,7 @@ defmodule EbbServer.ActionExport do
 
   # Component names, not model names: `ebb/grant` and `ebb/membership` are the
   # two structural platform components an export never needs, while
-  # `ebb/group` is the group itself and stays. The option keeps its historical
-  # `:excluded_models` key so a deployment's config does not have to change.
+  # `ebb/group` is the group itself and stays.
   @default_excluded_components [
     SystemComponent.component(:grant),
     SystemComponent.component(:membership)
@@ -95,7 +94,7 @@ defmodule EbbServer.ActionExport do
     :batch_size,
     :poll_interval_ms,
     :handler_timeout_ms,
-    :excluded_models,
+    :excluded_components,
     cursor: 0
   ]
 
@@ -123,7 +122,7 @@ defmodule EbbServer.ActionExport do
       batch_size: Keyword.get(opts, :batch_size, 500),
       poll_interval_ms: Keyword.get(opts, :poll_interval_ms, 1000),
       handler_timeout_ms: Keyword.get(opts, :handler_timeout_ms, 5000),
-      excluded_models: Keyword.get(opts, :excluded_models, @default_excluded_components)
+      excluded_components: Keyword.get(opts, :excluded_components, @default_excluded_components)
     }
 
     send(self(), :poll)
@@ -167,7 +166,7 @@ defmodule EbbServer.ActionExport do
     exported =
       from_gsn
       |> ActionLog.read(to_gsn, rocks_name: state.rocks_name)
-      |> filter_actions(state.excluded_models)
+      |> filter_actions(state.excluded_components)
 
     case invoke_handlers(exported, state) do
       :ok ->

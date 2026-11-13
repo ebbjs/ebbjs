@@ -24,9 +24,12 @@ plus a create.
 +         data: { value: { source_id: "todo_1", target_id: "todo_2", type: "todo", field: "dependsOn" } } }
 ```
 
-Permission subjects follow the component: a group write is `ebb/group.create`, a grant
-`ebb/grant.*`, a membership `ebb/membership.*`, a link `ebb/link.*` — the four distinct grants
-are preserved, and a grant list written for the old model names must be rewritten.
+Permission subjects follow the component: `group.*` becomes `ebb/group.*`, `groupMember.*` becomes
+`ebb/grant.*`, and `relationship.update|delete` becomes `ebb/link.update|delete`. A grant list
+written for the old names must be rewritten. Two of the four are unchanged in meaning:
+`entityGroup.*` was never consulted — a membership write authorizes as the entity's
+`<model>.create` / `.update` — and still is not, so `ebb/membership.*` is declared for the rule a
+later slice owns rather than gating anything today.
 
 A group's `apps` is a list of app ids (`["notes"]`) rather than a map (`{notes: true}`): an
 atomic value may not contain a map, because a nested map loses its per-key merge. Absent is still

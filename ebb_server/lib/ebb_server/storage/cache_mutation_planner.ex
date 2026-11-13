@@ -156,10 +156,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   defp plan_system_mutation(%{kind: :grant} = update, _tables, mutations, overlay) do
     key = {:group_members_by_id, update.subject_id}
-    value = SystemComponent.value(update.data, :grant)
 
-    case {update.method, value} do
-      {_method, %{} = value} ->
+    case SystemComponent.value(update.data, :grant) do
+      %{} = value ->
         row = %{
           id: update.subject_id,
           actor_id: Map.get(value, "actor_id"),
@@ -173,7 +172,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           {[{:group_member_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
-      _absent ->
+      nil ->
         {[{:group_member_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end
@@ -181,10 +180,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   defp plan_system_mutation(%{kind: :membership} = update, tables, mutations, overlay) do
     key = {:entity_groups_by_id, update.subject_id}
-    value = SystemComponent.value(update.data, :membership)
 
-    case {update.method, value} do
-      {_method, %{} = value} ->
+    case SystemComponent.value(update.data, :membership) do
+      %{} = value ->
         row = %{
           id: update.subject_id,
           entity_id: Map.get(value, "entity_id"),
@@ -197,7 +195,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           {[{:entity_group_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
-      _absent ->
+      nil ->
         entity_id = entity_group_entity(overlay, update.subject_id, tables)
 
         {[{:entity_group_delete, update.subject_id} | mutations],
@@ -212,14 +210,14 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp plan_system_mutation(%{kind: :group} = update, _tables, mutations, overlay) do
     key = {:group_apps, update.subject_id}
 
-    case {update.method, SystemComponent.value(update.data, :group)} do
-      {_method, %{} = value} ->
+    case SystemComponent.value(update.data, :group) do
+      %{} = value ->
         apps = Map.get(value, "apps")
 
         {[{:group_apps_put, update.subject_id, apps} | mutations],
          Overlay.put(overlay, key, apps)}
 
-      _absent ->
+      nil ->
         {[{:group_apps_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end
@@ -229,10 +227,9 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   # projected into the by-id cache.
   defp plan_system_mutation(%{kind: :link} = update, _tables, mutations, overlay) do
     key = {:relationships_by_id, update.subject_id}
-    value = SystemComponent.value(update.data, :link)
 
-    case {update.method, value} do
-      {_method, %{} = value} ->
+    case SystemComponent.value(update.data, :link) do
+      %{} = value ->
         row = %{
           id: update.subject_id,
           source_id: Map.get(value, "source_id"),
@@ -247,7 +244,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
-      _absent ->
+      nil ->
         {[{:relationship_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end

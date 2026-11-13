@@ -268,7 +268,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp authorize_action(action, actor_id, ctx, sim) do
     opts = ctx_to_opts(ctx)
-    mutations = action |> fold_action(opts, sim) |> resolve_kinds(opts)
+    mutations = fold_action(action, opts, sim)
     intra = PermissionHelper.build_intra_action_context(mutations)
     exists? = fn entity_id -> EntityIndex.exists?(entity_id, opts) end
 
@@ -314,29 +314,26 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # A delete names no component, so its kind exists only in the by-id caches.
-  # Resolving it here means every rule below dispatches on one thing: the
-  # kind. An id the caches cannot place anyway (created earlier in the same
-  # request) stays nil, and those rows keep the age-old refusal path.
-  defp resolve_kinds(mutations, opts) do
-    Enum.map(mutations, fn mutation -> %{mutation | kind: EntityIndex.kind_of(mutation, opts)} end)
-  end
-
   # The Action's Updates fold into one row mutation per subject, so every
   # component Update of a row is authorized once, against the row's model and
   # the row's fields.
   defp fold_action(action, opts, sim) do
-    RowMutations.fold(action.updates,
-      created: MapSet.new(Map.keys(sim.models)),
-      # A system row can be certified by its by-id cache while the type index
-      # still lags, and the authorizer's own rules treat that row as existing.
-      # The verb follows the same existence signal, so a write to it is an
-      # update rather than a create.
-      exists?: fn entity_id -> committed_model(entity_id, opts) != nil end,
-      model_resolver: fn entity_id ->
-        committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
-      end
-    )
+    # The fold's own reads are the authorizer's: a delete's kind and its
+    # committed model both come from the same by-id caches.
+    fold_opts =
+      Keyword.merge(opts,
+        created: MapSet.new(Map.keys(sim.models)),
+        # A system row can be certified by its by-id cache while the type
+        # index still lags, and the authorizer's own rules treat that row as
+        # existing. The verb follows the same existence signal, so a write to
+        # it is an update rather than a create.
+        exists?: fn entity_id -> committed_model(entity_id, opts) != nil end,
+        model_resolver: fn entity_id ->
+          committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
+        end
+      )
+
+    RowMutations.fold(action.updates, fold_opts)
   end
 
   defp check_all_mutations(mutations, actor_id, authz) do
@@ -1115,13 +1112,18 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.
+  #
+  # `subject` is the permission subject: a user row's model (`todo`), or a
+  # platform component's own name (`ebb/grant`) when the component declares
+  # `permission: "own"`. Either way the grant string is `<subject>.<verb>`.
+  #
   # `permissions_fun` selects the source: the cache unioned with the
   # Action's declared bootstrap permissions by default, or the cache
   # alone for membership mutations of an existing entity.
   defp check_group_permission(
          group_ids,
          actor_id,
-         model,
+         subject,
          permission,
          authz,
          permissions_fun \\ &permissions_for/3
@@ -1135,7 +1137,7 @@ defmodule EbbServer.Storage.Authorizer do
             false
 
           permissions ->
-            PermissionHelper.check_permission(permissions, model, permission)
+            PermissionHelper.check_permission(permissions, subject, permission)
         end
       end)
 

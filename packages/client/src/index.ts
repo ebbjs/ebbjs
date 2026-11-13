@@ -377,7 +377,12 @@ export {
   type Schema,
 } from "@ebbjs/schema";
 
-export { ReservedNameError, PLATFORM_NAMESPACE, RESERVED_MEMBERSHIP_NAMES } from "@ebbjs/schema";
+export {
+  ReservedNameError,
+  PLATFORM_NAMESPACE,
+  RESERVED_MEMBERSHIP_NAMES,
+  RESERVED_MODEL_NAMES,
+} from "@ebbjs/schema";
 
 export {
   EBB_COMPONENT_KINDS,
