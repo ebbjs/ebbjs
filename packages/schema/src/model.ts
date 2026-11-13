@@ -516,6 +516,22 @@ export class ComponentLeafMismatchError extends Error {
   }
 }
 
+/** Raised when a component declares a version that is not an integer >= 1. */
+export class InvalidComponentVersionError extends Error {
+  readonly componentName: string;
+  readonly version: unknown;
+
+  constructor(componentName: string, version: unknown) {
+    super(
+      `Component "${componentName}" declares version ${String(version)}: a component version is ` +
+        `an integer >= 1, and defaults to 1 when omitted.`,
+    );
+    this.name = "InvalidComponentVersionError";
+    this.componentName = componentName;
+    this.version = version;
+  }
+}
+
 /** True when a value is a component declaration rather than a bare schema. */
 const isComponentDef = (value: ComponentInput): value is ComponentDef =>
   typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "component";
@@ -594,6 +610,11 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     if (field !== undefined) throw new OptionalDefaultConflictError(name, field);
   }
 
+  const version = options.version ?? 1;
+  if (!Number.isInteger(version) || version < 1) {
+    throw new InvalidComponentVersionError(name, options.version);
+  }
+
   return Object.freeze({
     kind: "component",
     name,
@@ -606,7 +627,7 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     indexed: options.indexed ?? false,
     structural: options.structural ?? false,
     permission: options.permission,
-    version: options.version ?? 1,
+    version,
   });
 }
 

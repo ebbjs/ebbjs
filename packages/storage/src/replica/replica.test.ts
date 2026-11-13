@@ -1027,6 +1027,7 @@ describe("replica: change signal", () => {
 
     replica.load({
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 0,
       revision: 7,
       entities: [entity({ id: "e_9", type: "note" })],
@@ -1157,6 +1158,7 @@ describe("replica: journal capacity (#499)", () => {
 
     const record: ReplicaRecord = {
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 9,
       revision: 2,
       entities: [entity({ id: "e_9", type: "note" })],
@@ -1192,6 +1194,7 @@ describe("replica: journal capacity (#499)", () => {
     const replica = createReplica();
     const record: ReplicaRecord = {
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 4,
       revision: 2,
       entities: [entity({ id: "e_9", type: "note" })],
@@ -1521,7 +1524,13 @@ describe("replica: on-demand residency (#500)", () => {
       readComponent: reader(rows),
     });
 
-    replica.load({ format: REPLICA_RECORD_FORMAT, position: 0, revision: 1, entities });
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
+      position: 0,
+      revision: 1,
+      entities,
+    });
 
     expect(replica.stats()).toMatchObject({
       held: 10_000,
@@ -1662,6 +1671,7 @@ describe("replica: on-demand residency (#500)", () => {
 
     replica.load({
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 0,
       revision: 5,
       entities: [documentRow("doc_2"), entity({ id: "e_1", type: "todo" })],
@@ -1915,6 +1925,7 @@ describe("replica: residency per component (#802)", () => {
     const replica = createReplica({ materialization: componentPolicy, pinnedTtlMs: 0 });
     replica.load({
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 1,
       revision: 1,
       entities: [noteRow()],
@@ -1963,6 +1974,7 @@ describe("replica: residency per component (#802)", () => {
     });
     replica.load({
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 1,
       revision: 1,
       entities: [noteRow()],
@@ -1992,6 +2004,7 @@ describe("replica: residency per component (#802)", () => {
     });
     replica.load({
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 1,
       revision: 1,
       entities: [noteRow()],

@@ -80,6 +80,8 @@ export {
   type CanUnknownReason,
 } from "./sync/permission";
 
+export { ComponentVersionAheadError, type ComponentMigrations } from "./sync/migrations";
+
 export {
   OnDemandQueryError,
   type QueryBuilder,

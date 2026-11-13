@@ -56,6 +56,7 @@ import {
   type PresenceChannelsOf,
   type PresenceRuntime,
 } from "../presence/presence";
+import { createComponentMigrations, type ComponentMigrations } from "./migrations";
 import { openSSEStream, type SSESubscription } from "./sse";
 import { createOutbox, type Outbox } from "./outbox";
 import {
@@ -77,7 +78,12 @@ import { createFlushScheduler, type FlushScheduler } from "./flush-scheduler";
 import { createOutboxObserver, type OutboxObserver } from "./outbox-observer";
 import { createClientStatus, type ClientStatus, type ClientStatusController } from "./status";
 import { createQueryCache, type QueryCache } from "./query-cache";
-import { evictableRowIds, scopeEvictedGroupIds } from "./scope-eviction";
+import {
+  evictableRowIds,
+  mergeReplicaRecords,
+  scopeEvictedGroupIds,
+  withRetainedRows,
+} from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
 import {
@@ -236,6 +242,8 @@ export class SyncClient<
    * the engine signal re-homes them (#512/#520).
    */
   readonly replica: Replica;
+  /** Read migrations for stored component versions (#804); absent without a schema. */
+  readonly componentMigrations: ComponentMigrations | undefined;
   /**
    * The engine signal over {@link replica} and its reactive query result
    * cache (#512). Namespaces and hooks read query results through it, so a
@@ -434,10 +442,19 @@ export class SyncClient<
     }
     this.replica = createReplica({
       materialization: residencyFromRegistry(this.registry),
+      versions: { declared: (component) => this.registry.versionOf(component) },
       readComponent: (id, component) => this.readStoredComponent(id, component),
       pinnedCapacity: opts.pinnedCapacity ?? DEFAULT_PINNED_CAPACITY,
       pinnedTtlMs: opts.pinnedTtlMs ?? DEFAULT_PINNED_TTL_MS,
     });
+    this.componentMigrations =
+      opts.schema?._migrations === undefined
+        ? undefined
+        : createComponentMigrations({
+            registry: this.registry,
+            migrations: opts.schema._migrations,
+            versionOf: (id, component) => this.replica.componentVersion(id, component),
+          });
     this.replicaSignal = createReplicaSignal(this.replica);
     this.queries = createQueryCache(this.replica, this.replicaSignal, {
       ttlMs: opts.queryTtlMs,
@@ -2296,29 +2313,6 @@ export class SyncClient<
   }
 }
 
-/**
- * Fold `extra`'s rows into `base` by id, with `base` winning an overlap. A
- * full record captured before eviction is the source of the rows currently
- * absent from the resident set.
- */
-const mergeReplicaRecords = (extra: ReplicaRecord | null, base: ReplicaRecord): ReplicaRecord => {
-  if (extra === null) return base;
-  const rows = new Map(base.entities.map((entity) => [entity.id, entity]));
-  for (const entity of extra.entities) {
-    if (!rows.has(entity.id)) rows.set(entity.id, entity);
-  }
-  return { ...base, entities: [...rows.values()] };
-};
-
-/** Keep the rows the resident record no longer carries, preferring its current row. */
-const withRetainedRows = (record: ReplicaRecord, durable: ReplicaRecord): ReplicaRecord => {
-  const current = new Set(record.entities.map((entity) => entity.id));
-  const retained = durable.entities.filter((entity) => !current.has(entity.id));
-  return retained.length === 0
-    ? record
-    : { ...record, entities: [...record.entities, ...retained] };
-};
-
 const logReplicaSaveError = (thrown: unknown): void => {
   // eslint-disable-next-line no-console
   console.error("[SyncClient] replica save failed:", thrown);
@@ -2634,7 +2628,10 @@ export function createClient<
   }
   // The read path's capability: the registry its accessors resolve
   // against. Writes do not run through here.
-  const readCap = { registry: client.registry };
+  const readCap = {
+    registry: client.registry,
+    migrations: client.componentMigrations,
+  };
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
     queries: client.queries,

@@ -46,6 +46,7 @@ import { emptyQuery, type Predicate, type Query } from "./query";
 import { planQuery } from "./query-plan";
 import { createReplicaExecutor, executePlan } from "./query-execute";
 import type { QueryCache } from "./query-cache";
+import type { ComponentMigrations } from "./migrations";
 import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
 import {
   type AdjacencyReader,
@@ -516,6 +517,7 @@ function buildRowAccessors(
   sourceId: string,
   storage: StorageAdapter,
   registry: ModelRegistry,
+  migrations?: ComponentMigrations,
   replica?: ReplicaAccess,
 ): Record<string, RowAccessor> {
   const out: Record<string, RowAccessor> = {};
@@ -552,6 +554,7 @@ function buildRowAccessors(
         targetShape,
         field,
         relType,
+        migrations,
       );
       continue;
     }
@@ -574,6 +577,7 @@ function buildRowAccessors(
       sourceShape,
       field,
       relType,
+      migrations,
     );
   }
 
@@ -589,6 +593,7 @@ function buildRowAccessors(
       sourceId,
       "group",
       groupShape,
+      migrations,
     );
   }
 
@@ -620,8 +625,9 @@ const queryForFilter = <TFields extends Record<string, TSchema>>(
 const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TWire>,
+  migrations?: ComponentMigrations,
 ): EntitySnapshotOf<TWire> => ({
-  ...projectEntity(entity, shape),
+  ...projectEntity(entity, shape, migrations),
   id: entity.id,
   entity,
 });
@@ -641,11 +647,12 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   id: string,
   shape: TObject<TWire>,
   cb: (snapshot: EntitySnapshotOf<TWire>) => void,
+  migrations?: ComponentMigrations,
 ): (() => void) => {
   if (watcher === null) return () => {};
   const fire = (row: Entity | undefined): void => {
     if (row === undefined || row.type !== entityName) return;
-    cb(toEntitySnapshot(row, shape));
+    cb(toEntitySnapshot(row, shape, migrations));
   };
   const unsubscribeEntity = watcher.entity(id, fire);
   // A relationship / membership write leaves the row's own fields untouched
@@ -666,6 +673,8 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
  */
 export interface ReadCapability {
   readonly registry: ModelRegistry;
+  /** Read migrations for stored component versions, when the schema declares any. */
+  readonly migrations?: ComponentMigrations;
 }
 
 /**
@@ -700,7 +709,14 @@ export function createEntityNamespace<
     // alongside unknown ids. Callers don't distinguish — a missing
     // row and a wrong-type row are both "no row here".
     if (entity.type !== entityName) return null;
-    const accessors = buildRowAccessors(entityName, entity.id, storage, registry, replica);
+    const accessors = buildRowAccessors(
+      entityName,
+      entity.id,
+      storage,
+      registry,
+      read.migrations,
+      replica,
+    );
     const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
       subscribeToEntity(
         watcher,
@@ -708,6 +724,7 @@ export function createEntityNamespace<
         entity.id,
         shape,
         cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<TFields>>) => void,
+        read.migrations,
       );
     const subscribeAccessors = (cb: () => void): (() => void) =>
       watcher === null ? () => {} : watcher.accessors(entity.id, cb);
@@ -715,7 +732,7 @@ export function createEntityNamespace<
     // same-named field; the entity id spreads after them so it wins
     // over both.
     return {
-      ...projectRow(entity, shape),
+      ...projectRow(entity, shape, read.migrations),
       ...accessors,
       id: entity.id,
       subscribe,
@@ -740,6 +757,7 @@ export function createEntityNamespace<
         queries: replica.queries,
         hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
+        migrations: read.migrations,
       }) as unknown as QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
@@ -787,7 +805,7 @@ export function createEntityNamespace<
         execute: () => {
           const executor = createReplicaExecutor(replica.replica);
           return executePlan(planQuery(query), executor, (entity, field) =>
-            projectedFieldValue(entity, field, shape),
+            projectedFieldValue(entity, field, shape, read.migrations),
           )
             .filter((row) => row.type === entityName)
             .map((row) => row.id);
@@ -804,7 +822,13 @@ export function createEntityNamespace<
             const row = replica.replica.get(id);
             return row === undefined
               ? []
-              : [toEntitySnapshot(row, shape) as unknown as EntitySnapshot<TFields>];
+              : [
+                  toEntitySnapshot(
+                    row,
+                    shape,
+                    read.migrations,
+                  ) as unknown as EntitySnapshot<TFields>,
+                ];
           });
           cb({ entities, filter, count: entities.length });
         },

@@ -11,6 +11,7 @@ export interface ReplicaStoreTestSuiteOptions {
 
 const buildRecord = (overrides: Partial<ReplicaRecord> = {}): ReplicaRecord => ({
   format: REPLICA_RECORD_FORMAT,
+  componentVersions: {},
   position: 7,
   revision: 3,
   entities: [

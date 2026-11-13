@@ -176,6 +176,23 @@ pending write to the row. A _structural_ component opts out of detection
 entirely rather than declaring a scope.
 _Avoid_: conflict level, conflict granularity
 
+**Component version**:
+The declared shape version of one component's value. A bare declaration is
+version 1; a component bumps its version when a stored value's shape changes
+without a new component name. Versioning by component leaves every sibling on
+the row at its own version, so one renamed leaf does not bump the model.
+Distinct from _Schema version_, the whole-client handshake number.
+_Avoid_: entity version, field version, schema revision
+
+**Read migration**:
+An up-only transform from one _Component version_ to the next, declared with
+`defineMigration` and applied when a client projects a value whose stored
+version is behind the declaration. The Action log and the materialized base
+are never rewritten; a missing step in a declared chain fails at
+`defineSchema`, and a stored version newer than the declaration fails loudly
+on read.
+_Avoid_: upgrade, backfill, reconciliation
+
 **Hold**:
 The positions an open conflict keeps off the wire: the contested component for
 a field- or component-scope loss, the whole subject for an entity-scope loss.

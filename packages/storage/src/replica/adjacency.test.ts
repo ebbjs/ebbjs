@@ -331,6 +331,7 @@ const membershipRow = (id: string, groupId: string, entityId: string): Entity =>
 
 const record = (entities: readonly Entity[]): ReplicaRecord => ({
   format: REPLICA_RECORD_FORMAT,
+  componentVersions: {},
   position: 0,
   revision: 1,
   entities,

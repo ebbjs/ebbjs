@@ -8,6 +8,7 @@
 
 export * from "./model";
 export * from "./model-registry";
+export * from "./migrations";
 export * from "./relationship";
 export * from "./reserved";
 export * from "./schema";

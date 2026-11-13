@@ -30,6 +30,7 @@ export const createIndexedDBReplicaStore = (db: IDBPDatabase<EbbDBSchema>): Repl
         position: cursor.position,
         revision: cursor.revision,
         entities,
+        componentVersions: cursor.componentVersions,
       };
       return isValidReplicaRecord(record) ? record : null;
     },
@@ -46,6 +47,7 @@ export const createIndexedDBReplicaStore = (db: IDBPDatabase<EbbDBSchema>): Repl
         format: record.format,
         position: record.position,
         revision: record.revision,
+        componentVersions: record.componentVersions,
       });
       await tx.done;
     },
