@@ -1197,7 +1197,7 @@ describe("createOutbox conflict detection", () => {
     ]);
   });
 
-  it("never flags structural relationship, group, or membership edges", async () => {
+  it("never flags the structural platform components", async () => {
     const registry = new ModelRegistry();
     seedRegistry(registry, {}, undefined);
     const deps = mkDeps({
@@ -1206,9 +1206,9 @@ describe("createOutbox conflict detection", () => {
     });
     const outbox = createOutbox(deps);
     const structural: readonly (readonly [model: string, field: string])[] = [
-      ["relationship", "source_id"],
-      ["entityGroup", "entity_id"],
-      ["groupMember", "group_id"],
+      ["ebb", "link"],
+      ["ebb", "membership"],
+      ["ebb", "grant"],
     ];
     for (const [subjectType, field] of structural) {
       await outbox.enqueue(

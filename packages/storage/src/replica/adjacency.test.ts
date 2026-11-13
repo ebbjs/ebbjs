@@ -15,9 +15,10 @@ import { createReplica } from "./replica";
 import type { Replica } from "./types";
 
 /**
- * Fixtures for the replica's adjacency reads: materialized `relationship` and
- * `entityGroup` rows pushed through the same `put` / `patch` / `remove` path
- * the other replica suites use.
+ * Fixtures for the replica's adjacency reads: materialized `ebb/link` and
+ * `ebb/membership` rows pushed through the same `put` / `patch` / `remove`
+ * path the other replica suites use. A platform row carries its whole value
+ * in one atomic component.
  */
 
 const leaf = (value: unknown, updateId: string, ms: number): FieldValue => ({
@@ -69,7 +70,7 @@ const remove = (spec: Omit<WriteSpec, "fields">): Action => ({
   ],
 });
 
-/** A materialized relationship row: `source_id` —as/type→ `target_id`. */
+/** A materialized `ebb/link` row: `source_id` —as/type→ `target_id`. */
 const edge = (
   actionId: string,
   rowId: string,
@@ -84,18 +85,15 @@ const edge = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "relationship",
+    type: "ebb",
     gsn,
     ms,
     fields: {
-      field: leaf(field, `u_${rowId}`, ms),
-      type: leaf(type, `u_${rowId}`, ms),
-      source_id: leaf(sourceId, `u_${rowId}`, ms),
-      target_id: leaf(targetId, `u_${rowId}`, ms),
+      link: leaf({ source_id: sourceId, target_id: targetId, type, field }, `u_${rowId}`, ms),
     },
   });
 
-/** A materialized entityGroup row: member `entityId` in `groupId`. */
+/** A materialized `ebb/membership` row: member `entityId` in `groupId`. */
 const member = (
   actionId: string,
   rowId: string,
@@ -108,12 +106,11 @@ const member = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "entityGroup",
+    type: "ebb",
     gsn,
     ms,
     fields: {
-      group_id: leaf(groupId, `u_${rowId}`, ms),
-      entity_id: leaf(entityId, `u_${rowId}`, ms),
+      membership: leaf({ entity_id: entityId, group_id: groupId }, `u_${rowId}`, ms),
     },
   });
 
@@ -187,7 +184,7 @@ describe("replica adjacency: membership reads", () => {
         actionId: "a_2",
         updateId: "u_del",
         entityId: "m_1",
-        type: "entityGroup",
+        type: "ebb",
         gsn: 2,
         ms: 2,
       }),
@@ -211,7 +208,7 @@ describe("replica adjacency: row removal", () => {
         actionId: "a_3",
         updateId: "u_del",
         entityId: "r_1",
-        type: "relationship",
+        type: "ebb",
         gsn: 3,
         ms: 3,
       }),
@@ -235,7 +232,7 @@ describe("replica adjacency: row removal", () => {
         actionId: "a_2",
         updateId: "u_del",
         entityId: "r_1",
-        type: "relationship",
+        type: "ebb",
         gsn: 2,
         ms: 2,
       }),
@@ -300,13 +297,10 @@ const relationshipRow = (
   targetId: string,
 ): Entity => ({
   id,
-  type: "relationship",
+  type: "ebb",
   data: {
     fields: {
-      field: leaf(field, `u_${id}`, 1),
-      type: leaf(type, `u_${id}`, 1),
-      source_id: leaf(sourceId, `u_${id}`, 1),
-      target_id: leaf(targetId, `u_${id}`, 1),
+      link: leaf({ source_id: sourceId, target_id: targetId, type, field }, `u_${id}`, 1),
     },
   },
   exists: true,
@@ -318,9 +312,9 @@ const relationshipRow = (
 
 const membershipRow = (id: string, groupId: string, entityId: string): Entity => ({
   id,
-  type: "entityGroup",
+  type: "ebb",
   data: {
-    fields: { group_id: leaf(groupId, `u_${id}`, 1), entity_id: leaf(entityId, `u_${id}`, 1) },
+    fields: { membership: leaf({ entity_id: entityId, group_id: groupId }, `u_${id}`, 1) },
   },
   exists: true,
   created_hlc: makeHlc(1),

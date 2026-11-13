@@ -9,13 +9,16 @@
  * the same Map the old scan used, so the tests pin the traversal
  * contract.
  *
- * The `Entity` shape for `Relationship` records carries
- * `{source_id, target_id, type, field}` as field values.
+ * A link row is an `ebb` row carrying one atomic `ebb/link` value, and a
+ * membership row is an `ebb` row carrying `ebb/membership`, so the fake reader
+ * gates on the component rather than on `row.type`.
  */
 
 import { describe, it, expect } from "vitest";
 import type { Entity } from "@ebbjs/core";
 import type { MembershipLink, RelationshipLink } from "@ebbjs/storage/types";
+
+import { carriesComponent, EBB_MODEL_NAME, systemValue } from "@ebbjs/core";
 
 import {
   type AdjacencyReader,
@@ -24,6 +27,7 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
+import { platformEntity } from "../test-utils";
 
 const mkEntity = (
   id: string,
@@ -52,7 +56,7 @@ const mkRel = (
   field: string,
   type: string,
 ): Entity =>
-  mkEntity(id, "relationship", {
+  platformEntity(id, "relationship", {
     source_id: sourceId,
     target_id: targetId,
     field,
@@ -77,14 +81,14 @@ const mkAdjacency = (store: Map<string, Entity>): AdjacencyReader => {
       return live
         .filter(
           (e) =>
-            e.type === "relationship" &&
-            e.data?.fields?.["field"]?.value === as &&
-            e.data?.fields?.["type"]?.value === type &&
-            e.data?.fields?.["source_id"]?.value === sourceId,
+            carriesComponent(e, "link") &&
+            systemValue(e, "link")?.["field"] === as &&
+            systemValue(e, "link")?.["type"] === type &&
+            systemValue(e, "link")?.["source_id"] === sourceId,
         )
         .map((e) => ({
           relationshipId: e.id,
-          targetId: String(e.data?.fields?.["target_id"]?.value),
+          targetId: String(systemValue(e, "link")?.["target_id"]),
         }))
         .sort((a, b) =>
           a.targetId === b.targetId
@@ -98,23 +102,22 @@ const mkAdjacency = (store: Map<string, Entity>): AdjacencyReader => {
           live
             .filter(
               (e) =>
-                e.type === "relationship" &&
-                e.data?.fields?.["field"]?.value === as &&
-                e.data?.fields?.["type"]?.value === type &&
-                e.data?.fields?.["target_id"]?.value === targetId,
+                carriesComponent(e, "link") &&
+                systemValue(e, "link")?.["field"] === as &&
+                systemValue(e, "link")?.["type"] === type &&
+                systemValue(e, "link")?.["target_id"] === targetId,
             )
-            .map((e) => String(e.data?.fields?.["source_id"]?.value)),
+            .map((e) => String(systemValue(e, "link")?.["source_id"])),
         ),
       ].sort();
     },
     async membershipsOf(entityId): Promise<readonly MembershipLink[]> {
       return live
-        .filter(
-          (e) => e.type === "entityGroup" && e.data?.fields?.["entity_id"]?.value === entityId,
-        )
+        .filter((e) => carriesComponent(e, "membership"))
+        .filter((e) => systemValue(e, "membership")?.["entity_id"] === entityId)
         .map((e) => ({
           membershipId: e.id,
-          groupId: String(e.data?.fields?.["group_id"]?.value),
+          groupId: String(systemValue(e, "membership")?.["group_id"]),
         }))
         .sort((a, b) =>
           a.groupId === b.groupId
@@ -348,16 +351,16 @@ describe("membershipGroups", () => {
   it("projects the groups an entity is filed into, ascending by group id", async () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("g2", mkEntity("g2", "group", { name: "Second" }));
-    store.set("g1", mkEntity("g1", "group", { name: "First" }));
-    store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g2" }));
+    store.set("g2", platformEntity("g2", "group", { name: "Second" }));
+    store.set("g1", platformEntity("g1", "group", { name: "First" }));
+    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-2", platformEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g2" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
       "t1",
-      "group",
+      EBB_MODEL_NAME,
       shape({ name: { type: "string" } }),
     );
     expect((await qb).map((r) => r.id)).toEqual(["g1", "g2"]);
@@ -366,17 +369,23 @@ describe("membershipGroups", () => {
   it("drops missing and wrong-type groups", async () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("g1", mkEntity("g1", "group", { name: "First" }));
+    store.set("g1", platformEntity("g1", "group", { name: "First" }));
     store.set("other", mkEntity("other", "list", {}));
-    store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "ghost" }));
-    store.set("eg-3", mkEntity("eg-3", "entityGroup", { entity_id: "t1", group_id: "other" }));
+    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
+    store.set(
+      "eg-2",
+      platformEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "ghost" }),
+    );
+    store.set(
+      "eg-3",
+      platformEntity("eg-3", "entityGroup", { entity_id: "t1", group_id: "other" }),
+    );
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
       "t1",
-      "group",
+      EBB_MODEL_NAME,
       shape({ name: { type: "string" } }),
     );
     expect((await qb).map((r) => r.id)).toEqual(["g1"]);
@@ -390,7 +399,7 @@ describe("membershipGroups", () => {
       readLocalEntity(store),
       reader,
       "t1",
-      "group",
+      EBB_MODEL_NAME,
       shape({ name: { type: "string" } }),
     );
     expect(await qb).toEqual([]);
@@ -399,15 +408,15 @@ describe("membershipGroups", () => {
   it("returns each group once when duplicate membership rows name it", async () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("g1", mkEntity("g1", "group", { name: "First" }));
-    store.set("eg-1", mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
+    store.set("g1", platformEntity("g1", "group", { name: "First" }));
+    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
     store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g1" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
       reader,
       "t1",
-      "group",
+      EBB_MODEL_NAME,
       shape({ name: { type: "string" } }),
     );
     expect((await qb).map((r) => r.id)).toEqual(["g1"]);

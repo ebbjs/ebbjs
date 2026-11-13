@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { componentName, makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action } from "@ebbjs/core";
 import { defineModel, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
@@ -22,9 +22,11 @@ import {
   isListingRequest,
   jsonResponse,
   openSseResponse,
+  rowComponents,
   waitFor,
 } from "./test-utils";
 import type { EntityResponse, GroupListingResponse } from "./types";
+import type { Update } from "@ebbjs/core";
 
 const HLC = makeHlc(1711036800000);
 const NEWER = makeHlc(1711036800001);
@@ -62,7 +64,12 @@ const membership = (
   groupId: string,
   lastGsn: number,
 ): EntityResponse =>
-  wire({ id, type: "entityGroup", fields: { entity_id: entityId, group_id: groupId }, lastGsn });
+  wire({
+    id,
+    type: "ebb",
+    fields: { membership: { entity_id: entityId, group_id: groupId } },
+    lastGsn,
+  });
 
 /**
  * A relationship row as the listing ships it: scoped by its source, which is
@@ -77,12 +84,14 @@ const relationshipRow = (
 ): EntityResponse =>
   wire({
     id,
-    type: "relationship",
+    type: "ebb",
     fields: {
-      field: fields.field ?? "assignee",
-      type: fields.type ?? "blog_post",
-      source_id: sourceId,
-      target_id: targetId,
+      link: {
+        field: fields.field ?? "assignee",
+        type: fields.type ?? "blog_post",
+        source_id: sourceId,
+        target_id: targetId,
+      },
     },
     lastGsn,
   });
@@ -396,7 +405,7 @@ const mkServer = (opts: ServerOptions = {}) => {
         actor_id: "a_self",
         groups: groups.map((group) => ({
           id: group.id,
-          permissions: [...(group.permissions ?? ["blog_post.*", "entityGroup.*"])],
+          permissions: [...(group.permissions ?? ["blog_post.*", "ebb/membership.*"])],
           cursor_valid: group.cursorValid ?? true,
           reason: group.cursorValid === false ? "behind_watermark" : null,
           cursor: group.cursor ?? 0,
@@ -489,13 +498,15 @@ const putAction = (opts: {
     actor_id: "a_peer",
     hlc,
     gsn: opts.gsn,
-    updates: Object.entries(opts.fields).map(([key, value]) => ({
-      id: `u_${opts.id}_${key}`,
-      subject_id: opts.entityId,
-      component: componentName(opts.entityType ?? "blog_post", key),
-      method: "replace" as const,
-      data: { value, update_id: `u_${opts.id}_${key}`, hlc },
-    })),
+    updates: rowComponents(opts.entityType ?? "blog_post", opts.fields).map(
+      ([component, value]): Update => ({
+        id: `u_${opts.id}_${component}`,
+        subject_id: opts.entityId,
+        component,
+        method: "replace" as const,
+        data: { value, update_id: `u_${opts.id}_${component}`, hlc },
+      }),
+    ),
   };
 };
 

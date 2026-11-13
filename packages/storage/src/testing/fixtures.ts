@@ -1,7 +1,9 @@
 import {
   componentName,
+  EBB_COMPONENTS,
   makeHlc,
   type Action,
+  type EbbComponentKind,
   type Entity,
   type FieldValue,
   type Update,
@@ -91,83 +93,60 @@ export interface RelationshipRowFixture {
 }
 
 /**
- * Build a create Action for one Relationship row: one `replace` per
- * component, the shape the wire writes when a source points at a target.
+ * One atomic component Update: the whole value at one leaf, the shape every
+ * platform row write has since #805.
+ */
+const systemRowUpdate = (
+  kind: EbbComponentKind,
+  subjectId: string,
+  value: Record<string, unknown>,
+  updateId: string,
+  hlc: string,
+): Update => ({
+  id: updateId,
+  subject_id: subjectId,
+  component: EBB_COMPONENTS[kind],
+  method: "replace",
+  data: { value, update_id: updateId, hlc },
+});
+
+/**
+ * Build a create Action for one `ebb/link` row: one `replace` carrying the
+ * whole value, the shape the wire writes when a source points at a target.
  */
 export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${row.id}`;
-  const field = (value: string, name: string) => ({
-    value,
-    update_id: `${updateId}_${name}`,
-    hlc,
-  });
 
   return {
     id: `a_${row.id}`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: componentUpdates(
-      row.id,
-      "relationship",
-      "replace",
-      {
-        source_id: field(row.sourceId, "source_id"),
-        target_id: field(row.targetId, "target_id"),
-        type: field(row.type, "type"),
-        field: field(row.field, "field"),
-      },
-      updateId,
-    ),
+    updates: [
+      systemRowUpdate(
+        "link",
+        row.id,
+        {
+          source_id: row.sourceId,
+          target_id: row.targetId,
+          type: row.type,
+          field: row.field,
+        },
+        updateId,
+        hlc,
+      ),
+    ],
   };
 };
-
-export interface RelationshipPatchFixture {
-  id: string;
-  sourceId?: string;
-  targetId?: string;
-  /** Accessor name — the `as` of the relationship. */
-  field?: string;
-  /** Relationship type string. */
-  type?: string;
-}
 
 /**
- * Build an Action that changes one or more natural-key components of a
- * Relationship row, one `merge` each.
+ * Build an Action that rewrites an `ebb/link` row's whole value. A platform
+ * component is atomic, so there is no partial write: a "patch" names the
+ * complete value, exactly as the wire's `replace` does.
  */
-export const buildRelationshipPatchAction = (
-  patch: RelationshipPatchFixture,
-  gsn: number,
-): Action => {
-  const hlc = makeHlc(HLC_BASE, gsn);
-  const updateId = `u_${patch.id}_patch`;
-  const field = (value: string, name: string) => ({
-    value,
-    update_id: `${updateId}_${name}`,
-    hlc,
-  });
-  const fields: Record<string, FieldValue> = {};
-  if (patch.sourceId !== undefined) fields.source_id = field(patch.sourceId, "source_id");
-  if (patch.targetId !== undefined) fields.target_id = field(patch.targetId, "target_id");
-  if (patch.type !== undefined) fields.type = field(patch.type, "type");
-  if (patch.field !== undefined) fields.field = field(patch.field, "field");
-
-  return {
-    id: `a_${patch.id}_patch`,
-    actor_id: "a_user1",
-    hlc,
-    gsn,
-    updates: componentUpdates(patch.id, "relationship", "merge", fields, updateId),
-  };
-};
-
-/** Build an Action that re-points a Relationship row at a new target. */
-export const buildRelationshipRetargetAction = (
-  args: { id: string; targetId: string },
-  gsn: number,
-): Action => buildRelationshipPatchAction({ id: args.id, targetId: args.targetId }, gsn);
+export const buildRelationshipPatchAction = (row: RelationshipRowFixture, gsn: number): Action =>
+  buildRelationshipPutAction(row, gsn);
 
 export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
@@ -195,71 +174,38 @@ export interface EntityGroupRowFixture {
 }
 
 /**
- * Build a create Action for one `entityGroup` membership row: one `replace`
- * per component, the shape the wire writes when an entity joins a group.
+ * Build a create Action for one `ebb/membership` row: one `replace` carrying
+ * the whole value, the shape the wire writes when an entity joins a group.
  */
 export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${row.id}`;
-  const field = (value: string, name: string) => ({
-    value,
-    update_id: `${updateId}_${name}`,
-    hlc,
-  });
 
   return {
     id: `a_${row.id}`,
     actor_id: "a_user1",
     hlc,
     gsn,
-    updates: componentUpdates(
-      row.id,
-      "entityGroup",
-      "replace",
-      {
-        entity_id: field(row.entityId, "entity_id"),
-        group_id: field(row.groupId, "group_id"),
-      },
-      updateId,
-    ),
+    updates: [
+      systemRowUpdate(
+        "membership",
+        row.id,
+        { entity_id: row.entityId, group_id: row.groupId },
+        updateId,
+        hlc,
+      ),
+    ],
   };
 };
-
-export interface EntityGroupPatchFixture {
-  id: string;
-  entityId?: string;
-  groupId?: string;
-}
 
 /**
- * Build an Action that changes one or both ids of an `entityGroup` membership
- * row, one `merge` per component.
+ * Build an Action that rewrites an `ebb/membership` row's whole value. Like
+ * {@link buildRelationshipPatchAction}, a patch is a whole-value replace.
  */
-export const buildEntityGroupPatchAction = (
-  patch: EntityGroupPatchFixture,
-  gsn: number,
-): Action => {
-  const hlc = makeHlc(HLC_BASE, gsn);
-  const updateId = `u_${patch.id}_patch`;
-  const field = (value: string, name: string) => ({
-    value,
-    update_id: `${updateId}_${name}`,
-    hlc,
-  });
-  const fields: Record<string, FieldValue> = {};
-  if (patch.entityId !== undefined) fields.entity_id = field(patch.entityId, "entity_id");
-  if (patch.groupId !== undefined) fields.group_id = field(patch.groupId, "group_id");
+export const buildEntityGroupPatchAction = (row: EntityGroupRowFixture, gsn: number): Action =>
+  buildEntityGroupPutAction(row, gsn);
 
-  return {
-    id: `a_${patch.id}_patch`,
-    actor_id: "a_user1",
-    hlc,
-    gsn,
-    updates: componentUpdates(patch.id, "entityGroup", "merge", fields, updateId),
-  };
-};
-
-/** Build a delete Action for an `entityGroup` membership row. */
+/** Build a delete Action for an `ebb/membership` row. */
 export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
 

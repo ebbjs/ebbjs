@@ -79,15 +79,15 @@ export const assertLastMembership = (
   ]);
 };
 
-/** A `groupMember` delta: the rows to remove and the permission lists to overwrite. */
+/** A grant delta: the rows to remove and the permission lists to overwrite. */
 export interface GroupMemberDeltaInput {
   readonly removedIds: readonly string[];
   readonly upserts: readonly { readonly id: string; readonly permissions: readonly string[] }[];
 }
 
 /**
- * Refuse a `groupMember` delta that would leave the group with no member
- * holding a permission list. Only a provable roster is checked — deferring is
+ * Refuse a grant delta that would leave the group with no member holding a
+ * permission list. Only a provable roster is checked — deferring is
  * deliberate, matching the client's cold-cache behaviour.
  */
 export const assertLastGroupMember = (

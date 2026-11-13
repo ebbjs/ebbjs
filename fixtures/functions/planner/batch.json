@@ -19,7 +19,15 @@
       "u_gbatch10"
     ],
     "rel": ["rel_gbatch1", "rel_gbatch2"],
-    "hlc": ["111690000000000051", "111690000000000052", "111690000000000053", "111690000000000054"]
+    "hlc": [
+      "111690000000000051",
+      "111690000000000052",
+      "111690000000000053",
+      "111690000000000054",
+      "111690000000000055",
+      "111690000000000056",
+      "111690000000000057"
+    ]
   },
   "calls": [
     {
@@ -65,7 +73,7 @@
   "action": {
     "id": "a_1ce55ba2b91d3d48",
     "actor_id": "a_golden",
-    "hlc": "111690000000000054",
+    "hlc": "111690000000000057",
     "gsn": 0,
     "updates": [
       {
@@ -102,23 +110,17 @@
         }
       },
       {
-        "id": "u_gbatch4_entity_id",
+        "id": "u_gbatch4",
         "subject_id": "eg_9_e_gbatch1g_gship",
-        "component": "entityGroup/entity_id",
+        "component": "ebb/membership",
         "method": "replace",
         "data": {
-          "value": "e_gbatch1",
-          "update_id": "u_gbatch4_entity_id"
-        }
-      },
-      {
-        "id": "u_gbatch4_group_id",
-        "subject_id": "eg_9_e_gbatch1g_gship",
-        "component": "entityGroup/group_id",
-        "method": "replace",
-        "data": {
-          "value": "g_gship",
-          "update_id": "u_gbatch4_group_id"
+          "value": {
+            "entity_id": "e_gbatch1",
+            "group_id": "g_gship"
+          },
+          "update_id": "u_gbatch4",
+          "hlc": "111690000000000052"
         }
       },
       {
@@ -129,7 +131,7 @@
         "data": {
           "value": "Final",
           "update_id": "u_gbatch5",
-          "hlc": "111690000000000052"
+          "hlc": "111690000000000053"
         }
       },
       {
@@ -140,47 +142,23 @@
         "data": {
           "value": true,
           "update_id": "u_gbatch6",
-          "hlc": "111690000000000052"
+          "hlc": "111690000000000053"
         }
       },
       {
-        "id": "u_gbatch7_source_id",
+        "id": "u_gbatch7",
         "subject_id": "rel_gbatch1",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gbatch1",
-          "update_id": "u_gbatch7_source_id"
-        }
-      },
-      {
-        "id": "u_gbatch7_target_id",
-        "subject_id": "rel_gbatch1",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_gproject1",
-          "update_id": "u_gbatch7_target_id"
-        }
-      },
-      {
-        "id": "u_gbatch7_type",
-        "subject_id": "rel_gbatch1",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_gbatch7_type"
-        }
-      },
-      {
-        "id": "u_gbatch7_field",
-        "subject_id": "rel_gbatch1",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "project",
-          "update_id": "u_gbatch7_field"
+          "value": {
+            "source_id": "e_gbatch1",
+            "target_id": "e_gproject1",
+            "type": "issue",
+            "field": "project"
+          },
+          "update_id": "u_gbatch7",
+          "hlc": "111690000000000054"
         }
       },
       {
@@ -191,47 +169,23 @@
         "data": {
           "value": ["e_glabel1"],
           "update_id": "u_gbatch8",
-          "hlc": "111690000000000053"
+          "hlc": "111690000000000055"
         }
       },
       {
-        "id": "u_gbatch9_source_id",
+        "id": "u_gbatch9",
         "subject_id": "rel_gbatch2",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gbatch1",
-          "update_id": "u_gbatch9_source_id"
-        }
-      },
-      {
-        "id": "u_gbatch9_target_id",
-        "subject_id": "rel_gbatch2",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_glabel1",
-          "update_id": "u_gbatch9_target_id"
-        }
-      },
-      {
-        "id": "u_gbatch9_type",
-        "subject_id": "rel_gbatch2",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_gbatch9_type"
-        }
-      },
-      {
-        "id": "u_gbatch9_field",
-        "subject_id": "rel_gbatch2",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "labels",
-          "update_id": "u_gbatch9_field"
+          "value": {
+            "source_id": "e_gbatch1",
+            "target_id": "e_glabel1",
+            "type": "issue",
+            "field": "labels"
+          },
+          "update_id": "u_gbatch9",
+          "hlc": "111690000000000056"
         }
       },
       {

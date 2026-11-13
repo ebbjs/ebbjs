@@ -41,10 +41,10 @@ group lands in the same Action.
 
 `relate` / `unrelate` follow the registry's declared cardinality:
 
-| cardinality | `relate`                                    | `unrelate`                                   |
-| ----------- | ------------------------------------------- | -------------------------------------------- |
-| `one`       | link one target (a Relationship `put`)      | delete the edge by its `relationship` row id |
-| `many`      | set the canonical FK list on the source row | drop one target, or clear the whole set      |
+| cardinality | `relate`                                    | `unrelate`                              |
+| ----------- | ------------------------------------------- | --------------------------------------- |
+| `one`       | link one target (one `ebb/link` put)        | delete the edge by its link row id      |
+| `many`      | set the canonical FK list on the source row | drop one target, or clear the whole set |
 
 ## One Action per invocation
 

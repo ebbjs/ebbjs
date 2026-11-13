@@ -13,8 +13,7 @@
  * decision 12).
  */
 
-import { componentName } from "@ebbjs/core";
-import { entityGroupSystemEntity, relationshipSystemEntity } from "@ebbjs/schema";
+import { componentName, EBB_COMPONENTS, EBB_MODEL_NAME } from "@ebbjs/core";
 
 import type { Join, Predicate, Query } from "./query";
 import { hasJoinKind, hasPredicateKind } from "./query";
@@ -92,6 +91,20 @@ const isReplicaBacked = (query: Query): boolean => query.source !== "";
 export const modelComponents = (model: string): string => `${model}/*`;
 
 /**
+ * The components a join onto `target` reads. A platform target must name the
+ * exact component it projects: `modelComponents("ebb")` would invalidate the
+ * query on every one of the four kinds, so a page joined to `groups` would
+ * re-read on every grant write.
+ */
+const joinReadComponents = (join: Join): readonly string[] => {
+  if (join.target !== EBB_MODEL_NAME) return [modelComponents(join.target)];
+  // The only platform join today is the built-in `groups` membership join,
+  // which projects group rows. A relationship declared onto the `ebb` model
+  // cannot say which kind it means, so it reads the model whole.
+  return join.kind === "membership" ? [EBB_COMPONENTS.group] : [modelComponents(EBB_MODEL_NAME)];
+};
+
+/**
  * A branch that constrains a component of the source row: a non-null equality
  * (it requires the row to carry the field) or a positive existence test. A
  * `hasNot`, a null equality, a membership, or an adjacency constrains no source
@@ -139,18 +152,25 @@ const sourceComponentsFor = (query: Query): readonly string[] => {
  * ordering reads its field; an adjacency or membership predicate reads the
  * edge/membership rows. The source itself is read whole — `<source>/*` — unless
  * every branch names a source component, because only then does a row's arrival
- * depend on a component the plan watches.
+ * depend on a component the plan watches. A chain over a value view names its
+ * exact components instead of deriving them (see `Query.sourceComponents`).
  */
 export const readComponentsFor = (query: Query): readonly string[] => {
   if (!isReplicaBacked(query)) return [];
   const reads = new Set<string>(
-    everyBranchNamesComponent(query) ? sourceComponentsFor(query) : [modelComponents(query.source)],
+    query.sourceComponents ??
+      (everyBranchNamesComponent(query)
+        ? sourceComponentsFor(query)
+        : [modelComponents(query.source)]),
   );
+  // Exact components: an edge read depends on link rows only, a membership
+  // read on membership rows only. `ebb/*` would make every page query depend
+  // on every platform write.
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
-    reads.add(modelComponents(relationshipSystemEntity.name));
+    reads.add(EBB_COMPONENTS.link);
   }
   if (hasPredicateKind(query, "membership") || hasJoinKind(query, "membership")) {
-    reads.add(modelComponents(entityGroupSystemEntity.name));
+    reads.add(EBB_COMPONENTS.membership);
   }
   return [...reads];
 };
@@ -188,9 +208,12 @@ export const compileReadComponents = (components: readonly string[]): CompiledRe
 export const rowReadComponentsFor = (query: Query): readonly string[] => {
   if (!isReplicaBacked(query)) return [];
   const reads = new Set(readComponentsFor(query));
-  reads.add(modelComponents(query.source));
-  for (const join of query.joins) reads.add(modelComponents(join.target));
-  reads.add(modelComponents(entityGroupSystemEntity.name));
+  if (query.sourceComponents === undefined) reads.add(modelComponents(query.source));
+  for (const join of query.joins)
+    for (const component of joinReadComponents(join)) reads.add(component);
+  // Every projected row carries the group ids it is a live member of, so a
+  // membership write changes a row even when nothing else about it did.
+  reads.add(EBB_COMPONENTS.membership);
   return [...reads];
 };
 

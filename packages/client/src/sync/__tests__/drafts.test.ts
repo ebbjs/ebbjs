@@ -28,33 +28,15 @@ import { ActionRejectedError, ActionResolutionError, resolveReferences } from ".
 import type { Rejection } from "../types";
 import { createClient } from "../client";
 import { testActions } from "./test-actions";
-import { updateModel } from "../test-utils";
+import { rowFields, rowsByModel } from "../test-utils";
 
 /** The Updates of one model, grouped into one list per subject row. */
-const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
-  const bySubject = new Map<string, Update[]>();
-  for (const update of updates) {
-    if (updateModel(update) !== model) continue;
-    const row = bySubject.get(update.subject_id);
-    if (row === undefined) bySubject.set(update.subject_id, [update]);
-    else row.push(update);
-  }
-  return [...bySubject.values()];
-};
+/** The rows of `model`; a platform name matches its component's rows. */
+const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] =>
+  rowsByModel(updates, model);
 
-/** A component's value on a row, or `undefined` when absent or dropped. */
-const valueOf = (row: readonly Update[], field: string): unknown => {
-  const update = row.find(
-    (candidate) =>
-      candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
-      candidate.component.endsWith(`/${field}`),
-  );
-  if (update === undefined || update.method === "drop" || update.method === "delete") {
-    return undefined;
-  }
-  return update.data.value;
-};
+/** A field's value on a row, or `undefined` when absent or dropped. */
+const valueOf = (row: readonly Update[], field: string): unknown => rowFields(row)[field];
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -217,9 +199,9 @@ describe("drafts — one Action, forward references", () => {
     expect(actions).toHaveLength(1);
     const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "entityGroup");
     expect(membershipRows).toHaveLength(2);
-    // Each membership row is two Updates; a repeated id filing the group twice
-    // would add a third pair under the same subject.
-    expect(membershipRows.flat()).toHaveLength(4);
+    // Each membership is one atomic Update; a repeated id filing the group
+    // twice would add a third row under the same subject.
+    expect(membershipRows.flat()).toHaveLength(2);
     for (const row of membershipRows) {
       expect(valueOf(row, "entity_id")).toBe(created.id);
     }

@@ -88,7 +88,7 @@ const drop = (spec: WriteSpec): Action => ({
   })),
 });
 
-/** A materialized relationship row: `sourceId` —author/wrote→ `targetId`. */
+/** A materialized `ebb/link` row: `sourceId` —author/wrote→ `targetId`. */
 const relationship = (
   actionId: string,
   rowId: string,
@@ -101,18 +101,19 @@ const relationship = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "relationship",
+    type: "ebb",
     gsn,
     ms,
     fields: {
-      field: leaf("author", `u_${rowId}`, ms),
-      type: leaf("wrote", `u_${rowId}`, ms),
-      source_id: leaf(sourceId, `u_${rowId}`, ms),
-      target_id: leaf(targetId, `u_${rowId}`, ms),
+      link: leaf(
+        { source_id: sourceId, target_id: targetId, type: "wrote", field: "author" },
+        `u_${rowId}`,
+        ms,
+      ),
     },
   });
 
-/** A materialized entityGroup row putting `entityId` in `groupId`. */
+/** A materialized `ebb/membership` row putting `entityId` in `groupId`. */
 const membership = (
   actionId: string,
   rowId: string,
@@ -125,12 +126,11 @@ const membership = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "entityGroup",
+    type: "ebb",
     gsn,
     ms,
     fields: {
-      group_id: leaf(groupId, `u_${rowId}`, ms),
-      entity_id: leaf(entityId, `u_${rowId}`, ms),
+      membership: leaf({ entity_id: entityId, group_id: groupId }, `u_${rowId}`, ms),
     },
   });
 
@@ -1053,8 +1053,7 @@ describe("replica: evict (#499)", () => {
 
     expect(replica.get("r_1")).toBeUndefined();
     expect(replica.get("m_1")).toBeUndefined();
-    expect(replica.iterate("relationship")).toEqual([]);
-    expect(replica.iterate("entityGroup")).toEqual([]);
+    expect(replica.iterate("ebb")).toEqual([]);
     expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([]);
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([]);
     expect(replica.memberships({ groupId: "grp_1" })).toEqual([]);
@@ -1069,18 +1068,13 @@ describe("replica: evict (#499)", () => {
         revision: 3,
         id: "r_1",
         deleted: true,
-        components: [
-          "relationship/field",
-          "relationship/type",
-          "relationship/source_id",
-          "relationship/target_id",
-        ],
+        components: ["ebb/link"],
       },
       {
         revision: 4,
         id: "m_1",
         deleted: true,
-        components: ["entityGroup/group_id", "entityGroup/entity_id"],
+        components: ["ebb/membership"],
       },
     ]);
 

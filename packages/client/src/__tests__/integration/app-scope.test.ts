@@ -32,18 +32,22 @@ const NOTE = `note_${RUN_ID}`;
  * Permissions Alice holds in her own groups. The bridge membership uses the
  * same list: covering both types is what makes bidirectional edits legal (D6).
  */
-const MEMBER_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
+const MEMBER_PERMISSIONS = [
+  "ebb/group.*",
+  "ebb/grant.*",
+  "ebb/membership.*",
+  "ebb/link.*",
+  "note.*",
+  "issue.*",
+];
 
 /** A schema-bearing client: `group.update` needs the map marker to write scope. */
 const note = defineModel("note", { title: e.string() });
 const appScopeSchema = defineSchema({ models: { note }, version: 1 });
 const appScopeActions = {
-  setScope: defineAction(
-    appScopeSchema,
-    ({ group }, params: { id: string; apps: Record<string, boolean> }) => {
-      group.update(params.id, { apps: params.apps });
-    },
-  ),
+  setScope: defineAction(appScopeSchema, ({ group }, params: { id: string; apps: string[] }) => {
+    group.update(params.id, { apps: params.apps });
+  }),
 };
 
 const createAppScopeClient = (appId: string) =>
@@ -175,7 +179,7 @@ beforeAll(async () => {
 
   issues = createAppScopeClient("issues");
   await issues.seed({
-    groups: [{ id: G_ISSUES, name: "Issues", apps: { issues: true } }],
+    groups: [{ id: G_ISSUES, name: "Issues", apps: ["issues"] }],
     groupMembers: [
       {
         id: `gm_issues_${RUN_ID}`,
@@ -189,7 +193,7 @@ beforeAll(async () => {
 
   // The bridge names both apps; one Action bootstraps it and its membership.
   await notes.seed({
-    groups: [{ id: G_BRIDGE, name: "Bridge", apps: { notes: true, issues: true } }],
+    groups: [{ id: G_BRIDGE, name: "Bridge", apps: ["notes", "issues"] }],
     groupMembers: [
       {
         id: `gm_bridge_${RUN_ID}`,
@@ -252,12 +256,12 @@ describe("app scope integration", () => {
     expect(titleOf(issues!)).toBe("Edited by notes");
   });
 
-  it("removes a group from the app on the next reconcile when its scope says false", async () => {
+  it("removes a group from the app on the next reconcile when its id leaves the scope", async () => {
     if (!reachable) return;
 
     await handshakeIds(notes!);
-    // The SDK path: a `group.update` map patch, not a hand-rolled envelope.
-    await notes!.actions.setScope({ id: G_BRIDGE, apps: { issues: false } });
+    // The SDK path: a whole-value `group.update`, not a hand-rolled envelope.
+    await notes!.actions.setScope({ id: G_BRIDGE, apps: ["notes"] });
 
     const issuesIds = await handshakeIds(issues!);
     expect(issuesIds).not.toContain(G_BRIDGE);

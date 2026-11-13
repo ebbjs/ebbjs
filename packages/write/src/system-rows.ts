@@ -22,7 +22,12 @@ import {
 /** The ids one platform-row Update consumes. */
 export interface SystemRowIds {
   updateId(): string;
-  hlc(): string;
+  /**
+   * The leaf's clock. Omitted only by a builder whose caller has none (a
+   * pre-built write); a leaf without one merges as the oldest write, which is
+   * right for a row that has no predecessor and wrong for every other write.
+   */
+  hlc?(): string;
 }
 
 /** The default ids: a fresh Update id and the caller's current clock. */
@@ -30,6 +35,13 @@ export const systemRowIds = (hlc: () => string): SystemRowIds => ({
   updateId: () => generateId("u"),
   hlc,
 });
+
+/** The ids of one Update whose id and clock come from the caller. */
+export const fixedRowIds = (updateId: string, hlc?: string): SystemRowIds => {
+  const ids: SystemRowIds = { updateId: () => updateId };
+  if (hlc === undefined) return ids;
+  return { updateId: () => updateId, hlc: () => hlc };
+};
 
 /** One atomic component Update. `kind` is the value's shape, not its id. */
 export const systemRowUpdate = (
@@ -39,17 +51,23 @@ export const systemRowUpdate = (
   ids: SystemRowIds,
 ): Update => {
   const updateId = ids.updateId();
+  const hlc = ids.hlc?.();
   return {
     id: updateId,
     subject_id: subjectId,
     component: EBB_COMPONENTS[kind],
     method: "replace",
-    data: { value, update_id: updateId, hlc: ids.hlc() } as FieldValue,
+    data: (hlc === undefined
+      ? { value, update_id: updateId }
+      : { value, update_id: updateId, hlc }) as FieldValue,
   };
 };
 
 /** A row `delete`: it names no component, so the server resolves the kind. */
-export const systemRowDelete = (subjectId: string, ids: { updateId(): string }): Update => ({
+export const systemRowDelete = (
+  subjectId: string,
+  ids: { updateId(): string; hlc?(): string },
+): Update => ({
   id: ids.updateId(),
   subject_id: subjectId,
   method: "delete",

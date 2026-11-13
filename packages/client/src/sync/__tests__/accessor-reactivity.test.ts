@@ -10,7 +10,7 @@ import type { Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
-import { seedReplicaRow } from "../test-utils";
+import { platformEntity, seedReplicaRow } from "../test-utils";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
@@ -39,39 +39,16 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
   last_gsn: 0,
 });
 
-const mkRel = (id: string, sourceId: string, targetId: string): Entity => ({
-  id,
-  type: "relationship",
-  data: {
-    fields: {
-      source_id: { value: sourceId, update_id: "u" },
-      target_id: { value: targetId, update_id: "u" },
-      type: { value: "todo", update_id: "u" },
-      field: { value: "owner", update_id: "u" },
-    },
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+const mkRel = (id: string, sourceId: string, targetId: string): Entity =>
+  platformEntity(id, "relationship", {
+    source_id: sourceId,
+    target_id: targetId,
+    type: "todo",
+    field: "owner",
+  });
 
-const mkMembership = (id: string, entityId: string, groupId: string): Entity => ({
-  id,
-  type: "entityGroup",
-  data: {
-    fields: {
-      entity_id: { value: entityId, update_id: "u" },
-      group_id: { value: groupId, update_id: "u" },
-    },
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
+  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
 
 /** Write `row` to the shim and fold it into the replica the queries read (#520). */
 const seedRow = async (
@@ -159,7 +136,7 @@ describe("relationship accessor reactivity", () => {
 
   it("wakes subscribeAccessors on a membership write (id-keyed signal generalizes)", async () => {
     const { storage, client } = await fresh();
-    await seedRow(storage, client.replica, mkEntity("grp_1", "group", { name: "G" }));
+    await seedRow(storage, client.replica, platformEntity("grp_1", "group", { name: "G" }));
 
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
@@ -180,7 +157,7 @@ describe("relationship accessor reactivity", () => {
 
   it("re-materializes a membership-filtered query on a membership write", async () => {
     const { storage, client } = await fresh();
-    await seedRow(storage, client.replica, mkEntity("grp_1", "group", { name: "G" }));
+    await seedRow(storage, client.replica, platformEntity("grp_1", "group", { name: "G" }));
 
     const query = client.todo.query().where("groups", "grp_1");
     expect((await query).map((row) => row.id)).toEqual([]);

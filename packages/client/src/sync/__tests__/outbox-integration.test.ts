@@ -823,7 +823,7 @@ describe("catch-up conflict detection (#308, #390)", () => {
     expect(calls.filter((url) => url.includes("/sync/actions"))).toHaveLength(1);
   });
 
-  it("never flags a structural relationship edge", async () => {
+  it("never flags a structural link edge", async () => {
     const mkRelationship = (id: string, gsn: number, target: string): Action => ({
       id,
       actor_id: ACTOR_ID,
@@ -831,51 +831,15 @@ describe("catch-up conflict detection (#308, #390)", () => {
       gsn,
       updates: [
         {
-          id: `${`u_${id}`}_0`,
-
+          id: `u_${id}`,
           subject_id: "rel_1",
-
-          component: "relationship/source_id",
-
+          component: "ebb/link",
           method: "replace",
-
-          data: { value: "todo_1", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-        },
-
-        {
-          id: `${`u_${id}`}_1`,
-
-          subject_id: "rel_1",
-
-          component: "relationship/target_id",
-
-          method: "replace",
-
-          data: { value: target, update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-        },
-
-        {
-          id: `${`u_${id}`}_2`,
-
-          subject_id: "rel_1",
-
-          component: "relationship/type",
-
-          method: "replace",
-
-          data: { value: "link", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
-        },
-
-        {
-          id: `${`u_${id}`}_3`,
-
-          subject_id: "rel_1",
-
-          component: "relationship/field",
-
-          method: "replace",
-
-          data: { value: "target", update_id: `u_${id}`, hlc: makeHlc(1_711_036_800_000) },
+          data: {
+            value: { source_id: "todo_1", target_id: target, type: "link", field: "target" },
+            update_id: `u_${id}`,
+            hlc: makeHlc(1_711_036_800_000),
+          },
         },
       ],
     });

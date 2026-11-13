@@ -9,14 +9,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { componentName, makeHlc, type Action, type Update } from "@ebbjs/core";
+import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, rowComponents } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
 const note = defineModel("note", { body: e.string() });
@@ -62,13 +62,15 @@ const action = (gsn: number, updates: Update[]): Action => ({
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
   action(
     gsn,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${gsn}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${gsn}`),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${gsn}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${gsn}`),
+      }),
+    ),
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>

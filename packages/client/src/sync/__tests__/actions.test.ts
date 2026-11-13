@@ -119,13 +119,25 @@ const canonicalize = (action: Action): unknown => {
       return { subject_id: idOf(update.subject_id), method: update.method };
     }
     const leaf = update.data;
+    // A platform row's ids live inside its atomic value, so canonicalize the
+    // id-valued keys of the object as well as a leaf's own value.
+    const idKeys = new Set(["source_id", "target_id", "entity_id", "actor_id"]);
+    const canonicalValue = (value: unknown): unknown =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+              key,
+              idKeys.has(key) && typeof entry === "string" ? idOf(entry) : entry,
+            ]),
+          )
+        : value;
     const value =
       "value" in leaf &&
       (update.component.endsWith("/source_id") ||
         update.component.endsWith("/target_id") ||
         update.component.endsWith("/entity_id"))
         ? idOf(leaf.value as string)
-        : leaf.value;
+        : canonicalValue(leaf.value);
     return {
       subject_id: idOf(update.subject_id),
       component: update.component,
@@ -232,10 +244,19 @@ describe("client.actions composition", () => {
     const models = action!.updates
       .map((update) => updateModel(update))
       .filter((model, index, all) => model !== all[index - 1]);
-    expect(models).toEqual(["list", "entityGroup", "todo", "entityGroup", "relationship"]);
+    expect(models).toEqual(["list", "ebb", "todo", "ebb"]);
+    // The membership and the link are one atomic value each.
+    const components = action!.updates.flatMap((update) =>
+      update.method === "delete" ? [] : [update.component],
+    );
+    expect(components.filter((component) => component.startsWith("ebb/"))).toEqual([
+      "ebb/membership",
+      "ebb/membership",
+      "ebb/link",
+    ]);
     const target = action!.updates.find(
-      (update) => update.method !== "delete" && update.component === "relationship/target_id",
+      (update) => update.method !== "delete" && update.component === "ebb/link",
     )!;
-    expect(target.data).toMatchObject({ value: created.list.id });
+    expect(target.data).toMatchObject({ value: { target_id: created.list.id } });
   });
 });

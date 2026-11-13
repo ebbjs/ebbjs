@@ -15,7 +15,14 @@
       "u_gcreate7"
     ],
     "rel": ["rel_gcreate1", "rel_gcreate2", "rel_gcreate3"],
-    "hlc": ["111690000000000001", "111690000000000002"]
+    "hlc": [
+      "111690000000000001",
+      "111690000000000002",
+      "111690000000000003",
+      "111690000000000004",
+      "111690000000000005",
+      "111690000000000006"
+    ]
   },
   "calls": [
     {
@@ -34,7 +41,7 @@
   "action": {
     "id": "a_cd1ddadf5cc1e680",
     "actor_id": "a_golden",
-    "hlc": "111690000000000002",
+    "hlc": "111690000000000006",
     "gsn": 0,
     "updates": [
       {
@@ -71,143 +78,65 @@
         }
       },
       {
-        "id": "u_gcreate4_entity_id",
+        "id": "u_gcreate4",
         "subject_id": "eg_10_e_gcreate1g_gship",
-        "component": "entityGroup/entity_id",
+        "component": "ebb/membership",
         "method": "replace",
         "data": {
-          "value": "e_gcreate1",
-          "update_id": "u_gcreate4_entity_id"
+          "value": {
+            "entity_id": "e_gcreate1",
+            "group_id": "g_gship"
+          },
+          "update_id": "u_gcreate4",
+          "hlc": "111690000000000002"
         }
       },
       {
-        "id": "u_gcreate4_group_id",
-        "subject_id": "eg_10_e_gcreate1g_gship",
-        "component": "entityGroup/group_id",
-        "method": "replace",
-        "data": {
-          "value": "g_gship",
-          "update_id": "u_gcreate4_group_id"
-        }
-      },
-      {
-        "id": "u_gcreate5_source_id",
+        "id": "u_gcreate5",
         "subject_id": "rel_gcreate1",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gcreate1",
-          "update_id": "u_gcreate5_source_id"
+          "value": {
+            "source_id": "e_gcreate1",
+            "target_id": "e_gproject1",
+            "type": "issue",
+            "field": "project"
+          },
+          "update_id": "u_gcreate5",
+          "hlc": "111690000000000003"
         }
       },
       {
-        "id": "u_gcreate5_target_id",
-        "subject_id": "rel_gcreate1",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_gproject1",
-          "update_id": "u_gcreate5_target_id"
-        }
-      },
-      {
-        "id": "u_gcreate5_type",
-        "subject_id": "rel_gcreate1",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_gcreate5_type"
-        }
-      },
-      {
-        "id": "u_gcreate5_field",
-        "subject_id": "rel_gcreate1",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "project",
-          "update_id": "u_gcreate5_field"
-        }
-      },
-      {
-        "id": "u_gcreate6_source_id",
+        "id": "u_gcreate6",
         "subject_id": "rel_gcreate2",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gcreate1",
-          "update_id": "u_gcreate6_source_id"
+          "value": {
+            "source_id": "e_gcreate1",
+            "target_id": "e_glabel1",
+            "type": "issue",
+            "field": "labels"
+          },
+          "update_id": "u_gcreate6",
+          "hlc": "111690000000000004"
         }
       },
       {
-        "id": "u_gcreate6_target_id",
-        "subject_id": "rel_gcreate2",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_glabel1",
-          "update_id": "u_gcreate6_target_id"
-        }
-      },
-      {
-        "id": "u_gcreate6_type",
-        "subject_id": "rel_gcreate2",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_gcreate6_type"
-        }
-      },
-      {
-        "id": "u_gcreate6_field",
-        "subject_id": "rel_gcreate2",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "labels",
-          "update_id": "u_gcreate6_field"
-        }
-      },
-      {
-        "id": "u_gcreate7_source_id",
+        "id": "u_gcreate7",
         "subject_id": "rel_gcreate3",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gcreate1",
-          "update_id": "u_gcreate7_source_id"
-        }
-      },
-      {
-        "id": "u_gcreate7_target_id",
-        "subject_id": "rel_gcreate3",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_glabel2",
-          "update_id": "u_gcreate7_target_id"
-        }
-      },
-      {
-        "id": "u_gcreate7_type",
-        "subject_id": "rel_gcreate3",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_gcreate7_type"
-        }
-      },
-      {
-        "id": "u_gcreate7_field",
-        "subject_id": "rel_gcreate3",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "labels",
-          "update_id": "u_gcreate7_field"
+          "value": {
+            "source_id": "e_gcreate1",
+            "target_id": "e_glabel2",
+            "type": "issue",
+            "field": "labels"
+          },
+          "update_id": "u_gcreate7",
+          "hlc": "111690000000000005"
         }
       }
     ]

@@ -13,20 +13,23 @@
  * is materialized.
  */
 
-import { generateId, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  ebbComponentField,
+  generateId,
+  systemValue,
+  type EbbComponentKind,
+  type Entity,
+  type FieldValue,
+} from "@ebbjs/core";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { ModelDef, ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import type { ModelRegistry } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
-import {
-  GROUPS_ACCESSOR,
-  groupMemberSystemEntity,
-  groupSystemEntity,
-  type GroupFields,
-  type GroupMemberFields,
-} from "@ebbjs/schema";
+import { GROUPS_ACCESSOR } from "@ebbjs/schema";
 import { commit, type CommitCapability } from "@ebbjs/write";
 import {
   type AccessorKeyOf,
@@ -42,6 +45,7 @@ import {
   type LiveGroupMember,
 } from "@ebbjs/write";
 import type { EntityFields, EntityPatch, WireCreateStatic } from "./namespace";
+import type { GrantFieldMap, GroupFieldMap } from "./system-row";
 import {
   ActionRejectedError,
   call,
@@ -349,7 +353,18 @@ type DraftIntent =
       readonly patch: Record<string, unknown>;
       readonly validate: boolean | undefined;
     }
-  | { readonly kind: "member-delete"; readonly id: string };
+  | { readonly kind: "member-delete"; readonly id: string }
+  | {
+      /**
+       * A patch of a platform row. Its value is atomic, so the write is the
+       * whole value: the resolver merges the patch over the committed one.
+       */
+      readonly kind: "system-patch";
+      readonly component: EbbComponentKind;
+      readonly id: string;
+      readonly patch: Record<string, unknown>;
+      readonly validate: boolean | undefined;
+    };
 
 /** One unit of planned work: a ready call, or a verb waiting on a read. */
 type DraftStep =
@@ -428,7 +443,7 @@ export interface DraftNamespace<
 
 /**
  * A draft system namespace: the content verbs minus the membership ones, since
- * an `entityGroup` row for a group or a member has no meaning.
+ * a membership row for a group or a grant has no meaning.
  */
 export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit<
   DraftNamespace<TFields>,
@@ -439,24 +454,25 @@ export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit
 
 /**
  * `client.group.create`: the name is required, while `apps` is genuinely
- * optional — an absent scope means "every app", which is not `{}`.
+ * optional — an absent scope means "every app", which is not `[]`.
  */
-export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFields>, "create"> & {
+export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFieldMap>, "create"> & {
   create(
     input: {
       readonly name: string;
-      readonly apps?: Record<string, boolean>;
+      readonly apps?: readonly string[];
     },
     opts?: EntityWriteOptions,
-  ): CreatedEntity<GroupFields>;
+  ): CreatedEntity<GroupFieldMap>;
 };
 
 /**
- * The `groupMember` draft namespace: the system surface, with `update` /
- * `delete` behind the local `last_group_member` guard, so leaving a group
- * is one Action alongside the content changes.
+ * The `client.membership` draft namespace (today's `groupMember`): the system
+ * surface over the `ebb/grant` value, with `update` / `delete` behind the
+ * local `last_group_member` guard, so leaving a group is one Action alongside
+ * the content changes.
  */
-export type MembershipDraftNamespace = SystemDraftNamespace<GroupMemberFields>;
+export type MembershipDraftNamespace = SystemDraftNamespace<GrantFieldMap>;
 
 /**
  * The forward relationship keys a draft `create` accepts, typed as pointer
@@ -709,8 +725,12 @@ const sharedSystemVerbs = <TFields extends Record<string, TSchema>>(
 
 /**
  * The system draft namespaces. Only `create` differs from the content surface:
- * `group.create` bootstraps the group row plus the actor's membership, and
- * `membership.create` is a single `groupMember` put.
+ * `group.create` bootstraps the group row plus the actor's grant, and
+ * `membership.create` is a single `ebb/grant` put.
+ *
+ * Both read through their component's value view, and both patch by whole
+ * value: a platform component is atomic, so `update` merges the patch over the
+ * committed value before it reaches the wire.
  */
 const createSystemDrafts = (
   cap: ActionCapability,
@@ -719,23 +739,41 @@ const createSystemDrafts = (
   group: GroupDraftNamespace;
   membership: MembershipDraftNamespace;
 } => {
-  const group = createDraftNamespace<GroupFields>("group", groupSystemEntity, cap, collector);
-  const membership = createDraftNamespace<GroupMemberFields>(
-    "groupMember",
-    groupMemberSystemEntity,
+  const systemDef = () => cap.registry.get(EBB_MODEL_NAME);
+  const group = createDraftNamespace<GroupFieldMap>(
+    EBB_MODEL_NAME,
+    systemDef() as AnyModelDef,
     cap,
     collector,
   );
+  const membership = createDraftNamespace<GrantFieldMap>(
+    EBB_MODEL_NAME,
+    systemDef() as AnyModelDef,
+    cap,
+    collector,
+  );
+  const recordSystemPatch =
+    (component: EbbComponentKind) =>
+    (id: string, patch: unknown, opts?: EntityWriteOptions): void => {
+      recordIntent(collector, {
+        kind: "system-patch",
+        component,
+        id,
+        patch: patch as Record<string, unknown>,
+        validate: opts?.validate,
+      });
+    };
   return {
     group: {
       ...sharedSystemVerbs(group),
+      update: recordSystemPatch("group"),
       create(input, opts) {
         const bootstrap = groupBootstrap(cap.registry, input.name, opts?.validate, cap.appId);
         record(collector, bootstrap.call);
         return markHandle({
           id: bootstrap.groupId,
           name: input.name,
-        }) as unknown as CreatedEntity<GroupFields>;
+        }) as unknown as CreatedEntity<GroupFieldMap>;
       },
     },
     membership: {
@@ -745,13 +783,13 @@ const createSystemDrafts = (
         record(
           collector,
           call(createSystemEntity, {
-            entity: "groupMember",
+            kind: "grant",
             id,
-            fields: input as unknown as Record<string, unknown>,
+            value: input as unknown as Record<string, unknown>,
             validate: opts?.validate,
           }),
         );
-        return markHandle({ id, ...input }) as unknown as CreatedEntity<GroupMemberFields>;
+        return markHandle({ id, ...input }) as unknown as CreatedEntity<GrantFieldMap>;
       },
       update(id, patch, opts) {
         recordIntent(collector, {
@@ -790,7 +828,10 @@ const buildDrafts = (
  * draft verbs refuse exactly what the imperative membership verbs do.
  */
 const groupMemberView = (cap: ActionCapability): GroupMemberView => ({
-  row: (id) => cap.read.entity("groupMember", id),
+  row: async (id) => {
+    const row = await cap.read.entity(EBB_MODEL_NAME, id);
+    return row !== null && systemValue(row, "grant") !== null ? row : null;
+  },
   groupMembers: (groupId) => cap.read.groupMembers(groupId),
 });
 
@@ -1004,16 +1045,61 @@ const resolveGroupVerb = async (
   }
 };
 
-/** `membership.update`: the `last_group_member` guard, then the patch. */
+/**
+ * A patch of a platform row, as the one whole-value write it has to be: the
+ * component is atomic, so the patch is merged over the committed value and a
+ * write that moves an immutable key is refused here rather than at the server.
+ */
+const systemPatchCall = async (
+  ctx: ResolveContext,
+  args: {
+    readonly component: EbbComponentKind;
+    readonly id: string;
+    readonly patch: Record<string, unknown>;
+    readonly validate: boolean | undefined;
+  },
+): Promise<OperationCall> => {
+  const row = await ctx.cap.read.entity(EBB_MODEL_NAME, args.id);
+  const committed = row === null ? null : systemValue(row, args.component);
+  if (committed === null) {
+    throw new ActionResolutionError(
+      `${args.component} patch: no local ${args.component} row for id "${args.id}"; ` +
+        `an atomic value is written whole, so the live value has to be readable`,
+    );
+  }
+  const immutable =
+    args.component === "grant"
+      ? (["group_id"] as const)
+      : args.component === "membership"
+        ? (["entity_id", "group_id"] as const)
+        : ([] as const);
+  for (const field of immutable) {
+    const declared = args.patch[field];
+    if (declared !== undefined && declared !== committed[field]) {
+      throw new ActionResolutionError(
+        `an ${EBB_COMPONENTS[args.component]} row cannot be re-pointed at another ${field}; ` +
+          `move it with a delete plus a create`,
+      );
+    }
+  }
+  return call(patchEntity, {
+    entity: EBB_MODEL_NAME,
+    id: args.id,
+    payload: { [ebbComponentField(args.component)]: { ...committed, ...args.patch } },
+    groups: await readGroups(ctx, args.id),
+    validate: args.validate,
+  });
+};
+
+/** `membership.update`: the `last_group_member` guard, then the whole value. */
 const resolveMemberPatch = async (
   intent: Extract<DraftIntent, { kind: "member-patch" }>,
   ctx: ResolveContext,
 ): Promise<readonly OperationCall[]> => {
-  // Only a permission-only patch is locally provable. A patch that
-  // moves the member to another group changes which group is at risk,
-  // so leave it to the server; a patch that does not touch
-  // `permissions` cannot empty a list either. Changing `actor_id`
-  // keeps the same group, so it stays provable.
+  // The patch is expressed in the grant value's fields, and the resolver writes
+  // the whole value, so the rule reads the same way it always did: a patch that
+  // names `permissions` without moving the group is locally provable. Moving the
+  // group is a re-point, which `systemPatchCall` refuses outright.
   const permissions = intent.patch["permissions"];
   if (permissions !== undefined && intent.patch["group_id"] === undefined) {
     const details = await lastGroupMemberRefusal(groupMemberView(ctx.cap), intent.id, {
@@ -1023,11 +1109,10 @@ const resolveMemberPatch = async (
     if (details !== undefined) throw lastGroupMemberError(intent.id, details);
   }
   return [
-    call(patchEntity, {
-      entity: "groupMember",
+    await systemPatchCall(ctx, {
+      component: "grant",
       id: intent.id,
-      payload: intent.patch,
-      groups: await readGroups(ctx, intent.id),
+      patch: intent.patch,
       validate: intent.validate,
     }),
   ];
@@ -1045,7 +1130,7 @@ const resolveMemberDelete = async (
   if (details !== undefined) throw lastGroupMemberError(intent.id, details);
   return [
     call(deleteEntity, {
-      entity: "groupMember",
+      entity: EBB_MODEL_NAME,
       id: intent.id,
       groups: await readGroups(ctx, intent.id),
     }),
@@ -1074,6 +1159,15 @@ const resolveIntent = async (
       return resolveMemberPatch(intent, ctx);
     case "member-delete":
       return resolveMemberDelete(intent, ctx);
+    case "system-patch":
+      return [
+        await systemPatchCall(ctx, {
+          component: intent.component,
+          id: intent.id,
+          patch: intent.patch,
+          validate: intent.validate,
+        }),
+      ];
   }
 };
 

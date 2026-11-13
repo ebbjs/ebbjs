@@ -8,16 +8,23 @@ import { makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
-import { defineComponent, defineModel, e } from "@ebbjs/schema";
+import {
+  defineComponent,
+  defineModel,
+  e,
+  type GroupFields,
+  type GroupMemberFields,
+} from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
-import { groupSystemEntity } from "@ebbjs/schema";
+import type { GrantFieldMap, GroupFieldMap } from "../system-row";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
-import type { EntityFields } from "../namespace";
+import type { EntityFields, WireStatic } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
 import { createClient } from "../client";
-import { seedReplicaRow } from "../test-utils";
+import { platformEntity, seedReplicaRow } from "../test-utils";
+import { rowReadComponentsFor } from "../query-plan";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -373,40 +380,12 @@ const mkRelEntity = (
   targetId: string,
   field: string,
   type: string,
-): Entity => ({
-  id,
-  type: "relationship",
-  data: {
-    fields: {
-      source_id: { value: sourceId, update_id: "u" },
-      target_id: { value: targetId, update_id: "u" },
-      type: { value: type, update_id: "u" },
-      field: { value: field, update_id: "u" },
-    },
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+): Entity =>
+  platformEntity(id, "relationship", { source_id: sourceId, target_id: targetId, type, field });
 
-/** Materialize one `entityGroup` membership row into the local cache. */
-const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity => ({
-  id,
-  type: "entityGroup",
-  data: {
-    fields: {
-      entity_id: { value: entityId, update_id: "u" },
-      group_id: { value: groupId, update_id: "u" },
-    },
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+/** Materialize one `ebb/membership` row into the local cache. */
+const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
+  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
 
 /**
  * Write `row` to the shim and fold it into the replica the query
@@ -424,13 +403,15 @@ const seedQueryRow = async (
 
 /**
  * The row accessors read the replica's adjacency (#520), so mirror the
- * shim's live `relationship` / `entityGroup` rows into it. Entity rows
- * stay on the shim — only the adjacency indices feed traversal.
+ * shim's live link / membership rows into it. Entity rows stay on the shim —
+ * only the adjacency indices feed traversal. Both kinds are `ebb` rows, so the
+ * component index names them.
  */
 const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise<void> => {
-  for (const type of ["relationship", "entityGroup"]) {
-    for (const row of await storage.entities.query(type)) {
-      if (row.deleted_hlc === null) seedReplicaRow(replica, row, "replace");
+  for (const component of ["ebb/link", "ebb/membership"]) {
+    for (const id of await storage.entities.queryByComponent(component)) {
+      const row = await storage.entities.get(id);
+      if (row !== null && row.deleted_hlc === null) seedReplicaRow(replica, row, "replace");
     }
   }
 };
@@ -645,7 +626,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     expect(out.map((r) => r.title)).toEqual(["one"]);
   });
 
-  it("picks up an entityGroup row that is only in the action log (dirty replay)", async () => {
+  it("picks up a membership row that is only in the action log (dirty replay)", async () => {
     const { storage, client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     // The membership exists only as an Action: `entities.set` was never
@@ -659,18 +640,11 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
       gsn: 1,
       updates: [
         {
-          id: "u_1_0",
+          id: "u_1",
           subject_id: "eg1",
-          component: "entityGroup/entity_id",
+          component: "ebb/membership",
           method: "replace",
-          data: { value: "d1", update_id: "u_1", hlc },
-        },
-        {
-          id: "u_1_1",
-          subject_id: "eg1",
-          component: "entityGroup/group_id",
-          method: "replace",
-          data: { value: "g1", update_id: "u_1", hlc },
+          data: { value: { entity_id: "d1", group_id: "g1" }, update_id: "u_1", hlc },
         },
       ],
     };
@@ -1157,14 +1131,94 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   });
 });
 
+describe("client.group / client.membership — value namespaces", () => {
+  const groupsSchema = defineSchema({ models: { todo: todoEntity }, version: 1 });
+
+  const mkClient = async () => {
+    const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
+    const storage = createMemoryAdapter();
+    const client = createClient({
+      serverUrl: "http://x",
+      actorId: "a",
+      storage,
+      schema: groupsSchema,
+    });
+    return { client, storage };
+  };
+
+  it("pins each value field map to the schema's value type", () => {
+    // The namespace needs a field map; `@ebbjs/schema` exports the value type.
+    // If a component's shape changes, one of these assertions fails to compile
+    // rather than the projection silently drifting.
+    type Assert<T extends true> = T;
+    type GroupPinned = Assert<
+      WireStatic<GroupFieldMap> extends GroupFields
+        ? GroupFields extends WireStatic<GroupFieldMap>
+          ? true
+          : false
+        : false
+    >;
+    type GrantPinned = Assert<
+      WireStatic<GrantFieldMap> extends GroupMemberFields
+        ? GroupMemberFields extends WireStatic<GrantFieldMap>
+          ? true
+          : false
+        : false
+    >;
+    const groupPinned: GroupPinned = true;
+    const grantPinned: GrantPinned = true;
+    expect([groupPinned, grantPinned]).toEqual([true, true]);
+  });
+
+  it("scopes a group query's read set to ebb/group, never the whole platform model", async () => {
+    const { client } = await mkClient();
+    const query = client.group.query().toQuery();
+
+    expect(query.source).toBe("ebb");
+    // Exact component: `ebb/*` would invalidate a page query built over groups
+    // on every grant or membership write.
+    expect(query.sourceComponents).toEqual(["ebb/group"]);
+    const reads = rowReadComponentsFor(query);
+    expect(reads).toContain("ebb/group");
+    expect(reads).not.toContain("ebb/*");
+  });
+
+  it("reads a group row as {id, name, apps}, not as an ebb envelope", async () => {
+    const { client, storage } = await mkClient();
+    const row = platformEntity("g1", "group", { name: "Demo", apps: ["notes"] });
+    seedReplicaRow(client.replica, row);
+    await storage.entities.set(row);
+
+    expect(await client.group.query()).toEqual([
+      { id: "g1", name: "Demo", apps: ["notes"], groupIds: [] },
+    ]);
+    const read = await client.group.get("g1");
+    expect(read).toMatchObject({ id: "g1", name: "Demo", apps: ["notes"] });
+  });
+
+  it("returns null for a row that carries another platform component", async () => {
+    const { client, storage } = await mkClient();
+    const grant = platformEntity("gm_1", "groupMember", {
+      actor_id: "a",
+      group_id: "g1",
+      permissions: [],
+    });
+    seedReplicaRow(client.replica, grant);
+    await storage.entities.set(grant);
+
+    expect(await client.group.get("gm_1")).toBeNull();
+    expect(await client.group.query()).toEqual([]);
+  });
+});
+
 describe("doc.groups — built-in membership accessor", () => {
   const groupsSchema = defineSchema({ models: { todo: todoEntity }, version: 1 });
 
-  it("resolves the group rows linked through entityGroup membership rows", async () => {
+  it("resolves the group rows linked through ebb/membership rows", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
-    await storage.entities.set(mkEntity("g1", "group", { name: "Demo" }));
+    await storage.entities.set(platformEntity("g1", "group", { name: "Demo" }));
     await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
     const client = createClient({
       serverUrl: "http://x",
@@ -1175,7 +1229,7 @@ describe("doc.groups — built-in membership accessor", () => {
     await syncAdjacency(storage, client.replica);
     const row = await client.todo.get("t1");
     if (row === null) throw new Error("expected row");
-    const groups: QueryBuilder<EntityFields<typeof groupSystemEntity>> = row.groups;
+    const groups: QueryBuilder<GroupFieldMap> = row.groups;
     const resolved: readonly { name?: string }[] = await groups;
     expect(resolved.map((g) => g.name)).toEqual(["Demo"]);
   });

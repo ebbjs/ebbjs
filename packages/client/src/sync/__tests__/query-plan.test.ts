@@ -31,7 +31,7 @@ describe("planQuery", () => {
       { kind: "order", field: null, direction: "asc" },
     ]);
     expect(plan.readComponents).toEqual(["todo/completed"]);
-    expect(rowReadComponentsFor(filtered)).toEqual(["todo/completed", "todo/*", "entityGroup/*"]);
+    expect(rowReadComponentsFor(filtered)).toEqual(["todo/completed", "todo/*", "ebb/membership"]);
   });
 
   it("pushes indexed predicates ahead of filters and records the read components", () => {
@@ -55,10 +55,10 @@ describe("planQuery", () => {
         { kind: "filter", field: "completed", value: true },
       ],
     });
-    expect(plan.readComponents).toEqual(["todo/completed", "relationship/*", "entityGroup/*"]);
+    expect(plan.readComponents).toEqual(["todo/completed", "ebb/link", "ebb/membership"]);
   });
 
-  it("reads the relationship row model, not the adjacency wire type", () => {
+  it("reads the link component, not the adjacency wire type", () => {
     const plan = planQuery(
       query({
         groups: [
@@ -73,7 +73,7 @@ describe("planQuery", () => {
     );
 
     // No branch names a source component, so the source is read whole.
-    expect(plan.readComponents).toEqual(["todo/*", "relationship/*", "entityGroup/*"]);
+    expect(plan.readComponents).toEqual(["todo/*", "ebb/link", "ebb/membership"]);
   });
 
   it("deduplicates read components across branches", () => {
@@ -86,7 +86,7 @@ describe("planQuery", () => {
       }),
     );
 
-    expect(plan.readComponents).toEqual(["todo/*", "relationship/*"]);
+    expect(plan.readComponents).toEqual(["todo/*", "ebb/link"]);
   });
 
   it("plans an existence predicate as an index op ahead of filters", () => {
@@ -144,13 +144,13 @@ describe("planQuery", () => {
 
     expect(readComponentsFor(hasNot)).toEqual(["todo/*"]);
     expect(readComponentsFor(nullEquality)).toEqual(["todo/*"]);
-    expect(readComponentsFor(membership)).toEqual(["todo/*", "entityGroup/*"]);
+    expect(readComponentsFor(membership)).toEqual(["todo/*", "ebb/membership"]);
   });
 
   it("adds membership to a projected row even when no predicate reads it", () => {
     const filtered = query({ groups: [[{ kind: "field", field: "status", value: "open" }]] });
 
-    expect(rowReadComponentsFor(filtered)).toContain("entityGroup/*");
+    expect(rowReadComponentsFor(filtered)).toContain("ebb/membership");
   });
 
   it("adds each joined model whole to a projected row", () => {
@@ -166,32 +166,27 @@ describe("planQuery", () => {
           direction: "forward",
           cardinality: "one",
         },
-        { kind: "membership", as: "groups", target: "group", cardinality: "many" },
+        { kind: "membership", as: "groups", target: "ebb", cardinality: "many" },
       ],
     };
     const plan = planQuery(joined);
 
-    expect(plan.readComponents).toEqual(["issue/title", "relationship/*", "entityGroup/*"]);
+    expect(plan.readComponents).toEqual(["issue/title", "ebb/link", "ebb/membership"]);
     expect(rowReadComponentsFor(joined)).toEqual([
       "issue/title",
-      "relationship/*",
-      "entityGroup/*",
+      "ebb/link",
+      "ebb/membership",
       "issue/*",
       "user/*",
-      "group/*",
+      "ebb/group",
     ]);
   });
 
   it("splits a read set into exact components and whole models", () => {
-    const compiled = compileReadComponents([
-      "todo/status",
-      "todo/*",
-      "entityGroup/*",
-      "todo/status",
-    ]);
+    const compiled = compileReadComponents(["todo/status", "todo/*", "ebb/*", "todo/status"]);
 
     expect([...compiled.components]).toEqual(["todo/status"]);
-    expect([...compiled.models].sort()).toEqual(["entityGroup", "todo"]);
+    expect([...compiled.models].sort()).toEqual(["ebb", "todo"]);
   });
 
   it("reads nothing for a candidate chain", () => {

@@ -14,14 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-  componentName,
-  makeHlc,
-  type Action,
-  type Entity,
-  type FieldValue,
-  type Update,
-} from "@ebbjs/core";
+import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -29,7 +22,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, fixtureKind, platformEntity, rowComponents } from "../test-utils";
 import { testActions } from "./test-actions";
 
 const SERVER_URL = "http://localhost:4000";
@@ -79,13 +72,15 @@ const put = (
     opts.actionId,
     opts.gsn,
     opts.ms,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${opts.actionId}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${opts.actionId}`, opts.ms),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${opts.actionId}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${opts.actionId}`, opts.ms),
+      }),
+    ),
   );
 
 const remove = (
@@ -126,20 +121,23 @@ const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
   });
 
 /** A shim-only entity row (no action-log entry, no replica adjacency). */
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  type,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity =>
+  fixtureKind(type) === null
+    ? {
+        id,
+        type,
+        data: {
+          fields: Object.fromEntries(
+            Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
+          ),
+        },
+        exists: true,
+        created_hlc: "1",
+        updated_hlc: "1",
+        deleted_hlc: null,
+        last_gsn: 0,
+      }
+    : platformEntity(id, type, fields);
 
 /** Fold `actions` into a replica, as hydration would from the log. */
 const seedReplica = (actions: readonly Action[]) => {

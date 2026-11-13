@@ -4,9 +4,11 @@
  *
  * Seeds are schema-less plain data: rows carry explicit ids and plain
  * field values. {@link buildSeedAction} turns a {@link SeedData} into a
- * single wire `Action`, stamping every field with a uniform
- * `{ value, update_id, hlc }` envelope. Both submit paths apply the same
- * rejection-tolerance policy via {@link assertSeedAccepted}.
+ * single wire `Action`, stamping every component value with a uniform
+ * `{ value, update_id, hlc }` envelope. A platform row is one atomic
+ * component, so it seeds as one Update carrying its whole value. Both submit
+ * paths apply the same rejection-tolerance policy via
+ * {@link assertSeedAccepted}.
  *
  * The only runtime dependencies are sibling `@ebbjs/core` modules, so
  * this subpath stays usable from a browser.
@@ -14,6 +16,7 @@
 
 import { createAction } from "../action";
 import { createClock, localEvent } from "../hlc";
+import { EBB_COMPONENTS, type EbbComponentKind } from "../system";
 import type { Action, FieldValue, UpdateInput } from "../types/action";
 import type { HLCState } from "../hlc/types";
 
@@ -22,8 +25,11 @@ export type { Action };
 export interface GroupSeed {
   id: string;
   name: string;
-  /** App scope; omitted leaves the group unscoped (every app sees it). */
-  apps?: Record<string, boolean>;
+  /**
+   * The app ids the group is in scope for. Omitted leaves it unscoped (every
+   * app sees it); an empty list means no app, so the two are distinct.
+   */
+  apps?: readonly string[];
 }
 
 export interface GroupMemberSeed {
@@ -48,7 +54,7 @@ export interface RelationshipSeed {
   field: string;
 }
 
-/** One entity↔Group membership row, submitted as an `entityGroup` put. */
+/** One entity↔Group membership row, submitted as an `ebb/membership` put. */
 export interface EntityGroupSeed {
   id: string;
   entityId: string;
@@ -85,16 +91,6 @@ const stamp = (value: unknown, clock: HLCState) => ({
 });
 
 /**
- * Stamp a plain map into the wire's map envelope. A map's entries are
- * leaves, so each key merges on its own HLC.
- */
-const stampMap = (entries: Record<string, unknown>, clock: HLCState) => ({
-  map: Object.fromEntries(
-    Object.entries(entries).map(([key, value]) => [key, stamp(value, clock)]),
-  ),
-});
-
-/**
  * One component Update: `data` is the component's own value, and the
  * component is `<model>/<field>` because a seed row names its model and
  * fields directly.
@@ -107,25 +103,52 @@ const componentUpdate = (
   method: "merge" | "replace" = "replace",
 ): UpdateInput => ({ subject_id: subjectId, component: `${model}/${field}`, method, data });
 
+/**
+ * One platform row's Update. A platform component is atomic, so the seed's
+ * whole value is stamped into one leaf; there is no per-field variant.
+ */
+const systemUpdate = (
+  kind: EbbComponentKind,
+  subjectId: string,
+  value: Record<string, unknown>,
+  clock: HLCState,
+): UpdateInput => ({
+  subject_id: subjectId,
+  component: EBB_COMPONENTS[kind],
+  method: "replace",
+  data: stamp(value, clock),
+});
+
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
 
   const updates: UpdateInput[] = [];
 
   for (const group of data.groups) {
-    updates.push(componentUpdate(group.id, "group", "name", stamp(group.name, clock)));
-    if (group.apps !== undefined) {
-      updates.push(
-        componentUpdate(group.id, "group", "apps", stampMap(group.apps, clock), "merge"),
-      );
-    }
+    updates.push(
+      systemUpdate(
+        "group",
+        group.id,
+        group.apps === undefined
+          ? { name: group.name }
+          : { name: group.name, apps: [...group.apps] },
+        clock,
+      ),
+    );
   }
 
   for (const member of data.groupMembers) {
     updates.push(
-      componentUpdate(member.id, "groupMember", "actor_id", stamp(member.actorId, clock)),
-      componentUpdate(member.id, "groupMember", "group_id", stamp(member.groupId, clock)),
-      componentUpdate(member.id, "groupMember", "permissions", stamp(member.permissions, clock)),
+      systemUpdate(
+        "grant",
+        member.id,
+        {
+          actor_id: member.actorId,
+          group_id: member.groupId,
+          permissions: [...member.permissions],
+        },
+        clock,
+      ),
     );
   }
 
@@ -139,17 +162,28 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
 
   for (const rel of data.relationships ?? []) {
     updates.push(
-      componentUpdate(rel.id, "relationship", "source_id", stamp(rel.sourceId, clock)),
-      componentUpdate(rel.id, "relationship", "target_id", stamp(rel.targetId, clock)),
-      componentUpdate(rel.id, "relationship", "type", stamp(rel.type, clock)),
-      componentUpdate(rel.id, "relationship", "field", stamp(rel.field, clock)),
+      systemUpdate(
+        "link",
+        rel.id,
+        {
+          source_id: rel.sourceId,
+          target_id: rel.targetId,
+          type: rel.type,
+          field: rel.field,
+        },
+        clock,
+      ),
     );
   }
 
   for (const membership of data.entityGroups ?? []) {
     updates.push(
-      componentUpdate(membership.id, "entityGroup", "entity_id", stamp(membership.entityId, clock)),
-      componentUpdate(membership.id, "entityGroup", "group_id", stamp(membership.groupId, clock)),
+      systemUpdate(
+        "membership",
+        membership.id,
+        { entity_id: membership.entityId, group_id: membership.groupId },
+        clock,
+      ),
     );
   }
 

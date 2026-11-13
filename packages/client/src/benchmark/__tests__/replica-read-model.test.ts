@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { isFieldMap } from "@ebbjs/core";
+import { carriesComponent, isFieldMap } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -109,7 +109,7 @@ const tallyWorkspace = (rows: readonly Entity[]): Tally => {
   const groups = new Map<string, string[]>();
 
   for (const entity of rows) {
-    if (entity.type === "relationship") {
+    if (carriesComponent(entity, "link")) {
       const source = stringField(entity, "source_id");
       const target = stringField(entity, "target_id");
       const field = stringField(entity, "field");
@@ -123,7 +123,7 @@ const tallyWorkspace = (rows: readonly Entity[]): Tally => {
       }
       continue;
     }
-    if (entity.type === "entityGroup") {
+    if (carriesComponent(entity, "membership")) {
       const member = stringField(entity, "entity_id");
       const group = stringField(entity, "group_id");
       if (member !== undefined && group !== undefined) append(groups, member, group);
@@ -153,11 +153,11 @@ describe("replica read-model workspace", () => {
     const { replica, workspace } = setup(N);
     const stats = replica.stats();
 
+    // The link, membership, and group rows are all platform rows, so they share
+    // the `ebb` model; the component is what distinguishes them.
     expect(stats.byType).toEqual({
       page: N,
-      relationship: N - 1 + N * REFS_PER_PAGE,
-      entityGroup: N,
-      group: 1,
+      ebb: N - 1 + N * REFS_PER_PAGE + N + 1,
     });
     expect(stats.heldByType).toEqual(stats.byType);
     expect(stats.held).toBe(workspace.counts.heldRows);
@@ -224,7 +224,7 @@ describe("replica read-model workspace", () => {
       );
       expect(idsOf(backlinks)).toEqual(distinct(tally.backlinks.get(id)));
 
-      const groups = await membershipGroups(reader, adjacency, id, "group", groupShape);
+      const groups = await membershipGroups(reader, adjacency, id, "ebb", groupShape);
       expect(idsOf(groups)).toEqual(distinct(tally.groups.get(id)));
     }
   });

@@ -10,12 +10,13 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { componentName, makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
+import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import { emptyQuery, type Predicate, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { createReplicaExecutor, createRowsExecutor, executePlan } from "../query-execute";
+import { rowComponents } from "../test-utils";
 
 const field = (value: unknown, updateId: string): FieldValue => ({
   value,
@@ -28,13 +29,15 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   actor_id: "actor_1",
   hlc: makeHlc(1_711_036_800_000, gsn),
   gsn,
-  updates: Object.entries(fields).map(([key, value]) => ({
-    id: `u_${id}_${key}`,
-    subject_id: id,
-    component: componentName(type, key),
-    method: "replace" as const,
-    data: field(value, `u_${id}`),
-  })),
+  updates: rowComponents(type, fields).map(
+    ([component, value]): Update => ({
+      id: `u_${id}_${component}`,
+      subject_id: id,
+      component,
+      method: "replace" as const,
+      data: field(value, `u_${id}`),
+    }),
+  ),
 });
 
 const remove = (gsn: number, id: string, _type: string): Action => ({

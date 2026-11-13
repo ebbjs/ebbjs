@@ -8,10 +8,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { componentName, makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
+import { componentName, makeHlc, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
+import { EBB_COMPONENTS } from "@ebbjs/core";
+import { fixtureKind, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 
@@ -38,14 +40,20 @@ const ingest = (
   method: "merge" | "replace" = "replace",
 ): void => {
   gsn += 1;
-  const entity = row(id, title);
+  const kind = fixtureKind(type);
+  const components =
+    kind === null
+      ? Object.entries(row(id, title).data.fields).map(
+          ([field, value]) => [componentName(type, field), value] as const,
+        )
+      : [[EBB_COMPONENTS[kind], { value: {}, update_id: `u_${gsn}`, hlc: makeHlc(gsn) }] as const];
   replica.ingest(
     { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
-    Object.entries(entity.data.fields).map(([field, value]) => ({
-      id: `u_${gsn}_${field}`,
+    components.map(([component, value]) => ({
+      id: `u_${gsn}_${component}`,
       subject_id: id,
-      component: componentName(type, field),
-      method: method ?? ("replace" as const),
+      component,
+      method,
       data: value,
     })),
     gsn,
@@ -64,13 +72,15 @@ const write = (
   gsn += 1;
   replica.ingest(
     { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
-    Object.entries(fields).map(([field, value]) => ({
-      id: `u_${gsn}_${field}`,
-      subject_id: id,
-      component: componentName(type, field),
-      method: "replace" as const,
-      data: { value, update_id: `u_${gsn}`, hlc: makeHlc(gsn) } as FieldValue,
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${gsn}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: { value, update_id: `u_${gsn}`, hlc: makeHlc(gsn) } as FieldValue,
+      }),
+    ),
     gsn,
   );
 };
@@ -519,7 +529,7 @@ describe("query cache: component-granular invalidation", () => {
       ...emptyQuery("todo"),
       groups: [[{ kind: "membership", anyOf: ["group_1"] }]],
     };
-    expect(planQuery(query).readComponents).toEqual(["todo/*", "entityGroup/*"]);
+    expect(planQuery(query).readComponents).toEqual(["todo/*", "ebb/membership"]);
     const source = sourceWith(() => ["todo_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});

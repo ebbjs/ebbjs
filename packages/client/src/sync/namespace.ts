@@ -14,21 +14,26 @@
  * primitives in ./relationship.
  */
 
-import { componentName, type Entity, type Unset } from "@ebbjs/core";
+import {
+  componentName,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  type EbbComponentKind,
+  type Entity,
+  type Unset,
+} from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
 import type {
   ModelDef,
   ModelRegistry,
-  GroupFields,
-  GroupMemberFields,
   CreateShapeFields,
   RelationshipDef,
   Schema,
   ShapeFields,
 } from "@ebbjs/schema";
-import { GROUPS_ACCESSOR, groupMemberSystemEntity, groupSystemEntity } from "@ebbjs/schema";
+import { GROUPS_ACCESSOR } from "@ebbjs/schema";
 import type { AccessorKeyOf, AnyRelationshipDef, EntityNameOf, FieldsOf } from "./definition-types";
 import {
   buildReplicaQueryBuilder,
@@ -40,11 +45,13 @@ import {
   type MembershipJoin,
   type NoJoins,
   type QueryBuilder,
+  type QueryContext,
   type QueryRow,
 } from "./query-builder";
 import { emptyQuery, type Predicate, type Query } from "./query";
+import { componentRowView, type GrantFieldMap, type GroupFieldMap } from "./system-row";
 import { planQuery } from "./query-plan";
-import { createReplicaExecutor, executePlan } from "./query-execute";
+import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";
 import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
 import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
@@ -110,11 +117,11 @@ type AccessorsAt<TRels, TEnd extends RelationshipEnd, TName extends string> = {
 
 /**
  * Built-in membership accessor carried by every projected row.
- * `doc.groups` is a forward-many {@link QueryBuilder} over the
- * `group` system entity, resolved from the row's `entityGroup`
- * membership rows. There is no built-in reverse accessor in v1.
+ * `doc.groups` is a forward-many {@link QueryBuilder} over the group value,
+ * resolved from the row's `ebb/membership` rows. There is no built-in reverse
+ * accessor in v1.
  */
-export type MembershipAccessors = { readonly groups: QueryBuilder<GroupFields> };
+export type MembershipAccessors = { readonly groups: QueryBuilder<GroupFieldMap> };
 
 /**
  * Per-`as` accessor record for the entity named `TName`, derived from
@@ -366,11 +373,19 @@ export interface EntityNamespace<
  */
 export type EntityFields<D> = FieldsOf<D>;
 
-/** `client.group`: the read-only namespace over the `group` system entity. */
-export type GroupNamespace = EntityNamespace<GroupFields, MembershipAccessors>;
+/**
+ * `client.group`: the read-only namespace over the rows carrying `ebb/group`.
+ * The rows are `ebb` rows, but the namespace projects the component's value,
+ * so a group reads as `{id, name, apps}` — the shape the public API has always
+ * promised.
+ */
+export type GroupNamespace = EntityNamespace<GroupFieldMap, MembershipAccessors>;
 
-/** `client.membership`: the read-only namespace over the `groupMember` system entity. */
-export type MembershipNamespace = EntityNamespace<GroupMemberFields, MembershipAccessors>;
+/**
+ * `client.membership`: the read-only namespace over the rows carrying
+ * `ebb/grant` (today's `groupMember`), projected to its value.
+ */
+export type MembershipNamespace = EntityNamespace<GrantFieldMap, MembershipAccessors>;
 
 /** The system-entity namespaces every schema-bound client carries. */
 export type SystemNamespaces = {
@@ -581,18 +596,18 @@ function buildRowAccessors(
     );
   }
 
-  // Built-in membership accessor — reads the row's `entityGroup`
-  // rows and projects their `group` targets. Present on every row
-  // regardless of declared relationships.
-  const groupShape = registry.get("group")?.shape;
-  // Defensive: `group` is always a registered system entity.
+  // Built-in membership accessor — reads the row's `ebb/membership` rows and
+  // projects their group targets. Present on every row regardless of declared
+  // relationships.
+  const groupShape = registry.componentOf(EBB_MODEL_NAME, EBB_COMPONENTS.group)?.shape;
+  // Defensive: `ebb/group` is always registered.
   if (groupShape !== undefined) {
     out[GROUPS_ACCESSOR] = membershipGroups(
       readLocalEntity,
       adjacency,
       sourceId,
-      "group",
-      groupShape,
+      EBB_MODEL_NAME,
+      groupShape as TObject<Record<string, TSchema>>,
       migrations,
     );
   }
@@ -608,13 +623,25 @@ function buildRowAccessors(
 const queryForFilter = <TFields extends Record<string, TSchema>>(
   entityName: string,
   filter: QueryFilter<TFields>,
+  view?: EbbComponentKind,
 ): Query => {
   const predicates: Predicate[] = [];
   for (const [field, value] of Object.entries(filter)) {
     predicates.push({ kind: "field", field, value });
   }
-  return { ...emptyQuery(entityName), groups: predicates.length === 0 ? [] : [predicates] };
+  return {
+    ...emptyQuery(entityName, view === undefined ? undefined : [EBB_COMPONENTS[view]]),
+    groups: predicates.length === 0 ? [] : [predicates],
+  };
 };
+
+/**
+ * The platform row a value namespace reads: the row itself for an ordinary
+ * namespace, or the component's value view — and nothing at all when the row
+ * does not carry the component.
+ */
+const visibleRow = (row: Entity, view?: EbbComponentKind): Entity | null =>
+  view === undefined ? row : componentRowView(row, view);
 
 /**
  * Project a materialized entity into the subscribe snapshot shape:
@@ -648,11 +675,16 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   shape: TObject<TWire>,
   cb: (snapshot: EntitySnapshotOf<TWire>) => void,
   migrations?: ComponentMigrations,
+  view?: EbbComponentKind,
 ): (() => void) => {
   if (watcher === null) return () => {};
   const fire = (row: Entity | undefined): void => {
     if (row === undefined || row.type !== entityName) return;
-    cb(toEntitySnapshot(row, shape, migrations));
+    const visible = visibleRow(row, view);
+    if (visible === null) return;
+    // SAFETY: the view is the same row with the component's value as its
+    // fields, which is the shape `shape` projects.
+    cb(toEntitySnapshot(visible, shape, migrations));
   };
   const unsubscribeEntity = watcher.entity(id, fire);
   // A relationship / membership write leaves the row's own fields untouched
@@ -687,6 +719,10 @@ export interface ReadCapability {
  * source); the builder reads it at materialization time to drive
  * the per-field lookup. `read` supplies the registry the row's
  * relationship accessors resolve against.
+ *
+ * `view` names the platform component a *value* namespace reads: the rows
+ * are `ebb` rows and `shape` is the component's value shape, so every read
+ * filters on the component and projects its value (see `system-row.ts`).
  */
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -698,6 +734,7 @@ export function createEntityNamespace<
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
+  view?: EbbComponentKind,
 ): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = read.registry;
   const watcher =
@@ -707,8 +744,11 @@ export function createEntityNamespace<
   const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {
     // Wrong-type reads (different `entity.type`) resolve to `null`
     // alongside unknown ids. Callers don't distinguish — a missing
-    // row and a wrong-type row are both "no row here".
+    // row and a wrong-type row are both "no row here". A value namespace
+    // adds "does not carry my component" to that list.
     if (entity.type !== entityName) return null;
+    const row = visibleRow(entity, view);
+    if (row === null) return null;
     const accessors = buildRowAccessors(
       entityName,
       entity.id,
@@ -725,6 +765,7 @@ export function createEntityNamespace<
         shape,
         cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<TFields>>) => void,
         read.migrations,
+        view,
       );
     const subscribeAccessors = (cb: () => void): (() => void) =>
       watcher === null ? () => {} : watcher.accessors(entity.id, cb);
@@ -732,7 +773,7 @@ export function createEntityNamespace<
     // same-named field; the entity id spreads after them so it wins
     // over both.
     return {
-      ...projectRow(entity, shape, read.migrations),
+      ...projectRow(row, shape, read.migrations),
       ...accessors,
       id: entity.id,
       subscribe,
@@ -750,7 +791,7 @@ export function createEntityNamespace<
           `client.${entityName}.query(): no replica binding — build the namespace through createClient (or pass a ReplicaAccess)`,
         );
       }
-      return buildReplicaQueryBuilder<ShapeFields<TFields>, TJoins>(entityName, shape, {
+      const binding = {
         entityName,
         registry,
         replica: replica.replica,
@@ -758,7 +799,17 @@ export function createEntityNamespace<
         hydrated: () => replica.hydrated(),
         hydrate: () => replica.hydrate(),
         migrations: read.migrations,
-      }) as unknown as QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
+      };
+      // A value namespace answers `has`/`hasNot` about its one component, not
+      // about a field of the shared `ebb` model.
+      const context: QueryContext =
+        view === undefined ? binding : { ...binding, componentFor: () => EBB_COMPONENTS[view] };
+      return buildReplicaQueryBuilder<ShapeFields<TFields>, TJoins>(
+        entityName,
+        shape,
+        context,
+        view,
+      ) as unknown as QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
     },
     async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
       // The accessors read the replica's adjacency, so bring it up to
@@ -795,7 +846,7 @@ export function createEntityNamespace<
           // no-op
         };
       }
-      const query = queryForFilter(entityName, filter);
+      const query = queryForFilter(entityName, filter, view);
       // The cached result is the matching id list, so a field edit on a row
       // that already matches is not a collection change (the pinned contract)
       // while a join, delete, or insert is.
@@ -803,7 +854,10 @@ export function createEntityNamespace<
         ready: () => replica.hydrate(),
         isReady: () => replica.hydrated(),
         execute: () => {
-          const executor = createReplicaExecutor(replica.replica);
+          const executor =
+            view === undefined
+              ? createReplicaExecutor(replica.replica)
+              : createComponentViewExecutor(replica.replica, view);
           return executePlan(planQuery(query), executor, (entity, field) =>
             projectedFieldValue(entity, field, shape, read.migrations),
           )
@@ -820,11 +874,13 @@ export function createEntityNamespace<
           if (ids === undefined) return;
           const entities = ids.flatMap((id) => {
             const row = replica.replica.get(id);
-            return row === undefined
+            if (row === undefined) return [];
+            const visible = visibleRow(row, view);
+            return visible === null
               ? []
               : [
                   toEntitySnapshot(
-                    row,
+                    visible,
                     shape,
                     read.migrations,
                   ) as unknown as EntitySnapshot<TFields>,
@@ -840,33 +896,54 @@ export function createEntityNamespace<
   };
 }
 
-/** `client.group`: the read-only namespace over the `group` system entity. */
+/**
+ * The value shape of one platform component, read off the registry: a
+ * component declares one object shape, and that is what the value namespace
+ * projects.
+ */
+function componentValueShape<TFields extends Record<string, TSchema>>(
+  read: ReadCapability,
+  component: string,
+): TObject<ShapeFields<TFields>> {
+  const shape = read.registry.componentOf(EBB_MODEL_NAME, component)?.shape;
+  if (shape === undefined) {
+    throw new Error(
+      `the platform model "${EBB_MODEL_NAME}" does not declare "${component}"; ` +
+        `the client's registry is seeded by the schema, so this is a construction bug`,
+    );
+  }
+  return shape as unknown as TObject<ShapeFields<TFields>>;
+}
+
+/** `client.group`: the read-only namespace over rows carrying `ebb/group`. */
 function createGroupNamespace(
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
 ): GroupNamespace {
-  return createEntityNamespace<GroupFields, MembershipAccessors>(
-    "group",
-    groupSystemEntity.shape,
+  return createEntityNamespace<GroupFieldMap, MembershipAccessors>(
+    EBB_MODEL_NAME,
+    componentValueShape<GroupFieldMap>(read, EBB_COMPONENTS.group),
     storage,
     read,
     replica,
+    "group",
   );
 }
 
-/** `client.membership`: the read-only namespace over the `groupMember` system entity. */
+/** `client.membership`: the read-only namespace over rows carrying `ebb/grant`. */
 function createMembershipNamespace(
   storage: StorageAdapter,
   read: ReadCapability,
   replica?: ReplicaAccess,
 ): MembershipNamespace {
-  return createEntityNamespace<GroupMemberFields, MembershipAccessors>(
-    "groupMember",
-    groupMemberSystemEntity.shape,
+  return createEntityNamespace<GrantFieldMap, MembershipAccessors>(
+    EBB_MODEL_NAME,
+    componentValueShape<GrantFieldMap>(read, EBB_COMPONENTS.grant),
     storage,
     read,
     replica,
+    "grant",
   );
 }
 

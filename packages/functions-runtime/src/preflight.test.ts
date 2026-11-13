@@ -22,7 +22,7 @@ describe("last_membership", () => {
 
     const error = (() => {
       try {
-        ctx.delete("entityGroup", entityGroupId(created.id, "g_1"));
+        ctx.delete("ebb", entityGroupId(created.id, "g_1"));
       } catch (caught) {
         return caught;
       }
@@ -39,10 +39,8 @@ describe("last_membership", () => {
     const ctx = testContext(fakeHost());
     const created = ctx.create("issue", issue(), { id: "e_shared", groups: ["g_1", "g_2"] });
 
-    expect(() => ctx.delete("entityGroup", entityGroupId(created.id, "g_1"))).not.toThrow();
-    expect(() => ctx.delete("entityGroup", entityGroupId(created.id, "g_2"))).toThrow(
-      ActionRejectedError,
-    );
+    expect(() => ctx.delete("ebb", entityGroupId(created.id, "g_1"))).not.toThrow();
+    expect(() => ctx.delete("ebb", entityGroupId(created.id, "g_2"))).toThrow(ActionRejectedError);
   });
 
   it("defers when the entity's groups are not visible to the invocation", () => {
@@ -59,57 +57,63 @@ describe("last_membership", () => {
 describe("last_group_member", () => {
   it("refuses a member delete that would leave a new group with no capable member", () => {
     const ctx = testContext(fakeHost());
-    ctx.create("group", { name: "Team" }, { id: "g_team", groups: ["g_team"] });
+    ctx.create("ebb", { group: { name: "Team" } }, { id: "g_team", groups: ["g_team"] });
     ctx.create(
-      "groupMember",
-      { group_id: "g_team", actor_id: "a_admin", permissions: [] },
+      "ebb",
+      { grant: { group_id: "g_team", actor_id: "a_admin", permissions: [] } },
       { id: "e_member", groups: ["g_team"] },
     );
 
-    expect(() => ctx.delete("groupMember", "e_member")).toThrow(ActionRejectedError);
+    expect(() => ctx.delete("ebb", "e_member")).toThrow(ActionRejectedError);
   });
 
   it("refuses a permission-only patch that empties the group's last capable member", () => {
     const ctx = testContext(fakeHost());
-    ctx.create("group", { name: "Team" }, { id: "g_team", groups: ["g_team"] });
+    ctx.create("ebb", { group: { name: "Team" } }, { id: "g_team", groups: ["g_team"] });
     ctx.create(
-      "groupMember",
-      { group_id: "g_team", actor_id: "a_admin", permissions: ["issue.*"] },
+      "ebb",
+      { grant: { group_id: "g_team", actor_id: "a_admin", permissions: ["issue.*"] } },
       { id: "e_member", groups: ["g_team"] },
     );
 
-    expect(() => ctx.update("groupMember", "e_member", { permissions: [] })).toThrow(
-      ActionRejectedError,
-    );
+    expect(() =>
+      ctx.update("ebb", "e_member", {
+        grant: { group_id: "g_team", actor_id: "a_admin", permissions: [] },
+      }),
+    ).toThrow(ActionRejectedError);
   });
 
   it("allows emptying a member while another capable member remains", () => {
     const ctx = testContext(fakeHost());
-    ctx.create("group", { name: "Team" }, { id: "g_team", groups: ["g_team"] });
+    ctx.create("ebb", { group: { name: "Team" } }, { id: "g_team", groups: ["g_team"] });
     ctx.create(
-      "groupMember",
-      { group_id: "g_team", actor_id: "a_admin", permissions: ["issue.*"] },
+      "ebb",
+      { grant: { group_id: "g_team", actor_id: "a_admin", permissions: ["issue.*"] } },
       { id: "e_admin", groups: ["g_team"] },
     );
     ctx.create(
-      "groupMember",
-      { group_id: "g_team", actor_id: "a_guest", permissions: ["issue.*"] },
+      "ebb",
+      { grant: { group_id: "g_team", actor_id: "a_guest", permissions: ["issue.*"] } },
       { id: "e_guest", groups: ["g_team"] },
     );
 
-    expect(() => ctx.update("groupMember", "e_guest", { permissions: [] })).not.toThrow();
+    expect(() =>
+      ctx.update("ebb", "e_guest", {
+        grant: { group_id: "g_team", actor_id: "a_guest", permissions: [] },
+      }),
+    ).not.toThrow();
   });
 
   it("defers when the group's roster is not visible to the invocation", () => {
     const ctx = testContext(fakeHost());
     // The group predates the invocation, so its members are unknown.
     ctx.create(
-      "groupMember",
-      { group_id: "g_stored", actor_id: "a_admin", permissions: [] },
+      "ebb",
+      { grant: { group_id: "g_stored", actor_id: "a_admin", permissions: [] } },
       { id: "e_member", groups: ["g_stored"] },
     );
 
-    expect(() => ctx.delete("groupMember", "e_member")).not.toThrow();
+    expect(() => ctx.delete("ebb", "e_member")).not.toThrow();
   });
 });
 
@@ -130,7 +134,7 @@ describe("missing_ownership", () => {
   it("refuses a membership write that resolves to no owning group", () => {
     const error = (() => {
       try {
-        assertMembershipScope(view, "entityGroup", "eg_unknown", [unowned]);
+        assertMembershipScope(view, "ebb", "eg_unknown", [unowned]);
       } catch (caught) {
         return caught;
       }
@@ -146,22 +150,15 @@ describe("missing_ownership", () => {
   it("passes a membership row that names its group", () => {
     const owned: Update[] = [
       {
-        id: "u_1_entity",
+        id: "u_1",
         subject_id: "eg_1",
-        component: "entityGroup/entity_id",
+        component: "ebb/membership",
         method: "replace",
-        data: { value: "e_1", update_id: "u_1" },
-      },
-      {
-        id: "u_1_group",
-        subject_id: "eg_1",
-        component: "entityGroup/group_id",
-        method: "replace",
-        data: { value: "g_1", update_id: "u_1" },
+        data: { value: { entity_id: "e_1", group_id: "g_1" }, update_id: "u_1" },
       },
     ];
 
-    expect(() => assertMembershipScope(view, "entityGroup", "eg_1", owned)).not.toThrow();
+    expect(() => assertMembershipScope(view, "ebb", "eg_1", owned)).not.toThrow();
   });
 
   it("passes a batch with no membership writes", () => {

@@ -54,7 +54,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { groupSystemEntity } from "@ebbjs/schema";
+import { ebbSystemEntity } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -1066,7 +1066,7 @@ describe("integration: defineSchema", () => {
     });
     const todo_ownedBy = defineRelationship({
       source: todo,
-      target: groupSystemEntity,
+      target: ebbSystemEntity,
       as: "ownedBy",
     });
     const schema = defineSchema({

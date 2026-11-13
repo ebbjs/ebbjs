@@ -8,10 +8,8 @@
  * and the reader treats it as "everything may have changed".
  */
 
-import type { Entity } from "@ebbjs/core";
+import { carriesComponent, systemValueString, type Entity } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
-
-import { entityGroupSystemEntity, relationshipSystemEntity } from "@ebbjs/schema";
 
 /** One derived reader's view of the replica's change stream. */
 export interface ReplicaSignal {
@@ -45,18 +43,21 @@ export interface EntityWatcher {
   accessors(id: string, listener: (entity: Entity | undefined) => void): () => void;
 }
 
-/** The field a relationship / membership row names as its accessor subject. */
-const accessorSubjectField = (type: string): string | null => {
-  if (type === relationshipSystemEntity.name) return "source_id";
-  if (type === entityGroupSystemEntity.name) return "entity_id";
+/**
+ * The id an accessor change belongs to: a link row names its source, a
+ * membership row names its member entity. The row's model no longer says
+ * which — every platform row is an `ebb` row — so the component does.
+ */
+const accessorSubjectId = (entity: Entity): string | null => {
+  for (const [kind, field] of [
+    ["link", "source_id"],
+    ["membership", "entity_id"],
+  ] as const) {
+    if (!carriesComponent(entity, kind)) continue;
+    const id = systemValueString(entity, kind, field);
+    return id !== null && id.length > 0 ? id : null;
+  }
   return null;
-};
-
-/** Read a leaf string field; envelopes are not part of the accessor subject. */
-const stringField = (entity: Entity, field: string): string | null => {
-  const entry = entity.data?.fields?.[field];
-  if (entry === undefined || !("value" in entry)) return null;
-  return typeof entry.value === "string" && entry.value.length > 0 ? entry.value : null;
 };
 
 const addListener = <T>(map: Map<string, Set<T>>, id: string, listener: T): void => {
@@ -88,9 +89,7 @@ export const createEntityWatcher = (replica: Replica, signal: ReplicaSignal): En
       touched.add(change.id);
       const row = replica.get(change.id);
       if (row === undefined) continue;
-      const field = accessorSubjectField(row.type);
-      if (field === null) continue;
-      const subject = stringField(row, field);
+      const subject = accessorSubjectId(row);
       if (subject === null) continue;
       const subjectRow = replica.get(subject);
       const accessorBucket = Array.from(accessorListeners.get(subject) ?? []);

@@ -54,10 +54,15 @@ import type { IndexRows } from "../internal/reverse-index";
  * so a database below 12 is discarded rather than reading a conflict without
  * its holds. Version 13 adds `componentVersions` to the replica cursor (issue
  * #804): the persisted record gained the version each component was
- * materialized at, so a database below 13 is discarded. Bump this when adding
- * or changing object stores, or when a persisted row shape changes.
+ * materialized at. Version 14 moves the four system types onto `ebb/*`
+ * components (issue #805): the persisted adjacency key's middle segment is now
+ * the component name (`ebb/membership` rather than `entityGroup`), and a
+ * stored system row's fields are one atomic component value. Neither shape can
+ * be read out of the previous one, so a database below either version is
+ * discarded at open. Bump this when adding or changing object stores, or when
+ * a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 13;
+export const EBB_SCHEMA_VERSION = 14;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -79,6 +84,15 @@ const COMPONENT_HOLD_RESET_VERSION = 12;
 
 /** The version at which the replica record gained component version stamps. */
 const COMPONENT_VERSION_RESET_VERSION = 13;
+
+/**
+ * The version at which the adjacency index's key segments became component
+ * names and a stored system row became one atomic component value. A database
+ * below it is reset at open: every persisted key and row for the four system
+ * types is written in the pre-#805 layout, and there is no way to infer the
+ * new entries from the old ones.
+ */
+const SYSTEM_COMPONENT_RESET_VERSION = 14;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -141,10 +155,10 @@ export interface EbbDBSchema extends DBSchema {
   };
   /**
    * Shared adjacency index: one record per composite key, mapping each
-   * live row id to its yielded id. Serves relationship edges in both
+   * live row id to its yielded id. Serves `ebb/link` edges in both
    * directions — keyed by `(field, type, target_id)` for the reverse
    * read and `(field, type, source_id)` for the forward read — and
-   * `entityGroup` membership keyed by the synthetic `groups` accessor
+   * `ebb/membership` rows keyed by the synthetic `groups` accessor
    * (by group or by member entity). Keying on the row (not the source)
    * keeps a duplicate-natural-key row from erasing a source its sibling
    * still supplies. The name and the schema version are unchanged: the
@@ -229,8 +243,11 @@ export interface EbbDBSchema extends DBSchema {
  * cell format changed incompatibly, so every store is deleted before the
  * current stores are created and the action-position counter is opened at
  * zero. v11 resets for the same reason (stored rows lack the denormalized
- * component names), and v12 resets because a persisted conflict gained the
- * positions it holds. A database below any of those versions is discarded.
+ * component names), v12 resets because a persisted conflict gained the
+ * positions it holds, v13 because a replica record gained component version
+ * stamps, and v14 because the four system types moved onto `ebb/*` components,
+ * which changes both a stored row's fields and the adjacency key's segments. A
+ * database below any of those versions is discarded.
  * Only a genuinely fresh database (`oldVersion === 0`) skips the reset.
  */
 export const createEbbStores = (
@@ -240,15 +257,17 @@ export const createEbbStores = (
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
   // Incompatible persisted shapes are discarded instead of migrated: the text
-  // cell format (v9), the denormalized component names (v11), and the conflict
-  // component holds (v12). Each gate is declared explicitly, so a later version
-  // bump must decide its own migration rather than inheriting one of these
-  // resets.
+  // cell format (v9), the denormalized component names (v11), the conflict
+  // component holds (v12), the replica record's component versions (v13), and
+  // the four system types' `ebb/*` rows and adjacency keys (v14). Each gate is
+  // declared explicitly, so a later version bump must decide its own migration
+  // rather than inheriting one of these resets.
   const resetVersions = [
     TEXT_CELL_FORMAT_RESET_VERSION,
     COMPONENT_INDEX_RESET_VERSION,
     COMPONENT_HOLD_RESET_VERSION,
     COMPONENT_VERSION_RESET_VERSION,
+    SYSTEM_COMPONENT_RESET_VERSION,
   ];
   const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {

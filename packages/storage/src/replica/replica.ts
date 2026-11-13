@@ -2,6 +2,7 @@ import {
   componentField,
   componentModel,
   componentName,
+  EBB_MODEL_NAME,
   type Action,
   type Entity,
   type FieldValue,
@@ -26,10 +27,10 @@ import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica
 import {
   applyIndexDelta,
   forwardIndexDelta,
-  forwardIndexEntryFor,
+  forwardIndexEntriesFor,
   forwardIndexKey,
   forwardMembershipIndexKey,
-  indexEntryFor,
+  indexEntriesFor,
   liveMembershipLinks,
   liveRelationshipLinks,
   liveSourceIds,
@@ -387,7 +388,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (known === undefined) return;
     for (const component of known) {
       const model = componentModel(component);
-      if (model !== type && model !== "ebb") known.delete(component);
+      if (model !== type && model !== EBB_MODEL_NAME) known.delete(component);
     }
     if (known.size === 0) dormant.delete(id);
   };
@@ -760,7 +761,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       for (const component of notResident[entity.id] ?? []) {
         const model = componentModel(component);
-        if (!holds(component) && (model === entity.type || model === "ebb")) {
+        if (!holds(component) && (model === entity.type || model === EBB_MODEL_NAME)) {
           offloaded.add(component);
         }
       }
@@ -796,10 +797,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       ];
       if (stamps.size > 0) componentVersions.set(row.id, stamps);
       presence.push({ id: row.id, components });
-      const reverseEntry = indexEntryFor(row);
-      if (reverseEntry !== null) add(reverse, reverseEntry);
-      const forwardEntry = forwardIndexEntryFor(row);
-      if (forwardEntry !== null) add(forward, forwardEntry);
+      for (const entry of indexEntriesFor(row)) add(reverse, entry);
+      for (const entry of forwardIndexEntriesFor(row)) add(forward, entry);
     }
     // An all-on-demand row has no `entities` entry; its stamps come back here.
     for (const [id, stamps] of Object.entries(record.componentVersions)) {

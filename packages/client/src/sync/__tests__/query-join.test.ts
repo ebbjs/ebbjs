@@ -10,19 +10,19 @@
  */
 
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { componentName, makeHlc, type Action, type Update } from "@ebbjs/core";
+import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import type { GroupFields } from "@ebbjs/schema";
+import type { GroupFieldMap } from "../system-row";
 import { createClient } from "../client";
 import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 import type { ProjectedRow, QueryRow } from "../query-builder";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, rowComponents } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
 const user = defineModel("user", { name: e.string() });
@@ -86,7 +86,7 @@ type IssueRow = QueryRow<EntityFields<typeof issue>>;
 type UserRow = ProjectedRow<EntityFields<typeof user>>;
 type LabelRow = ProjectedRow<EntityFields<typeof label>>;
 type PageRow = ProjectedRow<EntityFields<typeof page>>;
-type GroupRow = ProjectedRow<GroupFields>;
+type GroupRow = ProjectedRow<GroupFieldMap>;
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 type JoinedIssue = Omit<IssueRow, "assignee"> & { readonly assignee: UserRow | null };
@@ -113,13 +113,15 @@ const action = (gsn: number, updates: Update[]): Action => ({
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
   action(
     gsn,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${gsn}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${gsn}`),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${gsn}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${gsn}`),
+      }),
+    ),
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
@@ -313,10 +315,10 @@ describe("with(...) — planning and adjacency", () => {
     const plan = planQuery(query);
     expect(rowReadComponentsFor(query)).toEqual([
       "issue/*",
-      "relationship/*",
+      "ebb/link",
       "user/*",
       "page/*",
-      "entityGroup/*",
+      "ebb/membership",
     ]);
     expect(plan.joins).toEqual(query.joins);
   });

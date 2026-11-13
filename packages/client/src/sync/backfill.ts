@@ -4,9 +4,9 @@
  *
  * Delivery is deltas only: an entity moved into a group has no field
  * writes in that group's history, so a member that receives the scoped
- * `entityGroup` row but not the entity ends up with a membership row it
+ * `ebb/membership` row but not the entity ends up with a membership row it
  * cannot materialize. The client's visible set is the entity ids its
- * `entityGroup` rows name, so any referenced entity it lacks is fetched
+ * `ebb/membership` rows name, so any referenced entity it lacks is fetched
  * from the server.
  *
  * The store is log-derived — entities materialize by replaying
@@ -24,6 +24,7 @@
 
 import {
   componentName,
+  EBB_COMPONENTS,
   generateId,
   isFieldMap,
   type Action,
@@ -143,7 +144,7 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
 });
 
 /**
- * Entity ids referenced by a live `entityGroup` row whose base the local
+ * Entity ids referenced by a live `ebb/membership` row whose base the local
  * cache does not hold, ascending. A row materialized from a later component
  * write has `exists: false` because its create has not been seen, so it is a
  * candidate too. A tombstone counts as held: the client knows the entity and
@@ -152,7 +153,14 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
 export async function collectBackfillCandidates(
   storage: StorageAdapter,
 ): Promise<readonly string[]> {
-  const rows = await storage.entities.query("entityGroup");
+  // `queryByComponent` answers ids, so the rows a membership read needs are one
+  // by-id read each — proportional to the membership count, not to the model.
+  const membershipIds = await storage.entities.queryByComponent(EBB_COMPONENTS.membership);
+  const rows: Entity[] = [];
+  for (const id of membershipIds) {
+    const row = await storage.entities.get(id);
+    if (row !== null) rows.push(row);
+  }
   const referenced = new Set(liveMemberships(rows).map((membership) => membership.entityId));
 
   const missing: string[] = [];

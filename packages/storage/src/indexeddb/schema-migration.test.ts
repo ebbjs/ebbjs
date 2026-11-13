@@ -20,6 +20,7 @@ const LEGACY_SCHEMA_VERSION = 7;
 const PRE_RESET_SCHEMA_VERSION = 8;
 const PRE_COMPONENT_INDEX_SCHEMA_VERSION = 10;
 const PRE_COMPONENT_HOLD_SCHEMA_VERSION = 11;
+const PRE_SYSTEM_COMPONENT_SCHEMA_VERSION = 12;
 
 interface LegacyStoredAction extends Action {
   subject_ids: readonly string[];
@@ -210,6 +211,36 @@ describe("IndexedDB v11 → v12 component-hold reset", () => {
     });
 
     expect(await current.get("outbox", action.id)).toBeUndefined();
+  });
+});
+
+describe("IndexedDB v12 → v13 system-component reset", () => {
+  it("discards a v12 database rather than reading entityGroup adjacency keys", async () => {
+    const dbName = legacyDbName();
+    const action = buildPutAction();
+
+    const v12 = await openDB<LegacyDBSchema>(dbName, PRE_SYSTEM_COMPONENT_SCHEMA_VERSION, {
+      upgrade: createLegacyStores,
+    });
+    await v12.put("relationships", {
+      key: "groups\u0000entityGroup\u0000group_1",
+      rows: { eg_1: "todo_1" },
+    });
+    await v12.put("entities", {
+      id: "eg_1",
+      type: "entityGroup",
+      data: { fields: { group_id: { value: "group_1", update_id: "u_1", hlc: action.hlc } } },
+    });
+    expect(await v12.count("relationships")).toBe(1);
+    v12.close();
+
+    const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
+      upgrade: createEbbStores,
+    });
+
+    await expectEmptyCurrentSchema(upgraded);
+    expect(await upgraded.count("relationships")).toBe(0);
+    expect(await upgraded.count("entities")).toBe(0);
   });
 });
 

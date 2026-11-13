@@ -21,16 +21,16 @@ export interface RelationshipSourceQuery {
   readonly sourceId: string;
 }
 
-/** One live relationship edge read from the source side. */
+/** One live `ebb/link` edge read from the source side. */
 export interface RelationshipLink {
-  /** The `relationship` row id — the `subject_id` an unlink names. */
+  /** The link row id — the `subject_id` an unlink names. */
   readonly relationshipId: string;
   readonly targetId: string;
 }
 
-/** One live membership row read from the member entity side. */
+/** One live `ebb/membership` row read from the member entity side. */
 export interface MembershipLink {
-  /** The `entityGroup` row id — the `subject_id` a delete names. */
+  /** The membership row id — the `subject_id` a delete names. */
   readonly membershipId: string;
   readonly groupId: string;
 }
@@ -63,16 +63,16 @@ export interface MembershipLink {
  *   of the component's model first
  * - `queryByRelationship({ as, type, targetId })` — returns the distinct
  *   source ids indexed under that triple in ascending order,
- *   materializing dirty relationship rows first
+ *   materializing dirty `ebb` rows first
  * - `queryByRelationshipSource({ as, type, sourceId })` — returns the
  *   live edges out of that source, ascending by target id,
- *   materializing dirty relationship rows first
+ *   materializing dirty `ebb` rows first
  * - `queryByMembership(groupId)` — returns the distinct live member
- *   entity ids whose `entityGroup` row points at the group, ascending,
- *   materializing dirty `entityGroup` rows first
+ *   entity ids whose `ebb/membership` row points at the group, ascending,
+ *   materializing dirty `ebb` rows first
  * - `queryByMembershipEntity(entityId)` — returns the live membership
  *   rows of that member entity, ascending by group id, materializing
- *   dirty `entityGroup` rows first
+ *   dirty `ebb` rows first
  * - `reset()` — clears all cached entities
  */
 export interface EntityStore {
@@ -85,9 +85,9 @@ export interface EntityStore {
    * read rather than a row filter; a tombstoned row's components are not
    * existence.
    *
-   * The dirty rows materialized first are the component prefix's model. That is
-   * the current `<model>/<field>` addressing rule (#797); a component namespace
-   * that is not the row's model (#805's `ebb/*` components on ordinary rows)
+   * The dirty rows materialized first are the component prefix's model. For a
+   * platform component that is `ebb`, which is the row's committed model
+   * (#805); an overlay component on a user row (#820) is the case that still
    * has to decode the model differently and revisit this step.
    */
   queryByComponent(component: string): Promise<readonly string[]>;

@@ -15,7 +15,13 @@ import { componentName, makeHlc, type Action, type Entity, type Update } from "@
 
 import { createClient } from "../client";
 import { PermissionError } from "../permission";
-import { makeFetchMock, type FetchCall } from "../test-utils";
+import {
+  fixtureKind,
+  makeFetchMock,
+  platformEntity,
+  platformUpdate,
+  type FetchCall,
+} from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -25,20 +31,23 @@ const mkEntity = (
   type: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
-): Entity => ({
-  id,
-  type,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: deletedHlc,
-  last_gsn: 0,
-});
+): Entity =>
+  fixtureKind(type) === null
+    ? {
+        id,
+        type,
+        data: {
+          fields: Object.fromEntries(
+            Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
+          ),
+        },
+        exists: true,
+        created_hlc: "1",
+        updated_hlc: "1",
+        deleted_hlc: deletedHlc,
+        last_gsn: 0,
+      }
+    : platformEntity(id, type, fields, deletedHlc);
 
 const field = (value: unknown): { value: unknown; update_id: string } => ({
   value,
@@ -60,15 +69,17 @@ const update = (
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
 ): Update[] =>
-  method === "delete"
-    ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
-    : Object.entries(fields(values)).map(([name, value]) => ({
-        id: `u_${subjectId}_${method}_${name}`,
-        subject_id: subjectId,
-        component: componentName(subjectType, name),
-        method: method === "put" ? "replace" : "merge",
-        data: value,
-      }));
+  fixtureKind(subjectType) !== null
+    ? platformUpdate(subjectId, subjectType, method, values)
+    : method === "delete"
+      ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
+      : Object.entries(fields(values)).map(([name, value]) => ({
+          id: `u_${subjectId}_${method}_${name}`,
+          subject_id: subjectId,
+          component: componentName(subjectType, name),
+          method: method === "put" ? "replace" : "merge",
+          data: value,
+        }));
 
 /** One Action from any number of component-Update groups. */
 const action = (...groups: readonly (readonly Update[])[]): Action => ({
@@ -417,7 +428,8 @@ describe("collectPermissionViolations — relationship edges", () => {
   });
 
   it("passes a put that restates the row's own source", async () => {
-    const { client } = await mkClient([["g_src", ["todo.update"]]]);
+    // The row already exists locally, so the write is an update of it.
+    const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
       mkEntity("rel_1", "relationship", {
@@ -437,7 +449,7 @@ describe("collectPermissionViolations — relationship edges", () => {
   });
 
   it("passes a patch that restates the row's own source", async () => {
-    const { client } = await mkClient([["g_src", ["relationship.update"]]]);
+    const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
     await client.storage.entities.set(
       mkEntity("rel_1", "relationship", {
         source_id: "todo_1",
@@ -472,7 +484,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     // declared source other than the row's own, so no permission can
     // re-point the edge here either. Moving an edge is delete + put.
     const { client, calls } = await mkClient([
-      ["g_grant", ["relationship.update"]],
+      ["g_grant", ["ebb/link.update"]],
       ["g_plain", []],
     ]);
     await client.storage.entities.set(
@@ -499,7 +511,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "relationship",
+        model: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -514,7 +526,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     // The server's by-id row is gone, so it sees a new edge and authorizes
     // the put by the declared source; a tombstoned local row is not a
     // committed source either.
-    const { client } = await mkClient([["g_new", ["todo.update"]]]);
+    const { client } = await mkClient([["g_new", ["todo.update", "ebb/link.update"]]]);
     await client.storage.entities.set(
       mkEntity(
         "rel_1",
@@ -548,8 +560,10 @@ describe("collectPermissionViolations — relationship edges", () => {
   // the new one, so delete + put is the move that re-points the edge.
   const mkMovingEdgeClient = async () => {
     const { client, calls } = await mkClient([
-      ["g_old", ["relationship.delete"]],
-      ["g_new", ["todo.update"]],
+      ["g_old", ["ebb/link.delete"]],
+      // A re-put of the tombstoned row is an update of it, and creating a
+      // fresh edge is a write to its source; the tests grant both.
+      ["g_new", ["todo.update", "ebb/link.update"]],
     ]);
     await client.storage.entities.set(
       mkEntity("rel_1", "relationship", {
@@ -605,7 +619,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "relationship",
+        model: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -632,7 +646,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "relationship",
+        model: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -672,7 +686,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       },
       {
         kind: "source-mismatch",
-        model: "relationship",
+        model: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -683,7 +697,7 @@ describe("collectPermissionViolations — relationship edges", () => {
 
   it("resolves a delete's source from the local relationship row", async () => {
     const { client } = await mkClient([
-      ["g_1", ["relationship.delete"]],
+      ["g_1", ["ebb/link.delete"]],
       ["g_2", []],
     ]);
     await client.storage.entities.set(
@@ -701,6 +715,75 @@ describe("collectPermissionViolations — relationship edges", () => {
     await expect(
       client.write([action(update("relationship", "rel_1", "delete"))]),
     ).resolves.toEqual({ rejected: [] });
+  });
+});
+
+describe("collectPermissionViolations — immutable platform keys", () => {
+  it("refuses an ebb/grant write that re-points its group", async () => {
+    const { client, calls } = await mkClient([
+      ["g_1", ["ebb/grant.*"]],
+      ["g_2", ["ebb/grant.*"]],
+    ]);
+    await client.storage.entities.set(
+      mkEntity("gm_1", "groupMember", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
+    );
+
+    const error = await client
+      .write([
+        action(
+          update("groupMember", "gm_1", "patch", {
+            actor_id: "actor_2",
+            group_id: "g_2",
+            permissions: [],
+          }),
+        ),
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "key-mismatch",
+        model: "ebb/grant",
+        subjectId: "gm_1",
+        field: "group_id",
+        declaredValue: "g_2",
+        committedValue: "g_1",
+        groupIds: ["g_1"],
+      },
+    ]);
+    expect(actionRequests(calls)).toHaveLength(0);
+  });
+
+  it("refuses an ebb/membership write that re-points its pair", async () => {
+    const { client, calls } = await mkClient([
+      ["g_1", ["todo.*"]],
+      ["g_2", ["todo.*"]],
+    ]);
+    await client.storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
+    await client.storage.entities.set(
+      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+    );
+
+    const error = await client
+      .write([
+        action(update("entityGroup", "eg_1", "patch", { entity_id: "todo_1", group_id: "g_2" })),
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "key-mismatch",
+        model: "ebb/membership",
+        subjectId: "eg_1",
+        field: "group_id",
+        declaredValue: "g_2",
+        committedValue: "g_1",
+        groupIds: ["g_1"],
+      },
+    ]);
+    expect(actionRequests(calls)).toHaveLength(0);
   });
 });
 
@@ -853,7 +936,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
       update("groupMember", "gm_1", "put", {
         actor_id: ACTOR_ID,
         group_id: "g_new",
-        permissions: ["todo.*", "group.*", "groupMember.*"],
+        permissions: ["todo.*", "ebb/group.*", "ebb/grant.*"],
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
       update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
@@ -981,7 +1064,7 @@ describe("collectPermissionViolations — best-effort", () => {
 
 describe("collectPermissionViolations — system entities", () => {
   it("requires group.create in the group for a put", async () => {
-    const { client } = await mkClient([["g_1", ["group.update"]]]);
+    const { client } = await mkClient([["g_1", ["ebb/group.update"]]]);
 
     await expect(
       client.write([action(update("group", "g_1", "put", { name: "G" }))]),
@@ -989,7 +1072,7 @@ describe("collectPermissionViolations — system entities", () => {
   });
 
   it("passes a group put when the target group grants group.create", async () => {
-    const { client } = await mkClient([["g_1", ["group.*"]]]);
+    const { client } = await mkClient([["g_1", ["ebb/group.*"]]]);
 
     await expect(
       client.write([action(update("group", "g_1", "put", { name: "G" }))]),
@@ -997,7 +1080,7 @@ describe("collectPermissionViolations — system entities", () => {
   });
 
   it("requires groupMember.create in the target group for a put", async () => {
-    const { client } = await mkClient([["g_1", ["groupMember.update"]]]);
+    const { client } = await mkClient([["g_1", ["ebb/grant.update"]]]);
 
     await expect(
       client.write([
@@ -1067,7 +1150,7 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "source-mismatch",
-        model: "relationship",
+        model: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -1076,11 +1159,11 @@ describe("PermissionError", () => {
     ]);
 
     expect(error.message).toContain(
-      'relationship rel_1: declared source "todo_new" but the row is committed with source "todo_old"',
+      'ebb/link rel_1: declared source "todo_new" but the row is committed with source "todo_old"',
     );
-    expect(error.message).toContain("a relationship row cannot be re-pointed at another source");
+    expect(error.message).toContain("an ebb/link row cannot be re-pointed at another source");
     expect(error.message).not.toContain("missing");
-    expect(error.message).not.toContain("relationship.update");
+    expect(error.message).not.toContain("ebb/link.update");
   });
 
   it("names both types for a mismatch and no missing permission", () => {

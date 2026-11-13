@@ -22,8 +22,10 @@ import {
 import {
   callApplyAction,
   closingSseResponse,
+  fixtureKind,
   jsonResponse,
   openSseResponse,
+  platformEntity,
   waitFor,
 } from "../test-utils";
 
@@ -35,23 +37,26 @@ const asResponse = (entity: Entity): EntityResponse => {
   return { ...rest, created_hlc: rest.created_hlc ?? 0 };
 };
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  type,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([key, value]) => [
-        key,
-        { value, update_id: `u_${key}`, hlc: HLC },
-      ]),
-    ),
-  },
-  exists: true,
-  created_hlc: HLC,
-  updated_hlc: HLC,
-  deleted_hlc: null,
-  last_gsn: 1,
-});
+const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity =>
+  fixtureKind(type) === null
+    ? {
+        id,
+        type,
+        data: {
+          fields: Object.fromEntries(
+            Object.entries(fields).map(([key, value]) => [
+              key,
+              { value, update_id: `u_${key}`, hlc: HLC },
+            ]),
+          ),
+        },
+        exists: true,
+        created_hlc: HLC,
+        updated_hlc: HLC,
+        deleted_hlc: null,
+        last_gsn: 1,
+      }
+    : platformEntity(id, type, fields);
 
 /** A content `put` as the server would deliver it for a peer's write. */
 const putAction = (opts: {
@@ -94,18 +99,15 @@ const membershipPut = (opts: {
     gsn: opts.gsn ?? 1,
     updates: [
       {
-        id: `${updateId}_0`,
+        id: updateId,
         subject_id: opts.membershipId,
-        component: "entityGroup/entity_id",
+        component: "ebb/membership",
         method: "replace",
-        data: { value: opts.entityId, update_id: updateId, hlc: HLC },
-      },
-      {
-        id: `${updateId}_1`,
-        subject_id: opts.membershipId,
-        component: "entityGroup/group_id",
-        method: "replace",
-        data: { value: opts.groupId ?? "g_2", update_id: updateId, hlc: HLC },
+        data: {
+          value: { entity_id: opts.entityId, group_id: opts.groupId ?? "g_2" },
+          update_id: updateId,
+          hlc: HLC,
+        },
       },
     ],
   };
@@ -155,7 +157,7 @@ const mkClient = (opts: {
         groups: [
           {
             id: "g_2",
-            permissions: ["blog_post.*", "entityGroup.*"],
+            permissions: ["blog_post.*", "ebb/membership.*"],
             cursor_valid: true,
             reason: null,
             cursor: 0,
