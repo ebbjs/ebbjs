@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import {
+  ComponentScopeError,
+  defineComponent,
   defineModel,
   e,
   hasDefault,
@@ -77,6 +79,78 @@ describe("defineModel reserved names", () => {
   it("still accepts app names and fields that don't collide", () => {
     const todo = defineModel("todo", { title: e.string(), grouping: e.string() });
     expect(todo.name).toBe("todo");
+  });
+});
+
+describe("component scope owner", () => {
+  it("lets an `ebb/` component declare one", () => {
+    const group = defineComponent("ebb/group", { name: e.string() }, { scope: "self" });
+    const grant = defineComponent("ebb/grant", { group_id: e.string() }, { scope: "group_id" });
+
+    expect(group.scope).toBe("self");
+    expect(grant.scope).toBe("group_id");
+  });
+
+  it("admits an `ebb/` component the platform has not declared yet", () => {
+    // The namespace is the rule, not the four known component names: a fifth
+    // system component declares its scope without touching this check.
+    const audit = defineComponent("ebb/audit", { subject_id: e.string() }, { scope: "subject_id" });
+
+    expect(audit.scope).toBe("subject_id");
+  });
+
+  it("rejects a scope declared outside the `ebb/` namespace, naming the component", () => {
+    let caught: unknown;
+    try {
+      defineComponent("todo/title", e.string(), { scope: "group_id" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ComponentScopeError);
+    expect((caught as ComponentScopeError).componentName).toBe("todo/title");
+    expect((caught as ComponentScopeError).scope).toBe("group_id");
+    expect((caught as Error).message).toContain("todo/title");
+    expect((caught as Error).message).toContain("delivery scope");
+  });
+
+  it('rejects "self" on a user component too', () => {
+    expect(() => defineComponent("todo/title", e.string(), { scope: "self" })).toThrow(
+      ComponentScopeError,
+    );
+  });
+
+  it("rejects a scope that is neither `self` nor field-shaped", () => {
+    for (const scope of ["", "a/b", " not a field "]) {
+      expect(() => defineComponent("ebb/grant", { group_id: e.string() }, { scope })).toThrow(
+        ComponentScopeError,
+      );
+    }
+  });
+
+  it("rejects a scope naming no field of the component's value", () => {
+    let caught: unknown;
+    try {
+      defineComponent("ebb/grant", { group_id: e.string() }, { scope: "groupid" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ComponentScopeError);
+    expect((caught as Error).message).toContain('"groupid"');
+    expect((caught as Error).message).toContain('"group_id"');
+  });
+
+  it("leaves a bare field builder without a field check", () => {
+    // A one-value component names itself, so `self` is the only scope it can
+    // carry a field for.
+    expect(defineComponent("ebb/group", e.string(), { scope: "self" }).scope).toBe("self");
+  });
+
+  it("leaves an anonymous component inheriting the entity's membership", () => {
+    const todo = defineModel("todo", { title: e.string() });
+
+    expect(todo.components.title.scope).toBeUndefined();
   });
 });
 

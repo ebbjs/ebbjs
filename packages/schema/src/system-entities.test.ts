@@ -68,3 +68,14 @@ describe("platform components and conflict scope", () => {
     expect(ebbSystemEntity.components.group.structural).toBe(false);
   });
 });
+
+describe("platform components declare their scope owner", () => {
+  it("names the entity each write's group set resolves against", () => {
+    // A group's scope is itself and a grant's is the group it names, so neither
+    // carries a membership row; an edge resolves through its source.
+    expect(ebbSystemEntity.components.group.scope).toBe("self");
+    expect(ebbSystemEntity.components.grant.scope).toBe("group_id");
+    expect(ebbSystemEntity.components.membership.scope).toBe("group_id");
+    expect(ebbSystemEntity.components.link.scope).toBe("source_id");
+  });
+});
