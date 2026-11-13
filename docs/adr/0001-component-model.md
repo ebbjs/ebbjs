@@ -207,6 +207,18 @@ the committed type string", and it is what
 [#803](https://github.com/ebbjs/ebbjs/issues/803) implements. `CONTEXT.md` records it as **Committed
 model**.
 
+### Amendments from slice 10 ([#805](https://github.com/ebbjs/ebbjs/issues/805))
+
+- **`ebb/group`'s `apps` is a list of app ids, not a map.** `e.object` refuses a map nested inside
+  an atomic value (`NestedMapError`), because a nested map would lose its per-key merge, so the
+  value is `{name, apps?: [appId]}`. Absent stays "every app" and `[]` stays "no app"; the cost is
+  that a scope edit writes the whole value, so concurrent edits converge last-writer-wins on the
+  value instead of merging per app id (#732's per-key merge is not preserved).
+- **Decision 13's immutable keys are enforced for three of the four.** `ebb/membership`'s
+  `(entity_id, group_id)`, `ebb/link`'s `source_id` and `ebb/grant`'s `group_id` are refused a
+  re-point, so moving an actor or a membership between groups is a delete plus a create — which
+  replaces the earlier "needs the permission in both groups" rule rather than keeping it as well.
+
 ### Amendments from slice 5 ([#798](https://github.com/ebbjs/ebbjs/issues/798))
 
 - **`optional` and `.default()` are mutually exclusive.** `optional` says absence is absence;
