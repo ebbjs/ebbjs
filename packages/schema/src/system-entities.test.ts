@@ -80,14 +80,10 @@ describe("platform component values are atomic", () => {
 });
 
 describe("platform components declare their own permission", () => {
-  it("opts grant, membership, and link into `ebb/<kind>.<verb>`", () => {
-    for (const kind of ["grant", "membership", "link"] as const) {
+  it("keeps the four grants distinct as `ebb/<kind>.<verb>`", () => {
+    for (const kind of EBB_COMPONENT_KINDS) {
       expect(ebbSystemEntity.components[kind].permission).toBe("own");
     }
-  });
-
-  it("leaves a group row on the model's permission subject", () => {
-    expect(ebbSystemEntity.components.group.permission).toBeUndefined();
   });
 });
 

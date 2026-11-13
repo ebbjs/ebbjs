@@ -25,39 +25,23 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { Static } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
+import type { TSchema } from "@sinclair/typebox/type";
 
-import { buildModelDef, defineComponent, e } from "./model";
-import { PLATFORM_NAMESPACE } from "./reserved";
+import { EBB_COMPONENTS, EBB_MODEL_NAME, type EbbComponentKind } from "@ebbjs/core";
 
-/** The model every platform row is committed under. */
-export const EBB_MODEL_NAME = PLATFORM_NAMESPACE;
+import { buildModelDef, defineComponent, e, type ModelDef } from "./model";
 
-/**
- * The four platform components, as `<model>/<leaf>` names. Every caller that
- * has to name one asks here rather than writing the string, so a fifth one is
- * one registration and no dispatch site.
- */
-export const EBB_COMPONENTS = Object.freeze({
-  group: "ebb/group",
-  grant: "ebb/grant",
-  membership: "ebb/membership",
-  link: "ebb/link",
-} as const);
-
-/** A platform component's kind: `"group" | "grant" | "membership" | "link"`. */
-export type EbbComponentKind = keyof typeof EBB_COMPONENTS;
-
-/** The component name for one kind. */
-export const ebbComponent = (kind: EbbComponentKind): string => EBB_COMPONENTS[kind];
-
-/** The kinds, in declaration order. */
-export const EBB_COMPONENT_KINDS = Object.freeze(Object.keys(EBB_COMPONENTS) as EbbComponentKind[]);
-
-const PLATFORM_COMPONENTS = new Set<string>(Object.values(EBB_COMPONENTS));
-
-/** Whether a `<model>/<leaf>` component name belongs to a platform component. */
-export const isEbbComponent = (name: string): boolean => PLATFORM_COMPONENTS.has(name);
+export {
+  EBB_COMPONENT_KINDS,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  ebbComponent,
+  ebbComponentField,
+  ebbComponentKind,
+  isEbbComponent,
+  type EbbComponentKind,
+} from "@ebbjs/core";
 
 /**
  * A group's name and the apps it is in scope for.
@@ -95,7 +79,10 @@ const linkShape = e.object({
   field: e.string(),
 });
 
-const groupComponent = defineComponent(EBB_COMPONENTS.group, groupShape, { optional: true });
+const groupComponent = defineComponent(EBB_COMPONENTS.group, groupShape, {
+  optional: true,
+  permission: "own",
+});
 
 const grantComponent = defineComponent(EBB_COMPONENTS.grant, grantShape, {
   optional: true,
@@ -120,7 +107,7 @@ const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
  * that names its kind. Every component is optional because a row carries one,
  * not all four.
  */
-export const ebbSystemEntity = buildModelDef(EBB_MODEL_NAME, {
+export const ebbSystemEntity: ModelDef<Record<string, TSchema>> = buildModelDef(EBB_MODEL_NAME, {
   group: groupComponent,
   grant: grantComponent,
   membership: membershipComponent,

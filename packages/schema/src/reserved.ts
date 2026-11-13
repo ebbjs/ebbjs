@@ -5,13 +5,15 @@
  * surface can't be shadowed.
  */
 
+import { EBB_MODEL_NAME } from "@ebbjs/core";
+
 /**
  * The model namespace the platform's own components live under (`ebb/group`,
  * `ebb/grant`, `ebb/membership`, `ebb/link`). An app may not declare a model
  * with this name: a component's namespace is its permission subject, so
  * claiming it would let an app mint the platform's permissions.
  */
-export const PLATFORM_NAMESPACE = "ebb";
+export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
 
 /**
  * The injected membership accessor. Also reserved as an entity field
