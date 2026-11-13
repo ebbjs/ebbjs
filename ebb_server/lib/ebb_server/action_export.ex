@@ -34,11 +34,10 @@ defmodule EbbServer.ActionExport do
   directly. Updates of the two structural platform components (`ebb/grant`,
   `ebb/membership`) are stripped by default, and an Action left with no
   Updates is dropped entirely. The exclusion names the components, not the
-  model: all four platform components commit under `ebb`, so excluding the
-  model would strip the `ebb/group` creates too. A `delete` names no
-  component, so it carries no component to exclude and is always exported.
-  The per-Update delivery scopes (#473) are internal routing metadata, not
-  part of the Action contract, so they are stripped too.
+  model `ebb`: excluding the model would strip the `ebb/group` creates too.
+  A `delete` names no component, so it is always exported. The per-Update
+  delivery scopes (#473) are internal routing metadata, not part of the
+  Action contract, so they are stripped too.
 
   ## Opt-in
 
@@ -76,9 +75,7 @@ defmodule EbbServer.ActionExport do
 
   @default_cursor_name "action_export"
 
-  # Component names, not model names: `ebb/grant` and `ebb/membership` are the
-  # two structural platform components an export never needs, while
-  # `ebb/group` is the group itself and stays.
+  # The two structural components an export never needs; `ebb/group` stays.
   @default_excluded_components [
     SystemComponent.component(:grant),
     SystemComponent.component(:membership)
@@ -233,8 +230,7 @@ defmodule EbbServer.ActionExport do
     kept
   end
 
-  # A delete names the row and no component, so it has no component to
-  # exclude.
+  # A delete names the row and no component, so it has nothing to exclude.
   defp update_component(%{"component" => component}) when is_binary(component), do: component
 
   defp update_component(_update), do: nil

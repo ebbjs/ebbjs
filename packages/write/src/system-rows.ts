@@ -1,14 +1,10 @@
 /**
  * The wire builders for the platform's four rows.
  *
- * Each row is one atomic component — `ebb/group`, `ebb/grant`,
- * `ebb/membership`, `ebb/link` — so every builder here emits exactly **one**
- * Update carrying the whole value. There is no per-field Update to tear: an
- * edge, membership, or grant either arrives complete or does not arrive.
- *
- * The component names and the value shapes come from `@ebbjs/core`, so this
- * module is the only place that knows how a platform value is wrapped into a
- * `FieldValue`.
+ * Each row is one atomic component, so every builder here emits exactly **one**
+ * Update carrying the whole value: there is no per-field Update to tear. The
+ * component names come from `@ebbjs/core`; this module is the only place that
+ * knows how a platform value is wrapped into a `FieldValue`.
  */
 
 import {
@@ -23,20 +19,18 @@ import {
 export interface SystemRowIds {
   updateId(): string;
   /**
-   * The leaf's clock. Omitted only by a builder whose caller has none (a
-   * pre-built write); a leaf without one merges as the oldest write, which is
-   * right for a row that has no predecessor and wrong for every other write.
+   * The leaf's clock. Omitted only by a caller that has none; a leaf without one
+   * merges as the oldest write.
    */
   hlc?(): string;
 }
 
-/** The default ids: a fresh Update id and the caller's current clock. */
+/** A fresh Update id and the caller's current clock. */
 export const systemRowIds = (hlc: () => string): SystemRowIds => ({
   updateId: () => generateId("u"),
   hlc,
 });
 
-/** The ids of one Update whose id and clock come from the caller. */
 export const fixedRowIds = (updateId: string, hlc?: string): SystemRowIds => {
   const ids: SystemRowIds = { updateId: () => updateId };
   if (hlc === undefined) return ids;
@@ -74,10 +68,7 @@ export const systemRowDelete = (
   data: null,
 });
 
-/**
- * `ebb/group`. `apps` is the list of app ids the group is in scope for;
- * omitting it is unscoped (every app), which is not the same as `[]`.
- */
+/** `ebb/group`. Omitting `apps` is unscoped (every app), which is not `[]`. */
 export const groupRowUpdate = (
   args: { groupId: string; name: string; apps?: readonly string[] },
   ids: SystemRowIds,
@@ -89,7 +80,6 @@ export const groupRowUpdate = (
     ids,
   );
 
-/** `ebb/grant`: one actor's permissions in one group. */
 export const grantRowUpdate = (
   args: {
     grantId: string;
@@ -112,8 +102,8 @@ export const grantRowUpdate = (
 
 /**
  * `ebb/membership`: one entity filed in one group. The pair is immutable after
- * create, and the row id is derived from it (`entityGroupId`), which is what
- * keeps a re-share idempotent.
+ * create and the row id is derived from it (`entityGroupId`), so a re-share is
+ * idempotent.
  */
 export const membershipRowUpdate = (
   args: { membershipId: string; entityId: string; groupId: string },
@@ -126,10 +116,7 @@ export const membershipRowUpdate = (
     ids,
   );
 
-/**
- * `ebb/link`: one edge from its source. The source is immutable after create;
- * moving an edge is a delete plus a create.
- */
+/** `ebb/link`: one edge from its source. Moving an edge is a delete plus a create. */
 export const linkRowUpdate = (
   args: {
     linkId: string;

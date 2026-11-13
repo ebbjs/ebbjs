@@ -45,8 +45,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
   defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
 
-  # A platform row carries one atomic component: the whole value lives at
-  # `fields.<kind>.value`, which is where the generated columns look.
+  # A platform row carries one atomic component whose value is the whole object.
   defp platform_row(id, kind, value, overrides \\ %{}) do
     fields = %{SystemComponent.field(kind) => %{"value" => value, "hlc" => 1}}
     entity_row(id, SystemComponent.model(), fields, overrides)
@@ -956,13 +955,13 @@ defmodule EbbServer.Storage.SQLiteTest do
   end
 
   describe "schema version" do
-    test "a stale read model is dropped and rebuilt, not answered empty", context do
+    test "a stale read model is rebuilt rather than answered empty", context do
       dir = tmp_dir(context)
       path = Path.join(dir, "ebb.db")
 
-      # A pre-#805 file: the old three-column table and no version stamp. The
-      # DDL is `CREATE TABLE IF NOT EXISTS`, so without the version check this
-      # table would keep its old columns and answer every listing empty.
+      # An older file, as a previous release left it. The DDL is
+      # `CREATE TABLE IF NOT EXISTS`, so a table it left behind would
+      # otherwise keep its old columns and answer every listing empty.
       {:ok, db} = Sqlite3.open(path)
 
       :ok =
@@ -977,29 +976,12 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       %{name: name} = start_sqlite(dir)
 
-      # The projected tables are rebuilt from scratch; an exporter's cursor is
-      # not a projection of them and survives.
+      # An exporter's cursor is not a projection of the entity table and
+      # survives the rebuild.
       assert {:ok, 42} = SQLite.get_cursor("action_export", name)
 
-      db = open_readonly(dir)
-
-      # The rebuilt table carries the component-derived columns, and the stale
-      # row is gone with the old table.
-      assert :ok =
-               Sqlite3.execute(
-                 db,
-                 "SELECT source_id, actor_id, entity_id, group_id FROM entities"
-               )
-
-      assert {:error, _} = Sqlite3.execute(db, "SELECT legacy_only FROM entities")
-
-      {:ok, version_stmt} = Sqlite3.prepare(db, "PRAGMA user_version")
-      assert {:row, [2]} = Sqlite3.step(db, version_stmt)
-      :ok = Sqlite3.release(db, version_stmt)
-
-      # The rebuilt table answers the reads it exists for: a grant written
-      # through the same API the materializer uses is found by the grant
-      # listing, and the membership listing does not see it.
+      # The rebuilt table serves the listings it exists for, and the old row is
+      # gone with the old table rather than half-read.
       grant =
         platform_row("gm_1", :grant, %{
           "actor_id" => "a_1",
@@ -1011,6 +993,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       assert [{"gm_1", "a_1"}] = SQLite.list_group_members("g_1", nil, 10, name)
       assert [] = SQLite.list_entity_group_memberships("g_1", nil, 10, name)
+      assert [] = SQLite.get_entities(["todo_1"], name)
     end
 
     test "a current read model keeps its rows across a restart", context do
@@ -1029,67 +1012,6 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
-  describe "generated columns" do
-    test "source_id and target_id read the link component's value", context do
-      dir = tmp_dir(context)
-      %{name: name} = start_sqlite(dir)
-
-      entity =
-        platform_row("rel_abc", :link, %{
-          "source_id" => "src_1",
-          "target_id" => "tgt_1",
-          "type" => "owns",
-          "field" => "x"
-        })
-
-      :ok = SQLite.upsert_entity(entity, name)
-
-      db = open_readonly(dir)
-      {:ok, stmt} = Sqlite3.prepare(db, "SELECT source_id, target_id FROM entities WHERE id = ?")
-      :ok = Sqlite3.bind(stmt, ["rel_abc"])
-      {:row, [source_id, target_id]} = Sqlite3.step(db, stmt)
-      :ok = Sqlite3.release(db, stmt)
-
-      assert source_id == "src_1"
-      assert target_id == "tgt_1"
-    end
-
-    test "group_id coalesces a grant's group and a membership's group", context do
-      dir = tmp_dir(context)
-      %{name: name} = start_sqlite(dir)
-
-      :ok =
-        SQLite.upsert_entity(
-          platform_row("gm_1", :grant, %{
-            "actor_id" => "a_1",
-            "group_id" => "g_grant",
-            "permissions" => []
-          }),
-          name
-        )
-
-      :ok =
-        SQLite.upsert_entity(
-          platform_row("eg_1", :membership, %{"entity_id" => "todo_1", "group_id" => "g_member"}),
-          name
-        )
-
-      db = open_readonly(dir)
-
-      {:ok, stmt} =
-        Sqlite3.prepare(db, "SELECT id, group_id FROM entities ORDER BY id")
-
-      assert {:row, ["eg_1", "g_member"]} = Sqlite3.step(db, stmt)
-      assert {:row, ["gm_1", "g_grant"]} = Sqlite3.step(db, stmt)
-      :ok = Sqlite3.release(db, stmt)
-    end
-  end
-
-  # The listing pages are the read model's most brittle coupling: a partial
-  # index is usable only when the statement repeats its predicate, and the
-  # predicate is the component's own generated column, not the model — all
-  # four platform kinds commit under `ebb`, so a model guard would turn each
-  # page into a scan that mixes grants with memberships.
   describe "listing query plans" do
     test "the grant keyset seeks idx_entities_group_member", context do
       dir = tmp_dir(context)

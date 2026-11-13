@@ -116,9 +116,8 @@ const edgeKey = (type: string, sourceId: string, as: string): string =>
   `${type}\u0000${sourceId}\u0000${as}`;
 
 /**
- * The model a component write commits under. A platform component is committed
- * under the `ebb` model; a user component under its own namespace. The two
- * coincide today, but they are different questions, and #820's overlay
+ * The model a component write commits under: `ebb` for a platform component, the
+ * component's own namespace otherwise. The two coincide today; #820's overlay
  * components are where they stop coinciding.
  */
 const committedModelOf = (component: string): string =>
@@ -243,8 +242,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
 
   /**
    * Index one buffered Update so later verbs and reads can resolve against it.
-   * The dispatch is on the platform component, never on a model string: the
-   * four kinds share one committed model.
+   * The dispatch is on the component: the four kinds share one committed model.
    */
   const indexWrite = (update: Update): void => {
     const id = update.subject_id;

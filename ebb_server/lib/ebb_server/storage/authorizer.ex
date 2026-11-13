@@ -318,8 +318,6 @@ defmodule EbbServer.Storage.Authorizer do
   # component Update of a row is authorized once, against the row's model and
   # the row's fields.
   defp fold_action(action, opts, sim) do
-    # The fold's own reads are the authorizer's: a delete's kind and its
-    # committed model both come from the same by-id caches.
     fold_opts =
       Keyword.merge(opts,
         created: MapSet.new(Map.keys(sim.models)),
@@ -539,9 +537,8 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # The grant value is atomic, so the wire value is the whole row. A patch
-  # that carries no value cannot be applied and falls back to the row it
-  # names.
+  # The grant value is atomic, so it is the whole row: a patch with no value
+  # falls back to the row it names.
   defp member_group_id(_method, %{} = value, _existing), do: Map.get(value, "group_id")
 
   defp member_group_id(:patch, nil, existing), do: existing && existing.group_id
@@ -721,13 +718,10 @@ defmodule EbbServer.Storage.Authorizer do
   # update is exempt only when the entity is created by that same Action
   # (#289).
   #
-  # A membership row's write is a `:put` while the row is new and a `:patch`
-  # once it exists. Both are authorized against the row's real identity — the
-  # entity it names and the group it enters — so re-filing a live row is an
-  # ordinary write, never a way to mint a row for an arbitrary entity (#623).
-  # The pair itself is immutable (decision 13), so a write naming any other
-  # pair is refused before it can be authorized. A write that names no entity
-  # cannot be placed and is refused below.
+  # A membership write is authorized against the row's real identity — the
+  # entity and the group it names — so re-filing a live row is never a way to
+  # mint one for an arbitrary entity (#623). The pair is immutable
+  # (decision 13); a write that names no entity is refused below.
   defp authorize_membership_update(%{method: method} = update, actor_id, authz)
        when method in [:put, :patch] do
     with {:ok, entity_id, group_id} <- membership_identity(update) do
@@ -829,13 +823,9 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
-  # Both verbs reach here: a platform row's write is `:put` while the row
-  # is new and `:patch` once it exists, and the fold derives the verb from
-  # existence, so a check on `:put` alone would never run for a live row.
-  # The identity check is decision 13: each component names its key, and a
-  # write that disagrees with a committed row's key is refused here, before
-  # any permission is consulted, so the bootstrap exemption cannot cover a
-  # re-point.
+  # A platform row's write is `:put` when new and `:patch` once it exists, so
+  # the identity check runs on both: a key that disagrees with the committed
+  # row is refused before any permission is consulted (decision 13).
   defp check_update_row_identity(%{kind: :membership, method: method} = update, authz)
        when method in [:put, :patch] do
     value = SystemComponent.value(update.data, :membership)
@@ -862,11 +852,9 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp check_update_row_identity(_update, _authz), do: :ok
 
-  # `ebb/grant`'s `group_id` is its identity (decision 13), like an
-  # `ebb/membership`'s pair: the group's member list is what the row means,
-  # so moving a grant between groups is a delete plus a create. #625's
-  # binding rule — an existing row is authorized in the group it already
-  # belongs to — reads the same stored row.
+  # `ebb/grant`'s `group_id` is its identity (decision 13): moving a grant
+  # between groups is a delete plus a create, so an existing row is authorized
+  # only in the group it already belongs to (#625).
   defp check_grant_row_group(grant_id, group_id, authz) do
     case GroupCache.get_group_member(grant_id, authz.ctx.group_members_by_id_table) do
       nil ->
@@ -881,17 +869,10 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # A link's source is its identity, like a membership's pair (#623): the
-  # row fans out to the source's group set, so re-pointing it would drop the
-  # edge out of its owner's projections and hand it to the caller (#624). A
-  # put or patch that keeps the source stays a normal write
-  # (target/type/field may change); moving an edge to another source is a
-  # delete plus a put. The delete is scoped by the stored row's source, never
-  # by a wire `source_id`, so it cannot reach a row in another group. A
-  # value that omits `source_id` cannot be applied (`CacheMutationPlanner`
-  # drops it), so there is nothing to re-point: the check answers about the
-  # source the request declares, and the stored row's groups authorize the
-  # no-op as before.
+  # A link's source is its identity (#623, #624): the row fans out to the
+  # source's group set, so re-pointing it would hand the edge to the caller.
+  # Changing target/type/field keeps the source and stays a normal write;
+  # moving an edge is a delete plus a put.
   #
   # No committed source is not a refusal. A by-id row can be missing because
   # the edge is new, because this request deleted it, or because it is
@@ -927,12 +908,8 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # Unlike membership deletes, which resolve their row up front because the
-  # authorization and the last-membership delta both need it, an `ebb/link`
-  # delete only has to release the row's source binding, so the ids suffice:
-  # delete plus put is how an edge moves (#624), and the caches do not
-  # advance until the Writer commits, so without this the id would still
-  # look bound to the source it was just deleted from.
+  # A link delete only has to release the row's source binding, so the id
+  # suffices: delete plus put is how an edge moves (#624).
   defp deleted_relationship_ids(mutations) do
     mutations
     |> Enum.filter(&(&1.kind == :link and &1.method == :delete))
@@ -986,13 +963,9 @@ defmodule EbbServer.Storage.Authorizer do
   # `EntityIndex.committed_model/2`).
   defp committed_model(entity_id, opts), do: EntityIndex.committed_model(entity_id, opts)
 
-  # `ebb/membership`'s `(entity_id, group_id)` pair is immutable after
-  # create (decision 13): the row's old owner would silently lose the
-  # membership without the last-membership guard seeing it, an orphaned
-  # entity could then be claimed by anyone (#623), and a group change would
-  # move the row out of the group whose member list it belongs to. A write
-  # that names the pair the row already has is the idempotent re-put a
-  # retried Action sends.
+  # `ebb/membership`'s pair is immutable after create (decision 13): the old
+  # owner would silently lose the membership without the last-membership guard
+  # seeing it, and an orphaned entity could then be claimed by anyone (#623).
   defp check_membership_row_identity(membership_id, value, authz) do
     case EntityIndex.membership(membership_id, authz.opts) do
       nil ->
@@ -1113,9 +1086,8 @@ defmodule EbbServer.Storage.Authorizer do
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.
   #
-  # `subject` is the permission subject: a user row's model (`todo`), or a
-  # platform component's own name (`ebb/grant`) when the component declares
-  # `permission: "own"`. Either way the grant string is `<subject>.<verb>`.
+  # `subject` is a user row's model (`todo`) or a platform component's own
+  # name (`ebb/grant`); either way the grant string is `<subject>.<verb>`.
   #
   # `permissions_fun` selects the source: the cache unioned with the
   # Action's declared bootstrap permissions by default, or the cache

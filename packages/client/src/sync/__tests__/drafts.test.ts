@@ -159,13 +159,13 @@ describe("drafts — one Action, forward references", () => {
     // 2 entity rows + 2 membership rows + 1 domain relationship row.
     expect(rowsOf(updates, "todo")).toHaveLength(1);
     expect(rowsOf(updates, "list")).toHaveLength(1);
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(2);
-    expect(rowsOf(updates, "relationship")).toHaveLength(1);
+    expect(rowsOf(updates, "membership")).toHaveLength(2);
+    expect(rowsOf(updates, "link")).toHaveLength(1);
 
     const [todoRow] = rowsOf(updates, "todo");
     const [listRow] = rowsOf(updates, "list");
-    const [domainRel] = rowsOf(updates, "relationship");
-    const membershipRows = rowsOf(updates, "entityGroup");
+    const [domainRel] = rowsOf(updates, "link");
+    const membershipRows = rowsOf(updates, "membership");
 
     for (const update of todoRow!) expect(update.method).toBe("replace");
     expect(todoRow![0]!.subject_id).toBe(created.todo.id);
@@ -197,7 +197,7 @@ describe("drafts — one Action, forward references", () => {
 
     const actions = actionCalls(seen);
     expect(actions).toHaveLength(1);
-    const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "entityGroup");
+    const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "membership");
     expect(membershipRows).toHaveLength(2);
     // Each membership is one atomic Update; a repeated id filing the group
     // twice would add a third row under the same subject.
@@ -267,8 +267,8 @@ describe("drafts — one Action, forward references", () => {
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
     // 3 entity rows + 3 membership rows + 2 domain relationship rows.
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(3);
-    const relTargets = rowsOf(updates, "relationship").map((row) => valueOf(row, "target_id"));
+    expect(rowsOf(updates, "membership")).toHaveLength(3);
+    const relTargets = rowsOf(updates, "link").map((row) => valueOf(row, "target_id"));
     expect(relTargets).toContain(created.a.id);
     expect(relTargets).toContain(created.b.id);
   });
@@ -284,9 +284,9 @@ describe("drafts — one Action, forward references", () => {
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
     // 1 entity row + 1 membership row + 1 domain relationship row.
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
+    expect(rowsOf(updates, "membership")).toHaveLength(1);
     expect(rowsOf(updates, "todo")).toHaveLength(1);
-    const [relRow] = rowsOf(updates, "relationship");
+    const [relRow] = rowsOf(updates, "link");
     expect(valueOf(relRow!, "field")).toBe("list");
     expect(valueOf(relRow!, "target_id")).toBe("list_existing");
   });
@@ -321,7 +321,7 @@ describe("drafts — one Action, forward references", () => {
     expect(created.todo.tags).toEqual([created.a.id, created.b.id]);
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
     // 3 entity rows + 3 membership rows + 2 domain relationship rows.
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(3);
+    expect(rowsOf(updates, "membership")).toHaveLength(3);
     const [todoRow] = rowsOf(updates, "todo");
     expect(valueOf(todoRow!, "tags")).toEqual([created.a.id, created.b.id]);
   });
@@ -393,7 +393,7 @@ describe("drafts — per-Update delivery (#473)", () => {
 
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
-    const membershipRows = rowsOf(decodeActions(calls[0]!)[0]!.updates, "entityGroup");
+    const membershipRows = rowsOf(decodeActions(calls[0]!)[0]!.updates, "membership");
     const rowsFor = (entityId: string) =>
       membershipRows
         .filter((row) => valueOf(row, "entity_id") === entityId)
@@ -490,7 +490,7 @@ describe("drafts — setGroups delta", () => {
     expect(
       updates.filter((update) => update.method === "delete").map((update) => update.subject_id),
     ).toEqual([entityGroupId(created.id, "g_1")]);
-    expect(rowsOf(updates, "entityGroup")).toEqual([]);
+    expect(rowsOf(updates, "membership")).toEqual([]);
   });
 });
 

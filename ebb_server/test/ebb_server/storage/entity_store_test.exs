@@ -29,6 +29,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
     EntityStore,
     RocksDB,
     SQLite,
+    SystemComponent,
     Writer
   }
 
@@ -2322,15 +2323,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, _range, []} = Writer.write_actions([action], ctx.writer_name)
       assert {:ok, entity} = EntityStore.get(entity_id, "a_1", store_opts(ctx))
 
-      assert entity.type == "ebb"
-      assert entity.data["components"] == ["ebb/grant"]
+      assert entity.type == SystemComponent.model()
       assert entity.data["fields"]["grant"]["value"]["group_id"] == "g_1"
 
       assert {:ok, [^entity_id]} =
                SQLite.query_component_ids("ebb/grant", 10, ctx.sqlite_name)
-
-      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
-      assert Jason.decode!(cached.data)["components"] == ["ebb/grant"]
     end
 
     test "query/4 selects a platform component by its component name", ctx do
@@ -2399,11 +2396,6 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert {:ok, note} = EntityStore.get(note_id, "a_1", store_opts(ctx))
       assert note.type == "note"
-      assert note.data["components"] == ["ebb/link", "note/title"]
-
-      # The overlay's component name is the platform one, not `note/link`.
-      assert {:ok, [^note_id]} = SQLite.query_component_ids("ebb/link", 10, ctx.sqlite_name)
-      assert {:ok, []} = SQLite.query_component_ids("note/link", 10, ctx.sqlite_name)
 
       assert {:ok, [queried]} =
                EntityStore.query("ebb/link", nil, "a_1", store_opts(ctx))

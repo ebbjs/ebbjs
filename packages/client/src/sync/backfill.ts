@@ -153,8 +153,7 @@ export const toRuntimeEntity = (response: EntityResponse): Entity => ({
 export async function collectBackfillCandidates(
   storage: StorageAdapter,
 ): Promise<readonly string[]> {
-  // `queryByComponent` answers ids, so the rows a membership read needs are one
-  // by-id read each — proportional to the membership count, not to the model.
+  // Proportional to the membership count, not to the size of the `ebb` model.
   const membershipIds = await storage.entities.queryByComponent(EBB_COMPONENTS.membership);
   const rows: Entity[] = [];
   for (const id of membershipIds) {

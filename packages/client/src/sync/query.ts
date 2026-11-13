@@ -85,11 +85,9 @@ export interface Query {
    */
   readonly source: string;
   /**
-   * The exact components the source rows must carry, when the chain reads a
-   * platform model through a value view: a `client.group.query()` scans `ebb`
-   * rows but only depends on `ebb/group`, and naming `ebb/*` instead would
-   * invalidate it on every grant or membership write. Absent for an ordinary
-   * chain, whose reads are derived from its predicates and source model.
+   * The exact components the source rows must carry, for a chain over a value
+   * view: `client.group.query()` scans `ebb` rows but depends only on
+   * `ebb/group`, where `ebb/*` would invalidate it on every grant write.
    */
   readonly sourceComponents?: readonly string[];
   /** DNF: groups are ORed, predicates within a group ANDed. */
@@ -100,11 +98,7 @@ export interface Query {
   readonly joins: readonly Join[];
 }
 
-/**
- * The unfiltered query over a source type. `sourceComponents` narrows a query
- * over a shared model to the components it actually reads (see
- * {@link Query.sourceComponents}).
- */
+/** The unfiltered query over a source type. */
 export const emptyQuery = (source: string, sourceComponents?: readonly string[]): Query => {
   const query: Query = { source, groups: [], order: null, limit: null, joins: [] };
   if (sourceComponents === undefined) return query;

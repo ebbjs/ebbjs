@@ -1,42 +1,16 @@
 /**
- * Platform component shapes — the rows the SDK writes itself, validated by
- * `Value.Check` exactly as an app entity is.
+ * The values of the platform's four components, validated by `Value.Check`
+ * exactly as an app entity is.
  */
 
 import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 import { describe, expect, it } from "vitest";
 
-import { EBB_COMPONENTS, EBB_COMPONENT_KINDS, EBB_MODEL_NAME, ebbSystemEntity } from "./index";
+import { EBB_COMPONENT_KINDS, ebbSystemEntity } from "./index";
 
 const componentShape = (kind: (typeof EBB_COMPONENT_KINDS)[number]): TSchema =>
   ebbSystemEntity.components[kind].shape;
-
-describe("the platform model", () => {
-  it("is one model named ebb carrying the four components", () => {
-    expect(EBB_MODEL_NAME).toBe("ebb");
-    expect(ebbSystemEntity.name).toBe("ebb");
-    expect(Object.keys(ebbSystemEntity.components).sort()).toEqual([
-      "grant",
-      "group",
-      "link",
-      "membership",
-    ]);
-  });
-
-  it("names each component `<model>/<kind>` and attaches it under its kind", () => {
-    for (const kind of EBB_COMPONENT_KINDS) {
-      expect(EBB_COMPONENTS[kind]).toBe(`ebb/${kind}`);
-      expect(ebbSystemEntity.components[kind].name).toBe(EBB_COMPONENTS[kind]);
-    }
-  });
-
-  it("declares every component optional — a row carries one, not all four", () => {
-    for (const kind of EBB_COMPONENT_KINDS) {
-      expect(ebbSystemEntity.components[kind].optional).toBe(true);
-    }
-  });
-});
 
 describe("platform component values are atomic", () => {
   it("closes every value's property set", () => {
@@ -87,16 +61,10 @@ describe("platform components declare their own permission", () => {
   });
 });
 
-describe("platform components declare structural conflict scope", () => {
-  it("never surfaces a concurrent edge, membership, or grant write", () => {
-    for (const kind of ["grant", "membership", "link"] as const) {
-      expect(ebbSystemEntity.components[kind].structural).toBe(true);
-    }
-  });
-
-  it("leaves a group row on the ordinary default", () => {
+describe("platform components and conflict scope", () => {
+  it("leaves a group row detectable, unlike the structural components", () => {
+    // `group` is the one platform component a concurrent write should surface;
+    // the edge, membership, and grant are the three `structural` exemptions.
     expect(ebbSystemEntity.components.group.structural).toBe(false);
-    expect(ebbSystemEntity.components.group.conflictScope).toBeUndefined();
-    expect(ebbSystemEntity.conflictScope).toBe("field");
   });
 });

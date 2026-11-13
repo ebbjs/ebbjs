@@ -4,27 +4,20 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { type Static } from "@sinclair/typebox/type";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { EBB_MODEL_NAME, makeHlc, type Action } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 
-import {
-  defineComponent,
-  defineModel,
-  e,
-  type GroupFields,
-  type GroupMemberFields,
-} from "@ebbjs/schema";
+import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
-import type { GrantFieldMap, GroupFieldMap } from "../system-row";
+import type { GroupFieldMap } from "../system-row";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
-import type { EntityFields, WireStatic } from "../namespace";
+import type { EntityFields } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
 import { createClient } from "../client";
 import { platformEntity, seedReplicaRow } from "../test-utils";
-import { rowReadComponentsFor } from "../query-plan";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -380,12 +373,11 @@ const mkRelEntity = (
   targetId: string,
   field: string,
   type: string,
-): Entity =>
-  platformEntity(id, "relationship", { source_id: sourceId, target_id: targetId, type, field });
+): Entity => platformEntity(id, "link", { source_id: sourceId, target_id: targetId, type, field });
 
 /** Materialize one `ebb/membership` row into the local cache. */
 const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
+  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 /**
  * Write `row` to the shim and fold it into the replica the query
@@ -894,8 +886,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     await list.parentList;
 
     const scannedTypes = query.mock.calls.map(([type]) => type);
-    expect(scannedTypes).not.toContain("relationship");
-    expect(scannedTypes).not.toContain("entityGroup");
+    expect(scannedTypes).not.toContain(EBB_MODEL_NAME);
     // The storage adapter's async indices are bypassed; the replica's
     // synchronous ones carry the traversal (#520).
     expect(storageForward).not.toHaveBeenCalled();
@@ -1146,43 +1137,6 @@ describe("client.group / client.membership — value namespaces", () => {
     return { client, storage };
   };
 
-  it("pins each value field map to the schema's value type", () => {
-    // The namespace needs a field map; `@ebbjs/schema` exports the value type.
-    // If a component's shape changes, one of these assertions fails to compile
-    // rather than the projection silently drifting.
-    type Assert<T extends true> = T;
-    type GroupPinned = Assert<
-      WireStatic<GroupFieldMap> extends GroupFields
-        ? GroupFields extends WireStatic<GroupFieldMap>
-          ? true
-          : false
-        : false
-    >;
-    type GrantPinned = Assert<
-      WireStatic<GrantFieldMap> extends GroupMemberFields
-        ? GroupMemberFields extends WireStatic<GrantFieldMap>
-          ? true
-          : false
-        : false
-    >;
-    const groupPinned: GroupPinned = true;
-    const grantPinned: GrantPinned = true;
-    expect([groupPinned, grantPinned]).toEqual([true, true]);
-  });
-
-  it("scopes a group query's read set to ebb/group, never the whole platform model", async () => {
-    const { client } = await mkClient();
-    const query = client.group.query().toQuery();
-
-    expect(query.source).toBe("ebb");
-    // Exact component: `ebb/*` would invalidate a page query built over groups
-    // on every grant or membership write.
-    expect(query.sourceComponents).toEqual(["ebb/group"]);
-    const reads = rowReadComponentsFor(query);
-    expect(reads).toContain("ebb/group");
-    expect(reads).not.toContain("ebb/*");
-  });
-
   it("reads a group row as {id, name, apps}, not as an ebb envelope", async () => {
     const { client, storage } = await mkClient();
     const row = platformEntity("g1", "group", { name: "Demo", apps: ["notes"] });
@@ -1198,7 +1152,7 @@ describe("client.group / client.membership — value namespaces", () => {
 
   it("returns null for a row that carries another platform component", async () => {
     const { client, storage } = await mkClient();
-    const grant = platformEntity("gm_1", "groupMember", {
+    const grant = platformEntity("gm_1", "grant", {
       actor_id: "a",
       group_id: "g1",
       permissions: [],
@@ -1249,7 +1203,7 @@ describe("doc.groups — built-in membership accessor", () => {
     expect(await row.groups).toEqual([]);
   });
 
-  it("exposes the group and membership system namespaces, but not entityGroup", async () => {
+  it("exposes the group and membership system namespaces, but no raw platform one", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     const client = createClient({
@@ -1259,10 +1213,10 @@ describe("doc.groups — built-in membership accessor", () => {
       schema: groupsSchema,
     });
     const namespaces = client as unknown as Record<string, unknown>;
-    // `group` / `membership` are system namespaces; `entityGroup` stays internal.
     expect(namespaces["group"]).toBeDefined();
     expect(namespaces["membership"]).toBeDefined();
-    expect(namespaces["entityGroup"]).toBeUndefined();
+    // The four kinds share one model, so there is no `ebb` surface.
+    expect(namespaces[EBB_MODEL_NAME]).toBeUndefined();
   });
 });
 

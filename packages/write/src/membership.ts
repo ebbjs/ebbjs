@@ -38,10 +38,7 @@ export interface MembershipView {
   groupOfMembership(membershipId: string): string | undefined;
 }
 
-/**
- * One platform component's atomic value from a batch's folded components, or
- * `null` when the batch does not carry that kind.
- */
+/** One platform component's atomic value, or `null` when the batch carries no such kind. */
 const platformValue = (
   components: ReadonlyMap<string, FieldValue>,
   kind: EbbComponentKind,
@@ -60,19 +57,15 @@ export interface SubjectWrites {
   readonly components: Map<string, FieldValue>;
   deleted: boolean;
   /**
-   * Whether the batch carries a `replace`, which is how a create states itself
-   * on the wire: an atomic value's `replace` is also its update, so the method
-   * alone cannot tell the two apart.
+   * Whether the batch carries a `replace`, which is how a create states itself on
+   * the wire: an atomic value's `replace` is also its update.
    */
   replaced: boolean;
 }
 
 /**
- * Fold a batch's Updates into one entry per subject, in first-seen order.
- *
- * Shared by the membership checker and the client's permission pass, which
- * both have to answer one row's question from an Action's per-component
- * Updates.
+ * Fold a batch's Updates into one entry per subject, in first-seen order. Shared
+ * by the membership checker and the client's permission pass.
  */
 export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
   const subjects = new Map<string, SubjectWrites>();

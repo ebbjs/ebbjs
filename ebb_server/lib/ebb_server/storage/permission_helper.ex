@@ -170,9 +170,8 @@ defmodule EbbServer.Storage.PermissionHelper do
     |> Map.new(fn mutation -> {mutation.subject_id, mutation.model} end)
   end
 
-  # A platform row is created as a platform row: its committed model is
-  # `ebb`, which is not a model an app declares, so it is never a user
-  # entity any permission or membership rule may claim.
+  # `ebb` is not a model an app declares, so a platform row is never a user
+  # entity a permission or membership rule may claim.
   defp user_entity_put?(mutation) do
     mutation.method == :put and is_nil(Map.get(mutation, :kind))
   end
@@ -238,8 +237,8 @@ defmodule EbbServer.Storage.PermissionHelper do
     updates
     |> Enum.filter(&link_source_update?/1)
     |> Enum.reduce(%{}, fn update, acc ->
-      # A raw component Update carries its own field and the component's value,
-      # so the accessor is handed the Update rather than a folded row's data.
+      # A raw Update carries its own field and the component's value, so the
+      # accessor is handed the Update, not a folded row's data.
       case {update.subject_id, SystemComponent.path(update, :link, "source_id")} do
         {rel_id, source_id} when is_binary(rel_id) and is_binary(source_id) ->
           Map.put(acc, rel_id, source_id)

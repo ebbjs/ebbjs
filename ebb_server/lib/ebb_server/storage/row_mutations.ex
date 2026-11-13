@@ -16,7 +16,7 @@ defmodule EbbServer.Storage.RowMutations do
 
   One mutation per subject, in first-appearance order:
 
-      %{id, subject_id, model, method: :put | :patch | :delete,
+      %{id, subject_id, model, kind, method: :put | :patch | :delete,
         data: %{"fields" => %{field => value}} | nil}
 
   - Any `delete` for the subject collapses the row to a single `:delete`
@@ -51,7 +51,6 @@ defmodule EbbServer.Storage.RowMutations do
           subject_id: String.t(),
           model: String.t() | nil,
           kind: SystemComponent.kind() | nil,
-          components: [String.t()],
           method: :put | :patch | :delete,
           data: %{String.t() => %{String.t() => term()}} | nil
         }
@@ -96,9 +95,6 @@ defmodule EbbServer.Storage.RowMutations do
     against `:entity_types` and the by-id caches in the same options.
   - `:entity_types`, `:overlay` — the existence and committed-model reads,
     passed through to `EntityIndex`.
-  - `:kind_resolver` — `(mutation -> platform kind | nil)` used for a delete,
-    whose Update names no component. Defaults to the by-id caches
-    (`EntityIndex.kind_of/2`) against the same options.
 
   One of `:entity_types`, or both predicates, is required: without an
   existence signal every row would fold to `:put`, which the rule engine
@@ -129,10 +125,8 @@ defmodule EbbServer.Storage.RowMutations do
   end
 
   # A delete names no component, so its kind exists only in the by-id caches.
-  # Resolving it inside the fold means every consumer dispatches on one thing —
-  # the row's kind — and none of them has to remember this step.
   defp resolve_kind(%{kind: nil} = mutation, opts),
-    do: %{mutation | kind: kind_resolver!(opts).(mutation)}
+    do: %{mutation | kind: EntityIndex.kind_of(mutation, opts)}
 
   defp resolve_kind(mutation, _opts), do: mutation
 
@@ -146,7 +140,6 @@ defmodule EbbServer.Storage.RowMutations do
       subject_id: update.subject_id,
       model: update.model,
       component: update.component,
-      components: [],
       deleted?: false,
       fields: %{}
     }
@@ -154,21 +147,16 @@ defmodule EbbServer.Storage.RowMutations do
   end
 
   defp fold_update(entry, %{method: :delete}) do
-    %{entry | deleted?: true, components: [], fields: %{}}
+    %{entry | deleted?: true, fields: %{}}
   end
 
   # The first component Update names the row's model. A delete carries none,
   # so a sibling component writes down what the row was committed as.
-  #
-  # The component names travel with the fold because the system vocabulary is
-  # stated in components, not models: all four platform components share the
-  # model `ebb`, so the model alone cannot say which kind of row this is.
   defp fold_update(entry, %{method: method} = update) do
     entry = %{
       entry
       | model: entry.model || update.model,
-        component: entry.component || update.component,
-        components: [update.component | entry.components] |> Enum.uniq()
+        component: entry.component || update.component
     }
 
     case method do
@@ -188,7 +176,6 @@ defmodule EbbServer.Storage.RowMutations do
       subject_id: entry.subject_id,
       model: resolve_model.(entry.subject_id) || entry.model,
       kind: SystemComponent.kind(entry.component),
-      components: entry.components,
       method: :delete,
       data: nil
     }
@@ -200,16 +187,13 @@ defmodule EbbServer.Storage.RowMutations do
       subject_id: entry.subject_id,
       model: row_model(entry, resolve_model),
       kind: SystemComponent.kind(entry.component),
-      components: entry.components,
       method: if(new_row?(entry.subject_id, created, exists?), do: :put, else: :patch),
       data: %{"fields" => entry.fields}
     }
   end
 
-  # A row's model is the model it was **committed** under. A platform
-  # component's prefix is always `ebb`, which would re-model a user row that
-  # carries an overlay component onto the platform namespace; the committed
-  # model wins there, and `ebb` stands only for a row that has none yet.
+  # A row's model is the one it was **committed** under: an `ebb/*` overlay on
+  # a user row does not re-model it.
   defp row_model(entry, resolve_model) do
     if SystemComponent.component?(entry.component) do
       resolve_model.(entry.subject_id) || SystemComponent.model()
@@ -250,21 +234,6 @@ defmodule EbbServer.Storage.RowMutations do
       other ->
         raise ArgumentError,
               "RowMutations.fold/2 :model_resolver must be a 1-arity function, " <>
-                "got: #{inspect(other, limit: 4)}"
-    end
-  end
-
-  defp kind_resolver!(opts) do
-    case Keyword.get(opts, :kind_resolver) do
-      fun when is_function(fun, 1) ->
-        fun
-
-      nil ->
-        fn mutation -> EntityIndex.kind_of(mutation, opts) end
-
-      other ->
-        raise ArgumentError,
-              "RowMutations.fold/2 :kind_resolver must be a 1-arity function, " <>
                 "got: #{inspect(other, limit: 4)}"
     end
   end

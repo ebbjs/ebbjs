@@ -53,9 +53,8 @@ export const createReplicaExecutor = (replica: Replica): PlanExecutor => ({
 
 /**
  * Read a platform model through a component's value view: the rows carrying
- * `kind`, each rewritten so its value reads as the row's fields (see
- * {@link componentRowView}). The adjacency and existence indices are the
- * replica's own — a component read is the same question either way.
+ * `kind`, each rewritten so its value reads as the row's fields. The indices are
+ * the replica's own.
  */
 export const createComponentViewExecutor = (
   replica: Replica,

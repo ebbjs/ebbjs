@@ -72,7 +72,7 @@ const remove = (gsn: number, id: string, _type: string): Action =>
   action(gsn, [{ id: `u_${gsn}`, subject_id: id, method: "delete", data: null }]);
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
-  put(gsn, `rel_${gsn}`, "relationship", {
+  put(gsn, `rel_${gsn}`, "link", {
     source_id: sourceId,
     target_id: targetId,
     field: as,

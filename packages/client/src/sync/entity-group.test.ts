@@ -11,42 +11,32 @@ import type { StorageAdapter } from "@ebbjs/storage/types";
 import { liveMembership, readMembership } from "./entity-group";
 import { platformEntity } from "./test-utils";
 
-const mkEntity = (
+const mkMembership = (
   id: string,
-  type: string,
-  fields: Record<string, unknown>,
+  entityId: string,
+  groupId: string | undefined,
   deletedHlc: string | null = null,
 ): Entity =>
-  type === "entityGroup"
-    ? platformEntity(id, type, fields, deletedHlc)
-    : {
-        id,
-        type,
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-          ),
-        },
-        exists: true,
-        created_hlc: "1",
-        updated_hlc: "1",
-        deleted_hlc: deletedHlc,
-        last_gsn: 0,
-      };
+  platformEntity(
+    id,
+    "membership",
+    groupId === undefined ? { entity_id: entityId } : { entity_id: entityId, group_id: groupId },
+    deletedHlc,
+  );
 
 describe("liveMembership", () => {
   it("carries the row id alongside the entity and group ids", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
+    const row = mkMembership("eg_1", "t1", "g1");
     expect(liveMembership(row)).toEqual({ membershipId: "eg_1", entityId: "t1", groupId: "g1" });
   });
 
   it("returns null for a tombstoned membership row", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" }, "9");
+    const row = mkMembership("eg_1", "t1", "g1", "9");
     expect(liveMembership(row)).toBeNull();
   });
 
   it("returns null when a required id is missing", () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1" });
+    const row = mkMembership("eg_1", "t1", undefined);
     expect(liveMembership(row)).toBeNull();
   });
 });
@@ -60,7 +50,7 @@ describe("readMembership", () => {
     }) as unknown as StorageAdapter;
 
   it("resolves a live membership row by its id", async () => {
-    const row = mkEntity("eg_1", "entityGroup", { entity_id: "t1", group_id: "g1" });
+    const row = mkMembership("eg_1", "t1", "g1");
     await expect(readMembership(storageWith([row]), "eg_1")).resolves.toEqual({
       membershipId: "eg_1",
       entityId: "t1",
@@ -69,8 +59,17 @@ describe("readMembership", () => {
   });
 
   it("returns null for a row that carries no ebb/membership component", async () => {
-    const row = mkEntity("t1", "todo", {});
-    await expect(readMembership(storageWith([row]), "t1")).resolves.toBeNull();
+    const row: Entity = {
+      id: "eg_1",
+      type: "todo",
+      data: { fields: { title: { value: "Ship", update_id: "u" } } },
+      exists: true,
+      created_hlc: "1",
+      updated_hlc: "1",
+      deleted_hlc: null,
+      last_gsn: 0,
+    };
+    await expect(readMembership(storageWith([row]), "eg_1")).resolves.toBeNull();
   });
 
   it("returns null for a missing row", async () => {

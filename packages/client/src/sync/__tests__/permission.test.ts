@@ -16,7 +16,7 @@ import { componentName, makeHlc, type Action, type Entity, type Update } from "@
 import { createClient } from "../client";
 import { PermissionError } from "../permission";
 import {
-  fixtureKind,
+  isPlatformModel,
   makeFetchMock,
   platformEntity,
   platformUpdate,
@@ -26,28 +26,26 @@ import {
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
 
+/** A materialized user row on the local store. Platform rows use `platformEntity`. */
 const mkEntity = (
   id: string,
   type: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
-): Entity =>
-  fixtureKind(type) === null
-    ? {
-        id,
-        type,
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
-          ),
-        },
-        exists: true,
-        created_hlc: "1",
-        updated_hlc: "1",
-        deleted_hlc: deletedHlc,
-        last_gsn: 0,
-      }
-    : platformEntity(id, type, fields, deletedHlc);
+): Entity => ({
+  id,
+  type,
+  data: {
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
+    ),
+  },
+  exists: true,
+  created_hlc: "1",
+  updated_hlc: "1",
+  deleted_hlc: deletedHlc,
+  last_gsn: 0,
+});
 
 const field = (value: unknown): { value: unknown; update_id: string } => ({
   value,
@@ -61,7 +59,8 @@ const fields = (
 
 /**
  * One Update per field: a former `put` is a `replace`, a former `patch` a
- * `merge`, and `delete` names no component.
+ * `merge`, and `delete` names no component. A platform row is one atomic
+ * `replace` instead.
  */
 const update = (
   subjectType: string,
@@ -69,7 +68,7 @@ const update = (
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
 ): Update[] =>
-  fixtureKind(subjectType) !== null
+  isPlatformModel(subjectType)
     ? platformUpdate(subjectId, subjectType, method, values)
     : method === "delete"
       ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
@@ -123,7 +122,7 @@ describe("collectPermissionViolations — user entities", () => {
   it("throws locally and never enqueues or POSTs when the permission is missing", async () => {
     const { client, calls } = await mkClient([["g_1", ["list.*"]]]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
@@ -137,7 +136,7 @@ describe("collectPermissionViolations — user entities", () => {
   it("reports the subject, the missing permission and the checked groups", async () => {
     const { client } = await mkClient([["g_1", ["list.*"]]]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     const error = await client
@@ -163,10 +162,10 @@ describe("collectPermissionViolations — user entities", () => {
       ["g_2", ["todo.update"]],
     ]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
     await expect(
@@ -180,10 +179,10 @@ describe("collectPermissionViolations — user entities", () => {
       ["g_2", ["todo.delete"]],
     ]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
     await expect(client.write([action(update("todo", "todo_1", "delete"))])).resolves.toEqual({
@@ -194,7 +193,7 @@ describe("collectPermissionViolations — user entities", () => {
   it("accepts the wildcard permission <type>.*", async () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
@@ -217,7 +216,7 @@ describe("collectPermissionViolations — user entities", () => {
       const { client, calls } = await mkClient([["g_1", ["todo.*"]]]);
       await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
       await client.storage.entities.set(
-        mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+        platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
       );
 
       // The wire claims `todo`, which the actor holds; the entity is
@@ -253,7 +252,7 @@ describe("collectPermissionViolations — user entities", () => {
     const { client } = await mkClient([["g_1", ["todo.*", "invoice.*"]]]);
     await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
 
     const error = await client
@@ -273,7 +272,7 @@ describe("collectPermissionViolations — user entities", () => {
     const { client } = await mkClient([["g_1", ["invoice.create"]]]);
     await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
 
     await expect(
@@ -286,7 +285,7 @@ describe("collectPermissionViolations — user entities", () => {
     // — for the grant that satisfies it and for the one that does not.
     const allowed = await mkClient([["g_1", ["todo.create"]]]);
     await allowed.client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await expect(
       allowed.client.write([action(update("todo", "todo_1", "put", { title: "Ship" }))]),
@@ -294,7 +293,7 @@ describe("collectPermissionViolations — user entities", () => {
 
     const denied = await mkClient([["g_1", ["invoice.create"]]]);
     await denied.client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     const error = await denied.client
       .write([action(update("todo", "todo_1", "put", { title: "Ship" }))])
@@ -317,7 +316,7 @@ describe("collectPermissionViolations — user entities", () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
     await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "invoice_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
 
     // can() has no wire type to compare, so it reports the permission the
@@ -350,9 +349,9 @@ describe("collectPermissionViolations — user entities", () => {
   });
 });
 
-describe("collectPermissionViolations — relationship edges", () => {
+describe("collectPermissionViolations — link edges", () => {
   const relUpdate = (sourceId: string, targetId: string, type: string): Update[] =>
-    update("relationship", "rel_1", "put", {
+    update("link", "rel_1", "put", {
       source_id: sourceId,
       target_id: targetId,
       field: "list",
@@ -366,10 +365,10 @@ describe("collectPermissionViolations — relationship edges", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_tgt", "entityGroup", { entity_id: "list_1", group_id: "g_target" }),
+      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
     );
 
     await expect(
@@ -388,10 +387,10 @@ describe("collectPermissionViolations — relationship edges", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_tgt", "entityGroup", { entity_id: "list_1", group_id: "g_target" }),
+      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
     );
 
     await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
@@ -403,7 +402,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client, calls } = await mkClient([["g_source", ["comment.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
 
     // The wire claims `comment`, which the actor holds; the source is
@@ -419,7 +418,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client } = await mkClient([["g_source", ["todo.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_source" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
 
     await expect(
@@ -432,7 +431,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -440,7 +439,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
     );
 
     await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
@@ -451,7 +450,7 @@ describe("collectPermissionViolations — relationship edges", () => {
   it("passes a patch that restates the row's own source", async () => {
     const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -459,14 +458,12 @@ describe("collectPermissionViolations — relationship edges", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
     );
 
     await expect(
       client.write([
-        action(
-          update("relationship", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" }),
-        ),
+        action(update("link", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -475,12 +472,12 @@ describe("collectPermissionViolations — relationship edges", () => {
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(
-      client.write([action(update("relationship", "rel_1", "put", { target_id: "list_1" }))]),
+      client.write([action(update("link", "rel_1", "put", { target_id: "list_1" }))]),
     ).resolves.toEqual({ rejected: [] });
   });
 
   it("refuses a patch that re-points the edge at another source", async () => {
-    // A relationship row's source is row identity: the server refuses a
+    // A link row's source is row identity: the server refuses a
     // declared source other than the row's own, so no permission can
     // re-point the edge here either. Moving an edge is delete + put.
     const { client, calls } = await mkClient([
@@ -488,7 +485,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       ["g_plain", []],
     ]);
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_old",
         target_id: "list_1",
         field: "list",
@@ -496,14 +493,14 @@ describe("collectPermissionViolations — relationship edges", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_old", "entityGroup", { entity_id: "todo_old", group_id: "g_plain" }),
+      platformEntity("eg_old", "membership", { entity_id: "todo_old", group_id: "g_plain" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_grant" }),
+      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_grant" }),
     );
 
     const error = await client
-      .write([action(update("relationship", "rel_1", "patch", { source_id: "todo_new" }))])
+      .write([action(update("link", "rel_1", "patch", { source_id: "todo_new" }))])
       .then(() => null)
       .catch((err: unknown) => err);
 
@@ -528,22 +525,22 @@ describe("collectPermissionViolations — relationship edges", () => {
     // committed source either.
     const { client } = await mkClient([["g_new", ["todo.update", "ebb/link.update"]]]);
     await client.storage.entities.set(
-      mkEntity(
+      platformEntity(
         "rel_1",
-        "relationship",
+        "link",
         { source_id: "todo_old", target_id: "list_1", field: "list", type: "todo" },
         "9",
       ),
     );
     await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_new" }),
+      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
     );
 
     await expect(
       client.write([
         action(
-          update("relationship", "rel_1", "put", {
+          update("link", "rel_1", "put", {
             source_id: "todo_new",
             target_id: "list_2",
             field: "list",
@@ -556,7 +553,7 @@ describe("collectPermissionViolations — relationship edges", () => {
 
   // A source binding is released by a delete in the same request, exactly
   // as the server's request simulation does; the actor holds
-  // `relationship.delete` over the stored source and `todo.update` over
+  // `ebb/link.delete` over the stored source and `todo.update` over
   // the new one, so delete + put is the move that re-points the edge.
   const mkMovingEdgeClient = async () => {
     const { client, calls } = await mkClient([
@@ -566,7 +563,7 @@ describe("collectPermissionViolations — relationship edges", () => {
       ["g_new", ["todo.update", "ebb/link.update"]],
     ]);
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_old",
         target_id: "list_1",
         field: "list",
@@ -575,11 +572,11 @@ describe("collectPermissionViolations — relationship edges", () => {
     );
     await client.storage.entities.set(mkEntity("todo_old", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_old", "entityGroup", { entity_id: "todo_old", group_id: "g_old" }),
+      platformEntity("eg_old", "membership", { entity_id: "todo_old", group_id: "g_old" }),
     );
     await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_new", "entityGroup", { entity_id: "todo_new", group_id: "g_new" }),
+      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
     );
     return { client, calls };
   };
@@ -589,7 +586,7 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action(update("relationship", "rel_1", "delete"), relUpdate("todo_new", "list_2", "todo")),
+        action(update("link", "rel_1", "delete"), relUpdate("todo_new", "list_2", "todo")),
       ]),
     ).resolves.toEqual({ rejected: [] });
     expect(client.outbox.size("acknowledged")).toBe(1);
@@ -601,7 +598,7 @@ describe("collectPermissionViolations — relationship edges", () => {
 
     await expect(
       client.write([
-        action(update("relationship", "rel_1", "delete")),
+        action(update("link", "rel_1", "delete")),
         { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
       ]),
     ).resolves.toEqual({ rejected: [] });
@@ -638,7 +635,7 @@ describe("collectPermissionViolations — relationship edges", () => {
     const error = await client
       .write([
         action(relUpdate("todo_new", "list_2", "todo")),
-        { ...action(update("relationship", "rel_1", "delete")), id: "a_2" },
+        { ...action(update("link", "rel_1", "delete")), id: "a_2" },
       ])
       .then(() => null)
       .catch((err: unknown) => err);
@@ -662,13 +659,13 @@ describe("collectPermissionViolations — relationship edges", () => {
     // releasing the binding for the next Action.
     const { client } = await mkMovingEdgeClient();
     await client.storage.entities.set(
-      mkEntity("eg_denied", "entityGroup", { entity_id: "todo_1", group_id: "g_old" }),
+      platformEntity("eg_denied", "membership", { entity_id: "todo_1", group_id: "g_old" }),
     );
 
     const error = await client
       .write([
         action(
-          update("relationship", "rel_1", "delete"),
+          update("link", "rel_1", "delete"),
           update("todo", "todo_1", "put", { title: "Ship" }),
         ),
         { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
@@ -695,13 +692,13 @@ describe("collectPermissionViolations — relationship edges", () => {
     ]);
   });
 
-  it("resolves a delete's source from the local relationship row", async () => {
+  it("resolves a delete's source from the local link row", async () => {
     const { client } = await mkClient([
       ["g_1", ["ebb/link.delete"]],
       ["g_2", []],
     ]);
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -709,12 +706,12 @@ describe("collectPermissionViolations — relationship edges", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
-    await expect(
-      client.write([action(update("relationship", "rel_1", "delete"))]),
-    ).resolves.toEqual({ rejected: [] });
+    await expect(client.write([action(update("link", "rel_1", "delete"))])).resolves.toEqual({
+      rejected: [],
+    });
   });
 });
 
@@ -725,13 +722,13 @@ describe("collectPermissionViolations — immutable platform keys", () => {
       ["g_2", ["ebb/grant.*"]],
     ]);
     await client.storage.entities.set(
-      mkEntity("gm_1", "groupMember", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
+      platformEntity("gm_1", "grant", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
     );
 
     const error = await client
       .write([
         action(
-          update("groupMember", "gm_1", "patch", {
+          update("grant", "gm_1", "patch", {
             actor_id: "actor_2",
             group_id: "g_2",
             permissions: [],
@@ -762,12 +759,12 @@ describe("collectPermissionViolations — immutable platform keys", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     const error = await client
       .write([
-        action(update("entityGroup", "eg_1", "patch", { entity_id: "todo_1", group_id: "g_2" })),
+        action(update("membership", "eg_1", "patch", { entity_id: "todo_1", group_id: "g_2" })),
       ])
       .then(() => null)
       .catch((err: unknown) => err);
@@ -787,14 +784,14 @@ describe("collectPermissionViolations — immutable platform keys", () => {
   });
 });
 
-describe("collectPermissionViolations — entityGroup membership", () => {
+describe("collectPermissionViolations — membership writes", () => {
   it("requires <type>.create in the target group for a put", async () => {
     const { client, calls } = await mkClient([["g_1", ["todo.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
+        action(update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -809,12 +806,12 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
+        action(update("membership", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
       ]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
@@ -827,12 +824,12 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
+        action(update("membership", "eg_2", "put", { entity_id: "todo_1", group_id: "g_2" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -845,15 +842,15 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_3", "put", { entity_id: "todo_1", group_id: "g_3" })),
+        action(update("membership", "eg_3", "put", { entity_id: "todo_1", group_id: "g_3" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -867,7 +864,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
+        action(update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -879,7 +876,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
 
     await expect(
       client.write([
-        action(update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
+        action(update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_1" })),
       ]),
     ).resolves.toEqual({ rejected: [] });
   });
@@ -888,14 +885,14 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     const { client, calls } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
     await expect(
-      client.write([action(update("entityGroup", "eg_1", "delete"))]),
+      client.write([action(update("membership", "eg_1", "delete"))]),
     ).rejects.toBeInstanceOf(PermissionError);
     expect(actionRequests(calls)).toHaveLength(0);
   });
@@ -907,13 +904,13 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
-    await expect(client.write([action(update("entityGroup", "eg_1", "delete"))])).resolves.toEqual({
+    await expect(client.write([action(update("membership", "eg_1", "delete"))])).resolves.toEqual({
       rejected: [],
     });
   });
@@ -922,7 +919,7 @@ describe("collectPermissionViolations — entityGroup membership", () => {
     const { client } = await mkClient([["g_1", []]]);
 
     await expect(
-      client.write([action(update("entityGroup", "eg_missing", "delete"))]),
+      client.write([action(update("membership", "eg_missing", "delete"))]),
     ).resolves.toEqual({ rejected: [] });
   });
 });
@@ -933,13 +930,13 @@ describe("collectPermissionViolations — group bootstrap", () => {
 
     const created = action(
       update("group", "g_new", "put", { id: "g_new" }),
-      update("groupMember", "gm_1", "put", {
+      update("grant", "gm_1", "put", {
         actor_id: ACTOR_ID,
         group_id: "g_new",
         permissions: ["todo.*", "ebb/group.*", "ebb/grant.*"],
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
-      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+      update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
     );
 
     await expect(client.write([created])).resolves.toEqual({ rejected: [] });
@@ -958,36 +955,36 @@ describe("collectPermissionViolations — group bootstrap", () => {
     const { client } = await mkClient([["g_old", []]]);
     const created = action(
       update("group", "g_new", "put", { name: "New" }),
-      update("groupMember", "gm_1", "put", {
+      update("grant", "gm_1", "put", {
         actor_id: ACTOR_ID,
         group_id: "g_new",
         permissions: ["todo.*"],
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
-      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+      update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
     );
     await client.write([created]);
 
     const followUp = action(
       update("todo", "todo_2", "put", { title: "Ship again" }),
-      update("entityGroup", "eg_2", "put", { entity_id: "todo_2", group_id: "g_new" }),
+      update("membership", "eg_2", "put", { entity_id: "todo_2", group_id: "g_new" }),
     );
     await expect(client.write([followUp])).resolves.toEqual({ rejected: [] });
   });
 
-  it("does not exempt an entityGroup put for an entity that already exists", async () => {
+  it("does not exempt a membership put for an entity that already exists", async () => {
     const { client } = await mkClient([["g_old", []]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
 
     const created = action(
       update("group", "g_new", "put", { id: "g_new" }),
-      update("groupMember", "gm_1", "put", {
+      update("grant", "gm_1", "put", {
         actor_id: ACTOR_ID,
         group_id: "g_new",
         permissions: ["todo.*"],
       }),
       update("todo", "todo_1", "put", { title: "Ship" }),
-      update("entityGroup", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
+      update("membership", "eg_1", "put", { entity_id: "todo_1", group_id: "g_new" }),
     );
 
     await expect(client.write([created])).rejects.toBeInstanceOf(PermissionError);
@@ -1001,7 +998,7 @@ describe("collectPermissionViolations — best-effort", () => {
     ]);
     const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
@@ -1014,10 +1011,10 @@ describe("collectPermissionViolations — best-effort", () => {
   it("aggregates violations across every Action in the batch", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_2", group_id: "g_1" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_2", group_id: "g_1" }),
     );
 
     const error = await client
@@ -1051,7 +1048,7 @@ describe("collectPermissionViolations — best-effort", () => {
     const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl: fn });
     await client.handshake();
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     const response = await client.write([
@@ -1079,13 +1076,13 @@ describe("collectPermissionViolations — system entities", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("requires groupMember.create in the target group for a put", async () => {
+  it("requires ebb/grant.create in the target group for a put", async () => {
     const { client } = await mkClient([["g_1", ["ebb/grant.update"]]]);
 
     await expect(
       client.write([
         action(
-          update("groupMember", "gm_1", "put", {
+          update("grant", "gm_1", "put", {
             actor_id: "actor_2",
             group_id: "g_1",
             permissions: [],
@@ -1095,21 +1092,21 @@ describe("collectPermissionViolations — system entities", () => {
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
-  it("resolves a groupMember delete's group from the local row", async () => {
+  it("resolves a grant delete's group from the local row", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
-      mkEntity("gm_1", "groupMember", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
+      platformEntity("gm_1", "grant", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
     );
 
-    await expect(
-      client.write([action(update("groupMember", "gm_1", "delete"))]),
-    ).rejects.toBeInstanceOf(PermissionError);
+    await expect(client.write([action(update("grant", "gm_1", "delete"))])).rejects.toBeInstanceOf(
+      PermissionError,
+    );
   });
 
-  it("requires relationship.update in the edge's source group set for a patch", async () => {
+  it("requires ebb/link.update in the edge's source group set for a patch", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -1117,11 +1114,11 @@ describe("collectPermissionViolations — system entities", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(
-      client.write([action(update("relationship", "rel_1", "patch", { target_id: "list_2" }))]),
+      client.write([action(update("link", "rel_1", "patch", { target_id: "list_2" }))]),
     ).rejects.toBeInstanceOf(PermissionError);
   });
 });

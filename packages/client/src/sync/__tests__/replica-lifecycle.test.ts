@@ -62,7 +62,7 @@ const membership = (
   entityId: string,
   groupId: string,
   opts: { actionId: string; gsn: number; ms: number },
-): Action => put(rowId, "entityGroup", { entity_id: entityId, group_id: groupId }, opts);
+): Action => put(rowId, "membership", { entity_id: entityId, group_id: groupId }, opts);
 
 const mkClient = (
   storage: ReturnType<typeof createMemoryAdapter>,
@@ -243,7 +243,7 @@ describe("replica scope eviction (#499)", () => {
       client,
       put(
         "rel_1",
-        "relationship",
+        "link",
         { source_id: "todo_1", target_id: "todo_2", field: "related", type: "todo" },
         { actionId: "a_rel", gsn: 7, ms: 70 },
       ),

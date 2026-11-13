@@ -567,7 +567,7 @@ describe("SyncClient group listing", () => {
         id: "act_link",
         gsn: 35,
         entityId: "rel_1",
-        entityType: "relationship",
+        entityType: "link",
         fields: {
           source_id: "post_2",
           target_id: "post_1",

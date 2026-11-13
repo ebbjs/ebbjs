@@ -401,7 +401,7 @@ describe("held source with an on-demand join", () => {
     await callApplyAction(client, put(2, "page_1", "page", { title: "One" }));
     await callApplyAction(
       client,
-      put(3, "rel_1", "relationship", {
+      put(3, "rel_1", "link", {
         source_id: "page_1",
         target_id: "page_content_1",
         field: "content",

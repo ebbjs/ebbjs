@@ -7,12 +7,10 @@ import { sortSourceIds } from "./reverse-index";
  * (`<type>/<field>`) each materialized row currently carries.
  *
  * A row's component set is the set of keys in `data.fields`, each named
- * `<model>/<field>` — the pre-#820 addressing rule, where a component's prefix
- * is always its row's model. That is exact for a user row and for an `ebb` row
- * (`ebb/link`, `ebb/membership`, …); an overlay `ebb/*` component on a user row
- * needs the field's own component name instead, which #820 owns. A dropped
- * component is a missing key, which is what makes existence a fact about the
- * row rather than a value stored in it.
+ * `<model>/<field>`: exact for a user row and for an `ebb` row, while an overlay
+ * `ebb/*` component on a user row needs the field's own component name, which
+ * #820 owns. A dropped component is a missing key, which is what makes existence
+ * a fact about the row rather than a value stored in it.
  *
  * In memory only: the replica rebuilds it from the rows on load, like the
  * adjacency indices, and #799 owns the durable index that replaces it.

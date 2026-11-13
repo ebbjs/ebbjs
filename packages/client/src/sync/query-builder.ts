@@ -360,10 +360,9 @@ export interface QueryContext {
   readonly entityName: string;
   readonly registry: ModelRegistry;
   /**
-   * The component a `has` / `hasNot` field resolves to, when the chain reads a
-   * platform model through a value view: every row in such a view carries the
-   * same atomic component, so every field names it. Absent for an ordinary
-   * chain, where the field names `<model>/<field>`.
+   * The component a `has` / `hasNot` field resolves to, for a chain over a value
+   * view: every row in such a view carries the same atomic component. Absent for
+   * an ordinary chain, where the field names `<model>/<field>`.
    */
   readonly componentFor?: (field: string) => string | null;
   /** The materialized read path the plan executes over. */
@@ -766,9 +765,8 @@ const entityGroupIds = (entityId: string, executor: PlanExecutor): readonly stri
   executor.memberships({ entityId });
 
 /**
- * The value shape of a platform component: what a platform join projects.
- * `registry.get("ebb").shape` is the four-component envelope, never one kind's
- * value, so the component declaration is the projection source.
+ * The value shape of a platform component: `registry.get("ebb").shape` is the
+ * four-component envelope, never one kind's value.
  */
 const componentValueShape = (
   context: QueryContext | undefined,
@@ -790,8 +788,8 @@ const readJoinedRow = (
   const row = executor.get(id);
   if (row === undefined || row.deleted_hlc !== null || row.type !== join.target) return null;
   if (join.kind === "membership") {
-    // The `groups` join projects group rows, which are `ebb` rows carrying
-    // `ebb/group`: filter on the component and project its value.
+    // The `groups` join projects group rows: filter on the component and project
+    // its value.
     if (!carriesComponent(row, "group")) return null;
     return projectRow(
       componentRowView(row, "group") ?? row,

@@ -8,10 +8,9 @@
 import { EBB_MODEL_NAME } from "@ebbjs/core";
 
 /**
- * The model namespace the platform's own components live under (`ebb/group`,
- * `ebb/grant`, `ebb/membership`, `ebb/link`). An app may not declare a model
- * with this name: a component's namespace is its permission subject, so
- * claiming it would let an app mint the platform's permissions.
+ * The namespace the platform's own components live under. An app may not declare
+ * it: a component's namespace is its permission subject, so claiming it would let
+ * an app mint the platform's permissions.
  */
 export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
 
@@ -22,10 +21,9 @@ export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
 export const RESERVED_MEMBERSHIP_NAMES = ["groups"] as const;
 
 /**
- * Model names the SDK reserves. `ebb` is the platform namespace; `group` and
- * `membership` are the two names `client.group` and `client.membership` are
- * keyed by, so an app model of either name would shadow a namespace the SDK
- * injects onto every client.
+ * Model names the SDK reserves. `group` and `membership` are what `client.group`
+ * and `client.membership` are keyed by, so an app model of either name would
+ * shadow a namespace the SDK injects.
  */
 export const RESERVED_MODEL_NAMES = [PLATFORM_NAMESPACE, "group", "membership"] as const;
 

@@ -74,7 +74,7 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
-  put(gsn, `rel_${gsn}`, "relationship", {
+  put(gsn, `rel_${gsn}`, "link", {
     source_id: sourceId,
     target_id: targetId,
     field: as,
@@ -201,7 +201,7 @@ describe("subscribed query results", () => {
     expect(seen).toEqual([]);
 
     await seed(client, [
-      put(2, "eg_1", "entityGroup", { entity_id: "issue_1", group_id: "group_1" }),
+      put(2, "eg_1", "membership", { entity_id: "issue_1", group_id: "group_1" }),
     ]);
     await flush();
     expect(seen).toEqual([["group_1"]]);

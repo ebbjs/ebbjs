@@ -6,14 +6,11 @@
 "@ebbjs/write": minor
 ---
 
-The four system types become platform components on one `ebb` model.
+The four system types are now `ebb/*` components of one `ebb` model.
 
-`group`, `groupMember`, `entityGroup` and `relationship` are now `ebb/group`,
-`ebb/grant`, `ebb/membership` and `ebb/link`: four **atomic** components of a single model
-`ebb`, each carrying one object value (`{source_id, target_id, type, field}` for a link) in one
-Update. A torn edge, membership or grant is unrepresentable, and `ebb/membership`'s pair,
-`ebb/link`'s source and `ebb/grant`'s group are immutable after create — moving one is a delete
-plus a create.
+`group`, `groupMember`, `entityGroup` and `relationship` are `ebb/group`, `ebb/grant`,
+`ebb/membership` and `ebb/link`: four **atomic** components, each carrying one object value in one
+Update. A torn edge, membership or grant is unrepresentable.
 
 ```diff
 -Update { component: "relationship/source_id", method: "patch", data: { value: "todo_1" } }
@@ -21,23 +18,24 @@ plus a create.
 -Update { component: "relationship/type",      method: "patch", data: { value: "todo" } }
 -Update { component: "relationship/field",     method: "patch", data: { value: "dependsOn" } }
 +Update { component: "ebb/link", method: "replace",
-+         data: { value: { source_id: "todo_1", target_id: "todo_2", type: "todo", field: "dependsOn" } } }
++         data: { value: { source_id: "todo_1", target_id: "todo_2",
++                          type: "todo", field: "dependsOn" } } }
 ```
 
-Permission subjects follow the component: `group.*` becomes `ebb/group.*`, `groupMember.*` becomes
-`ebb/grant.*`, and `relationship.update|delete` becomes `ebb/link.update|delete`. A grant list
-written for the old names must be rewritten. Two of the four are unchanged in meaning:
-`entityGroup.*` was never consulted — a membership write authorizes as the entity's
-`<model>.create` / `.update` — and still is not, so `ebb/membership.*` is declared for the rule a
-later slice owns rather than gating anything today.
+`ebb/membership`'s pair, `ebb/link`'s source and `ebb/grant`'s group are fixed at create; moving one
+is a delete plus a create.
 
-A group's `apps` is a list of app ids (`["notes"]`) rather than a map (`{notes: true}`): an
-atomic value may not contain a map, because a nested map loses its per-key merge. Absent is still
-unscoped (every app) and an empty list is still no app. A scope edit writes the whole `ebb/group`
-value, so concurrent edits converge on one value rather than merging per app id.
+Permission subjects are the component: `group.*` → `ebb/group.*`, `groupMember.*` → `ebb/grant.*`,
+`relationship.update|delete` → `ebb/link.update|delete`. A membership write authorizes as the
+entity's `<model>.create` / `.update`, unchanged.
 
-`@ebbjs/core` drops the unused `GroupSchema`, `GroupMemberSchema` and `RelationshipSchema` row
-types — the component values are the shapes now — and `GroupSeed.apps` is a `string[]`.
+A group's `apps` is the list of app ids it is in scope for (`["notes"]`) rather than a map, because
+an atomic value cannot contain a map. Absent is unscoped, `[]` is no app, and a scope edit writes
+the whole `ebb/group` value.
 
-The client's replica record and its adjacency index keys move with the component names, so local
-records and indexes are discarded at the new store version, not migrated.
+`@ebbjs/core` exports the component vocabulary — `EBB_COMPONENTS`, `systemValue` — and no longer
+declares the `Group`, `GroupMember` and `Relationship` row schemas; the component values are the
+shapes. `GroupSeed.apps` is a `string[]`.
+
+The client's replica store moves to v13 and starts empty: its adjacency index keys name components,
+and a stored row is one atomic value.

@@ -99,19 +99,19 @@ describe("executePlan", () => {
       put(3, "todo_3", "todo", { title: "Elsewhere" }),
       put(4, "user_1", "user", { name: "Ada" }),
       put(5, "user_2", "user", { name: "Grace" }),
-      put(6, "rel_1", "relationship", {
+      put(6, "rel_1", "link", {
         source_id: "todo_1",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(7, "rel_2", "relationship", {
+      put(7, "rel_2", "link", {
         source_id: "todo_2",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(8, "rel_3", "relationship", {
+      put(8, "rel_3", "link", {
         source_id: "todo_3",
         target_id: "user_2",
         field: "owner",
@@ -140,8 +140,8 @@ describe("executePlan", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
       put(2, "todo_2", "todo", { title: "Test" }),
-      put(3, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
-      put(4, "eg_2", "entityGroup", { entity_id: "todo_2", group_id: "group_2" }),
+      put(3, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" }),
+      put(4, "eg_2", "membership", { entity_id: "todo_2", group_id: "group_2" }),
     ]);
     const iterate = vi.spyOn(replica, "iterate");
 
@@ -159,13 +159,13 @@ describe("executePlan", () => {
       put(1, "todo_1", "todo", { title: "Ship", completed: true }),
       put(2, "todo_2", "todo", { title: "Test", completed: false }),
       put(3, "todo_3", "todo", { title: "Docs", completed: true }),
-      put(4, "rel_1", "relationship", {
+      put(4, "rel_1", "link", {
         source_id: "todo_1",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(5, "rel_2", "relationship", {
+      put(5, "rel_2", "link", {
         source_id: "todo_2",
         target_id: "user_1",
         field: "owner",
@@ -195,13 +195,13 @@ describe("executePlan", () => {
   it("drops index hits whose row is missing from the replica", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "rel_1", "relationship", {
+      put(2, "rel_1", "link", {
         source_id: "todo_1",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(3, "rel_2", "relationship", {
+      put(3, "rel_2", "link", {
         source_id: "todo_missing",
         target_id: "user_1",
         field: "owner",
@@ -280,13 +280,13 @@ describe("executePlan", () => {
   it("matches nothing for an anyOf that names no live edge or group", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "rel_1", "relationship", {
+      put(2, "rel_1", "link", {
         source_id: "todo_1",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(3, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
+      put(3, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" }),
     ]);
     const executor = createReplicaExecutor(replica);
 
@@ -310,13 +310,13 @@ describe("executePlan", () => {
       put(1, "todo_1", "todo", { title: "Ship" }),
       put(2, "todo_2", "todo", { title: "Test" }),
       put(3, "todo_3", "todo", { title: "Elsewhere" }),
-      put(4, "rel_1", "relationship", {
+      put(4, "rel_1", "link", {
         source_id: "todo_1",
         target_id: "user_1",
         field: "owner",
         type: "todo",
       }),
-      put(5, "rel_2", "relationship", {
+      put(5, "rel_2", "link", {
         source_id: "todo_2",
         target_id: "user_2",
         field: "owner",
@@ -452,9 +452,9 @@ describe("executePlan", () => {
       put(1, "todo_1", "todo", { title: "Ship", note: "n" }),
       put(2, "todo_2", "todo", { title: "Test", note: "m" }),
       put(3, "todo_3", "todo", { title: "Docs" }),
-      put(4, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" }),
-      put(5, "eg_2", "entityGroup", { entity_id: "todo_2", group_id: "group_1" }),
-      put(6, "eg_3", "entityGroup", { entity_id: "todo_3", group_id: "group_1" }),
+      put(4, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" }),
+      put(5, "eg_2", "membership", { entity_id: "todo_2", group_id: "group_1" }),
+      put(6, "eg_3", "membership", { entity_id: "todo_3", group_id: "group_1" }),
     ]);
     const iterate = vi.spyOn(replica, "iterate");
 

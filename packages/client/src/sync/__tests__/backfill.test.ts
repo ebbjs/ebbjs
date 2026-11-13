@@ -22,7 +22,6 @@ import {
 import {
   callApplyAction,
   closingSseResponse,
-  fixtureKind,
   jsonResponse,
   openSseResponse,
   platformEntity,
@@ -37,26 +36,23 @@ const asResponse = (entity: Entity): EntityResponse => {
   return { ...rest, created_hlc: rest.created_hlc ?? 0 };
 };
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity =>
-  fixtureKind(type) === null
-    ? {
-        id,
-        type,
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(fields).map(([key, value]) => [
-              key,
-              { value, update_id: `u_${key}`, hlc: HLC },
-            ]),
-          ),
-        },
-        exists: true,
-        created_hlc: HLC,
-        updated_hlc: HLC,
-        deleted_hlc: null,
-        last_gsn: 1,
-      }
-    : platformEntity(id, type, fields);
+const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+  id,
+  type,
+  data: {
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([key, value]) => [
+        key,
+        { value, update_id: `u_${key}`, hlc: HLC },
+      ]),
+    ),
+  },
+  exists: true,
+  created_hlc: HLC,
+  updated_hlc: HLC,
+  deleted_hlc: null,
+  last_gsn: 1,
+});
 
 /** A content `put` as the server would deliver it for a peer's write. */
 const putAction = (opts: {
@@ -198,10 +194,10 @@ describe("collectBackfillCandidates", () => {
   it("names referenced entities the cache does not hold", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     await storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "post_2", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "post_2", group_id: "g_2" }),
     );
     await storage.entities.set(mkEntity("post_2", "blog_post", { title: "known" }));
     // A tombstone is a known entity, not a backfill candidate.
@@ -216,7 +212,7 @@ describe("collectBackfillCandidates", () => {
   it("names a present placeholder whose create has not been seen", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     // A later component write materialized the row without its base.
     await storage.entities.set({
@@ -232,7 +228,7 @@ describe("createBackfill", () => {
   it("does not append an empty Action or re-fetch a zero-component base", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     let fetches = 0;
     const backfill = createBackfill({
@@ -254,7 +250,7 @@ describe("createBackfill", () => {
   it("writes a fetched entity as a snapshot that survives a log replay", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     const fetches: string[] = [];
     const backfill = createBackfill({
@@ -281,7 +277,7 @@ describe("createBackfill", () => {
   it("leaves an absent entity absent and appends nothing", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     const backfill = createBackfill({ storage, fetchEntity: async () => null });
 
@@ -294,7 +290,7 @@ describe("createBackfill", () => {
   it("keeps a local row that lands while the read is in flight", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     let release: ((entity: EntityResponse) => void) | undefined;
     const backfill = createBackfill({
@@ -318,7 +314,7 @@ describe("createBackfill", () => {
   it("treats a fetched tombstone as absent", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     const backfill = createBackfill({
       storage,
@@ -335,7 +331,7 @@ describe("createBackfill", () => {
   it("publishes the in-flight ids and drains them", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     let release: ((entity: EntityResponse) => void) | undefined;
     const backfill = createBackfill({
@@ -508,7 +504,7 @@ describe("snapshot content merges under later writes", () => {
   it("lets a newer patch win over the backfilled base", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "post_1", group_id: "g_2" }),
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
     );
     const backfill = createBackfill({
       storage,

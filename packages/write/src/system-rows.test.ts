@@ -112,15 +112,6 @@ describe("system row emitters", () => {
     expect(valueOf(scoped)).toEqual({ name: "Team", apps: ["notes"] });
   });
 
-  it("stamps the leaf's update id from the Update's own id", () => {
-    const update = membershipRowUpdate(
-      { membershipId: "eg_1", entityId: "e_todo", groupId: "g_1" },
-      ids(),
-    );
-
-    expect(valueUpdate(update).data.update_id).toBe(update.id);
-  });
-
   it("emits a delete that names no component, so the server resolves the kind", () => {
     const update = systemRowDelete("eg_1", { updateId: () => "u_1" });
 

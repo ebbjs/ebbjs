@@ -1,9 +1,9 @@
 /**
  * The platform's own components.
  *
- * `ebb/` is the platform namespace. A row that carries only platform
- * components is committed under the model `ebb`; the *component* names the
- * row's kind. Four kinds, one atomic value each:
+ * `ebb/` is the platform namespace, and a row that carries only platform
+ * components is committed under the model `ebb`. The *component* names the
+ * row's kind; four kinds, one atomic value each:
  *
  * | kind         | component        | value                                 |
  * | ------------ | ---------------- | ------------------------------------- |
@@ -12,15 +12,12 @@
  * | `membership` | `ebb/membership` | `{entity_id, group_id}`               |
  * | `link`       | `ebb/link`       | `{source_id, target_id, type, field}` |
  *
- * Atomic means one Update carries the whole object, stored as one leaf at the
- * row field named after the kind (`data.fields.link`). So a torn edge,
- * membership, or grant is unrepresentable, and reading one is a read of the
- * component's value — never of four separate row fields.
+ * Atomic means one Update carries the whole object, stored as one leaf at
+ * `data.fields.<kind>`: a torn edge, membership, or grant is unrepresentable.
  */
 
 import { componentName, type ComponentName, type Entity, type FieldValue } from "./types";
 
-/** The model every platform row is committed under. */
 export const EBB_MODEL_NAME = "ebb";
 
 /** The four platform components, as `<model>/<leaf>` names. */
@@ -31,16 +28,13 @@ export const EBB_COMPONENTS = Object.freeze({
   link: "ebb/link",
 } as const);
 
-/** A platform component's kind. */
 export type EbbComponentKind = keyof typeof EBB_COMPONENTS;
 
-/** The kinds, in declaration order. */
 export const EBB_COMPONENT_KINDS = Object.freeze(Object.keys(EBB_COMPONENTS) as EbbComponentKind[]);
 
-/** The component name for one kind. */
 export const ebbComponent = (kind: EbbComponentKind): ComponentName => EBB_COMPONENTS[kind];
 
-/** The row field a kind's value is stored at (the leaf after the `/`). */
+/** The row field a kind's value is stored at: the leaf after the `/`. */
 export const ebbComponentField = (kind: EbbComponentKind): string =>
   componentName(EBB_MODEL_NAME, kind).split("/")[1] as string;
 
@@ -52,19 +46,12 @@ const KINDS_BY_COMPONENT = new Map<string, EbbComponentKind>(
 export const ebbComponentKind = (component: string): EbbComponentKind | null =>
   KINDS_BY_COMPONENT.get(component) ?? null;
 
-/** Whether a component name belongs to the platform. */
 export const isEbbComponent = (component: string): boolean => KINDS_BY_COMPONENT.has(component);
 
 /** A component's value: the atomic object a platform row carries. */
 export type SystemValue = Readonly<Record<string, unknown>>;
 
-/**
- * The whole value an atomic component's leaf carries, or `null` when the leaf
- * is absent or does not hold an object.
- *
- * The one decoder for that shape: a leaf is `{value, update_id, hlc}`, and an
- * atomic component's `value` is the whole record.
- */
+/** The whole value an atomic component's leaf carries, or `null`. A leaf is `{value, update_id, hlc}`. */
 export const componentValue = (leaf: FieldValue | null | undefined): SystemValue | null => {
   if (leaf === null || leaf === undefined) return null;
   const value = (leaf as { value?: unknown }).value;
@@ -72,19 +59,13 @@ export const componentValue = (leaf: FieldValue | null | undefined): SystemValue
   return value as SystemValue;
 };
 
-/**
- * The value a row carries for `kind`, or `null` when it does not carry it.
- *
- * A missing field, a tombstoned leaf, and a row of another kind all read as
- * absent.
- */
+/** The value a row carries for `kind`, or `null` for a missing field or another kind. */
 export const systemValue = (
   row: Pick<Entity, "data"> | null | undefined,
   kind: EbbComponentKind,
 ): SystemValue | null =>
   componentValue(row?.data?.fields?.[ebbComponentField(kind)] as FieldValue | undefined);
 
-/** Whether a row carries `kind`. */
 export const carriesComponent = (
   row: Pick<Entity, "data"> | null | undefined,
   kind: EbbComponentKind,

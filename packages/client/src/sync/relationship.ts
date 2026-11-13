@@ -134,11 +134,8 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
 /**
  * Build the built-in membership accessor result: the group rows the member
  * entity is filed into, read through the entity-keyed membership index. Same
- * lazy shape as {@link forwardMany}.
- *
- * A group row is an `ebb` row carrying `ebb/group`, so the loaded rows are
- * filtered on the component rather than on the model — `row.type` is `ebb`
- * for a grant or a membership too.
+ * lazy shape as {@link forwardMany}. Rows are filtered on the `ebb/group`
+ * component, since `row.type` is `ebb` for a grant too.
  */
 export function membershipGroups<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
@@ -202,10 +199,9 @@ async function loadEntity(
 }
 
 /**
- * Load the distinct rows an index read names, keeping only rows of `type`
- * and — when the target is a platform row, whose model is shared by all four
- * kinds — only rows carrying `component`. A miss or a wrong-typed row is
- * dropped, matching the type-wide read the index replaced.
+ * Load the distinct rows an index read names, keeping only rows of `type` and,
+ * for a platform target whose model is shared by all four kinds, only rows
+ * carrying `component`.
  */
 async function loadRows(
   readLocalEntity: (id: string) => Promise<Entity | null>,

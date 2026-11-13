@@ -29,23 +29,20 @@ defmodule EbbServer.Storage.SQLite do
   so that `WHERE` clauses can reference them via `json_extract` without
   parsing JSON at read time. A user field's value lives at
   `data.fields.X.value`; a platform component (`ebb/link`, `ebb/grant`, …)
-  carries one atomic value at `data.fields.<kind>.value`, so its semantic
-  fields (`source_id`, `actor_id`, …) are one object further down. Each of
-  the eight semantic columns binds to the one platform component that owns
-  it (see `EbbServer.Storage.SystemComponent`), which is what makes the
-  column's non-nullness mean "the row carries this component".
+  carries one atomic value at `data.fields.<kind>.value`. Each semantic
+  column binds to the one component that owns it, which is what makes its
+  non-nullness mean "the row carries this component" (see
+  `EbbServer.Storage.SystemComponent`).
   A separate `cursors` table holds durable named consumer cursors (Action
   export today, peer replication later).
 
   ## Component existence
 
   A materialized row's `data.components` is the canonical, sorted list of
-  component names derived from `data.fields`. A user field names its own row's
-  model (`todo/title`); a platform field names the platform component
-  (`ebb/link`), because all four platform components commit under `ebb` while
-  the row they sit on may be committed under any model. It is written by
-  `EbbServer.Storage.EntityStore` alongside the fields and is not part of the
-  wire shape: `EbbServer.Storage.EntityView` projects it away.
+  component names derived from `data.fields`: a user field names its row's
+  model (`todo/title`), a platform field names its component (`ebb/link`). It
+  is written by `EbbServer.Storage.EntityStore` and projected away from the
+  wire shape by `EbbServer.Storage.EntityView`.
 
   `entity_components` mirrors that list one row per `(entity, component)` so
   "which live rows hold component X" is an index lookup rather than a JSON
@@ -92,16 +89,11 @@ defmodule EbbServer.Storage.SQLite do
   # the NIF rather than returning an error a caller can handle.
   @max_offset 0x7FFFFFFFFFFFFFFF
 
-  # The read model's shape: generated columns, indexes, and the
-  # `entity_components` mirror. Bumped whenever any of them changes, because
-  # the DDL is `CREATE ... IF NOT EXISTS` and an older file would otherwise
-  # keep its old columns and answer every listing with an empty page instead
-  # of failing.
-  #
-  # The cache is rebuildable from `cf_actions` plus `cf_group_actions`, so a
-  # version mismatch is a reset rather than a migration (#793 decision 9).
-  # The `cursors` table is not part of the shape and survives: an exporter's
-  # position is not a projection of the entity table.
+  # The read model's shape. The DDL is `CREATE ... IF NOT EXISTS`, so an older
+  # file would keep its old columns and answer every listing empty; a mismatch
+  # is therefore a reset, not a migration. The cache rebuilds from
+  # `cf_actions` plus `cf_group_actions` (#793 decision 9), and `cursors` is
+  # not part of the shape and survives.
   @schema_version 2
 
   @pragmas """
@@ -112,13 +104,9 @@ defmodule EbbServer.Storage.SQLite do
   PRAGMA foreign_keys = ON;
   """
 
-  # Generated columns extract field values from entity `data` JSON.
   # A user field's value lives at `data.fields.X.value`; a platform
-  # component's value is the whole object at `data.fields.<kind>.value`, so
-  # each semantic field is addressed through the component that owns it.
-  #
-  # `rel_type`/`rel_field` keep their names: they name the *link's* type and
-  # field, not a pair of top-level row fields.
+  # component's is the whole object at `data.fields.<kind>.value`.
+  # `rel_type`/`rel_field` name the *link's* type and field.
   @create_entities_table """
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
@@ -140,17 +128,14 @@ defmodule EbbServer.Storage.SQLite do
   );
   """
 
-  # One `group_id` column, not two: a grant and a membership are both filed in
-  # a group, and every page filters on "the group this row is in". The value
-  # spaces do not mix because each partial index is predicated on the owning
-  # component's own identity column (`actor_id` for a grant, `entity_id` for a
-  # membership), and a row carries at most one of them.
+  # A grant and a membership are both filed in a group, so one `group_id`
+  # column serves both; the spaces do not mix because each partial index is
+  # predicated on the owning component's identity column.
   #
-  # The guards are the generated columns' non-nullness, not `type = '…'`: all
-  # four platform components share the model `ebb`, so the model cannot tell
-  # them apart, while `actor_id IS NOT NULL` is exactly "carries `ebb/grant`".
-  # A partial index is usable only when the statement repeats its predicate,
-  # so every listing below carries the same guard.
+  # The guards are generated-column non-nullness, not `type = '…'`: all four
+  # components share the model `ebb`, while `actor_id IS NOT NULL` is exactly
+  # "carries `ebb/grant`". A partial index is usable only when the statement
+  # repeats its predicate.
   @create_indexes """
   CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type) WHERE deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_type_gsn ON entities(type, last_gsn);
@@ -214,9 +199,7 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   # Group-scoped listing pages (#476). Each query is the keyset for one phase
-  # of `EbbServer.Sync.GroupListing`: grants are ordered by `(actor_id, id)`
-  # through `idx_entities_group_member`, memberships by `id` through
-  # `idx_entities_entity_group_page`. The leading component guard is the
+  # of `EbbServer.Sync.GroupListing`. The leading component guard is the
   # partial index's own predicate; dropping it turns the page into a scan.
   @list_group_member_ids_sql """
   SELECT id, actor_id FROM entities
@@ -476,10 +459,9 @@ defmodule EbbServer.Storage.SQLite do
   Returns SQLite's `EXPLAIN QUERY PLAN` details for a group-member keyset
   statement, for the `after_key` variant a page would run.
 
-  The statement is chosen so the partial `idx_entities_group_member` index
-  serves it; that choice rests on the component guard matching the index's
-  predicate, which is exactly the coupling a re-typed guard silently breaks.
-  This seam lets a test assert the plan rather than the SQL text.
+  The plan rests on the component guard matching the partial index's
+  predicate, which a re-typed guard silently breaks; this seam lets a test
+  assert the plan rather than the SQL text.
   """
   @spec explain_list_group_members({String.t(), String.t()} | nil, GenServer.server()) ::
           {:ok, [String.t()]} | {:error, term()}
@@ -627,9 +609,7 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   # A shape change is a reset: drop the projected tables and let the
-  # materializer rebuild them. Rows are not migrated, because there is nothing
-  # here that is not derived from the log. A brand-new file has no projected
-  # table to drop and is simply stamped.
+  # materializer rebuild them from the log.
   defp reset_stale_schema(db) do
     version = read_user_version(db)
 
@@ -654,8 +634,7 @@ defmodule EbbServer.Storage.SQLite do
 
   defp set_user_version(db), do: Sqlite3.execute(db, "PRAGMA user_version = #{@schema_version}")
 
-  # A PRAGMA has no column metadata, so it is read through a prepared
-  # statement rather than `fetch_all/2`, which refuses one as invalid.
+  # A PRAGMA has no column metadata, so it needs a prepared statement.
   defp read_user_version(db) do
     {:ok, stmt} = Sqlite3.prepare(db, "PRAGMA user_version")
     {:row, [version]} = Sqlite3.step(db, stmt)
@@ -967,11 +946,8 @@ defmodule EbbServer.Storage.SQLite do
     WHERE e.deleted_hlc IS NULL
     """
 
-    # A page asked for by platform component is "the rows that carry this
-    # component", across whatever model each is committed under — an `ebb/*`
-    # component may sit on a user row (ADR decision 12), so the component is
-    # the source and the model is not. A page asked for by model selects on
-    # `type`.
+    # A component-sourced page returns the rows that carry it, whatever model
+    # each is committed under (ADR decision 12).
     #
     # Offset pagination needs a total order. `created_hlc` is the row's
     # creation time and is never NULL, so `id` only breaks same-millisecond
@@ -1094,10 +1070,7 @@ defmodule EbbServer.Storage.SQLite do
 
   defp field_path(field), do: "json_extract(e.data, '$.fields.#{field}.value')"
 
-  # A page asked for by platform component returns the rows that carry it,
-  # whatever model they are committed under. The mirror holds the actual
-  # component names, so this is a primary-key probe per candidate row and
-  # needs no schema knowledge.
+  # The mirror makes this a primary-key probe per candidate row.
   defp source_clause(%{component: component}) when is_binary(component) do
     {" AND EXISTS (SELECT 1 FROM entity_components ec " <>
        "WHERE ec.entity_id = e.id AND ec.component = ?)", [component]}

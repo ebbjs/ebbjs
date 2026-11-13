@@ -114,7 +114,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
+  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 /** The `ebb/membership` values one Action writes, one per membership row. */
 const membershipValues = (

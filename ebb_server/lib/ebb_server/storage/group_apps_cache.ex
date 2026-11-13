@@ -2,11 +2,10 @@ defmodule EbbServer.Storage.GroupAppsCache do
   @moduledoc """
   GenServer that owns the group app-scope ETS table.
 
-  Holds each group's `apps` value alongside its projection, so the
-  handshake can answer from ETS instead of lazily materializing every
-  group row. `apps` is one key of the group's atomic `ebb/group` value: the
-  app ids the group is in scope for. The projection is what readers see: a
-  set of app ids.
+  Holds each group's projected app ids, so the handshake can answer from
+  ETS instead of lazily materializing every group row. `apps` is one key of
+  the group's atomic `ebb/group` value: the app ids the group is in scope
+  for.
 
   Scope is a sync/residency filter, not authorization. A group with no
   cached entry, or no `apps` key, is `:unscoped`; an empty list projects to
@@ -26,7 +25,7 @@ defmodule EbbServer.Storage.GroupAppsCache do
 
   @type apps :: :unscoped | MapSet.t(String.t())
   @type field :: [String.t()] | nil
-  @type entry :: %{field: field(), apps: apps()}
+  @type entry :: %{apps: apps()}
 
   @type t :: %__MODULE__{group_apps: atom()}
   defstruct [:group_apps]
@@ -53,7 +52,7 @@ defmodule EbbServer.Storage.GroupAppsCache do
   @spec put_group_apps(String.t(), field(), keyword()) :: :ok
   def put_group_apps(group_id, apps_field, opts \\ []) do
     table = Keyword.get(opts, :group_apps) || CacheTables.group_apps()
-    :ets.insert(table, {group_id, %{field: apps_field, apps: project(apps_field)}})
+    :ets.insert(table, {group_id, %{apps: project(apps_field)}})
     :ok
   end
 
@@ -79,33 +78,18 @@ defmodule EbbServer.Storage.GroupAppsCache do
   end
 
   @doc """
-  Whether a group's app scope has been cached at all.
+  Whether a group row has been cached at all, unscoped or not.
 
-  A group row is cached even when it declares no `apps` field (unscoped), so
-  presence is how the by-id caches answer "is this id a group row?".
+  Presence is how the by-id caches answer "is this id a group row?", since
+  the `apps` value cannot.
   """
   @spec known?(String.t(), atom() | nil) :: boolean()
   def known?(group_id, table \\ nil) do
     table = table || CacheTables.group_apps()
 
-    # A caller whose options carry a cache table this process tree never
-    # started (unit tests, an ablated boot) gets "not known" rather than an
-    # `ArgumentError` out of a read path.
+    # An unstarted table (unit tests, an ablated boot) reads as "not known"
+    # rather than raising out of a read path.
     :ets.info(table, :name) != :undefined and :ets.member(table, group_id)
-  end
-
-  @doc """
-  Returns the stored `apps` list, or `nil` when none is cached.
-
-  The planner and the boot replay write this from the group's atomic value;
-  it is the value readers compare against, not a merge base.
-  """
-  @spec get_field(String.t(), atom()) :: field()
-  def get_field(group_id, table \\ nil) do
-    case lookup(group_id, table) do
-      nil -> nil
-      %{field: field} -> field
-    end
   end
 
   @doc """

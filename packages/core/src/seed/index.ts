@@ -103,10 +103,7 @@ const componentUpdate = (
   method: "merge" | "replace" = "replace",
 ): UpdateInput => ({ subject_id: subjectId, component: `${model}/${field}`, method, data });
 
-/**
- * One platform row's Update. A platform component is atomic, so the seed's
- * whole value is stamped into one leaf; there is no per-field variant.
- */
+/** One platform row's Update: an atomic component's whole value, stamped once. */
 const systemUpdate = (
   kind: EbbComponentKind,
   subjectId: string,

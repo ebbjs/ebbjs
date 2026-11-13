@@ -6,11 +6,10 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   are projections of whole rows: a row's delivered scope and its cache row
   are properties of the row.
 
-  Each of the platform's four components is **atomic**, so a plan projects
-  the component value directly: there is no "wire value wins, cached row
-  supplies the rest" merge, because a value cannot be partial. A folded row
-  that does not carry the component (a `drop`, or a row delete) deletes that
-  kind's cache row.
+  Each platform component is **atomic**, so a plan projects its value
+  directly; there is no "wire value wins, cached row supplies the rest"
+  merge to get wrong. A folded row that does not carry the component (a
+  `drop`, or a row delete) deletes that kind's cache row.
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`
@@ -203,10 +202,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  # A group's app scope is one key of its atomic value, so a write replaces
-  # the whole scope: the wire value is the scope. Neither path affects write
-  # authorization: app scope is a sync filter, so the overlay must not
-  # serialize successors.
+  # App scope is one key of the atomic group value, so the wire value is the
+  # whole scope. A sync filter must not serialize successors in the overlay.
   defp plan_system_mutation(%{kind: :group} = update, _tables, mutations, overlay) do
     key = {:group_apps, update.subject_id}
 
@@ -223,8 +220,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  # A link row names a source and a target; a value missing either cannot be
-  # projected into the by-id cache.
+  # A value missing a source or target cannot be projected.
   defp plan_system_mutation(%{kind: :link} = update, _tables, mutations, overlay) do
     key = {:relationships_by_id, update.subject_id}
 

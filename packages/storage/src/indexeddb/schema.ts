@@ -55,9 +55,8 @@ import type { IndexRows } from "../internal/reverse-index";
  * its holds. Version 13 adds `componentVersions` to the replica cursor (issue
  * #804): the persisted record gained the version each component was
  * materialized at. Version 14 moves the four system types onto `ebb/*`
- * components (issue #805): the persisted adjacency key's middle segment is now
- * the component name (`ebb/membership` rather than `entityGroup`), and a
- * stored system row's fields are one atomic component value. Neither shape can
+ * components (issue #805): an adjacency key's middle segment is the component
+ * name and a stored system row is one atomic component value. Neither shape can
  * be read out of the previous one, so a database below either version is
  * discarded at open. Bump this when adding or changing object stores, or when
  * a persisted row shape changes.
@@ -86,11 +85,9 @@ const COMPONENT_HOLD_RESET_VERSION = 12;
 const COMPONENT_VERSION_RESET_VERSION = 13;
 
 /**
- * The version at which the adjacency index's key segments became component
- * names and a stored system row became one atomic component value. A database
- * below it is reset at open: every persisted key and row for the four system
- * types is written in the pre-#805 layout, and there is no way to infer the
- * new entries from the old ones.
+ * The version at which an adjacency key's segments became component names and a
+ * stored system row became one atomic value. There is no way to infer the new
+ * entries from the old ones, so a database below it is reset at open.
  */
 const SYSTEM_COMPONENT_RESET_VERSION = 14;
 
@@ -243,12 +240,12 @@ export interface EbbDBSchema extends DBSchema {
  * cell format changed incompatibly, so every store is deleted before the
  * current stores are created and the action-position counter is opened at
  * zero. v11 resets for the same reason (stored rows lack the denormalized
- * component names), v12 resets because a persisted conflict gained the
- * positions it holds, v13 because a replica record gained component version
- * stamps, and v14 because the four system types moved onto `ebb/*` components,
- * which changes both a stored row's fields and the adjacency key's segments. A
- * database below any of those versions is discarded.
- * Only a genuinely fresh database (`oldVersion === 0`) skips the reset.
+ * component names), v12 because a persisted conflict gained the positions it
+ * holds, v13 because a replica record gained component version stamps, and v14
+ * because the four system types moved onto `ebb/*` components, which changes
+ * both a stored row's fields and the adjacency key's segments. A database below
+ * any of those versions is discarded; only a genuinely fresh database
+ * (`oldVersion === 0`) skips the reset.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,

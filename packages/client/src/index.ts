@@ -397,6 +397,4 @@ export {
   type EbbComponentKind,
   type GroupFields,
   type GroupMemberFields,
-  type EntityGroupFields,
-  type RelationshipFields,
 } from "@ebbjs/schema";

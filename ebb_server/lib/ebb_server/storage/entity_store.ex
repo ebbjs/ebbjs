@@ -459,9 +459,8 @@ defmodule EbbServer.Storage.EntityStore do
     }
 
     # `data.components` is derived, so it is recomputed from the fields this
-    # apply leaves behind rather than trusted from the stored blob. The one
-    # component the delta actually wrote keeps its own name, which is the only
-    # place a component's namespace can disagree with its row's model.
+    # apply leaves behind. The component the delta wrote keeps its own name:
+    # that is the one place a namespace can disagree with the row's model.
     components = component_names(fields_of(merged_data), type, written)
 
     merged_data = Map.put(merged_data, "components", components)
@@ -662,11 +661,8 @@ defmodule EbbServer.Storage.EntityStore do
     %{"fields" => fields, "components" => component_names(fields, model, written)}
   end
 
-  # `data.components` names components, not `<model>/<field>` pairs: a
-  # platform component's namespace is `ebb`, not necessarily the model the row
-  # is committed under, so a platform row's names come from the platform
-  # vocabulary, the component the delta just wrote keeps its own name, and
-  # only a plain user field falls back to the row's model.
+  # A platform field names its component (`ebb/link`), a plain user field the
+  # row's model; the component the delta wrote keeps its own name.
   defp component_names(fields, model, written) when is_binary(model) do
     fields
     |> Map.keys()
@@ -837,9 +833,8 @@ defmodule EbbServer.Storage.EntityStore do
 
   A platform component name (`ebb/membership`) is also a query source, and
   the more precise one: an `ebb/*` component may sit on a row committed under
-  any model, so asking by component returns the rows that carry it rather than
-  the rows of one model. The `ebb` rows themselves are one model, so asking
-  for the model alone would return every kind at once.
+  any model, so asking by component returns the rows that carry it. Asking for
+  the model alone returns every kind at once.
 
   ## Options
   - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
@@ -902,9 +897,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp normalize_offset(_offset), do: {:error, :invalid_offset}
 
-  # `model` is the row's committed model — the query source — while the
-  # SQLite column it selects on is still named `type`. A platform component
-  # narrows the same committed model to the rows that carry it.
+  # `model` is the query source; the SQLite column it selects on is `type`.
   defp run_query(model, filter, actor_id, limit, offset, opts) do
     {type, component} = query_source(model)
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
@@ -950,10 +943,8 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
-  # A platform component names one of the four kinds and selects by
-  # component; anything else is a model and selects on `type`. Either way the
-  # dirty pass runs against the committed model `ebb`, because
-  # materialization is per row and the row's kind cannot narrow it.
+  # A platform component selects by component, anything else by `type`; the
+  # dirty pass always runs against `ebb`, since materialization is per row.
   defp query_source(model) do
     case SystemComponent.kind(model) do
       nil -> {model, nil}

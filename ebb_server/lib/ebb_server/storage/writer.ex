@@ -2098,19 +2098,14 @@ defmodule EbbServer.Storage.Writer do
 
   # Every subject this Action folded is a row the flush has already written,
   # so later Actions of the same flush have to patch it rather than put it.
-  # Keyed by subject id alone, not `{kind | model, id}` as the
-  # group-resolution memo is: ids are not guaranteed model-unique in this
-  # codebase, but every platform kind of the cache planner projects a `:put`
-  # and a `:patch` identically when no cached row exists, so a cross-kind
-  # collision cannot change the plan today.
+  # Keyed by subject id alone: a cross-kind collision cannot change the plan,
+  # since a `:put` and a `:patch` with no cached row project identically.
   defp fold_subjects(mutations, created) do
     Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
   end
 
-  # The row shape an earlier Action of this flush left behind, for the scope
-  # fields an `ebb/membership` / `ebb/grant` / `ebb/link` value carries.
-  # Built from the raw Updates, not the folded mutation, so a `drop` removes
-  # a field and a `delete` removes the row.
+  # The row shape an earlier Action of this flush left behind. Built from the
+  # raw Updates, so a `drop` removes a field and a `delete` removes the row.
   defp remember_flush_rows(rows, updates) do
     Enum.reduce(updates, rows, fn update, rows ->
       case update.method do
@@ -2167,9 +2162,8 @@ defmodule EbbServer.Storage.Writer do
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
   defp prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo) do
-    # Scope is a per-subject decision, never a per-component one. A platform
-    # row's `group_id`/`source_id` lives in its one atomic component value,
-    # so the folded row decides for its every Update (`RowMutations`).
+    # Scope is a per-subject decision, so the folded row decides for every
+    # Update of it.
     mutations =
       RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
 
@@ -2645,10 +2639,8 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
-  # The memo key is the resolution key, not the model: the four platform
-  # components share the model `ebb` but resolve differently, so a kind
-  # (`:link`, `:grant`, ...) is part of the key and can never answer for
-  # another kind's row.
+  # The key includes the kind: the four components share `ebb` but resolve
+  # differently.
   defp resolve_memo_groups(memo, key, subject_id, resolve_opts) do
     resolve_memo(memo, {key, subject_id}, resolve_opts, fn ->
       EntityIndex.resolve_groups_cached(key, subject_id, resolve_opts)

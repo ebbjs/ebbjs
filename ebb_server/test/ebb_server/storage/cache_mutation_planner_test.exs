@@ -146,7 +146,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       assert Overlay.fetch(overlay_2, :group_members_by_id, "gm_1") == {:ok, :deleted}
     end
 
-    test "a planar write moves a membership without consulting the cached row",
+    test "a patch writes the whole value without consulting the cached row",
          %{tables: tables, group_members_by_id: group_members_by_id} do
       # A stale cached row is not a merge base any more: the atomic value is
       # the row, so the plan carries the wire's actor and permissions only.
@@ -594,7 +594,6 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
           subject_id: subject_id,
           model: "ebb",
           kind: kind,
-          components: ["ebb/" <> field],
           method: method,
           data:
             if(method == :delete, do: nil, else: %{"fields" => %{field => leaf(fields, 1, "u1")}})
@@ -620,7 +619,6 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
           subject_id: subject_id,
           model: model,
           kind: nil,
-          components: [],
           method: method,
           data: data
         }

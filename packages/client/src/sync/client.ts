@@ -2675,8 +2675,8 @@ export function createClient<
       },
       // The `last_group_member` guard reads the group's local member view.
       groupMembers: async (groupId: string) => {
-        // The guard reads grant rows only: `ebb/grant` is one component of the
-        // shared `ebb` model, so the ids come from the component index.
+        // The guard reads grant rows only, so the ids come from the component
+        // index rather than a shared-model scan.
         const grantIds = await client.storage.entities.queryByComponent(EBB_COMPONENTS.grant);
         const rows: Entity[] = [];
         for (const id of grantIds) {

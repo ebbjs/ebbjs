@@ -13,33 +13,31 @@ import { describe, expect, it } from "vitest";
 import type { Entity } from "@ebbjs/core";
 
 import { createClient } from "../client";
-import { fixtureKind, makeFetchMock, platformEntity } from "../test-utils";
+import { makeFetchMock, platformEntity } from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
 
+/** A materialized user row. Platform rows use `platformEntity`. */
 const mkEntity = (
   id: string,
   type: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
-): Entity =>
-  fixtureKind(type) === null
-    ? {
-        id,
-        type,
-        data: {
-          fields: Object.fromEntries(
-            Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
-          ),
-        },
-        exists: true,
-        created_hlc: "1",
-        updated_hlc: "1",
-        deleted_hlc: deletedHlc,
-        last_gsn: 0,
-      }
-    : platformEntity(id, type, fields, deletedHlc);
+): Entity => ({
+  id,
+  type,
+  data: {
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
+    ),
+  },
+  exists: true,
+  created_hlc: "1",
+  updated_hlc: "1",
+  deleted_hlc: deletedHlc,
+  last_gsn: 0,
+});
 
 const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
   actor_id: ACTOR_ID,
@@ -110,7 +108,7 @@ describe("client.can — global form", () => {
   it("reflects grants from local groupMember rows, not just the handshake", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
-      mkEntity("gm_1", "groupMember", {
+      platformEntity("gm_1", "grant", {
         actor_id: ACTOR_ID,
         group_id: "g_2",
         permissions: ["list.*"],
@@ -125,7 +123,7 @@ describe("client.can — global form", () => {
   it("ignores another actor's groupMember rows", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
-      mkEntity("gm_1", "groupMember", {
+      platformEntity("gm_1", "grant", {
         actor_id: "actor_2",
         group_id: "g_2",
         permissions: ["list.*"],
@@ -174,10 +172,10 @@ describe("client.can — per-entity form", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
 
     await expect(client.can("todo_1", "update")).resolves.toEqual({
@@ -190,7 +188,7 @@ describe("client.can — per-entity form", () => {
     const { client } = await mkClient([["g_1", ["todo.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     await expect(client.can("todo_1", "delete")).resolves.toEqual({
@@ -209,7 +207,7 @@ describe("client.can — per-entity form", () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
 
     const result = await client.can({ id: "todo_1" }, "update");
@@ -246,7 +244,7 @@ describe("client.can — per-entity form", () => {
 describe("client.can — system entities", () => {
   it("checks a group against itself", async () => {
     const { client } = await mkClient([["g_1", ["ebb/group.*"]]]);
-    await client.storage.entities.set(mkEntity("g_1", "group", { name: "G" }));
+    await client.storage.entities.set(platformEntity("g_1", "group", { name: "G" }));
     await expect(client.can("g_1", "update")).resolves.toEqual({
       kind: "allowed",
       groupIds: ["g_1"],
@@ -256,7 +254,7 @@ describe("client.can — system entities", () => {
   it("checks a grant against its group", async () => {
     const { client } = await mkClient([["g_1", ["ebb/grant.delete"]]]);
     await client.storage.entities.set(
-      mkEntity("gm_1", "groupMember", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
+      platformEntity("gm_1", "grant", { actor_id: "actor_2", group_id: "g_1", permissions: [] }),
     );
     await expect(client.can("gm_1", "delete")).resolves.toEqual({
       kind: "allowed",
@@ -268,10 +266,10 @@ describe("client.can — system entities", () => {
     const { client } = await mkClient([["g_2", ["todo.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("eg_1", "entityGroup", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_2", "entityGroup", { entity_id: "todo_1", group_id: "g_2" }),
+      platformEntity("eg_2", "membership", { entity_id: "todo_1", group_id: "g_2" }),
     );
     await expect(client.can("eg_1", "delete")).resolves.toEqual({
       kind: "allowed",
@@ -286,7 +284,7 @@ describe("client.can — system entities", () => {
     ]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -294,7 +292,7 @@ describe("client.can — system entities", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
     );
     await expect(client.can("rel_1", "update")).resolves.toEqual({
       kind: "allowed",
@@ -306,7 +304,7 @@ describe("client.can — system entities", () => {
     const { client } = await mkClient([["g_src", ["todo.update"]]]);
     await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
     await client.storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "todo_1",
         target_id: "list_1",
         field: "list",
@@ -314,7 +312,7 @@ describe("client.can — system entities", () => {
       }),
     );
     await client.storage.entities.set(
-      mkEntity("eg_src", "entityGroup", { entity_id: "todo_1", group_id: "g_src" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
     );
     await expect(client.can("rel_1", "create")).resolves.toEqual({
       kind: "allowed",

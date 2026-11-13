@@ -62,28 +62,8 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
     end
   end
 
-  describe "get_field/2" do
-    test "returns the stored value" do
-      cache = with_isolated_cache()
-      field = ["notes", "issues"]
-
-      :ok = GroupAppsCache.put_group_apps("g_raw", field, group_apps: cache.table)
-
-      assert GroupAppsCache.get_field("g_raw", cache.table) == field
-    end
-
-    test "returns nil for an absent entry and for an unscoped field" do
-      cache = with_isolated_cache()
-
-      assert GroupAppsCache.get_field("g_missing", cache.table) == nil
-
-      :ok = GroupAppsCache.put_group_apps("g_unscoped", nil, group_apps: cache.table)
-      assert GroupAppsCache.get_field("g_unscoped", cache.table) == nil
-    end
-  end
-
   describe "delete_group_apps/2" do
-    test "removes the stored field and projection" do
+    test "removes the stored scope" do
       cache = with_isolated_cache()
 
       :ok =
@@ -92,7 +72,7 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
       :ok = GroupAppsCache.delete_group_apps("g_1", group_apps: cache.table)
 
       assert GroupAppsCache.get_apps("g_1", cache.table) == :unscoped
-      assert GroupAppsCache.get_field("g_1", cache.table) == nil
+      refute GroupAppsCache.known?("g_1", cache.table)
     end
 
     test "is a no-op for an unknown group" do

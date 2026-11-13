@@ -316,13 +316,13 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
+  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 const mkMember = (id: string, groupId: string, permissions: readonly string[]): Entity =>
-  platformEntity(id, "groupMember", { group_id: groupId, actor_id: "actor_1", permissions });
+  platformEntity(id, "grant", { group_id: groupId, actor_id: "actor_1", permissions });
 
 const mkRelationship = (id: string, sourceId: string, targetId: string): Entity =>
-  platformEntity(id, "relationship", {
+  platformEntity(id, "link", {
     source_id: sourceId,
     target_id: targetId,
     field: "list",
@@ -432,7 +432,7 @@ describe("drafts — duplicate", () => {
     expect(title.method).not.toBe("delete");
     expect((title.data as { update_id: string }).update_id).toBe("u_src");
 
-    const memberships = rowsOf(updates, "entityGroup");
+    const memberships = rowsOf(updates, "membership");
     expect(memberships).toHaveLength(2);
     expect(memberships.every((row) => fieldsOf(row)["entity_id"] === copy.id)).toBe(true);
     expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
@@ -444,7 +444,7 @@ describe("drafts — duplicate", () => {
 
     await client.actions.duplicateTodo({ id: "todo_1", groups: ["g_2"] });
 
-    const memberships = rowsOf(updatesOf(seen), "entityGroup");
+    const memberships = rowsOf(updatesOf(seen), "membership");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_2"]);
   });
 });
@@ -457,7 +457,7 @@ describe("drafts — link / unlink / setLinks", () => {
     await client.actions.linkTodoList({ id: "todo_1", targetId: { id: "list_9" } });
 
     const updates = updatesOf(seen);
-    const relationships = rowsOf(updates, "relationship");
+    const relationships = rowsOf(updates, "link");
     expect(relationships).toHaveLength(1);
     expect(fieldsOf(relationships[0]!)).toMatchObject({
       source_id: "todo_1",
@@ -466,7 +466,7 @@ describe("drafts — link / unlink / setLinks", () => {
       type: "todo",
     });
     // The source's memberships scope the edge; they are not membership writes.
-    expect(rowsOf(updates, "entityGroup")).toEqual([]);
+    expect(rowsOf(updates, "membership")).toEqual([]);
   });
 
   it("unlink deletes the live relationship row by its id", async () => {
@@ -500,7 +500,7 @@ describe("drafts — link / unlink / setLinks", () => {
     const [entityRow] = rowsOf(updates, "todo");
     expect(fieldsOf(entityRow!)["tags"]).toEqual(["label_1", "label_2"]);
 
-    const relationships = rowsOf(updates, "relationship");
+    const relationships = rowsOf(updates, "link");
     expect(relationships).toHaveLength(2);
     expect(relationships.map((row) => fieldsOf(row)["target_id"]).sort()).toEqual([
       "label_1",
@@ -538,7 +538,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.setTodoGroups({ id: "todo_1", groupIds: ["g_2", "g_3"] });
 
     const updates = updatesOf(seen);
-    const rows = rowsOf(updates, "entityGroup");
+    const rows = rowsOf(updates, "membership");
     expect(rows).toHaveLength(1);
     const added = rows[0]!;
     expect(added[0]!.subject_id).toBe(entityGroupId("todo_1", "g_3"));
@@ -572,7 +572,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.shareBoth();
 
     expect(actionCalls(seen)).toHaveLength(1);
-    const memberships = rowsOf(updatesOf(seen), "entityGroup");
+    const memberships = rowsOf(updatesOf(seen), "membership");
     expect(new Set(memberships.map((row) => row[0]!.subject_id)).size).toBe(2);
     expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
   });
@@ -632,7 +632,7 @@ describe("drafts — membership.update / membership.delete", () => {
     await client.actions.demoteMember({ memberId: "gm_1" });
 
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "groupMember");
+    const [row] = rowsOf(updates, "grant");
     expect(row).toHaveLength(1);
     // A grant is one atomic value, so a permission patch rewrites the value.
     expect(row![0]).toMatchObject({
@@ -736,7 +736,7 @@ describe("drafts — call order is wire order", () => {
 
     const updates = updatesOf(seen);
     expect(updates[0]).toMatchObject({ subject_id: created.id, component: "todo/title" });
-    const memberships = rowsOf(updates, "entityGroup");
+    const memberships = rowsOf(updates, "membership");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
     expect(memberships[1]![0]!.subject_id).toBe(entityGroupId(created.id, "g_2"));
   });
@@ -747,7 +747,7 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_1" });
 
     const updates = updatesOf(seen);
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(1);
+    expect(rowsOf(updates, "membership")).toHaveLength(1);
     expect(
       updates.filter((update) => update.subject_id === created.id && update.method === "replace"),
     ).not.toHaveLength(0);

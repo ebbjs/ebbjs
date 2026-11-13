@@ -92,10 +92,7 @@ export interface RelationshipRowFixture {
   type: string;
 }
 
-/**
- * One atomic component Update: the whole value at one leaf, the shape every
- * platform row write has since #805.
- */
+/** One atomic component Update: the whole value at one leaf. */
 const systemRowUpdate = (
   kind: EbbComponentKind,
   subjectId: string,
@@ -119,7 +116,7 @@ export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1)
   const updateId = `u_${row.id}`;
 
   return {
-    id: `a_${row.id}`,
+    id: `a_${row.id}_${gsn}`,
     actor_id: "a_user1",
     hlc,
     gsn,
@@ -139,14 +136,6 @@ export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1)
     ],
   };
 };
-
-/**
- * Build an Action that rewrites an `ebb/link` row's whole value. A platform
- * component is atomic, so there is no partial write: a "patch" names the
- * complete value, exactly as the wire's `replace` does.
- */
-export const buildRelationshipPatchAction = (row: RelationshipRowFixture, gsn: number): Action =>
-  buildRelationshipPutAction(row, gsn);
 
 export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
@@ -182,7 +171,7 @@ export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): 
   const updateId = `u_${row.id}`;
 
   return {
-    id: `a_${row.id}`,
+    id: `a_${row.id}_${gsn}`,
     actor_id: "a_user1",
     hlc,
     gsn,
@@ -197,13 +186,6 @@ export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): 
     ],
   };
 };
-
-/**
- * Build an Action that rewrites an `ebb/membership` row's whole value. Like
- * {@link buildRelationshipPatchAction}, a patch is a whole-value replace.
- */
-export const buildEntityGroupPatchAction = (row: EntityGroupRowFixture, gsn: number): Action =>
-  buildEntityGroupPutAction(row, gsn);
 
 /** Build a delete Action for an `ebb/membership` row. */
 export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number): Action => {

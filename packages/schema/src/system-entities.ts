@@ -1,27 +1,16 @@
 /**
- * The platform's own components.
+ * The platform's own components: the `ebb` model's four atomic values.
  *
- * `ebb/` is the platform namespace. Its components may sit on any row, are
- * authorized by their own permission, and never determine or change the row's
- * committed model — a row that carries only platform components is committed
- * under the model `ebb`.
+ * Its components may sit on any row, are authorized by their own permission, and
+ * never change the row's committed model. Each is atomic — one Update replaces
+ * the whole value — and the membership and link keys are immutable after create,
+ * so a move is a delete plus a create.
  *
- * The four are atomic: one Update replaces the whole value, so an edge,
- * membership, or grant whose fields disagree with each other is
- * unrepresentable. Membership and link keys are immutable after create; a
- * move is a delete plus a create.
- *
- * `defineSchema` registers this model alongside the app's models, so the
- * public write paths (`link` / `unlink` / `setLinks`, `share`, `createGroup`,
- * membership writes) can submit their Updates without callers
- * hand-registering anything.
- *
- * Kept separate from `schema.ts` to avoid a cyclic import with `client.ts`
- * (the client seeds its per-client registry from a schema, but also imports
- * this model for the seed).
- *
- * Built with the unchecked factory (`buildModelDef`) because `defineModel`
- * rejects the reserved `ebb` name.
+ * `defineSchema` registers this model alongside the app's models, so the public
+ * write paths can submit their Updates without callers hand-registering
+ * anything. Kept out of `schema.ts` to avoid a cyclic import with `client.ts`,
+ * and built with `buildModelDef` because `defineModel` rejects the reserved
+ * name.
  */
 
 import { Type } from "@sinclair/typebox";
@@ -44,13 +33,10 @@ export {
 } from "@ebbjs/core";
 
 /**
- * A group's name and the apps it is in scope for.
- *
- * `apps` is the list of app ids the group is in scope for. Absent means
- * unscoped (every app); an empty list means no app, so absence must not
- * collapse to `[]`. It is a list rather than the map the wire carried before
- * #805 because an atomic value may not contain a map: a map nested inside an
- * object loses its per-key merge, which `e.object` refuses at definition time.
+ * A group's name and the apps it is in scope for. Absent means unscoped (every
+ * app) and an empty list means no app, so the two must stay distinct. It is a
+ * list because an atomic value may not contain a map: a nested map would lose
+ * its per-key merge, which `e.object` refuses at definition time.
  */
 const groupShape = e.object({
   name: e.string(),
@@ -65,13 +51,13 @@ const grantShape = e.object({
   permissions: e.array(e.string()),
 });
 
-/** One entity's membership of one group. The pair is immutable after create. */
+/** One entity's membership of one group. */
 const membershipShape = e.object({
   entity_id: e.string(),
   group_id: e.string(),
 });
 
-/** One edge from a source entity. The source is immutable after create. */
+/** One edge from a source entity. */
 const linkShape = e.object({
   source_id: e.string(),
   target_id: e.string(),
@@ -103,9 +89,8 @@ const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
 });
 
 /**
- * The platform model: four atomic components, of which a row carries the one
- * that names its kind. Every component is optional because a row carries one,
- * not all four.
+ * The platform model. Every component is optional because a row carries the one
+ * that names its kind, not all four.
  */
 export const ebbSystemEntity: ModelDef<Record<string, TSchema>> = buildModelDef(EBB_MODEL_NAME, {
   group: groupComponent,
@@ -114,20 +99,11 @@ export const ebbSystemEntity: ModelDef<Record<string, TSchema>> = buildModelDef(
   link: linkComponent,
 });
 
-/**
- * The value map of a group row: what the row's `ebb/group` component carries,
- * and what a group namespace projects.
- */
+/** The value map of a group row: what `ebb/group` carries. */
 export type GroupFields = Static<typeof groupShape>;
 
-/** The value map of a grant row (today's `groupMember`). */
+/** The value map of a grant row. */
 export type GroupMemberFields = Static<typeof grantShape>;
-
-/** The value map of a membership row (today's `entityGroup`). */
-export type EntityGroupFields = Static<typeof membershipShape>;
-
-/** The value map of a link row (today's `relationship`). */
-export type RelationshipFields = Static<typeof linkShape>;
 
 /** Accessor name the built-in membership surface carries on every row. */
 export const GROUPS_ACCESSOR = "groups";

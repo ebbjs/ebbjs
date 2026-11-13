@@ -40,7 +40,7 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 const mkRel = (id: string, sourceId: string, targetId: string): Entity =>
-  platformEntity(id, "relationship", {
+  platformEntity(id, "link", {
     source_id: sourceId,
     target_id: targetId,
     type: "todo",
@@ -48,7 +48,7 @@ const mkRel = (id: string, sourceId: string, targetId: string): Entity =>
   });
 
 const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
+  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 /** Write `row` to the shim and fold it into the replica the queries read (#520). */
 const seedRow = async (

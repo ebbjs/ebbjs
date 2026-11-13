@@ -91,10 +91,9 @@ const isReplicaBacked = (query: Query): boolean => query.source !== "";
 export const modelComponents = (model: string): string => `${model}/*`;
 
 /**
- * The components a join onto `target` reads. A platform target must name the
- * exact component it projects: `modelComponents("ebb")` would invalidate the
- * query on every one of the four kinds, so a page joined to `groups` would
- * re-read on every grant write.
+ * The components a join onto `target` reads. A platform target names the exact
+ * component it projects, so a page joined to `groups` does not re-read on every
+ * grant write.
  */
 const joinReadComponents = (join: Join): readonly string[] => {
   if (join.target !== EBB_MODEL_NAME) return [modelComponents(join.target)];
@@ -153,7 +152,7 @@ const sourceComponentsFor = (query: Query): readonly string[] => {
  * edge/membership rows. The source itself is read whole — `<source>/*` — unless
  * every branch names a source component, because only then does a row's arrival
  * depend on a component the plan watches. A chain over a value view names its
- * exact components instead of deriving them (see `Query.sourceComponents`).
+ * exact components instead (see `Query.sourceComponents`).
  */
 export const readComponentsFor = (query: Query): readonly string[] => {
   if (!isReplicaBacked(query)) return [];
@@ -163,9 +162,8 @@ export const readComponentsFor = (query: Query): readonly string[] => {
         ? sourceComponentsFor(query)
         : [modelComponents(query.source)]),
   );
-  // Exact components: an edge read depends on link rows only, a membership
-  // read on membership rows only. `ebb/*` would make every page query depend
-  // on every platform write.
+  // Exact components: an edge read depends on link rows only, a membership read
+  // on membership rows only.
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
     reads.add(EBB_COMPONENTS.link);
   }

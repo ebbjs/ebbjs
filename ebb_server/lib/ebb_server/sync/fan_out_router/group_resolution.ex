@@ -53,17 +53,13 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
     |> Enum.uniq()
   end
 
-  # A row's scope is decided by its component kind, never by its model: all
-  # four platform kinds commit under `ebb`. A delete names no component, so
-  # the by-id caches are the only place its kind survives — and a link the
-  # same Action created has no cache row yet, which is what
-  # `:intra_relationship_sources` covers.
+  # A row's scope follows its component kind, never its model; only a delete's
+  # kind has to be resolved from the by-id caches.
   defp resolve_mutation_group_ids(mutation, opts) do
     case scope_key(mutation, opts) do
       :link ->
-        # A link belongs to its source's groups, never its target's. A put or
-        # patch is bound to the source the wire carries (the authorizer
-        # refuses a mismatch), a delete to the stored row's (#624).
+        # A link belongs to its source's groups, never its target's; a delete
+        # follows the stored row's source (#624).
         EntityIndex.relationship_groups(
           mutation.method,
           SystemComponent.path(mutation.data, :link, "source_id"),

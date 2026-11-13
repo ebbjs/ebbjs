@@ -75,8 +75,8 @@ defmodule EbbServer.Sync.GroupListing do
   @default_limit 200
   @max_limit 1000
   @token_version 1
-  # Every platform row commits under one model, so the boot repair is one
-  # dirty lookup; the four kinds are told apart by the component they carry.
+  # The kinds differ by component, so the boot repair is one dirty lookup on
+  # their shared model.
   @system_model SystemComponent.model()
 
   @default_sqlite_name EbbServer.Storage.SQLite
@@ -443,9 +443,7 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  # A row is the kind it carries, never the model it commits under: every
-  # platform row's model is `ebb`, so a model test would accept a link where a
-  # grant belongs.
+  # A row is the kind it carries; a model test would accept a link for a grant.
   defp typed_row(by_id, id, kind) do
     case Map.fetch(by_id, id) do
       {:ok, row} -> if SystemComponent.present?(row.data, kind), do: [row], else: []

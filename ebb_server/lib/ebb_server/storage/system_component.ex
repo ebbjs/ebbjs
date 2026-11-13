@@ -4,9 +4,9 @@ defmodule EbbServer.Storage.SystemComponent do
 
   `ebb/` is the platform namespace. A row that carries only platform
   components is committed under the model `ebb`; the **component** is what
-  names its kind, so every module that used to ask "is this row a
-  `relationship`?" asks `kind/1` about a component instead, and every module
-  that used to read `source_id` off a row reads the component's value here.
+  names its kind, so every module asks `kind/1` about a component rather than
+  a model, and reads `source_id` and friends through the component's value
+  here.
 
   | kind         | component        | value                                        |
   | ------------ | ---------------- | -------------------------------------------- |
@@ -18,8 +18,8 @@ defmodule EbbServer.Storage.SystemComponent do
   Each value is **atomic**: one Update carries the whole object, so a torn
   edge, membership, or grant is unrepresentable and there is no "wire value
   wins, cache supplies the rest" merge to get wrong. The value is stored at
-  the row field named after the kind (`fields.link`), which is why
-  `value/2` reads one field rather than four.
+  the row field named after the kind (`fields.link`), which is why `value/2`
+  reads one field rather than four.
 
   `:membership` and `:link` have an immutable key after create
   (`(entity_id, group_id)` and `source_id`); the authorizer refuses a
@@ -104,8 +104,7 @@ defmodule EbbServer.Storage.SystemComponent do
   @spec present?(map() | nil, kind()) :: boolean()
   def present?(data, kind), do: component_data(data, kind) != nil
 
-  # A raw Update names its field and carries the component's own value; a row
-  # record nests the same value one level down.
+  # A raw Update carries the component's value; a row record nests it.
   defp component_data(%{field: field, data: data}, kind) when is_binary(field) do
     if field == field(kind), do: data
   end

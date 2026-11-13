@@ -23,7 +23,7 @@
 
 import { arch, cpus, platform, release } from "node:os";
 import { Type } from "@sinclair/typebox";
-import { componentName, type Entity } from "@ebbjs/core";
+import { carriesComponent, componentName, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
@@ -132,8 +132,16 @@ const rowsOfType = (type: string): readonly Entity[] =>
   heldRows.filter((entity) => entity.type === type);
 
 const pageJson = jsonBytes(rowsOfType("page"));
-const relationshipJson = jsonBytes(rowsOfType("relationship"));
-const groupJson = jsonBytes(rowsOfType("entityGroup")) + jsonBytes(rowsOfType("group"));
+// Every platform row is an `ebb` row, so the component is what splits them out.
+const platformRows = heldRows.filter((entity) => entity.type === EBB_MODEL_NAME);
+const relationshipJson = jsonBytes(
+  platformRows.filter((entity) => carriesComponent(entity, "link")),
+);
+const groupJson = jsonBytes(
+  platformRows.filter(
+    (entity) => carriesComponent(entity, "membership") || carriesComponent(entity, "group"),
+  ),
+);
 const metadataJson = pageJson + relationshipJson + groupJson;
 const bodyJson = workspace.bodyBytes * config.n;
 const workspaceJson = metadataJson + bodyJson;
@@ -338,7 +346,13 @@ const rootOfFirst = await forwardOne(reader, adjacency, pageId(1), "page", "pare
 if (rootOfFirst?.id !== pageId(0)) {
   throw new Error(`self-check: parent of page_1 is ${rootOfFirst?.id}, expected page_0`);
 }
-const groupsOfFirst = await membershipGroups(reader, adjacency, pageId(1), "group", groupShape);
+const groupsOfFirst = await membershipGroups(
+  reader,
+  adjacency,
+  pageId(1),
+  EBB_MODEL_NAME,
+  groupShape,
+);
 if (groupsOfFirst.length !== 1 || groupsOfFirst[0]?.id !== WORKSPACE_GROUP_ID) {
   throw new Error("self-check: page_1 is not filed in exactly the workspace group");
 }
@@ -401,7 +415,7 @@ const casesWithReader = (readRow: RowReader): readonly [ReadCase, ReadCase, Read
   },
   {
     label: "`membershipGroups` — groups",
-    read: (id) => membershipGroups(readRow, adjacency, id, "group", groupShape),
+    read: (id) => membershipGroups(readRow, adjacency, id, EBB_MODEL_NAME, groupShape),
     degreeOf: arrayLength,
   },
 ];

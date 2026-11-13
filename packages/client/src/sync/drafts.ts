@@ -441,10 +441,7 @@ export interface DraftNamespace<
   setGroups(id: string, groupIds: readonly GroupRef[]): void;
 }
 
-/**
- * A draft system namespace: the content verbs minus the membership ones, since
- * a membership row for a group or a grant has no meaning.
- */
+/** A draft system namespace: the content verbs minus the membership ones. */
 export type SystemDraftNamespace<TFields extends Record<string, TSchema>> = Omit<
   DraftNamespace<TFields>,
   "create" | "drop" | "addToGroup" | "removeFromGroup" | "setGroups"
@@ -467,10 +464,10 @@ export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFieldMap>, "cre
 };
 
 /**
- * The `client.membership` draft namespace (today's `groupMember`): the system
- * surface over the `ebb/grant` value, with `update` / `delete` behind the
- * local `last_group_member` guard, so leaving a group is one Action alongside
- * the content changes.
+ * The `client.membership` draft namespace: the system surface over the
+ * `ebb/grant` value, with `update` / `delete` behind the local
+ * `last_group_member` guard, so leaving a group is one Action alongside the
+ * content changes.
  */
 export type MembershipDraftNamespace = SystemDraftNamespace<GrantFieldMap>;
 
@@ -724,13 +721,9 @@ const sharedSystemVerbs = <TFields extends Record<string, TSchema>>(
 });
 
 /**
- * The system draft namespaces. Only `create` differs from the content surface:
- * `group.create` bootstraps the group row plus the actor's grant, and
- * `membership.create` is a single `ebb/grant` put.
- *
- * Both read through their component's value view, and both patch by whole
- * value: a platform component is atomic, so `update` merges the patch over the
- * committed value before it reaches the wire.
+ * The system draft namespaces. `group.create` bootstraps the group row plus the
+ * actor's grant, `membership.create` is a single `ebb/grant` put, and both
+ * patch by whole value because a platform component is atomic.
  */
 const createSystemDrafts = (
   cap: ActionCapability,
@@ -1046,9 +1039,8 @@ const resolveGroupVerb = async (
 };
 
 /**
- * A patch of a platform row, as the one whole-value write it has to be: the
- * component is atomic, so the patch is merged over the committed value and a
- * write that moves an immutable key is refused here rather than at the server.
+ * A platform row patch, as the one whole-value write it has to be: the patch is
+ * merged over the committed value, and a moved immutable key is refused here.
  */
 const systemPatchCall = async (
   ctx: ResolveContext,
@@ -1096,10 +1088,8 @@ const resolveMemberPatch = async (
   intent: Extract<DraftIntent, { kind: "member-patch" }>,
   ctx: ResolveContext,
 ): Promise<readonly OperationCall[]> => {
-  // The patch is expressed in the grant value's fields, and the resolver writes
-  // the whole value, so the rule reads the same way it always did: a patch that
-  // names `permissions` without moving the group is locally provable. Moving the
-  // group is a re-point, which `systemPatchCall` refuses outright.
+  // A patch naming `permissions` without moving the group is locally provable;
+  // moving the group is a re-point, which `systemPatchCall` refuses.
   const permissions = intent.patch["permissions"];
   if (permissions !== undefined && intent.patch["group_id"] === undefined) {
     const details = await lastGroupMemberRefusal(groupMemberView(ctx.cap), intent.id, {

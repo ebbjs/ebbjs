@@ -13,7 +13,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
-import { fixtureKind, rowComponents } from "../test-utils";
+import { isPlatformModel, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 
@@ -40,13 +40,11 @@ const ingest = (
   method: "merge" | "replace" = "replace",
 ): void => {
   gsn += 1;
-  const kind = fixtureKind(type);
-  const components =
-    kind === null
-      ? Object.entries(row(id, title).data.fields).map(
-          ([field, value]) => [componentName(type, field), value] as const,
-        )
-      : [[EBB_COMPONENTS[kind], { value: {}, update_id: `u_${gsn}`, hlc: makeHlc(gsn) }] as const];
+  const components = isPlatformModel(type)
+    ? [[EBB_COMPONENTS[type], { value: {}, update_id: `u_${gsn}`, hlc: makeHlc(gsn) }] as const]
+    : Object.entries(row(id, title).data.fields).map(
+        ([field, value]) => [componentName(type, field), value] as const,
+      );
   replica.ingest(
     { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
     components.map(([component, value]) => ({
@@ -407,7 +405,7 @@ describe("query cache: invalidation", () => {
     await flush();
     expect(source.runs).toBe(1);
 
-    ingest(replica, "relationship", "rel_1");
+    ingest(replica, "link", "rel_1");
     expect(source.runs).toBe(2);
   });
 
@@ -536,7 +534,30 @@ describe("query cache: component-granular invalidation", () => {
     await flush();
     expect(source.runs).toBe(1);
 
-    write(replica, "eg_1", "entityGroup", { entity_id: "todo_1", group_id: "group_1" });
+    write(replica, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" });
+    expect(source.runs).toBe(2);
+  });
+
+  it("does not re-run a component-scoped read on another platform component's write", async () => {
+    const replica = createReplica();
+    write(replica, "g_1", "group", { name: "Team" });
+    const cache = createQueryCache(replica);
+    // A value view reads one component of the shared `ebb` model, not the model.
+    const query: Query = {
+      ...emptyQuery("ebb", ["ebb/group"]),
+      groups: [[{ kind: "field", field: "name", value: "Team" }]],
+    };
+    const source = sourceWith(() => ["g_1"]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: [] });
+    await flush();
+    expect(source.runs).toBe(1);
+
+    write(replica, "g_1", "group", { name: "Renamed" });
     expect(source.runs).toBe(2);
   });
 

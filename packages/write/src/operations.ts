@@ -79,9 +79,8 @@ export class ActionRejectedError extends Error {
 }
 
 /**
- * The client-provable `last_group_member` refusal: a grant (`ebb/grant`)
- * delta that would leave its group with no member holding a non-empty
- * permission list.
+ * The client-provable `last_group_member` refusal: a grant delta that would leave
+ * its group with no member holding a non-empty permission list.
  */
 export const lastGroupMemberError = (id: string, details: string): ActionRejectedError =>
   new ActionRejectedError([
@@ -191,12 +190,9 @@ export interface CreateEntityInput {
 }
 
 /**
- * The one platform kind a value map names.
- *
- * A platform row carries exactly one of the four components: each names a
- * different kind of row, so a write naming two would be two kinds on one row
- * and a write naming none would be a row with no kind. Both are refused before
- * any Update exists.
+ * The one platform kind a value map names. A platform row carries exactly one of
+ * the four components, so naming two or none is refused before any Update
+ * exists.
  */
 const platformKindOf = (
   entity: string,
@@ -241,8 +237,7 @@ const platformComponentOf = (
  * per group, then one link row per resolved pointer. Field validation runs
  * here (never partially) unless the caller opted out.
  *
- * A platform row (`ebb`) is one atomic component, so it takes the platform
- * path: exactly one `ebb/*` component, validated as a whole value.
+ * A platform row (`ebb`) is one atomic component, validated as a whole value.
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
@@ -311,13 +306,10 @@ export interface CreateSystemEntityInput {
 }
 
 /**
- * Create one platform row: one `ebb/*` Update carrying the component's whole
- * value. The row's fan-out scope comes from the value itself (`ebb/group` is
- * its own group; `ebb/grant` and `ebb/membership` name their `group_id`), so no
- * cached membership view is consulted.
- *
- * Validation checks the whole value against the component's object shape: a
- * value missing a required field is refused rather than written as a partial.
+ * Create one platform row: one `ebb/*` Update carrying the whole value. The
+ * row's fan-out scope comes from the value itself, so no cached membership view
+ * is consulted. Validation checks the whole value against the component's
+ * shape, so a value missing a required field is refused.
  */
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(EBB_MODEL_NAME);
@@ -381,16 +373,14 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
 };
 
 /**
- * The permissions a bootstrapping actor needs to operate on every registered
- * entity. The server matches only an exact `<subject>.<verb>` or
- * `<subject>.*`, so the actor's own grant carries one wildcard per permission
- * subject rather than a global `*` that grants nothing.
+ * The permissions a bootstrapping actor needs on every registered entity. The
+ * server matches only an exact `<subject>.<verb>` or `<subject>.*`, so the actor
+ * carries one wildcard per permission subject rather than a global `*` that
+ * grants nothing.
  *
  * A subject is a model, except where a component declares its own permission:
- * the four platform components do, so the platform model contributes
- * `ebb/group.*`, `ebb/grant.*`, `ebb/membership.*` and `ebb/link.*` rather than
- * one `ebb.*`. The model subject is granted as well, because a row `delete`
- * names no component and is authorized against the row's committed model.
+ * the four platform components do. The model subject is granted as well, because
+ * a row `delete` is authorized against the row's committed model.
  */
 export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] => {
   const subjects = new Set<string>();
@@ -525,9 +515,8 @@ export interface DropEntityInput {
  * still means "clear the position" (a tombstone), which is a different write.
  *
  * Refused before any Update exists: an empty field list, a component the model
- * does not declare, and a platform component. A platform row is one atomic
- * component, so detaching it would leave a row with no kind; removing a
- * platform row is a delete.
+ * does not declare, and a platform component — detaching it would leave a row
+ * with no kind, so removing a platform row is a delete.
  */
 export const dropEntity: Operation<DropEntityInput> = (ctx, input) => {
   if (input.entity === EBB_MODEL_NAME) {

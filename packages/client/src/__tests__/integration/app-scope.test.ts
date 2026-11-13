@@ -102,10 +102,7 @@ const notePatch = (title: string) => {
   }).action;
 };
 
-/**
- * One `ebb/membership` put. The pair rides as one atomic value, so the share
- * cannot arrive half-written.
- */
+/** One `ebb/membership` put: the pair rides as one atomic value. */
 const fileInto = (entityId: string, groupId: string) => {
   const clock = createClock();
   const updateId = `u_share_${RUN_ID}`;

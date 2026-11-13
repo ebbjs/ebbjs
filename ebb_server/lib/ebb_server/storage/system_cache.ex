@@ -529,9 +529,7 @@ defmodule EbbServer.Storage.SystemCache do
     )
   end
 
-  # Each phase selects the **component** label, not the `ebb` model label:
-  # every platform row commits under one model, so a model selector would
-  # project all four kinds into every cache.
+  # The model `ebb` would project all four kinds into every cache.
   defp populate_type(component, rocks_name, dirty_set, insert_fn, opts, counter) do
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
@@ -622,10 +620,8 @@ defmodule EbbServer.Storage.SystemCache do
   # modeled falls back to a record already in `EntityTypeCache`; an id nothing
   # knows has no entry to rebuild.
   #
-  # A platform component's prefix is the model `ebb`, which is the committed
-  # model of every platform row: a user row cannot carry one (`ActionValidator`
-  # refuses two component prefixes on one subject), so the prefix is never a
-  # relabel here.
+  # A user row cannot carry `ebb` (`ActionValidator` refuses two component
+  # prefixes on one subject), so a platform prefix is never a relabel here.
   defp replay_action(raw_updates, models, entity_types_table) do
     updates = Enum.map(raw_updates, &RowMutations.from_stored/1)
 

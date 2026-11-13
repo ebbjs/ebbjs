@@ -18,9 +18,9 @@ defmodule EbbServer.Integration.ActionHelpers do
   alias EbbServer.Sync.Router
   alias EbbServer.TestHelpers
 
-  # The platform's four components are atomic and all commit under `ebb`; the
-  # helpers keep the pre-#805 call shape (`"entityGroup"`) and build the folded
-  # row the wire now carries.
+  # A platform row is one atomic component under the model `ebb`. Callers keep
+  # naming the row by its old model-style label and field leaves; these
+  # helpers build the single Update the wire carries.
   @system_components %{
     "group" => "ebb/group",
     "groupMember" => "ebb/grant",

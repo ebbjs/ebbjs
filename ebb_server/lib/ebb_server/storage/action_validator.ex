@@ -222,11 +222,8 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp check_subject_model(_update, models), do: {:cont, models}
 
-  # A row carries at most one platform component (decision 13): each of the
-  # four is atomic and names its own kind, so a second one on the same row
-  # would make the row's kind ambiguous and its cache projection a guess.
-  # This runs after the per-Update checks, so `SystemComponent.kind/1` sees
-  # a well-formed component name.
+  # A row carries at most one platform component (decision 13), so a second
+  # one would make its kind — and its cache projection — a guess.
   defp validate_subject_components(updates) do
     case Enum.reduce_while(updates, %{}, &check_subject_component/2) do
       {:error, _reason, _details} = error -> error

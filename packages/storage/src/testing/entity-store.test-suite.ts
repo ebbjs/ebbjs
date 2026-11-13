@@ -14,12 +14,10 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
   buildEntityGroupDeleteAction,
-  buildEntityGroupPatchAction,
   buildEntityGroupPutAction,
   buildPatchAction,
   buildPutAction,
   buildRelationshipDeleteAction,
-  buildRelationshipPatchAction,
   buildRelationshipPutAction,
 } from "./fixtures";
 
@@ -814,7 +812,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction(
+          buildRelationshipPutAction(
             {
               id: "rel_1",
               sourceId: "todo_2",
@@ -834,7 +832,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
         await actionLog.append(
-          buildRelationshipPatchAction(
+          buildRelationshipPutAction(
             {
               id: "rel_1",
               sourceId: "todo_2",
@@ -1005,7 +1003,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction(
+          buildRelationshipPutAction(
             {
               id: "rel_1",
               sourceId: "todo_1",
@@ -1028,7 +1026,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction(
+          buildRelationshipPutAction(
             {
               id: "rel_1",
               sourceId: "todo_1",
@@ -1056,7 +1054,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction(
+          buildRelationshipPutAction(
             {
               id: "rel_1",
               sourceId: "todo_2",
@@ -1427,7 +1425,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         });
 
         await actionLog.append(
-          buildEntityGroupPatchAction({ id: "eg_1", entityId: "todo_2", groupId: "group_1" }, 2),
+          buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_1" }, 2),
         );
         await dirtyTracker.mark("eg_1", "ebb");
 
@@ -1500,9 +1498,8 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await newGroup.dirtyTracker.mark("eg_new", "ebb");
         const materialized = await newGroup.entityStore.get("eg_new");
         expect(materialized).not.toBeNull();
-        expect(
-          (materialized!.data.fields.membership as { value: { group_id: string } }).value.group_id,
-        ).toBe("group_new");
+        // The row the split delivered is the one the new group is scoped to.
+        expect(await newGroup.entityStore.queryByMembership("group_new")).toEqual(["todo_1"]);
 
         // The old group's subscriber receives only the delete. It never
         // materialized `eg_old`, so the delete must be a no-op rather

@@ -62,9 +62,9 @@ export async function readEntityMemberships(
 }
 
 /**
- * Read a single membership row by the `subject_id` a membership delete
- * names. Returns `null` when the id is missing, names a row that does not
- * carry `ebb/membership`, or the row is tombstoned / malformed.
+ * Read a single membership row by the `subject_id` a membership delete names.
+ * Returns `null` when the id is missing, carries no `ebb/membership`, or the row
+ * is tombstoned / malformed.
  */
 export async function readMembership(
   storage: StorageAdapter,

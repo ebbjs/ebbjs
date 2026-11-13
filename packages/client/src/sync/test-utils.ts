@@ -22,6 +22,7 @@ import {
   componentModel,
   componentName,
   EBB_COMPONENTS,
+  EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
   ebbComponentField,
   isEbbComponent,
@@ -112,110 +113,76 @@ export const seedReplicaRow = (
   replica.ingest(action, updates, seedPosition);
 };
 
-/**
- * The platform kind a pre-#805 model name names. Fixtures still speak the old
- * vocabulary (`entityGroup`, `groupMember`, …) because that is what they are
- * *about*; the row they build is an `ebb` row carrying one atomic component.
- */
-export const fixtureKind = (model: string): EbbComponentKind | null => {
-  switch (model) {
-    case "group":
-      return "group";
-    case "groupMember":
-      return "grant";
-    case "entityGroup":
-      return "membership";
-    case "relationship":
-      return "link";
-    default:
-      return null;
-  }
-};
+/** Whether `model` names a platform component rather than a user model. */
+export const isPlatformModel = (model: string): model is EbbComponentKind =>
+  (EBB_COMPONENT_KINDS as readonly string[]).includes(model);
 
 /**
- * The `(component, value)` pairs a fixture row write emits. A user row emits
- * one pair per field; a platform row emits exactly one — its whole value on the
- * atomic component — so a per-field fixture keeps its call shape and produces
- * the atomic wire write.
+ * The `(component, value)` pairs a fixture row write emits. A user row emits one
+ * per field; a platform row (`membership`, `grant`, …) emits one whole value.
  */
 export const rowComponents = (
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
-): readonly (readonly [`${string}/${string}`, unknown])[] => {
-  const kind = fixtureKind(type);
-  return kind === null
-    ? Object.entries(fields).map(([key, value]) => [componentName(type, key), value] as const)
-    : [[EBB_COMPONENTS[kind], fields] as const];
-};
+): readonly (readonly [`${string}/${string}`, unknown])[] =>
+  isPlatformModel(model)
+    ? [[EBB_COMPONENTS[model], fields] as const]
+    : Object.entries(fields).map(([key, value]) => [componentName(model, key), value] as const);
 
-/**
- * A materialized platform row: an `ebb` row carrying one atomic component
- * whose value is `values`. `model` is the pre-#805 name the fixture is about.
- */
+/** A materialized platform row: an `ebb` row carrying one atomic component. */
 export const platformEntity = (
   id: string,
-  model: string,
+  kind: EbbComponentKind,
   values: Record<string, unknown>,
   deletedHlc: string | null = null,
-): Entity => {
-  const kind = fixtureKind(model);
-  if (kind === null) throw new Error(`platformEntity: "${model}" is not a platform fixture model`);
-  return {
-    id,
-    type: EBB_MODEL_NAME,
-    data: {
-      fields: {
-        [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: "1-0" },
-      },
+): Entity => ({
+  id,
+  type: EBB_MODEL_NAME,
+  data: {
+    fields: {
+      [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: "1-0" },
     },
-    exists: true,
-    created_hlc: "1-0",
-    updated_hlc: "1-0",
-    deleted_hlc: deletedHlc,
-    last_gsn: 0,
-  };
-};
+  },
+  exists: true,
+  created_hlc: "1-0",
+  updated_hlc: "1-0",
+  deleted_hlc: deletedHlc,
+  last_gsn: 0,
+});
 
-/**
- * The Update a pre-#805 per-field fixture implies: one atomic component write
- * carrying the whole value. A platform row has no partial write.
- */
+/** The Update a platform row write implies: one atomic component, whole value. */
 export const platformUpdate = (
   subjectId: string,
-  model: string,
+  kind: EbbComponentKind,
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
 ): Update[] => {
   if (method === "delete") {
     return [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }];
   }
-  const kind = fixtureKind(model);
-  if (kind === null) throw new Error(`platformUpdate: "${model}" is not a platform fixture model`);
   return [
     {
       id: `u_${subjectId}_${method}`,
       subject_id: subjectId,
       component: EBB_COMPONENTS[kind],
-      method: method === "put" ? "replace" : "replace",
+      method: "replace",
       data: { value: values, update_id: `u_${subjectId}_${method}`, hlc: makeHlc(1) },
     },
   ];
 };
 
 /**
- * Updates grouped by subject, keeping only rows of `model`. A platform model
- * name (`entityGroup`, `groupMember`, `relationship`, `group`) matches the rows
- * carrying its component, because every platform row is now an `ebb` row.
+ * Updates grouped by subject, keeping only the rows of `model` — a user model,
+ * or a platform kind, which matches the rows carrying its component.
  */
 export const rowsByModel = (
   updates: readonly Update[],
   model: string,
 ): readonly (readonly Update[])[] => {
-  const kind = fixtureKind(model);
   const matches = (update: Update): boolean =>
-    kind === null
-      ? updateModel(update) === model
-      : update.method !== "delete" && update.component === EBB_COMPONENTS[kind];
+    isPlatformModel(model)
+      ? update.method !== "delete" && update.component === EBB_COMPONENTS[model]
+      : updateModel(update) === model;
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
     if (!matches(update)) continue;
@@ -227,9 +194,8 @@ export const rowsByModel = (
 };
 
 /**
- * A row's field values, keyed by field. A user row names one component per
- * field; a platform row is one atomic component, so its value's keys are the
- * fields.
+ * A row's field values, keyed by field. A user row names one component per field;
+ * a platform row's value keys are the fields.
  */
 export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
   const out: Record<string, unknown> = {};

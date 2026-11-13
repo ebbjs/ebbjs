@@ -125,7 +125,7 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
-  put(gsn, `rel_${gsn}`, "relationship", {
+  put(gsn, `rel_${gsn}`, "link", {
     source_id: sourceId,
     target_id: targetId,
     field: as,
@@ -203,7 +203,7 @@ describe("with(...) — runtime", () => {
     await seed(client, [
       put(1, "issue_1", "issue", { title: "Ship", status: "open" }),
       put(2, "group_1", "group", { name: "Workspace" }),
-      put(3, "eg_1", "entityGroup", { entity_id: "issue_1", group_id: "group_1" }),
+      put(3, "eg_1", "membership", { entity_id: "issue_1", group_id: "group_1" }),
     ]);
 
     const [row] = await client.issue.query().with({ groups: true });
@@ -363,7 +363,7 @@ describe("with(...) — planning and adjacency", () => {
     await seed(client, [
       put(1, "issue_1", "issue", { title: "Ship", status: "open" }),
       put(2, "group_1", "group", { name: "Workspace" }),
-      put(3, "eg_1", "entityGroup", { entity_id: "issue_1", group_id: "group_1" }),
+      put(3, "eg_1", "membership", { entity_id: "issue_1", group_id: "group_1" }),
     ]);
     await client.issue.query();
 

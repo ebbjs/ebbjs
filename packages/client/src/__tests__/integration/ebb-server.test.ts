@@ -86,11 +86,7 @@ const componentUpdates = (
     data: { value, update_id: `${updateId}_${field}`, hlc },
   }));
 
-/**
- * One atomic platform Update — `ebb/group`, `ebb/grant`, `ebb/membership`,
- * or `ebb/link`. The whole value rides in that component's single leaf, so a
- * fixture cannot build a torn platform row.
- */
+/** One atomic platform Update: the whole value in that component's single leaf. */
 const platformUpdate = (
   kind: EbbComponentKind,
   subjectId: string,
@@ -106,9 +102,8 @@ const platformUpdate = (
 });
 
 /**
- * Submit one Action as `actorId`, surfacing the server's per-Action
- * rejections: an empty `rejected[]` is the only acceptance, so a fixture
- * that drifts from the wire fails here with the server's own reason.
+ * Submit one Action as `actorId`, surfacing the server's per-Action rejections:
+ * an empty `rejected[]` is the only acceptance.
  */
 async function postAction(actorId: string, action: Action, what: string): Promise<void> {
   const res = await fetch(`${SERVER_URL}/sync/actions`, {
@@ -173,10 +168,8 @@ async function addMemberWithPerms(actorId: string, permissions: readonly string[
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const TEST_GROUP_ID = `grp_it_${RUN_ID}`;
 /**
- * An actor's `ebb/grant` row id, unique per run. The server's bootstrap
- * exemption only covers a grant row the existence index has not seen, so a
- * constant id would make every later run's bootstrap a plain unauthenticated
- * put into a group the actor does not belong to yet.
+ * An actor's `ebb/grant` row id, unique per run: the server's bootstrap exemption
+ * only covers a grant row its existence index has not seen.
  */
 const grantRowId = (actorId: string): string => `gm_${RUN_ID}_${actorId}`;
 /**
@@ -232,10 +225,8 @@ beforeAll(async () => {
     return;
   }
 
-  // Bootstrap the test group in ONE action so the server's bootstrap
-  // exemption applies: the `ebb/group` put, the acting actor's own
-  // `ebb/grant` in that new group, and the `ebb/membership` of an entity the
-  // same action creates.
+  // Bootstrap the test group in ONE action so the server's bootstrap exemption
+  // applies to the group put, the actor's grant, and the membership.
   const bootstrapDocId = testDocId("bootstrap");
   const bootstrapMembershipId = `eg_${RUN_ID}_bootstrap`;
   const clock = createClock();
@@ -1110,11 +1101,10 @@ describe("integration: defineSchema", () => {
       // so its Updates validate and materialize.
       expect(client.registry.getRelationship("todo", "groups")).toBeUndefined();
       expect(client.registry.has(EBB_MODEL_NAME)).toBe(true);
-      // `group` / `membership` are system namespaces; `entityGroup` stays
-      // internal and names no model.
+      // The shared platform model has no namespace of its own.
       expect((client as unknown as Record<string, unknown>)["group"]).toBeDefined();
       expect((client as unknown as Record<string, unknown>)["membership"]).toBeDefined();
-      expect((client as unknown as Record<string, unknown>)["entityGroup"]).toBeUndefined();
+      expect((client as unknown as Record<string, unknown>)[EBB_MODEL_NAME]).toBeUndefined();
 
       // The server tolerates schema_version / min_supported_version
       // fields it doesn't understand today.

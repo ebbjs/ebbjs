@@ -18,40 +18,18 @@
  * cannot see; `can()` is correspondingly conservative and reports
  * `unknown` where it cannot resolve a subject.
  *
- * A permission is held in a group when that group's permission list
- * contains `"<model>.<verb>"` or `"<model>.*"`. User entities and
- * domain edges use union semantics over the entity's group set (any
- * group may grant it); membership mutations of an existing entity
- * consult cached permissions only, never the Action's declared
- * bootstrap grant.
+ * A permission is held in a group when its list contains `"<subject>.<verb>"`
+ * or `"<subject>.*"`, over the union of the entity's group set. Checks are per
+ * row, not per Update: one Action's Updates for one subject fold into one
+ * mutation, a `create` or an `update`.
  *
- * Permissions are checked per row, not per Update: one Action's component
- * Updates for one subject fold into one row mutation, and that mutation is
- * the `create` (the row's first write) or an `update` (a write to a row that
- * already exists).
- *
- * For a user-entity write, the permission model is the model the id was
- * committed under, never the component's model prefix, which is forgeable
- * (#624). A write whose components name another model is refused here
- * whatever permission the actor holds: the server refuses it
- * structurally, so no grant could make it pass. That check covers user
- * entities only — a `relationship` or `entityGroup` write whose subject id
- * is committed as some other model passes this best-effort pass and is
- * refused by the server. A `relationship` row's source is likewise its
- * identity: a write that declares another `source_id` is refused here with
- * no permission to report, mirroring the server's "a relationship row cannot
- * be re-pointed at another source" (#624); moving an edge is delete plus
- * create, and a delete's wire source is ignored. A delete in the same
- * `write()` batch releases the row's source binding for the Actions that
- * follow it — as the server's request simulation does — so the delete plus
- * re-create that moves an edge is authorized here too; within one Action the
- * release is order-independent, and a refused Action releases nothing. A
- * delete still sitting in the Outbox — no echo yet — releases nothing either,
- * so an edge moved across two `write()` calls is refused locally until the
- * delete syncs; batch the delete and the re-create. The server also binds an
- * id's first model for the whole request, so an Action that relabels an id an
- * earlier Action in the same batch created is refused there but not here;
- * Actions are otherwise checked one at a time.
+ * Three refusals mirror the server structurally, so no grant can make them
+ * pass: a user write naming a model other than the id's committed one (#624),
+ * an `ebb/link` write that re-points the source, and a re-pointed immutable
+ * key on `ebb/grant` or `ebb/membership` (decision 13). A delete earlier in
+ * the same `write()` batch releases the row, which is how delete plus create
+ * moves an edge; a delete still sitting in the Outbox releases nothing, so
+ * batch the two.
  */
 
 import {
@@ -116,11 +94,9 @@ export interface TypeMismatchViolation {
 }
 
 /**
- * The write cannot be authorized at any permission: a platform row's
- * immutable key was re-pointed. `ebb/membership`'s `(entity_id, group_id)`
- * pair and `ebb/grant`'s `group_id` are fixed after create (decision 13), so
- * one of their writes naming another value is refused structurally, exactly
- * as the server refuses it. There is deliberately no `required`.
+ * The write cannot be authorized at any permission: an `ebb/membership` pair
+ * or an `ebb/grant`'s `group_id` was re-pointed, which is fixed after create
+ * (decision 13). There is deliberately no `required`.
  */
 export interface KeyMismatchViolation {
   readonly kind: "key-mismatch";
@@ -139,11 +115,9 @@ export interface KeyMismatchViolation {
 
 /**
  * The write cannot be authorized at any permission: an `ebb/link` write
- * declared a source other than the one the row is committed with, which the
- * server refuses structurally (#624). A row's source is its identity, so
- * moving an edge is expressed as delete plus create, never as a re-point.
- * There is deliberately no `required` — the actor may hold every `ebb/link`
- * grant and the write still fails.
+ * declared a source other than the row's committed one (#624). A row's source
+ * is its identity, so moving an edge is delete plus create. There is
+ * deliberately no `required`.
  */
 export interface SourceMismatchViolation {
   readonly kind: "source-mismatch";
@@ -152,7 +126,7 @@ export interface SourceMismatchViolation {
   readonly subjectId: string;
   /** The source the write declared, i.e. the `source_id` component value. */
   readonly declaredSourceId: string;
-  /** The source the relationship row is committed with locally. */
+  /** The source the link row is committed with locally. */
   readonly committedSourceId: string;
   /** The committed source's group set. */
   readonly groupIds: readonly string[];
@@ -413,44 +387,21 @@ const committedRelationshipSource = (
 /**
  * The rule table: for a subject `(kind, id, verb)`, the permission it
  * requires and the groups to union-match. Returns `unresolved` when the
- * inputs the rule needs are not locally available — the write path then
- * defers to the server, and `can()` reports `unknown`.
+ * inputs the rule needs are not locally available — the write path then defers
+ * to the server, and `can()` reports `unknown`.
  *
- * Every platform row is committed under `ebb`, so the component kind is what
- * dispatches. Rules mirror `EbbServer.Storage.PermissionHelper` and #319:
- * - user entity → `<committed model>.<verb>` over the entity's group set,
- *   where the committed model is the entity's local type, never the
- *   component's model prefix (#624). An id the local store has never seen has
- *   no committed model, so the component's prefix stands — and a declared
- *   model that contradicts the committed one is refused outright with no
- *   permission to report, as the server refuses it;
- * - `ebb/group` → `ebb/group.<verb>` in the group itself;
- * - `ebb/grant` → `ebb/grant.<verb>` in the grant's group. Its `group_id` is
- *   its identity (decision 13), so a write naming another group is refused
- *   outright;
+ * Rules mirror `EbbServer.Storage.PermissionHelper` (#319) and dispatch on the
+ * component kind, because every platform row is committed under `ebb`.
+ * - user entity → `<committed model>.<verb>` over its group set. A declared
+ *   model contradicting the committed one is refused outright (#624).
+ * - `ebb/group` → its own group; `ebb/grant` → the grant's group.
  * - `ebb/membership` create → `<entityModel>.create` in the target group
- *   **and** `<entityModel>.update` over the entity's current group set,
- *   because filing an entity the store already places in a group is a write
- *   to it (#623). An entity with no locally-known group set is the server's
- *   "new to the index" branch, where `create` stands alone. Its pair is
- *   immutable (decision 13), so a write naming another pair is refused;
- * - the one duplicate-row refusal is not mirrored: our clients derive one
- *   row id per `(entity, group)`, so they cannot express it, and the
- *   server stays the authority;
- * - `ebb/membership` delete → `<entityModel>.update` in the entity's current
- *   set;
+ *   **and** `.update` over the entity's current set, because filing an entity
+ *   the store already places in a group is a write to it (#623).
  * - `ebb/link` create → `<sourceModel>.update` over the source's set;
- *   update/delete → `ebb/link.<verb>` over the source's set. A row's source is
- *   its identity: a write whose declared `source_id` differs from the
- *   committed row's is refused outright (#624), since the server will not
- *   re-point an edge. An id whose binding this batch has released — its
- *   delete rides in this Action or an earlier one of the same batch — reads as
- *   a new edge, authorized by the wire source, which is how delete plus
- *   create moves one. The delete and update scopes still come from the stored
- *   row, as the server scopes them. An id the local store has no live
- *   link row for is a new edge too. A delete's wire `source_id` is ignored —
- *   the server resolves the stored row — so only the committed source can
- *   authorize it.
+ *   update/delete → `ebb/link.<verb>` over the source's set, which comes from
+ *   the stored row. A declared `source_id` that differs is refused (#624); a
+ *   binding this batch released reads as a new edge.
  */
 async function resolveRule(
   kind: EbbComponentKind | null,
@@ -657,11 +608,9 @@ async function resolveLinkRule(
   // A delete in this batch releases the binding, so the re-point check
   // has nothing left to contradict and the row reads as a new edge.
   const boundSourceId = released.has(subjectId) ? null : committedSourceId;
-  // A row's source is its identity: the server refuses a declared source
-  // other than the committed one rather than re-pointing the edge, so
-  // neither may this pass allow it. A delete carries a source the server
-  // never reads — it resolves the stored row — so a stale one there is
-  // ignored, not refused.
+  // A row's source is its identity, so a declared source other than the
+  // committed one is refused. A delete's wire source is never read (the server
+  // resolves the stored row), so a stale one is ignored there.
   if (
     verb !== "delete" &&
     declaredSourceId !== null &&
@@ -1014,10 +963,8 @@ const collectActionViolations = async (
     writes: SubjectWrites,
   ): Promise<PermissionViolation | null> => {
     const writtenKind = writes.kind;
-    // A platform write is atomic, so its `replace` is the patch method too and
-    // cannot state the verb; existence answers it. A user write keeps the
-    // wire's statement of intent. A delete names no component, so its kind is
-    // the one its stored row carries.
+    // A platform write is atomic, so its `replace` cannot state the verb —
+    // existence answers it, and a delete's kind is its stored row's.
     const row = writes.model === undefined || writtenKind !== null ? await exists(subjectId) : null;
     const model = writes.model ?? row?.type;
     // A delete of a row the store does not know names no model: the server
@@ -1074,12 +1021,9 @@ const collectActionViolations = async (
 };
 
 /**
- * Merge the actor's own locally-materialized `groupMember` rows into
- * the handshake's permission map. The handshake is a snapshot: after a
- * bootstrap the client's membership row is applied locally before the
- * next handshake, so without this the pass would falsely refuse a
- * write into the group it just created. Best-effort — the server stays
- * the authority.
+ * Merge the actor's own locally-materialized grants into the handshake's
+ * permission map. The handshake is a snapshot, so after a bootstrap the pass
+ * would otherwise refuse a write into the group it just created.
  */
 const mergeLocalMemberships = async (
   cached: Map<string, readonly string[]>,
@@ -1132,8 +1076,8 @@ export interface PermissionQuery {
 
 /**
  * The global form: does the actor hold `<model>.<verb>` anywhere? Consulted
- * groups are the handshake's actor groups plus the actor's local
- * `groupMember` rows. Mirrors the write path: with no handshake the actor's
+ * groups are the handshake's actor groups plus the actor's local grants.
+ * Mirrors the write path: with no handshake the actor's
  * groups are unknown, so the answer is `unknown` rather than `denied`.
  */
 export async function queryActorPermission(

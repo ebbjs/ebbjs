@@ -20,10 +20,9 @@ defmodule EbbServer.Storage.QueryFilter do
   unfiltered, matching `nil`.
 
   A filter addresses a **user** component's value, one level below
-  `data.fields.<field>`. A platform component's value is one atomic object at
-  `data.fields.<kind>.value`, so no scalar equals it and a filter on one
-  simply matches nothing; platform rows are selected by their component name
-  instead (`EbbServer.Storage.EntityStore.query/4`).
+  `data.fields.<field>`. A platform component's value is one atomic object
+  there, so no scalar equals it and a filter on one matches nothing; platform
+  rows are selected by component name (`EbbServer.Storage.EntityStore.query/4`).
   """
 
   # Every key adds one clause and one bind parameter. 64 keeps the parameter

@@ -45,8 +45,8 @@ export interface EntityWatcher {
 
 /**
  * The id an accessor change belongs to: a link row names its source, a
- * membership row names its member entity. The row's model no longer says
- * which — every platform row is an `ebb` row — so the component does.
+ * membership row names its member entity. Every platform row is an `ebb` row, so
+ * the component says which.
  */
 const accessorSubjectId = (entity: Entity): string | null => {
   for (const [kind, field] of [

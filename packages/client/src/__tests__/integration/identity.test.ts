@@ -34,10 +34,7 @@ const MEMBER_ID = `gm_ts_${RUN_ID}`;
 const SEEDED_ENTITY = `issue_ts_seed_${RUN_ID}`;
 const WRITTEN_ENTITY = `issue_ts_write_${RUN_ID}`;
 
-/**
- * The platform permissions plus `issue.*`. The `ebb/*` grants cover the
- * group, grant, membership, and link components this suite seeds and writes.
- */
+/** The platform permissions this suite's seeds need, plus `issue.*`. */
 const PERMISSIONS = ["ebb/group.*", "ebb/grant.*", "ebb/membership.*", "issue.*"];
 
 /** Play the gateway: every request carries the Tailscale identity headers. */

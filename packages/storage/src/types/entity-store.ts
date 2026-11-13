@@ -85,10 +85,9 @@ export interface EntityStore {
    * read rather than a row filter; a tombstoned row's components are not
    * existence.
    *
-   * The dirty rows materialized first are the component prefix's model. For a
-   * platform component that is `ebb`, which is the row's committed model
-   * (#805); an overlay component on a user row (#820) is the case that still
-   * has to decode the model differently and revisit this step.
+   * The dirty rows materialized first are the component prefix's model: `ebb`
+   * for a platform component, which is the row's committed model. An overlay
+   * component on a user row (#820) is where this step has to change.
    */
   queryByComponent(component: string): Promise<readonly string[]>;
   queryByRelationship(query: RelationshipIndexQuery): Promise<readonly string[]>;

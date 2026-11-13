@@ -450,10 +450,9 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  # The platform's four components are atomic and all commit under `ebb`, so a
-  # folded platform row carries a `kind` and one object value. The helpers keep
-  # the pre-#805 call shape (`"groupMember"`, field => value) and build the
-  # folded row the engine now sees.
+  # A folded platform row carries a `kind` and one object value. Callers keep
+  # the model-style label and `field => value` shape; this builds what the
+  # engine now sees.
   @components %{
     "group" => {:group, "group"},
     "groupMember" => {:grant, "grant"},
@@ -469,7 +468,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           subject_id: subject_id,
           model: "ebb",
           kind: kind,
-          components: ["ebb/" <> field],
           method: method,
           data: %{"fields" => %{field => %{"value" => fields}}}
         }
@@ -480,7 +478,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
           subject_id: subject_id,
           model: model,
           kind: nil,
-          components: [],
           method: method,
           data: %{
             "fields" => Map.new(fields, fn {field, value} -> {field, %{"value" => value}} end)
@@ -495,7 +492,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       subject_id: subject_id,
       model: model,
       kind: nil,
-      components: [],
       method: :delete,
       data: nil
     }

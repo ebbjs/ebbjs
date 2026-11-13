@@ -375,16 +375,12 @@ export type EntityFields<D> = FieldsOf<D>;
 
 /**
  * `client.group`: the read-only namespace over the rows carrying `ebb/group`.
- * The rows are `ebb` rows, but the namespace projects the component's value,
- * so a group reads as `{id, name, apps}` — the shape the public API has always
- * promised.
+ * The namespace projects the component's value, so a group reads as
+ * `{id, name, apps}`.
  */
 export type GroupNamespace = EntityNamespace<GroupFieldMap, MembershipAccessors>;
 
-/**
- * `client.membership`: the read-only namespace over the rows carrying
- * `ebb/grant` (today's `groupMember`), projected to its value.
- */
+/** `client.membership`: the read-only namespace over rows carrying `ebb/grant`. */
 export type MembershipNamespace = EntityNamespace<GrantFieldMap, MembershipAccessors>;
 
 /** The system-entity namespaces every schema-bound client carries. */
@@ -635,11 +631,7 @@ const queryForFilter = <TFields extends Record<string, TSchema>>(
   };
 };
 
-/**
- * The platform row a value namespace reads: the row itself for an ordinary
- * namespace, or the component's value view — and nothing at all when the row
- * does not carry the component.
- */
+/** The row a value namespace reads: the component's value view, or nothing. */
 const visibleRow = (row: Entity, view?: EbbComponentKind): Entity | null =>
   view === undefined ? row : componentRowView(row, view);
 
@@ -720,9 +712,8 @@ export interface ReadCapability {
  * the per-field lookup. `read` supplies the registry the row's
  * relationship accessors resolve against.
  *
- * `view` names the platform component a *value* namespace reads: the rows
- * are `ebb` rows and `shape` is the component's value shape, so every read
- * filters on the component and projects its value (see `system-row.ts`).
+ * `view` names the platform component a *value* namespace reads: the rows are
+ * `ebb` rows and `shape` is the component's value shape (see `system-row.ts`).
  */
 export function createEntityNamespace<
   TFields extends Record<string, TSchema>,
@@ -896,11 +887,7 @@ export function createEntityNamespace<
   };
 }
 
-/**
- * The value shape of one platform component, read off the registry: a
- * component declares one object shape, and that is what the value namespace
- * projects.
- */
+/** The value shape of one platform component, read off the registry. */
 function componentValueShape<TFields extends Record<string, TSchema>>(
   read: ReadCapability,
   component: string,

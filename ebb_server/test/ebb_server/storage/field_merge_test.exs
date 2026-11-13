@@ -74,7 +74,7 @@ defmodule EbbServer.Storage.FieldMergeTest do
     )
   end
 
-  describe "merge/2 atomic component value (#805)" do
+  describe "merge/2 on an atomic component value" do
     test "a newer whole value wins, in whichever order the writes arrive" do
       older = link(%{"target_id" => "todo_2"}, 1, "u_a")
       newer = link(%{"target_id" => "todo_3"}, 2, "u_b")

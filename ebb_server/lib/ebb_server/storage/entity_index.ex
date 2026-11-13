@@ -13,17 +13,15 @@ defmodule EbbServer.Storage.EntityIndex do
 
   Resolution is dispatched by the row's `SystemComponent` **kind**, never
   by a model: all four platform rows commit under the model `ebb`, so the
-  model cannot tell a grant from an edge.
+  model cannot tell a grant from an edge. `#819` replaces this dispatch with
+  a declaration table, one `scope:` per component; keep every platform kind
+  in the clauses below until then.
 
     - `:group`      → the group is its own id
     - `:membership` → the membership's `group_id`
     - `:grant`      → the membership's `group_id`
     - `:link`       → the membership set of the edge's source
     - user models   → the entity's own membership set
-
-  The dispatch stays a function-head chain here because the declaration
-  table that replaces it is #819: one `scope:` per platform component.
-  Keep every platform kind in the clauses below until then.
 
   A link resolves through its **source**, never its own `target_id`: an
   app may hold a domain link to a `group` entity, and that link must not
@@ -124,9 +122,8 @@ defmodule EbbServer.Storage.EntityIndex do
           {[String.t()], subject_id() | nil}
   def resolve_groups_cached(:group, group_id, _opts), do: {[group_id], nil}
 
-  # A caller holding a folded row's committed model (`ebb`) rather than its
-  # kind still resolves through the same clauses: the by-id caches name the
-  # kind, and an id carries exactly one platform component.
+  # A caller holding the committed model (`ebb`) rather than the kind still
+  # resolves: the by-id caches name the kind.
   def resolve_groups_cached(model, subject_id, opts) when model == @model do
     resolve_groups_cached(kind(subject_id, opts) || :unknown, subject_id, opts)
   end
@@ -229,12 +226,10 @@ defmodule EbbServer.Storage.EntityIndex do
   @doc """
   Answers which platform component a stored row carries.
 
-  A `delete` names no component, so this is how the authorizer, the cache
-  planner, and the fan-out learn a row's kind from its id. The four rows all
-  commit under the model `ebb`, so the model entry cannot answer it; the by-id
-  caches can, because each is written by exactly one kind.
-
-  Returns `nil` for a user row and for an id nothing knows.
+  A `delete` names no component, so this is how a caller learns a stored
+  row's kind from its id: the by-id caches can answer because each is
+  written by exactly one kind. Returns `nil` for a user row and for an id
+  nothing knows.
   """
   @spec kind(subject_id(), keyword()) :: SystemComponent.kind() | nil
   def kind(entity_id, opts) do
@@ -262,9 +257,9 @@ defmodule EbbServer.Storage.EntityIndex do
   A value Update names its component, so the fold already knows the kind. A
   `delete` names only the row, so its kind comes from the by-id caches — and
   only when the row's committed model is the platform model: ids are not
-  model-unique in this codebase, so an id another kind happens to use must not
-  lend its kind to a user row. Returns `nil` for a user row and for a delete
-  nothing can place (an id created earlier in the same request).
+  model-unique here, so an id another kind happens to use must not lend its
+  kind to a user row. Returns `nil` for a delete nothing can place (an id
+  created earlier in the same request).
   """
   @spec kind_of(map(), keyword()) :: SystemComponent.kind() | nil
   def kind_of(%{kind: kind}, _opts) when not is_nil(kind), do: kind
@@ -274,8 +269,7 @@ defmodule EbbServer.Storage.EntityIndex do
 
   def kind_of(_mutation, _opts), do: nil
 
-  # A group row's cache entry exists even when the row declares no app scope,
-  # so presence — not a field value — is the signal.
+  # The cache row exists even for an unscoped group, so presence is the signal.
   defp group_cached?(entity_id, opts) do
     case Keyword.fetch(opts, :group_apps) do
       {:ok, table} -> GroupAppsCache.known?(entity_id, table)
@@ -320,9 +314,7 @@ defmodule EbbServer.Storage.EntityIndex do
     model(entity_id, opts) || system_model_by_id(entity_id, opts)
   end
 
-  # Every platform row is committed under the platform model, so a by-id
-  # cache entry can only say "this is an ebb row" — the *kind* is what
-  # distinguishes the four, and it is `kind/2` that answers.
+  # Only the shared model is named here; the kind distinguishes the four.
   defp system_model_by_id(entity_id, opts) do
     if kind(entity_id, opts), do: @model, else: nil
   end

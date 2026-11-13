@@ -1,17 +1,14 @@
 /**
  * Tests for the relationship accessors in `relationship.ts`.
  *
- * Forward accessors (`forwardOne`, `forwardMany`) and the reverse /
- * membership walkers read through an `AdjacencyReader` — the storage
- * layer's adjacency index, or the replica's synchronous one when the
- * client binds it (#520) — not a scan of the whole `relationship` /
- * `entityGroup` type. The fake here is a small in-memory reader over
- * the same Map the old scan used, so the tests pin the traversal
- * contract.
+ * Forward accessors (`forwardOne`, `forwardMany`) and the reverse / membership
+ * walkers read through an `AdjacencyReader` — the storage layer's adjacency
+ * index, or the replica's synchronous one when the client binds it (#520) — not
+ * a scan of the whole model. The fake here is a small in-memory reader, so the
+ * tests pin the traversal contract.
  *
- * A link row is an `ebb` row carrying one atomic `ebb/link` value, and a
- * membership row is an `ebb` row carrying `ebb/membership`, so the fake reader
- * gates on the component rather than on `row.type`.
+ * A link and a membership are `ebb` rows carrying one atomic component each, so
+ * the fake reader gates on the component rather than on `row.type`.
  */
 
 import { describe, it, expect } from "vitest";
@@ -56,7 +53,7 @@ const mkRel = (
   field: string,
   type: string,
 ): Entity =>
-  platformEntity(id, "relationship", {
+  platformEntity(id, "link", {
     source_id: sourceId,
     target_id: targetId,
     field,
@@ -353,8 +350,8 @@ describe("membershipGroups", () => {
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("g2", platformEntity("g2", "group", { name: "Second" }));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
-    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    store.set("eg-2", platformEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g2" }));
+    store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-2", platformEntity("eg-2", "membership", { entity_id: "t1", group_id: "g2" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
@@ -371,15 +368,9 @@ describe("membershipGroups", () => {
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
     store.set("other", mkEntity("other", "list", {}));
-    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    store.set(
-      "eg-2",
-      platformEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "ghost" }),
-    );
-    store.set(
-      "eg-3",
-      platformEntity("eg-3", "entityGroup", { entity_id: "t1", group_id: "other" }),
-    );
+    store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-2", platformEntity("eg-2", "membership", { entity_id: "t1", group_id: "ghost" }));
+    store.set("eg-3", platformEntity("eg-3", "membership", { entity_id: "t1", group_id: "other" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
@@ -409,8 +400,8 @@ describe("membershipGroups", () => {
     const store = new Map<string, Entity>();
     store.set("t1", mkEntity("t1", "todo", {}));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
-    store.set("eg-1", platformEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }));
-    store.set("eg-2", mkEntity("eg-2", "entityGroup", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-2", mkEntity("eg-2", "membership", { entity_id: "t1", group_id: "g1" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),

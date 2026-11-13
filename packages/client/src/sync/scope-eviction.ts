@@ -28,22 +28,17 @@ const addGroup = (map: Map<string, Set<string>>, entityId: string, groupId: stri
 };
 
 /**
- * Split the platform rows out of the replica in one scan. A row's kind is the
- * `ebb/*` component it carries, not its model — every platform row is an
- * `ebb` row. A row carrying two platform components lands in both buckets,
- * which is what an overlay row (#820) needs.
- *
- * A zero-component `ebb` row (a row whose last component was dropped) belongs
- * to no group and no endpoint, so it contributes nothing here.
+ * The replica's rows of one platform kind. A row's kind is the `ebb/*` component
+ * it carries, not its model; a row carrying two lands in both buckets, which is
+ * what an overlay row (#820) needs.
  */
 const platformRows = (replica: Replica, kind: EbbComponentKind): readonly Entity[] =>
   replica.iterate(EBB_MODEL_NAME).filter((row) => carriesComponent(row, kind));
 
 /**
- * The ids to evict so only `groupIds` remain resident. Group rows,
- * grant rows, and membership rows follow their own `group_id`; content
- * rows follow their live `ebb/membership` rows; a link row follows an
- * evicted endpoint.
+ * The ids to evict so only `groupIds` remain resident. Group, grant, and
+ * membership rows follow their own `group_id`; content rows follow their live
+ * `ebb/membership` rows; a link row follows an evicted endpoint.
  */
 export const evictableRowIds = (
   replica: Replica,
@@ -70,9 +65,8 @@ export const evictableRowIds = (
     if (groupId !== null && !subscribed.has(groupId)) evicted.add(row.id);
   }
 
-  // Every other model's rows follow their memberships. `ebb` is skipped
-  // because its rows were bucketed by component above; an overlay row is
-  // committed under its host model, so this loop still reaches it.
+  // Every other model's rows follow their memberships. `ebb` was bucketed by
+  // component above; an overlay row is committed under its host model.
   for (const type of Object.keys(replica.stats().byType)) {
     if (type === EBB_MODEL_NAME) continue;
     for (const row of replica.iterate(type)) {

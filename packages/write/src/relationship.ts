@@ -2,9 +2,8 @@
  * Wire builders for relationship writes: the pure half of the client's
  * relationship module. Storage-backed traversal stays in `@ebbjs/client`.
  *
- * A link row is one atomic `ebb/link` value and a membership is one atomic
- * `ebb/membership` value, so every builder here emits exactly one Update per
- * row. The emitters themselves live in `system-rows.ts`.
+ * A link and a membership are each one atomic component, so every builder here
+ * emits one Update per row. The emitters themselves live in `system-rows.ts`.
  */
 
 import { componentName, generateId, type Update } from "@ebbjs/core";
@@ -65,11 +64,7 @@ export interface BuildRelationshipWriteOptions {
    * to recover the relationship's group).
    */
   relationshipSubjectId?: string;
-  /**
-   * The local clock a link's value is stamped with. Absent leaves the leaf
-   * unstamped, which is what a caller with no clock (a pre-built write) can
-   * offer; the public operations always pass one.
-   */
+  /** The local clock a link's value is stamped with; absent leaves the leaf unstamped. */
   hlc?: () => string;
   /**
    * Mints the link row and Update ids. Defaults to core's
@@ -137,11 +132,8 @@ export function resolveCardinality(
 }
 
 /**
- * Build the wire-level Updates for a single link: one `ebb/link` Update
- * carrying the whole edge, or a single `delete` when the target is null.
- *
- * The array is length one (or a lone delete) so existing spreading call sites
- * keep working; there is never a second Update to tear the edge across.
+ * Build the wire-level Updates for a single link: one `ebb/link` Update carrying
+ * the whole edge, or a single `delete` when the target is null.
  */
 export function buildRelationshipUpdate(args: {
   relationshipId: string;
@@ -150,10 +142,7 @@ export function buildRelationshipUpdate(args: {
   field: string;
   type: string;
   updateId: string;
-  /**
-   * The leaf's clock, drawn only when a value Update is built: a `delete`
-   * carries no leaf, so it must not consume a clock tick.
-   */
+  /** Drawn only when a value Update is built: a `delete` must not consume a tick. */
   hlc?: () => string;
 }): Update[] {
   if (args.targetId === null) {
@@ -173,10 +162,7 @@ export function buildRelationshipUpdate(args: {
   ];
 }
 
-/**
- * Build the Update for an `ebb/membership` row, filing `entityId` into
- * `groupId`. One row per (entity, group), one Update per row.
- */
+/** Build the Update for an `ebb/membership` row filing `entityId` into `groupId`. */
 export function buildEntityGroupUpdate(args: {
   membershipId: string;
   entityId: string;
