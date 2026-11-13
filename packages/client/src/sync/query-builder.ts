@@ -84,7 +84,7 @@ import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query
 
 /**
  * Raised when a chain's source type is materialized on demand. A scan is
- * held-only: reading a body is `get(id)` / `replica.open(id)`, not a query
+ * held-only: reading a body is `get(id)` / `replica.open(id, component)`, not a query
  * over its type. A held source may still join an on-demand target.
  */
 export class OnDemandQueryError extends Error {
@@ -560,7 +560,7 @@ export function buildReplicaQueryBuilder<
   shape: TObject<TFields>,
   context: QueryContext,
 ): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
-  if (!context.replica.isHeld(source)) throw new OnDemandQueryError(source);
+  if (!modelIsHeld(context, source)) throw new OnDemandQueryError(source);
   const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
     projectQueryRow(row, shape, entityGroupIds(row.id, executor));
   const syncRun = (query: Query): readonly unknown[] => {
@@ -646,9 +646,19 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
   }
 };
 
+/**
+ * Whether a query may scan `model`: every declared component is eagerly
+ * loaded. A model with any lazy component cannot be read row-shaped, because
+ * its rows may be partial. An undeclared model has no lazy declaration.
+ */
+const modelIsHeld = (context: QueryContext | undefined, model: string): boolean => {
+  if (context === undefined) return true;
+  return context.registry.componentsOf(model).every((component) => component.loading === "eager");
+};
+
 /** The joins of this query whose target type the replica does not hold. */
 const coldJoins = (query: Query, context: QueryContext | undefined): readonly Join[] =>
-  context === undefined ? [] : query.joins.filter((join) => !context.replica.isHeld(join.target));
+  context === undefined ? [] : query.joins.filter((join) => !modelIsHeld(context, join.target));
 
 /** Whether any join of this query reads a target type the replica does not hold. */
 const hasOnDemandJoin = (query: Query, context: QueryContext | undefined): boolean =>
@@ -668,13 +678,29 @@ const openJoinedRows = async (
   if (context === undefined) return;
   const cold = coldJoins(query, context);
   if (cold.length === 0) return;
-  const ids = new Set<string>();
+  // Open only the lazy components each cold target declares; a held component
+  // is already there, and opening one it does not carry would be a store miss.
+  const coldComponents = new Map<string, readonly string[]>();
+  for (const join of cold) {
+    if (coldComponents.has(join.target)) continue;
+    coldComponents.set(
+      join.target,
+      context.registry
+        .componentsOf(join.target)
+        .filter((component) => !context.replica.isHeld(component.name))
+        .map((component) => component.name),
+    );
+  }
+  const opens: Promise<unknown>[] = [];
   for (const row of rows) {
     for (const join of cold) {
-      for (const id of joinIds(row, join, executor)) ids.add(id);
+      const components = coldComponents.get(join.target) ?? [];
+      for (const id of joinIds(row, join, executor)) {
+        for (const component of components) opens.push(context.replica.open(id, component));
+      }
     }
   }
-  await Promise.all([...ids].map((id) => context.replica.open(id)));
+  await Promise.all(opens);
 };
 
 /** Run the plan, then open the on-demand rows its joins read before projecting. */

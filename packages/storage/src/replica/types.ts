@@ -30,31 +30,34 @@ export interface ReplicaChange {
 }
 
 /**
- * Whether the replica retains a type's rows. The seam #500 builds on-demand
- * residency against: a policy that holds nothing lets the engine fetch a type
- * on first read and react to the journal it still receives.
+ * Whether the replica retains a component's value. Residency is declared per
+ * component (`<model>/<leaf>`), not per row: a note's metadata can be held
+ * while its body is loaded only on demand (#802). A row is resident iff any of
+ * its components is held, or the row is pinned.
  */
 export interface MaterializationPolicy {
-  holds(type: string): boolean;
+  holds(component: string): boolean;
 }
 
 export interface ReplicaOptions {
   readonly materialization?: MaterializationPolicy;
   /**
-   * Reads a row from the local stores when `open` misses. Without it an
-   * on-demand id that is not resident stays a miss.
+   * Reads one component from the local stores when `open(id, component)` misses.
+   * The returned row carries the component's value and the row metadata; the
+   * replica installs only what it is asked for. Without it an open stays a
+   * miss.
    */
-  readonly readEntity?: (id: string) => Promise<Entity | null>;
+  readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
-   * Maximum resident on-demand rows. Defaults to 16. A non-positive or
-   * non-finite value keeps every opened row resident; opening past the
+   * Maximum resident on-demand components. Defaults to 16. A non-positive or
+   * non-finite value keeps every opened component resident; opening past the
    * window releases the least recently opened one.
    */
   readonly pinnedCapacity?: number;
   /**
-   * How long a closed on-demand row stays cached before release. Defaults to
-   * 30_000 ms. A non-positive or non-finite value releases it immediately on
-   * close. An open row is never released by the TTL.
+   * How long a closed on-demand component stays cached before release. Defaults
+   * to 30_000 ms. A non-positive or non-finite value releases it immediately on
+   * close. An open component is never released by the TTL.
    */
   readonly pinnedTtlMs?: number;
   /**
@@ -71,12 +74,28 @@ export interface ReplicaStats {
   readonly entities: number;
   /** Materialized row count per entity type. */
   readonly byType: Readonly<Record<string, number>>;
-  /** Rows retained because their type is held: the metadata footprint. */
+  /** Rows retained because at least one of their components is held. */
   readonly held: number;
-  /** Held row count per type; excludes opened on-demand rows. */
+  /** Held row count per type; excludes rows resident only through a pin. */
   readonly heldByType: Readonly<Record<string, number>>;
-  /** Resident on-demand rows (open or closed and waiting out their TTL). */
+  /** Resident on-demand components (open or closed and waiting out their TTL). */
   readonly pinned: number;
+  /** Components present on resident rows: held, pinned, or overlaid. */
+  readonly components: number;
+  /** Components whose value is in the composed view. */
+  readonly residentComponents: number;
+  /** Held component count per component name: the retained metadata footprint. */
+  readonly heldComponents: Readonly<Record<string, number>>;
+  /** Pinned on-demand component count per component name. */
+  readonly pinnedComponents: Readonly<Record<string, number>>;
+  /**
+   * Components known to exist on a resident row but whose value is not
+   * resident, per component name. A held note with a lazy body reports its body
+   * here.
+   */
+  readonly nonResidentComponents: Readonly<Record<string, number>>;
+  /** Total components known to exist on a resident row without their value. */
+  readonly nonResident: number;
   readonly revision: Revision;
   /** Append cursor of the last durable position folded into the base. */
   readonly position: number;
@@ -114,6 +133,10 @@ export interface MembershipQuery {
  * caller serializes them and folds durable updates in ascending log position.
  * Reads return the replica's own row objects (shared, not cloned), tombstones
  * included; callers must treat them as immutable.
+ *
+ * A row may be partial: components the policy does not hold are absent from its
+ * fields while the replica still knows they exist (`components()` includes
+ * them). Opening a component installs its value and pins it.
  */
 export interface Replica {
   readonly revision: Revision;
@@ -138,25 +161,31 @@ export interface Replica {
    * the model index with the overlay's model overrides layered on top.
    */
   iterate(model: string): readonly Entity[];
-  /** Whether the materialization policy holds `type` in full. */
-  isHeld(type: string): boolean;
+  /** Whether the materialization policy holds `component` (`<model>/<leaf>`). */
+  isHeld(component: string): boolean;
+  /** Whether every component the row carries is held, so it needs no open. */
+  isRowHeld(row: Entity): boolean;
   /**
-   * Load `id` through `readEntity` when absent, pinning it and journaling the
-   * install so a derived reader sees the row arrive. Idempotent: a resident row
+   * Open one component. Reads it through `readComponent` when it is not
+   * resident, installs its value, and pins it. Idempotent: a resident component
    * is marked open and touched (LRU order) without another read, a concurrent
-   * open shares the in-flight read, and a held row is returned without
+   * open shares the in-flight read, and a held component is returned without
    * installing or pinning. Resolves to the composed row, or `null` when the
    * read misses.
    */
-  open(id: string): Promise<Entity | null>;
+  open(id: string, component: string): Promise<Entity | null>;
   /**
-   * Close a pinned row. It stays cached until `pinnedTtlMs` so a remount reads
-   * it back, then leaves; with the TTL disabled it leaves immediately. A no-op
-   * for held rows.
+   * Close one pinned component. It stays cached until `pinnedTtlMs` so a
+   * remount reads it back, then its value leaves; with the TTL disabled it
+   * leaves immediately. A no-op for held components.
    */
-  close(id: string): void;
-  /** Whether `id` is currently open (closed rows waiting out their TTL are not). */
-  isOpen(id: string): boolean;
+  close(id: string, component: string): void;
+  /** Whether the pin for `(id, component)` is currently open. */
+  isOpen(id: string, component: string): boolean;
+  /** Whether `component`'s value is in the composed view for `id`. */
+  isComponentResident(id: string, component: string): boolean;
+  /** Component names whose value is resident for `id`, in field order. */
+  residentComponents(id: string): readonly string[];
   /**
    * Changes newer than `revision`, ascending. Empty when the cursor predates
    * `changeFloor`, where the trimmed journal can no longer answer it.
@@ -171,8 +200,9 @@ export interface Replica {
   relationships(query: RelationshipQuery): readonly string[];
   /**
    * Ids currently carrying `component` (`<type>/<field>`) in the composed
-   * view, ascending. Component existence is the set of present fields on a
-   * row, so a query reading it costs its index rather than a row filter.
+   * view, ascending. Component existence is the set of present components on
+   * a row — held or known-but-not-resident — so a query reading it costs its
+   * index rather than a row filter.
    */
   components(component: string): readonly string[];
   /**
@@ -215,7 +245,7 @@ export interface Replica {
    * `close`) that settles the composed view, so a derived reader can
    * resynchronise from `revision` and `changesSince`. A no-op write still
    * fires; readers cheaply ignore an unchanged revision. Re-opening a resident
-   * row only touches the LRU window, so it fires nothing. Returns an
+   * component only touches the LRU window, so it fires nothing. Returns an
    * unsubscribe function.
    */
   subscribe(listener: () => void): () => void;

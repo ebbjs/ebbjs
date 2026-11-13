@@ -14,7 +14,7 @@
  * primitives in ./relationship.
  */
 
-import type { Entity, Unset } from "@ebbjs/core";
+import { componentName, type Entity, type Unset } from "@ebbjs/core";
 import type { Replica, StorageAdapter } from "@ebbjs/storage/types";
 import type { Static, TObject, TRecord, TSchema, TString } from "@sinclair/typebox/type";
 
@@ -756,9 +756,15 @@ export function createEntityNamespace<
       // read through `open` so it lands and pins.
       const entity = await storage.entities.get(id);
       if (entity === null) return null;
-      if (replica.replica.isHeld(entity.type)) return buildRow(entity);
-      const opened = await replica.replica.open(id);
-      return opened === null ? null : buildRow(opened);
+      if (replica.replica.isRowHeld(entity)) return buildRow(entity);
+      // The store row is the full row; every non-held component it carries is
+      // opened here, including one the replica has never seen and one whose
+      // current value is only an unacknowledged overlay write.
+      for (const field of Object.keys(entity.data.fields)) {
+        const component = componentName(entity.type, field);
+        if (!replica.replica.isHeld(component)) await replica.replica.open(id, component);
+      }
+      return buildRow(replica.replica.get(id) ?? entity);
     },
     subscribe(
       filter: QueryFilter<TFields>,

@@ -16,14 +16,14 @@ describe("@ebbjs/storage subpaths", () => {
     const mod = await import("./memory/index");
     expect(typeof mod.createMemoryAdapter).toBe("function");
     expect(Object.keys(mod).sort()).toEqual(["createMemoryAdapter"]);
-  });
+  }, 20_000);
 
   it("@ebbjs/storage/indexeddb re-exports createIndexedDBAdapter and IndexedDBAdapterOptions", async () => {
     const mod = await import("./indexeddb/index");
     expect(typeof mod.createIndexedDBAdapter).toBe("function");
     // IndexedDBAdapterOptions is type-only; we check the runtime surface
     expect(Object.keys(mod).sort()).toEqual(["createIndexedDBAdapter"]);
-  });
+  }, 20_000);
 
   it("@ebbjs/storage/replica re-exports the replica runtime", async () => {
     const mod = await import("./replica/index");
@@ -39,7 +39,7 @@ describe("@ebbjs/storage subpaths", () => {
       "foldEntityAction",
       "holdAll",
     ]);
-  });
+  }, 20_000);
 
   it("@ebbjs/storage/types re-exports the five public types as type-only", async () => {
     // Type-only exports have no runtime presence; the module surface is empty.

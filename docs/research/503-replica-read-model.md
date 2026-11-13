@@ -230,6 +230,50 @@ every call is a cold read.
 The cold-open median is 3.6–3.9 µs across runs; the max is a scheduler/GC outlier (20–55 µs
 depending on the run), not a second read.
 
+## Residency per component (#802 update)
+
+Residency became per component in [#802](https://github.com/ebbjs/ebbjs/issues/802): a row is
+resident iff any of its components is held or the row is pinned, the replica's base row can be
+partial, and a component the policy does not hold is fetched on its own. The benchmark was re-run
+on the same shape and host after that change; the per-component attribution it now prints is below.
+
+Every held component of every held row, attributed by its value bytes. This is the #802
+residency view: the row-level buckets above are models, these are the units the replica keeps
+or leaves to the store.
+
+| component                    | rows carrying | JSON bytes |   size | % of held components |
+| ---------------------------- | ------------: | ---------: | -----: | -------------------: |
+| `relationship/source_id`     |        29,999 |  1,773,286 | 1.7 MB |                18.0% |
+| `relationship/target_id`     |        29,999 |  1,763,294 | 1.7 MB |                17.9% |
+| `relationship/field`         |        29,999 |  1,736,617 | 1.7 MB |                17.6% |
+| `relationship/type`          |        29,999 |  1,566,620 | 1.5 MB |                15.9% |
+| `page/title`                 |        10,000 |    937,780 | 0.9 MB |                 9.5% |
+| `page/updated_at`            |        10,000 |    598,890 | 0.6 MB |                 6.1% |
+| `entityGroup/entity_id`      |        10,000 |    517,780 | 0.5 MB |                 5.3% |
+| `entityGroup/group_id`       |        10,000 |    478,890 | 0.5 MB |                 4.9% |
+| `page/icon`                  |        10,000 |    468,890 | 0.4 MB |                 4.8% |
+| `group/name`                 |             1 |         49 | 0.0 MB |                 0.0% |
+| **held components subtotal** |             — |  9,842,096 | 9.4 MB |               100.0% |
+
+**What the re-run says.** The row-level buckets above are unchanged in shape; the component table
+splits the same held rows into the units the replica now keeps or leaves to the store. Each held
+row carries its declared components, and a component's bytes are its value leaves only, so the
+9.8 MB subtotal is smaller than the 18.9 MB row JSON: the row envelope (`id`, `type`, existence and
+HLC fields, field names) belongs to the row and is not attributed to any one component.
+
+The consequence the slice is for is visible at the bottom of the table: `page_content/content` is
+absent because every `page_content` component is lazy, so no body row is resident. A note whose
+body were a lazy component of a held row would report one `nonResidentComponents` entry and zero
+body bytes, which `ReplicaStats` now reports per component.
+
+**Heap and cold read in the re-run.** The heap account moved from the 41.0 MB reported above to
+45.4 MB total (rows 29.7 MB, replica structures 15.7 MB, indices 13.9 MB) on the same host. The
+delta is the component index [#798/#799](https://github.com/ebbjs/ebbjs/issues/799) added after
+this note was written plus the per-component presence the replica now tracks, not a change to the
+measured read path. A windowed body cold-opened in 15–25 µs across two re-runs (range 11–25 µs
+median), still with exactly one store row read and zero resident bodies after close; wall-clock on
+this shared host drifts well beyond the earlier 3.6–3.9 µs, so compare magnitudes, not decimals.
+
 ## Caveats
 
 - **One developer machine, one Node/V8.** Wall-clock moves with JIT, GC and layout; the spike ran on an earlier machine, so compare magnitudes, not decimals.

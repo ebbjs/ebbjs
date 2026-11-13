@@ -1,19 +1,25 @@
-import type { Action, Entity, Update } from "@ebbjs/core";
+import {
+  componentField,
+  componentModel,
+  componentName,
+  type Action,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 import {
   applyUpdate,
   RESIDENT_MAP_FIELDS,
-  updateModel,
   withAdoptedMapFields,
   withWireMapFields,
 } from "../internal/materialize";
 import {
   applyComponentDelta,
-  buildComponentIndex,
-  componentDelta,
+  buildComponentIndexFrom,
+  componentSetDelta,
   componentIds,
-  componentsOf,
-  touchedComponents,
+  touchedComponentSet,
   type ComponentIndex,
 } from "../internal/component-index";
 import { REPLICA_RECORD_FORMAT, isValidReplicaRecord } from "../internal/replica-record";
@@ -84,8 +90,15 @@ const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
   }
 };
 
+/** `(entity, component)` is the pin key; the separator cannot occur in either. */
+const PIN_SEPARATOR = "\u0000";
+const pinKey = (id: string, component: string): string => `${id}${PIN_SEPARATOR}${component}`;
+const pinIdOf = (key: string): string => key.slice(0, key.indexOf(PIN_SEPARATOR));
+const pinComponentOf = (key: string): string => key.slice(key.indexOf(PIN_SEPARATOR) + 1);
+/** The row a pin key or a whole-row open key addresses. */
+
 interface Pin {
-  /** Whether the row is currently open; a closed pin is waiting out its TTL. */
+  /** Whether the component is currently open; a closed pin waits out its TTL. */
   open: boolean;
   /** `null` while open, or when TTL release is disabled. */
   timer: ReturnType<typeof setTimeout> | null;
@@ -109,21 +122,34 @@ interface OrphanUpdate {
   readonly position: number;
 }
 
+/** A composed view plus the components it is known to carry. */
+interface Snapshot {
+  readonly row: Entity | null;
+  readonly components: readonly string[];
+}
+
 /**
  * Mutable in-place core. `entities` is the durable base (what `toRecord`
- * persists, once pinned on-demand rows are filtered out), `overlay` composes
+ * persists, once pinned components are filtered out), `overlay` composes
  * optimistic writes over it, and `effective` caches the composed view for
  * overlaid ids so a read never recomposes.
+ *
+ * `dormant` is the component-level half of residency (#802): components that
+ * exist on a resident row but whose value the replica does not hold. A held
+ * note with a lazy body has three fields and one dormant component.
+ *
  * `modelIndex` indexes the base by model; `iterate` layers the overlay's model
  * overrides on top of it. `componentIndex` tracks the composed view's component
  * set alongside the adjacency indices, and is likewise derived rather than
- * persisted.
+ * persisted. Pins are keyed `(entity, component)`, so an on-demand component is
+ * fetched, evicted and TTL-released on its own.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const policy = options?.materialization ?? holdAll;
-  const holds = (type: string): boolean => policy.holds(type);
+  const holds = (component: string): boolean => policy.holds(component);
 
   const entities = new Map<string, Entity>();
+  const dormant = new Map<string, Set<string>>();
   const modelIndex = new Map<string, Set<string>>();
   let componentIndex: ComponentIndex = new Map();
   const overlay = new Map<string, OptimisticWrite[]>();
@@ -136,11 +162,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   // key is the oldest pin.
   const pins = new Map<string, Pin>();
   const inFlightOpens = new Map<string, Promise<Entity | null>>();
-  /** Cancels a cold read whose row was closed or evicted while it was loading. */
+  /** Cancels a cold read whose component was closed or evicted while it was loading. */
   const openEpochs = new Map<string, number>();
   let nextOpenEpoch = 0;
-  /** Updates that landed for an on-demand id while its cold read was in flight. */
+  /** Updates that landed for a row while a cold read was in flight. */
   const pendingOpens = new Map<string, OrphanUpdate[]>();
+  /**
+   * Components observed on a row before the row became resident. A lazy
+   * component's value is not retained, but its existence has to survive until a
+   * held component makes the row resident.
+   */
+  const pendingPresence = new Map<string, Map<string, boolean>>();
   let journal: ReplicaChange[] = [];
   // Head cursor into `journal`: trimming advances it in O(1), and a later
   // splice folds the dead prefix away once it dominates the array.
@@ -182,61 +214,106 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (ids.size === 0) modelIndex.delete(model);
   };
 
-  /**
-   * A row stays resident when the policy holds its type or it is pinned. A
-   * closed pin keeps the row cached until its TTL, so a remount reads it back.
-   */
-  const resident = (row: Entity): boolean => holds(row.type) || pins.has(row.id);
+  /** Present components of a row's field map, under the row's own model. */
+  const fieldComponentsOf = (row: Entity): readonly string[] =>
+    Object.keys(row.data.fields).map((field) => componentName(row.type, field));
 
-  const releasePin = (id: string): void => {
-    const pin = pins.get(id);
+  /**
+   * Every component a resident row is known to carry: held values plus the
+   * components whose values are not resident.
+   */
+  const presenceOfRow = (id: string, row: Entity): readonly string[] => {
+    const components = new Set(fieldComponentsOf(row));
+    const known = dormant.get(id);
+    if (known !== undefined) {
+      for (const component of known) components.add(component);
+    }
+    return [...components];
+  };
+
+  const pinsOf = (id: string): readonly string[] => {
+    const keys: string[] = [];
+    for (const key of pins.keys()) {
+      if (pinIdOf(key) === id) keys.push(key);
+    }
+    return keys;
+  };
+
+  const hasOpenInFlight = (id: string): boolean => {
+    for (const key of inFlightOpens.keys()) {
+      if (pinIdOf(key) === id) return true;
+    }
+    return false;
+  };
+
+  /**
+   * A row is resident iff any of its components is held, or the row is pinned.
+   * A row that carries no component has nothing to retain, so it stays.
+   */
+  const resident = (id: string, row: Entity): boolean => {
+    const components = presenceOfRow(id, row);
+    if (components.length === 0) return true;
+    if (pinsOf(id).length > 0) return true;
+    return components.some(holds);
+  };
+
+  const cancelOpen = (key: string): void => {
+    if (!inFlightOpens.has(key)) return;
+    inFlightOpens.delete(key);
+    pendingOpens.delete(pinIdOf(key));
+    openEpochs.set(key, ++nextOpenEpoch);
+  };
+
+  const cancelOpensFor = (id: string): void => {
+    for (const key of inFlightOpens.keys()) {
+      if (pinIdOf(key) === id) cancelOpen(key);
+    }
+    pendingOpens.delete(id);
+  };
+
+  const dropPin = (key: string): void => {
+    const pin = pins.get(key);
     if (pin === undefined) return;
     if (pin.timer !== null) clearTimeout(pin.timer);
-    pins.delete(id);
+    pins.delete(key);
   };
 
-  /** Stop an in-flight cold read from installing a row that is no longer wanted. */
-  const cancelOpen = (id: string): void => {
-    if (!inFlightOpens.has(id)) return;
-    inFlightOpens.delete(id);
-    pendingOpens.delete(id);
-    openEpochs.set(id, ++nextOpenEpoch);
+  const dropPinsFor = (id: string): void => {
+    for (const key of pinsOf(id)) dropPin(key);
   };
 
-  /** Mark `id` as the most recently opened row, releasing the oldest past the window. */
-  const openPin = (id: string): void => {
-    releasePin(id);
-    pins.set(id, { open: true, timer: null });
-    const doomed: string[] = [];
-    for (const candidate of pins.keys()) {
-      if (pins.size - doomed.length <= pinnedCapacity) break;
-      doomed.push(candidate);
+  /** Remember a component exists without holding its value. */
+  const ensureDormant = (id: string, component: string): void => {
+    const components = dormant.get(id);
+    if (components === undefined) dormant.set(id, new Set([component]));
+    else components.add(component);
+  };
+
+  const forgetDormant = (id: string, component: string): void => {
+    const components = dormant.get(id);
+    if (components === undefined) return;
+    components.delete(component);
+    if (components.size === 0) dormant.delete(id);
+  };
+
+  const notePendingPresence = (id: string, component: string, present: boolean): void => {
+    const components = pendingPresence.get(id);
+    if (components === undefined) pendingPresence.set(id, new Map([[component, present]]));
+    else components.set(component, present);
+  };
+
+  /** Fold components observed before the row was resident into its presence. */
+  const absorbPendingPresence = (id: string): void => {
+    const pending = pendingPresence.get(id);
+    if (pending === undefined) return;
+    pendingPresence.delete(id);
+    for (const [component, present] of pending) {
+      if (present) ensureDormant(id, component);
+      else forgetDormant(id, component);
     }
-    if (doomed.length > 0) evict(doomed);
   };
 
-  /**
-   * Close a pin: the row stays cached until its TTL so a remount does not
-   * re-read, then it leaves the replica. With TTL disabled it leaves now.
-   */
-  const closePin = (id: string): void => {
-    const pin = pins.get(id);
-    if (pin === undefined || !pin.open) return;
-    pin.open = false;
-    if (!Number.isFinite(pinnedTtlMs)) {
-      evict([id]);
-      return;
-    }
-    pin.timer = setTimeout(() => evict([id]), pinnedTtlMs);
-    unrefTimer(pin.timer);
-  };
-
-  const isOpen = (id: string): boolean => pins.get(id)?.open === true;
-
-  /**
-   * Append one observable change. `components` is what the change touched in the
-   * composed view, which is what a derived reader invalidates against.
-   */
+  /** Append one observable change. `components` is what the change touched. */
   const bump = (id: string, deleted: boolean, components: readonly string[]): void => {
     revision += 1;
     journal.push({ revision, id, deleted, components });
@@ -264,10 +341,17 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const viewOf = (id: string): Entity | null =>
     effective.has(id) ? (effective.get(id) ?? null) : (entities.get(id) ?? null);
 
-  const get = (id: string): Entity | undefined => {
-    if (effective.has(id)) return effective.get(id) ?? undefined;
-    return entities.get(id);
+  const presenceOfView = (id: string): readonly string[] => {
+    const row = viewOf(id);
+    return row === null ? [] : presenceOfRow(id, row);
   };
+
+  const capture = (id: string): Snapshot => ({
+    row: viewOf(id),
+    components: presenceOfView(id),
+  });
+
+  const get = (id: string): Entity | undefined => viewOf(id) ?? undefined;
 
   const iterate = (model: string): readonly Entity[] => {
     // The base index answers for every composed row, and the overlay can move a
@@ -293,43 +377,113 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     else pending.push(entry);
   };
 
-  const foldBase = (update: Update, gsn: number, hlc: string, position: number): void => {
+  /** Drop dormant names the row's current model cannot carry. */
+  const dropStaleDormant = (id: string, type: string): void => {
+    const known = dormant.get(id);
+    if (known === undefined) return;
+    for (const component of known) {
+      const model = componentModel(component);
+      if (model !== type && model !== "ebb") known.delete(component);
+    }
+    if (known.size === 0) dormant.delete(id);
+  };
+
+  /** Remove a non-held component's value from a base row and keep its existence. */
+  const stripToResidency = (id: string, row: Entity): Entity => {
+    dropStaleDormant(id, row.type);
+    let changed = false;
+    const fields: Record<string, FieldValue> = {};
+    for (const [field, value] of Object.entries(row.data.fields)) {
+      const component = componentName(row.type, field);
+      if (holds(component) || pins.has(pinKey(id, component))) {
+        fields[field] = value;
+      } else {
+        changed = true;
+        ensureDormant(id, component);
+      }
+    }
+    return changed ? { ...row, data: { fields } } : row;
+  };
+
+  /** Drop pins that the composed view no longer justifies: absent or now held. */
+  const dropStalePins = (id: string, components: readonly string[]): void => {
+    const present = new Set(components);
+    for (const key of pinsOf(id)) {
+      const component = pinComponentOf(key);
+      if (!present.has(component) || holds(component)) dropPin(key);
+    }
+  };
+
+  const applyBaseUpdate = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
     const previous = entities.get(id) ?? null;
-    const model = updateModel(update, previous);
+
     // The local store row is read asynchronously; keep updates that land while
     // that read is in flight so the install replays them instead of hiding
     // them behind a snapshot taken before they arrived.
-    if (!holds(model) && !pins.has(id) && inFlightOpens.has(id)) {
+    if (hasOpenInFlight(id)) {
       bufferUpdate(pendingOpens, { update, gsn, hlc, position });
       return;
     }
+
+    if (update.method !== "delete") {
+      const component = update.component;
+      const residentComponent = holds(component) || pins.has(pinKey(id, component));
+      if (!residentComponent) {
+        if (previous === null) {
+          // A component the policy does not hold and no pin covers is not
+          // retained. Its existence is all the replica remembers until a held
+          // component makes the row resident.
+          notePendingPresence(id, component, update.method !== "drop");
+          return;
+        }
+        const sameModel = componentModel(component) === previous.type;
+        if (update.method === "drop") forgetDormant(id, component);
+        else ensureDormant(id, component);
+        // A write in the row's own model changes no retained value, so it must
+        // not advance the row's metadata and invalidate every reader of the
+        // model. A write naming another model moves the row and falls through.
+        if (sameModel) return;
+      }
+    }
+
     const next = applyUpdate(previous, update, gsn, hlc, RESIDENT_MAP_FIELDS);
 
     if (next === null) {
       // An unopened on-demand row has no base here by design; the local store
       // owns the base, so keeping the update would retain body data the replica
       // is deliberately not holding.
-      if (!holds(model) && !pins.has(id)) return;
-      bufferUpdate(orphans, { update, gsn, hlc, position });
-      return;
-    }
-
-    if (!resident(next)) {
-      // A not-held row is unobservable: it retains nothing and journals
-      // nothing. Dropping a previously held row is still observable, and
-      // `resync` journals that removal from the composed-view comparison.
-      if (previous !== null) {
-        entities.delete(id);
-        removeFromModel(previous.type, id);
+      if (previous === null) {
+        if (update.method === "delete") pendingPresence.delete(id);
+        if (update.method === "drop") {
+          notePendingPresence(id, update.component, false);
+          bufferUpdate(orphans, { update, gsn, hlc, position });
+        }
+        return;
       }
-      if (previous === null) orphans.delete(id);
+      entities.delete(id);
+      dormant.delete(id);
+      removeFromModel(previous.type, id);
       return;
     }
 
-    entities.set(id, next);
-    if (previous !== null && previous.type !== next.type) removeFromModel(previous.type, id);
-    addToModel(next.type, id);
+    if (previous === null) absorbPendingPresence(id);
+
+    const stripped = stripToResidency(id, next);
+    if (!resident(id, stripped)) {
+      // A not-resident row is unobservable: it retains nothing and journals
+      // nothing. Dropping a previously resident row is still observable, and
+      // `resync` journals that removal from the composed-view comparison.
+      entities.delete(id);
+      dormant.delete(id);
+      if (previous !== null) removeFromModel(previous.type, id);
+      else orphans.delete(id);
+      return;
+    }
+
+    entities.set(id, stripped);
+    if (previous !== null && previous.type !== stripped.type) removeFromModel(previous.type, id);
+    addToModel(stripped.type, id);
 
     if (previous === null) {
       const pending = orphans.get(id);
@@ -340,15 +494,16 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         const survivors = pending
           .filter((orphan) => orphan.gsn > gsn)
           .sort((a, b) => a.gsn - b.gsn);
-        let row = next;
+        let row = stripped;
         for (const orphan of survivors) {
           row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc, RESIDENT_MAP_FIELDS) ?? row;
         }
-        if (row !== next) {
-          entities.set(id, row);
-          if (next.type !== row.type) {
-            removeFromModel(next.type, id);
-            addToModel(row.type, id);
+        if (row !== stripped) {
+          const residentRow = stripToResidency(id, row);
+          entities.set(id, residentRow);
+          if (stripped.type !== residentRow.type) {
+            removeFromModel(stripped.type, id);
+            addToModel(residentRow.type, id);
           }
         }
       }
@@ -361,12 +516,14 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * one place every base, overlay, drop and tombstone write already funnels
    * through.
    */
-  const reconcileIndex = (previous: Entity | null, next: Entity | null): void => {
-    const before = previous ?? undefined;
-    const after = next ?? undefined;
+  const reconcileIndex = (previous: Snapshot, next: Snapshot): void => {
+    const before = previous.row ?? undefined;
+    const after = next.row ?? undefined;
     reverseIndex = applyIndexDelta(reverseIndex, reverseIndexDelta(before, after));
     forwardIndex = applyIndexDelta(forwardIndex, forwardIndexDelta(before, after));
-    const delta = componentDelta(before, after);
+    const id = (after ?? before)?.id;
+    if (id === undefined) return;
+    const delta = componentSetDelta(id, previous.components, next.components);
     if (delta !== null) componentIndex = applyComponentDelta(componentIndex, delta);
   };
 
@@ -376,7 +533,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * view captured before the change, which is what makes an echo of an
    * already-visible optimistic write a no-op for the revision.
    */
-  const resync = (id: string, previous: Entity | null): void => {
+  const resync = (id: string, previous: Snapshot): void => {
     const base = entities.get(id) ?? null;
     const writes = overlay.get(id);
     let next = base;
@@ -385,32 +542,64 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         next = applyUpdate(next, write.update, 0, write.hlc, RESIDENT_MAP_FIELDS);
       }
     }
-    const retained = next !== null && resident(next) ? next : null;
+    const nextComponents = next === null ? [] : presenceOfRow(id, next);
+    // A pin belongs to the base row, not to the composed view: a local drop
+    // overlay can hide a component for a moment without releasing the value the
+    // base still holds. A pin for a component the base no longer carries — or
+    // that the policy now holds — is not a pin.
+    const baseComponents = base === null ? [] : presenceOfRow(id, base);
+    dropStalePins(id, baseComponents);
+
+    const overlaid = writes !== undefined && writes.length > 0;
+    // An overlay does not keep a row resident on its own: a local write to an
+    // on-demand component is a write to the store's row until the component is
+    // opened, exactly as a remote one is.
+    const retained = next !== null && resident(id, next) ? next : null;
+    const nextSnapshot: Snapshot = {
+      row: retained,
+      components: retained === null ? [] : nextComponents,
+    };
+
+    if (overlaid) effective.set(id, retained);
+    else effective.delete(id);
+
     // A row that left the replica — or that the policy now holds outright —
     // must not leave a phantom pin behind.
-    if (retained === null || holds(retained.type)) releasePin(id);
+    if (retained === null) dropPinsFor(id);
 
-    if (writes === undefined || writes.length === 0) effective.delete(id);
-    else effective.set(id, retained);
+    reconcileIndex(previous, nextSnapshot);
 
-    reconcileIndex(previous, retained);
+    const journalChange = (deleted: boolean, components: readonly string[]): void =>
+      bump(id, deleted, components);
 
-    const journalChange = (deleted: boolean): void =>
-      bump(id, deleted, touchedComponents(previous, retained));
     if (retained === null) {
-      if (next !== null) journalChange(next.deleted_hlc !== null);
-      else if (previous !== null) journalChange(true);
+      if (next !== null) {
+        journalChange(
+          next.deleted_hlc !== null,
+          touchedComponentSet(previous.row, previous.components, null, []),
+        );
+      } else if (previous.row !== null) {
+        journalChange(true, touchedComponentSet(previous.row, previous.components, null, []));
+      }
       return;
     }
-    if (contentChanged(previous, retained)) journalChange(retained.deleted_hlc !== null);
+    const touched = touchedComponentSet(
+      previous.row,
+      previous.components,
+      retained,
+      nextSnapshot.components,
+    );
+    if (contentChanged(previous.row, retained) || touched.length > 0) {
+      journalChange(retained.deleted_hlc !== null, touched);
+    }
   };
 
-  const rememberView = (before: Map<string, Entity | null>, id: string): void => {
-    if (!before.has(id)) before.set(id, viewOf(id));
+  const rememberView = (before: Map<string, Snapshot>, id: string): void => {
+    if (!before.has(id)) before.set(id, capture(id));
   };
 
   /** Drop one action's overlay writes, capturing the pre-change views. */
-  const dropOverlay = (actionId: string, before: Map<string, Entity | null>): string[] => {
+  const dropOverlay = (actionId: string, before: Map<string, Snapshot>): string[] => {
     const affected: string[] = [];
     for (const [id, writes] of overlay) {
       if (!writes.some((write) => write.actionId === actionId)) continue;
@@ -427,24 +616,24 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   const ingest = (action: Action, delta: readonly Update[], position: number): Revision => {
-    const before = new Map<string, Entity | null>();
+    const before = new Map<string, Snapshot>();
     for (const update of delta) rememberView(before, update.subject_id);
 
     // The echo of an optimistic Action now lives in the base; drop its overlay.
     const echoed = dropOverlay(action.id, before);
 
-    for (const update of delta) foldBase(update, action.gsn, action.hlc, position);
+    for (const update of delta) applyBaseUpdate(update, action.gsn, action.hlc, position);
     if (position > lastPosition) lastPosition = position;
 
     const touched = new Set<string>(delta.map((update) => update.subject_id));
     for (const id of echoed) touched.add(id);
-    for (const id of touched) resync(id, before.get(id) ?? null);
+    for (const id of touched) resync(id, before.get(id) ?? capture(id));
     notify();
     return revision;
   };
 
   const optimistic = (action: Action): Revision => {
-    const before = new Map<string, Entity | null>();
+    const before = new Map<string, Snapshot>();
     const touched = new Set<string>();
     for (const update of action.updates) {
       const id = update.subject_id;
@@ -455,17 +644,32 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (writes === undefined) overlay.set(id, [write]);
       else writes.push(write);
     }
-    for (const id of touched) resync(id, before.get(id) ?? null);
+    for (const id of touched) resync(id, before.get(id) ?? capture(id));
     notify();
     return revision;
   };
 
   const discard = (actionId: string): Revision => {
-    const before = new Map<string, Entity | null>();
+    const before = new Map<string, Snapshot>();
     const affected = dropOverlay(actionId, before);
-    for (const id of affected) resync(id, before.get(id) ?? null);
+    for (const id of affected) resync(id, before.get(id) ?? capture(id));
     notify();
     return revision;
+  };
+
+  /** Remove a row's base, overlay, presence and index traces without journaling. */
+  const removeRow = (id: string): void => {
+    const base = entities.get(id);
+    entities.delete(id);
+    dormant.delete(id);
+    overlay.delete(id);
+    effective.delete(id);
+    orphans.delete(id);
+    pendingPresence.delete(id);
+    pendingOpens.delete(id);
+    cancelOpensFor(id);
+    dropPinsFor(id);
+    if (base !== undefined) removeFromModel(base.type, id);
   };
 
   /**
@@ -479,21 +683,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     for (const id of ids) {
       if (seen.has(id)) continue;
       seen.add(id);
-      cancelOpen(id);
-      releasePin(id);
-      pendingOpens.delete(id);
-      const previous = viewOf(id);
-      const base = entities.get(id);
-      entities.delete(id);
-      overlay.delete(id);
-      effective.delete(id);
-      orphans.delete(id);
-      if (base !== undefined) removeFromModel(base.type, id);
-      reconcileIndex(previous, null);
-      const row = previous ?? base ?? null;
-      if (row === null) continue;
+      const previous = capture(id);
+      removeRow(id);
+      reconcileIndex(previous, { row: null, components: [] });
+      if (previous.row === null) continue;
       removed = true;
-      bump(id, true, componentsOf(row));
+      bump(id, true, previous.components);
     }
     if (removed) notify();
     return revision;
@@ -503,13 +698,15 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (!isValidReplicaRecord(record)) return revision;
     entities.clear();
     modelIndex.clear();
+    dormant.clear();
     orphans.clear();
     overlay.clear();
     effective.clear();
     pendingOpens.clear();
+    pendingPresence.clear();
     inFlightOpens.clear();
     openEpochs.clear();
-    for (const id of pins.keys()) releasePin(id);
+    for (const key of pins.keys()) dropPin(key);
     journal.length = 0;
     journalStart = 0;
     // One linear pass rebuilds the base, both adjacency directions, and
@@ -523,17 +720,44 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (rows === undefined) index[entry.key] = { [entry.rowId]: entry.value };
       else rows[entry.rowId] = entry.value;
     };
+    const presence: { id: string; components: readonly string[] }[] = [];
+    const notResident = record.notResident ?? {};
     for (const entity of record.entities) {
-      if (!holds(entity.type)) continue;
-      const row = withAdoptedMapFields(entity);
+      const fields: Record<string, FieldValue> = {};
+      const offloaded = new Set<string>();
+      for (const [field, value] of Object.entries(entity.data.fields)) {
+        const component = componentName(entity.type, field);
+        if (holds(component)) fields[field] = value;
+        else offloaded.add(component);
+      }
+      for (const component of notResident[entity.id] ?? []) {
+        const model = componentModel(component);
+        if (!holds(component) && (model === entity.type || model === "ebb")) {
+          offloaded.add(component);
+        }
+      }
+      const carried = Object.keys(entity.data.fields).length > 0 || offloaded.size > 0;
+      if (carried && Object.keys(fields).length === 0) continue;
+      // A row with every component held is adopted whole: the record's row is
+      // the row the replica keeps, so a load does not duplicate it.
+      const row =
+        offloaded.size === 0
+          ? withAdoptedMapFields(entity)
+          : withAdoptedMapFields({ ...entity, data: { fields } });
       entities.set(row.id, row);
       addToModel(row.type, row.id);
+      if (offloaded.size > 0) dormant.set(row.id, offloaded);
+      const components = [
+        ...Object.keys(fields).map((field) => componentName(row.type, field)),
+        ...offloaded,
+      ];
+      presence.push({ id: row.id, components });
       const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
       const forwardEntry = forwardIndexEntryFor(row);
       if (forwardEntry !== null) add(forward, forwardEntry);
     }
-    componentIndex = buildComponentIndex(entities.values());
+    componentIndex = buildComponentIndexFrom(presence);
     reverseIndex = reverse;
     forwardIndex = forward;
     // A load replaces the journal wholesale. When it advances the revision,
@@ -555,37 +779,70 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // not advance past it or hydrate would replay the tail only after the base.
     const position =
       oldest === Number.POSITIVE_INFINITY ? lastPosition : Math.min(lastPosition, oldest - 1);
-    // Bodies are residency, not durability: only held rows persist, and a
-    // resident map field leaves as the flat wire shape.
+    // Values are residency, not durability: only held components persist, and a
+    // resident map field leaves as the flat wire shape. A component without a
+    // value still persists its existence.
     const persisted: Entity[] = [];
+    const notResident: Record<string, readonly string[]> = {};
     for (const row of entities.values()) {
-      if (holds(row.type)) persisted.push(withWireMapFields(row));
+      const components = presenceOfRow(row.id, row);
+      const held = components.filter(holds);
+      if (components.length > 0 && held.length === 0) continue;
+      const fields: Record<string, FieldValue> = {};
+      for (const [field, value] of Object.entries(row.data.fields)) {
+        if (holds(componentName(row.type, field))) fields[field] = value;
+      }
+      persisted.push(withWireMapFields({ ...row, data: { fields } }));
+      const offloaded = components.filter((component) => !holds(component));
+      if (offloaded.length > 0) notResident[row.id] = offloaded;
     }
-    return {
+    const record: ReplicaRecord = {
       format: REPLICA_RECORD_FORMAT,
       position,
       revision,
       entities: persisted,
     };
+    return Object.keys(notResident).length === 0 ? record : { ...record, notResident };
   };
 
   const stats = (): ReplicaStats => {
     const byType: Record<string, number> = {};
     const heldByType: Record<string, number> = {};
-    const models = new Set(modelIndex.keys());
-    for (const row of effective.values()) {
-      if (row !== null) models.add(row.type);
+    const heldComponents: Record<string, number> = {};
+    const pinnedComponents: Record<string, number> = {};
+    const nonResidentComponents: Record<string, number> = {};
+    const ids = new Set<string>(entities.keys());
+    for (const [id, row] of effective) {
+      if (row !== null) ids.add(id);
     }
     let total = 0;
     let heldTotal = 0;
-    for (const model of models) {
-      const count = iterate(model).length;
-      if (count === 0) continue;
-      byType[model] = count;
-      total += count;
-      if (holds(model)) {
-        heldByType[model] = count;
-        heldTotal += count;
+    let components = 0;
+    let residentComponents = 0;
+    let nonResident = 0;
+
+    for (const id of ids) {
+      const row = viewOf(id);
+      if (row === null) continue;
+      total += 1;
+      byType[row.type] = (byType[row.type] ?? 0) + 1;
+      const carried = presenceOfRow(id, row);
+      if (carried.length === 0 || carried.some(holds)) {
+        heldByType[row.type] = (heldByType[row.type] ?? 0) + 1;
+        heldTotal += 1;
+      }
+      for (const component of new Set(carried)) {
+        components += 1;
+        const hasValue = row.data.fields[componentField(component)] !== undefined;
+        if (hasValue) residentComponents += 1;
+        if (holds(component)) heldComponents[component] = (heldComponents[component] ?? 0) + 1;
+        if (pins.has(pinKey(id, component))) {
+          pinnedComponents[component] = (pinnedComponents[component] ?? 0) + 1;
+        }
+        if (!hasValue) {
+          nonResidentComponents[component] = (nonResidentComponents[component] ?? 0) + 1;
+          nonResident += 1;
+        }
       }
     }
     return {
@@ -594,6 +851,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       held: heldTotal,
       heldByType,
       pinned: pins.size,
+      components,
+      residentComponents,
+      heldComponents,
+      pinnedComponents,
+      nonResidentComponents,
+      nonResident,
       revision,
       position: lastPosition,
       changes: retainedChanges(),
@@ -611,66 +874,176 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return changes;
   };
 
+  /** Set a pin without trimming, so a multi-component install settles as one. */
+  const pinComponent = (id: string, component: string): void => {
+    const key = pinKey(id, component);
+    dropPin(key);
+    pins.set(key, { open: true, timer: null });
+  };
+
   /**
-   * Install a row read for an on-demand id as the base, journaling it so a
-   * derived reader sees the arrival. The pin lands first so retention sees the
-   * row as resident.
+   * Release a component's value: the pin goes, the value leaves the base, and
+   * the component stays known to exist. A row with nothing left to retain is
+   * evicted.
    */
-  const install = (id: string, row: Entity, buffered: readonly OrphanUpdate[]): void => {
-    const previous = viewOf(id);
-    entities.set(id, row);
-    addToModel(row.type, id);
-    openPin(id);
-    for (const entry of buffered) foldBase(entry.update, entry.gsn, entry.hlc, entry.position);
-    resync(id, previous);
+  const releaseComponent = (id: string, component: string): void => {
+    const key = pinKey(id, component);
+    if (!pins.has(key)) return;
+    dropPin(key);
+    const previous = capture(id);
+    const base = entities.get(id);
+    if (base === undefined) return;
+    let next = base;
+    if (!holds(component)) {
+      const field = componentField(component);
+      if (base.data.fields[field] !== undefined) {
+        const { [field]: _released, ...fields } = base.data.fields;
+        next = { ...base, data: { fields } };
+        ensureDormant(id, component);
+      }
+    }
+    if (!resident(id, next)) {
+      removeRow(id);
+      reconcileIndex(previous, { row: null, components: [] });
+      if (previous.row !== null) bump(id, true, previous.components);
+    } else {
+      entities.set(id, next);
+      resync(id, previous);
+    }
     notify();
   };
 
-  const open = (id: string): Promise<Entity | null> => {
-    const row = get(id);
-    if (row !== undefined) {
-      if (!holds(row.type)) openPin(id);
-      return Promise.resolve(row);
+  /** Release the least recently opened components past the configured window. */
+  const trimPins = (): void => {
+    while (pins.size > pinnedCapacity) {
+      const oldest = pins.keys().next();
+      if (oldest.done === true) return;
+      releaseComponent(pinIdOf(oldest.value), pinComponentOf(oldest.value));
     }
-    const pending = inFlightOpens.get(id);
+  };
+
+  /** Mark a component as the most recently opened and trim the window. */
+  const openPin = (id: string, component: string): void => {
+    if (holds(component)) return;
+    pinComponent(id, component);
+    trimPins();
+  };
+
+  const closePin = (id: string, component: string): void => {
+    const pin = pins.get(pinKey(id, component));
+    if (pin === undefined || !pin.open) return;
+    pin.open = false;
+    if (!Number.isFinite(pinnedTtlMs)) {
+      releaseComponent(id, component);
+      return;
+    }
+    pin.timer = setTimeout(() => releaseComponent(id, component), pinnedTtlMs);
+    unrefTimer(pin.timer);
+  };
+
+  /** Read one component through the seam. */
+  const readOne = async (id: string, component: string): Promise<Entity | null> =>
+    options?.readComponent?.(id, component) ?? null;
+
+  /** Install a component read for `id`, pinning it and replaying buffered writes. */
+  const installComponent = (
+    id: string,
+    component: string,
+    loaded: Entity,
+    buffered: readonly OrphanUpdate[],
+  ): boolean => {
+    const field = componentField(component);
+    const adopted = withAdoptedMapFields(loaded);
+    const value = adopted.data.fields[field];
+    if (value === undefined) return false;
+    const previous = capture(id);
+    const base = entities.get(id) ?? null;
+    const fields = { ...base?.data.fields, [field]: value };
+    const row: Entity = {
+      ...(base ?? loaded),
+      id,
+      type: loaded.type,
+      data: { fields },
+      exists: loaded.exists,
+      created_hlc: loaded.created_hlc,
+      updated_hlc: loaded.updated_hlc,
+      deleted_hlc: loaded.deleted_hlc,
+      last_gsn: Math.max(base?.last_gsn ?? 0, loaded.last_gsn),
+    };
+    entities.set(id, row);
+    addToModel(row.type, id);
+    forgetDormant(id, component);
+    if (base === null) absorbPendingPresence(id);
+    if (!holds(component)) pinComponent(id, component);
+    for (const entry of buffered)
+      applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
+    trimPins();
+    resync(id, previous);
+    notify();
+    return true;
+  };
+
+  const openComponent = (id: string, component: string): Promise<Entity | null> => {
+    const view = get(id);
+    if (holds(component)) return Promise.resolve(view ?? null);
+    if (view !== undefined) {
+      const field = componentField(component);
+      if (view.data.fields[field] !== undefined || pins.has(pinKey(id, component))) {
+        // Re-opening a resident component only touches the LRU window.
+        openPin(id, component);
+        return Promise.resolve(get(id) ?? view);
+      }
+    }
+    const key = pinKey(id, component);
+    const pending = inFlightOpens.get(key);
     if (pending !== undefined) return pending;
-    const readEntity = options?.readEntity;
-    if (readEntity === undefined) return Promise.resolve(null);
     const epoch = ++nextOpenEpoch;
-    openEpochs.set(id, epoch);
-    const read = readEntity(id).then(
+    openEpochs.set(key, epoch);
+    const read = readOne(id, component).then(
       (loaded) => {
-        if (inFlightOpens.get(id) === read) inFlightOpens.delete(id);
-        // A close or eviction while the read was in flight wins: the row does
-        // not reappear behind the caller's back.
-        if (openEpochs.get(id) !== epoch) return null;
+        if (inFlightOpens.get(key) === read) inFlightOpens.delete(key);
+        // A close or eviction while the read was in flight wins: the component
+        // does not reappear behind the caller's back.
+        if (openEpochs.get(key) !== epoch) return null;
+        if (loaded === null) return null;
         const buffered = pendingOpens.get(id) ?? [];
         pendingOpens.delete(id);
-        if (loaded === null) return null;
-        if (holds(loaded.type)) return loaded;
-        const adopted = withAdoptedMapFields(loaded);
-        install(id, adopted, buffered);
-        return get(id) ?? adopted;
+        return installComponent(id, component, loaded, buffered) ? (get(id) ?? null) : null;
       },
       (error: unknown) => {
-        if (inFlightOpens.get(id) === read) inFlightOpens.delete(id);
+        if (inFlightOpens.get(key) === read) inFlightOpens.delete(key);
         throw error;
       },
     );
-    inFlightOpens.set(id, read);
+    inFlightOpens.set(key, read);
     return read;
   };
 
-  const close = (id: string): void => {
+  const open = (id: string, component: string): Promise<Entity | null> =>
+    openComponent(id, component);
+
+  const close = (id: string, component: string): void => {
+    cancelOpen(pinKey(id, component));
+    if (!pins.has(pinKey(id, component))) return;
+    closePin(id, component);
+  };
+
+  const isOpen = (id: string, component: string): boolean =>
+    pins.get(pinKey(id, component))?.open === true;
+
+  const isHeld = (component: string): boolean => holds(component);
+
+  const isRowHeld = (row: Entity): boolean =>
+    presenceOfRow(row.id, row).every((component) => holds(component));
+
+  const isComponentResident = (id: string, component: string): boolean => {
     const row = viewOf(id);
-    if (row === null) {
-      cancelOpen(id);
-      return;
-    }
-    if (holds(row.type)) return;
-    cancelOpen(id);
-    if (pins.has(id)) closePin(id);
-    else evict([id]);
+    return row !== null && row.data.fields[componentField(component)] !== undefined;
+  };
+
+  const residentComponents = (id: string): readonly string[] => {
+    const row = viewOf(id);
+    return row === null ? [] : fieldComponentsOf(row);
   };
 
   return {
@@ -683,10 +1056,13 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     get,
     base: (id) => entities.get(id),
     iterate,
-    isHeld: holds,
+    isHeld,
+    isRowHeld,
     open,
     close,
     isOpen,
+    isComponentResident,
+    residentComponents,
     changesSince,
     stats,
     relationships: (query: RelationshipQuery): readonly string[] => {

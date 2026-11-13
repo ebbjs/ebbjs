@@ -151,12 +151,14 @@ const pageContent = defineModel(
 
 A document entity declared `{ materialization: "on-demand" }` keeps the heavy
 body out of the replica while the page, its relationships, and its memberships
-stay held. Open a body with `client.replica.open(id)`; it is pinned in an LRU
-window (`pinnedCapacity`, default 16). `client.replica.close(id)` closes the
-pin; the row stays cached for `pinnedTtlMs` (default 30 s) so a remount reads
-it back, then leaves. A non-positive TTL releases it immediately on close, and
-an open row is never released by the TTL. The persisted replica record holds
-held rows only — a body is never part of it.
+stay held. Residency is per component: open one with
+`client.replica.open(id, "page_content/content")`; it is pinned in an LRU
+window (`pinnedCapacity`, default 16 components). `client.replica.close(id,
+component)` closes the pin; the component stays cached for `pinnedTtlMs`
+(default 30 s) so a remount reads it back, then leaves. A non-positive TTL
+releases it immediately on close, and an open component is never released by
+the TTL. The persisted replica record holds the held components only — a lazy
+component's existence survives in `notResident`, its value never does.
 
 A query whose **source** type is on-demand is refused with
 `OnDemandQueryError`, because a scan is held-only. A held source may join an
