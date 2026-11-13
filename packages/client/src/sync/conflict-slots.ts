@@ -25,27 +25,24 @@ import {
   type Update,
 } from "@ebbjs/core";
 import type { ConflictScope } from "@ebbjs/schema";
-import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
+import type { ConflictHold, ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 import { projectFieldValue } from "./query-builder";
 
-/**
- * The coarsest scope wins: an entity-scope subject holds the whole conflict,
- * whether the scopes are per subject or per grouped losing Action.
- */
-export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
-  scopes.includes("entity") ? "entity" : "field";
+/** Granularity ordering for a conflict: `none` < `field` < `component` < `entity`. */
+const SCOPE_RANK: Readonly<Record<ConflictScope, number>> = {
+  none: 0,
+  field: 1,
+  component: 2,
+  entity: 3,
+};
 
-/**
- * Models whose rows carry structural edges, not LWW component writes: a
- * `relationship` edge, an `entityGroup` membership, and a `groupMember`
- * permission row. Concurrent writes to edges are never surfaced as conflicts.
- */
-export const STRUCTURAL_MODELS: ReadonlySet<string> = new Set([
-  "relationship",
-  "entityGroup",
-  "groupMember",
-]);
+/** The coarsest scope wins: an entity-scope loss holds the whole conflict. */
+export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =>
+  scopes.reduce<ConflictScope>(
+    (coarsest, scope) => (SCOPE_RANK[scope] > SCOPE_RANK[coarsest] ? scope : coarsest),
+    "none",
+  );
 
 /** The component-kind oracle the outbox injects; `undefined` defaults to LWW. */
 export type LwwFieldOracle = ((model: string, component: string) => boolean) | undefined;
@@ -147,15 +144,37 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
   return writes;
 };
 
+/** Stable key for one held position: the subject, and `*` for the whole subject. */
+export const holdKey = (hold: Pick<ConflictHold, "subjectId" | "component">): string =>
+  `${hold.subjectId}\u0000${hold.component ?? "*"}`;
+
 /**
- * True when an inbound write to `component` can silently overwrite a local
- * one. A structural model's rows are edges, never LWW component writes.
+ * The holds a conflict payload carries. A row written before the component
+ * hold names only subjects, and holds each of them whole — the behavior it
+ * was detected under.
  */
-export const isConflictableField = (
-  isLwwField: LwwFieldOracle,
-  model: string,
-  component: string,
-): boolean => !STRUCTURAL_MODELS.has(model) && (isLwwField?.(model, component) ?? true);
+export const conflictHolds = (conflict: {
+  readonly subjects: readonly string[];
+  readonly holds?: readonly ConflictHold[];
+}): readonly ConflictHold[] =>
+  conflict.holds ?? conflict.subjects.map((subjectId) => ({ subjectId }));
+
+/**
+ * Whether an Action writes any held position. An Action cannot be submitted
+ * in part, so touching one held component holds the whole Action; a
+ * `delete` Update detaches every component of its subject.
+ */
+export const actionTouchesHolds = (action: Action, holds: readonly ConflictHold[]): boolean => {
+  if (holds.length === 0) return false;
+  for (const update of action.updates) {
+    for (const hold of holds) {
+      if (hold.subjectId !== update.subject_id) continue;
+      if (hold.component === undefined) return true;
+      if (update.method === "delete" || update.component === hold.component) return true;
+    }
+  }
+  return false;
+};
 
 /**
  * The `ConflictSide` view of a FieldValue: a leaf carries its LWW triple,

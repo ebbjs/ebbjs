@@ -9,11 +9,11 @@ Live sync is **pure convergence**. While a client is connected, every inbound Ac
 
 ## The convergence boundary
 
-|          | Live                                        | Catch-up                                                                      |
-| -------- | ------------------------------------------- | ----------------------------------------------------------------------------- |
-| Behavior | append and materialize every inbound Action | fold the missed window against buffered local writes                          |
-| Rows     | none                                        | one `conflicted` row per losing local Action                                  |
-| Holds    | none                                        | the losing Actions and later writes to their subjects are held until resolved |
+|          | Live                                        | Catch-up                                                                               |
+| -------- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Behavior | append and materialize every inbound Action | fold the missed window against buffered local writes                                   |
+| Rows     | none                                        | one `conflicted` row per losing local Action                                           |
+| Holds    | none                                        | the losing Actions and later writes to the positions they hold are held until resolved |
 
 The boundary is the **catch-up call site**, not `connectionState`. The subscription's catch-up runs the detection pass once, after the whole missed window has drained and before the flush gate reopens. `connectionState` flips to `live` only after the gate releases.
 
@@ -21,7 +21,7 @@ The boundary is the **catch-up call site**, not `connectionState`. The subscript
 
 ## Declared scope
 
-Granularity is declared on the entity, not guessed:
+Granularity is declared per component, falling back to the model's default:
 
 ```ts
 const post = defineModel(
@@ -43,11 +43,12 @@ const schema = defineSchema({
 ```
 
 - `"field"` surfaces a same-position race, and a concurrent `delete` or `drop` of a component the local write holds (the component is reverted on the server).
+- `"component"` surfaces any concurrent touch of the same component, even one that writes a different map key, and holds only that component.
 - `"entity"` surfaces any concurrent touch of an entity that has buffered local writes.
-- Unknown entity types default to `"field"`.
-- Structural edge subject types (`relationship`, `entityGroup`, `groupMember`) are never surfaced: concurrent writes to edges are not field conflicts.
+- `"none"` marks a structural component whose writes are never surfaced and never hold another write. The SDK's edge (`relationship`), membership (`entityGroup`), and grant (`groupMember`) components declare it.
+- Unknown components default to `"field"`.
 
-`conflictScope` is declared on the document entity, so each document declares its own scope. Every document is its own entity ([#398](https://github.com/ebbjs/ebbjs/issues/398)), so a blanket `text_document.*` grant becomes one grant per document entity.
+A component-scope hold does not block a sibling component's flush. An Action cannot be sent in part, so an Action that writes a held component and a free one waits whole. `conflictScope` is declared on each component, so one document can mix scope granularities. Every document is its own entity ([#398](https://github.com/ebbjs/ebbjs/issues/398)), so a blanket `text_document.*` grant becomes one grant per document entity.
 
 ## Positions
 
@@ -91,18 +92,25 @@ A detected loser is a `conflicted` status plus a payload on **its own outbox row
 ```ts
 interface Conflict {
   readonly id: string; // the persisted conflictId, shared by the group
-  readonly scope: "field" | "entity"; // how detection classified it
+  readonly scope: "field" | "component" | "entity"; // how detection classified it
   readonly subjects: readonly string[];
+  readonly holds: readonly ConflictHold[]; // the positions kept off the wire
   readonly subjectStates: readonly ConflictSubjectStateView[];
   readonly entries: readonly ConflictEntry[];
   readonly remoteActions: readonly ConflictRemoteAction[];
+}
+
+interface ConflictHold {
+  readonly subjectId: string;
+  readonly component?: string; // absent holds the whole subject
 }
 
 interface ConflictEntry {
   readonly action: Action; // the losing local Action, verbatim
   readonly subjects: readonly string[]; // subjects that actually lost
   readonly slots?: readonly ConflictSlotView[]; // absent when this entry's scope is entity
-  readonly scope: "field" | "entity";
+  readonly holds: readonly ConflictHold[];
+  readonly scope: "field" | "component" | "entity";
   readonly remoteActions: readonly ConflictRemoteAction[];
   readonly basedOnGsn: number;
   readonly catchUpId: string; // the catch-up pass
@@ -118,7 +126,7 @@ interface ConflictRemoteAction {
 
 interface ConflictSlotView {
   readonly subjectId: string;
-  readonly field: string;
+  readonly component: string;
   readonly path: readonly string[];
   readonly local: ConflictSide;
   readonly remote: ConflictSide;
@@ -127,25 +135,26 @@ interface ConflictSlotView {
 
 interface ConflictSubjectStateView {
   readonly subjectId: string;
-  readonly subjectType: string;
+  readonly model: string;
   readonly before: Entity | null; // what the client had before the sync
   readonly after: Entity | null; // the server's row after it
   readonly diff: readonly EntityDiff[];
 }
 
 interface EntityDiff {
-  readonly field: string;
-  readonly path: readonly string[]; // map-key path from the field root; [] at the root
+  readonly component: string; // full <model>/<field> name
+  readonly path: readonly string[]; // map-key path from the component root; [] at the root
   readonly before: unknown; // projected via projectFieldValue
   readonly after: unknown;
   readonly kind: "changed" | "added" | "removed";
 }
 ```
 
-- `scope` is declared on the entity, not guessed per position. `"entity"` means any concurrent touch surfaced the subject; `"field"` means an overlapping position did.
+- `scope` is declared per component, not guessed per position. `"entity"` means any concurrent touch surfaced the subject; `"component"` means a touch of the same component did; `"field"` means an overlapping position did.
 - `subjects` scopes the entity-level group. A create-plus-update write names only the entity that lost, so a freshly created entity is not dragged in.
 - `subjectStates` is one state per losing subject, in `subjects` order: the client's row before the sync, the server's row after it, and the positions that differ.
-- `slots` is the overlapping positions, in detection order, and is **absent** for an entity-scope entry — there is no position-level verdict to misread. Read the diff instead. `Conflict.scope` is the coarsest of its entries, so a mixed group reports `"entity"` while its field-scope entries still carry slots.
+- `slots` is the contested positions, in detection order, and is **absent** for an entity-scope entry — there is no position-level verdict to misread. Read the diff instead. A field-scope slot names a map key inside the component; a component-scope slot names the component as a whole with an empty `path`. `Conflict.scope` is the coarsest of its entries, so a mixed group reports `"entity"` while its field-scope entries still carry slots.
+- `holds` names the positions the conflict keeps off the wire: one component for a field- or component-scope loss, the whole subject for an entity-scope loss.
 - `remoteActions` is the concurrent missed Actions that made this a conflict: actor, action id, and server GSN. Deduped by action id, first-seen across the conflict's entries (each entry's own list is in window order).
 - `conflictId` is stamped at detection, one per connected set of losing subjects in a catch-up pass, so grouping survives a reload and a partial resolution.
 - The stored rows stay plain; the conflicts view rebuilds the method-carrying objects.
@@ -161,10 +170,11 @@ Captures are taken per catch-up pass, keyed by the pass's `catchUpId`, so a seco
 
 The `diff` is a **projection**, computed in the conflicts view, not stored. It uses the same recursion the merge does (top-level fields, then `FieldMap` keys), so the diff vocabulary matches the merge and slot vocabulary:
 
-- entries sort deterministically: top-level fields by name, then path segments by name;
+- entries sort deterministically: components by name, then path segments by name;
 - each side is projected to plain JSON through `projectFieldValue`, the rule the slot sides already use;
 - `kind` is a pure function of the two projected values: an absent `before` is `added`, an absent `after` is `removed`, both present is `changed`. A `before: null` therefore reads as `added` — nothing was materialized at capture;
-- a nested map entry that projects to `null` is a tombstone, read as absent rather than as a changed position.
+- a nested map entry that projects to `null` is a tombstone, read as absent rather than as a changed position;
+- each entry names the full `<model>/<field>` component, matching the slot vocabulary.
 
 `subjectStates` lives on `Conflict` only; each `ConflictEntry` carries its own `slots`, `scope`, and `remoteActions`. `subjectStates` dedupes by `subjectId` alone, taking the earliest `before` and the latest `after` — a no-op today, since every entry in a conflict comes from one catch-up pass.
 
@@ -208,14 +218,15 @@ A failed entry stays `conflicted` under the same `conflictId` and can be resolve
 
 There is no `retry`, `discard`, `accept`, `backup`, or `merge` verb. Policy — copy a backup, pick a winner, do nothing — is application code over the report.
 
-## The subject hold
+## The component hold
 
-Entity scope holds more than the losing Action. Every subject named by an open conflict is **held**: a later local write to it is accepted into the outbox and applied optimistically, so local UX continues, but `pending()` and the flush exclude it until the conflict resolves. The hold is derived from the durable `conflicted` rows, so a reload preserves it without a second store.
+A conflict holds more than the losing Action. Every position it names is **held**: a later local write to that component is accepted into the outbox and applied optimistically, so local UX continues, but `pending()` and the flush exclude it until the conflict resolves. A field- or component-scope conflict holds the contested component; an entity-scope conflict holds the whole subject. The hold is derived from the durable `conflicted` rows, so a reload preserves it without a second store.
 
+- A held component does not block a sibling component's flush; a different component of the same row is a different position.
 - The hold applies to `pending` rows only. An `acknowledged` write is already on the server and is never re-held.
 - Detection only considers `pending` rows for the same reason.
-- `sendLocalActions` releases the whole held set and flushes it; `clearLocalActions` drops it, so the subjects really do converge.
-- An Action writing several subjects is held or dropped whole; an Action cannot be sent in part.
+- `sendLocalActions` releases the whole held set and flushes it; `clearLocalActions` drops it, so the released positions really do converge.
+- An Action writing a held position and a free one is held or dropped whole; an Action cannot be sent in part.
 
 ## Backup
 
@@ -248,7 +259,7 @@ The convergence/detection boundary is deliberate:
 
 - **No client merge override.** A different convergent type is a protocol extension, not a callback.
 - **No live detection.** Inbound Actions while connected never create a conflict.
-- **No gate holds.** The flush gate is global and catch-up-scoped. The subject hold keeps a conflict's subjects out of `pending`; sending or clearing them is the application's decision, made through `client.conflicts`.
+- **No gate holds.** The flush gate is global and catch-up-scoped. The component hold keeps a conflict's positions out of `pending`; sending or clearing them is the application's decision, made through `client.conflicts`.
 - **Detection is not exact concurrency between two already-committed writes.** It is "a write this client had not seen when it authored its own".
 - **The conflict's entity rows are copies, not references into the action log.** Compaction of the log cannot erase the comparison a conflict exposes.
 

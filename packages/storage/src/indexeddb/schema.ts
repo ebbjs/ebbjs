@@ -50,10 +50,13 @@ import type { IndexRows } from "../internal/reverse-index";
  * context. Version 11 adds the `components` multiEntry index to `entities`
  * (issue #799): rows now carry a denormalized component-name array, so there
  * is no migration from a lower version — an existing database below 11 is
- * discarded at open and rebuilt empty. Bump this when adding or changing
- * object stores, or when a persisted row shape changes.
+ * discarded at open and rebuilt empty. Version 12 adds `holds` to the
+ * persisted conflict payload (issue #801): the positions a detected conflict
+ * keeps off the wire. It is additive and has no reset; a row written before
+ * it is read as holding each named subject whole. Bump this when adding or
+ * changing object stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 11;
+export const EBB_SCHEMA_VERSION = 12;
 
 /**
  * The version at which the collaborative-text cell format changed

@@ -161,7 +161,7 @@ storage     derived index (component, id) in ETS    → replaces cf_type_entitie
             ReplicaChange { components }               → replaces { type }
 client      query(model) reads declared components    → set intersection, not one Set lookup
             plan.readComponents                        → replaces readTypes
-            conflictScope "component"                  → replaces STRUCTURAL_MODELS
+            conflictScope per component ("component" | "none") → replaces STRUCTURAL_MODELS
 auth        component prefix = committed model         → #624 cannot borrow a model's permission
             ebb/* component names its permission       → ebb/group.create, not ebb.create
 ```
@@ -605,6 +605,18 @@ editing different components of one row do not hold each other; two actors editi
 component do.
 
 **Depends on.** 4, 6.
+
+**Current state.** Shipped in [#801](https://github.com/ebbjs/ebbjs/issues/801). Scope resolves per
+component from the registry (`conflictScopeOf(model, component)`), and the outbox keys its durable
+hold by `(subject, component)`: a field- or component-scope loss holds the contested component, an
+entity-scope loss holds the whole subject, and a record written before the component hold still
+holds its subjects whole. A component-scope slot names the component as a whole (`path: []`), while
+a field-scope slot keeps its map-key path. `STRUCTURAL_MODELS` is gone: `relationship`,
+`entityGroup`, and `groupMember` declare `conflictScope: "none"` on every component, and a
+schema-less client resolves those static declarations without a per-client registry. `EntityDiff`
+now reports `component` (the full `<model>/<field>` name) beside `path`. `LwwFieldOracle` stays
+`(model, component) => boolean`, as the issue required; the epic's `(component, leaf)` sketch was
+not needed.
 
 ---
 

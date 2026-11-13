@@ -40,7 +40,7 @@ describe("diffEntity", () => {
     const after = row({ title: leaf("theirs", "u_peer", PEER_HLC) });
 
     expect(diffEntity(null, after)).toEqual([
-      { field: "title", path: [], before: undefined, after: "theirs", kind: "added" },
+      { component: "todo/title", path: [], before: undefined, after: "theirs", kind: "added" },
     ]);
   });
 
@@ -49,7 +49,7 @@ describe("diffEntity", () => {
     const after = row({ title: leaf("mine") });
 
     expect(diffEntity(before, after)).toEqual([
-      { field: "notes", path: [], before: "draft", after: undefined, kind: "removed" },
+      { component: "todo/notes", path: [], before: "draft", after: undefined, kind: "removed" },
     ]);
   });
 
@@ -57,7 +57,7 @@ describe("diffEntity", () => {
     const before = row({ title: leaf("mine") });
 
     expect(diffEntity(before, null)).toEqual([
-      { field: "title", path: [], before: "mine", after: undefined, kind: "removed" },
+      { component: "todo/title", path: [], before: "mine", after: undefined, kind: "removed" },
     ]);
   });
 
@@ -66,7 +66,7 @@ describe("diffEntity", () => {
     const after = row({ title: leaf("theirs", "u_peer", PEER_HLC) });
 
     expect(diffEntity(before, after)).toEqual([
-      { field: "title", path: [], before: "mine", after: "theirs", kind: "changed" },
+      { component: "todo/title", path: [], before: "mine", after: "theirs", kind: "changed" },
     ]);
   });
 
@@ -83,8 +83,8 @@ describe("diffEntity", () => {
     });
 
     expect(diffEntity(before, after)).toEqual([
-      { field: "content", path: ["b"], before: "mine", after: "theirs", kind: "changed" },
-      { field: "content", path: ["c"], before: undefined, after: "new", kind: "added" },
+      { component: "todo/content", path: ["b"], before: "mine", after: "theirs", kind: "changed" },
+      { component: "todo/content", path: ["c"], before: undefined, after: "new", kind: "added" },
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("diffEntity", () => {
     const after = row({ content: map({ a: leaf(null, "u_peer", PEER_HLC), b: leaf("keep") }) });
 
     expect(diffEntity(before, after)).toEqual([
-      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { component: "todo/content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
     ]);
   });
 
@@ -113,7 +113,7 @@ describe("diffEntity", () => {
 
     expect(diffEntity(before, after)).toEqual([
       {
-        field: "content",
+        component: "todo/content",
         path: [],
         before: { a: "mine" },
         after: "whole",
@@ -126,6 +126,9 @@ describe("diffEntity", () => {
     const before = row({ title: leaf("mine"), content: map({ a: leaf("mine") }) });
     const after = row({ content: map({ a: leaf("theirs") }), title: leaf("theirs") });
 
-    expect(diffEntity(before, after).map((diff) => diff.field)).toEqual(["content", "title"]);
+    expect(diffEntity(before, after).map((diff) => diff.component)).toEqual([
+      "todo/content",
+      "todo/title",
+    ]);
   });
 });

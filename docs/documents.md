@@ -177,12 +177,14 @@ value, and eviction stays observable either way.
 
 ## Conflicts
 
-The only declaration is `conflictScope`:
+The only declaration is `conflictScope`, read per component:
 
-| Scope      | Detection                              | Outcome                     |
-| ---------- | -------------------------------------- | --------------------------- |
-| `"field"`  | overlapping positions in missed window | merge; surface slots        |
-| `"entity"` | any concurrent touch by another actor  | hold pending writes; report |
+| Scope         | Detection                              | Outcome                                  |
+| ------------- | -------------------------------------- | ---------------------------------------- |
+| `"field"`     | overlapping positions in missed window | merge; surface slots                     |
+| `"component"` | any concurrent touch of the component  | hold that component; surface its slot    |
+| `"entity"`    | any concurrent touch by another actor  | hold the row's writes; report            |
+| `"none"`      | never (a structural component)         | converge last-writer-wins; never surface |
 
 A log field never mints colliding keys, so a field-scope document has no
 conflicts. Entity scope is the app's choice, not a document requirement.

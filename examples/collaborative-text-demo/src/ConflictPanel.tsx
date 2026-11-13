@@ -98,9 +98,9 @@ export function ConflictPanel({ client, docId, groupId }: Props) {
                   <div key={state.subjectId} className="flex flex-col gap-1">
                     <div className="font-mono text-stone-500 break-words">{state.subjectId}</div>
                     {state.diff.map((diff, index) => (
-                      <div key={`${diff.field}:${diff.path.join(".")}:${index}`}>
+                      <div key={`${diff.component}:${diff.path.join(".")}:${index}`}>
                         <div className="text-stone-500">
-                          {diff.field}
+                          {diff.component}
                           {diff.path.length > 0 ? ` → ${diff.path.join(" → ")}` : ""}
                           <span className="ml-1 text-stone-600">{diff.kind}</span>
                         </div>

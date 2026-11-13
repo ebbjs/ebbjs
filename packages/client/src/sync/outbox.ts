@@ -34,12 +34,14 @@
  * can never be submitted even when that write fails. A read view over
  * the conflicted rows is the application's `client.conflicts`.
  *
- * The hold outlives the losing Action. Every subject an open conflict
- * names is held until the application resolves it, and a `pending` write
- * to a held subject is buffered (so local reads keep working) but never
- * submitted. Sending the conflicted Action unchanged or clearing it
- * releases its subjects. The hold is derived from the durable rows, so it
- * survives a reload with no second store.
+ * The hold outlives the losing Action. Every position an open conflict
+ * names is held until the application resolves it — the contested component
+ * for a field- or component-scope loss, the whole subject for an
+ * entity-scope loss — and a `pending` write to a held position is buffered
+ * (so local reads keep working) but never submitted. Sending the conflicted
+ * Action unchanged or clearing it releases those positions. The hold is
+ * derived from the durable rows, so it survives a reload with no second
+ * store.
  *
  * The module depends only on injected seams: the store, an HLC source
  * for the ordering key, `applyOptimistic` (the client wires it to the
@@ -51,6 +53,7 @@
 import { compare, componentField, componentName, type Action, type Entity } from "@ebbjs/core";
 import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD, type ConflictScope } from "@ebbjs/schema";
 import type {
+  ConflictHold,
   ConflictRemoteAction,
   ConflictSlot,
   ConflictSubjectState,
@@ -60,12 +63,14 @@ import type {
 
 import type { Rejection, WriteResponse } from "./types";
 import {
+  actionTouchesHolds,
   actionWrites,
   coarsestScope,
+  conflictHolds,
   conflictSlot,
   foldInboundWindow,
+  holdKey,
   inboundSubjects,
-  isConflictableField,
   overlappingPaths,
   slotKey,
   type InboundSubject,
@@ -106,22 +111,14 @@ export interface ConflictedOutboxEntry extends OutboxEntry {
 const isConflicted = (entry: OutboxEntry): entry is ConflictedOutboxEntry =>
   entry.status === "conflicted" && entry.conflict !== undefined;
 
-/** Every subject an open conflict names; a `pending` write to one is held. */
-const heldSubjects = (entries: readonly OutboxEntry[]): ReadonlySet<string> => {
-  const held = new Set<string>();
+/** Every position an open conflict holds, deduped by subject and component. */
+const heldPositions = (entries: readonly OutboxEntry[]): readonly ConflictHold[] => {
+  const byKey = new Map<string, ConflictHold>();
   for (const entry of entries) {
     if (!isConflicted(entry)) continue;
-    for (const subjectId of entry.conflict.subjects) held.add(subjectId);
+    for (const hold of conflictHolds(entry.conflict)) byKey.set(holdKey(hold), hold);
   }
-  return held;
-};
-
-/** Whether an Action writes a held subject. An Action cannot be sent in part. */
-const writesHeld = (action: Action, held: ReadonlySet<string>): boolean => {
-  for (const subjectId of actionWrites(action).keys()) {
-    if (held.has(subjectId)) return true;
-  }
-  return false;
+  return [...byKey.values()];
 };
 
 /** Whether a missed Action out-dates a buffered write — the concurrency rule. */
@@ -141,6 +138,7 @@ interface Loser {
   readonly subjects: string[];
   readonly subjectStates: readonly LoserSubject[];
   readonly slots: ConflictSlot[];
+  readonly holds: readonly ConflictHold[];
   readonly scope: ConflictScope;
   readonly remoteActions: readonly ConflictRemoteAction[];
 }
@@ -250,18 +248,19 @@ export interface OutboxDependencies {
    */
   baseGsn: () => number;
   /**
-   * Conflict granularity declared by a model: `"field"` surfaces a
-   * same-position race, `"entity"` any concurrent touch. Unknown models
-   * default to `"field"`.
+   * Conflict granularity declared by a component: `"field"` surfaces a
+   * same-position race, `"component"` any concurrent touch of that
+   * component, `"entity"` any concurrent touch of the row, and `"none"` a
+   * structural component whose writes are never surfaced. Unknown
+   * components default to `"field"`.
    */
-  conflictScope: (model: string) => ConflictScope;
+  conflictScope: (model: string, component: string) => ConflictScope;
   /**
    * Component-kind oracle: `true` when `component` merges last-writer-wins,
    * so an inbound write can silently overwrite a buffered local one. A keyed
-   * component (a document's `content`) is LWW per leaf, so the slot comparison
-   * still gates on the leaf. Counter components return `false`. Structural
-   * edge models are excluded regardless. Defaults to every non-structural
-   * component being LWW.
+   * component (a document's `content`) is LWW per leaf, so slot comparison
+   * still gates on the leaf. Counter components return `false`. Defaults to
+   * every declared component being LWW.
    */
   isLwwField?: (model: string, component: string) => boolean;
   /** Stamp a fresh HLC for an entry's `enqueuedAtHlc` ordering key. */
@@ -323,7 +322,7 @@ export interface Outbox {
   enqueue(action: Action): Promise<void>;
   /**
    * Still-flushable entries in authoring order: `pending` entries that
-   * write no subject an open conflict holds. A snapshot: callers cannot
+   * write no position an open conflict holds. A snapshot: callers cannot
    * mutate the queue through it.
    */
   pending(): readonly OutboxEntry[];
@@ -424,14 +423,14 @@ export interface Outbox {
    */
   clearConflict(actionId: string): Promise<void>;
   /**
-   * Snapshot the `pending` rows whose Action writes one of `subjects` —
-   * the local writes the current subject hold excludes from `pending()`.
+   * Snapshot the `pending` rows whose Action writes one of `holds` — the
+   * local writes the current component hold excludes from `pending()`.
    * Read it *before* a verb moves the conflicted rows: a write enqueued
    * after that point was never held, so dropping it later would discard
-   * an edit the hold never covered. An Action writing several subjects is
+   * an edit the hold never covered. An Action writing several positions is
    * held whole; an Action cannot be sent in part.
    */
-  heldPending(subjects: readonly string[]): readonly OutboxEntry[];
+  heldPending(holds: readonly ConflictHold[]): readonly OutboxEntry[];
   /**
    * Delete the named `pending` rows and return their Actions so the caller
    * can revert their optimistic overlays. Only rows still `pending` are
@@ -459,8 +458,10 @@ export interface Outbox {
    * reconnect, before the flush gate reopens.
    *
    * An entry loses when a missed Action with `gsn > entry.basedOnGsn`
-   * touches the same position (declared `"field"` scope) or the same
-   * entity (declared `"entity"` scope). `pending` entries are candidates;
+   * touches the same position (declared `"field"` scope), the same
+   * component (declared `"component"` scope), or the same entity (declared
+   * `"entity"` scope). A `"none"` component is structural and never
+   * surfaces. `pending` entries are candidates;
    * `acknowledged`, `error`, and already-`conflicted` entries are not —
    * an acknowledged write is already on the server and must never be
    * re-held. A conflict is recorded even when the local value would win
@@ -575,13 +576,15 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
   };
 
   /**
-   * Entries a flush may submit: `pending` and writing no held subject.
+   * Entries a flush may submit: `pending` and writing no held position.
    * `pending()` and `runFlush` read this one filter, so an entry held by
    * an open conflict can never reach the wire.
    */
   const flushableEntries = (): readonly OutboxEntry[] => {
-    const held = heldSubjects(entries);
-    return entries.filter((entry) => entry.status === "pending" && !writesHeld(entry.action, held));
+    const held = heldPositions(entries);
+    return entries.filter(
+      (entry) => entry.status === "pending" && !actionTouchesHolds(entry.action, held),
+    );
   };
 
   const enqueue = async (action: Action): Promise<void> => {
@@ -743,14 +746,13 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
   };
 
   /**
-   * The `pending` writes the current subject hold is keeping off the wire,
+   * The `pending` writes the current component hold is keeping off the wire,
    * snapshotted before a verb moves the conflicted rows.
    */
-  const heldPending = (subjects: readonly string[]): readonly OutboxEntry[] => {
-    if (subjects.length === 0) return [];
-    const wanted = new Set(subjects);
+  const heldPending = (holds: readonly ConflictHold[]): readonly OutboxEntry[] => {
+    if (holds.length === 0) return [];
     return entries.filter(
-      (entry) => entry.status === "pending" && writesHeld(entry.action, wanted),
+      (entry) => entry.status === "pending" && actionTouchesHolds(entry.action, holds),
     );
   };
 
@@ -870,6 +872,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
       const subjects: string[] = [];
       const subjectStates: LoserSubject[] = [];
       const slots: ConflictSlot[] = [];
+      const holds: ConflictHold[] = [];
       const seen = new Set<string>();
       const scopes: ConflictScope[] = [];
       for (const [subjectId, pending] of actionWrites(entry.action)) {
@@ -887,19 +890,55 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         }
         if (concurrent.length === 0) continue;
         const overlap: ConflictSlot[] = [];
-        for (const actionInbound of concurrent) {
-          for (const [component, pendingValue] of pending.components) {
-            if (!isConflictableField(deps.isLwwField, inbound.model, component)) continue;
-            // A text body's `version` component declares its cell format; it
-            // is metadata, not state, so a concurrent write never contests it.
-            if (
-              componentField(component) === DOC_VERSION_FIELD &&
-              pending.components.has(componentName(inbound.model, DOC_CONTENT_FIELD))
-            ) {
-              continue;
-            }
+        const heldComponents = new Set<string>();
+        const subjectScopes: ConflictScope[] = [];
+        let holdsWholeSubject = false;
+        for (const [component, pendingValue] of pending.components) {
+          const declared = deps.conflictScope(inbound.model, component);
+          // A `"none"` component is structural: its writes converge and are
+          // never surfaced.
+          if (declared === "none") continue;
+          if (declared === "entity") {
+            // An entity-scope component surfaces any concurrent touch of the
+            // row, whatever component the peer wrote.
+            holdsWholeSubject = true;
+            subjectScopes.push("entity");
+            continue;
+          }
+          // A non-LWW component never surfaces a position.
+          if (!(deps.isLwwField?.(inbound.model, component) ?? true)) continue;
+          // A text body's `version` component declares its cell format; it
+          // is metadata, not state, so a concurrent write never contests it.
+          if (
+            componentField(component) === DOC_VERSION_FIELD &&
+            pending.components.has(componentName(inbound.model, DOC_CONTENT_FIELD))
+          ) {
+            continue;
+          }
+          for (const actionInbound of concurrent) {
             const remoteField = inbound.components.get(component);
             const winner = actionInbound.components.get(component);
+            if (declared === "component") {
+              // Any concurrent touch of this component contests it, even a
+              // write to a different map key.
+              if (winner === undefined && !actionInbound.deleted) continue;
+              const key = slotKey({ subjectId, component, path: [] });
+              if (!seen.has(key)) {
+                seen.add(key);
+                overlap.push(
+                  conflictSlot({
+                    subjectId,
+                    component,
+                    path: [],
+                    pending: pendingValue,
+                    remote: remoteField,
+                  }),
+                );
+              }
+              heldComponents.add(component);
+              subjectScopes.push("component");
+              continue;
+            }
             const paths = winner !== undefined ? overlappingPaths(pendingValue, winner) : [];
             // A concurrent delete reverts every component the entry writes,
             // even one it omits.
@@ -918,20 +957,24 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
                 }),
               );
             }
+            if (paths.length > 0) {
+              heldComponents.add(component);
+              subjectScopes.push("field");
+            }
           }
         }
-        const declared = deps.conflictScope(inbound.model);
-        if (declared === "entity" || overlap.length > 0) {
-          subjects.push(subjectId);
-          subjectStates.push({
-            subjectId,
-            model: inbound.model,
-            before: deps.preSyncRow(catchUpId, subjectId),
-          });
-          slots.push(...overlap);
-          // The conflict is as coarse as its loosest losing subject.
-          scopes.push(declared);
-        }
+        if (!holdsWholeSubject && heldComponents.size === 0) continue;
+        subjects.push(subjectId);
+        subjectStates.push({
+          subjectId,
+          model: inbound.model,
+          before: deps.preSyncRow(catchUpId, subjectId),
+        });
+        slots.push(...overlap);
+        if (holdsWholeSubject) holds.push({ subjectId });
+        else for (const component of heldComponents) holds.push({ subjectId, component });
+        // The conflict is as coarse as its loosest losing position.
+        scopes.push(coarsestScope(subjectScopes));
       }
       if (subjects.length === 0) continue;
       // The remote half of the report: every concurrent missed Action that
@@ -950,6 +993,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         subjects,
         subjectStates,
         slots,
+        holds,
         scope: coarsestScope(scopes),
         remoteActions,
       });
@@ -972,6 +1016,7 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         subjects: loser.subjects,
         subjectStates,
         slots: loser.slots,
+        holds: loser.holds,
         scope: loser.scope,
         remoteActions: loser.remoteActions,
         catchUpId,

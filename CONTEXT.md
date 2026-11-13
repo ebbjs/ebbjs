@@ -170,8 +170,10 @@ _Avoid_: tier, cache policy, eviction policy
 
 **Conflict scope**:
 The granularity at which a concurrent write is surfaced as a conflict: _field_,
-_component_, or _entity_. Declared per component; an entity-scope conflict holds
-every pending write to the row.
+_component_, or _entity_ (and _none_ for a structural component that never
+surfaces). Declared per component. A field- or component-scope conflict holds
+the contested component; an entity-scope conflict holds every pending write to
+the row.
 _Avoid_: conflict level, conflict granularity
 
 **Project**:

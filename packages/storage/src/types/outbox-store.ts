@@ -75,6 +75,17 @@ export interface ConflictSubjectState {
 }
 
 /**
+ * One position an open conflict holds off the wire. A component-scope or
+ * field-scope loss holds just the contested component; an entity-scope loss
+ * holds the whole subject. An absent `component` means the whole subject.
+ */
+export interface ConflictHold {
+  readonly subjectId: string;
+  /** The `<model>/<field>` component held; absent holds every component. */
+  readonly component?: string;
+}
+
+/**
  * The conflict payload detection stamps onto a losing Action's outbox
  * row. It travels with the row rather than in a second store, so the
  * hold and the record are the same durable write and cannot disagree.
@@ -98,11 +109,19 @@ export interface OutboxConflict {
    */
   readonly slots: readonly ConflictSlot[];
   /**
-   * The looser of the losing subjects' declared scopes: `"entity"` when
-   * any losing subject declared entity scope, else `"field"`. The union is
-   * spelled inline so storage stays independent of the schema package.
+   * The positions this conflict holds off the wire: one component for a
+   * field- or component-scope loss, the whole subject for an entity-scope
+   * loss. Pending writes that touch none of these flush past the hold.
    */
-  readonly scope: "field" | "component" | "entity";
+  readonly holds: readonly ConflictHold[];
+  /**
+   * The looser of the losing positions' declared scopes. `"entity"` when
+   * any losing position declared entity scope, else the next coarsest of
+   * `"component"` and `"field"`. The union is spelled inline so storage
+   * stays independent of the schema package; `"none"` never appears on a
+   * persisted loss because such a component is never surfaced.
+   */
+  readonly scope: "none" | "field" | "component" | "entity";
   /**
    * The concurrent missed Actions that touched the losing subjects,
    * deduped by action id, in window order. The remote half of the
@@ -127,9 +146,14 @@ export interface OutboxConflict {
  * read path fills both in; a legacy row is still a field-scope conflict
  * with no recorded remote context.
  */
-export interface StoredOutboxConflict extends Omit<OutboxConflict, "scope" | "remoteActions"> {
-  readonly scope?: "field" | "component" | "entity";
+export interface StoredOutboxConflict extends Omit<
+  OutboxConflict,
+  "scope" | "remoteActions" | "holds"
+> {
+  readonly scope?: "none" | "field" | "component" | "entity";
   readonly remoteActions?: readonly ConflictRemoteAction[];
+  /** Absent on a row written before the component hold; the whole subject is held. */
+  readonly holds?: readonly ConflictHold[];
 }
 
 /**

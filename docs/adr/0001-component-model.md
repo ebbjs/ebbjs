@@ -69,7 +69,10 @@ becomes the name of a declared component set.**
    component is held in the replica; a lazy component is fetched, pinned, and evicted independently
    of its row.
 7. **Conflict scope gains a middle rung.** `"field" | "component" | "entity"`, declared per
-   component. A component-scope hold holds one component, not the whole row.
+   component. A component-scope hold holds one component, not the whole row. The SDK's structural
+   components (`relationship`, `entityGroup`, `groupMember`) declare `"none"`: their writes
+   converge and are never surfaced, which replaces `STRUCTURAL_MODELS`. `"none"` is an exemption
+   from detection, not a fourth granularity; it never appears on a persisted conflict.
 8. **Indexing is opt-in per component.** A component declared `indexed: true` gets an existence row;
    one that is not is reachable only by id. Today _every_ entity sits in `cf_type_entities` whether
    or not anything queries by type; this inverts that default. **As shipped in #799 the server indexes

@@ -47,9 +47,9 @@ const leaf = (value: unknown, updateId = "u_local", hlc = LOCAL_HLC): FieldValue
 });
 
 /** A materialized entity row for one subject. */
-const mkEntity = (id: string, fields: Record<string, FieldValue>): Entity => ({
+const mkEntity = (id: string, fields: Record<string, FieldValue>, type = "todo"): Entity => ({
   id,
-  type: "todo",
+  type,
   data: { fields },
   exists: true,
   created_hlc: LOCAL_HLC,
@@ -91,7 +91,8 @@ const mkRow = (
     readonly subjects?: readonly string[];
     readonly subjectStates?: readonly ConflictSubjectState[];
     readonly slots?: readonly ConflictSlot[];
-    readonly scope?: "field" | "entity";
+    readonly holds?: readonly { readonly subjectId: string; readonly component?: string }[];
+    readonly scope?: "none" | "field" | "component" | "entity";
     readonly remoteActions?: readonly ConflictRemoteAction[];
     readonly action?: Action;
   } = {},
@@ -105,6 +106,13 @@ const mkRow = (
     subjects: overrides.subjects ?? ["todo_1"],
     subjectStates: overrides.subjectStates ?? [],
     slots: overrides.slots ?? [mkSlot()],
+    holds:
+      overrides.holds ??
+      (overrides.subjects ?? ["todo_1"]).map((subjectId) =>
+        (overrides.scope ?? "field") === "entity"
+          ? { subjectId }
+          : { subjectId, component: "todo/title" },
+      ),
     remoteActions: overrides.remoteActions ?? [mkRemote("act_peer")],
     catchUpId: "cu_1",
     conflictId: overrides.conflictId ?? `c_${actionId}`,
@@ -133,7 +141,11 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
     rows = rows.filter((row) => row.action.id !== actionId);
     emit();
   });
-  const heldPending = vi.fn((_subjects: readonly string[]): readonly OutboxEntry[] => []);
+  const heldPending = vi.fn(
+    (
+      _holds: readonly { readonly subjectId: string; readonly component?: string }[],
+    ): readonly OutboxEntry[] => [],
+  );
   const dropHeld = vi.fn(async (_actionIds: readonly string[]): Promise<readonly Action[]> => []);
 
   return {
@@ -286,7 +298,9 @@ describe("createConflicts", () => {
     expect(result).toEqual({ resolved: ["act_local"], failed: [] });
     // Snapshot first, while the conflicted row still holds the subject; a
     // write made after the hold lifts is never named and so never dropped.
-    expect(harness.heldPending).toHaveBeenCalledWith(["todo_1"]);
+    expect(harness.heldPending).toHaveBeenCalledWith([
+      { subjectId: "todo_1", component: "todo/title" },
+    ]);
     expect(harness.dropHeld).toHaveBeenCalledWith(["act_later"]);
     expect(harness.reMaterialize.mock.calls.map((call) => call[0])).toEqual([
       row.action,
@@ -322,7 +336,12 @@ describe("createConflicts", () => {
 
   it("reads a pre-v10 conflicted row as field scope with no remote context", async () => {
     const legacy = mkRow("act_local", "1");
-    const { scope: _scope, remoteActions: _remoteActions, ...rest } = legacy.conflict;
+    const {
+      scope: _scope,
+      remoteActions: _remoteActions,
+      holds: _holds,
+      ...rest
+    } = legacy.conflict;
     const harness = mkDeps([{ ...legacy, conflict: rest as unknown as OutboxConflict }]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
@@ -330,6 +349,8 @@ describe("createConflicts", () => {
     const [projected] = await conflicts.list();
     expect(projected?.scope).toBe("field");
     expect(projected?.remoteActions).toEqual([]);
+    // A row written before the component hold holds each subject whole.
+    expect(projected?.holds).toEqual([{ subjectId: "todo_1" }]);
     expect(projected?.entries[0]?.scope).toBe("field");
     expect(projected?.entries[0]?.slots).toHaveLength(1);
     expect(conflicts.count()).toBe(1);
@@ -498,8 +519,8 @@ describe("Conflict scope and report", () => {
   });
 
   it("makes slots absent for an entity-scope conflict and keeps the diff", async () => {
-    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } });
-    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } });
+    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } }, "doc");
+    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } }, "doc");
     const harness = mkDeps([
       mkRow("act_local", "1", {
         scope: "entity",
@@ -517,8 +538,8 @@ describe("Conflict scope and report", () => {
     // No position-level verdict to misread at entity scope.
     expect(conflict?.entries[0]?.slots).toBeUndefined();
     expect(conflict?.subjectStates[0]?.diff).toEqual([
-      { field: "content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
-      { field: "content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
+      { component: "doc/content", path: ["a"], before: "mine", after: undefined, kind: "removed" },
+      { component: "doc/content", path: ["b"], before: undefined, after: "theirs", kind: "added" },
     ]);
   });
 

@@ -14,7 +14,21 @@
  * system names.
  */
 
-import { buildModelDef, e, type ModelDef } from "./model";
+import {
+  buildModelDef,
+  defineComponent,
+  e,
+  type ComponentShapeInput,
+  type ModelDef,
+} from "./model";
+
+/**
+ * A structural edge component: the SDK's own rows (an edge, a membership, a
+ * grant) carry no user-facing conflict. Concurrent writes to them converge
+ * last-writer-wins; they are never surfaced and never hold another write.
+ */
+const structuralComponent = (name: string, shape: ComponentShapeInput) =>
+  defineComponent(name, shape, { conflictScope: "none" });
 
 /**
  * Names of the wire-level entities the SDK owns. They are internal rows
@@ -36,10 +50,10 @@ export const SYSTEM_ENTITY_NAMES: ReadonlySet<string> = new Set([
  * absent rather than null on a cleared edge.
  */
 export const relationshipSystemEntity = buildModelDef("relationship", {
-  source_id: e.string(),
-  target_id: e.string(),
-  type: e.string(),
-  field: e.string(),
+  source_id: structuralComponent("relationship/source_id", e.string()),
+  target_id: structuralComponent("relationship/target_id", e.string()),
+  type: structuralComponent("relationship/type", e.string()),
+  field: structuralComponent("relationship/field", e.string()),
 });
 
 /** Wire shape of a `Group` record, mirroring `@ebbjs/core`'s `GroupSchema`. */
@@ -56,9 +70,9 @@ export const groupSystemEntity = buildModelDef("group", {
 
 /** Wire shape of a `GroupMember` record, mirroring `@ebbjs/core`'s `GroupMemberSchema`. */
 export const groupMemberSystemEntity = buildModelDef("groupMember", {
-  group_id: e.string(),
-  actor_id: e.string(),
-  permissions: e.array(e.string()),
+  group_id: structuralComponent("groupMember/group_id", e.string()),
+  actor_id: structuralComponent("groupMember/actor_id", e.string()),
+  permissions: structuralComponent("groupMember/permissions", e.array(e.string())),
 });
 
 /**
@@ -67,8 +81,8 @@ export const groupMemberSystemEntity = buildModelDef("groupMember", {
  * `groupMember`, which carries actor permissions.
  */
 export const entityGroupSystemEntity = buildModelDef("entityGroup", {
-  entity_id: e.string(),
-  group_id: e.string(),
+  entity_id: structuralComponent("entityGroup/entity_id", e.string()),
+  group_id: structuralComponent("entityGroup/group_id", e.string()),
 });
 
 /** Field map of the client-side `group` entity. */

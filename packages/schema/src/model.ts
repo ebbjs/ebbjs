@@ -42,9 +42,10 @@ export type FieldMarker = {
  * Granularity at which a concurrent write is surfaced as a conflict.
  * `"field"` scopes detection to a shared map position; `"component"` holds
  * one component; `"entity"` surfaces any touch of an entity with offline
- * writes.
+ * writes. `"none"` declares a structural component whose concurrent writes
+ * are never surfaced — the SDK's edge, membership, and grant rows.
  */
-export type ConflictScope = "field" | "component" | "entity";
+export type ConflictScope = "none" | "field" | "component" | "entity";
 
 /**
  * Client-side residency of an entity type. `"held"` keeps every row in

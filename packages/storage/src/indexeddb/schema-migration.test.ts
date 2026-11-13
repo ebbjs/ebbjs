@@ -193,7 +193,8 @@ describe("IndexedDB pre-v10 conflict payload", () => {
   it("normalizes a legacy payload on read instead of handing back a row it would throw on", async () => {
     const db = await openTestDb("legacy-conflict");
     const action = buildPutAction();
-    // A v9 payload carries neither field that arrived at v10.
+    // A v9 payload carries none of the fields that arrived later: no
+    // scope or remote context (v10) and no component hold (v12).
     const v9Conflict = {
       subjects: ["todo_1"],
       subjectStates: [],
@@ -217,6 +218,7 @@ describe("IndexedDB pre-v10 conflict payload", () => {
     const entry = await createIndexedDBOutboxStore(db).get(action.id);
     expect(entry?.conflict?.scope).toBe("field");
     expect(entry?.conflict?.remoteActions).toEqual([]);
+    expect(entry?.conflict?.holds).toEqual([{ subjectId: "todo_1" }]);
   });
 });
 

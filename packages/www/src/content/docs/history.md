@@ -27,7 +27,7 @@ interface HistoryEvent {
 }
 ```
 
-`changes` uses the same field-path vocabulary as the conflict view ([Offline conflicts](/docs/conflicts)): one entry per differing position, with `field`, `path` (the map keys from the field root, empty for a whole field), `before`, `after`, and `kind` (`added` / `removed` / `changed`). The diff is the shared projection — a map-key edit is a `path` entry, not a whole-map replacement. A create has no before row, so it reports each top-level field once as `added` (a whole map is one position); `path` entries appear once both rows hold the map.
+`changes` uses the same field-path vocabulary as the conflict view ([Offline conflicts](/docs/conflicts)): one entry per differing position, with `component` (the full `<model>/<field>` name), `path` (the map keys from the component root, empty for a whole component), `before`, `after`, and `kind` (`added` / `removed` / `changed`). The diff is the shared projection — a map-key edit is a `path` entry, not a whole-map replacement. A create has no before row, so it reports each top-level field once as `added` (a whole map is one position); `path` entries appear once both rows hold the map.
 
 `methods` lists the entity's Update methods in the Action, each once and in first-seen order. It is what makes a delete legible: `applyUpdate` keeps a deleted row's fields, so a delete produces `methods: ["delete"]` with `changes: []`, not "every field removed". A method records what the Action attempted, so a patch the fold rejected (against a tombstoned or absent row) also appears with `changes: []`.
 

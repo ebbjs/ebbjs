@@ -7,7 +7,12 @@ import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 import { describe, expect, it } from "vitest";
 
-import { groupSystemEntity } from "./index";
+import {
+  entityGroupSystemEntity,
+  groupMemberSystemEntity,
+  groupSystemEntity,
+  relationshipSystemEntity,
+} from "./index";
 
 describe("group system entity app scope (#732)", () => {
   it("models apps as a string-keyed map of booleans", () => {
@@ -16,5 +21,23 @@ describe("group system entity app scope (#732)", () => {
 
     expect(Value.Check(apps, { notes: true, issues: false })).toBe(true);
     expect(Value.Check(apps, { notes: "yes" })).toBe(false);
+  });
+});
+
+describe("system components declare structural conflict scope", () => {
+  it("never surfaces a concurrent edge, membership, or grant write", () => {
+    for (const model of [
+      relationshipSystemEntity,
+      entityGroupSystemEntity,
+      groupMemberSystemEntity,
+    ]) {
+      for (const component of Object.values(model.components)) {
+        expect(component.conflictScope).toBe("none");
+      }
+    }
+  });
+
+  it("leaves group rows on the ordinary default", () => {
+    expect(groupSystemEntity.components.name.conflictScope).toBe("field");
   });
 });

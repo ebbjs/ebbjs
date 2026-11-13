@@ -20,13 +20,14 @@
 import { compare, type Action, type Entity } from "@ebbjs/core";
 import type { ConflictScope } from "@ebbjs/schema";
 import type {
+  ConflictHold,
   ConflictRemoteAction,
   ConflictSide,
   ConflictSlot,
   ConflictSubjectState,
 } from "@ebbjs/storage/types";
 import { diffEntity, type EntityDiff } from "@ebbjs/write";
-import { coarsestScope } from "./conflict-slots";
+import { actionTouchesHolds, coarsestScope, conflictHolds, holdKey } from "./conflict-slots";
 import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
@@ -74,6 +75,12 @@ export interface ConflictEntry {
    * {@link Conflict.scope} is the coarsest of its entries.
    */
   readonly slots?: readonly ConflictSlotView[];
+  /**
+   * The positions this entry holds off the wire: one component for a
+   * field- or component-scope loss, the whole subject for an entity-scope
+   * loss.
+   */
+  readonly holds: readonly ConflictHold[];
   /** Scope detection classified this losing Action under. */
   readonly scope: ConflictScope;
   /** The concurrent missed Actions that touched this entry's losing subjects. */
@@ -109,6 +116,8 @@ export interface Conflict {
   readonly scope: ConflictScope;
   /** Union of the entries' losing subjects, first-seen order. */
   readonly subjects: readonly string[];
+  /** Union of the entries' held positions, first-seen order. */
+  readonly holds: readonly ConflictHold[];
   /**
    * One state per losing subject, in the same order as
    * {@link subjects}: the client's row before the sync, the server's row
@@ -182,7 +191,7 @@ export interface Conflicts {
    */
   count(): number;
   /**
-   * Send every held Action in one conflict: clear the subject hold and
+   * Send every held Action in one conflict: clear the component hold and
    * submit the held Actions unchanged, in authoring order. Their ids,
    * Update ids, and field HLCs are untouched — re-stamping would rewrite
    * provenance on an append-only log. An application that wants its scalar
@@ -239,11 +248,11 @@ export interface ConflictOutbox {
    */
   releaseConflict(actionId: string): Promise<void>;
   /**
-   * Snapshot the `pending` writes the current subject hold excludes, so a
+   * Snapshot the `pending` writes the current component hold excludes, so a
    * clear can drop exactly those and never a write made after the hold
    * lifted.
    */
-  heldPending(subjects: readonly string[]): readonly OutboxEntry[];
+  heldPending(holds: readonly ConflictHold[]): readonly OutboxEntry[];
   /**
    * Delete the named `pending` writes and return their Actions so the
    * caller can revert their optimistic overlays. `acknowledged` rows are
@@ -337,6 +346,7 @@ const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => {
     action: entry.action,
     subjects: entry.conflict.subjects,
     slots: scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
+    holds: conflictHolds(entry.conflict),
     scope,
     remoteActions: entry.conflict.remoteActions ?? [],
     basedOnGsn: entry.basedOnGsn,
@@ -407,6 +417,16 @@ const groupConflicts = (
         subjects.push(subject);
       }
     }
+    const holds: ConflictHold[] = [];
+    const holdSeen = new Set<string>();
+    for (const entry of ordered) {
+      for (const hold of entry.holds) {
+        const key = holdKey(hold);
+        if (holdSeen.has(key)) continue;
+        holdSeen.add(key);
+        holds.push(hold);
+      }
+    }
     const remoteActions: ConflictRemoteAction[] = [];
     const remoteSeen = new Set<string>();
     for (const entry of ordered) {
@@ -420,6 +440,7 @@ const groupConflicts = (
       id,
       scope: coarsestScope(ordered.map((entry) => entry.scope)),
       subjects,
+      holds,
       subjectStates: aggregateSubjectStates(ordered, subjects, statesByAction),
       entries: ordered,
       remoteActions,
@@ -501,7 +522,7 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
     await rehydrate();
     // Snapshot the held writes before the conflicted rows move. A write
     // enqueued after this point was never held, so a clear must not drop it.
-    const held = verb === "clear" ? deps.outbox.heldPending(conflict.subjects) : [];
+    const held = verb === "clear" ? deps.outbox.heldPending(conflict.holds) : [];
     const resolved: string[] = [];
     const failed: FailedResolution[] = [];
     for (const entry of conflict.entries) {
@@ -516,16 +537,18 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       }
     }
     if (verb === "clear") {
-      // Drop the snapshot rows for subjects this pass actually released. A
-      // subject a failed entry still names stays held, so its writes stay.
-      const stillHeld = new Set<string>();
-      for (const row of deps.outbox.conflicts()) {
-        for (const subject of row.conflict.subjects) stillHeld.add(subject);
-      }
-      const released = new Set(conflict.subjects.filter((subject) => !stillHeld.has(subject)));
-      const toDrop = held.filter((entry) =>
-        entry.action.updates.some((update) => released.has(update.subject_id)),
+      // Drop the snapshot rows for the positions this pass actually
+      // released. A position a failed entry still holds keeps its writes;
+      // an Action spanning both is dropped whole, because it cannot be sent
+      // in part.
+      const stillHeld = new Set(
+        deps.outbox
+          .conflicts()
+          .flatMap((row) => conflictHolds(row.conflict))
+          .map(holdKey),
       );
+      const released = conflict.holds.filter((hold) => !stillHeld.has(holdKey(hold)));
+      const toDrop = held.filter((entry) => actionTouchesHolds(entry.action, released));
       if (toDrop.length > 0) {
         const dropped = await deps.outbox.dropHeld(toDrop.map((entry) => entry.action.id));
         for (const action of dropped) await deps.reMaterialize(action);

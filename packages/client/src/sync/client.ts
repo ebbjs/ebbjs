@@ -86,6 +86,7 @@ import {
   isLogPosition,
   ModelRegistry,
   parseContentField,
+  type ConflictScope,
   type CellFieldValue,
   EntityValidationError,
   TextDocument,
@@ -473,9 +474,9 @@ export class SyncClient<
       // different runs never conflict and a same-run race does — see the
       // outbox's recursive slot comparison.
       isLwwField: (model, component) => this.registry.isLwwField(model, component),
-      // Scope is declared on the model; an unknown model defaults to
-      // `"field"`, matching a client without a schema.
-      conflictScope: (model) => this.registry.getConflictScope(model),
+      // Scope is declared per component, falling back to the model's
+      // default; a client without a schema resolves to `"field"`.
+      conflictScope: (model, component) => conflictScopeFor(this.registry, model, component),
       baseGsn: () => this.appliedBaseGsn(),
       hlc: () => this.freshHlc(),
       conflictId: () => generateId("c"),
@@ -2339,6 +2340,25 @@ const buildRegistryFromSchema = (schema: AnySchema | undefined): ModelRegistry =
   if (schema === undefined) return registry;
   seedRegistry(registry, schema.models, schema.relationships);
   return registry;
+};
+
+/**
+ * The SDK's own rows declare static component policy. A client without a
+ * schema has no per-client registry, but an offline edge or membership write
+ * must still converge silently, so resolve those declarations here.
+ */
+const systemPolicyRegistry = new ModelRegistry();
+seedRegistry(systemPolicyRegistry, {}, undefined);
+
+const conflictScopeFor = (
+  registry: ModelRegistry,
+  model: string,
+  component: string,
+): ConflictScope => {
+  if (registry.has(model)) return registry.conflictScopeOf(model, component);
+  if (systemPolicyRegistry.has(model))
+    return systemPolicyRegistry.conflictScopeOf(model, component);
+  return "field";
 };
 
 /**
