@@ -13,10 +13,17 @@
  * the registry, or the builder.
  */
 
-import { componentModel, isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  componentModel,
+  isFieldMap,
+  type EbbComponentKind,
+  type Entity,
+  type FieldValue,
+} from "@ebbjs/core";
 import type { MembershipQuery, Replica, RelationshipQuery } from "@ebbjs/storage/replica";
 
 import type { Plan, PlanPredicate } from "./query-plan";
+import { componentRowView } from "./system-row";
 
 /**
  * The read seam a plan executes against: a whole-type scan, a by-id
@@ -43,6 +50,28 @@ export const createReplicaExecutor = (replica: Replica): PlanExecutor => ({
   memberships: (query) => replica.memberships(query),
   components: (component) => replica.components(component),
 });
+
+/**
+ * Read a platform model through a component's value view: the rows carrying
+ * `kind`, each rewritten so its value reads as the row's fields. The indices are
+ * the replica's own.
+ */
+export const createComponentViewExecutor = (
+  replica: Replica,
+  kind: EbbComponentKind,
+): PlanExecutor => {
+  const view = (row: Entity): Entity | undefined => componentRowView(row, kind) ?? undefined;
+  return {
+    scan: (type) => replica.iterate(type).flatMap((row) => view(row) ?? []),
+    get: (id) => {
+      const row = replica.get(id);
+      return row === undefined ? undefined : view(row);
+    },
+    relationships: (query) => replica.relationships(query),
+    memberships: (query) => replica.memberships(query),
+    components: (component) => replica.components(component),
+  };
+};
 
 const candidateOnlyError = (): never => {
   throw new Error(

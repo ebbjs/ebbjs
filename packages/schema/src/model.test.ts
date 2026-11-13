@@ -9,7 +9,6 @@ import {
   validatePayload,
   NullFieldError,
   ReservedNameError,
-  RESERVED_ENTITY_NAMES,
 } from "./index";
 
 describe("defineModel", () => {
@@ -60,9 +59,14 @@ describe("defineModel", () => {
 });
 
 describe("defineModel reserved names", () => {
-  it.each(RESERVED_ENTITY_NAMES)("rejects the reserved entity name %s", (name) => {
+  it.each(["ebb", "group", "membership"])("rejects the reserved entity name %s", (name) => {
     expect(() => defineModel(name, { name: e.string() })).toThrow(ReservedNameError);
     expect(() => defineModel(name, { name: e.string() })).toThrow(/reserved/);
+  });
+
+  it("says which surface already answers to the name", () => {
+    expect(() => defineModel("ebb", { name: e.string() })).toThrow(/platform's own components/);
+    expect(() => defineModel("group", { name: e.string() })).toThrow(/client\.group/);
   });
 
   it("rejects a field named groups — the injected membership accessor", () => {

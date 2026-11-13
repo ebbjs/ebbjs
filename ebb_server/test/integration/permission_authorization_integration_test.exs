@@ -647,7 +647,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     test "refuses removing a group's last capable membership and leaves it committed" do
       bootstrap =
         bootstrap_group_action("actor_1", "group_1", [
-          "groupMember.delete",
+          "ebb/grant.delete",
           "todo.create",
           "todo.read"
         ])
@@ -722,7 +722,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   defp group_member_id(action) do
     action["updates"]
-    |> Enum.find(&String.starts_with?(&1["component"] || "", "groupMember/"))
+    |> Enum.find(&String.starts_with?(&1["component"] || "", "ebb/grant"))
     |> Map.fetch!("subject_id")
   end
 
@@ -732,7 +732,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   describe "cross-tenant entityGroup row identity (#623)" do
     test "an outsider cannot file an entity in, and the owner's share lets them read it" do
       bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
-      bootstrap_group("attacker", "g_atk", ["todo.create", "todo.update", "groupMember.create"])
+      bootstrap_group("attacker", "g_atk", ["todo.create", "todo.update", "ebb/grant.create"])
 
       hlc = generate_hlc()
       secret_id = "todo_secret_#{Nanoid.generate()}"
@@ -803,7 +803,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert %{"rejected" => []} = submit(create, "victim")
 
       # The attacker owns this group and self-granted todo.create there.
-      bootstrap_group("attacker", "g_atk", ["entityGroup.*", "todo.create", "todo.update"])
+      bootstrap_group("attacker", "g_atk", ["ebb/membership.*", "todo.create", "todo.update"])
 
       # Positive control: the attacker may file their own entity, so the
       # rejections below are about the row, not an inert membership.
@@ -841,23 +841,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_graft_patch_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" =>
-          List.flatten([
-            %{
-              "id" => "upd_graft_patch_#{Nanoid.generate()}" <> "_entity_id",
-              "subject_id" => patch_eg,
-              "component" => "entityGroup/entity_id",
-              "method" => "merge",
-              "data" => %{"type" => "lww", "value" => secret_id, "hlc" => hlc}
-            },
-            %{
-              "id" => "upd_graft_patch_#{Nanoid.generate()}" <> "_group_id",
-              "subject_id" => patch_eg,
-              "component" => "entityGroup/group_id",
-              "method" => "merge",
-              "data" => %{"type" => "lww", "value" => "g_atk", "hlc" => hlc}
-            }
-          ])
+        "updates" => List.flatten([entity_group_put(patch_eg, secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(patch_graft, "attacker")
@@ -873,7 +857,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # every other type's entities there.
   describe "committed-type authorization (#624)" do
     test "an outsider cannot relabel or overwrite an entity through its wire type" do
-      bootstrap_group("victim", "g_1", ["invoice.*", "todo.*", "groupMember.create"])
+      bootstrap_group("victim", "g_1", ["invoice.*", "todo.*", "ebb/grant.create"])
 
       hlc = generate_hlc()
       invoice_id = "invoice_#{Nanoid.generate()}"
@@ -930,7 +914,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
 
     test "a refused patch or delete leaves the committed row untouched" do
-      bootstrap_group("victim", "g_1", ["invoice.*", "groupMember.create"])
+      bootstrap_group("victim", "g_1", ["invoice.*", "ebb/grant.create"])
 
       member =
         add_group_member("victim", "g_1", "actor_2", ["todo.create", "todo.update", "todo.delete"])
@@ -978,7 +962,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
 
     test "a later Action cannot relabel an id an earlier Action of the same request created" do
-      bootstrap_group("actor_2", "g_1", ["groupMember.create", "invoice.*", "todo.*"])
+      bootstrap_group("actor_2", "g_1", ["ebb/grant.create", "invoice.*", "todo.*"])
 
       hlc = generate_hlc()
       todo_id = "todo_#{Nanoid.generate()}"
@@ -1031,8 +1015,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # `source_id` may not move an existing row to another source.
   describe "relationship row identity (#624)" do
     test "an outsider cannot re-point a victim's edge" do
-      bootstrap_group("victim", "g_victim", ["todo.*", "relationship.*"])
-      bootstrap_group("attacker", "g_attacker", ["todo.*", "relationship.*"])
+      bootstrap_group("victim", "g_victim", ["todo.*", "ebb/link.*"])
+      bootstrap_group("attacker", "g_attacker", ["todo.*", "ebb/link.*"])
 
       hlc = generate_hlc()
       victim_id = "todo_victim_#{Nanoid.generate()}"
@@ -1101,8 +1085,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     # A delete names the row and carries no component, so the scope can only
     # come from the stored row's source: naming a row is not authority.
     test "an outsider cannot delete a victim's edge" do
-      bootstrap_group("victim", "g_victim", ["todo.*", "relationship.*"])
-      bootstrap_group("attacker", "g_attacker", ["todo.*", "relationship.*"])
+      bootstrap_group("victim", "g_victim", ["todo.*", "ebb/link.*"])
+      bootstrap_group("attacker", "g_attacker", ["todo.*", "ebb/link.*"])
 
       hlc = generate_hlc()
       victim_id = "todo_victim_#{Nanoid.generate()}"
@@ -1168,8 +1152,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     # to the new source's, and neither group receives an Update it should
     # not see.
     test "delete plus put moves an edge to another source, one scope per group" do
-      bootstrap_group("owner", "g_victim", ["todo.*", "relationship.*"])
-      bootstrap_group("owner", "g_new", ["todo.*", "relationship.*"])
+      bootstrap_group("owner", "g_victim", ["todo.*", "ebb/link.*"])
+      bootstrap_group("owner", "g_new", ["todo.*", "ebb/link.*"])
 
       hlc = generate_hlc()
       victim_id = "todo_victim_#{Nanoid.generate()}"
@@ -1217,10 +1201,10 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       assert %{"rejected" => []} = submit(put, "owner")
 
-      # The put is four component Updates, all scoped to the new source's
-      # group; none of them reaches the old source's group.
+      # The link is one atomic Update, scoped to the new source's group; it
+      # does not reach the old source's group.
       updates = action_updates("g_new", "owner", put_id)
-      assert length(updates) == 4
+      assert length(updates) == 1
       assert Enum.all?(updates, &(&1["subject_id"] == edge and &1["method"] == "replace"))
       assert action_updates("g_victim", "owner", put_id) == []
     end
@@ -1255,76 +1239,44 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
     [
       %{
-        "id" => eg_id <> "_entity_id",
+        "id" => eg_id <> "_membership",
         "subject_id" => eg_id,
-        "component" => "entityGroup/entity_id",
+        "component" => "ebb/membership",
         "method" => "replace",
-        "data" => %{"type" => "lww", "value" => entity_id, "hlc" => hlc}
-      },
-      %{
-        "id" => eg_id <> "_group_id",
-        "subject_id" => eg_id,
-        "component" => "entityGroup/group_id",
-        "method" => "replace",
-        "data" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
+        "data" => %{
+          "value" => %{"entity_id" => entity_id, "group_id" => group_id},
+          "hlc" => hlc
+        }
       }
     ]
   end
 
   defp relationship_put(rel_id, source_id, target_id, hlc) do
-    id = "upd_rel_#{Nanoid.generate()}"
-
     [
-      %{
-        "id" => id <> "_source_id",
-        "subject_id" => rel_id,
-        "component" => "relationship/source_id",
-        "method" => "replace",
-        "data" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}
-      },
-      %{
-        "id" => id <> "_target_id",
-        "subject_id" => rel_id,
-        "component" => "relationship/target_id",
-        "method" => "replace",
-        "data" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
-      },
-      %{
-        "id" => id <> "_type",
-        "subject_id" => rel_id,
-        "component" => "relationship/type",
-        "method" => "replace",
-        "data" => %{"type" => "lww", "value" => "todo", "hlc" => hlc}
-      },
-      %{
-        "id" => id <> "_field",
-        "subject_id" => rel_id,
-        "component" => "relationship/field",
-        "method" => "replace",
-        "data" => %{"type" => "lww", "value" => "column", "hlc" => hlc}
-      }
+      link_update(rel_id, "replace", source_id, target_id, hlc)
     ]
   end
 
   defp relationship_patch(rel_id, source_id, target_id, hlc) do
-    id = "upd_rel_patch_#{Nanoid.generate()}"
+    [link_update(rel_id, "replace", source_id, target_id, hlc)]
+  end
 
-    [
-      %{
-        "id" => id <> "_source_id",
-        "subject_id" => rel_id,
-        "component" => "relationship/source_id",
-        "method" => "merge",
-        "data" => %{"type" => "lww", "value" => source_id, "hlc" => hlc}
-      },
-      %{
-        "id" => id <> "_target_id",
-        "subject_id" => rel_id,
-        "component" => "relationship/target_id",
-        "method" => "merge",
-        "data" => %{"type" => "lww", "value" => target_id, "hlc" => hlc}
+  defp link_update(rel_id, method, source_id, target_id, hlc) do
+    %{
+      "id" => "upd_rel_#{Nanoid.generate()}",
+      "subject_id" => rel_id,
+      "component" => "ebb/link",
+      "method" => method,
+      "data" => %{
+        "value" => %{
+          "source_id" => source_id,
+          "target_id" => target_id,
+          "type" => "todo",
+          "field" => "column"
+        },
+        "hlc" => hlc
       }
-    ]
+    }
   end
 
   # A delete names the row and carries no component, so the old wire form's

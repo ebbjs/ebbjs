@@ -120,55 +120,33 @@ defmodule EbbServer.Storage.SystemCacheTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "demo-seeder",
         hlc: hlc,
-        updates:
-          [
-            TestHelpers.validated_component("grp_test", "group/name", %{
-              "value" => "Test",
-              "update_id" => "u1"
-            })
-          ] ++
-            [
-              TestHelpers.validated_component("gm_test", "groupMember/actor_id", %{
-                "value" => "demo-seeder",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("gm_test", "groupMember/group_id", %{
-                "value" => "grp_test",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("gm_test", "groupMember/permissions", %{
-                "value" => ["group.*"],
-                "update_id" => "u1"
-              })
-            ] ++
-            [
-              TestHelpers.validated_component("eg_test", "entityGroup/entity_id", %{
-                "value" => "doc_test",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("eg_test", "entityGroup/group_id", %{
-                "value" => "grp_test",
-                "update_id" => "u1"
-              })
-            ] ++
-            [
-              TestHelpers.validated_component("rel_test", "relationship/source_id", %{
-                "value" => "doc_test",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_test", "relationship/target_id", %{
-                "value" => "author_1",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_test", "relationship/type", %{
-                "value" => "text_document",
-                "update_id" => "u1"
-              }),
-              TestHelpers.validated_component("rel_test", "relationship/field", %{
-                "value" => "author",
-                "update_id" => "u1"
-              })
-            ]
+        updates: [
+          TestHelpers.validated_component("grp_test", "ebb/group", %{
+            "value" => %{"name" => "Test"},
+            "update_id" => "u1"
+          }),
+          TestHelpers.validated_component("gm_test", "ebb/grant", %{
+            "value" => %{
+              "actor_id" => "demo-seeder",
+              "group_id" => "grp_test",
+              "permissions" => ["ebb/group.*"]
+            },
+            "update_id" => "u1"
+          }),
+          TestHelpers.validated_component("eg_test", "ebb/membership", %{
+            "value" => %{"entity_id" => "doc_test", "group_id" => "grp_test"},
+            "update_id" => "u1"
+          }),
+          TestHelpers.validated_component("rel_test", "ebb/link", %{
+            "value" => %{
+              "source_id" => "doc_test",
+              "target_id" => "author_1",
+              "type" => "text_document",
+              "field" => "author"
+            },
+            "update_id" => "u1"
+          })
+        ]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -203,14 +181,19 @@ defmodule EbbServer.Storage.SystemCacheTest do
       # The seed reconstructed both key kinds, so a second restart without
       # further writes still rebuilds correctly.
       opts = index_opts(ctx)
-      assert ComponentEntityIndex.component_entry_ids("groupMember", opts) == ["gm_test"]
-      assert ComponentEntityIndex.component_entry_ids("groupMember/actor_id", opts) == ["gm_test"]
-      assert ComponentEntityIndex.component_entry_ids("entityGroup", opts) == ["eg_test"]
-      assert ComponentEntityIndex.component_entry_ids("relationship", opts) == ["rel_test"]
-
-      assert ComponentEntityIndex.component_entry_ids("relationship/target_id", opts) == [
+      # Every platform row commits under the model `ebb`; the component entry
+      # is what distinguishes the four kinds.
+      assert ComponentEntityIndex.component_entry_ids("ebb", opts) == [
+               "eg_test",
+               "gm_test",
+               "grp_test",
                "rel_test"
              ]
+
+      assert ComponentEntityIndex.component_entry_ids("ebb/grant", opts) == ["gm_test"]
+      assert ComponentEntityIndex.component_entry_ids("ebb/membership", opts) == ["eg_test"]
+      assert ComponentEntityIndex.component_entry_ids("ebb/link", opts) == ["rel_test"]
+      assert ComponentEntityIndex.component_entry_ids("ebb/group", opts) == ["grp_test"]
     end
 
     test "fills GroupAppsCache from the group rows on boot",
@@ -222,21 +205,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
         actor_id: "demo-seeder",
         hlc: hlc,
         updates: [
-          TestHelpers.validated_component("grp_apps", "group/name", %{
-            "value" => "Scoped",
+          TestHelpers.validated_component("grp_apps", "ebb/group", %{
+            "value" => %{"name" => "Scoped", "apps" => ["notes"]},
             "update_id" => "u1",
             "hlc" => hlc
-          }),
-          TestHelpers.validated_component(
-            "grp_apps",
-            "group/apps",
-            %{
-              "map" => %{
-                "notes" => %{"value" => true, "update_id" => "u1", "hlc" => hlc}
-              }
-            },
-            method: :merge
-          )
+          })
         ]
       }
 
@@ -406,31 +379,45 @@ defmodule EbbServer.Storage.SystemCacheTest do
     test "reports the failing phase's progress, not just completed phases", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      valid_data =
+      grant_data =
         Jason.encode!(%{
           "fields" => %{
-            "actor_id" => %{"value" => "a_partial"},
-            "group_id" => %{"value" => "g_partial"},
-            "permissions" => %{"value" => ["group.read"]}
+            "grant" => %{
+              "value" => %{
+                "actor_id" => "a_partial",
+                "group_id" => "g_partial",
+                "permissions" => ["ebb/group.read"]
+              }
+            }
           }
         })
 
-      :ok = SQLite.upsert_entity(entity_row("gm_partial_aaa_valid", valid_data), ctx.sqlite_name)
-      # A non-map JSON payload survives materialization but breaks
-      # `Fields.get/2` in the groupMember insert, aborting the phase after
-      # the first row is cached.
-      :ok = SQLite.upsert_entity(entity_row("gm_partial_zzz_bad", "[1,2,3]"), ctx.sqlite_name)
+      membership_data =
+        Jason.encode!(%{
+          "fields" => %{
+            "membership" => %{
+              "value" => %{"entity_id" => "todo_partial", "group_id" => "g_partial"}
+            }
+          }
+        })
+
+      :ok = SQLite.upsert_entity(entity_row("gm_partial_aaa_valid", grant_data), ctx.sqlite_name)
+
+      :ok =
+        SQLite.upsert_entity(entity_row("eg_partial_zzz_valid", membership_data), ctx.sqlite_name)
 
       # The seed discovers both rows in the action log; no entity actions
-      # exist, so materialization falls back to the SQLite snapshot.
-      for {id, gsn} <- Enum.with_index(["gm_partial_aaa_valid", "gm_partial_zzz_bad"], 1) do
+      # exist, so materialization falls back to the SQLite snapshot. Both
+      # phases get past the component index, and the membership phase raises
+      # on its first cache write because its by-group table is gone — after
+      # the entity-type and grant phases already reported progress.
+      for {id, component, gsn} <- [
+            {"gm_partial_aaa_valid", "ebb/grant", 1},
+            {"eg_partial_zzz_valid", "ebb/membership", 2}
+          ] do
         frame =
           TestHelpers.validated_action(%{
-            updates: [
-              TestHelpers.validated_component(id, "groupMember/actor_id", %{
-                "value" => "a_partial"
-              })
-            ]
+            updates: [TestHelpers.validated_component(id, component, %{"value" => %{}})]
           })
           |> ActionFormat.build()
           |> ActionFormat.encode()
@@ -443,7 +430,11 @@ defmodule EbbServer.Storage.SystemCacheTest do
           )
       end
 
-      assert_raise FunctionClauseError, fn ->
+      # A cache table that disappears mid-boot must not be reported as a
+      # healthy boot, and the phases that already ran stay observable.
+      :ets.delete(ctx.eg_by_group_table)
+
+      assert_raise ArgumentError, fn ->
         SystemCache.populate_system_caches(populate_opts(ctx))
       end
 
@@ -452,7 +443,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
                 %{outcome: :error, reason: reason}}
              ] = TestHelpers.telemetry_events(ref)
 
-      assert reason == FunctionClauseError
+      assert reason == ArgumentError
       assert measurements.entity_types == 2
       assert measurements.group_members == 1
       assert measurements.entity_groups == 0
@@ -482,8 +473,12 @@ defmodule EbbServer.Storage.SystemCacheTest do
       action =
         TestHelpers.validated_action(%{
           updates: [
-            TestHelpers.validated_component("gm_exit", "groupMember/actor_id", %{
-              "value" => "a_exit"
+            TestHelpers.validated_component("gm_exit", "ebb/grant", %{
+              "value" => %{
+                "actor_id" => "a_exit",
+                "group_id" => "g_exit",
+                "permissions" => ["ebb/group.read"]
+              }
             })
           ]
         })

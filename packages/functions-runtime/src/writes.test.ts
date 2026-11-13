@@ -43,7 +43,7 @@ describe("ctx.create", () => {
     const models = modelsOf(action!.updates).filter(
       (model, index, all) => model !== all[index - 1],
     );
-    expect(models).toEqual(["issue", "entityGroup"]);
+    expect(models).toEqual(["issue", "ebb"]);
     expect(action!.updates.every((update) => update.method === "replace")).toBe(true);
   });
 
@@ -60,11 +60,15 @@ describe("ctx.create", () => {
     const [copiedRow] = rowsOf(action!.updates, "project").filter(
       (row) => row[0]!.subject_id === "e_proj2",
     );
-    const [relationship] = rowsOf(action!.updates, "relationship");
+    const [link] = rowsOf(action!.updates, "ebb").filter(
+      (row) => row[0]!.method !== "delete" && row[0]!.component === "ebb/link",
+    );
 
     expect(valueOf(copiedRow!, "name")).toBe(project.id);
-    expect(valueOf(relationship!, "target_id")).toBe(project.id);
-    expect(valueOf(relationship!, "field")).toBe("project");
+    expect(valueOf(link!, "link")).toMatchObject({
+      target_id: project.id,
+      field: "project",
+    });
   });
 
   it("requires a non-empty groups option", () => {
@@ -139,13 +143,16 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.commit();
 
     const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
-    const relationshipRows = rowsOf(action!.updates, "relationship");
+    const linkRows = rowsOf(action!.updates, "ebb").filter(
+      (row) => row[0]!.method !== "delete" && row[0]!.component === "ebb/link",
+    );
     const deleted = action!.updates.filter((update) => update.method === "delete");
 
-    // One rel_seeded row (four components) and its delete.
-    expect(relationshipRows).toHaveLength(1);
+    // One link row (one atomic component) and its delete.
+    expect(linkRows).toHaveLength(1);
+    expect(linkRows[0]).toHaveLength(1);
     expect(deleted).toHaveLength(1);
-    expect(deleted[0]!.subject_id).toBe(relationshipRows[0]![0]!.subject_id);
+    expect(deleted[0]!.subject_id).toBe(linkRows[0]![0]!.subject_id);
   });
 
   it("sets a many-cardinality FK list and clears it", async () => {

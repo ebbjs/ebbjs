@@ -224,13 +224,14 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     });
 
     expect(result.entityUpdate).toBeUndefined();
-    expect(result.relationshipUpdates).toHaveLength(4);
-    const value = (field: string): unknown => {
-      const update = result.relationshipUpdates.find(
-        (u) => u.method !== "delete" && u.component === `relationship/${field}`,
-      )!;
-      return (update.data as { value: unknown } | null)?.value;
-    };
+    // One atomic `ebb/link` value, not four per-field Updates.
+    expect(result.relationshipUpdates).toHaveLength(1);
+    const value = (field: string): unknown =>
+      (
+        result.relationshipUpdates[0]!.data as {
+          value: Record<string, unknown>;
+        }
+      ).value[field];
     expect(value("source_id")).toBe("todo_1");
     expect(value("target_id")).toBe("list_1");
     expect(value("field")).toBe("list");
@@ -283,10 +284,9 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       sourceId: "todo_1",
       targetId: { id: "list_99" },
     });
-    const target = result.relationshipUpdates.find(
-      (u) => u.method !== "delete" && u.component === "relationship/target_id",
-    )!;
-    expect((target.data as { value: unknown } | null)?.value).toBe("list_99");
+    expect(
+      (result.relationshipUpdates[0]!.data as { value: { target_id: string } }).value.target_id,
+    ).toBe("list_99");
   });
 
   it("throws EntityValidationError when the source entity is not registered", () => {
@@ -383,10 +383,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     const targets = [...rows.values()]
       .map(
         (row) =>
-          (
-            row.find((u) => u.method !== "delete" && u.component === "relationship/target_id")!
-              .data as { value: unknown } | null
-          )?.value,
+          (row[0]!.data as { value: { target_id: string } } | null)?.value.target_id as string,
       )
       .sort();
     expect(targets).toEqual(["list_1", "list_2", "list_3"]);

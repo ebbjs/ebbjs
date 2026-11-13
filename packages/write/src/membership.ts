@@ -12,7 +12,19 @@
  * resolution also feeds the `groups` union the committer returns.
  */
 
-import { componentModel, isFieldMap, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  carriesComponent,
+  componentModel,
+  componentValue,
+  ebbComponent,
+  ebbComponentKind,
+  systemValue,
+  systemValueString,
+  type EbbComponentKind,
+  type Entity,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 
 /**
  * The local view the checker resolves a system write against. It is
@@ -22,36 +34,54 @@ import { componentModel, isFieldMap, type Entity, type FieldValue, type Update }
 export interface MembershipView {
   /** Live group ids for an entity id. */
   groupsOf(entityId: string): readonly string[];
-  /** The group a live `entityGroup` row scopes to, or `undefined` when unknown. */
+  /** The group a live membership row scopes to, or `undefined` when unknown. */
   groupOfMembership(membershipId: string): string | undefined;
 }
 
-/** One wire field's value from a row's component values, or `undefined`. */
-const wireLeaf = (components: ReadonlyMap<string, FieldValue>, component: string): unknown => {
-  const value = components.get(component);
-  return value === undefined || isFieldMap(value) ? undefined : value.value;
-};
+/** One platform component's atomic value, or `null` when the batch carries no such kind. */
+const platformValue = (
+  components: ReadonlyMap<string, FieldValue>,
+  kind: EbbComponentKind,
+): Readonly<Record<string, unknown>> | null => componentValue(components.get(ebbComponent(kind)));
 
 /** One subject's writes in a batch, folded to the components it carries. */
 export interface SubjectWrites {
-  /** The model its components name; `undefined` for a delete-only row. */
+  /**
+   * The platform kind the batch's components name, or `null` for a row whose
+   * writes carry only user components. Derived from the component, never read
+   * as the row's committed model.
+   */
+  kind: EbbComponentKind | null;
+  /** The prefix its components name; `undefined` for a delete-only row. */
   model?: string;
   readonly components: Map<string, FieldValue>;
   deleted: boolean;
+  /**
+   * Whether the batch carries a `replace`, which is how a create states itself on
+   * the wire: an atomic value's `replace` is also its update.
+   */
+  replaced: boolean;
 }
 
-/** Fold a batch's Updates into one entry per subject. */
-const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
+/**
+ * Fold a batch's Updates into one entry per subject, in first-seen order. Shared
+ * by the membership checker and the client's permission pass.
+ */
+export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> => {
   const subjects = new Map<string, SubjectWrites>();
   for (const update of updates) {
     const entry: SubjectWrites = subjects.get(update.subject_id) ?? {
+      kind: null,
       components: new Map(),
       deleted: false,
+      replaced: false,
     };
     if (update.method === "delete") {
       entry.deleted = true;
     } else {
+      entry.kind = ebbComponentKind(update.component) ?? entry.kind;
       entry.model = componentModel(update.component);
+      entry.replaced = entry.replaced || update.method === "replace";
       if (update.method !== "drop") entry.components.set(update.component, update.data);
     }
     subjects.set(update.subject_id, entry);
@@ -62,7 +92,7 @@ const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWrites> =>
 const sortedUnique = (groups: readonly string[]): readonly string[] => [...new Set(groups)].sort();
 
 /**
- * The `entityGroup` row id for an `(entity, group)` pair.
+ * The `ebb/membership` row id for an `(entity, group)` pair.
  *
  * One row per pair (#623): two devices that share the same entity into the
  * same group before syncing must converge on one row, or an unshare
@@ -79,12 +109,12 @@ export const entityGroupId = (entityId: string, groupId: string): string =>
   `eg_${entityId.length}_${entityId}${groupId}`;
 
 /**
- * Resolve one subject's fan-out group set from the components its batch
- * carries:
+ * Resolve one subject's fan-out group set from the platform component its
+ * batch carries:
  *
- * - `group` → its own id (a group is its own group);
- * - `groupMember` / `entityGroup` → the wired `group_id`;
- * - `relationship` → the source entity's groups;
+ * - `ebb/group` → its own id (a group is its own group);
+ * - `ebb/grant` / `ebb/membership` → the value's `group_id`;
+ * - `ebb/link` → the source entity's groups;
  * - a delete → the membership row's group when the local view knows one, else
  *   the subject's own group set (a content row);
  * - anything else → the entity's groups.
@@ -97,14 +127,20 @@ export const resolveSubjectGroups = (
   writes: SubjectWrites,
   view: MembershipView,
 ): readonly string[] => {
-  if (writes.model === "group") return [subjectId];
-  if (writes.model === "groupMember" || writes.model === "entityGroup") {
-    const groupId = wireLeaf(writes.components, `${writes.model}/group_id`);
-    return typeof groupId === "string" ? [groupId] : [];
-  }
-  if (writes.model === "relationship") {
-    const sourceId = wireLeaf(writes.components, "relationship/source_id");
-    return typeof sourceId === "string" ? view.groupsOf(sourceId) : [];
+  switch (writes.kind) {
+    case "group":
+      return [subjectId];
+    case "grant":
+    case "membership": {
+      const groupId = platformValue(writes.components, writes.kind)?.["group_id"];
+      return typeof groupId === "string" ? [groupId] : [];
+    }
+    case "link": {
+      const sourceId = platformValue(writes.components, "link")?.["source_id"];
+      return typeof sourceId === "string" ? view.groupsOf(sourceId) : [];
+    }
+    default:
+      break;
   }
   if (writes.deleted) {
     const groupId = view.groupOfMembership(subjectId);
@@ -167,7 +203,7 @@ export const lastMembershipViolation = (
 };
 
 /**
- * A live `groupMember` row reduced to what the lockout guard reads:
+ * A live grant row reduced to what the lockout guard reads:
  * the row id, the group it scopes to, and its permission list. An
  * empty list grants nothing, so such a member cannot administer the
  * group.
@@ -184,7 +220,7 @@ export interface GroupMemberUpsert {
   readonly permissions: readonly string[];
 }
 
-/** A `groupMember` delta: the rows to remove and the permission lists to overwrite. */
+/** A grant delta: the rows to remove and the permission lists to overwrite. */
 export interface GroupMemberDelta {
   readonly removedIds: readonly string[];
   readonly upserts: readonly GroupMemberUpsert[];
@@ -216,22 +252,22 @@ export const lastGroupMemberViolation = (
 };
 
 /**
- * Reduce one `groupMember` row to the guard's inputs. A tombstoned or
- * malformed row (missing / non-array permission list) is `null`, so the
- * caller defers rather than reading it as "no permissions".
+ * Reduce one live grant row to the guard's inputs. A tombstoned or malformed
+ * row (missing / non-array permission list) is `null`, so the caller defers
+ * rather than reading it as "no permissions".
  */
 export const liveGroupMember = (row: Entity): LiveGroupMember | null => {
   if (row.deleted_hlc !== null) return null;
-  const groupId = row.data?.fields?.["group_id"]?.value;
-  const permissions = row.data?.fields?.["permissions"]?.value;
-  if (typeof groupId !== "string" || !isStringArray(permissions)) return null;
+  const groupId = systemValueString(row, "grant", "group_id");
+  const permissions = systemValue(row, "grant")?.["permissions"];
+  if (groupId === null || !isStringArray(permissions)) return null;
   return { id: row.id, groupId, permissions };
 };
 
 const isStringArray = (value: unknown): value is readonly string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string");
 
-/** The live `groupMember` rows of one group, ready for the guard. */
+/** The live grant rows of one group, ready for the guard. */
 export const groupMembersOf = (
   rows: readonly Entity[],
   groupId: string,
@@ -252,11 +288,10 @@ export interface GroupMemberView {
 }
 
 /**
- * The `last_group_member` refusal for a `groupMember` delta, read from
- * the local view. `undefined` when the target row is absent, not a
- * `groupMember`, tombstoned, or malformed, or when the group's local
- * member view is empty — the caller then defers to the server's
- * authoritative check.
+ * The `last_group_member` refusal for a grant delta, read from the local view.
+ * `undefined` when the target row is absent, not a grant, tombstoned, or
+ * malformed, or when the group's local member view is empty — the caller then
+ * defers to the server's authoritative check.
  */
 export const lastGroupMemberRefusal = async (
   view: GroupMemberView,
@@ -264,8 +299,8 @@ export const lastGroupMemberRefusal = async (
   delta: GroupMemberDelta,
 ): Promise<string | undefined> => {
   const row = await view.row(id);
-  if (row === null || row.type !== "groupMember" || row.deleted_hlc !== null) return undefined;
-  const groupId = row.data?.fields?.["group_id"]?.value;
-  if (typeof groupId !== "string") return undefined;
+  if (row === null || !carriesComponent(row, "grant") || row.deleted_hlc !== null) return undefined;
+  const groupId = systemValueString(row, "grant", "group_id");
+  if (groupId === null) return undefined;
   return lastGroupMemberViolation(await view.groupMembers(groupId), delta);
 };

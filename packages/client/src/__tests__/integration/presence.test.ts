@@ -120,25 +120,39 @@ const waitForStream = (calls: readonly string[], timeoutMs = 10_000): Promise<vo
   waitFor(() => countCalls(calls, "/sync/live") >= 1, timeoutMs);
 
 /**
- * Add an actor as a member of grp_demo (sent as demo-seeder, who has
- * groupMember.* permission). Idempotent — tolerates already_exists.
+ * Add an actor as a member of grp_demo (sent as demo-seeder, who holds
+ * `ebb/grant.*` permission), as one atomic `ebb/grant` put. Idempotent —
+ * tolerates already_exists.
  */
 async function addMemberAsSeeder(actorId: string): Promise<void> {
-  const { encodeSync, createAction, createClock, componentName, localEvent } =
+  const { encodeSync, createAction, createClock, EBB_COMPONENTS, localEvent } =
     await import("@ebbjs/core");
   const clock = createClock();
   const hlc = localEvent(clock);
-  const fields: Record<string, unknown> = {
-    actor_id: actorId,
-    group_id: GROUP_ID,
-    permissions: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
-  };
-  const updates = Object.entries(fields).map(([field, value]) => ({
-    subject_id: `gm_${actorId}`,
-    component: componentName("groupMember", field),
-    method: "replace" as const,
-    data: { value, update_id: `add_${field}`, hlc },
-  }));
+  const updateId = "add_grant";
+  const updates = [
+    {
+      id: updateId,
+      subject_id: `gm_${actorId}`,
+      component: EBB_COMPONENTS.grant,
+      method: "replace" as const,
+      data: {
+        value: {
+          actor_id: actorId,
+          group_id: GROUP_ID,
+          permissions: [
+            "text_document.*",
+            "ebb/group.*",
+            "ebb/grant.*",
+            "ebb/membership.*",
+            "ebb/link.*",
+          ],
+        },
+        update_id: updateId,
+        hlc,
+      },
+    },
+  ];
   const { action } = createAction({ actorId: "demo-seeder", updates, clock });
   const body = encodeSync({ actions: [action] });
 

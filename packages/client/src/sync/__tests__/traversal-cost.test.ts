@@ -30,6 +30,7 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
+import { platformEntity } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
 
 const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
@@ -53,8 +54,7 @@ const mkRel = (
   targetId: string,
   field: string,
   type: string,
-): Entity =>
-  mkEntity(id, "relationship", { source_id: sourceId, target_id: targetId, field, type });
+): Entity => platformEntity(id, "link", { source_id: sourceId, target_id: targetId, field, type });
 
 /** Fold one materialized row into the replica the way hydrate would. */
 const ingestRow = (replica: ReturnType<typeof createReplica>, entity: Entity, position: number) => {
@@ -90,15 +90,15 @@ const mkStore = async (unrelatedCount: number, backend: Backend) => {
     mkEntity("t1", "todo", { title: "Ship" }),
     mkEntity("l1", "list", { name: "Work" }),
     mkRel("rel-1", "t1", "l1", "parentList", "todo"),
-    mkEntity("g1", "group", { name: "G" }),
-    mkEntity("eg-1", "entityGroup", { entity_id: "t1", group_id: "g1" }),
+    platformEntity("g1", "group", { name: "G" }),
+    platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }),
   ];
   for (let i = 0; i < unrelatedCount; i += 1) {
     rows.push(
       mkEntity(`other-${i}`, "todo", { title: `other ${i}` }),
       mkRel(`unrelated-rel-${i}`, `other-${i}`, `unrelated-list-${i}`, "parentList", "todo"),
       mkEntity(`unrelated-list-${i}`, "list", { name: `List ${i}` }),
-      mkEntity(`unrelated-eg-${i}`, "entityGroup", {
+      platformEntity(`unrelated-eg-${i}`, "membership", {
         entity_id: `other-${i}`,
         group_id: `unrelated-group-${i}`,
       }),

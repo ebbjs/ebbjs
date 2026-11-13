@@ -2,7 +2,7 @@
  * Two apps, one actor, one store (#732 acceptance).
  *
  * Each client declares a local `appId`; the handshake keeps only the
- * groups whose `apps` map names it (plus unscoped groups). A bridge
+ * groups whose `apps` list names it (plus unscoped groups). A bridge
  * group names both apps, and an entity filed into it is delivered to
  * both replicas. Scope is a residency filter, not authority: both apps
  * write as the same actor, and the actor's grants decide what lands.
@@ -13,7 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAction, createClock, localEvent } from "@ebbjs/core";
+import { createAction, createClock, EBB_COMPONENTS, localEvent } from "@ebbjs/core";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createClient, defineAction, type SyncClient } from "../..";
 
@@ -32,18 +32,22 @@ const NOTE = `note_${RUN_ID}`;
  * Permissions Alice holds in her own groups. The bridge membership uses the
  * same list: covering both types is what makes bidirectional edits legal (D6).
  */
-const MEMBER_PERMISSIONS = ["group.*", "groupMember.*", "entityGroup.*", "note.*", "issue.*"];
+const MEMBER_PERMISSIONS = [
+  "ebb/group.*",
+  "ebb/grant.*",
+  "ebb/membership.*",
+  "ebb/link.*",
+  "note.*",
+  "issue.*",
+];
 
-/** A schema-bearing client: `group.update` needs the map marker to write scope. */
+/** A schema-bearing client: `group.update` writes the atomic group value. */
 const note = defineModel("note", { title: e.string() });
 const appScopeSchema = defineSchema({ models: { note }, version: 1 });
 const appScopeActions = {
-  setScope: defineAction(
-    appScopeSchema,
-    ({ group }, params: { id: string; apps: Record<string, boolean> }) => {
-      group.update(params.id, { apps: params.apps });
-    },
-  ),
+  setScope: defineAction(appScopeSchema, ({ group }, params: { id: string; apps: string[] }) => {
+    group.update(params.id, { apps: params.apps });
+  }),
 };
 
 const createAppScopeClient = (appId: string) =>
@@ -98,6 +102,7 @@ const notePatch = (title: string) => {
   }).action;
 };
 
+/** One `ebb/membership` put: the pair rides as one atomic value. */
 const fileInto = (entityId: string, groupId: string) => {
   const clock = createClock();
   const updateId = `u_share_${RUN_ID}`;
@@ -108,16 +113,9 @@ const fileInto = (entityId: string, groupId: string) => {
       {
         id: `${updateId}_0`,
         subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
-        component: "entityGroup/entity_id",
+        component: EBB_COMPONENTS.membership,
         method: "replace",
-        data: leaf(entityId, updateId, clock),
-      },
-      {
-        id: `${updateId}_1`,
-        subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
-        component: "entityGroup/group_id",
-        method: "replace",
-        data: leaf(groupId, updateId, clock),
+        data: leaf({ entity_id: entityId, group_id: groupId }, updateId, clock),
       },
     ],
   }).action;
@@ -175,7 +173,7 @@ beforeAll(async () => {
 
   issues = createAppScopeClient("issues");
   await issues.seed({
-    groups: [{ id: G_ISSUES, name: "Issues", apps: { issues: true } }],
+    groups: [{ id: G_ISSUES, name: "Issues", apps: ["issues"] }],
     groupMembers: [
       {
         id: `gm_issues_${RUN_ID}`,
@@ -189,7 +187,7 @@ beforeAll(async () => {
 
   // The bridge names both apps; one Action bootstraps it and its membership.
   await notes.seed({
-    groups: [{ id: G_BRIDGE, name: "Bridge", apps: { notes: true, issues: true } }],
+    groups: [{ id: G_BRIDGE, name: "Bridge", apps: ["notes", "issues"] }],
     groupMembers: [
       {
         id: `gm_bridge_${RUN_ID}`,
@@ -232,7 +230,7 @@ describe("app scope integration", () => {
     await handshakeIds(notes!);
     await handshakeIds(issues!);
 
-    // Notes files its note into the bridge (the share is an entityGroup put).
+    // Notes files its note into the bridge (the share is an `ebb/membership` put).
     expect((await notes!.write([fileInto(NOTE, G_BRIDGE)])).rejected).toEqual([]);
 
     // The issues replica learns the note through the bridge listing.
@@ -252,12 +250,12 @@ describe("app scope integration", () => {
     expect(titleOf(issues!)).toBe("Edited by notes");
   });
 
-  it("removes a group from the app on the next reconcile when its scope says false", async () => {
+  it("removes a group from the app on the next reconcile when its id leaves the scope", async () => {
     if (!reachable) return;
 
     await handshakeIds(notes!);
-    // The SDK path: a `group.update` map patch, not a hand-rolled envelope.
-    await notes!.actions.setScope({ id: G_BRIDGE, apps: { issues: false } });
+    // The SDK path: a whole-value `group.update`, not a hand-rolled envelope.
+    await notes!.actions.setScope({ id: G_BRIDGE, apps: ["notes"] });
 
     const issuesIds = await handshakeIds(issues!);
     expect(issuesIds).not.toContain(G_BRIDGE);

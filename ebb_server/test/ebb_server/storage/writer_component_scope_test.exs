@@ -38,14 +38,12 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
     ActionFormat.decode(frame, gsn)
   end
 
-  test "every component Update of an entityGroup create is scoped to its group", ctx do
+  test "a membership create is scoped to its group", ctx do
     updates = [
-      validated_component("eg_1", "entityGroup/entity_id", %{"value" => "todo_1", "hlc" => 1},
-        method: :replace
-      ),
-      validated_component("eg_1", "entityGroup/group_id", %{"value" => "g_1", "hlc" => 1},
-        method: :replace
-      )
+      validated_component("eg_1", "ebb/membership", %{
+        "value" => %{"entity_id" => "todo_1", "group_id" => "g_1"},
+        "hlc" => 1
+      })
     ]
 
     action = validated_action(%{updates: updates})
@@ -54,12 +52,9 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     stored = stored_action(1, ctx.rocks_name)
 
-    assert Enum.map(stored["updates"], & &1["component"]) == [
-             "entityGroup/entity_id",
-             "entityGroup/group_id"
-           ]
+    assert Enum.map(stored["updates"], & &1["component"]) == ["ebb/membership"]
 
-    assert stored["update_scopes"] == [["g_1"], ["g_1"]]
+    assert stored["update_scopes"] == [["g_1"]]
   end
 
   # A delete names no component, so its model is the committed one — the
@@ -68,7 +63,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   # out to nothing, skips the system-cache projection, and records a dirty
   # mark with no model, which hides the row from
   # `dirty_entity_ids_for_model/2`.
-  test "an entityGroup delete with no type-index entry still fans out and keeps its model", ctx do
+  test "a membership delete with no type-index entry still fans out and keeps its model", ctx do
     EntityGroupCache.put_entity_group(
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
       entity_groups: ctx.entity_groups,
@@ -86,10 +81,12 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
     assert {:ok, {1, 1}, []} = Writer.write_actions([action], ctx.writer_name)
 
     assert stored_action(1, ctx.rocks_name)["update_scopes"] == [["g_1"]]
-    assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", ctx.dirty_set) == ["eg_1"]
+    # The row's committed model is the platform model, which is what the
+    # dirty mark has to carry for a later materialization to find it.
+    assert DirtyTracker.dirty_entity_ids_for_model("ebb", ctx.dirty_set) == ["eg_1"]
   end
 
-  test "every component Update of a relationship create is scoped to its source's groups", ctx do
+  test "a link create is scoped to its source's groups", ctx do
     # The source entity's groups are the edge's scope; the source_id component
     # is what names it, and its siblings must inherit the same list.
     EntityGroupCache.put_entity_group(
@@ -101,17 +98,17 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     :ets.insert(ctx.entity_types, {"todo_1", "todo"})
 
-    updates =
-      for {field, value} <- [
-            {"source_id", "todo_1"},
-            {"target_id", "g_2"},
-            {"type", "note"},
-            {"field", "link"}
-          ] do
-        validated_component("rel_1", "relationship/#{field}", %{"value" => value, "hlc" => 1},
-          method: :replace
-        )
-      end
+    updates = [
+      validated_component("rel_1", "ebb/link", %{
+        "value" => %{
+          "source_id" => "todo_1",
+          "target_id" => "g_2",
+          "type" => "note",
+          "field" => "link"
+        },
+        "hlc" => 1
+      })
+    ]
 
     action = validated_action(%{updates: updates})
 
@@ -119,13 +116,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     stored = stored_action(1, ctx.rocks_name)
 
-    assert stored["update_scopes"] == [["g_1"], ["g_1"], ["g_1"], ["g_1"]]
-
-    assert Enum.map(stored["updates"], & &1["component"]) == [
-             "relationship/source_id",
-             "relationship/target_id",
-             "relationship/type",
-             "relationship/field"
-           ]
+    assert stored["update_scopes"] == [["g_1"]]
+    assert Enum.map(stored["updates"], & &1["component"]) == ["ebb/link"]
   end
 end

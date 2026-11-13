@@ -55,13 +55,20 @@
  * is untouched.
  */
 
-import { componentName, type Entity } from "@ebbjs/core";
+import {
+  carriesComponent,
+  componentName,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  type EbbComponentKind,
+  type Entity,
+} from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError, isMapSchema, readDefault, type ModelRegistry } from "@ebbjs/schema";
-import { GROUPS_ACCESSOR, groupSystemEntity, type GroupFields } from "@ebbjs/schema";
+import { GROUPS_ACCESSOR } from "@ebbjs/schema";
 import { normalizePointer, projectFieldValue, type PointerValue } from "@ebbjs/write";
 import type {
   AccessorKeyOf,
@@ -74,12 +81,14 @@ import type {
 import { emptyQuery, type Join, type Predicate, type Query } from "./query";
 import { planQuery } from "./query-plan";
 import {
+  createComponentViewExecutor,
   createReplicaExecutor,
   createRowsExecutor,
   executePlan,
   type FieldResolver,
   type PlanExecutor,
 } from "./query-execute";
+import { componentRowView, type GroupFieldMap } from "./system-row";
 import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
 
@@ -303,7 +312,7 @@ export type JoinRecord<TRels, TName extends string> = [TRels] extends [undefined
 
 /** Built-in membership join carried by every entity's query. */
 export type MembershipJoin = {
-  readonly [GROUPS_ACCESSOR]: readonly ProjectedRow<GroupFields>[];
+  readonly [GROUPS_ACCESSOR]: readonly ProjectedRow<GroupFieldMap>[];
 };
 
 /** Selector accepted by {@link QueryBuilder.with}. */
@@ -350,6 +359,12 @@ export { normalizePointer } from "@ebbjs/write";
 export interface QueryContext {
   readonly entityName: string;
   readonly registry: ModelRegistry;
+  /**
+   * The component a `has` / `hasNot` field resolves to, for a chain over a value
+   * view: every row in such a view carries the same atomic component. Absent for
+   * an ordinary chain, where the field names `<model>/<field>`.
+   */
+  readonly componentFor?: (field: string) => string | null;
   /** The materialized read path the plan executes over. */
   readonly replica: Replica;
   /** The reactive result cache shared by every chain over this client. */
@@ -575,12 +590,13 @@ export function buildReplicaQueryBuilder<
   source: string,
   shape: TObject<TFields>,
   context: QueryContext,
+  view?: EbbComponentKind,
 ): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
   if (!modelIsHeld(context, source)) throw new OnDemandQueryError(source);
   const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
     projectQueryRow(row, shape, entityGroupIds(row.id, executor), context.migrations);
   const syncRun = (query: Query): readonly unknown[] => {
-    const executor = createReplicaExecutor(context.replica);
+    const executor = replicaExecutorFor(context, view);
     return projectResultRows(
       executePlan(planQuery(query), executor, (entity, field) =>
         projectedFieldValue(entity, field, shape, context.migrations),
@@ -592,27 +608,37 @@ export function buildReplicaQueryBuilder<
     );
   };
   const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
-    const run = await runProjectingPlan(query, replicaExecutor(context), context, (entity, field) =>
-      projectedFieldValue(entity, field, shape, context.migrations),
+    const run = await runProjectingPlan(
+      query,
+      replicaExecutor(context, view),
+      context,
+      (entity, field) => projectedFieldValue(entity, field, shape, context.migrations),
     );
     return projectResultRows(run.rows, query, run.executor, context, projectBase);
   };
   return buildChain<TFields, TJoins, NoJoins, QueryRow<TFields>>(
-    emptyQuery(source),
+    emptyQuery(source, view === undefined ? undefined : [EBB_COMPONENTS[view]]),
     shape,
     context,
-    replicaExecutor(context),
+    replicaExecutor(context, view),
     projectBase,
     syncRun,
     asyncRun,
   );
 }
 
+/** An executor over the replica, optionally through a component's value view. */
+const replicaExecutorFor = (context: QueryContext, view?: EbbComponentKind): PlanExecutor =>
+  view === undefined
+    ? createReplicaExecutor(context.replica)
+    : createComponentViewExecutor(context.replica, view);
+
 /** Hydrate the replica, then read the plan's rows and indices from it. */
-const replicaExecutor = (context: QueryContext) => async (): Promise<PlanExecutor> => {
-  await context.hydrate();
-  return createReplicaExecutor(context.replica);
-};
+const replicaExecutor =
+  (context: QueryContext, view?: EbbComponentKind) => async (): Promise<PlanExecutor> => {
+    await context.hydrate();
+    return replicaExecutorFor(context, view);
+  };
 
 interface QueryRun {
   readonly rows: readonly Entity[];
@@ -738,6 +764,21 @@ const runProjectingPlan = async (
 const entityGroupIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
   executor.memberships({ entityId });
 
+/**
+ * The value shape of a platform component: `registry.get("ebb").shape` is the
+ * four-component envelope, never one kind's value.
+ */
+const componentValueShape = (
+  context: QueryContext | undefined,
+  component: string,
+): TObject<Record<string, TSchema>> => {
+  const shape = context?.registry.componentOf(EBB_MODEL_NAME, component)?.shape;
+  if (shape === undefined) {
+    throw new Error(`with(): platform component "${component}" is not registered`);
+  }
+  return shape as TObject<Record<string, TSchema>>;
+};
+
 const readJoinedRow = (
   id: string,
   join: Join,
@@ -746,6 +787,16 @@ const readJoinedRow = (
 ): ProjectedRow<Record<string, TSchema>> | null => {
   const row = executor.get(id);
   if (row === undefined || row.deleted_hlc !== null || row.type !== join.target) return null;
+  if (join.kind === "membership") {
+    // The `groups` join projects group rows: filter on the component and project
+    // its value.
+    if (!carriesComponent(row, "group")) return null;
+    return projectRow(
+      componentRowView(row, "group") ?? row,
+      componentValueShape(context, EBB_COMPONENTS.group),
+      context?.migrations,
+    );
+  }
   return projectRow(row, shapeForJoin(context, join.target), context?.migrations);
 };
 
@@ -789,7 +840,9 @@ const projectResultRows = <
 
 const resolveJoinDef = (entityName: string, key: string, registry: ModelRegistry): Join => {
   if (key === GROUPS_ACCESSOR) {
-    return { kind: "membership", as: key, target: groupSystemEntity.name, cardinality: "many" };
+    // Group rows are `ebb` rows carrying `ebb/group`; the join reads them
+    // through that component's value view.
+    return { kind: "membership", as: key, target: EBB_MODEL_NAME, cardinality: "many" };
   }
   // Forward wins a collision so a self-referential relationship joins the
   // direction it declares.
@@ -1008,8 +1061,10 @@ function buildExistence(
       },
     ]);
   }
-  const component = context.registry.get(context.entityName)?.components[field];
-  if (component === undefined) {
+  const name =
+    context.componentFor?.(field) ??
+    context.registry.get(context.entityName)?.components[field]?.name;
+  if (name === undefined || name === null) {
     throw new EntityValidationError([
       {
         entityName: context.entityName,
@@ -1018,7 +1073,7 @@ function buildExistence(
       },
     ]);
   }
-  return { kind: "existence", component: component.name, present };
+  return { kind: "existence", component: name, present };
 }
 
 /**

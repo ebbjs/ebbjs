@@ -7,14 +7,14 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
   hand-mirrored implementations of one predicate language cannot drift.
 
   Fixture rows are written through the real write path (one create per row
-  plus its `entityGroup` row, each as one Update per component) so the query
-  also runs the permission JOINs a caller reaches through
+  plus its `ebb/membership` row, the membership as one atomic Update) so the
+  query also runs the permission JOINs a caller reaches through
   `EntityStore.query/4`.
   """
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{EntityStore, Writer}
+  alias EbbServer.Storage.{EntityStore, SystemComponent, Writer}
 
   import EbbServer.TestHelpers
 
@@ -135,22 +135,23 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        validated_component(eg_id, "entityGroup/entity_id", %{
-          "value" => row_id,
-          "hlc" => eg_hlc
-        }),
-        validated_component(eg_id, "entityGroup/group_id", %{
-          "value" => group_id,
-          "hlc" => eg_hlc
-        })
+        validated_component(
+          eg_id,
+          SystemComponent.component(:membership),
+          %{
+            "value" => %{"entity_id" => row_id, "group_id" => group_id},
+            "hlc" => eg_hlc
+          }
+        )
       ]
     }
 
     {:ok, _gsn_pair, []} = Writer.write_actions([eg_action], writer_name)
   end
 
-  # The permission JOIN reads a live `entityGroup` row for the queried entity
-  # and a `groupMember` row for the actor, with a non-empty permission list.
+  # The permission JOIN reads a live `ebb/membership` row for the queried
+  # entity and an `ebb/grant` row for the actor, with a non-empty permission
+  # list.
   defp bootstrap_group(group_id, actor_id, writer_name) do
     hlc = generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
@@ -160,15 +161,18 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        validated_component(gm_id, "groupMember/actor_id", %{"value" => actor_id, "hlc" => hlc}),
-        validated_component(gm_id, "groupMember/group_id", %{
-          "value" => group_id,
-          "hlc" => hlc
-        }),
-        validated_component(gm_id, "groupMember/permissions", %{
-          "value" => ["todo.read"],
-          "hlc" => hlc
-        })
+        validated_component(
+          gm_id,
+          SystemComponent.component(:grant),
+          %{
+            "value" => %{
+              "actor_id" => actor_id,
+              "group_id" => group_id,
+              "permissions" => ["todo.read"]
+            },
+            "hlc" => hlc
+          }
+        )
       ]
     }
 

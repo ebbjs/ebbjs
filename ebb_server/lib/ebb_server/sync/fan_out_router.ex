@@ -40,12 +40,11 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   Using the Writer's snapshot keeps live fan-out in agreement with the
   `cf_group_actions` index catch-up reads: the cache has already moved
-  by dispatch time, so re-resolving a `relationship`/`groupMember`
-  delete there returns `[]` (its by-id entry is gone and the wire form
-  carries no `source_id`). Each Action is stored with its per-Update
-  scopes (`"update_scopes"`) for the same reason; an Action committed
-  before those scopes were persisted has none and is delivered whole, as
-  it was before per-Update delivery (#473).
+  by dispatch time, so re-resolving an `ebb/link`/`ebb/grant` delete there
+  finds no by-id entry, and the wire form carries no component for a delete.
+  Each Action is stored with its per-Update scopes (`"update_scopes"`) for
+  the same reason; an Action committed before those scopes were persisted has
+  none and is delivered whole, as it was before per-Update delivery (#473).
 
   ## Resolved holes
 
@@ -99,10 +98,10 @@ defmodule EbbServer.Sync.FanOutRouter do
   commit time. A client that reacts immediately therefore cannot
   handshake into the pre-apply state.
 
-  Membership is the trigger: a `groupMember` put, patch, or delete,
+  Membership is the trigger: an `ebb/grant` put, patch, or delete,
   including a permissions-only patch, and a re-put that re-keys the row to
   another actor (the old actor's view changed too). An Action that touches
-  no membership emits nothing; a recovered range carries no actor set and
+  no grant emits nothing; a recovered range carries no actor set and
   emits nothing either.
 
   Coalescing is per connection per released range. `actor_connections`
@@ -542,12 +541,15 @@ defmodule EbbServer.Sync.FanOutRouter do
   defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, actor_connections, meta) do
     decode_started_at = System.monotonic_time()
 
+    # All five caches, so a delete naming no component still resolves its
+    # row's kind, and so its scope.
     resolve_opts = [
       entity_groups: CacheTables.entity_groups(),
       entity_groups_by_id: CacheTables.entity_groups_by_id(),
       entity_types: CacheTables.entity_types(),
       relationships_by_id: CacheTables.relationships_by_id(),
-      group_members_by_id: CacheTables.group_members_by_id()
+      group_members_by_id: CacheTables.group_members_by_id(),
+      group_apps: CacheTables.group_apps()
     ]
 
     actions =

@@ -11,7 +11,7 @@
  * Covers:
  * - a non-member never receives the shared group, its workspace, or its
  *   issues, and a self-join is refused;
- * - the invite files the actor's `groupMember` row and leaves the profile
+ * - the invite files the actor's `ebb/grant` row and leaves the profile
  *   pending, and the invitee's own client then shares it (#623);
  * - a member cannot file another actor's profile into the workspace;
  * - `client.can` on the shared issue is allowed for a member and the

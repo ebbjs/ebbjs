@@ -58,16 +58,40 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     }
   end
 
-  # One Update per field: the wire names a component, and the row the rule
-  # engine reads is the fold of them.
+  # The wire names one component per Update and the row the rule engine reads
+  # is the fold of them. A platform component is atomic: its fields are one
+  # object value, so the row is one Update.
+  @components %{
+    "group" => "group",
+    "groupMember" => "grant",
+    "entityGroup" => "membership",
+    "relationship" => "link"
+  }
+
   defp row_updates(subject_id, model, fields, opts \\ []) do
     method = Keyword.get(opts, :method, "replace")
     id = Keyword.get(opts, :id)
 
-    Enum.map(fields, fn {field, value} ->
-      update(id || new_id(), subject_id, "#{model}/#{field}", method, leaf(value))
-    end)
+    case Map.fetch(@components, model) do
+      {:ok, leaf_name} ->
+        value = Map.new(fields, fn {field, value} -> {field, value} end)
+
+        [
+          update(id || new_id(), subject_id, "ebb/" <> leaf_name, atomic_method(method), %{
+            "value" => value
+          })
+        ]
+
+      :error ->
+        Enum.map(fields, fn {field, value} ->
+          update(id || new_id(), subject_id, "#{model}/#{field}", method, leaf(value))
+        end)
+    end
   end
+
+  # A value Update of an atomic component is a `replace` on the wire.
+  defp atomic_method("merge"), do: "replace"
+  defp atomic_method(method), do: method
 
   defp delete_update(subject_id) do
     %{"id" => new_id(), "subject_id" => subject_id, "method" => "delete", "data" => nil}
@@ -79,15 +103,22 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
   defp entity_group_put_updates(id, entity_id, group_id) do
     [
-      update(id <> "_entity", id, "entityGroup/entity_id", "replace", leaf(entity_id)),
-      update(id <> "_group", id, "entityGroup/group_id", "replace", leaf(group_id))
+      update(id, id, "ebb/membership", "replace", %{
+        "value" => %{"entity_id" => entity_id, "group_id" => group_id}
+      })
     ]
   end
 
   defp relationship_put_updates(id, source_id, target_id) do
     [
-      update(id <> "_source", id, "relationship/source_id", "replace", leaf(source_id)),
-      update(id <> "_target", id, "relationship/target_id", "replace", leaf(target_id))
+      update(id, id, "ebb/link", "replace", %{
+        "value" => %{
+          "source_id" => source_id,
+          "target_id" => target_id,
+          "type" => "todo",
+          "field" => "owns"
+        }
+      })
     ]
   end
 
@@ -180,20 +211,26 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert PermissionChecker.authorize_updates(action, "a_1", opts) == :ok
     end
 
-    test "system entity update authorized when actor holds groupMember.update" do
+    test "system entity update authorized when actor holds ebb/grant.update" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.update"])
-      put_group_member_row(tables, "gm_2", "a_2", "g_1", ["group.read"])
-      put_entity_type(tables, "gm_2", "groupMember")
+      put_group_member(tables, "g_1", ["ebb/grant.update"])
+      put_group_member_row(tables, "gm_2", "a_2", "g_1", ["ebb/group.read"])
+      put_entity_type(tables, "gm_2", "ebb")
 
       action = %{
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
         "updates" => [
-          update(new_id(), "gm_2", "groupMember/permissions", "merge", leaf(["group.write"]))
+          update(new_id(), "gm_2", "ebb/grant", "replace", %{
+            "value" => %{
+              "actor_id" => "a_2",
+              "group_id" => "g_1",
+              "permissions" => ["ebb/group.write"]
+            }
+          })
         ]
       }
 
@@ -215,7 +252,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
             %{
               "group_id" => "g_1",
               "actor_id" => "a_2",
-              "permissions" => ["group.read"]
+              "permissions" => ["ebb/group.read"]
             },
             method: "merge"
           )

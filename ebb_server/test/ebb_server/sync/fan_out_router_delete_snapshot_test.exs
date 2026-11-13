@@ -144,8 +144,8 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "todo.read",
       "todo.write",
       "todo.*",
-      "groupMember.*",
-      "entityGroup.*"
+      "ebb/grant.*",
+      "ebb/membership.*"
     ])
 
     ActionHelpers.bootstrap_group(actor_id, other_group_id, ["todo.create"])
@@ -248,17 +248,39 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     end
   end
 
+  # A platform row is one atomic component whose value is the whole object.
+  @system_components %{
+    "group" => "ebb/group",
+    "groupMember" => "ebb/grant",
+    "entityGroup" => "ebb/membership",
+    "relationship" => "ebb/link"
+  }
+
   defp component_updates(id_prefix, subject_id, model, method, fields, hlc) do
-    fields
-    |> Enum.with_index()
-    |> Enum.map(fn {{field, value}, index} ->
-      %{
-        "id" => "#{id_prefix}_#{index}",
-        "subject_id" => subject_id,
-        "component" => "#{model}/#{field}",
-        "method" => method,
-        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
-      }
-    end)
+    case Map.fetch(@system_components, model) do
+      {:ok, component} ->
+        [
+          %{
+            "id" => "#{id_prefix}_0",
+            "subject_id" => subject_id,
+            "component" => component,
+            "method" => method,
+            "data" => %{"value" => fields, "hlc" => hlc}
+          }
+        ]
+
+      :error ->
+        fields
+        |> Enum.with_index()
+        |> Enum.map(fn {{field, value}, index} ->
+          %{
+            "id" => "#{id_prefix}_#{index}",
+            "subject_id" => subject_id,
+            "component" => "#{model}/#{field}",
+            "method" => method,
+            "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+          }
+        end)
+    end
   end
 end

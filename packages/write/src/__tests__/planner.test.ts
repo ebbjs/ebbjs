@@ -101,7 +101,7 @@ describe("@ebbjs/write", () => {
     expect(submissions).toHaveLength(1);
     expect(
       submissions[0]?.map((update) => (update.method === "delete" ? null : update.component)),
-    ).toEqual(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]);
+    ).toEqual(["issue/title", "ebb/membership"]);
   });
 
   it("scopes a bootstrapped group to the app that created it", async () => {
@@ -109,12 +109,10 @@ describe("@ebbjs/write", () => {
     const bootstrap = groupBootstrap(registry, "Team", undefined, "notes");
 
     const updates = await commitUpdates(registry, [bootstrap.call]);
-    const apps = componentOf(updates, "group/apps");
+    const group = componentOf(updates, "ebb/group");
 
-    expect(apps).toMatchObject({ method: "merge" });
-    expect(apps.data).toMatchObject({
-      map: { notes: { value: true, hlc: "hlc-1" } },
-    });
+    expect(group).toMatchObject({ method: "replace" });
+    expect(group.data).toMatchObject({ value: { name: "Team", apps: ["notes"] } });
   });
 
   it("leaves a group unscoped without an app label", async () => {
@@ -123,10 +121,14 @@ describe("@ebbjs/write", () => {
 
     const updates = await commitUpdates(registry, [bootstrap.call]);
 
-    expect(
-      updates.some((update) => update.method !== "delete" && update.component === "group/apps"),
-    ).toBe(false);
-    expect(componentOf(updates, "group/name")).toMatchObject({ method: "replace" });
+    expect(componentOf(updates, "ebb/group").data).toMatchObject({ value: { name: "Team" } });
+    expect(componentOf(updates, "ebb/grant").data).toMatchObject({
+      value: {
+        group_id: bootstrap.groupId,
+        actor_id: "a_actor",
+        permissions: expect.arrayContaining(["ebb/group.*", "issue.*"]),
+      },
+    });
   });
 
   it("writes a user entity's map field as a merge of a map envelope", async () => {
@@ -150,22 +152,23 @@ describe("@ebbjs/write", () => {
     expect(componentOf(updates, "setting/name")).toMatchObject({ method: "replace" });
   });
 
-  it("writes a scope patch as a merge of a map envelope so app keys merge independently", async () => {
+  it("replaces a platform component's whole value on a patch", async () => {
     const registry = buildRegistry();
 
     const updates = await commitUpdates(registry, [
       call(patchEntity, {
-        entity: "group",
+        entity: "ebb",
         id: "g_1",
-        payload: { apps: { issues: false } },
+        payload: { group: { name: "Team", apps: ["issues"] } },
         groups: ["g_1"],
       }),
     ]);
 
-    const apps = componentOf(updates, "group/apps");
-    expect(apps).toMatchObject({ method: "merge" });
-    expect(apps.data).toMatchObject({
-      map: { issues: { value: false, hlc: "hlc-1" } },
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      component: "ebb/group",
+      method: "replace",
+      data: { value: { name: "Team", apps: ["issues"] } },
     });
   });
 
@@ -182,7 +185,7 @@ describe("@ebbjs/write", () => {
     expect(updates).toEqual([{ id: "u_1", subject_id: "rel_1", method: "delete", data: null }]);
   });
 
-  it("builds one replace Update per Relationship component", () => {
+  it("builds one ebb/link Update carrying the whole edge", () => {
     const updates = buildRelationshipUpdate({
       relationshipId: "rel_1",
       sourceId: "e_issue",
@@ -192,15 +195,23 @@ describe("@ebbjs/write", () => {
       updateId: "u_1",
     });
 
-    expect(
-      updates.map((update) => (update.method === "delete" ? null : update.component)).sort(),
-    ).toEqual([
-      "relationship/field",
-      "relationship/source_id",
-      "relationship/target_id",
-      "relationship/type",
+    expect(updates).toEqual([
+      {
+        id: "u_1",
+        subject_id: "rel_1",
+        component: "ebb/link",
+        method: "replace",
+        data: {
+          value: {
+            source_id: "e_issue",
+            target_id: "e_project",
+            type: "project",
+            field: "project",
+          },
+          update_id: "u_1",
+        },
+      },
     ]);
-    for (const update of updates) expect(update).toMatchObject({ method: "replace" });
   });
 
   it("drops one component per named field and never a delete", async () => {
@@ -262,22 +273,22 @@ describe("@ebbjs/write", () => {
     expect((caught as Error).message).toContain('"draft"');
   });
 
-  it("refuses a system model's component, naming the model", () => {
+  it("refuses dropping a platform component, naming the model", () => {
     const registry = buildRegistry();
 
     let caught: unknown;
     try {
       dropEntity(
         { registry, ids: ids("u_"), actorId: "a_actor" },
-        { entity: "relationship", id: "rel_1", fields: ["target_id"], groups: ["g_project"] },
+        { entity: "ebb", id: "rel_1", fields: ["link"], groups: ["g_project"] },
       );
     } catch (error) {
       caught = error;
     }
 
     expect(caught).toBeInstanceOf(EntityValidationError);
-    expect((caught as Error).message).toContain("relationship");
-    expect((caught as Error).message).toContain("system");
+    expect((caught as Error).message).toContain("ebb");
+    expect((caught as Error).message).toContain("atomic");
   });
 
   it("resolves a drop verb without any read", async () => {
@@ -309,14 +320,10 @@ describe("@ebbjs/write", () => {
     });
 
     expect(result.groups).toEqual(["g_project"]);
-    expect(result.updates).toHaveLength(4);
-    expect(
-      result.updates.map((update) => (update.method === "delete" ? null : update.component)).sort(),
-    ).toEqual([
-      "relationship/field",
-      "relationship/source_id",
-      "relationship/target_id",
-      "relationship/type",
-    ]);
+    expect(result.updates).toHaveLength(1);
+    expect(result.updates[0]).toMatchObject({
+      component: "ebb/link",
+      data: { value: { source_id: "e_issue", target_id: "e_project", field: "project" } },
+    });
   });
 });

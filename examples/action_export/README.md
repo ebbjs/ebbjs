@@ -50,5 +50,5 @@ To watch the exporter's own health, attach to `[:ebb, :action_export, :lag]`
 - Idempotency: because delivery is at-least-once, the example comments the
   dedup key (`{action_id, update_id}`) a real sink should upsert on.
 
-`groupMember` and `entityGroup` Updates are stripped by default, so the sink
+`ebb/grant` and `ebb/membership` Updates are stripped by default, so the sink
 sees domain Actions, not system membership bookkeeping.

@@ -377,15 +377,24 @@ export {
   type Schema,
 } from "@ebbjs/schema";
 
-export { ReservedNameError, RESERVED_ENTITY_NAMES, RESERVED_MEMBERSHIP_NAMES } from "@ebbjs/schema";
+export {
+  ReservedNameError,
+  PLATFORM_NAMESPACE,
+  RESERVED_MEMBERSHIP_NAMES,
+  RESERVED_MODEL_NAMES,
+} from "@ebbjs/schema";
 
 export {
-  relationshipSystemEntity,
-  groupSystemEntity,
-  groupMemberSystemEntity,
-  entityGroupSystemEntity,
+  EBB_COMPONENT_KINDS,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
+  ebbComponent,
+  ebbComponentField,
+  ebbComponentKind,
+  ebbSystemEntity,
+  isEbbComponent,
   GROUPS_ACCESSOR,
+  type EbbComponentKind,
   type GroupFields,
   type GroupMemberFields,
-  type EntityGroupFields,
 } from "@ebbjs/schema";

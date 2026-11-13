@@ -6,7 +6,7 @@
  *   - `n` `page` rows (title, icon, updated_at) — the held metadata,
  *   - one `parent` edge per page (a BRANCH-ary tree) plus REFS_PER_PAGE
  *     `references` edges per page — held `relationship` rows,
- *   - one `entityGroup` row per page plus a workspace `group` — held,
+ *   - one `ebb/membership` row per page plus a workspace `ebb/group` — held,
  *   - heavy `page_content` rows that stay windowed.
  *
  * Every row is generated once, in memory: seeding through the memory
@@ -17,7 +17,13 @@
  * few hundred rows without running the 10k bench.
  */
 
-import { isFieldLeaf, type Entity, type FieldValue } from "@ebbjs/core";
+import {
+  carriesComponent,
+  isFieldLeaf,
+  systemValue,
+  type Entity,
+  type FieldValue,
+} from "@ebbjs/core";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
 /** The entity type the shipped residency policy leaves windowed. */
@@ -189,31 +195,37 @@ const pageRow = (index: number): Entity =>
   });
 
 const parentRow = (index: number, branch: number): Entity =>
-  row(`rel_parent_${index}`, "relationship", {
-    source_id: leaf(`u_rel_parent_${index}_source`, pageId(index)),
-    target_id: leaf(`u_rel_parent_${index}_target`, pageId(parentIndexOf(index, branch))),
-    type: leaf(`u_rel_parent_${index}_type`, "page"),
-    field: leaf(`u_rel_parent_${index}_field`, "parent"),
+  row(`rel_parent_${index}`, "ebb", {
+    link: leaf(`u_rel_parent_${index}`, {
+      source_id: pageId(index),
+      target_id: pageId(parentIndexOf(index, branch)),
+      type: "page",
+      field: "parent",
+    }),
   });
 
 const referenceRow = (index: number, ref: number, n: number): Entity => {
   const id = `rel_ref_${index}_${ref}`;
-  return row(id, "relationship", {
-    source_id: leaf(`u_${id}_source`, pageId(index)),
-    target_id: leaf(`u_${id}_target`, pageId(referenceTargetIndex(index, ref, n))),
-    type: leaf(`u_${id}_type`, "page"),
-    field: leaf(`u_${id}_field`, "references"),
+  return row(id, "ebb", {
+    link: leaf(`u_${id}`, {
+      source_id: pageId(index),
+      target_id: pageId(referenceTargetIndex(index, ref, n)),
+      type: "page",
+      field: "references",
+    }),
   });
 };
 
 const entityGroupRow = (index: number): Entity =>
-  row(entityGroupId(index), "entityGroup", {
-    entity_id: leaf(`u_${entityGroupId(index)}_entity`, pageId(index)),
-    group_id: leaf(`u_${entityGroupId(index)}_group`, WORKSPACE_GROUP_ID),
+  row(entityGroupId(index), "ebb", {
+    membership: leaf(`u_${entityGroupId(index)}`, {
+      entity_id: pageId(index),
+      group_id: WORKSPACE_GROUP_ID,
+    }),
   });
 
 const groupRow = (): Entity =>
-  row(WORKSPACE_GROUP_ID, "group", { name: leaf("u_grp_ws_name", "Workspace") });
+  row(WORKSPACE_GROUP_ID, "ebb", { group: leaf("u_grp_ws_name", { name: "Workspace" }) });
 
 const bodyRow = (index: number, content: FieldValue): Entity =>
   row(bodyId(index), ON_DEMAND_TYPE, { content });
@@ -302,6 +314,13 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
 
 /** A string field's value, or `undefined` for a map/absent/malformed field. */
 export const stringField = (entity: Entity, name: string): string | undefined => {
+  for (const kind of ["link", "membership", "group", "grant"] as const) {
+    const value = systemValue(entity, kind);
+    if (value !== null) {
+      const entry = value[name];
+      return typeof entry === "string" ? entry : undefined;
+    }
+  }
   const field = entity.data?.fields?.[name];
   if (field === undefined || !isFieldLeaf(field)) return undefined;
   return typeof field.value === "string" ? field.value : undefined;
@@ -333,7 +352,7 @@ export const summariseIndexKeys = (rows: readonly Entity[]): IndexKeyCounts => {
     const target = stringField(entity, "target_id");
     const field = stringField(entity, "field");
     const type = stringField(entity, "type");
-    if (entity.type === "relationship" && source && target && field && type) {
+    if (carriesComponent(entity, "link") && source && target && field && type) {
       reverse.add(JSON.stringify([field, type, target]));
       forward.add(JSON.stringify([field, type, source]));
       reverseRows += 1;
@@ -342,9 +361,9 @@ export const summariseIndexKeys = (rows: readonly Entity[]): IndexKeyCounts => {
     }
     const member = stringField(entity, "entity_id");
     const group = stringField(entity, "group_id");
-    if (entity.type === "entityGroup" && member && group) {
-      reverse.add(JSON.stringify(["groups", "entityGroup", group]));
-      forward.add(JSON.stringify(["groups", "entityGroup", member]));
+    if (carriesComponent(entity, "membership") && member && group) {
+      reverse.add(JSON.stringify(["groups", "ebb/membership", group]));
+      forward.add(JSON.stringify(["groups", "ebb/membership", member]));
       reverseRows += 1;
       forwardRows += 1;
     }

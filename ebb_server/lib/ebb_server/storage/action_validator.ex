@@ -43,7 +43,7 @@ defmodule EbbServer.Storage.ActionValidator do
   """
 
   import Bitwise
-  alias EbbServer.Storage.Component
+  alias EbbServer.Storage.{Component, SystemComponent}
 
   @type raw_action :: %{String.t() => term()}
   @type raw_update :: %{String.t() => term()}
@@ -179,9 +179,17 @@ defmodule EbbServer.Storage.ActionValidator do
         {:error, "invalid_structure", "action updates must be a non-empty list"}
 
       true ->
-        with :ok <- validate_updates_structure(action["updates"]) do
-          validate_subject_models(action["updates"])
-        end
+        validate_updates(action["updates"])
+    end
+  end
+
+  # Ordered: the per-Update shape first, so every component below is well
+  # formed; the model check next, because it reads the prefix; and the
+  # platform-component count last.
+  defp validate_updates(updates) do
+    with :ok <- validate_updates_structure(updates),
+         :ok <- validate_subject_models(updates) do
+      validate_subject_components(updates)
     end
   end
 
@@ -219,6 +227,40 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp check_subject_model(_update, models), do: {:cont, models}
+
+  # A row carries at most one platform component (decision 13), so a second
+  # one would make its kind — and its cache projection — a guess.
+  defp validate_subject_components(updates) do
+    case Enum.reduce_while(updates, %{}, &check_subject_component/2) do
+      {:error, _reason, _details} = error -> error
+      _components -> :ok
+    end
+  end
+
+  defp check_subject_component(%{"component" => component, "subject_id" => subject_id}, seen)
+       when is_binary(component) do
+    case SystemComponent.kind(component) do
+      nil ->
+        {:cont, seen}
+
+      _kind ->
+        case Map.fetch(seen, subject_id) do
+          :error ->
+            {:cont, Map.put(seen, subject_id, component)}
+
+          {:ok, ^component} ->
+            {:cont, seen}
+
+          {:ok, other} ->
+            {:halt,
+             {:error, "invalid_structure",
+              "a row carries one platform component: #{inspect(subject_id)} names both " <>
+                "#{inspect(other)} and #{inspect(component)}"}}
+        end
+    end
+  end
+
+  defp check_subject_component(_update, seen), do: {:cont, seen}
 
   defp validate_updates_structure(updates) do
     Enum.reduce_while(updates, :ok, fn update, _acc ->

@@ -4,14 +4,20 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { componentName, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import { makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { evictableRowIds, scopeEvictedGroupIds } from "../scope-eviction";
 import { createClient } from "../client";
 import { emptyQuery } from "../query";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, emptyCatchUpResponse, openSseResponse, waitFor } from "../test-utils";
+import {
+  callApplyAction,
+  emptyCatchUpResponse,
+  openSseResponse,
+  rowComponents,
+  waitFor,
+} from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -40,13 +46,15 @@ const put = (
     opts.actionId,
     opts.gsn,
     opts.ms,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${opts.actionId}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${opts.actionId}`, opts.ms),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${opts.actionId}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${opts.actionId}`, opts.ms),
+      }),
+    ),
   );
 
 const membership = (
@@ -54,7 +62,7 @@ const membership = (
   entityId: string,
   groupId: string,
   opts: { actionId: string; gsn: number; ms: number },
-): Action => put(rowId, "entityGroup", { entity_id: entityId, group_id: groupId }, opts);
+): Action => put(rowId, "membership", { entity_id: entityId, group_id: groupId }, opts);
 
 const mkClient = (
   storage: ReturnType<typeof createMemoryAdapter>,
@@ -235,7 +243,7 @@ describe("replica scope eviction (#499)", () => {
       client,
       put(
         "rel_1",
-        "relationship",
+        "link",
         { source_id: "todo_1", target_id: "todo_2", field: "related", type: "todo" },
         { actionId: "a_rel", gsn: 7, ms: 70 },
       ),

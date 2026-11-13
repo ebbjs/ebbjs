@@ -16,7 +16,7 @@ defmodule EbbServer.Storage.RowMutations do
 
   One mutation per subject, in first-appearance order:
 
-      %{id, subject_id, model, method: :put | :patch | :delete,
+      %{id, subject_id, model, kind, method: :put | :patch | :delete,
         data: %{"fields" => %{field => value}} | nil}
 
   - Any `delete` for the subject collapses the row to a single `:delete`
@@ -37,7 +37,7 @@ defmodule EbbServer.Storage.RowMutations do
   model `nil` rather than inventing one.
   """
 
-  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge}
+  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge, SystemComponent}
 
   @typedoc """
   One whole-row projection of an Action's component Updates.
@@ -50,6 +50,7 @@ defmodule EbbServer.Storage.RowMutations do
           id: String.t(),
           subject_id: String.t(),
           model: String.t() | nil,
+          kind: SystemComponent.kind() | nil,
           method: :put | :patch | :delete,
           data: %{String.t() => %{String.t() => term()}} | nil
         }
@@ -120,7 +121,14 @@ defmodule EbbServer.Storage.RowMutations do
     order
     |> Enum.reverse()
     |> Enum.map(&finish(by_subject[&1], created, exists?, resolve_model))
+    |> Enum.map(&resolve_kind(&1, opts))
   end
+
+  # A delete names no component, so its kind exists only in the by-id caches.
+  defp resolve_kind(%{kind: nil} = mutation, opts),
+    do: %{mutation | kind: EntityIndex.kind_of(mutation, opts)}
+
+  defp resolve_kind(mutation, _opts), do: mutation
 
   # A delete names the row and carries no component.
   defp split_component(component) when is_binary(component), do: Component.split(component)
@@ -131,6 +139,7 @@ defmodule EbbServer.Storage.RowMutations do
       id: update.id,
       subject_id: update.subject_id,
       model: update.model,
+      component: update.component,
       deleted?: false,
       fields: %{}
     }
@@ -144,7 +153,11 @@ defmodule EbbServer.Storage.RowMutations do
   # The first component Update names the row's model. A delete carries none,
   # so a sibling component writes down what the row was committed as.
   defp fold_update(entry, %{method: method} = update) do
-    entry = %{entry | model: entry.model || update.model}
+    entry = %{
+      entry
+      | model: entry.model || update.model,
+        component: entry.component || update.component
+    }
 
     case method do
       :merge -> %{entry | fields: merge_field(entry.fields, update.field, update.data)}
@@ -162,19 +175,31 @@ defmodule EbbServer.Storage.RowMutations do
       id: entry.id,
       subject_id: entry.subject_id,
       model: resolve_model.(entry.subject_id) || entry.model,
+      kind: SystemComponent.kind(entry.component),
       method: :delete,
       data: nil
     }
   end
 
-  defp finish(entry, created, exists?, _resolve_model) do
+  defp finish(entry, created, exists?, resolve_model) do
     %{
       id: entry.id,
       subject_id: entry.subject_id,
-      model: entry.model,
+      model: row_model(entry, resolve_model),
+      kind: SystemComponent.kind(entry.component),
       method: if(new_row?(entry.subject_id, created, exists?), do: :put, else: :patch),
       data: %{"fields" => entry.fields}
     }
+  end
+
+  # A row's model is the one it was **committed** under: an `ebb/*` overlay on
+  # a user row does not re-model it.
+  defp row_model(entry, resolve_model) do
+    if SystemComponent.component?(entry.component) do
+      resolve_model.(entry.subject_id) || SystemComponent.model()
+    else
+      entry.model
+    end
   end
 
   defp new_row?(subject_id, created, exists?) do

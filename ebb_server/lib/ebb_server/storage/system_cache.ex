@@ -119,12 +119,12 @@ defmodule EbbServer.Storage.SystemCache do
     EntityGroupCache,
     EntityStore,
     EntityTypeCache,
-    Fields,
     GroupAppsCache,
     GroupCache,
     RelationshipCache,
     RocksDB,
-    RowMutations
+    RowMutations,
+    SystemComponent
   }
 
   alias EbbServer.Telemetry
@@ -426,7 +426,7 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp populate_group_members(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
-      "groupMember",
+      SystemComponent.component(:grant),
       rocks_name,
       dirty_set,
       &put_group_member(&1, tables),
@@ -440,9 +440,9 @@ defmodule EbbServer.Storage.SystemCache do
 
     member = %{
       id: entity_data.id,
-      actor_id: Fields.get(data, "actor_id"),
-      group_id: Fields.get(data, "group_id"),
-      permissions: Fields.get(data, "permissions")
+      actor_id: SystemComponent.path(data, :grant, "actor_id"),
+      group_id: SystemComponent.path(data, :grant, "group_id"),
+      permissions: SystemComponent.path(data, :grant, "permissions")
     }
 
     GroupCache.put_group_member(member,
@@ -454,7 +454,7 @@ defmodule EbbServer.Storage.SystemCache do
 
   defp populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
-      "entityGroup",
+      SystemComponent.component(:membership),
       rocks_name,
       dirty_set,
       &put_entity_group(&1, tables),
@@ -469,8 +469,8 @@ defmodule EbbServer.Storage.SystemCache do
     EntityGroupCache.put_entity_group(
       %{
         id: entity_data.id,
-        entity_id: Fields.get(data, "entity_id"),
-        group_id: Fields.get(data, "group_id")
+        entity_id: SystemComponent.path(data, :membership, "entity_id"),
+        group_id: SystemComponent.path(data, :membership, "group_id")
       },
       entity_groups: tables.entity_groups,
       entity_groups_by_id: tables.entity_groups_by_id,
@@ -483,7 +483,7 @@ defmodule EbbServer.Storage.SystemCache do
   # cache here instead of materializing a row per handshake.
   defp populate_group_apps(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
-      "group",
+      SystemComponent.component(:group),
       rocks_name,
       dirty_set,
       &put_group_apps(&1, tables),
@@ -497,14 +497,14 @@ defmodule EbbServer.Storage.SystemCache do
 
     GroupAppsCache.put_group_apps(
       entity_data.id,
-      Fields.get(data, "apps"),
+      SystemComponent.group_apps(data),
       group_apps: tables.group_apps
     )
   end
 
   defp populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter) do
     populate_type(
-      "relationship",
+      SystemComponent.component(:link),
       rocks_name,
       dirty_set,
       &put_relationship(&1, tables),
@@ -519,21 +519,22 @@ defmodule EbbServer.Storage.SystemCache do
     RelationshipCache.put_relationship(
       %{
         id: entity_data.id,
-        source_id: Fields.get(data, "source_id"),
-        target_id: Fields.get(data, "target_id"),
-        type: Fields.get(data, "type"),
-        field: Fields.get(data, "field")
+        source_id: SystemComponent.path(data, :link, "source_id"),
+        target_id: SystemComponent.path(data, :link, "target_id"),
+        type: SystemComponent.path(data, :link, "type"),
+        field: SystemComponent.path(data, :link, "field")
       },
       relationships: tables.relationships,
       relationships_by_id: tables.relationships_by_id
     )
   end
 
-  defp populate_type(type, rocks_name, dirty_set, insert_fn, opts, counter) do
+  # The model `ebb` would project all four kinds into every cache.
+  defp populate_type(component, rocks_name, dirty_set, insert_fn, opts, counter) do
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
     ComponentEntityIndex.each_component_entry_id(
-      type,
+      component,
       fn entity_id ->
         case EntityStore.materialize(
                entity_id,
@@ -618,6 +619,9 @@ defmodule EbbServer.Storage.SystemCache do
   # that names no component still writes the model entry. An id the log never
   # modeled falls back to a record already in `EntityTypeCache`; an id nothing
   # knows has no entry to rebuild.
+  #
+  # A user row cannot carry `ebb` (`ActionValidator` refuses two component
+  # prefixes on one subject), so a platform prefix is never a relabel here.
   defp replay_action(raw_updates, models, entity_types_table) do
     updates = Enum.map(raw_updates, &RowMutations.from_stored/1)
 

@@ -11,7 +11,7 @@
  * existing imports from this module keep resolving.
  */
 
-import type { Entity } from "@ebbjs/core";
+import { carriesComponent, type EbbComponentKind, type Entity } from "@ebbjs/core";
 import type {
   MembershipLink,
   RelationshipIndexQuery,
@@ -22,6 +22,7 @@ import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { ComponentMigrations } from "./migrations";
 import { type LoadEntities, type QueryBuilder, buildLazyQueryBuilder } from "./query-builder";
+import { componentRowView } from "./system-row";
 import { recordTraversalRows } from "./traversal-counter";
 
 export {
@@ -44,10 +45,9 @@ export type { PointerValue } from "./query-builder";
 
 /**
  * The index reads a traversal needs. Reading through this interface —
- * rather than scanning the whole `relationship` / `entityGroup` type —
- * is what keeps a traversal proportional to the degree of the row it
- * starts from. The client binds it to the storage layer's adjacency
- * index in `buildRowAccessors`.
+ * rather than scanning the `ebb` model — is what keeps a traversal
+ * proportional to the degree of the row it starts from. The client binds it
+ * to the storage layer's adjacency index in `buildRowAccessors`.
  */
 export interface AdjacencyReader {
   /** Live edges out of the query's source under `(as, type)`, ascending by target id. */
@@ -61,14 +61,14 @@ export interface AdjacencyReader {
 /**
  * Build a forward-singular accessor result. For
  * `sourceCardinality: "one"` the canonical FK lives on a materialized
- * `Relationship` entity, read through the forward index by `source_id
- * + field + type`; it is not a field on the source entity, so users
- * don't have to declare one — `defineRelationship({source, target,
- * as})` alone wires the link.
+ * `ebb/link` row, read through the forward index by `source_id + field +
+ * type`; it is not a field on the source entity, so users don't have to
+ * declare one — `defineRelationship({source, target, as})` alone wires the
+ * link.
  *
  * Returns:
- * - `null` when no Relationship record exists for `(sourceId, field,
- *   type)` — the link was cleared or never set
+ * - `null` when no link row exists for `(sourceId, field, type)` — the link
+ *   was cleared or never set
  * - `undefined` when an edge exists in metadata but the target id is
  *   dangling (target missing from the cache)
  * - `Entity` when both the edge and target resolve
@@ -98,10 +98,9 @@ export async function forwardOne(
 
 /**
  * Build a forward-many accessor result. The canonical FK set lives on
- * materialized `Relationship` entities, read through the forward index
- * by `source_id + field + type`; it is not a field on the source
- * entity. The distinct target ids the index returns are the
- * relationship's set of links.
+ * materialized `ebb/link` rows, read through the forward index by
+ * `source_id + field + type`; it is not a field on the source entity. The
+ * distinct target ids the index returns are the link's set of targets.
  *
  * `targetShape` drives the projection on `await qb` — the chain is
  * generic over the target entity's field map.
@@ -133,9 +132,10 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
 }
 
 /**
- * Build the built-in membership accessor result: the `group` rows the
- * member entity is filed into, read through the entity-keyed
- * membership index. Same lazy shape as {@link forwardMany}.
+ * Build the built-in membership accessor result: the group rows the member
+ * entity is filed into, read through the entity-keyed membership index. Same
+ * lazy shape as {@link forwardMany}. Rows are filtered on the `ebb/group`
+ * component, since `row.type` is `ebb` for a grant too.
  */
 export function membershipGroups<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
@@ -151,7 +151,10 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
     // Two rows may name the same group; the accessor projects each group
     // once, matching the type-wide read it replaced.
     const groupIds = [...new Set(memberships.map((membership) => membership.groupId))];
-    return loadRows(readLocalEntity, groupIds, targetName);
+    const rows = await loadRows(readLocalEntity, groupIds, targetName, "group");
+    // The accessor projects the component's value, not the `ebb` row: a group
+    // reads as `{id, name, apps}`.
+    return rows.flatMap((row) => componentRowView(row, "group") ?? []);
   };
   return buildLazyQueryBuilder(loader, targetShape, migrations);
 }
@@ -196,15 +199,21 @@ async function loadEntity(
 }
 
 /**
- * Load the distinct rows an index read names, keeping only rows of
- * `type`. A miss or a wrong-typed row is dropped, matching the
- * type-wide read the index replaced.
+ * Load the distinct rows an index read names, keeping only rows of `type` and,
+ * for a platform target whose model is shared by all four kinds, only rows
+ * carrying `component`.
  */
 async function loadRows(
   readLocalEntity: (id: string) => Promise<Entity | null>,
   ids: readonly string[],
   type: string,
+  component?: EbbComponentKind,
 ): Promise<readonly Entity[]> {
   const rows = await Promise.all(ids.map((id) => loadEntity(readLocalEntity, id)));
-  return rows.filter((row): row is Entity => row !== null && row.type === type);
+  return rows.filter(
+    (row): row is Entity =>
+      row !== null &&
+      row.type === type &&
+      (component === undefined || carriesComponent(row, component)),
+  );
 }

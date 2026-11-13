@@ -7,7 +7,13 @@
   "ids": {
     "u": ["u_grelate1", "u_grelate2", "u_grelate3", "u_grelate4"],
     "rel": ["rel_grelate1", "rel_grelate2", "rel_grelate3"],
-    "hlc": ["111690000000000031", "111690000000000032"]
+    "hlc": [
+      "111690000000000031",
+      "111690000000000032",
+      "111690000000000033",
+      "111690000000000034",
+      "111690000000000035"
+    ]
   },
   "calls": [
     {
@@ -28,47 +34,23 @@
   "action": {
     "id": "a_d821b9aa2775e6a4",
     "actor_id": "a_golden",
-    "hlc": "111690000000000032",
+    "hlc": "111690000000000035",
     "gsn": 0,
     "updates": [
       {
-        "id": "u_grelate1_source_id",
+        "id": "u_grelate1",
         "subject_id": "rel_grelate1",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gissue1",
-          "update_id": "u_grelate1_source_id"
-        }
-      },
-      {
-        "id": "u_grelate1_target_id",
-        "subject_id": "rel_grelate1",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_gproject1",
-          "update_id": "u_grelate1_target_id"
-        }
-      },
-      {
-        "id": "u_grelate1_type",
-        "subject_id": "rel_grelate1",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_grelate1_type"
-        }
-      },
-      {
-        "id": "u_grelate1_field",
-        "subject_id": "rel_grelate1",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "project",
-          "update_id": "u_grelate1_field"
+          "value": {
+            "source_id": "e_gissue1",
+            "target_id": "e_gproject1",
+            "type": "issue",
+            "field": "project"
+          },
+          "update_id": "u_grelate1",
+          "hlc": "111690000000000031"
         }
       },
       {
@@ -79,87 +61,39 @@
         "data": {
           "value": ["e_glabel1", "e_glabel2"],
           "update_id": "u_grelate2",
-          "hlc": "111690000000000031"
+          "hlc": "111690000000000032"
         }
       },
       {
-        "id": "u_grelate3_source_id",
+        "id": "u_grelate3",
         "subject_id": "rel_grelate2",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gissue1",
-          "update_id": "u_grelate3_source_id"
+          "value": {
+            "source_id": "e_gissue1",
+            "target_id": "e_glabel1",
+            "type": "issue",
+            "field": "labels"
+          },
+          "update_id": "u_grelate3",
+          "hlc": "111690000000000033"
         }
       },
       {
-        "id": "u_grelate3_target_id",
-        "subject_id": "rel_grelate2",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_glabel1",
-          "update_id": "u_grelate3_target_id"
-        }
-      },
-      {
-        "id": "u_grelate3_type",
-        "subject_id": "rel_grelate2",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_grelate3_type"
-        }
-      },
-      {
-        "id": "u_grelate3_field",
-        "subject_id": "rel_grelate2",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "labels",
-          "update_id": "u_grelate3_field"
-        }
-      },
-      {
-        "id": "u_grelate4_source_id",
+        "id": "u_grelate4",
         "subject_id": "rel_grelate3",
-        "component": "relationship/source_id",
+        "component": "ebb/link",
         "method": "replace",
         "data": {
-          "value": "e_gissue1",
-          "update_id": "u_grelate4_source_id"
-        }
-      },
-      {
-        "id": "u_grelate4_target_id",
-        "subject_id": "rel_grelate3",
-        "component": "relationship/target_id",
-        "method": "replace",
-        "data": {
-          "value": "e_glabel2",
-          "update_id": "u_grelate4_target_id"
-        }
-      },
-      {
-        "id": "u_grelate4_type",
-        "subject_id": "rel_grelate3",
-        "component": "relationship/type",
-        "method": "replace",
-        "data": {
-          "value": "issue",
-          "update_id": "u_grelate4_type"
-        }
-      },
-      {
-        "id": "u_grelate4_field",
-        "subject_id": "rel_grelate3",
-        "component": "relationship/field",
-        "method": "replace",
-        "data": {
-          "value": "labels",
-          "update_id": "u_grelate4_field"
+          "value": {
+            "source_id": "e_gissue1",
+            "target_id": "e_glabel2",
+            "type": "issue",
+            "field": "labels"
+          },
+          "update_id": "u_grelate4",
+          "hlc": "111690000000000034"
         }
       }
     ]

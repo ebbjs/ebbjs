@@ -72,10 +72,21 @@ describe("client.seed", () => {
     const actions = decodeSync<{ actions: Action[] }>(calls[0]!.body!).actions;
     expect(actions).toHaveLength(1);
     expect(actions[0]!.actor_id).toBe("actor_1");
-    const models = actions[0]!.updates
-      .map((u) => updateModel(u))
-      .filter((model, index, all) => model !== all[index - 1]);
-    expect(models).toEqual(["group", "groupMember", "todo", "entityGroup"]);
+    // Every platform row is committed under `ebb`; the component is what
+    // distinguishes the group, its grant, and the membership.
+    const components = actions[0]!.updates.flatMap((u) =>
+      u.method === "delete" ? [] : [u.component],
+    );
+    expect(components.filter((component) => component.startsWith("ebb/"))).toEqual([
+      "ebb/group",
+      "ebb/grant",
+      "ebb/membership",
+    ]);
+    expect(
+      actions[0]!.updates
+        .map((u) => updateModel(u))
+        .filter((model, index, all) => model !== all[index - 1]),
+    ).toEqual(["ebb", "todo", "ebb"]);
   });
 
   it("tolerates already_exists / duplicate_action rejections", async () => {

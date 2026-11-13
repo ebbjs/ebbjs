@@ -14,7 +14,7 @@ defmodule EbbServer.Sync.GroupListingTest do
   import EbbServer.Integration.ActionHelpers
   import EbbServer.TestHelpers
 
-  alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite, WatermarkTracker}
+  alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite, SystemComponent, WatermarkTracker}
   alias EbbServer.Sync.{CatchUp, GroupListing, Router}
 
   @entity_keys ["created_hlc", "data", "deleted_hlc", "id", "last_gsn", "type", "updated_hlc"]
@@ -43,14 +43,14 @@ defmodule EbbServer.Sync.GroupListingTest do
       entities = page["entities"]
       ids = Enum.map(entities, & &1["id"])
 
-      # The row set is the group's state: the group row and its membership
-      # rows carry no entityGroup row, so a membership join alone misses them.
-      assert Enum.count(entities, &(&1["type"] == "group")) == 1
+      # The row set is the group's state: the group row and its grant rows
+      # carry no membership row, so a membership join alone misses them.
+      assert Enum.count(entities, &carries?(&1, :group)) == 1
       assert group_id in ids
 
-      assert Enum.count(entities, &(&1["type"] == "groupMember")) == 1
+      assert Enum.count(entities, &carries?(&1, :grant)) == 1
 
-      assert Enum.count(entities, &(&1["type"] == "entityGroup")) == 2
+      assert Enum.count(entities, &carries?(&1, :membership)) == 2
 
       assert Enum.sort(ids) ==
                Enum.sort([group_id, group_member_id(entities), todo_a, todo_b, eg_a, eg_b])
@@ -60,8 +60,8 @@ defmodule EbbServer.Sync.GroupListingTest do
       end
 
       # `GET /entities/:id` authorizes through membership rows, so it cannot
-      # read the system rows themselves (a `group` or `groupMember` row has no
-      # `entityGroup` row behind it). Every user entity it can read must be
+      # read the system rows themselves (a group or grant row has no
+      # membership row behind it). Every user entity it can read must be
       # byte-identical to the seeded object.
       for entity <- entities, entity["type"] == "todo" do
         read = get_entity(entity["id"], actor_id)
@@ -189,8 +189,8 @@ defmodule EbbServer.Sync.GroupListingTest do
       {:ok, unpaged} = GroupListing.list(group_id, actor_id)
       expected_ids = unpaged.entities |> Enum.map(& &1.id) |> Enum.sort()
 
-      # Three membership keys per page: the group row plus the single
-      # groupMember row do not fill page 1, so it continues into the
+      # Three membership keys per page: the group row plus the single grant
+      # row do not fill page 1, so it continues into the
       # `memberships` phase and every page after it carries that key.
       pages = walk_pages(group_id, actor_id, 3)
 
@@ -224,7 +224,7 @@ defmodule EbbServer.Sync.GroupListingTest do
 
       memberships =
         unpaged.entities
-        |> Enum.reject(&(&1.type in ["group", "groupMember"]))
+        |> Enum.reject(&(carries?(&1, :group) or carries?(&1, :grant)))
         |> Enum.map(& &1.id)
         |> Enum.sort()
 
@@ -237,10 +237,9 @@ defmodule EbbServer.Sync.GroupListingTest do
       page = Jason.decode!(conn.resp_body)
 
       # A memberships key resumes past the bounded prefix, so the group and
-      # groupMember rows that only page 1 carries are not re-emitted.
-      types = Enum.map(page["entities"], & &1["type"])
-      refute "group" in types
-      refute "groupMember" in types
+      # grant rows that only page 1 carries are not re-emitted.
+      refute Enum.any?(page["entities"], &carries?(&1, :group))
+      refute Enum.any?(page["entities"], &carries?(&1, :grant))
 
       assert Enum.sort(Enum.map(page["entities"], & &1["id"])) == memberships
       assert page["has_more"] == false
@@ -252,11 +251,13 @@ defmodule EbbServer.Sync.GroupListingTest do
       group_id = unique("g")
       bootstrap(actor_id, group_id)
 
-      # The group row and its single groupMember row are the whole group, so
-      # page 1 ends with a next key in hand and nothing after it.
+      # The group row and its single grant row are the whole group, so page 1
+      # ends with a next key in hand and nothing after it.
       {:ok, page} = GroupListing.list(group_id, actor_id, limit: 2)
 
-      assert Enum.map(page.entities, & &1.type) |> Enum.sort() == ["group", "groupMember"]
+      assert [group_row, grant_row] = page.entities
+      assert carries?(group_row, :group)
+      assert carries?(grant_row, :grant)
       assert page.has_more == false
       assert page.cursor == nil
     end
@@ -292,11 +293,11 @@ defmodule EbbServer.Sync.GroupListingTest do
 
       {:ok, page} = GroupListing.list(group_id, actor_id)
 
-      relationship_rows = Enum.filter(page.entities, &(&1.type == "relationship"))
+      relationship_rows = Enum.filter(page.entities, &carries?(&1, :link))
       assert Enum.sort(Enum.map(relationship_rows, & &1.id)) == Enum.sort([derived_id, domain_id])
 
       for row <- relationship_rows do
-        assert get_in(row.data, ["fields", "source_id", "value"]) == todo_id
+        assert get_in(row.data, ["fields", "link", "value", "source_id"]) == todo_id
         # Both rows existed before the frontier the listing was seeded at.
         assert row.last_gsn <= page.watermark
       end
@@ -411,11 +412,11 @@ defmodule EbbServer.Sync.GroupListingTest do
         actor_id,
         [
           todo_update(heavy_todo, "heavy"),
-          entity_group_update(heavy_todo, group_id, hlc, heavy_eg),
+          membership_update(heavy_todo, group_id, hlc, heavy_eg),
           todo_update(light_todo, "light"),
-          entity_group_update(light_todo, group_id, hlc, light_eg),
+          membership_update(light_todo, group_id, hlc, light_eg),
           todo_update(outside_todo, "outside"),
-          entity_group_update(outside_todo, group_id, hlc, outside_eg)
+          membership_update(outside_todo, group_id, hlc, outside_eg)
         ]
       )
 
@@ -444,11 +445,11 @@ defmodule EbbServer.Sync.GroupListingTest do
       {:ok, page1} = GroupListing.list(group_id, actor_id, limit: 2)
       assert page1.has_more
 
-      [member] = Enum.filter(page1.entities, &(&1.type == "groupMember"))
+      [member] = Enum.filter(page1.entities, &carries?(&1, :grant))
 
       assert cursor_key(page1.cursor) == [
                0,
-               get_in(member.data, ["fields", "actor_id", "value"]),
+               get_in(member.data, ["fields", "grant", "value", "actor_id"]),
                member.id
              ]
 
@@ -530,7 +531,7 @@ defmodule EbbServer.Sync.GroupListingTest do
           fn {entity_id, eg_id} ->
             [
               todo_update(entity_id, "title"),
-              entity_group_update(entity_id, group_id, hlc, eg_id)
+              membership_update(entity_id, group_id, hlc, eg_id)
             ]
           end
         )
@@ -547,7 +548,7 @@ defmodule EbbServer.Sync.GroupListingTest do
           relationship_id
         end)
 
-      # One listing first: `relationship` is a system type, so the page's
+      # One listing first: `ebb/link` is a platform component, so the page's
       # system materialization is what puts these rows in the cache.
       {:ok, _page} = GroupListing.list(group_id, actor_id)
 
@@ -576,7 +577,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       write_action(
         actor_id,
         Enum.flat_map([{first, first_eg}, {second, second_eg}], fn {entity_id, eg_id} ->
-          [todo_update(entity_id, "title"), entity_group_update(entity_id, group_id, hlc, eg_id)]
+          [todo_update(entity_id, "title"), membership_update(entity_id, group_id, hlc, eg_id)]
         end)
       )
 
@@ -635,7 +636,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       assert conn.status == 200
 
       page = Jason.decode!(conn.resp_body)
-      refute Enum.any?(page["entities"], &(&1["type"] == "group"))
+      refute Enum.any?(page["entities"], &carries?(&1, :group))
 
       assert Enum.sort(Enum.map(page["entities"], & &1["id"])) ==
                Enum.sort([group_member_id(page["entities"]), eg_id, todo_id])
@@ -650,8 +651,13 @@ defmodule EbbServer.Sync.GroupListingTest do
       {:ok, _seeded} = GroupListing.list(group_id, actor_id)
 
       # The cache says the id is a todo; the membership rows still say the
-      # actor is in the group. Only a `group` row is the listing's own row.
-      patch_cached_row(group_id, %{type: "todo"})
+      # actor is in the group. Only a row carrying `ebb/group` is the
+      # listing's own row.
+      patch_cached_data(group_id, %{
+        "type" => "lww",
+        "value" => "not a group",
+        "hlc" => generate_hlc()
+      })
 
       conn = get_listing(group_id, actor_id)
       assert conn.status == 200
@@ -696,11 +702,11 @@ defmodule EbbServer.Sync.GroupListingTest do
     test "skips a member row the log has since deleted", %{tmp_dir: _} do
       owner_id = unique("a")
       group_id = unique("g")
-      bootstrap(owner_id, group_id, ["todo.*", "groupMember.*"])
+      bootstrap(owner_id, group_id, ["todo.*", "ebb/grant.*"])
       [{todo_id, eg_id, _}] = write_todos(owner_id, group_id, 1)
 
       member_id = unique("a")
-      assert add_group_member(owner_id, group_id, member_id, ["todo.read"]).status == 200
+      assert add_member(owner_id, group_id, member_id, ["todo.read"]).status == 200
 
       {:ok, seeded} = GroupListing.list(group_id, owner_id)
       member_row_id = member_row_for(seeded.entities, member_id)
@@ -726,23 +732,26 @@ defmodule EbbServer.Sync.GroupListingTest do
     test "skips a member row whose log no longer places it in the group", %{tmp_dir: _} do
       owner_id = unique("a")
       group_id = unique("g")
-      bootstrap(owner_id, group_id, ["todo.*", "groupMember.*"])
+      bootstrap(owner_id, group_id, ["todo.*", "ebb/grant.*"])
       [{todo_id, eg_id, _}] = write_todos(owner_id, group_id, 1)
 
       member_id = unique("a")
-      assert add_group_member(owner_id, group_id, member_id, ["todo.read"]).status == 200
+      assert add_member(owner_id, group_id, member_id, ["todo.read"]).status == 200
 
       {:ok, seeded} = GroupListing.list(group_id, owner_id)
       member_row_id = member_row_for(seeded.entities, member_id)
       owner_row_id = member_row_for(seeded.entities, owner_id)
 
-      # The same row re-put with its `group_id` component dropped: the cache
-      # still files it under the group the keyset read, the log says it is not
-      # a member of it.
+      # The same row re-put with its grant component dropped: the cache still
+      # files it under the group the keyset read, the log says it is not a
+      # member of it.
       write_components(owner_id, [
-        component_update(member_row_id, "groupMember/actor_id", "replace", lww(member_id)),
-        component_update(member_row_id, "groupMember/permissions", "replace", lww(["todo.read"])),
-        component_update(member_row_id, "groupMember/group_id", "drop", nil)
+        component_update(
+          member_row_id,
+          SystemComponent.component(:grant),
+          "drop",
+          nil
+        )
       ])
 
       DirtyTracker.reset()
@@ -770,7 +779,7 @@ defmodule EbbServer.Sync.GroupListingTest do
         frontier = WatermarkTracker.committed_watermark()
         send(test_pid, {:frontier, frontier})
 
-        assert write_entity_in_group(actor_id, late_entity_id, "todo", group_id, %{
+        assert write_entity_with_membership(actor_id, late_entity_id, "todo", group_id, %{
                  "title" => %{"type" => "lww", "value" => "late", "hlc" => generate_hlc()}
                }).status == 200
 
@@ -828,10 +837,103 @@ defmodule EbbServer.Sync.GroupListingTest do
   defp unique(prefix), do: "#{prefix}_#{:erlang.unique_integer([:positive])}"
 
   defp bootstrap(actor_id, group_id, permissions \\ ["todo.*"]) do
-    conn = bootstrap_group(actor_id, group_id, permissions)
+    hlc = generate_hlc()
+    gm_id = "gm_" <> Nanoid.generate()
+
+    action = %{
+      "id" => unique("act"),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [
+        component_update(
+          group_id,
+          SystemComponent.component(:group),
+          "replace",
+          leaf(%{"name" => "Test Group"}, hlc)
+        ),
+        component_update(
+          gm_id,
+          SystemComponent.component(:grant),
+          "replace",
+          leaf(
+            %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
+            hlc
+          )
+        )
+      ]
+    }
+
+    conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
   end
+
+  # One atomic `ebb/grant` row: the whole value is a single Update, so a grant
+  # cannot tear. The row goes through the permission table, not the bootstrap
+  # exemption, so `actor_id` must already hold `ebb/grant.create` there.
+  defp add_member(actor_id, group_id, member_actor_id, permissions) do
+    hlc = generate_hlc()
+
+    action = %{
+      "id" => unique("act"),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [
+        component_update(
+          "gm_" <> Nanoid.generate(),
+          SystemComponent.component(:grant),
+          "replace",
+          leaf(
+            %{
+              "actor_id" => member_actor_id,
+              "group_id" => group_id,
+              "permissions" => permissions
+            },
+            hlc
+          )
+        )
+      ]
+    }
+
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  defp write_entity_with_membership(actor_id, entity_id, entity_type, group_id, fields) do
+    hlc = generate_hlc()
+
+    field_updates =
+      Enum.map(fields, fn {field, value} ->
+        %{
+          "id" => unique("upd"),
+          "subject_id" => entity_id,
+          "component" => "#{entity_type}/#{field}",
+          "method" => "replace",
+          "data" => value
+        }
+      end)
+
+    action = %{
+      "id" => unique("act"),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => field_updates ++ [membership_update(entity_id, group_id, hlc, nil)]
+    }
+
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
+  end
+
+  defp membership_update(entity_id, group_id, hlc, eg_id) do
+    eg_id = eg_id || derived_membership_id(entity_id, group_id)
+
+    component_update(
+      eg_id,
+      SystemComponent.component(:membership),
+      "replace",
+      leaf(%{"entity_id" => entity_id, "group_id" => group_id}, hlc)
+    )
+  end
+
+  defp derived_membership_id(entity_id, group_id), do: "eg_" <> entity_id <> "_" <> group_id
 
   # These tests corrupt one row of the read model so the listing's defence
   # against a cache that disagrees with the log runs. The row is patched
@@ -850,6 +952,31 @@ defmodule EbbServer.Sync.GroupListingTest do
     }
 
     :ok = SQLite.patch_entity(id, %{}, [], Map.merge(meta, attrs), SQLite)
+  end
+
+  # Replaces a cached row's whole field map at the row's own `last_gsn`, so
+  # the next read has nothing to replay over it. The shape is the shape the
+  # materializer would have written: a row carries one component per field.
+  defp patch_cached_data(id, title_field) do
+    {:ok, row} = SQLite.get_entity(id, SQLite)
+    components = ["todo/title"]
+
+    :ok =
+      SQLite.upsert_entity(
+        %{
+          id: id,
+          type: "todo",
+          data:
+            Jason.encode!(%{"fields" => %{"title" => title_field}, "components" => components}),
+          created_hlc: row.created_hlc,
+          updated_hlc: row.updated_hlc,
+          deleted_hlc: row.deleted_hlc,
+          deleted_by: row.deleted_by,
+          last_gsn: row.last_gsn,
+          components: components
+        },
+        SQLite
+      )
   end
 
   # An entity-actions entry with no Action behind it: materializing the id
@@ -896,7 +1023,7 @@ defmodule EbbServer.Sync.GroupListingTest do
             "method" => "replace",
             "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
           }
-        ] ++ entity_group_update(entity_id, group_id, hlc, eg_id)
+        ] ++ [membership_update(entity_id, group_id, hlc, eg_id)]
       end)
 
     action = %{"id" => unique("act"), "actor_id" => actor_id, "hlc" => hlc, "updates" => updates}
@@ -928,13 +1055,16 @@ defmodule EbbServer.Sync.GroupListingTest do
       SQLite.upsert_entity(
         %{
           id: eg_id,
-          type: "entityGroup",
+          type: SystemComponent.model(),
           data:
             Jason.encode!(%{
               "fields" => %{
-                "entity_id" => %{"type" => "lww", "value" => entity_id, "hlc" => 1},
-                "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => 1}
-              }
+                SystemComponent.field(:membership) => %{
+                  "value" => %{"entity_id" => entity_id, "group_id" => group_id},
+                  "hlc" => 1
+                }
+              },
+              "components" => [SystemComponent.component(:membership)]
             }),
           created_hlc: 1,
           updated_hlc: 1,
@@ -970,21 +1100,22 @@ defmodule EbbServer.Sync.GroupListingTest do
   end
 
   defp relationship_update(relationship_id, source_id, target_id, field) do
-    %{
-      "source_id" => lww(source_id),
-      "target_id" => lww(target_id),
-      "type" => lww("todo"),
-      "field" => lww(field)
-    }
-    |> Enum.map(fn {name, value} ->
-      %{
-        "id" => unique("upd"),
-        "subject_id" => relationship_id,
-        "component" => "relationship/#{name}",
-        "method" => "replace",
-        "data" => value
-      }
-    end)
+    [
+      component_update(
+        relationship_id,
+        SystemComponent.component(:link),
+        "replace",
+        leaf(
+          %{
+            "source_id" => source_id,
+            "target_id" => target_id,
+            "type" => "todo",
+            "field" => field
+          },
+          generate_hlc()
+        )
+      )
+    ]
   end
 
   defp write_delete(actor_id, entity_id) do
@@ -1030,6 +1161,8 @@ defmodule EbbServer.Sync.GroupListingTest do
 
   defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => generate_hlc()}
 
+  defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
+
   defp write_patch(actor_id, entity_id, title) do
     action = %{
       "id" => unique("act"),
@@ -1052,7 +1185,7 @@ defmodule EbbServer.Sync.GroupListingTest do
   defp title_of(%{data: %{"fields" => %{"title" => %{"value" => title}}}}), do: title
 
   defp group_member_id(entities) do
-    [member] = Enum.filter(entities, &(&1["type"] == "groupMember"))
+    [member] = Enum.filter(entities, &carries?(&1, :grant))
     member["id"]
   end
 
@@ -1060,12 +1193,22 @@ defmodule EbbServer.Sync.GroupListingTest do
     [row] =
       Enum.filter(
         entities,
-        &(&1.type == "groupMember" and
-            get_in(&1.data, ["fields", "actor_id", "value"]) == actor_id)
+        &(carries?(&1, :grant) and
+            get_in(fields_of(&1), [SystemComponent.field(:grant), "value", "actor_id"]) ==
+              actor_id)
       )
 
     row.id
   end
+
+  # A row's fields, whether it is a wire view (string keys) or a listing row
+  # (atom keys). Which component a row carries is the only way to tell the
+  # platform kinds apart now that they share one model.
+  defp fields_of(%{data: %{"fields" => fields}}), do: fields
+  defp fields_of(%{"data" => %{"fields" => fields}}), do: fields
+  defp fields_of(_row), do: %{}
+
+  defp carries?(row, kind), do: Map.has_key?(fields_of(row), SystemComponent.field(kind))
 
   defp walk_pages(group_id, actor_id, limit, cursor \\ nil, acc \\ []) do
     {:ok, page} = GroupListing.list(group_id, actor_id, limit: limit, cursor: cursor)
@@ -1091,7 +1234,7 @@ defmodule EbbServer.Sync.GroupListingTest do
 
   defp last_membership_id(page) do
     page.entities
-    |> Enum.filter(&(&1.type == "entityGroup"))
+    |> Enum.filter(&carries?(&1, :membership))
     |> List.last()
     |> Map.fetch!(:id)
   end

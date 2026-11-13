@@ -1,7 +1,7 @@
 defmodule EbbServer.Storage.SQLiteTest do
   use ExUnit.Case, async: true
 
-  alias EbbServer.Storage.SQLite
+  alias EbbServer.Storage.{SQLite, SystemComponent}
   alias Exqlite.Sqlite3
   import EbbServer.TestHelpers
 
@@ -44,6 +44,12 @@ defmodule EbbServer.Storage.SQLiteTest do
   end
 
   defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
+
+  # A platform row carries one atomic component whose value is the whole object.
+  defp platform_row(id, kind, value, overrides \\ %{}) do
+    fields = %{SystemComponent.field(kind) => %{"value" => value, "hlc" => 1}}
+    entity_row(id, SystemComponent.model(), fields, overrides)
+  end
 
   defp component_row(id, type, fields, components, overrides \\ %{}) do
     data = Jason.encode!(%{"fields" => fields, "components" => components})
@@ -156,23 +162,16 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       :ok =
         SQLite.upsert_entity(
-          entity_row("eg_1", "entityGroup", %{
-            "entity_id" => lww("doc_1"),
-            "group_id" => lww("g_1")
-          }),
+          platform_row("eg_1", :membership, %{"entity_id" => "doc_1", "group_id" => "g_1"}),
           name
         )
 
       :ok =
         SQLite.upsert_entity(
-          entity_row(
+          platform_row(
             "gm_1",
-            "groupMember",
-            %{
-              "actor_id" => lww("a_1"),
-              "group_id" => lww("g_1"),
-              "permissions" => lww(permissions_value)
-            },
+            :grant,
+            %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => permissions_value},
             %{last_gsn: last_gsn}
           ),
           name
@@ -651,15 +650,14 @@ defmodule EbbServer.Storage.SQLiteTest do
       seed_entity(
         name,
         "doc_1",
-        ~s({"fields":{"content":{"map":{}},"source_id":{"value":"src_old","hlc":1}}})
+        ~s({"fields":{"content":{"map":{}}}})
       )
 
       :ok =
         SQLite.patch_entity(
           "doc_1",
           %{
-            "content" => ~s({"map":{"run_1":{"value":"z","hlc":9}}}),
-            "source_id" => ~s({"value":"src_new","hlc":2})
+            "content" => ~s({"map":{"run_1":{"value":"z","hlc":9}}})
           },
           [],
           %{
@@ -681,11 +679,50 @@ defmodule EbbServer.Storage.SQLiteTest do
       {:ok, stmt} =
         Sqlite3.prepare(
           db,
-          "SELECT json_extract(data, '$.fields.content.map.run_1.value'), source_id FROM entities WHERE id = ?"
+          "SELECT json_extract(data, '$.fields.content.map.run_1.value') FROM entities WHERE id = ?"
         )
 
       :ok = Sqlite3.bind(stmt, ["doc_1"])
-      assert {:row, ["z", "src_new"]} = Sqlite3.step(db, stmt)
+      assert {:row, ["z"]} = Sqlite3.step(db, stmt)
+      :ok = Sqlite3.release(db, stmt)
+    end
+
+    test "a patched platform component recomputes its generated columns", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
+
+      seed_entity(
+        name,
+        "rel_1",
+        ~s({"fields":{"link":{"value":{"source_id":"src_old","target_id":"tgt_1","type":"owns","field":"x"},"hlc":1}}})
+      )
+
+      :ok =
+        SQLite.patch_entity(
+          "rel_1",
+          %{
+            "link" =>
+              ~s({"value":{"source_id":"src_new","target_id":"tgt_2","type":"owns","field":"x"},"hlc":2})
+          },
+          ["ebb/link"],
+          %{
+            type: "ebb",
+            created_hlc: 1000,
+            updated_hlc: 2000,
+            deleted_hlc: nil,
+            deleted_by: nil,
+            last_gsn: 2
+          },
+          name
+        )
+
+      db = open_readonly(dir)
+
+      {:ok, stmt} =
+        Sqlite3.prepare(db, "SELECT source_id, target_id FROM entities WHERE id = ?")
+
+      :ok = Sqlite3.bind(stmt, ["rel_1"])
+      assert {:row, ["src_new", "tgt_2"]} = Sqlite3.step(db, stmt)
       :ok = Sqlite3.release(db, stmt)
     end
   end
@@ -917,32 +954,88 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
-  describe "generated columns" do
-    test "source_id and target_id are populated from JSON data", context do
+  describe "schema version" do
+    test "a stale read model is rebuilt rather than answered empty", context do
+      dir = tmp_dir(context)
+      path = Path.join(dir, "ebb.db")
+
+      # An older file, as a previous release left it. The DDL is
+      # `CREATE TABLE IF NOT EXISTS`, so a table it left behind would
+      # otherwise keep its old columns and answer every listing empty.
+      {:ok, db} = Sqlite3.open(path)
+
+      :ok =
+        Sqlite3.execute(db, """
+        CREATE TABLE entities (id TEXT PRIMARY KEY, type TEXT NOT NULL, data TEXT);
+        INSERT INTO entities (id, type, data) VALUES ('todo_1', 'todo', '{}');
+        CREATE TABLE cursors (name TEXT PRIMARY KEY, gsn INTEGER NOT NULL);
+        INSERT INTO cursors (name, gsn) VALUES ('action_export', 42);
+        """)
+
+      :ok = Sqlite3.close(db)
+
+      %{name: name} = start_sqlite(dir)
+
+      # An exporter's cursor is not a projection of the entity table and
+      # survives the rebuild.
+      assert {:ok, 42} = SQLite.get_cursor("action_export", name)
+
+      # The rebuilt table serves the listings it exists for, and the old row is
+      # gone with the old table rather than half-read.
+      grant =
+        platform_row("gm_1", :grant, %{
+          "actor_id" => "a_1",
+          "group_id" => "g_1",
+          "permissions" => ["ebb/grant.read"]
+        })
+
+      assert :ok = SQLite.upsert_entity(grant, name)
+
+      assert [{"gm_1", "a_1"}] = SQLite.list_group_members("g_1", nil, 10, name)
+      assert [] = SQLite.list_entity_group_memberships("g_1", nil, 10, name)
+      assert [] = SQLite.get_entities(["todo_1"], name)
+    end
+
+    test "a current read model keeps its rows across a restart", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      assert :ok =
+               SQLite.upsert_entity(entity_row("todo_1", "todo", %{"title" => lww("kept")}), name)
+
+      safe_stop(pid)
+
+      %{name: restarted} = start_sqlite(dir)
+
+      assert [row] = SQLite.get_entities(["todo_1"], restarted)
+      assert Jason.decode!(row.data) == %{"fields" => %{"title" => lww("kept")}}
+    end
+  end
+
+  describe "listing query plans" do
+    test "the grant keyset seeks idx_entities_group_member", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
 
-      entity = %{
-        id: "rel_abc",
-        type: "relation",
-        data: ~s({"fields":{"source_id":{"value":"src_1"},"target_id":{"value":"tgt_1"}}}),
-        created_hlc: 1000,
-        updated_hlc: 1000,
-        deleted_hlc: nil,
-        deleted_by: nil,
-        last_gsn: 1
-      }
+      for after_key <- [nil, {"a_1", "gm_a"}] do
+        assert {:ok, plan} = SQLite.explain_list_group_members(after_key, name)
 
-      :ok = SQLite.upsert_entity(entity, name)
+        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_group_member")),
+               "expected idx_entities_group_member for #{inspect(after_key)}, got: #{inspect(plan)}"
+      end
+    end
 
-      db = open_readonly(dir)
-      {:ok, stmt} = Sqlite3.prepare(db, "SELECT source_id, target_id FROM entities WHERE id = ?")
-      :ok = Sqlite3.bind(stmt, ["rel_abc"])
-      {:row, [source_id, target_id]} = Sqlite3.step(db, stmt)
-      :ok = Sqlite3.release(db, stmt)
+    test "the membership keyset seeks idx_entities_entity_group_page", context do
+      dir = tmp_dir(context)
+      %{name: name} = start_sqlite(dir)
 
-      assert source_id == "src_1"
-      assert target_id == "tgt_1"
+      for after_key <- [nil, "eg_1"] do
+        assert {:ok, plan} = SQLite.explain_list_entity_group_memberships(after_key, name)
+
+        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_entity_group_page")),
+               "expected idx_entities_entity_group_page for #{inspect(after_key)}, " <>
+                 "got: #{inspect(plan)}"
+      end
     end
   end
 
@@ -959,9 +1052,10 @@ defmodule EbbServer.Storage.SQLiteTest do
           ] do
         :ok =
           SQLite.upsert_entity(
-            entity_row(id, "groupMember", %{
-              "actor_id" => lww(actor_id),
-              "group_id" => lww(group_id)
+            platform_row(id, :grant, %{
+              "actor_id" => actor_id,
+              "group_id" => group_id,
+              "permissions" => []
             }),
             name
           )
@@ -969,10 +1063,10 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       :ok =
         SQLite.upsert_entity(
-          entity_row(
+          platform_row(
             "gm_deleted",
-            "groupMember",
-            %{"actor_id" => lww("a_0"), "group_id" => lww("g_1")},
+            :grant,
+            %{"actor_id" => "a_0", "group_id" => "g_1", "permissions" => []},
             %{deleted_hlc: 5, deleted_by: "a_1"}
           ),
           name
@@ -1001,22 +1095,31 @@ defmodule EbbServer.Storage.SQLiteTest do
       for {id, entity_id} <- [{"eg_2", "todo_2"}, {"eg_1", "todo_1"}, {"eg_9", "todo_9"}] do
         :ok =
           SQLite.upsert_entity(
-            entity_row(id, "entityGroup", %{
-              "entity_id" => lww(entity_id),
-              "group_id" => lww("g_1")
-            }),
+            platform_row(id, :membership, %{"entity_id" => entity_id, "group_id" => "g_1"}),
             name
           )
       end
 
       :ok =
         SQLite.upsert_entity(
-          entity_row(
+          platform_row(
             "eg_3",
-            "entityGroup",
-            %{"entity_id" => lww("todo_3"), "group_id" => lww("g_1")},
+            :membership,
+            %{"entity_id" => "todo_3", "group_id" => "g_1"},
             %{deleted_hlc: 5, deleted_by: "a_1"}
           ),
+          name
+        )
+
+      # A grant in the same group shares the generated `group_id` column but
+      # carries no `entity_id`, so it must never enter the membership keyset.
+      :ok =
+        SQLite.upsert_entity(
+          platform_row("gm_1", :grant, %{
+            "actor_id" => "a_1",
+            "group_id" => "g_1",
+            "permissions" => []
+          }),
           name
         )
 

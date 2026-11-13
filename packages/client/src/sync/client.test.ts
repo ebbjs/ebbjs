@@ -1620,18 +1620,19 @@ describe("app scope (#732)", () => {
     const seedAction = async (
       client: ReturnType<typeof createClient>,
       calls: { init: RequestInit }[],
-      groups: { id: string; name: string; apps?: Record<string, boolean> }[],
+      groups: { id: string; name: string; apps?: readonly string[] }[],
     ): Promise<Action> => {
       await client.seed({ groups, groupMembers: [], entities: [] });
       const body = calls[0]!.init.body as Uint8Array;
       return decodeSync<{ actions: Action[] }>(body).actions[0]!;
     };
 
+    /** The group's atomic value, which is where `apps` now lives. */
     const appsField = (action: Action, groupId: string): unknown =>
       action.updates.find(
         (update) =>
           update.method !== "delete" &&
-          update.component === "group/apps" &&
+          update.component === "ebb/group" &&
           update.subject_id === groupId,
       )?.data;
 
@@ -1640,24 +1641,25 @@ describe("app scope (#732)", () => {
 
       const action = await seedAction(client, calls, [{ id: "g_1", name: "Team" }]);
 
-      expect(appsField(action, "g_1")).toEqual({
-        map: { notes: { value: true, update_id: "seed_update", hlc: expect.any(String) } },
-      });
+      expect((appsField(action, "g_1") as { value: { apps: string[] } }).value.apps).toEqual([
+        "notes",
+      ]);
     });
 
     it("keeps an explicit scope, including an empty one", async () => {
       const { client, calls } = mkSeedClient("notes");
 
       const action = await seedAction(client, calls, [
-        { id: "g_1", name: "Shared", apps: { notes: true, issues: true } },
-        { id: "g_2", name: "Nobody", apps: {} },
+        { id: "g_1", name: "Shared", apps: ["notes", "issues"] },
+        { id: "g_2", name: "Nobody", apps: [] },
       ]);
 
-      expect(Object.keys((appsField(action, "g_1") as { map: object }).map)).toEqual([
+      expect((appsField(action, "g_1") as { value: { apps: string[] } }).value.apps).toEqual([
         "notes",
         "issues",
       ]);
-      expect((appsField(action, "g_2") as { map: object }).map).toEqual({});
+      // An empty list means "no app", which is not the same as unscoped.
+      expect((appsField(action, "g_2") as { value: { apps: string[] } }).value.apps).toEqual([]);
     });
 
     it("omits apps when the client declares no app", async () => {
@@ -1665,7 +1667,10 @@ describe("app scope (#732)", () => {
 
       const action = await seedAction(client, calls, [{ id: "g_1", name: "Team" }]);
 
-      expect(appsField(action, "g_1")).toBeUndefined();
+      // An unscoped group carries no `apps` key at all: absence is "every app",
+      // which an empty list could not express.
+      expect(appsField(action, "g_1")).toMatchObject({ value: { name: "Team" } });
+      expect((appsField(action, "g_1") as { value: object }).value).not.toHaveProperty("apps");
     });
   });
 

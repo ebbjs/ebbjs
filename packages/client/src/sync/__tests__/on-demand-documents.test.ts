@@ -11,14 +11,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import {
-  componentName,
-  decodeSync,
-  makeHlc,
-  type Action,
-  type FieldValue,
-  type Update,
-} from "@ebbjs/core";
+import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -38,7 +31,7 @@ import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, jsonResponse, updateModel, waitFor } from "../test-utils";
+import { callApplyAction, jsonResponse, rowComponents, updateModel, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
@@ -184,13 +177,15 @@ const seedAction = (gsn: number, updates: Update[]): Action => ({
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
   seedAction(
     gsn,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${gsn}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${gsn}_${key}`),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${gsn}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${gsn}_${component}`),
+      }),
+    ),
   );
 
 // ---------------------------------------------------------------------------
@@ -207,11 +202,9 @@ describe("on-demand document residency", () => {
       1,
     );
 
-    expect(client.replicaStats.byType).toMatchObject({
-      page: 1,
-      relationship: 1,
-      entityGroup: 2,
-    });
+    // The link and the two memberships are platform rows, so they share the
+    // `ebb` model and the component is what distinguishes them.
+    expect(client.replicaStats.byType).toMatchObject({ page: 1, ebb: 3 });
     expect(client.replicaStats.byType[bodyDocType]).toBeUndefined();
     expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replica.get(pageId)?.data.fields.title.value).toBe("One");
@@ -280,8 +273,8 @@ describe("on-demand document residency", () => {
     const types = (record?.entities ?? []).map((row) => row.type);
     expect(types).not.toContain(bodyDocType);
     expect(types).toContain("page");
-    expect(types).toContain("relationship");
-    expect(types).toContain("entityGroup");
+    // The link row and the two membership rows are all `ebb` rows.
+    expect(types.filter((type) => type === "ebb")).toHaveLength(3);
   });
 });
 
@@ -408,7 +401,7 @@ describe("held source with an on-demand join", () => {
     await callApplyAction(client, put(2, "page_1", "page", { title: "One" }));
     await callApplyAction(
       client,
-      put(3, "rel_1", "relationship", {
+      put(3, "rel_1", "link", {
         source_id: "page_1",
         target_id: "page_content_1",
         field: "content",

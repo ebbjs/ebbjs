@@ -18,8 +18,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const ACTOR_ID = "actor_docker_smoke";
 const GROUP_ID = "grp_docker_smoke";
-const MEMBER_ID = "gm_docker_smoke";
-const ENTITY_GROUP_ID = "eg_docker_smoke";
+const GRANT_ID = "gm_docker_smoke";
+const MEMBERSHIP_ID = "eg_docker_smoke";
 const ENTITY_ID = "ent_docker_smoke";
 const ENTITY_TYPE = "todo";
 const FIELD_VALUE = "Docker persistence smoke";
@@ -82,7 +82,8 @@ const stamp = (value, hlc) => ({ value, update_id: "seed_update", hlc });
 
 // One Update names one component: `component` is `<model>/<field>` and `data`
 // is that component's own value, never a row's field record. A create writes
-// one `replace` per component.
+// one `replace` per component. The platform's four kinds are each one atomic
+// value under `ebb/*`, so a system row seeds as a single Update.
 const update = (id, subjectId, component, data) => ({
   id,
   subject_id: subjectId,
@@ -97,24 +98,21 @@ const buildSeedAction = (hlc) => ({
   actor_id: ACTOR_ID,
   hlc,
   updates: [
-    update("u_group_name", GROUP_ID, "group/name", stamp("Docker Smoke", hlc)),
-    update("u_member_actor_id", MEMBER_ID, "groupMember/actor_id", stamp(ACTOR_ID, hlc)),
-    update("u_member_group_id", MEMBER_ID, "groupMember/group_id", stamp(GROUP_ID, hlc)),
-    // Permission strings are `<entity_type>.<verb>`; the wildcard
-    // covers the verbs this probe reads back.
-    update("u_member_permissions", MEMBER_ID, "groupMember/permissions", stamp(["todo.*"], hlc)),
+    update("u_group", GROUP_ID, "ebb/group", stamp({ name: "Docker Smoke" }, hlc)),
+    update(
+      "u_grant",
+      GRANT_ID,
+      "ebb/grant",
+      // Permission strings are `<model>.<verb>`; the wildcard covers the
+      // verbs this probe reads back.
+      stamp({ actor_id: ACTOR_ID, group_id: GROUP_ID, permissions: ["todo.*"] }, hlc),
+    ),
     update("u_entity_title", ENTITY_ID, `${ENTITY_TYPE}/title`, stamp(FIELD_VALUE, hlc)),
     update(
-      "u_entity_group_entity_id",
-      ENTITY_GROUP_ID,
-      "entityGroup/entity_id",
-      stamp(ENTITY_ID, hlc),
-    ),
-    update(
-      "u_entity_group_group_id",
-      ENTITY_GROUP_ID,
-      "entityGroup/group_id",
-      stamp(GROUP_ID, hlc),
+      "u_membership",
+      MEMBERSHIP_ID,
+      "ebb/membership",
+      stamp({ entity_id: ENTITY_ID, group_id: GROUP_ID }, hlc),
     ),
   ],
 });

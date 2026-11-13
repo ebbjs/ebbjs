@@ -1,5 +1,4 @@
-import type { Entity } from "@ebbjs/core";
-import { isFieldLeaf } from "@ebbjs/core";
+import { EBB_COMPONENTS, systemValueString, type Entity } from "@ebbjs/core";
 import type { MembershipLink, RelationshipLink } from "../types/entity-store";
 
 /**
@@ -17,10 +16,11 @@ import type { MembershipLink, RelationshipLink } from "../types/entity-store";
  *   the read behind `forwardOne` / `forwardMany` and the entity-keyed
  *   membership read.
  *
- * Two row kinds contribute: a `relationship` row keys on its
- * `(field, type, target_id)` / `(field, type, source_id)` pair, and an
- * `entityGroup` row keys on its `group_id` (group side) or `entity_id`
- * (member side) under a synthetic membership accessor.
+ * Two components contribute: `ebb/link` keys on its `(field, type, target_id)` /
+ * `(field, type, source_id)` pair, and `ebb/membership` on its `group_id` (group
+ * side) or `entity_id` (member side) under a synthetic membership accessor. A
+ * row carrying both yields both entries, which is what the overlay case (#820)
+ * needs.
  *
  * It keys on the row, not the source: two rows may share a natural key
  * (same source, field, type, target), and dropping one must not erase a
@@ -44,11 +44,10 @@ export type IndexRows = Readonly<Record<string, string>>;
 /** Live rows per composite key — the shape both adapters persist. */
 export type ReverseIndex = Readonly<Record<string, IndexRows>>;
 
-/** The entity type carried by a materialized Relationship row. */
-export const RELATIONSHIP_ENTITY_TYPE = "relationship";
+/** The component a link row carries; its value derives the adjacency keys. */
+export const LINK_COMPONENT = EBB_COMPONENTS.link;
 
-/** The entity type carried by a materialized `entityGroup` row. */
-export const MEMBERSHIP_ENTITY_TYPE = "entityGroup";
+export const MEMBERSHIP_COMPONENT = EBB_COMPONENTS.membership;
 
 /**
  * Synthetic accessor name under which membership rows are indexed.
@@ -80,104 +79,77 @@ export const forwardIndexKey = (field: string, type: string, sourceId: string): 
 
 /** The reverse-index key a membership row with this group id contributes. */
 export const membershipIndexKey = (groupId: string): string =>
-  reverseIndexKey(MEMBERSHIP_ACCESSOR, MEMBERSHIP_ENTITY_TYPE, groupId);
+  reverseIndexKey(MEMBERSHIP_ACCESSOR, MEMBERSHIP_COMPONENT, groupId);
 
 /** The forward-index key a membership row with this member entity id contributes. */
 export const forwardMembershipIndexKey = (entityId: string): string =>
-  forwardIndexKey(MEMBERSHIP_ACCESSOR, MEMBERSHIP_ENTITY_TYPE, entityId);
-
-const readStringField = (entity: Entity, name: string): string | null => {
-  const field = entity.data?.fields?.[name];
-  if (field === undefined || !isFieldLeaf(field)) return null;
-  const value = field.value;
-  return typeof value === "string" ? value : null;
-};
+  forwardIndexKey(MEMBERSHIP_ACCESSOR, MEMBERSHIP_COMPONENT, entityId);
 
 /**
- * The index entry a materialized Relationship row contributes, or
- * `null` when it contributes none. Non-relationship rows, tombstoned
- * rows, and rows missing part of the Relationship field envelope all
- * index nothing — the last case keeps a malformed row from poisoning
- * the index with a partial key.
+ * The index entry a row carrying `ebb/link` contributes, or `null`. A row whose
+ * value is missing part of its key indexes nothing, so a malformed row cannot
+ * poison the index with a partial key.
  */
 export const relationshipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.type !== RELATIONSHIP_ENTITY_TYPE) return null;
   if (entity.deleted_hlc !== null) return null;
 
-  const field = readStringField(entity, "field");
-  const type = readStringField(entity, "type");
-  const targetId = readStringField(entity, "target_id");
-  const sourceId = readStringField(entity, "source_id");
+  const field = systemValueString(entity, "link", "field");
+  const type = systemValueString(entity, "link", "type");
+  const targetId = systemValueString(entity, "link", "target_id");
+  const sourceId = systemValueString(entity, "link", "source_id");
   if (field === null || type === null || targetId === null || sourceId === null) return null;
 
   return { key: reverseIndexKey(field, type, targetId), rowId: entity.id, value: sourceId };
 };
 
-/**
- * The forward (source-keyed) index entry a materialized Relationship row
- * contributes, or `null` when it contributes none. Yields the target id
- * so `forwardOne` / `forwardMany` resolve without scanning the type.
- */
+/** The forward (source-keyed) entry an `ebb/link` row contributes, or `null`. */
 export const forwardRelationshipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.type !== RELATIONSHIP_ENTITY_TYPE) return null;
   if (entity.deleted_hlc !== null) return null;
 
-  const field = readStringField(entity, "field");
-  const type = readStringField(entity, "type");
-  const sourceId = readStringField(entity, "source_id");
-  const targetId = readStringField(entity, "target_id");
+  const field = systemValueString(entity, "link", "field");
+  const type = systemValueString(entity, "link", "type");
+  const sourceId = systemValueString(entity, "link", "source_id");
+  const targetId = systemValueString(entity, "link", "target_id");
   if (field === null || type === null || sourceId === null || targetId === null) return null;
 
   return { key: forwardIndexKey(field, type, sourceId), rowId: entity.id, value: targetId };
 };
 
 /**
- * The index entry a materialized `entityGroup` row contributes, or
- * `null` when it contributes none. Its source is the member entity
- * (`entity_id`) and its target the group (`group_id`), so a group-keyed
- * lookup returns members.
+ * The index entry a row carrying `ebb/membership` contributes, or `null`. Its
+ * source is the member (`entity_id`) and its target the group (`group_id`), so a
+ * group-keyed lookup returns members.
  */
 export const membershipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.type !== MEMBERSHIP_ENTITY_TYPE) return null;
   if (entity.deleted_hlc !== null) return null;
 
-  const groupId = readStringField(entity, "group_id");
-  const entityId = readStringField(entity, "entity_id");
+  const groupId = systemValueString(entity, "membership", "group_id");
+  const entityId = systemValueString(entity, "membership", "entity_id");
   if (groupId === null || entityId === null) return null;
 
   return { key: membershipIndexKey(groupId), rowId: entity.id, value: entityId };
 };
 
-/**
- * The forward (member-keyed) index entry a materialized `entityGroup`
- * row contributes, or `null` when it contributes none. Yields the group
- * id so the entity-keyed membership read resolves without scanning the
- * type.
- */
+/** The forward (member-keyed) entry an `ebb/membership` row contributes, or `null`. */
 export const forwardMembershipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.type !== MEMBERSHIP_ENTITY_TYPE) return null;
   if (entity.deleted_hlc !== null) return null;
 
-  const groupId = readStringField(entity, "group_id");
-  const entityId = readStringField(entity, "entity_id");
+  const groupId = systemValueString(entity, "membership", "group_id");
+  const entityId = systemValueString(entity, "membership", "entity_id");
   if (groupId === null || entityId === null) return null;
 
   return { key: forwardMembershipIndexKey(entityId), rowId: entity.id, value: groupId };
 };
 
-/**
- * Every index entry a materialized row contributes. Both entry kinds
- * derive from distinct entity types, so at most one applies.
- */
-export const indexEntryFor = (entity: Entity): IndexEntry | null =>
-  relationshipEntryFor(entity) ?? membershipEntryFor(entity);
+const isEntry = (entry: IndexEntry | null): entry is IndexEntry => entry !== null;
 
-/**
- * Every forward index entry a materialized row contributes. Both entry
- * kinds derive from distinct entity types, so at most one applies.
- */
-export const forwardIndexEntryFor = (entity: Entity): IndexEntry | null =>
-  forwardRelationshipEntryFor(entity) ?? forwardMembershipEntryFor(entity);
+/** Every reverse index entry a row contributes: one per component kind it carries. */
+export const indexEntriesFor = (entity: Entity): readonly IndexEntry[] =>
+  [relationshipEntryFor(entity), membershipEntryFor(entity)].filter(isEntry);
+
+/** Every forward index entry a materialized row contributes. */
+export const forwardIndexEntriesFor = (entity: Entity): readonly IndexEntry[] =>
+  [forwardRelationshipEntryFor(entity), forwardMembershipEntryFor(entity)].filter(isEntry);
 
 /**
  * Ascending id order, so both adapters return the same sequence for
@@ -246,12 +218,18 @@ export const removeIndexRow = (
 };
 
 export interface IndexDelta {
-  readonly remove: IndexEntry | null;
-  readonly add: IndexEntry | null;
+  readonly remove: readonly IndexEntry[];
+  readonly add: readonly IndexEntry[];
 }
 
-const sameEntry = (a: IndexEntry | null, b: IndexEntry | null): boolean =>
-  a?.key === b?.key && a?.rowId === b?.rowId && a?.value === b?.value;
+const sameEntry = (a: IndexEntry, b: IndexEntry): boolean =>
+  a.key === b.key && a.rowId === b.rowId && a.value === b.value;
+
+/** The entries `next` adds and `previous` removes; an unchanged one yields nothing. */
+const entryDelta = (previous: readonly IndexEntry[], next: readonly IndexEntry[]): IndexDelta => ({
+  remove: previous.filter((before) => !next.some((after) => sameEntry(before, after))),
+  add: next.filter((after) => !previous.some((before) => sameEntry(before, after))),
+});
 
 /**
  * Build the delta function for one index direction. Both sides derive
@@ -261,28 +239,19 @@ const sameEntry = (a: IndexEntry | null, b: IndexEntry | null): boolean =>
  */
 const indexDeltaFor =
   (
-    entryFor: (entity: Entity) => IndexEntry | null,
+    entriesFor: (entity: Entity) => readonly IndexEntry[],
   ): ((previous: Entity | undefined, next: Entity | undefined) => IndexDelta) =>
-  (previous, next) => {
-    const remove = previous === undefined ? null : entryFor(previous);
-    const add = next === undefined ? null : entryFor(next);
-    return sameEntry(remove, add) ? { remove: null, add: null } : { remove, add };
-  };
+  (previous, next) =>
+    entryDelta(
+      previous === undefined ? [] : entriesFor(previous),
+      next === undefined ? [] : entriesFor(next),
+    );
 
-/**
- * The reverse index change a previous→next write implies. A single
- * delta path maintains both relationship edges and membership rows
- * because it routes through {@link indexEntryFor}.
- */
-export const reverseIndexDelta = indexDeltaFor(indexEntryFor);
+/** The reverse index change a previous→next write implies, for both entry kinds. */
+export const reverseIndexDelta = indexDeltaFor(indexEntriesFor);
 
-/**
- * The forward index change a previous→next write implies, derived from
- * the same two row versions as {@link reverseIndexDelta}. A row that is
- * not a relationship / membership row yields an empty delta on both
- * sides.
- */
-export const forwardIndexDelta = indexDeltaFor(forwardIndexEntryFor);
+/** The forward index change a previous→next write implies, from the same two rows. */
+export const forwardIndexDelta = indexDeltaFor(forwardIndexEntriesFor);
 
 const withEntry = (
   index: ReverseIndex,
@@ -303,14 +272,14 @@ const withEntry = (
  * dropped.
  */
 export const applyIndexDelta = (index: ReverseIndex, delta: IndexDelta): ReverseIndex => {
-  if (delta.remove === null && delta.add === null) return index;
+  if (delta.remove.length === 0 && delta.add.length === 0) return index;
 
   let next = index;
-  if (delta.remove !== null) {
-    next = withEntry(next, delta.remove, removeIndexRow(next[delta.remove.key], delta.remove));
+  for (const entry of delta.remove) {
+    next = withEntry(next, entry, removeIndexRow(next[entry.key], entry));
   }
-  if (delta.add !== null) {
-    next = withEntry(next, delta.add, addIndexRow(next[delta.add.key], delta.add));
+  for (const entry of delta.add) {
+    next = withEntry(next, entry, addIndexRow(next[entry.key], entry));
   }
   return next;
 };

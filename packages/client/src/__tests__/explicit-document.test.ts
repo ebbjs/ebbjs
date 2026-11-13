@@ -188,10 +188,10 @@ describe("a document the app declares", () => {
     expect(written).toHaveLength(1);
     const updates = written[0]!.updates;
 
+    // The membership and the link are `ebb` rows; their components name them.
     expect([...new Set(updates.map((update) => updateModel(update)))].sort()).toEqual([
-      "entityGroup",
+      "ebb",
       "note",
-      "relationship",
       "text_document",
     ]);
 
@@ -203,14 +203,13 @@ describe("a document the app declares", () => {
     expect(content.map[initialRun.id]!.value).toEqual(initialRun);
     expect(componentOf(documentRow!, "version").value).toBe(CURRENT_TEXT_VERSION);
 
-    const [relationshipUpdate] = updates.filter(
-      (update) => update.method !== "delete" && update.component === "relationship/source_id",
+    // The link is one atomic value: one Update carries the whole edge.
+    const [linkUpdate] = updates.filter(
+      (update) => update.method !== "delete" && update.component === "ebb/link",
     );
-    expect((relationshipUpdate!.data as { value: unknown } | null)?.value).toBe(created.noteId);
-    const [target] = updates.filter(
-      (update) => update.method !== "delete" && update.component === "relationship/target_id",
-    );
-    expect((target!.data as { value: unknown } | null)?.value).toBe(created.documentId);
+    expect(
+      (linkUpdate!.data as { value: { source_id: string; target_id: string } }).value,
+    ).toMatchObject({ source_id: created.noteId, target_id: created.documentId });
 
     const row = await client.note.get(created.noteId);
     expect(row!.title).toBe("Greeting");

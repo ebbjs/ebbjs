@@ -6,10 +6,11 @@ import { sortSourceIds } from "./reverse-index";
  * Component existence over the composed view: which components
  * (`<type>/<field>`) each materialized row currently carries.
  *
- * A row's component set is the set of keys in `data.fields` — one row has one
- * model, so each present field names exactly one component. A dropped
- * component is a missing key, which is what makes existence a fact about the
- * row rather than a value stored in it.
+ * A row's component set is the set of keys in `data.fields`, each named
+ * `<model>/<field>`: exact for a user row and for an `ebb` row, while an overlay
+ * `ebb/*` component on a user row needs the field's own component name, which
+ * #820 owns. A dropped component is a missing key, which is what makes existence
+ * a fact about the row rather than a value stored in it.
  *
  * In memory only: the replica rebuilds it from the rows on load, like the
  * adjacency indices, and #799 owns the durable index that replaces it.

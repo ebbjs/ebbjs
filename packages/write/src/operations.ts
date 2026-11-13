@@ -13,9 +13,13 @@
 
 import {
   componentName,
+  EBB_COMPONENT_KINDS,
+  EBB_MODEL_NAME,
+  ebbComponent,
   generateId,
   isFieldMap,
   isUnset,
+  type EbbComponentKind,
   type Entity,
   type FieldValue,
   type Update,
@@ -26,7 +30,6 @@ import {
   GROUPS_ACCESSOR,
   isPlainObject,
   nestedUnsetMessage,
-  SYSTEM_ENTITY_NAMES,
   validatePayload,
   type ModelRegistry,
   type FieldMarker,
@@ -45,6 +48,7 @@ import {
   buildRelationshipWrite,
   type ManyPointerValue,
 } from "./relationship";
+import { systemRowUpdate } from "./system-rows";
 
 /**
  * Refusal of an Action: a client-side membership failure
@@ -75,12 +79,13 @@ export class ActionRejectedError extends Error {
 }
 
 /**
- * The client-provable `last_group_member` refusal: a `groupMember`
- * delta that would leave its group with no member holding a non-empty
- * permission list.
+ * The client-provable `last_group_member` refusal: a grant delta that would leave
+ * its group with no member holding a non-empty permission list.
  */
 export const lastGroupMemberError = (id: string, details: string): ActionRejectedError =>
-  new ActionRejectedError([{ id, model: "groupMember", reason: "last_group_member", details }]);
+  new ActionRejectedError([
+    { id, model: ebbComponent("grant"), reason: "last_group_member", details },
+  ]);
 
 const formatRejections = (rejections: readonly ActionRejection[]): string => {
   if (rejections.length === 0) return "ActionRejectedError";
@@ -103,9 +108,9 @@ export interface OperationIds {
   /** Advance the local clock and return a fresh HLC timestamp. */
   hlc(): string;
   /**
-   * Mint an id of a non-Update row the batch addresses — a `relationship`
-   * row, say. A seam rather than a direct `generateId` call so a caller
-   * that needs a deterministic batch (the function runtime's reference fixtures) can
+   * Mint an id of a non-Update row the batch addresses — a link row, say. A
+   * seam rather than a direct `generateId` call so a caller that needs a
+   * deterministic batch (the function runtime's reference fixtures) can
    * control every id the planner emits.
    */
   newId(prefix: string): string;
@@ -125,7 +130,7 @@ export interface OpContext {
   readonly actorId: string;
 }
 
-/** Whose write this is — the named entity, not the relationship row. */
+/** Whose write this is — the named entity, not the link row. */
 export interface OperationSubject {
   readonly id: string;
   readonly type: string;
@@ -185,43 +190,83 @@ export interface CreateEntityInput {
 }
 
 /**
+ * The one platform kind a value map names. A platform row carries exactly one of
+ * the four components, so naming two or none is refused before any Update
+ * exists.
+ */
+const platformKindOf = (
+  entity: string,
+  values: Record<string, unknown>,
+): EbbComponentKind | null => {
+  if (entity !== EBB_MODEL_NAME) return null;
+  const named = EBB_COMPONENT_KINDS.filter((kind) => values[kind] !== undefined);
+  if (named.length === 1) return named[0]!;
+  const got = named.length === 0 ? "none" : named.map(ebbComponent).join(", ");
+  const allowed = EBB_COMPONENT_KINDS.map(ebbComponent).join(", ");
+  throw new EntityValidationError([
+    {
+      entityName: entity,
+      message: `a platform row carries exactly one component (${allowed}); got ${got}`,
+    },
+  ]);
+};
+
+/** The one platform component a create names, with its value narrowed to an object. */
+const platformComponentOf = (
+  entity: string,
+  values: Readonly<Record<string, unknown>>,
+): { kind: EbbComponentKind; value: Readonly<Record<string, unknown>> } | null => {
+  const kind = platformKindOf(entity, values);
+  if (kind === null) return null;
+  const value = values[kind];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new EntityValidationError([
+      {
+        entityName: entity,
+        field: kind,
+        message: `"${ebbComponent(kind)}" takes one object value`,
+      },
+    ]);
+  }
+  return { kind, value: value as Readonly<Record<string, unknown>> };
+};
+
+/**
  * Create one entity: one `replace` per leaf component (a keyed component
- * merges, because `replace` is refused for a key space), one `entityGroup`
- * row per group, then one Relationship row per resolved pointer. Field
- * validation runs here (never partially) unless the caller opted out.
+ * merges, because `replace` is refused for a key space), one membership row
+ * per group, then one link row per resolved pointer. Field validation runs
+ * here (never partially) unless the caller opted out.
+ *
+ * A platform row (`ebb`) is one atomic component, validated as a whole value.
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
   const updates: Update[] = [];
 
+  const platform = platformComponentOf(input.entity, input.fields);
   const def = ctx.registry.get(input.entity);
   if (input.validate !== false && def !== undefined) {
-    // A system row is internal and may legitimately omit a field without a
-    // default (`group.apps` on an unscoped group), so its create validates
-    // per field. A user entity keeps the strict create rule.
-    const partial = SYSTEM_ENTITY_NAMES.has(input.entity);
-    const violations = validatePayload(
-      partial ? def.shape : def.createShape,
-      input.fields,
-      input.entity,
-      partial,
-    );
+    const violations = validatePayload(def.createShape, input.fields, input.entity, false);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
   }
 
-  updates.push(
-    ...componentUpdates(
-      input.id,
-      input.entity,
-      input.fields,
-      { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
-      def?.markers,
-      "replace",
-    ),
-  );
-  updates.push(...buildEntityGroupUpdates(input.id, groups, () => ctx.ids.updateId()));
+  if (platform !== null) {
+    updates.push(systemRowUpdate(platform.kind, input.id, platform.value, ctx.ids));
+  } else {
+    updates.push(
+      ...componentUpdates(
+        input.id,
+        input.entity,
+        input.fields,
+        { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
+        def?.markers,
+        "replace",
+      ),
+    );
+  }
+  updates.push(...buildEntityGroupUpdates(input.id, groups, ctx.ids));
 
   for (const pointer of input.pointers ?? []) {
     updates.push(
@@ -232,6 +277,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
         field: pointer.as,
         type: pointer.type,
         updateId: ctx.ids.updateId(),
+        hlc: () => ctx.ids.hlc(),
       }),
     );
   }
@@ -243,7 +289,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   };
 };
 
-/** The local view an empty system write resolves against: no cached membership. */
+/** The local view a platform-row write resolves against: no cached membership. */
 const EMPTY_MEMBERSHIP_VIEW: MembershipView = {
   groupsOf: () => [],
   groupOfMembership: () => undefined,
@@ -251,39 +297,34 @@ const EMPTY_MEMBERSHIP_VIEW: MembershipView = {
 
 /** Input for {@link createSystemEntity}. */
 export interface CreateSystemEntityInput {
-  readonly entity: "group" | "groupMember";
+  /** Which of the four platform components the row carries. */
+  readonly kind: EbbComponentKind;
   readonly id: string;
-  readonly fields: Readonly<Record<string, unknown>>;
+  /** The component's whole value; an atomic value has no partial write. */
+  readonly value: Readonly<Record<string, unknown>>;
   readonly validate?: boolean;
 }
 
 /**
- * Create one system entity row, one component Update each. The row's fan-out
- * scope comes from the wire itself (`group` is its own group; `groupMember` names its
- * `group_id`), so no cached membership view is consulted. Validation
- * is per-field like an update: a system row may legitimately be absent
- * for a field without a default (`group.apps` on an unscoped group).
+ * Create one platform row: one `ebb/*` Update carrying the whole value. The
+ * row's fan-out scope comes from the value itself, so no cached membership view
+ * is consulted. Validation checks the whole value against the component's
+ * shape, so a value missing a required field is refused.
  */
 export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
-  const def = ctx.registry.get(input.entity);
-  if (input.validate !== false && def !== undefined) {
-    const violations = validatePayload(def.shape, input.fields, input.entity, true);
+  const def = ctx.registry.get(EBB_MODEL_NAME);
+  const shape = def?.components?.[input.kind]?.shape;
+  if (input.validate !== false && shape !== undefined) {
+    const violations = validatePayload(shape, input.value, EBB_MODEL_NAME, false);
     if (violations.length > 0) {
       throw new EntityValidationError(violations);
     }
   }
-  const updates = componentUpdates(
-    input.id,
-    input.entity,
-    input.fields,
-    { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
-    def?.markers,
-    "replace",
-  );
+  const updates = [systemRowUpdate(input.kind, input.id, input.value, ctx.ids)];
   return {
     updates,
     groups: membershipScope(updates, EMPTY_MEMBERSHIP_VIEW),
-    subject: { id: input.id, type: input.entity },
+    subject: { id: input.id, type: EBB_MODEL_NAME },
   };
 };
 
@@ -299,25 +340,25 @@ export interface CreateGroupInput {
 }
 
 /**
- * The canonical group bootstrap: the `group` put plus the acting
- * actor's own `groupMember` put carrying the caller-derived permission
- * wildcards, in one Action. A group is its own group, so no
- * `entityGroup` row is emitted for it.
+ * The canonical group bootstrap: the `ebb/group` put plus the acting actor's
+ * own `ebb/grant` put carrying the caller-derived permission wildcards, in one
+ * Action. A group is its own group, so no membership row is emitted for it.
  */
 export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
-  const fields: Record<string, unknown> = { name: input.name };
-  if (input.appId !== undefined) fields["apps"] = { [input.appId]: true };
+  const groupValue: Record<string, unknown> = { name: input.name };
+  // Absent scope is every app; the creating app's scope is the one it names.
+  if (input.appId !== undefined) groupValue.apps = [input.appId];
 
   const group = createSystemEntity(ctx, {
-    entity: "group",
+    kind: "group",
     id: input.groupId,
-    fields,
+    value: groupValue,
     validate: input.validate,
   });
   const member = createSystemEntity(ctx, {
-    entity: "groupMember",
+    kind: "grant",
     id: input.memberId,
-    fields: {
+    value: {
       group_id: input.groupId,
       actor_id: ctx.actorId,
       permissions: [...input.permissions],
@@ -327,18 +368,30 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
   return {
     updates: [...group.updates, ...member.updates],
     groups: [...new Set([...group.groups, ...member.groups])],
-    subject: { id: input.groupId, type: "group" },
+    subject: { id: input.groupId, type: EBB_MODEL_NAME },
   };
 };
 
 /**
- * The permissions a bootstrapping actor needs to operate on every
- * registered entity. The server matches only an exact `<type>.<verb>`
- * or `<type>.*`, so the actor's own membership carries one wildcard per
- * entity name rather than a global `*` that grants nothing.
+ * The permissions a bootstrapping actor needs on every registered entity. The
+ * server matches only an exact `<subject>.<verb>` or `<subject>.*`, so the actor
+ * carries one wildcard per permission subject rather than a global `*` that
+ * grants nothing.
+ *
+ * A subject is a model, except where a component declares its own permission:
+ * the four platform components do. The model subject is granted as well, because
+ * a row `delete` is authorized against the row's committed model.
  */
-export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] =>
-  [...registry.modelNames()].sort().map((name) => `${name}.*`);
+export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] => {
+  const subjects = new Set<string>();
+  for (const name of registry.modelNames()) {
+    subjects.add(name);
+    for (const component of registry.componentsOf(name)) {
+      subjects.add(registry.permissionOf(name, component.name));
+    }
+  }
+  return [...subjects].sort().map((subject) => `${subject}.*`);
+};
 
 /** The ids and call the group bootstrap shares across both authoring surfaces. */
 export interface GroupBootstrap {
@@ -391,6 +444,9 @@ export interface PatchEntityInput {
  */
 export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
   const def = ctx.registry.get(input.entity);
+  const platformKind = isPlainObject(input.payload)
+    ? platformKindOf(input.entity, input.payload)
+    : null;
   if (input.validate !== false && def !== undefined) {
     const violations = validatePayload(def.shape, input.payload, input.entity, true);
     if (violations.length > 0) {
@@ -409,7 +465,9 @@ export const patchEntity: Operation<PatchEntityInput> = (ctx, input) => {
       input.payload,
       { updateId: () => ctx.ids.updateId(), hlc: ctx.ids.hlc() },
       def?.markers,
-      "merge",
+      // A platform component's value is one merge position, so a patch replaces
+      // the whole value rather than merging per key.
+      platformKind === null ? "merge" : "replace",
     ),
     groups: [...input.groups],
     subject: { id: input.id, type: input.entity },
@@ -457,15 +515,15 @@ export interface DropEntityInput {
  * still means "clear the position" (a tombstone), which is a different write.
  *
  * Refused before any Update exists: an empty field list, a component the model
- * does not declare, and a system model's component (dropping a system
- * component is a torn edge or membership, which #805/#803 own).
+ * does not declare, and a platform component — detaching it would leave a row
+ * with no kind, so removing a platform row is a delete.
  */
 export const dropEntity: Operation<DropEntityInput> = (ctx, input) => {
-  if (SYSTEM_ENTITY_NAMES.has(input.entity)) {
+  if (input.entity === EBB_MODEL_NAME) {
     throw new EntityValidationError([
       {
         entityName: input.entity,
-        message: `drop: "${input.entity}" is a system entity; dropping one of its components is a torn edge or membership and is not available here`,
+        message: `drop: "${input.entity}" is the platform model and a platform row carries one atomic component; removing it is a delete, not a drop`,
       },
     ]);
   }
@@ -514,9 +572,10 @@ export interface DuplicateEntityInput {
  * Copy a source row onto a fresh id: one Update per component carrying the
  * values verbatim — leaf and nested `update_id` / `hlc` stamps included, so a
  * collaborative-text map survives as a reference snapshot rather than a
- * re-stamped write — plus one `entityGroup` row per group. A leaf component is
- * a `replace`, a keyed one a `merge`. The copy is validated against the
- * entity's shape like `create`.
+ * re-stamped write — plus one membership row per group. A leaf component is
+ * a `replace`, a keyed one a `merge`. A platform row's copy is its one
+ * `ebb/*` component. The copy is validated against the entity's shape like
+ * `create`.
  */
 export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => {
   const fields = input.source.data?.fields ?? {};
@@ -541,7 +600,7 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
           data: cloneFieldValue(value),
         };
       }),
-      ...buildEntityGroupUpdates(input.subjectId, input.groups, () => ctx.ids.updateId()),
+      ...buildEntityGroupUpdates(input.subjectId, input.groups, ctx.ids),
     ],
     groups: [...input.groups],
     subject: { id: input.subjectId, type: input.entity },
@@ -588,9 +647,9 @@ export interface MembershipRemoval {
 export interface ChangeGroupsInput {
   readonly entity: string;
   readonly entityId: string;
-  /** Groups to add; one `entityGroup` put each. */
+  /** Groups to add; one membership put each. */
   readonly puts?: readonly string[];
-  /** Membership rows to delete; one `entityGroup` delete each. */
+  /** Membership rows to delete; one delete each. */
   readonly removes?: readonly MembershipRemoval[];
   /**
    * The entity's live cached group ids, when the caller read them.
@@ -610,9 +669,7 @@ export interface ChangeGroupsInput {
 export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   const puts = input.puts ?? [];
   const removes = input.removes ?? [];
-  const updates: Update[] = [
-    ...buildEntityGroupUpdates(input.entityId, puts, () => ctx.ids.updateId()),
-  ];
+  const updates: Update[] = [...buildEntityGroupUpdates(input.entityId, puts, ctx.ids)];
 
   updates.push(
     ...removes.map((removal) =>
@@ -678,8 +735,8 @@ export interface WriteRelationshipInput {
   readonly pointer: RelationshipPointer;
   /**
    * `subject_id` the one-cardinality delete must name. The draft
-   * planner resolves the existing relationship row's id (a storage
-   * read) and passes it in.
+   * planner resolves the existing link row's id (a storage read) and
+   * passes it in.
    */
   readonly relationshipSubjectId?: string;
   /** The source entity's live membership set. */
@@ -725,8 +782,8 @@ export const requireRelationship = (
  * membership accessor is refused (membership verbs own it), and an
  * undeclared relationship is refused before any wire Update exists.
  * Many-cardinality emits the source's canonical-FK component merge plus one
- * Relationship row per target; one-cardinality emits one Relationship row (or
- * a `delete`).
+ * link Update per target; one-cardinality emits one link Update (or a
+ * `delete`).
  */
 export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input) => {
   const { entity, sourceId, as } = input;
@@ -749,6 +806,7 @@ export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input)
     source: { name: entity },
     target: { name: rel.target.name },
     newId: ctx.ids.newId,
+    hlc: () => ctx.ids.hlc(),
     as,
     sourceId,
     entityUpdate,

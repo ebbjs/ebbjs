@@ -84,6 +84,12 @@ export interface Query {
    * sentinel in the value.
    */
   readonly source: string;
+  /**
+   * The exact components the source rows must carry, for a chain over a value
+   * view: `client.group.query()` scans `ebb` rows but depends only on
+   * `ebb/group`, where `ebb/*` would invalidate it on every grant write.
+   */
+  readonly sourceComponents?: readonly string[];
   /** DNF: groups are ORed, predicates within a group ANDed. */
   readonly groups: readonly (readonly Predicate[])[];
   readonly order: QueryOrder | null;
@@ -93,13 +99,11 @@ export interface Query {
 }
 
 /** The unfiltered query over a source type. */
-export const emptyQuery = (source: string): Query => ({
-  source,
-  groups: [],
-  order: null,
-  limit: null,
-  joins: [],
-});
+export const emptyQuery = (source: string, sourceComponents?: readonly string[]): Query => {
+  const query: Query = { source, groups: [], order: null, limit: null, joins: [] };
+  if (sourceComponents === undefined) return query;
+  return { ...query, sourceComponents };
+};
 
 /**
  * Lower a wire {@link Filter} to the builder's predicate language: one

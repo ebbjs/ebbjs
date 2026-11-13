@@ -28,6 +28,7 @@ import {
   type Action,
   componentField,
   componentModel,
+  EBB_COMPONENTS,
   createClock,
   type Entity,
   type FieldValue,
@@ -2502,7 +2503,7 @@ const withDefaultAppScope = (data: SeedData, appId: string | undefined): SeedDat
   return {
     ...data,
     groups: data.groups.map((group) =>
-      group.apps === undefined ? { ...group, apps: { [appId]: true } } : group,
+      group.apps === undefined ? { ...group, apps: [appId] } : group,
     ),
   };
 };
@@ -2513,12 +2514,12 @@ const errorMessage = (err: unknown): string => {
 };
 
 /**
- * The wake-up for backfill (#475): an `entityGroup` put is the delivery
+ * The wake-up for backfill (#475): an `ebb/membership` put is the delivery
  * that can name an entity the client cannot materialize.
  */
 const isMembershipPut = (action: Action): boolean =>
   action.updates.some(
-    (update) => update.method !== "delete" && componentModel(update.component) === "entityGroup",
+    (update) => update.method !== "delete" && update.component === EBB_COMPONENTS.membership,
   );
 
 /** Returned by {@link SyncClient.handshake}. */
@@ -2673,8 +2674,17 @@ export function createClient<
         return link === undefined ? undefined : { relationshipId: link.relationshipId };
       },
       // The `last_group_member` guard reads the group's local member view.
-      groupMembers: async (groupId: string) =>
-        groupMembersOf(await client.storage.entities.query("groupMember"), groupId),
+      groupMembers: async (groupId: string) => {
+        // The guard reads grant rows only, so the ids come from the component
+        // index rather than a shared-model scan.
+        const grantIds = await client.storage.entities.queryByComponent(EBB_COMPONENTS.grant);
+        const rows: Entity[] = [];
+        for (const id of grantIds) {
+          const row = await client.storage.entities.get(id);
+          if (row !== null) rows.push(row);
+        }
+        return groupMembersOf(rows, groupId);
+      },
     },
   };
   const actionRuntime = createActionRuntime(opts.schema, actionCap);

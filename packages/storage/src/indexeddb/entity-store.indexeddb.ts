@@ -1,5 +1,5 @@
 import type { IDBPDatabase } from "idb";
-import { componentModel, type Entity } from "@ebbjs/core";
+import { componentModel, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
 import type {
   EntityStore,
   MembershipLink,
@@ -20,11 +20,9 @@ import {
   liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
-  MEMBERSHIP_ENTITY_TYPE,
   removeIndexRow,
   reverseIndexDelta,
   reverseIndexKey,
-  RELATIONSHIP_ENTITY_TYPE,
   type IndexEntry,
   type IndexRows,
 } from "../internal/reverse-index";
@@ -42,11 +40,11 @@ import type { EbbDBSchema, StoredEntity } from "./schema";
  *
  * The `relationships` object store is the shared adjacency index: one
  * record per composite key mapping each live row id to its yielded id.
- * It serves relationship edges in both directions — keyed by
+ * It serves `ebb/link` edges in both directions — keyed by
  * `(field, type, target_id)` for the reverse read and
- * `(field, type, source_id)` for the forward read — and `entityGroup`
- * membership keyed by the synthetic `groups` accessor (by group or by
- * member entity). The store name and schema version are unchanged; the
+ * `(field, type, source_id)` for the forward read — and `ebb/membership`
+ * rows keyed by the synthetic `groups` accessor (by group or by member
+ * entity). The store name and schema version are unchanged; the
  * index is derived and, following #248, is not backfilled, so a
  * database predating membership keys must be cleared rather than
  * reused. It is rewritten alongside the entity store on every
@@ -116,8 +114,8 @@ export const createIndexedDBEntityStore = (
     // Reverse then forward: the same physical store keeps the two
     // directions under distinct key prefixes.
     for (const delta of [reverseIndexDelta(previous, next), forwardIndexDelta(previous, next)]) {
-      if (delta.remove !== null) await removeIndexEntry(delta.remove);
-      if (delta.add !== null) await addIndexEntry(delta.add);
+      for (const entry of delta.remove) await removeIndexEntry(entry);
+      for (const entry of delta.add) await addIndexEntry(entry);
     }
   };
 
@@ -192,7 +190,7 @@ export const createIndexedDBEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return readIndex(reverseIndexKey(as, type, targetId));
     },
 
@@ -201,18 +199,18 @@ export const createIndexedDBEntityStore = (
       type,
       sourceId,
     }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       const record = await db.get("relationships", forwardIndexKey(as, type, sourceId));
       return liveRelationshipLinks(record?.rows);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {
-      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return readIndex(membershipIndexKey(groupId));
     },
 
     async queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]> {
-      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       const record = await db.get("relationships", forwardMembershipIndexKey(entityId));
       return liveMembershipLinks(record?.rows);
     },

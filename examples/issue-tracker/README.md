@@ -42,13 +42,13 @@ The collaborative-text demo still runs with `pnpm dev:collab`.
 1. The actor comes from the server in tailscale mode, or from `?actor=`
    (default `alice`) under bypass auth. The picker only exists for bypass.
 2. On load, `client.seed()` submits two bootstrap Actions through the public write path:
-   - the actor's **personal workspace** (`grp_<actorId>`), their own `groupMember`, a `workspace`, a `profile`, and one `entityGroup` per row — attributed to the actor, so the server's group-bootstrap exemption authorizes it;
+   - the actor's **personal workspace** (`grp_<actorId>`), their own `ebb/grant` row, a `workspace`, a `profile`, and one `ebb/membership` row per user entity — attributed to the actor, so the server's group-bootstrap exemption authorizes it;
    - the **shared workspace** (`grp_shared`) with a sample issue, attributed to the dedicated service actor `demo-seeder` (the invite/service-account pattern from [#126](https://github.com/ebbjs/ebbjs/issues/126)).
 3. A typed `SyncClient` runs `handshake()` and opens an SSE subscription for the actor's groups.
 4. The client persists to IndexedDB (one database per actor), so the Outbox survives a page reload: an unacknowledged write is rehydrated and flushed once the subscription reconnects.
 5. The ready tree is wrapped in `<EbbProvider>`. `useConnection()` drives the badge; `useQuery` drives the workspace switcher, profile card, membership panel, issue list, and issue detail. Joining or leaving the shared workspace re-runs `handshake()` and replaces the subscription, so the group set stays current without a reload.
 
-Every seed id is derived from the actor id (or a fixed literal for the shared fixtures), so reloading re-`put`s the same rows: the seed is idempotent and its permissions cover the re-`put` path (a committed group is authorized by `group.create` in that group, not by the bootstrap exemption).
+Every seed id is derived from the actor id (or a fixed literal for the shared fixtures), so reloading re-`put`s the same rows: the seed is idempotent and its permissions cover the re-`put` path (a committed group is authorized by `ebb/group.create` in that group, not by the bootstrap exemption).
 
 ## Actor identity
 
@@ -106,32 +106,34 @@ defineRelationship({ source: issue, target: profile, as: "assignee", sourceCardi
 
 Reads join the edge with `q.issue.query().with({ assignee: true })`, filter through `.where("assignee", profileId)`, and write through the `setIssueAssignee` Action (or in the same Action as the create via `createIssue`). A `profile` is group-scoped, so a profile is only visible (and therefore only assignable) inside the workspaces its actor has joined. There is deliberately no scalar `assignee_id` ([#454](https://github.com/ebbjs/ebbjs/issues/454)).
 
-Membership is ebb's built-in system, **not** a user-defined entity:
+Membership is ebb's built-in platform model, **not** a user-defined entity. Every platform row is committed under the model `ebb` and carries one atomic component:
 
-- a workspace **is** a Group; actors join through `GroupMember`;
-- issues and profiles are scoped to the workspace group through the `entityGroup` write path;
+- a workspace **is** a group, and its `ebb/group` value carries `{name, apps}`. `apps` is the list of app ids the group is in scope for, so `["issue-tracker"]` scopes it to this app and an absent value leaves it unscoped;
+- actors join through an `ebb/grant` value (`{actor_id, group_id, permissions}`);
+- issues and profiles are scoped to the workspace group through the `ebb/membership` value (`{entity_id, group_id}`) write path;
+- the `assignee` join is an `ebb/link` value (`{source_id, target_id, type, field}`);
 - a row's group comes from the built-in `groups` join (`q.workspace.query().with({ groups: true })`), which is why **`workspace` has no `group_id` field**. The workspace switcher demonstrates this by reading each workspace's group ids from that join. Single-row `client.<entity>.get()` and the row accessors are internal; the app reads only through `query()` / `useQuery`.
-- `group`, `groupMember`, and `entityGroup` are reserved system entities. Do not declare a `member` / `membership` entity.
+- `ebb/group`, `ebb/grant`, `ebb/membership` and `ebb/link` are the platform's components, and the model `ebb` is reserved. Do not declare a `member` / `membership` entity.
 
 `profile` is one row per actor, scoped to the workspaces they have joined, so it is visible only inside those workspaces. The profile card finds the row whose `actor_id` matches the signed-in actor.
 
 ## Workspace membership and per-issue access
 
-A workspace **is** a Group; actors join it through a `groupMember` row, and an actor's group-scoped `profile` is made visible to the workspace by an `entityGroup` row. The two stores are independent, and they belong to different actors' authority: the workspace member invites (`inviteMember`), then the invitee's own client shares its profile (`shareProfile`). Between the two Actions the member exists and the profile does not — the `profile-pending` window. [`src/workspace.ts`](src/workspace.ts) sequences those reads and Actions; the Actions themselves are declared in [`src/actions.ts`](src/actions.ts).
+A workspace **is** a group; actors join it through an `ebb/grant` row, and an actor's group-scoped `profile` is made visible to the workspace by an `ebb/membership` row. The two stores are independent, and they belong to different actors' authority: the workspace member invites (`inviteMember`), then the invitee's own client shares its profile (`shareProfile`). Between the two Actions the member exists and the profile does not — the `profile-pending` window. [`src/workspace.ts`](src/workspace.ts) sequences those reads and Actions; the Actions themselves are declared in [`src/actions.ts`](src/actions.ts).
 
 The membership panel joins and leaves the shared workspace:
 
-- **Joining is an invite.** Groups are closed by default ([#126](https://github.com/ebbjs/ebbjs/issues/126)): only an existing member can put another actor's `groupMember` row. The shared workspace's service actor `demo-seeder` runs `inviteMember` for the signed-in actor (the invite/service-account pattern), and the invitee then runs `shareProfile`.
-- **Leaving is self-service, in one Action.** The invite grants the new member the permissions to drop its own rows again, and `leaveWorkspace` drafts the profile's membership removal and the `groupMember` delete together.
+- **Joining is an invite.** Groups are closed by default ([#126](https://github.com/ebbjs/ebbjs/issues/126)): only an existing member can put another actor's `ebb/grant` row. The shared workspace's service actor `demo-seeder` runs `inviteMember` for the signed-in actor (the invite/service-account pattern), and the invitee then runs `shareProfile`.
+- **Leaving is self-service, in one Action.** The invite grants the new member the permissions to drop its own rows again, and `leaveWorkspace` drafts the profile's membership removal and the `ebb/grant` delete together.
 - Either way the actor's client re-handshakes and re-subscribes, so the new workspace's issues appear (and its former issues stop being delivered) without a reload.
 
 Only the groups the actor is a member of are subscribed, so a non-member's client never materializes the shared workspace, its issues, or its members. The membership panel's leave control is gated on `client.can(...)`, which asks the same `<type>.<verb>` question the server enforces; the detail view's assignee picker instead offers only the profiles of the issue's own workspace group.
 
-The issue's assignee is the `issue → profile` link declared in `schema.ts`. A profile is reachable only through the membership that scopes it, so the picker offers exactly the workspace members' profiles. Note that this is a UI affordance, not a server invariant: a relationship write is authorized against the _source_'s (issue's) groups, not the target's, so a raw wire client could link an arbitrary profile id. The demo constrains assignment by what it can show.
+The issue's assignee is the `issue → profile` link declared in `schema.ts`. A profile is reachable only through the membership that scopes it, so the picker offers exactly the workspace members' profiles. Note that this is a UI affordance, not a server invariant: an `ebb/link` write is authorized against the _source_'s (issue's) groups, not the target's, so a raw wire client could link an arbitrary profile id. The demo constrains assignment by what it can show.
 
 ### Profile content follows membership
 
-The shared group receives the member's profile `entityGroup` row, and the client's membership backfill ([#475](https://github.com/ebbjs/ebbjs/issues/475)) reads the profile content — which was written in the member's personal group — into the shared group's subscribers. A fellow member can therefore read the joined actor's `display_name` / `avatar_url`, and a non-member still cannot. `client.sync.backfill` reports ids whose content is still being read, so a UI can render a pending row rather than an empty one.
+The shared group receives the member's profile `ebb/membership` row, and the client's membership backfill ([#475](https://github.com/ebbjs/ebbjs/issues/475)) reads the profile content — which was written in the member's personal group — into the shared group's subscribers. A fellow member can therefore read the joined actor's `display_name` / `avatar_url`, and a non-member still cannot. `client.sync.backfill` reports ids whose content is still being read, so a UI can render a pending row rather than an empty one.
 
 ## Files
 

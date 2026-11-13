@@ -14,14 +14,11 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
   buildEntityGroupDeleteAction,
-  buildEntityGroupPatchAction,
   buildEntityGroupPutAction,
   buildPatchAction,
   buildPutAction,
   buildRelationshipDeleteAction,
-  buildRelationshipPatchAction,
   buildRelationshipPutAction,
-  buildRelationshipRetargetAction,
 } from "./fixtures";
 
 export interface EntityStoreTestSuiteHarness {
@@ -112,7 +109,7 @@ const buildRowPutAction = (
   })),
 });
 
-/** A materialized Relationship row, for direct `set()` writes. */
+/** A materialized `ebb/link` row, for direct `set()` writes. */
 const makeRelationshipEntity = (
   overrides: {
     id?: string;
@@ -124,18 +121,22 @@ const makeRelationshipEntity = (
   } = {},
 ): Entity => {
   const id = overrides.id ?? "rel_2";
-  const updateId = `u_${id}`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc: makeHlc(1) });
 
   return {
     id,
-    type: "relationship",
+    type: "ebb",
     data: {
       fields: {
-        source_id: field(overrides.sourceId ?? "todo_1"),
-        target_id: field(overrides.targetId ?? "list_1"),
-        type: field(overrides.type ?? "todo_list"),
-        field: field(overrides.field ?? "list"),
+        link: {
+          value: {
+            source_id: overrides.sourceId ?? "todo_1",
+            target_id: overrides.targetId ?? "list_1",
+            type: overrides.type ?? "todo_list",
+            field: overrides.field ?? "list",
+          },
+          update_id: `u_${id}`,
+          hlc: makeHlc(1),
+        },
       },
     },
     exists: true,
@@ -146,7 +147,7 @@ const makeRelationshipEntity = (
   };
 };
 
-/** A materialized `entityGroup` membership row, for direct `set()` writes. */
+/** A materialized `ebb/membership` row, for direct `set()` writes. */
 const makeEntityGroupEntity = (
   overrides: {
     id?: string;
@@ -156,16 +157,20 @@ const makeEntityGroupEntity = (
   } = {},
 ): Entity => {
   const id = overrides.id ?? "eg_2";
-  const updateId = `u_${id}`;
-  const field = (value: string) => ({ value, update_id: updateId, hlc: makeHlc(1) });
 
   return {
     id,
-    type: "entityGroup",
+    type: "ebb",
     data: {
       fields: {
-        entity_id: field(overrides.entityId ?? "todo_1"),
-        group_id: field(overrides.groupId ?? "group_1"),
+        membership: {
+          value: {
+            entity_id: overrides.entityId ?? "todo_1",
+            group_id: overrides.groupId ?? "group_1",
+          },
+          update_id: `u_${id}`,
+          hlc: makeHlc(1),
+        },
       },
     },
     exists: true,
@@ -197,10 +202,10 @@ const seedListEdge = async (
       type: row.type ?? "todo_list",
     }),
   );
-  await dirtyTracker.mark(row.id, "relationship");
+  await dirtyTracker.mark(row.id, "ebb");
 };
 
-/** Append an `entityGroup` put and mark its row dirty. */
+/** Append an `ebb/membership` put and mark its row dirty. */
 const seedMembership = async (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
@@ -209,7 +214,7 @@ const seedMembership = async (
   await actionLog.append(
     buildEntityGroupPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
   );
-  await dirtyTracker.mark(row.id, "entityGroup");
+  await dirtyTracker.mark(row.id, "ebb");
 };
 
 /** A whole-row write for an arbitrary row: one component Update per field. */
@@ -726,7 +731,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual(["todo_1"]);
       });
 
-      it("materializes dirty relationship rows on query", async () => {
+      it("materializes dirty ebb/link rows on query", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
         expect(await dirtyTracker.isDirty("rel_1")).toBe(true);
@@ -782,7 +787,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual(["todo_1"]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await listQuery(entityStore)).toEqual([]);
       });
@@ -794,11 +799,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await listQuery(entityStore)).toEqual(["todo_b"]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_b" }, 2));
-        await dirtyTracker.mark("rel_b", "relationship");
+        await dirtyTracker.mark("rel_b", "ebb");
         expect(await listQuery(entityStore)).toEqual(["todo_b"]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_b2" }, 3));
-        await dirtyTracker.mark("rel_b2", "relationship");
+        await dirtyTracker.mark("rel_b2", "ebb");
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
@@ -807,9 +812,18 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction({ id: "rel_1", sourceId: "todo_2" }, 2),
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_2",
+              targetId: "list_1",
+              field: "list",
+              type: "todo_list",
+            },
+            2,
+          ),
         );
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
       });
@@ -818,18 +832,24 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
         await actionLog.append(
-          buildRelationshipPatchAction(
-            { id: "rel_1", sourceId: "todo_2", field: "owner", type: "todo_user" },
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_2",
+              targetId: "list_1",
+              field: "owner",
+              type: "todo_user",
+            },
             2,
           ),
         );
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         const newKey = { as: "owner", type: "todo_user", targetId: "list_1" };
         expect(await entityStore.queryByRelationship(newKey)).toEqual(["todo_2"]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 3));
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await entityStore.queryByRelationship(newKey)).toEqual([]);
         expect(await listQuery(entityStore)).toEqual([]);
@@ -932,7 +952,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ]);
       });
 
-      it("materializes dirty relationship rows on query", async () => {
+      it("materializes dirty ebb/link rows on query", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
         expect(await dirtyTracker.isDirty("rel_1")).toBe(true);
@@ -970,11 +990,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
         expect((await sourceQuery(entityStore)).map((l) => l.relationshipId)).toEqual(["rel_2"]);
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_2" }, 3));
-        await dirtyTracker.mark("rel_2", "relationship");
+        await dirtyTracker.mark("rel_2", "ebb");
         expect(await sourceQuery(entityStore)).toEqual([]);
       });
 
@@ -983,9 +1003,18 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipRetargetAction({ id: "rel_1", targetId: "list_2" }, 2),
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_1",
+              targetId: "list_2",
+              field: "list",
+              type: "todo_list",
+            },
+            2,
+          ),
         );
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await sourceQuery(entityStore)).toEqual([
           { relationshipId: "rel_1", targetId: "list_2" },
@@ -996,8 +1025,19 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
-        await actionLog.append(buildRelationshipPatchAction({ id: "rel_1", field: "owner" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
+        await actionLog.append(
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_1",
+              targetId: "list_1",
+              field: "owner",
+              type: "todo_list",
+            },
+            2,
+          ),
+        );
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await sourceQuery(entityStore)).toEqual([]);
         expect(
@@ -1014,9 +1054,18 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(
-          buildRelationshipPatchAction({ id: "rel_1", sourceId: "todo_2" }, 2),
+          buildRelationshipPutAction(
+            {
+              id: "rel_1",
+              sourceId: "todo_2",
+              targetId: "list_1",
+              field: "list",
+              type: "todo_list",
+            },
+            2,
+          ),
         );
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await sourceQuery(entityStore)).toEqual([]);
         expect(
@@ -1035,7 +1084,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
 
         await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "relationship");
+        await dirtyTracker.mark("rel_1", "ebb");
 
         expect(await sourceQuery(entityStore)).toEqual([]);
       });
@@ -1123,7 +1172,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
       });
 
-      it("materializes dirty entityGroup rows on query", async () => {
+      it("materializes dirty ebb/membership rows on query", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedMembership(actionLog, dirtyTracker, {
           id: "eg_1",
@@ -1183,7 +1232,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
 
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
+        await dirtyTracker.mark("eg_1", "ebb");
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
       });
@@ -1212,7 +1261,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await actionLog.append(
           buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_2" }, 2),
         );
-        await dirtyTracker.mark("eg_1", "entityGroup");
+        await dirtyTracker.mark("eg_1", "ebb");
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
         expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_2"]);
@@ -1233,11 +1282,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
 
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b" }, 2));
-        await dirtyTracker.mark("eg_b", "entityGroup");
+        await dirtyTracker.mark("eg_b", "ebb");
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
 
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b2" }, 3));
-        await dirtyTracker.mark("eg_b2", "entityGroup");
+        await dirtyTracker.mark("eg_b2", "ebb");
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
       });
 
@@ -1264,7 +1313,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_2")).toEqual(["todo_2"]);
       });
 
-      it("does not index non-entityGroup entities that carry the same field names", async () => {
+      it("does not index rows without the membership component that carry the same field names", async () => {
         const { entityStore } = await factory();
         await entityStore.set({
           ...makeEntity({ id: "todo_9", type: "todo" }),
@@ -1309,7 +1358,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ]);
       });
 
-      it("materializes dirty entityGroup rows on query", async () => {
+      it("materializes dirty ebb/membership rows on query", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await seedMembership(actionLog, dirtyTracker, {
           id: "eg_1",
@@ -1359,11 +1408,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ]);
 
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
+        await dirtyTracker.mark("eg_1", "ebb");
         expect((await entityQuery(entityStore)).map((m) => m.membershipId)).toEqual(["eg_2"]);
 
         await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_2" }, 3));
-        await dirtyTracker.mark("eg_2", "entityGroup");
+        await dirtyTracker.mark("eg_2", "ebb");
         expect(await entityQuery(entityStore)).toEqual([]);
       });
 
@@ -1375,8 +1424,10 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
           groupId: "group_1",
         });
 
-        await actionLog.append(buildEntityGroupPatchAction({ id: "eg_1", entityId: "todo_2" }, 2));
-        await dirtyTracker.mark("eg_1", "entityGroup");
+        await actionLog.append(
+          buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_1" }, 2),
+        );
+        await dirtyTracker.mark("eg_1", "ebb");
 
         expect(await entityQuery(entityStore)).toEqual([]);
         expect(await entityStore.queryByMembershipEntity("todo_2")).toEqual([
@@ -1444,26 +1495,27 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         // The new group's subscriber receives only the put.
         const newGroup = await factory();
         await newGroup.actionLog.append(newGroupCopy);
-        await newGroup.dirtyTracker.mark("eg_new", "entityGroup");
+        await newGroup.dirtyTracker.mark("eg_new", "ebb");
         const materialized = await newGroup.entityStore.get("eg_new");
         expect(materialized).not.toBeNull();
-        expect((materialized!.data.fields.group_id as { value: unknown }).value).toBe("group_new");
+        // The row the split delivered is the one the new group is scoped to.
+        expect(await newGroup.entityStore.queryByMembership("group_new")).toEqual(["todo_1"]);
 
         // The old group's subscriber receives only the delete. It never
         // materialized `eg_old`, so the delete must be a no-op rather
         // than a stream-breaking throw.
         const oldGroup = await factory();
         await oldGroup.actionLog.append(oldGroupCopy);
-        await oldGroup.dirtyTracker.mark("eg_old", "entityGroup");
+        await oldGroup.dirtyTracker.mark("eg_old", "ebb");
         await expect(oldGroup.entityStore.get("eg_old")).resolves.toBeNull();
 
         // Re-delivery of a copy is idempotent: the same put leaves the
         // row in place and the same delete leaves it absent.
         await newGroup.actionLog.append(newGroupCopy);
-        await newGroup.dirtyTracker.mark("eg_new", "entityGroup");
+        await newGroup.dirtyTracker.mark("eg_new", "ebb");
         expect(await newGroup.entityStore.get("eg_new")).toEqual(materialized);
         await oldGroup.actionLog.append(oldGroupCopy);
-        await oldGroup.dirtyTracker.mark("eg_old", "entityGroup");
+        await oldGroup.dirtyTracker.mark("eg_old", "ebb");
         await expect(oldGroup.entityStore.get("eg_old")).resolves.toBeNull();
       });
     });

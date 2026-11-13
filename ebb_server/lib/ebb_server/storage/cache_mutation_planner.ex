@@ -3,9 +3,13 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   Computes the system-cache writes a batch's rows imply, and the overlay of
   rows those writes would leave behind. Its input is the folded row
   projection (`EbbServer.Storage.RowMutations`), because the system caches
-  are projections of whole rows: a membership's `group_id` and a
-  relationship's `source_id` may arrive in different component Updates of the
-  same row.
+  are projections of whole rows: a row's delivered scope and its cache row
+  are properties of the row.
+
+  Each platform component is **atomic**, so a plan projects its value
+  directly; there is no "wire value wins, cached row supplies the rest"
+  merge to get wrong. A folded row that does not carry the component (a
+  `drop`, or a row delete) deletes that kind's cache row.
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`
@@ -30,12 +34,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   alias EbbServer.Storage.{
     EntityGroupCache,
-    FieldMerge,
-    Fields,
-    GroupAppsCache,
-    GroupCache,
-    RelationshipCache,
-    RowMutations
+    RowMutations,
+    SystemComponent
   }
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
@@ -153,71 +153,48 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     plan_system_mutation(update, tables, mutations, overlay)
   end
 
-  defp plan_system_mutation(%{model: "groupMember"} = update, tables, mutations, overlay) do
+  defp plan_system_mutation(%{kind: :grant} = update, _tables, mutations, overlay) do
     key = {:group_members_by_id, update.subject_id}
 
-    case update.method do
-      method when method in [:put, :patch] ->
-        data = update.data || %{}
+    case SystemComponent.value(update.data, :grant) do
+      %{} = value ->
+        row = %{
+          id: update.subject_id,
+          actor_id: Map.get(value, "actor_id"),
+          group_id: Map.get(value, "group_id"),
+          permissions: Map.get(value, "permissions")
+        }
 
-        existing =
-          patch_existing(
-            update,
-            overlay,
-            :group_members_by_id,
-            tables.group_members_by_id,
-            &GroupCache.get_group_member/2
-          )
-
-        actor_id = Fields.get(data, "actor_id") || existing[:actor_id]
-        group_id = Fields.get(data, "group_id") || existing[:group_id]
-
-        if is_nil(actor_id) or is_nil(group_id) do
+        if is_nil(row.actor_id) or is_nil(row.group_id) do
           {mutations, overlay}
         else
-          row = %{
-            id: update.subject_id,
-            actor_id: actor_id,
-            group_id: group_id,
-            permissions: Fields.get(data, "permissions") || existing[:permissions]
-          }
-
           {[{:group_member_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
-      :delete ->
+      nil ->
         {[{:group_member_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end
   end
 
-  defp plan_system_mutation(%{model: "entityGroup"} = update, tables, mutations, overlay) do
+  defp plan_system_mutation(%{kind: :membership} = update, tables, mutations, overlay) do
     key = {:entity_groups_by_id, update.subject_id}
 
-    case update.method do
-      method when method in [:put, :patch] ->
-        data = update.data || %{}
+    case SystemComponent.value(update.data, :membership) do
+      %{} = value ->
+        row = %{
+          id: update.subject_id,
+          entity_id: Map.get(value, "entity_id"),
+          group_id: Map.get(value, "group_id")
+        }
 
-        existing =
-          patch_existing(
-            update,
-            overlay,
-            :entity_groups_by_id,
-            tables.entity_groups_by_id,
-            &EntityGroupCache.get_entity_group/2
-          )
-
-        entity_id = Fields.get(data, "entity_id") || existing[:entity_id]
-        group_id = Fields.get(data, "group_id") || existing[:group_id]
-
-        if is_nil(entity_id) or is_nil(group_id) do
+        if is_nil(row.entity_id) or is_nil(row.group_id) do
           {mutations, overlay}
         else
-          row = %{id: update.subject_id, entity_id: entity_id, group_id: group_id}
           {[{:entity_group_put, row} | mutations], Overlay.put(overlay, key, row)}
         end
 
-      :delete ->
+      nil ->
         entity_id = entity_group_entity(overlay, update.subject_id, tables)
 
         {[{:entity_group_delete, update.subject_id} | mutations],
@@ -225,116 +202,51 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  # A group put replaces the whole row, so its apps field is exactly the
-  # wire value. A patch merges per app id so concurrent scope edits do not
-  # clobber each other. Neither path affects write authorization: app scope
-  # is a sync filter, so the overlay must not serialize successors.
-  defp plan_system_mutation(%{model: "group"} = update, tables, mutations, overlay) do
+  # App scope is one key of the atomic group value, so the wire value is the
+  # whole scope. A sync filter must not serialize successors in the overlay.
+  defp plan_system_mutation(%{kind: :group} = update, _tables, mutations, overlay) do
     key = {:group_apps, update.subject_id}
 
-    case update.method do
-      :put ->
-        field = Fields.get(update.data || %{}, "apps")
+    case SystemComponent.value(update.data, :group) do
+      %{} = value ->
+        apps = Map.get(value, "apps")
 
-        {[{:group_apps_put, update.subject_id, field} | mutations],
-         Overlay.put(overlay, key, field)}
+        {[{:group_apps_put, update.subject_id, apps} | mutations],
+         Overlay.put(overlay, key, apps)}
 
-      :patch ->
-        data = update.data || %{}
-
-        if Fields.present?(data, "apps") do
-          field = merge_group_apps(update, overlay, data, tables)
-
-          {[{:group_apps_put, update.subject_id, field} | mutations],
-           Overlay.put(overlay, key, field)}
-        else
-          {mutations, overlay}
-        end
-
-      :delete ->
+      nil ->
         {[{:group_apps_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end
   end
 
-  # A relationship row's components may arrive across several Updates, so the
-  # wire value wins where it is present and the cached row supplies the rest.
-  # A row still missing its source or target cannot be projected.
-  defp plan_system_mutation(%{model: "relationship"} = update, tables, mutations, overlay) do
+  # A value missing a source or target cannot be projected.
+  defp plan_system_mutation(%{kind: :link} = update, _tables, mutations, overlay) do
     key = {:relationships_by_id, update.subject_id}
 
-    case update.method do
-      method when method in [:put, :patch] ->
-        plan_relationship_put(update, tables, mutations, overlay, key)
+    case SystemComponent.value(update.data, :link) do
+      %{} = value ->
+        row = %{
+          id: update.subject_id,
+          source_id: Map.get(value, "source_id"),
+          target_id: Map.get(value, "target_id"),
+          type: Map.get(value, "type"),
+          field: Map.get(value, "field")
+        }
 
-      :delete ->
+        if is_nil(row.source_id) or is_nil(row.target_id) do
+          {mutations, overlay}
+        else
+          {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
+        end
+
+      nil ->
         {[{:relationship_delete, update.subject_id} | mutations],
          Overlay.put(overlay, key, :deleted)}
     end
   end
 
   defp plan_system_mutation(_update, _tables, mutations, overlay), do: {mutations, overlay}
-
-  defp plan_relationship_put(update, tables, mutations, overlay, key) do
-    existing =
-      patch_existing(
-        update,
-        overlay,
-        :relationships_by_id,
-        tables.relationships_by_id,
-        &RelationshipCache.get_relationship/2
-      )
-
-    row = relationship_row(update, existing)
-
-    if row == nil do
-      {mutations, overlay}
-    else
-      {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
-    end
-  end
-
-  # A relationship row names a source and a target; a row still missing
-  # either cannot be projected into the by-id cache.
-  defp relationship_row(update, existing) do
-    data = update.data || %{}
-    source_id = Fields.get(data, "source_id") || row_field(existing, :source_id)
-    target_id = Fields.get(data, "target_id") || row_field(existing, :target_id)
-
-    if is_nil(source_id) or is_nil(target_id) do
-      nil
-    else
-      %{
-        id: update.subject_id,
-        source_id: source_id,
-        target_id: target_id,
-        type: Fields.get(data, "type") || row_field(existing, :type),
-        field: Fields.get(data, "field") || row_field(existing, :field)
-      }
-    end
-  end
-
-  # Only a patch consults a pre-existing row. The overlay is the plan's own
-  # prior effect, so a delete in the same plan means there is nothing left
-  # to merge over and the patch cannot resurrect a pre-plan row.
-  defp patch_existing(%{method: :patch} = update, overlay, cache, table, fetch) do
-    case Overlay.fetch(overlay, cache, update.subject_id) do
-      {:ok, :deleted} -> %{}
-      {:ok, row} -> row
-      :error -> fetch.(update.subject_id, table) || %{}
-    end
-  end
-
-  defp patch_existing(_update, _overlay, _cache, _table, _fetch), do: %{}
-
-  defp merge_group_apps(update, overlay, data, tables) do
-    existing =
-      patch_existing(update, overlay, :group_apps, tables.group_apps, &GroupAppsCache.get_field/2)
-
-    FieldMerge.merge(existing, Fields.get(data, "apps"))
-  end
-
-  defp row_field(existing, key), do: existing[key] || existing[to_string(key)]
 
   # A delete's wire form carries only the membership id, so the projection
   # needs the entity the row belonged to. Prefer the chain, then the cache.

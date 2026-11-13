@@ -726,6 +726,32 @@ an old source, a membership with a mismatched pair, or a membership re-pointed i
 
 **Depends on.** 4, 6, 8. **Not blocked by** #790.
 
+**Current state.** Shipped in [#805](https://github.com/ebbjs/ebbjs/issues/805).
+`@ebbjs/schema`'s `ebbSystemEntity` is the one model carrying `ebb/group`, `ebb/grant`,
+`ebb/membership` and `ebb/link`; the names and the value readers live in `@ebbjs/core`, and
+`SYSTEM_ENTITY_NAMES`, `RESERVED_ENTITY_NAMES`, `PermissionHelper.system_models/0` and
+`GroupListing`'s copy are gone (the reserved name is now the platform namespace, `ebb`). Each row is
+one atomic component value, written by one Update: `Relationship` became `ebb/link`,
+`groupMember` became `ebb/grant`, `entityGroup` became `ebb/membership`, and a group is
+`ebb/group`. On the server, `Storage.SystemComponent` is the only module that names them, the fold
+carries the row's components and kind, and every dispatch that was on a model string now reads that
+kind (`EntityIndex.kind/2` answers it for a delete, which names no component). Atomicity deleted
+machinery rather than moving it: the cache planner projects the whole value with no "wire wins, cache
+supplies the rest" merge, and decision 13 makes the membership pair, a grant's `group_id` and a
+link's `source_id` immutable, so a move is a delete plus a create (the old "needs the permission in
+both groups" rule is gone). Permission subjects are `ebb/<leaf>.<verb>`, which preserves the four
+distinct grants. SQLite follows the value into the component and guards each listing on the
+generated column's non-nullness — the component-existence guard, and indexable; `EXPLAIN QUERY PLAN`
+tests pin all four listings, and the read model now carries a schema version so an upgraded database
+is rebuilt from the Action log instead of answering empty pages. Four things are recorded rather
+than resolved: a group's `apps` is a **list of app ids** rather than a map, because `e.object`
+refuses a nested map (absent is unscoped, `[]` is nobody, and a scope edit writes the whole value);
+`drop` of a platform component is still refused by the client's write path, as #798 left it;
+decision 12's `ebb/*` overlay on a user row is #820's, so the validator refuses two component
+prefixes on one subject and the overlay has no write path; and a delete whose id nothing models keeps
+its kind `nil`, which is the pre-existing unresolvable-delete behaviour. `EntityIndex`'s scope
+resolution still dispatches on the kind — that table is slice 11.
+
 ---
 
 ### 11. `refactor(storage)`: scope resolution is a declared table

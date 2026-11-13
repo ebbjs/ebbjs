@@ -120,10 +120,25 @@ defmodule EbbServer.Storage.EntityIndexTest do
     %{id: id, source_id: source_id, target_id: target_id, type: "todo", field: "owns"}
   end
 
+  # A folded platform row: one atomic component value, and its kind.
+  defp system_update(kind, subject_id, method, value) do
+    %{
+      subject_id: subject_id,
+      model: "ebb",
+      kind: kind,
+      method: method,
+      data:
+        if(method == :delete,
+          do: nil,
+          else: %{"fields" => %{Atom.to_string(kind) => %{"value" => value || %{}}}}
+        )
+    }
+  end
+
   describe "resolve_groups/3" do
     test "returns the group id for a group subject type" do
       _ = tables()
-      assert EntityIndex.resolve_groups("group", "g_1") == ["g_1"]
+      assert EntityIndex.resolve_groups(:group, "g_1") == ["g_1"]
     end
 
     test "resolves an entityGroup subject via the by-id table" do
@@ -131,7 +146,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      assert EntityIndex.resolve_groups("entityGroup", "eg_1", opts(t)) == ["g_1"]
+      assert EntityIndex.resolve_groups(:membership, "eg_1", opts(t)) == ["g_1"]
     end
 
     test "resolves a relationship subject via its source's membership set" do
@@ -140,7 +155,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_member")
       :ok = put_rel(t, link_rel("rel_link", "todo_1", "col_1"))
 
-      assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == ["g_1"]
+      assert EntityIndex.resolve_groups(:link, "rel_link", opts(t)) == ["g_1"]
     end
 
     test "resolves a groupMember subject via the by-id table" do
@@ -154,7 +169,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
           group_members_by_group: t.group_members_by_group
         )
 
-      assert EntityIndex.resolve_groups("groupMember", "gm_1", opts(t)) == ["g_1"]
+      assert EntityIndex.resolve_groups(:grant, "gm_1", opts(t)) == ["g_1"]
     end
 
     test "returns every group for a multi-membership source" do
@@ -188,15 +203,15 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_rel(t, link_rel("rel_link", "todo_1", "g_1"))
 
       assert EntityIndex.resolve_groups("todo", "todo_1", opts(t)) == []
-      assert EntityIndex.resolve_groups("relationship", "rel_link", opts(t)) == []
+      assert EntityIndex.resolve_groups(:link, "rel_link", opts(t)) == []
     end
 
     test "returns an empty list when the entity isn't in the index" do
       t = tables()
 
-      assert EntityIndex.resolve_groups("relationship", "rel_unknown", opts(t)) == []
-      assert EntityIndex.resolve_groups("groupMember", "gm_unknown", opts(t)) == []
-      assert EntityIndex.resolve_groups("entityGroup", "eg_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups(:link, "rel_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups(:grant, "gm_unknown", opts(t)) == []
+      assert EntityIndex.resolve_groups(:membership, "eg_unknown", opts(t)) == []
       assert EntityIndex.resolve_groups("todo", "todo_unknown", opts(t)) == []
     end
 
@@ -204,15 +219,15 @@ defmodule EbbServer.Storage.EntityIndexTest do
       _t = tables()
 
       assert_raise KeyError, fn ->
-        EntityIndex.resolve_groups("relationship", "rel_1", [])
+        EntityIndex.resolve_groups(:link, "rel_1", [])
       end
 
       assert_raise KeyError, fn ->
-        EntityIndex.resolve_groups("groupMember", "gm_1", [])
+        EntityIndex.resolve_groups(:grant, "gm_1", [])
       end
 
       assert_raise KeyError, fn ->
-        EntityIndex.resolve_groups("entityGroup", "eg_1", [])
+        EntityIndex.resolve_groups(:membership, "eg_1", [])
       end
 
       assert_raise KeyError, fn ->
@@ -232,8 +247,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
                "todo_1"
              }
 
-      assert EntityIndex.resolve_groups_cached("entityGroup", "eg_1", opts(t)) == {["g_1"], nil}
-      assert EntityIndex.resolve_groups_cached("group", "g_1", opts(t)) == {["g_1"], nil}
+      assert EntityIndex.resolve_groups_cached(:membership, "eg_1", opts(t)) == {["g_1"], nil}
+      assert EntityIndex.resolve_groups_cached(:group, "g_1", opts(t)) == {["g_1"], nil}
     end
 
     test "excludes intra-action membership from the cached set" do
@@ -288,12 +303,11 @@ defmodule EbbServer.Storage.EntityIndexTest do
     test "prefers the wire group for a not-yet-cached membership row" do
       t = tables()
 
-      update = %{
-        subject_id: "eg_1",
-        model: "entityGroup",
-        method: :put,
-        data: %{"fields" => %{"group_id" => "g_wire"}}
-      }
+      update =
+        system_update(:membership, "eg_1", :put, %{
+          "entity_id" => "todo_1",
+          "group_id" => "g_wire"
+        })
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:wire, ["g_wire"]}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_wire"]
@@ -303,9 +317,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = %{subject_id: "eg_1", model: "entityGroup", method: :delete, data: nil}
+      update = system_update(:membership, "eg_1", :delete, nil)
 
-      assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, "entityGroup"}
+      assert EntityIndex.fan_out_preference(update, opts(t)) == {:by_id, :membership}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
     end
 
@@ -313,12 +327,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = %{
-        subject_id: "rel_1",
-        model: "relationship",
-        method: :put,
-        data: %{"fields" => %{"source_id" => "todo_1"}}
-      }
+      update = system_update(:link, "rel_1", :put, %{"source_id" => "todo_1"})
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -329,7 +338,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
-      update = %{subject_id: "rel_1", model: "relationship", method: :delete, data: nil}
+      update = system_update(:link, "rel_1", :delete, nil)
 
       assert EntityIndex.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -346,12 +355,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       # A folded delete carries no data; the wire source is supplied here to
       # pin that fan-out ignores it even if one reaches this function.
-      update = %{
-        subject_id: "rel_victim",
-        model: "relationship",
-        method: :delete,
-        data: %{"fields" => %{"source_id" => "todo_attacker"}}
-      }
+      update = system_update(:link, "rel_victim", :delete, %{"source_id" => "todo_attacker"})
 
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
     end
@@ -361,12 +365,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
       :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
 
-      update = %{
-        subject_id: "rel_victim",
-        model: "relationship",
-        method: :patch,
-        data: %{"fields" => %{"target_id" => "col_2"}}
-      }
+      update = system_update(:link, "rel_victim", :patch, %{"target_id" => "col_2"})
 
       assert EntityIndex.fan_out_groups(update, opts(t)) == ["g_victim"]
     end

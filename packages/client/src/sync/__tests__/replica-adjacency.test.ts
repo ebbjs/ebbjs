@@ -14,14 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-  componentName,
-  makeHlc,
-  type Action,
-  type Entity,
-  type FieldValue,
-  type Update,
-} from "@ebbjs/core";
+import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -29,7 +22,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction } from "../test-utils";
+import { callApplyAction, platformEntity, rowComponents } from "../test-utils";
 import { testActions } from "./test-actions";
 
 const SERVER_URL = "http://localhost:4000";
@@ -79,13 +72,15 @@ const put = (
     opts.actionId,
     opts.gsn,
     opts.ms,
-    Object.entries(fields).map(([key, value]) => ({
-      id: `u_${opts.actionId}_${key}`,
-      subject_id: id,
-      component: componentName(type, key),
-      method: "replace" as const,
-      data: field(value, `u_${opts.actionId}`, opts.ms),
-    })),
+    rowComponents(type, fields).map(
+      ([component, value]): Update => ({
+        id: `u_${opts.actionId}_${component}`,
+        subject_id: id,
+        component,
+        method: "replace" as const,
+        data: field(value, `u_${opts.actionId}`, opts.ms),
+      }),
+    ),
   );
 
 const remove = (
@@ -105,14 +100,14 @@ const putRel = (
   type: string,
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
-  put(relId, "relationship", { source_id: sourceId, target_id: targetId, field: as, type }, opts);
+  put(relId, "link", { source_id: sourceId, target_id: targetId, field: as, type }, opts);
 
 const putMembership = (
   rowId: string,
   entityId: string,
   groupId: string,
   opts: { actionId: string; gsn: number; ms: number },
-): Action => put(rowId, "entityGroup", { entity_id: entityId, group_id: groupId }, opts);
+): Action => put(rowId, "membership", { entity_id: entityId, group_id: groupId }, opts);
 
 const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
   createClient({
@@ -125,7 +120,7 @@ const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
       new Response(JSON.stringify({ rejected: [] }), { status: 200 })) as unknown as typeof fetch,
   });
 
-/** A shim-only entity row (no action-log entry, no replica adjacency). */
+/** A shim-only user row (no action-log entry, no replica adjacency). */
 const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
   id,
   type,
@@ -163,7 +158,7 @@ describe("replica adjacency accessors (#520)", () => {
     // adjacency rows live only in the replica record.
     await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
     await storage.entities.set(mkEntity("user_1", "user", { name: "Ada" }));
-    await storage.entities.set(mkEntity("group_1", "group", { name: "Work" }));
+    await storage.entities.set(platformEntity("group_1", "group", { name: "Work" }));
 
     const client = mkClient(storage);
     const row = await client.todo.get("todo_1");
@@ -235,10 +230,7 @@ describe("replica adjacency accessors (#520)", () => {
       client,
       putRel("rel_1", "todo_1", "user_1", "owner", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
     );
-    await callApplyAction(
-      client,
-      remove("rel_1", "relationship", { actionId: "a_4", gsn: 4, ms: 40 }),
-    );
+    await callApplyAction(client, remove("rel_1", "link", { actionId: "a_4", gsn: 4, ms: 40 }));
 
     const row = await client.todo.get("todo_1");
     if (row === null) throw new Error("expected row");
@@ -267,7 +259,7 @@ describe("replica adjacency accessors (#520)", () => {
 
     await callApplyAction(
       client,
-      remove("eg_1", "entityGroup", { actionId: "a_4", gsn: 4, ms: 40 }),
+      remove("eg_1", "membership", { actionId: "a_4", gsn: 4, ms: 40 }),
     );
 
     const after = await client.todo.get("todo_1");

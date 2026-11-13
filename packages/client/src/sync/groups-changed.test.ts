@@ -58,7 +58,13 @@ const membership = (
   groupId: string,
   lastGsn: number,
 ): EntityResponse =>
-  wire({ id, type: "entityGroup", fields: { entity_id: entityId, group_id: groupId }, lastGsn });
+  // A membership row is an `ebb` row carrying one atomic `ebb/membership` value.
+  wire({
+    id,
+    type: "ebb",
+    fields: { membership: { entity_id: entityId, group_id: groupId } },
+    lastGsn,
+  });
 
 const listingPage = (opts: {
   groupId: string;

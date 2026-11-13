@@ -213,10 +213,10 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       g1 = "g_473_rec_a_#{:erlang.unique_integer([:positive])}"
       g2 = "g_473_rec_b_#{:erlang.unique_integer([:positive])}"
 
-      assert ActionHelpers.bootstrap_group(actor_id, g1, ["todo.*", "entityGroup.*"]).status ==
+      assert ActionHelpers.bootstrap_group(actor_id, g1, ["todo.*", "ebb/membership.*"]).status ==
                200
 
-      assert ActionHelpers.bootstrap_group(actor_id, g2, ["todo.*", "entityGroup.*"]).status ==
+      assert ActionHelpers.bootstrap_group(actor_id, g2, ["todo.*", "ebb/membership.*"]).status ==
                200
 
       # Seed an entity in g2 before anyone subscribes, so the recovered
@@ -279,8 +279,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       assert scoped ==
                Enum.sort([
-                 Enum.sort([leaked_id, eg_leak, eg_leak]),
-                 [eg_other, eg_other]
+                 Enum.sort([leaked_id, eg_leak]),
+                 [eg_other]
                ])
 
       :ok = FanOutRouter.unsubscribe(sse1)
@@ -298,21 +298,20 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
     }
   end
 
+  # A membership is one atomic component, so the row is one Update.
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
     [
-      entity_group_component(eg_id, "entity_id", entity_id, hlc, 0),
-      entity_group_component(eg_id, "group_id", group_id, hlc, 1)
+      %{
+        "id" => "#{eg_id}_0",
+        "subject_id" => eg_id,
+        "component" => "ebb/membership",
+        "method" => "replace",
+        "data" => %{
+          "value" => %{"entity_id" => entity_id, "group_id" => group_id},
+          "hlc" => hlc
+        }
+      }
     ]
-  end
-
-  defp entity_group_component(eg_id, field, value, hlc, index) do
-    %{
-      "id" => "#{eg_id}_#{index}",
-      "subject_id" => eg_id,
-      "component" => "entityGroup/#{field}",
-      "method" => "replace",
-      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
-    }
   end
 
   defp update_subject_ids(payload) do

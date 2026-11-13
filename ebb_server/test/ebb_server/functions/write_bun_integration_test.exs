@@ -156,28 +156,22 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     subject_ids = MapSet.new(updates, & &1["subject_id"])
     assert MapSet.subset?(MapSet.new(body["result"]["ids"]), subject_ids)
 
-    # Two creates (each entity plus its membership row), one patch, one
-    # one-cardinality relationship put. Each is one Update per component.
-    entity_group_components =
-      Enum.filter(updates, &String.starts_with?(&1["component"] || "", "entityGroup/"))
+    # Two creates (each entity plus its `ebb/membership` row), one patch, one
+    # one-cardinality link. A platform row is one atomic component, so each is
+    # one Update rather than one per field.
+    membership_updates = Enum.filter(updates, &(&1["component"] == "ebb/membership"))
 
-    assert length(entity_group_components) == 4
+    assert length(membership_updates) == 2
 
     [patch] = Enum.filter(updates, &(&1["method"] == "merge"))
     assert patch["subject_id"] == todo_id
     assert patch["component"] == "todo/done"
     assert patch["data"]["value"] == true
 
-    relationship_updates =
-      Enum.filter(updates, &String.starts_with?(&1["component"] || "", "relationship/"))
-
-    assert length(relationship_updates) == 4
-    assert Enum.all?(relationship_updates, &(&1["method"] == "replace"))
-
-    source = Enum.find(relationship_updates, &(&1["component"] == "relationship/source_id"))
-    target = Enum.find(relationship_updates, &(&1["component"] == "relationship/target_id"))
-    assert source["data"]["value"] == todo_id
-    assert target["data"]["value"] == project_id
+    assert [link] = Enum.filter(updates, &(&1["component"] == "ebb/link"))
+    assert link["method"] == "replace"
+    assert link["data"]["value"]["source_id"] == todo_id
+    assert link["data"]["value"]["target_id"] == project_id
   end
 
   test "a handler that throws after a create leaves nothing", %{dir: dir} do
@@ -323,7 +317,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "todo.create",
       "todo.update",
       "project.create",
-      "relationship.delete"
+      "ebb/link.delete"
     ])
 
     assert write_entity_in_group(actor_id, project_id, "project", group_id, fields("a project")).status ==
@@ -345,14 +339,10 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert [action] = ActionLog.read(before + 1, before + 1)
     assert action["gsn"] == before + 1
 
-    put_updates =
-      Enum.filter(
-        action["updates"],
-        &String.starts_with?(&1["component"] || "", "relationship/")
-      )
+    put_updates = Enum.filter(action["updates"], &(&1["component"] == "ebb/link"))
 
-    assert length(put_updates) == 4
-    assert Enum.all?(put_updates, &(&1["method"] == "replace"))
+    assert [put] = put_updates
+    assert put["method"] == "replace"
     assert [relationship_id] = put_updates |> Enum.map(& &1["subject_id"]) |> Enum.uniq()
 
     assert [%{"method" => "delete"}] =
@@ -381,16 +371,13 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
         &(&1["subject_id"] == relationship_id)
       )
 
-    assert Enum.count(live_relationship_updates, &(&1["method"] == "replace")) == 4
+    assert Enum.count(live_relationship_updates, &(&1["method"] == "replace")) == 1
     assert Enum.count(live_relationship_updates, &(&1["method"] == "delete")) == 1
 
     # The one relationship row is the only relationship subject the event
     # carries; the todo the row links is its own subject.
     assert Enum.all?(
-             Enum.filter(
-               event["updates"],
-               &String.starts_with?(&1["component"] || "", "relationship/")
-             ),
+             Enum.filter(event["updates"], &(&1["component"] == "ebb/link")),
              &(&1["subject_id"] == relationship_id)
            )
 
@@ -462,7 +449,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "function." <> name,
       "todo.create",
       "todo.update",
-      "relationship.delete"
+      "ebb/link.delete"
     ])
 
     hlc = generate_hlc()

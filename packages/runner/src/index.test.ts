@@ -86,8 +86,9 @@ describe("runInvocation", () => {
       readonly updates: readonly { readonly component?: string; readonly method: string }[];
     };
     expect(frame).toMatchObject({ actor_id: "a_test", gsn: 0 });
+    // The membership row is one atomic `ebb/membership` value.
     expect(new Set(frame.updates.map((update) => update.component))).toEqual(
-      new Set(["issue/title", "entityGroup/entity_id", "entityGroup/group_id"]),
+      new Set(["issue/title", "ebb/membership"]),
     );
     expect(frame.updates.every((update) => update.method === "replace")).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { componentModel, type Entity } from "@ebbjs/core";
+import { componentModel, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
 import type {
   EntityStore,
   MembershipLink,
@@ -24,10 +24,8 @@ import {
   liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
-  MEMBERSHIP_ENTITY_TYPE,
   reverseIndexDelta,
   reverseIndexKey,
-  RELATIONSHIP_ENTITY_TYPE,
   type ReverseIndex,
 } from "../internal/reverse-index";
 
@@ -40,10 +38,10 @@ import {
  * - `components` — component → member ids — O(1) component existence reads,
  *   derived from the rows like the adjacency index
  * - `index` — Record<indexKey, rowId → yieldedId> — O(1) adjacency lookup
- *   for relationship edges (both the `(field, type, target_id)` reverse
- *   key and the `(field, type, source_id)` forward key) and group
- *   membership (the synthetic `groups` accessor, keyed by group or by
- *   member entity).
+ *   for `ebb/link` edges (both the `(field, type, target_id)` reverse key
+ *   and the `(field, type, source_id)` forward key) and `ebb/membership`
+ *   rows (the synthetic `groups` accessor, keyed by group or by member
+ *   entity).
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -205,7 +203,7 @@ export const createMemoryEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return readIndex(reverseIndexKey(as, type, targetId));
     },
 
@@ -214,17 +212,17 @@ export const createMemoryEntityStore = (
       type,
       sourceId,
     }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyType(RELATIONSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return liveRelationshipLinks(state.index[forwardIndexKey(as, type, sourceId)]);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {
-      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return readIndex(membershipIndexKey(groupId));
     },
 
     async queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]> {
-      await materializeDirtyType(MEMBERSHIP_ENTITY_TYPE);
+      await materializeDirtyType(EBB_MODEL_NAME);
       return liveMembershipLinks(state.index[forwardMembershipIndexKey(entityId)]);
     },
 

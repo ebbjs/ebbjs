@@ -73,77 +73,63 @@ describe("buildSeedAction", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
 
     expect(action.actor_id).toBe("actor_1");
-    expect(action.updates).toHaveLength(13);
+    expect(action.updates).toHaveLength(7);
     for (const update of action.updates) {
       expect(update.method).toBe("replace");
       expect(update.data).not.toBeNull();
     }
 
-    const group = componentOf(action, "group/name", "grp_1");
-    expect(group.data).toMatchObject({ value: "Group One" });
-
-    const member = componentOf(action, "groupMember/actor_id", "gm_1");
-    expect(member.data).toMatchObject({ value: "actor_1" });
-    expect(componentOf(action, "groupMember/group_id", "gm_1").data).toMatchObject({
-      value: "grp_1",
+    expect(componentOf(action, "ebb/group", "grp_1").data).toMatchObject({
+      value: { name: "Group One" },
     });
-    expect(componentOf(action, "groupMember/permissions", "gm_1").data).toMatchObject({
-      value: ["todo.*", "list.*"],
+    expect(componentOf(action, "ebb/grant", "gm_1").data).toMatchObject({
+      value: { actor_id: "actor_1", group_id: "grp_1", permissions: ["todo.*", "list.*"] },
     });
 
     expect(componentOf(action, "todo/title", "todo_1").data).toMatchObject({ value: "Ship it" });
     expect(componentOf(action, "todo/status", "todo_1").data).toMatchObject({ value: "todo" });
     expect(componentOf(action, "todo/assignee_id", "todo_1").data).toMatchObject({ value: null });
 
-    expect(componentOf(action, "relationship/source_id", "rel_1").data).toMatchObject({
-      value: "todo_1",
-    });
-    expect(componentOf(action, "relationship/target_id", "rel_1").data).toMatchObject({
-      value: "list_1",
-    });
-    expect(componentOf(action, "relationship/type", "rel_1").data).toMatchObject({
-      value: "todo",
-    });
-    expect(componentOf(action, "relationship/field", "rel_1").data).toMatchObject({
-      value: "list",
+    expect(componentOf(action, "ebb/link", "rel_1").data).toMatchObject({
+      value: { source_id: "todo_1", target_id: "list_1", type: "todo", field: "list" },
     });
 
-    expect(componentOf(action, "entityGroup/entity_id", "eg_1").data).toMatchObject({
-      value: "todo_1",
-    });
-    expect(componentOf(action, "entityGroup/group_id", "eg_1").data).toMatchObject({
-      value: "grp_1",
+    expect(componentOf(action, "ebb/membership", "eg_1").data).toMatchObject({
+      value: { entity_id: "todo_1", group_id: "grp_1" },
     });
   });
 
-  it("writes a group's app scope as a merge of a map envelope with one leaf per app id", () => {
+  it("writes a group's app scope into the group's one atomic value", () => {
     const action = buildSeedAction("actor_1", {
-      groups: [{ id: "grp_1", name: "Shared", apps: { notes: true, issues: false } }],
+      groups: [{ id: "grp_1", name: "Shared", apps: ["notes", "issues"] }],
       groupMembers: [],
       entities: [],
     });
 
-    const apps = componentOf(action, "group/apps") as {
-      data: { map: Record<string, { value: boolean; update_id: string; hlc: string }> };
-    };
-
-    expect(action.updates).toHaveLength(2);
-    expect((componentOf(action, "group/apps") as { method: string }).method).toBe("merge");
-    expect(Object.keys(apps.data.map)).toEqual(["notes", "issues"]);
-    expect(apps.data.map["notes"]!.value).toBe(true);
-    expect(apps.data.map["issues"]!.value).toBe(false);
-    expect(apps.data.map["notes"]!.update_id).toBe("seed_update");
-    expect(typeof apps.data.map["notes"]!.hlc).toBe("string");
+    expect(action.updates).toHaveLength(1);
+    const group = componentOf(action, "ebb/group");
+    expect(group.method).toBe("replace");
+    expect(group.data).toMatchObject({
+      value: { name: "Shared", apps: ["notes", "issues"] },
+    });
   });
 
-  it("omits the apps component when the group is left unscoped", () => {
-    const action = buildSeedAction("actor_1", buildRepresentativeSeed());
+  it("distinguishes an unscoped group from one scoped to no app", () => {
+    const unscoped = buildSeedAction("actor_1", {
+      groups: [{ id: "grp_1", name: "Shared" }],
+      groupMembers: [],
+      entities: [],
+    });
+    const noApps = buildSeedAction("actor_1", {
+      groups: [{ id: "grp_1", name: "Shared", apps: [] }],
+      groupMembers: [],
+      entities: [],
+    });
 
-    expect(
-      action.updates.some(
-        (update) => update.method !== "delete" && update.component === "group/apps",
-      ),
-    ).toBe(false);
+    expect(componentOf(unscoped, "ebb/group").data).toMatchObject({ value: { name: "Shared" } });
+    expect(componentOf(noApps, "ebb/group").data).toMatchObject({
+      value: { name: "Shared", apps: [] },
+    });
   });
 
   it("stamps every plain value into a seed_update envelope with an HLC", () => {

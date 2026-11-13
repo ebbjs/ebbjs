@@ -117,12 +117,8 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert puts_to(ops, RocksDB.cf_group_actions(ctx.rocks_name)) == []
 
       # Resolution still happened: the stored scopes carry the group, once
-      # per component Update of the row.
-      assert stored_scopes(ops, ctx.rocks_name) == [
-               ["g_grouped"],
-               ["g_grouped"],
-               ["g_grouped"]
-             ]
+      # per Update of the Action.
+      assert stored_scopes(ops, ctx.rocks_name) == [["g_grouped"], ["g_grouped"]]
     end
 
     test ":group_resolution leaves update_scopes empty", ctx do
@@ -131,7 +127,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert {:ok, {1, 1}, []} = Writer.write_actions([grouped_action()], writer)
 
       assert_receive {:captured_ops, ops}
-      assert stored_scopes(ops, ctx.rocks_name) == [[], [], []]
+      assert stored_scopes(ops, ctx.rocks_name) == [[], []]
     end
 
     test ":build stores an empty payload", ctx do
@@ -329,12 +325,8 @@ defmodule EbbServer.Storage.WriterAblationTest do
       updates:
         [validated_component("todo_grouped", "todo/title", %{"value" => "x", "hlc" => hlc})] ++
           [
-            validated_component("eg_grouped", "entityGroup/entity_id", %{
-              "value" => "todo_grouped",
-              "hlc" => hlc
-            }),
-            validated_component("eg_grouped", "entityGroup/group_id", %{
-              "value" => "g_grouped",
+            validated_component("eg_grouped", "ebb/membership", %{
+              "value" => %{"entity_id" => "todo_grouped", "group_id" => "g_grouped"},
               "hlc" => hlc
             })
           ]

@@ -191,10 +191,7 @@ defmodule EbbServer.Storage.WriterTest do
       update_a = validated_update(%{subject_id: "todo_a"})
       update_b = validated_update(%{subject_id: "todo_b"})
 
-      update_eg_b = [
-        validated_component("eg_b", "entityGroup/entity_id", %{"value" => "todo_b"}),
-        validated_component("eg_b", "entityGroup/group_id", %{"value" => "group_2"})
-      ]
+      update_eg_b = entity_group_updates("eg_b", "todo_b", "group_2", generate_hlc())
 
       action = validated_action(%{updates: [update_a, update_b] ++ update_eg_b})
 
@@ -204,8 +201,9 @@ defmodule EbbServer.Storage.WriterTest do
         RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), name: rocks_name)
 
       # The Action spans group_1 (todo_a) and group_2 (the new todo_b and its
-      # membership row); the stored per-Update scopes keep them apart.
-      assert %{"update_scopes" => [["group_1"], ["group_2"], ["group_2"], ["group_2"]]} =
+      # membership row); the stored per-Update scopes keep them apart. The
+      # membership is one atomic Update, so the row costs one scope.
+      assert %{"update_scopes" => [["group_1"], ["group_2"], ["group_2"]]} =
                ActionFormat.decode(binary, 1)
 
       for group_id <- ["group_1", "group_2"] do
@@ -228,18 +226,17 @@ defmodule EbbServer.Storage.WriterTest do
       create =
         validated_action(%{
           id: "act_813_create",
-          updates: [
-            validated_component("eg_813", "entityGroup/entity_id", %{"value" => "todo_813"}),
-            validated_component("eg_813", "entityGroup/group_id", %{"value" => "group_813"})
-          ]
+          updates: entity_group_updates("eg_813", "todo_813", "group_813", generate_hlc())
         })
 
+      # A value that omits the group cannot name its own scope, so the flush's
+      # folded row is the only place the group survives.
       permissions =
         validated_action(%{
           id: "act_813_permissions",
           updates: [
-            validated_component("eg_813", "entityGroup/permissions", %{
-              "value" => ["todo.*"]
+            validated_component("eg_813", "ebb/membership", %{
+              "value" => %{"entity_id" => "todo_813"}
             })
           ]
         })
@@ -253,7 +250,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert %{"update_scopes" => [["group_813"]]} = decoded
 
       # The same scope catch-up and live fan-out filter on.
-      assert [%{"component" => "entityGroup/permissions"}] =
+      assert [%{"component" => "ebb/membership"}] =
                ActionScope.updates_for_group(decoded, "group_813")
 
       key = RocksDB.encode_group_action_key("group_813", 2)
@@ -762,7 +759,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert EntityGroupCache.group_entities("group_1", eg_by_group) == ["todo_1"]
     end
 
-    test "entityGroup PATCH merges the wire fields over the cached row",
+    test "entityGroup PATCH projects the whole wire value",
          %{
            writer_name: writer_name,
            entity_groups: eg_table,
@@ -784,7 +781,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: generate_hlc(),
-        updates: [entity_group_patch(eg_id, "group_2", hlc)]
+        updates: entity_group_patch(eg_id, "todo_1", "group_2", hlc)
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([patch_action], writer_name)
@@ -793,7 +790,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert EntityGroupCache.get_entity_group(eg_id, eg_by_id).entity_id == "todo_1"
     end
 
-    test "entityGroup PATCH with no cached row is a no-op",
+    test "an entityGroup value that omits the entity is not projected",
          %{
            writer_name: writer_name,
            entity_groups_by_id: eg_by_id
@@ -805,14 +802,14 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: [entity_group_patch(eg_id, "group_1", hlc)]
+        updates: [entity_group_partial_patch(eg_id, "group_1", hlc)]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([patch_action], writer_name)
       assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
     end
 
-    test "groupMember PATCH merges the wire fields over the cached row",
+    test "groupMember PATCH projects the whole wire value",
          %{
            writer_name: writer_name,
            group_members: gm_table
@@ -833,7 +830,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: generate_hlc(),
-        updates: [group_member_patch(gm_id, ["todo.read"], hlc)]
+        updates: group_member_patch(gm_id, "actor_1", "group_1", ["todo.read"], hlc)
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([patch_action], writer_name)
@@ -842,7 +839,7 @@ defmodule EbbServer.Storage.WriterTest do
                GroupCache.get_actor_groups("actor_1", gm_table)
     end
 
-    test "groupMember PATCH with no cached row is a no-op",
+    test "a groupMember value that omits the actor is not projected",
          %{
            writer_name: writer_name,
            group_members_by_id: gm_by_id
@@ -854,7 +851,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: [group_member_patch(gm_id, ["todo.read"], hlc)]
+        updates: [group_member_partial_patch(gm_id, ["todo.read"], hlc)]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([patch_action], writer_name)
@@ -1040,9 +1037,9 @@ defmodule EbbServer.Storage.WriterTest do
       eg_id = "eg_" <> Nanoid.generate()
 
       put = entity_group_updates(eg_id, "todo_merge", "group_1", hlc)
-      patch = entity_group_patch(eg_id, "group_2", hlc)
+      patch = entity_group_patch(eg_id, "todo_merge", "group_2", hlc)
 
-      action = validated_action(%{id: "act_merge", updates: put ++ [patch]})
+      action = validated_action(%{id: "act_merge", updates: put ++ patch})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
@@ -1114,9 +1111,9 @@ defmodule EbbServer.Storage.WriterTest do
       assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) != nil
 
       delete = system_delete_update(eg_id)
-      patch = entity_group_patch(eg_id, "group_2", hlc)
+      patch = entity_group_patch(eg_id, "todo_merge", "group_2", hlc)
 
-      action = validated_action(%{id: "act_resurrect", updates: [delete, patch]})
+      action = validated_action(%{id: "act_resurrect", updates: [delete] ++ patch})
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([action], writer_name)
 
@@ -1614,20 +1611,29 @@ defmodule EbbServer.Storage.WriterTest do
     end
   end
 
+  # A platform row is one atomic component, so its fixture is one Update
+  # whose value is the whole object.
   defp entity_group_updates(id, entity_id, group_id, hlc) do
     [
-      validated_component(id, "entityGroup/entity_id", %{"value" => entity_id, "hlc" => hlc}),
-      validated_component(id, "entityGroup/group_id", %{
-        "value" => group_id,
-        "hlc" => hlc
-      })
+      validated_component(
+        id,
+        "ebb/membership",
+        %{"value" => %{"entity_id" => entity_id, "group_id" => group_id}, "hlc" => hlc}
+      )
     ]
   end
 
-  defp entity_group_patch(id, group_id, hlc) do
-    validated_component(id, "entityGroup/group_id", %{"value" => group_id, "hlc" => hlc},
-      method: :merge
-    )
+  defp entity_group_patch(id, entity_id, group_id, hlc) do
+    entity_group_updates(id, entity_id, group_id, hlc)
+  end
+
+  # A value that omits the entity cannot be projected into the membership
+  # cache.
+  defp entity_group_partial_patch(id, group_id, hlc) do
+    validated_component(id, "ebb/membership", %{
+      "value" => %{"group_id" => group_id},
+      "hlc" => hlc
+    })
   end
 
   defp todo_update(id, entity_id, value, hlc) do
@@ -1640,42 +1646,40 @@ defmodule EbbServer.Storage.WriterTest do
 
   defp group_member_updates(id, actor_id, group_id, permissions, hlc) do
     [
-      validated_component(id, "groupMember/actor_id", %{"value" => actor_id, "hlc" => hlc}),
-      validated_component(id, "groupMember/group_id", %{
-        "value" => group_id,
-        "hlc" => hlc
-      }),
-      validated_component(id, "groupMember/permissions", %{
-        "value" => permissions,
+      validated_component(id, "ebb/grant", %{
+        "value" => %{
+          "actor_id" => actor_id,
+          "group_id" => group_id,
+          "permissions" => permissions
+        },
         "hlc" => hlc
       })
     ]
   end
 
-  defp group_member_patch(id, permissions, hlc) do
-    validated_component(
-      id,
-      "groupMember/permissions",
-      %{
-        "value" => permissions,
-        "hlc" => hlc
-      },
-      method: :merge
-    )
+  defp group_member_patch(id, actor_id, group_id, permissions, hlc) do
+    group_member_updates(id, actor_id, group_id, permissions, hlc)
+  end
+
+  # A value that omits the actor cannot be projected into the grant caches.
+  defp group_member_partial_patch(id, permissions, hlc) do
+    validated_component(id, "ebb/grant", %{
+      "value" => %{"permissions" => permissions},
+      "hlc" => hlc
+    })
   end
 
   defp relationship_updates(id, source_id, target_id, hlc) do
     [
-      validated_component(id, "relationship/source_id", %{
-        "value" => source_id,
+      validated_component(id, "ebb/link", %{
+        "value" => %{
+          "source_id" => source_id,
+          "target_id" => target_id,
+          "type" => "todo",
+          "field" => "owns"
+        },
         "hlc" => hlc
-      }),
-      validated_component(id, "relationship/target_id", %{
-        "value" => target_id,
-        "hlc" => hlc
-      }),
-      validated_component(id, "relationship/type", %{"value" => "todo", "hlc" => hlc}),
-      validated_component(id, "relationship/field", %{"value" => "owns", "hlc" => hlc})
+      })
     ]
   end
 

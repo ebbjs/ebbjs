@@ -13,9 +13,14 @@
 import {
   componentField,
   componentModel,
+  ebbComponentField,
+  ebbComponentKind,
+  EBB_MODEL_NAME,
   generateId,
+  isEbbComponent,
   isFieldMap,
   localEvent,
+  type EbbComponentKind,
   type FieldValue,
   type HLCState,
   type Update,
@@ -106,9 +111,17 @@ export interface WriteSurface extends PreflightView {
   commit(): Promise<CommitOutcome>;
 }
 
-/** The key a buffered relationship edge is found by. */
+/** The key a buffered link edge is found by. */
 const edgeKey = (type: string, sourceId: string, as: string): string =>
   `${type}\u0000${sourceId}\u0000${as}`;
+
+/**
+ * The model a component write commits under: `ebb` for a platform component, the
+ * component's own namespace otherwise. The two coincide today; #820's overlay
+ * components are where they stop coinciding.
+ */
+const committedModelOf = (component: string): string =>
+  isEbbComponent(component) ? EBB_MODEL_NAME : componentModel(component);
 
 const stringListField = (
   fields: Record<string, FieldValue>,
@@ -124,6 +137,16 @@ const stringListField = (
 
 /** A component's projected plain value, from the buffered row so far. */
 const plainField = (fields: Record<string, unknown>, key: string): unknown => fields[key];
+
+/** One platform component's atomic value from a buffered row or a patch, or `undefined`. */
+const platformValue = (
+  values: Record<string, unknown>,
+  kind: EbbComponentKind,
+): Record<string, unknown> | undefined => {
+  const value = plainField(values, ebbComponentField(kind));
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+};
 
 const stringValue = (fields: Record<string, unknown>, key: string): string | undefined => {
   const value = plainField(fields, key);
@@ -148,24 +171,26 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const updates: Update[] = [];
   const updatesById = new Map<string, Update[]>();
   const types = new Map<string, string>();
-  /** `entityGroup` row id → the group it scopes to. */
+  /** Membership row id → the group it scopes to. */
   const membershipGroup = new Map<string, string>();
-  /** `entityGroup` row id → the entity it files. */
+  /** Membership row id → the entity it files. */
   const membershipEntity = new Map<string, string>();
+  /** Row id → the platform kind its buffered writes named. */
+  const rowKinds = new Map<string, EbbComponentKind>();
   /** Entity id → groups this invocation has filed/or scoped it into. */
   const groupsByEntity = new Map<string, Set<string>>();
   /** Group ids this invocation created; their member rosters are knowable. */
   const createdGroups = new Set<string>();
   /** Group id → the member rows of that group this invocation wrote. */
   const membersByGroup = new Map<string, Map<string, readonly string[]>>();
-  /** `groupMember` row id → its group. */
+  /** Grant row id → its group. */
   const memberGroup = new Map<string, string>();
   /** Edge key → the live buffered edge, or `gone` when a buffered delete removed it. */
   const edges = new Map<
     string,
     { readonly relationshipId: string; readonly targetId: string } | "gone"
   >();
-  /** Relationship row id → the edge key it belongs to. */
+  /** Link row id → the edge key it belongs to. */
   const edgeKeys = new Map<string, string>();
 
   let sealed = false;
@@ -215,48 +240,60 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     return values;
   };
 
-  /** Index one buffered Update so later verbs and reads can resolve against it. */
+  /**
+   * Index one buffered Update so later verbs and reads can resolve against it.
+   * The dispatch is on the component: the four kinds share one committed model.
+   */
   const indexWrite = (update: Update): void => {
     const id = update.subject_id;
     if (update.method === "delete") {
-      if (membershipGroup.has(id)) {
+      const kind = rowKinds.get(id);
+      rowKinds.delete(id);
+      if (kind === "membership") {
         removeGroup(membershipEntity.get(id) ?? "", membershipGroup.get(id) ?? "");
         membershipGroup.delete(id);
         membershipEntity.delete(id);
         return;
       }
-      if (edgeKeys.has(id)) {
+      if (kind === "link") {
         markEdgeGone(id);
         return;
       }
-      const groupId = memberGroup.get(id);
-      if (groupId !== undefined) {
-        membersByGroup.get(groupId)?.delete(id);
-        memberGroup.delete(id);
+      if (kind === "grant") {
+        const groupId = memberGroup.get(id);
+        if (groupId !== undefined) {
+          membersByGroup.get(groupId)?.delete(id);
+          memberGroup.delete(id);
+        }
       }
       rowValues.delete(id);
       return;
     }
 
-    const model = componentModel(update.component);
+    const kind = ebbComponentKind(update.component);
     const values = foldRow(update);
     if (values === undefined) return;
+    if (kind === null) return;
+    rowKinds.set(id, kind);
 
-    switch (model) {
-      case "entityGroup": {
-        const groupId = stringValue(values, "group_id");
-        const entityId = stringValue(values, "entity_id");
+    const value = platformValue(values, kind);
+    if (value === undefined) return;
+
+    switch (kind) {
+      case "membership": {
+        const groupId = stringValue(value, "group_id");
+        const entityId = stringValue(value, "entity_id");
         if (groupId === undefined || entityId === undefined) return;
         membershipGroup.set(id, groupId);
         membershipEntity.set(id, entityId);
         addGroup(entityId, groupId);
         return;
       }
-      case "relationship": {
-        const sourceId = stringValue(values, "source_id");
-        const field = stringValue(values, "field");
-        const type = stringValue(values, "type");
-        const targetId = stringValue(values, "target_id");
+      case "link": {
+        const sourceId = stringValue(value, "source_id");
+        const field = stringValue(value, "field");
+        const type = stringValue(value, "type");
+        const targetId = stringValue(value, "target_id");
         if (
           sourceId === undefined ||
           field === undefined ||
@@ -275,10 +312,10 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
         addGroup(id, id);
         return;
       }
-      case "groupMember": {
-        const groupId = stringValue(values, "group_id");
+      case "grant": {
+        const groupId = stringValue(value, "group_id");
         if (groupId === undefined) return;
-        const permissions = stringListValue(values, "permissions") ?? [];
+        const permissions = stringListValue(value, "permissions") ?? [];
         memberGroup.set(id, groupId);
         const roster = membersByGroup.get(groupId) ?? new Map<string, readonly string[]>();
         roster.set(id, permissions);
@@ -286,8 +323,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
         addGroup(id, groupId);
         return;
       }
-      default:
-        return;
     }
   };
 
@@ -298,7 +333,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       if (held === undefined) updatesById.set(update.subject_id, [update]);
       else held.push(update);
       if (update.method !== "delete") {
-        types.set(update.subject_id, componentModel(update.component));
+        types.set(update.subject_id, committedModelOf(update.component));
       }
       indexWrite(update);
     }
@@ -364,12 +399,17 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     return overlay.read(id);
   };
 
-  /** Refuse a `groupMember` patch that would empty its group's capable members. */
-  const guardMemberUpdate = (id: string, patch: Record<string, unknown>): void => {
-    const permissions = patch["permissions"];
-    if (permissions === undefined || patch["group_id"] !== undefined) return;
+  /** Refuse a grant patch that would empty its group's capable members. */
+  const guardGrantUpdate = (id: string, patch: Record<string, unknown>): void => {
+    const value = platformValue(patch, "grant");
+    if (value === undefined) return;
     const groupId = memberGroup.get(id);
-    if (groupId === undefined || !Array.isArray(permissions)) return;
+    const nextGroupId = stringValue(value, "group_id");
+    const permissions = value["permissions"];
+    // Only a same-group permission write is locally provable. A move between
+    // groups re-points the grant, which the server refuses.
+    if (groupId === undefined || nextGroupId !== groupId) return;
+    if (!Array.isArray(permissions)) return;
     if (!permissions.every((entry) => typeof entry === "string")) return;
     assertLastGroupMember({ groupsOf, groupOfMembership, groupMembersOf }, id, groupId, {
       removedIds: [],
@@ -423,7 +463,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       id,
       batch.filter(
         (update) =>
-          update.method !== "delete" && componentModel(update.component) === "entityGroup",
+          update.method !== "delete" && ebbComponentKind(update.component) === "membership",
       ),
     );
     return createHandle(id);
@@ -437,7 +477,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   ): void => {
     assertWritable();
     const schema = requireRegistry();
-    if (entity === "groupMember") guardMemberUpdate(id, patch);
+    if (rowKinds.get(id) === "grant") guardGrantUpdate(id, patch);
     const verb: UpdateVerb = {
       verb: "update",
       entity,
@@ -452,8 +492,11 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const remove = (entity: string, id: string): void => {
     assertWritable();
     const schema = requireRegistry();
-    if (entity === "entityGroup") guardMembershipDelete(id);
-    if (entity === "groupMember") guardMemberDelete(id);
+    // A delete names no component, so a row's kind is knowable only when this
+    // invocation wrote the row itself; anything else defers to the server.
+    const kind = rowKinds.get(id);
+    if (kind === "membership") guardMembershipDelete(id);
+    if (kind === "grant") guardMemberDelete(id);
     run(operationCallFor(schema, { verb: "delete", entity, id, groups: groupsOf(id) }));
   };
 

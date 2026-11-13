@@ -77,7 +77,11 @@ interface CommittedUpdate {
   readonly data?: { readonly value?: unknown };
 }
 
-/** The model a committed Update's component names; `undefined` for a delete. */
+/**
+ * The model a committed Update's component names; `undefined` for a delete.
+ * A platform component's prefix is the model `ebb`, never its kind, so a
+ * membership write reads as `ebb` and its component as `ebb/membership`.
+ */
 const modelOf = (update: CommittedUpdate): string | undefined =>
   update.component?.slice(0, update.component.indexOf("/"));
 
@@ -125,8 +129,13 @@ describe("proofreadDocument", () => {
     const models = action?.updates
       .map(modelOf)
       .filter((model, index, all) => model !== all[index - 1]);
-    expect(models).toEqual(["comment", "entityGroup", "comment", "entityGroup"]);
+    // Each created comment is filed into the workspace group, so every comment
+    // write is followed by its `ebb/membership` row under the `ebb` model.
+    expect(models).toEqual(["comment", "ebb", "comment", "ebb"]);
     expect(action?.updates.every((update) => update.method === "replace")).toBe(true);
+
+    const components = (action?.updates ?? []).map((update) => update.component);
+    expect(components.filter((component) => component === "ebb/membership")).toHaveLength(2);
 
     const valueOf = (component: string): unknown[] =>
       (action?.updates ?? [])

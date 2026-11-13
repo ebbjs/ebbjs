@@ -26,7 +26,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
   import Plug.Conn
   import EbbServer.TestHelpers
 
-  alias EbbServer.Storage.Writer
+  alias EbbServer.Storage.{SystemComponent, Writer}
   alias EbbServer.Sync.Router
 
   defp post_query(body, actor_id \\ "a_test") do
@@ -44,7 +44,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       id: "act_group_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: component_updates("upd_group_", group_id, "group", %{"name" => "Test Group"}, hlc)
+      updates: component_updates("upd_group_", group_id, :group, %{"name" => "Test Group"}, hlc)
     }
 
     {:ok, {_gsn1, _gsn1}, []} = Writer.write_actions([group_action])
@@ -57,7 +57,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
         component_updates(
           "upd_gm_",
           gm_id,
-          "groupMember",
+          :grant,
           %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
           hlc
         )
@@ -76,7 +76,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
         component_updates(
           "upd_eg_",
           eg_id,
-          "entityGroup",
+          :membership,
           %{"entity_id" => group_id, "group_id" => group_id},
           eg_hlc
         )
@@ -118,7 +118,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
         component_updates(
           "upd_eg_",
           eg_id,
-          "entityGroup",
+          :membership,
           %{"entity_id" => todo_id, "group_id" => group_id},
           eg_hlc
         )
@@ -128,7 +128,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
     :ok
   end
 
-  defp component_updates(id_prefix, subject_id, model, fields, hlc) do
+  defp component_updates(id_prefix, subject_id, model, fields, hlc) when is_binary(model) do
     fields
     |> Enum.with_index()
     |> Enum.map(fn {{field, value}, index} ->
@@ -142,6 +142,22 @@ defmodule EbbServer.Sync.EntityQueryTest do
         data: %{"type" => "lww", "value" => value, "hlc" => hlc}
       }
     end)
+  end
+
+  # A platform row is one atomic component: the whole value is the payload and
+  # the component name says which kind it is.
+  defp component_updates(id_prefix, subject_id, kind, value, hlc) when is_atom(kind) do
+    [
+      %{
+        id: "#{id_prefix}_#{Nanoid.generate()}",
+        subject_id: subject_id,
+        component: SystemComponent.component(kind),
+        model: SystemComponent.model(),
+        field: SystemComponent.field(kind),
+        method: :replace,
+        data: %{"value" => value, "hlc" => hlc}
+      }
+    ]
   end
 
   describe "POST /entities/query" do

@@ -27,16 +27,22 @@ defmodule EbbServer.Storage.SQLite do
 
   Generated columns extract field values from the per-entity JSON `data`
   so that `WHERE` clauses can reference them via `json_extract` without
-  parsing JSON at read time. Field values live at `data.fields.X.value`.
+  parsing JSON at read time. A user field's value lives at
+  `data.fields.X.value`; a platform component (`ebb/link`, `ebb/grant`, …)
+  carries one atomic value at `data.fields.<kind>.value`. Each semantic
+  column binds to the one component that owns it, which is what makes its
+  non-nullness mean "the row carries this component" (see
+  `EbbServer.Storage.SystemComponent`).
   A separate `cursors` table holds durable named consumer cursors (Action
   export today, peer replication later).
 
   ## Component existence
 
   A materialized row's `data.components` is the canonical, sorted list of
-  `<model>/<field>` names derived from `data.fields`. It is written by
-  `EbbServer.Storage.EntityStore` alongside the fields and is not part of the
-  wire shape: `EbbServer.Storage.EntityView` projects it away.
+  component names derived from `data.fields`: a user field names its row's
+  model (`todo/title`), a platform field names its component (`ebb/link`). It
+  is written by `EbbServer.Storage.EntityStore` and projected away from the
+  wire shape by `EbbServer.Storage.EntityView`.
 
   `entity_components` mirrors that list one row per `(entity, component)` so
   "which live rows hold component X" is an index lookup rather than a JSON
@@ -70,6 +76,8 @@ defmodule EbbServer.Storage.SQLite do
 
   use GenServer
 
+  require Logger
+
   alias EbbServer.Storage.QueryFilter
   alias Exqlite.Sqlite3
 
@@ -81,6 +89,13 @@ defmodule EbbServer.Storage.SQLite do
   # the NIF rather than returning an error a caller can handle.
   @max_offset 0x7FFFFFFFFFFFFFFF
 
+  # The read model's shape. The DDL is `CREATE ... IF NOT EXISTS`, so an older
+  # file would keep its old columns and answer every listing empty; a mismatch
+  # is therefore a reset, not a migration. The cache rebuilds from
+  # `cf_actions` plus `cf_group_actions` (#793 decision 9), and `cursors` is
+  # not part of the shape and survives.
+  @schema_version 2
+
   @pragmas """
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
@@ -89,8 +104,9 @@ defmodule EbbServer.Storage.SQLite do
   PRAGMA foreign_keys = ON;
   """
 
-  # Generated columns extract field values from entity `data` JSON.
-  # Field values live at `data.fields.X.value`.
+  # A user field's value lives at `data.fields.X.value`; a platform
+  # component's is the whole object at `data.fields.<kind>.value`.
+  # `rel_type`/`rel_field` name the *link's* type and field.
   @create_entities_table """
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
@@ -101,24 +117,32 @@ defmodule EbbServer.Storage.SQLite do
     deleted_hlc INTEGER,
     deleted_by TEXT,
     last_gsn INTEGER NOT NULL,
-    source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.source_id.value')) STORED,
-    target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.target_id.value')) STORED,
-    rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.type.value')) STORED,
-    rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.field.value')) STORED,
-    actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.actor_id.value')) STORED,
-    entity_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.entity_id.value')) STORED,
-    group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.group_id.value')) STORED,
-    permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.permissions.value')) STORED
+    source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.source_id')) STORED,
+    target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.target_id')) STORED,
+    rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.type')) STORED,
+    rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.field')) STORED,
+    actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.grant.value.actor_id')) STORED,
+    entity_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.membership.value.entity_id')) STORED,
+    group_id TEXT GENERATED ALWAYS AS (COALESCE(json_extract(data, '$.fields.grant.value.group_id'), json_extract(data, '$.fields.membership.value.group_id'))) STORED,
+    permissions TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.grant.value.permissions')) STORED
   );
   """
 
+  # A grant and a membership are both filed in a group, so one `group_id`
+  # column serves both; the spaces do not mix because each partial index is
+  # predicated on the owning component's identity column.
+  #
+  # The guards are generated-column non-nullness, not `type = '…'`: all four
+  # components share the model `ebb`, while `actor_id IS NOT NULL` is exactly
+  # "carries `ebb/grant`". A partial index is usable only when the statement
+  # repeats its predicate.
   @create_indexes """
   CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type) WHERE deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_type_gsn ON entities(type, last_gsn);
-  CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE type = 'relationship' AND deleted_hlc IS NULL;
-  CREATE INDEX IF NOT EXISTS idx_entities_group_member ON entities(group_id, actor_id) WHERE type = 'groupMember' AND deleted_hlc IS NULL;
-  CREATE INDEX IF NOT EXISTS idx_entities_entity_group ON entities(entity_id, group_id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
-  CREATE INDEX IF NOT EXISTS idx_entities_entity_group_page ON entities(group_id, id) WHERE type = 'entityGroup' AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE source_id IS NOT NULL AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_group_member ON entities(group_id, actor_id) WHERE actor_id IS NOT NULL AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_entity_group ON entities(entity_id, group_id) WHERE entity_id IS NOT NULL AND deleted_hlc IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_entities_entity_group_page ON entities(group_id, id) WHERE entity_id IS NOT NULL AND deleted_hlc IS NULL;
   """
 
   @create_entity_components_table """
@@ -175,38 +199,36 @@ defmodule EbbServer.Storage.SQLite do
   """
 
   # Group-scoped listing pages (#476). Each query is the keyset for one phase
-  # of `EbbServer.Sync.GroupListing`: group members are ordered by
-  # `(actor_id, id)` through `idx_entities_group_member`, membership rows by
-  # `id` through `idx_entities_entity_group_page`.
+  # of `EbbServer.Sync.GroupListing`. The leading component guard is the
+  # partial index's own predicate; dropping it turns the page into a scan.
   @list_group_member_ids_sql """
   SELECT id, actor_id FROM entities
-  WHERE type = 'groupMember' AND group_id = ? AND deleted_hlc IS NULL
+  WHERE actor_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL
   ORDER BY actor_id, id LIMIT ?
   """
 
   @list_group_member_ids_after_sql """
   SELECT id, actor_id FROM entities
-  WHERE type = 'groupMember' AND group_id = ? AND deleted_hlc IS NULL
+  WHERE actor_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL
     AND (actor_id > ? OR (actor_id = ? AND id > ?))
   ORDER BY actor_id, id LIMIT ?
   """
 
   @list_entity_group_memberships_sql """
   SELECT id, entity_id FROM entities
-  WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+  WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL
   ORDER BY id LIMIT ?
   """
 
   @list_entity_group_memberships_after_sql """
   SELECT id, entity_id FROM entities
-  WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id > ?
+  WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL AND id > ?
   ORDER BY id LIMIT ?
   """
 
-  # Per-page relationship ids (#744). A relationship is scoped by its source
-  # and never gets an `entityGroup` row of its own, so the membership keyset
-  # above cannot name it; the page finds its rows by joining its own window
-  # to `source_id`.
+  # Per-page link ids (#744). A link is scoped by its source and never gets a
+  # membership row of its own, so the membership keyset above cannot name it;
+  # the page finds its rows by joining its own window to `source_id`.
   #
   # The fence and the index hint are both load-bearing, and nothing in this
   # application runs `ANALYZE`. `AS MATERIALIZED` keeps the window on the
@@ -214,7 +236,7 @@ defmodule EbbServer.Storage.SQLite do
   # joined rows, so one source with a large outgoing degree would fill the page
   # and drop every later source in the window. `INDEXED BY` makes the plan a
   # seek per window row; without it the shape is a scan of the whole live
-  # relationship set on a database that has no statistics.
+  # link set on a database that has no statistics.
   #
   # The window is bounded by the membership rows the caller already read —
   # `id <=` the page's own last row — and there is deliberately no `LIMIT`.
@@ -226,24 +248,24 @@ defmodule EbbServer.Storage.SQLite do
   @list_page_relationship_ids_sql """
   WITH page AS MATERIALIZED (
     SELECT entity_id FROM entities
-    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL AND id <= ?
+    WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL AND id <= ?
   )
   SELECT r.id
   FROM page m
   JOIN entities r INDEXED BY idx_entities_source_id
-    ON r.source_id = m.entity_id AND r.type = 'relationship' AND r.deleted_hlc IS NULL
+    ON r.source_id = m.entity_id AND r.source_id IS NOT NULL AND r.deleted_hlc IS NULL
   """
 
   @list_page_relationship_ids_after_sql """
   WITH page AS MATERIALIZED (
     SELECT entity_id FROM entities
-    WHERE type = 'entityGroup' AND group_id = ? AND deleted_hlc IS NULL
+    WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL
       AND id > ? AND id <= ?
   )
   SELECT r.id
   FROM page m
   JOIN entities r INDEXED BY idx_entities_source_id
-    ON r.source_id = m.entity_id AND r.type = 'relationship' AND r.deleted_hlc IS NULL
+    ON r.source_id = m.entity_id AND r.source_id IS NOT NULL AND r.deleted_hlc IS NULL
   """
 
   # Generic durable consumer cursor. #367's Action export owns the
@@ -356,13 +378,12 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Lists the group's live `groupMember` rows in keyset order.
+  Lists the group's live `ebb/grant` rows in keyset order.
 
   Ordered by `(actor_id, id)`; `after_key` is `nil` to start from the
   beginning or the `{actor_id, id}` pair of the last row returned by a
-  previous call. The pair, not `actor_id` alone, is the key so two
-  membership rows for one actor cannot shadow each other at a page
-  boundary.
+  previous call. The pair, not `actor_id` alone, is the key so two grants
+  for one actor cannot shadow each other at a page boundary.
 
   Returns `[{id, actor_id}]`.
   """
@@ -377,7 +398,7 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Lists the group's live `entityGroup` rows in keyset order.
+  Lists the group's live `ebb/membership` rows in keyset order.
 
   Ordered by row `id`; `after_key` is `nil` to start from the beginning or
   the last row id returned by a previous call.
@@ -395,8 +416,8 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Lists the live `relationship` row ids whose source an `entityGroup` row in
-  the group's window names.
+  Lists the live `ebb/link` row ids whose source a live `ebb/membership` row
+  in the group's window names.
 
   The window is `(after_key, window_end]` over the membership keyset
   `list_entity_group_memberships/4` pages. It is bounded by the membership
@@ -432,6 +453,33 @@ defmodule EbbServer.Storage.SQLite do
           {:ok, [String.t()]} | {:error, term()}
   def explain_page_relationship_ids(after_key, server \\ __MODULE__) do
     GenServer.call(server, {:explain_page_relationship_ids, after_key})
+  end
+
+  @doc """
+  Returns SQLite's `EXPLAIN QUERY PLAN` details for a group-member keyset
+  statement, for the `after_key` variant a page would run.
+
+  The plan rests on the component guard matching the partial index's
+  predicate, which a re-typed guard silently breaks; this seam lets a test
+  assert the plan rather than the SQL text.
+  """
+  @spec explain_list_group_members({String.t(), String.t()} | nil, GenServer.server()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def explain_list_group_members(after_key, server \\ __MODULE__) do
+    GenServer.call(server, {:explain_list_group_members, after_key})
+  end
+
+  @doc """
+  Returns SQLite's `EXPLAIN QUERY PLAN` details for a membership keyset
+  statement, for the `after_key` variant a page would run.
+
+  See `explain_list_group_members/2`: the plan has to name the partial
+  `idx_entities_entity_group_page` index.
+  """
+  @spec explain_list_entity_group_memberships(String.t() | nil, GenServer.server()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def explain_list_entity_group_memberships(after_key, server \\ __MODULE__) do
+    GenServer.call(server, {:explain_list_entity_group_memberships, after_key})
   end
 
   @doc """
@@ -526,6 +574,8 @@ defmodule EbbServer.Storage.SQLite do
     # PRAGMAs
     :ok = Sqlite3.execute(db, @pragmas)
 
+    :ok = reset_stale_schema(db)
+
     # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
     :ok = Sqlite3.execute(db, @create_indexes)
@@ -556,6 +606,50 @@ defmodule EbbServer.Storage.SQLite do
     }
 
     {:ok, state}
+  end
+
+  # A shape change is a reset: drop the projected tables and let the
+  # materializer rebuild them from the log.
+  defp reset_stale_schema(db) do
+    version = read_user_version(db)
+
+    cond do
+      version == @schema_version ->
+        :ok
+
+      not table?(db, "entities") ->
+        set_user_version(db)
+
+      true ->
+        Logger.warning(
+          "SQLite read model is schema v#{version}, expected v#{@schema_version}: " <>
+            "dropping the projected tables and rebuilding from the Action log"
+        )
+
+        :ok = Sqlite3.execute(db, "DROP TABLE IF EXISTS entities")
+        :ok = Sqlite3.execute(db, "DROP TABLE IF EXISTS entity_components")
+        set_user_version(db)
+    end
+  end
+
+  defp set_user_version(db), do: Sqlite3.execute(db, "PRAGMA user_version = #{@schema_version}")
+
+  # A PRAGMA has no column metadata, so it needs a prepared statement.
+  defp read_user_version(db) do
+    {:ok, stmt} = Sqlite3.prepare(db, "PRAGMA user_version")
+    {:row, [version]} = Sqlite3.step(db, stmt)
+    :ok = Sqlite3.release(db, stmt)
+    version
+  end
+
+  defp table?(db, name) do
+    {:ok, stmt} =
+      Sqlite3.prepare(db, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?")
+
+    :ok = Sqlite3.bind(stmt, [name])
+    {:row, [count]} = Sqlite3.step(db, stmt)
+    :ok = Sqlite3.release(db, stmt)
+    count > 0
   end
 
   @impl true
@@ -740,27 +834,27 @@ defmodule EbbServer.Storage.SQLite do
 
   @impl true
   def handle_call({:list_group_members, group_id, after_key, limit}, _from, state) do
-    {sql, params} =
-      case after_key do
-        nil ->
-          {@list_group_member_ids_sql, [group_id, limit]}
-
-        {actor_id, id} ->
-          {@list_group_member_ids_after_sql, [group_id, actor_id, actor_id, id, limit]}
-      end
-
+    {sql, params} = group_member_statement(group_id, after_key, limit)
     {:reply, collect_pairs(state, sql, params), state}
   end
 
   @impl true
-  def handle_call({:list_entity_group_memberships, group_id, after_key, limit}, _from, state) do
-    {sql, params} =
-      case after_key do
-        nil -> {@list_entity_group_memberships_sql, [group_id, limit]}
-        id -> {@list_entity_group_memberships_after_sql, [group_id, id, limit]}
-      end
+  def handle_call({:explain_list_group_members, after_key}, _from, state) do
+    # The plan is the answer, so the bounds only have to bind.
+    {sql, params} = group_member_statement(nil, after_key, 1)
+    {:reply, explain(state.db, sql, params), state}
+  end
 
+  @impl true
+  def handle_call({:list_entity_group_memberships, group_id, after_key, limit}, _from, state) do
+    {sql, params} = membership_statement(group_id, after_key, limit)
     {:reply, collect_pairs(state, sql, params), state}
+  end
+
+  @impl true
+  def handle_call({:explain_list_entity_group_memberships, after_key}, _from, state) do
+    {sql, params} = membership_statement(nil, after_key, 1)
+    {:reply, explain(state.db, sql, params), state}
   end
 
   @impl true
@@ -841,24 +935,28 @@ defmodule EbbServer.Storage.SQLite do
     base_sql = """
     SELECT DISTINCT e.id, e.type, e.data, e.created_hlc, e.updated_hlc, e.deleted_hlc, e.deleted_by, e.last_gsn
     FROM entities e
-    INNER JOIN entities m ON m.type = 'entityGroup'
+    INNER JOIN entities m ON m.entity_id IS NOT NULL
       AND m.entity_id = e.id
       AND m.deleted_hlc IS NULL
-    INNER JOIN entities gm ON gm.type = 'groupMember'
+    INNER JOIN entities gm ON gm.actor_id IS NOT NULL
       AND gm.group_id = m.group_id
       AND gm.actor_id = ?
       AND gm.deleted_hlc IS NULL
       AND COALESCE(json_array_length(gm.permissions), 0) > 0
-    WHERE e.type = ?
-      AND e.deleted_hlc IS NULL
+    WHERE e.deleted_hlc IS NULL
     """
 
+    # A component-sourced page returns the rows that carry it, whatever model
+    # each is committed under (ADR decision 12).
+    #
     # Offset pagination needs a total order. `created_hlc` is the row's
     # creation time and is never NULL, so `id` only breaks same-millisecond
     # ties. DISTINCT collapses the membership join's one row per shared group.
     # The page is always bounded: `LIMIT -1` is valid SQLite for "no limit", so
     # a missing bound must never reach the SQL.
-    sql = base_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id LIMIT ?"
+    {source_sql, source_params} = source_clause(query)
+
+    sql = base_sql <> source_sql <> filter_sql <> " ORDER BY e.created_hlc, e.id LIMIT ?"
 
     {sql, pagination_params} =
       case query[:offset] do
@@ -866,7 +964,7 @@ defmodule EbbServer.Storage.SQLite do
         offset -> {sql <> " OFFSET ?", [query.limit, offset]}
       end
 
-    params = [query.actor_id, query.type] ++ filter_params ++ pagination_params
+    params = [query.actor_id] ++ source_params ++ filter_params ++ pagination_params
 
     case run_prepared(db, sql, params) do
       {:ok, rows} -> {:reply, {:ok, rows}, state}
@@ -972,6 +1070,14 @@ defmodule EbbServer.Storage.SQLite do
 
   defp field_path(field), do: "json_extract(e.data, '$.fields.#{field}.value')"
 
+  # The mirror makes this a primary-key probe per candidate row.
+  defp source_clause(%{component: component}) when is_binary(component) do
+    {" AND EXISTS (SELECT 1 FROM entity_components ec " <>
+       "WHERE ec.entity_id = e.id AND ec.component = ?)", [component]}
+  end
+
+  defp source_clause(%{type: type}), do: {" AND e.type = ?", [type]}
+
   defp convert_filter_value(true), do: 1
   defp convert_filter_value(false), do: 0
   defp convert_filter_value(value), do: value
@@ -981,6 +1087,22 @@ defmodule EbbServer.Storage.SQLite do
       {:row, row} -> collect_rows(db, stmt, [row_to_entity(row) | acc])
       :done -> Enum.reverse(acc)
     end
+  end
+
+  defp group_member_statement(group_id, nil, limit) do
+    {@list_group_member_ids_sql, [group_id, limit]}
+  end
+
+  defp group_member_statement(group_id, {actor_id, id}, limit) do
+    {@list_group_member_ids_after_sql, [group_id, actor_id, actor_id, id, limit]}
+  end
+
+  defp membership_statement(group_id, nil, limit) do
+    {@list_entity_group_memberships_sql, [group_id, limit]}
+  end
+
+  defp membership_statement(group_id, id, limit) do
+    {@list_entity_group_memberships_after_sql, [group_id, id, limit]}
   end
 
   defp page_relationship_statement(group_id, nil, window_end) do

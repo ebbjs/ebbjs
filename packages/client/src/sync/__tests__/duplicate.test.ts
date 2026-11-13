@@ -18,7 +18,7 @@ import { defineAction } from "../../schema/action";
 import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
-import { jsonResponse, openSseResponse, updateModel } from "../test-utils";
+import { jsonResponse, openSseResponse, platformEntity, updateModel } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -114,7 +114,17 @@ const mkEntity = (id: string, type: string, fields: Record<string, unknown>): En
 });
 
 const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  mkEntity(id, "entityGroup", { entity_id: entityId, group_id: groupId });
+  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
+
+/** The `ebb/membership` values one Action writes, one per membership row. */
+const membershipValues = (
+  updates: readonly Action["updates"][number][],
+): readonly { entity_id: string; group_id: string }[] =>
+  updates.flatMap((update) =>
+    update.method === "delete" || update.component !== "ebb/membership"
+      ? []
+      : [(update.data as { value: { entity_id: string; group_id: string } }).value],
+  );
 
 const storageOf = () => createMemoryAdapter();
 
@@ -133,7 +143,7 @@ const mkClient = async () => {
   return { client, storage, seen };
 };
 
-/** Seed a `todo` row plus its `entityGroup` memberships. */
+/** Seed a `todo` row plus its `ebb/membership` rows. */
 const seedTodo = async (
   storage: ReturnType<typeof storageOf>,
   id: string,
@@ -299,26 +309,12 @@ describe("duplicate — memberships", () => {
 
     const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
-    const memberships = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "entityGroup");
+    const memberships = membershipValues(decodeFirstAction(actionRequests(seen)[0]!).updates);
     expect(memberships).toHaveLength(2);
-    const valueOfComponent = (
-      row: readonly Action["updates"][number][],
-      component: string,
-    ): unknown => {
-      const update = row.find(
-        (candidate) => candidate.method !== "delete" && candidate.component === component,
-      );
-      return update === undefined || update.method === "delete"
-        ? undefined
-        : (update.data as { value: unknown }).value;
-    };
     for (const membership of memberships) {
-      expect(valueOfComponent(membership, "entityGroup/entity_id")).toBe(id);
+      expect(membership.entity_id).toBe(id);
     }
-    expect(memberships.map((row) => valueOfComponent(row, "entityGroup/group_id")).sort()).toEqual([
-      "g_1",
-      "g_2",
-    ]);
+    expect(memberships.map((membership) => membership.group_id).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("honors an explicit groups option over the source's", async () => {
@@ -327,17 +323,10 @@ describe("duplicate — memberships", () => {
 
     await client.actions.duplicateTodo({ id: "t_1", groups: ["g_2"] });
 
-    const memberships = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "entityGroup");
     expect(
-      memberships.map((row) => {
-        const update = row.find(
-          (candidate) =>
-            candidate.method !== "delete" && candidate.component === "entityGroup/group_id",
-        );
-        return update === undefined || update.method === "delete"
-          ? undefined
-          : (update.data as { value: unknown }).value;
-      }),
+      membershipValues(decodeFirstAction(actionRequests(seen)[0]!).updates).map(
+        (membership) => membership.group_id,
+      ),
     ).toEqual(["g_2"]);
   });
 

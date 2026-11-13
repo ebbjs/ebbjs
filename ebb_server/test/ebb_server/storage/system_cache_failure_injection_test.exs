@@ -69,8 +69,8 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an entity the action log cannot produce is skipped, not fatal", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_model_entry(ctx, "groupMember", "gm_present")
-      seed_model_entry(ctx, "groupMember", "gm_absent")
+      seed_model_entry(ctx, "ebb/grant", "gm_present")
+      seed_model_entry(ctx, "ebb/grant", "gm_absent")
 
       :ok =
         SQLite.upsert_entity(
@@ -129,7 +129,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an exception raised inside a dependency call is reported by class", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_model_entry(ctx, "groupMember", "gm_raises")
+      seed_model_entry(ctx, "ebb/grant", "gm_raises")
 
       name = :"raising_store_#{System.unique_integer([:positive])}"
       start_supervised!({RaisingStore, name: name})
@@ -158,7 +158,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     test "an atom carried by an exit is reported as that atom", ctx do
       ref = TestHelpers.attach_telemetry([[:ebb, :system_cache, :populated]])
 
-      seed_model_entry(ctx, "groupMember", "gm_exits")
+      seed_model_entry(ctx, "ebb/grant", "gm_exits")
 
       name = {:via, FailingRegistry, {:exits, :store_unavailable}}
 
@@ -202,8 +202,10 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
     ]
   end
 
-  defp seed_model_entry(ctx, model, entity_id) do
-    ComponentEntityIndex.apply_ops([{:put, {model, entity_id}}], index_opts(ctx))
+  # `label` is the component name for a projection phase's walk; a model
+  # entry (`ebb`) is what `entity_types` is rebuilt from.
+  defp seed_model_entry(ctx, label, entity_id) do
+    ComponentEntityIndex.apply_ops([{:put, {label, entity_id}}], index_opts(ctx))
   end
 
   defp seed_actions(ctx, actions) do
@@ -242,9 +244,13 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   defp membership_data(actor_id, group_id) do
     Jason.encode!(%{
       "fields" => %{
-        "actor_id" => %{"value" => actor_id},
-        "group_id" => %{"value" => group_id},
-        "permissions" => %{"value" => ["group.read"]}
+        "grant" => %{
+          "value" => %{
+            "actor_id" => actor_id,
+            "group_id" => group_id,
+            "permissions" => ["ebb/group.read"]
+          }
+        }
       }
     })
   end

@@ -1,30 +1,26 @@
 /**
- * End-to-end tests for the `group` / `membership` system drafts (#465) —
- * the bootstrap `create`, the draft verbs, and the `defineAction` recipe
- * that composes a `groupMember` put with an `entityGroup` put in one
- * Action.
+ * End-to-end tests for the `group` / `membership` system drafts (#465): the
+ * bootstrap `create`, the draft verbs, and the `defineAction` recipes that
+ * compose a grant put with a membership put in one Action.
  *
- * The stub `fetch` records every request so the tests can decode the
- * submitted Action and assert the wire shape. `entityGroup` stays
- * internal: no namespace, no draft handle, and no bootstrap row for the
- * group itself.
+ * The stub `fetch` records every request so the tests can decode the submitted
+ * Action and assert the wire shape.
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, type Action, type Entity } from "@ebbjs/core";
-import type { TSchema } from "@sinclair/typebox/type";
+import { decodeSync, EBB_MODEL_NAME, type Action, type Entity } from "@ebbjs/core";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { groupSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
+import { ebbSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { ActionRejectedError } from "@ebbjs/write";
 import type { ActionDrafts } from "../drafts";
-import type { WireCreateStatic, WireStatic } from "../namespace";
+
 import { createClient } from "../client";
-import { seedReplicaRow, updateModel } from "../test-utils";
+import { platformEntity, rowFields, rowsByModel, seedReplicaRow } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -53,7 +49,13 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch =>
         groups: [
           {
             id: "g_1",
-            permissions: ["profile.*", "group.*", "groupMember.*", "relationship.*"],
+            permissions: [
+              "profile.*",
+              "ebb/group.*",
+              "ebb/grant.*",
+              "ebb/membership.*",
+              "ebb/link.*",
+            ],
             cursor_valid: true,
             reason: null,
             cursor: 0,
@@ -73,7 +75,9 @@ const schema = defineSchema({
   // A system entity can own a relationship. Without one the system
   // namespaces' link / unlink verbs would have nothing to point at.
   relationships: {
-    group_lead: defineRelationship({ source: groupSystemEntity, target: profile, as: "lead" }),
+    // A platform row can own a relationship; its model is `ebb` and its kind is
+    // the component it carries.
+    group_lead: defineRelationship({ source: ebbSystemEntity, target: profile, as: "lead" }),
   },
   version: 1,
 });
@@ -81,17 +85,16 @@ const schema = defineSchema({
 /** The system drafts under test, each declared so the call site stays typed. */
 const createGroup = defineAction(
   schema,
-  ({ group }, params: { name: string; apps?: Record<string, boolean> }) => group.create(params),
+  ({ group }, params: { name: string; apps?: readonly string[] }) => group.create(params),
 );
 
-const createMembership = defineAction(
-  schema,
-  ({ membership }, params: WireCreateStatic<GroupMemberFields>) => membership.create(params),
+const createMembership = defineAction(schema, ({ membership }, params: GroupMemberFields) =>
+  membership.create(params),
 );
 
 const updateMembership = defineAction(
   schema,
-  ({ membership }, params: { id: string; patch: Partial<WireStatic<GroupMemberFields>> }): void => {
+  ({ membership }, params: { id: string; patch: Partial<GroupMemberFields> }): void => {
     membership.update(params.id, params.patch);
   },
 );
@@ -109,7 +112,7 @@ const updateGroup = defineAction(
 
 const updateGroupApps = defineAction(
   schema,
-  ({ group }, params: { id: string; apps: Record<string, boolean> }): void => {
+  ({ group }, params: { id: string; apps: string[] }): void => {
     group.update(params.id, { apps: params.apps });
   },
 );
@@ -130,7 +133,13 @@ const duplicateGroup = defineAction(
     membership.create({
       group_id: copy.id,
       actor_id: "actor_1",
-      permissions: ["profile.*", "group.*", "groupMember.*", "relationship.*"],
+      permissions: [
+        "profile.*",
+        "ebb/group.*",
+        "ebb/grant.*",
+        "ebb/membership.*",
+        "ebb/link.*",
+      ] as string[],
     });
     return copy;
   },
@@ -248,55 +257,11 @@ const updatesOf = (seen: readonly RecordedRequest[]): Action["updates"] =>
 const rowsOf = (
   updates: readonly Action["updates"][number][],
   model: string,
-): readonly (readonly Action["updates"][number][])[] => {
-  const bySubject = new Map<string, Action["updates"][number][]>();
-  for (const update of updates) {
-    if (updateModel(update) !== model) continue;
-    const row = bySubject.get(update.subject_id);
-    if (row === undefined) bySubject.set(update.subject_id, [update]);
-    else row.push(update);
-  }
-  return [...bySubject.values()];
-};
-
-/** One component's value on a row, as the wire carries it. */
-const componentOf = (row: readonly Action["updates"][number][], field: string): unknown => {
-  const update = row.find(
-    (candidate) =>
-      candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
-      candidate.component.endsWith(`/${field}`),
-  );
-  return update === undefined || update.method === "drop" || update.method === "delete"
-    ? undefined
-    : update.data;
-};
+): readonly (readonly Action["updates"][number][])[] => rowsByModel(updates, model);
 
 /** A row's component values, keyed by field. */
 const fieldsOf = (row: readonly Action["updates"][number][]): Record<string, unknown> =>
-  Object.fromEntries(
-    row
-      .filter((update) => update.method === "merge" || update.method === "replace")
-      .map((update) => [
-        update.method === "delete" ? "" : update.component.slice(update.component.indexOf("/") + 1),
-        update.method === "delete" ? null : (update.data as { value: unknown }).value,
-      ]),
-  );
-
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  type,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
+  rowFields(row);
 
 describe("draft group.create — bootstrap", () => {
   it("submits one Action with the group put and the actor's own groupMember put", async () => {
@@ -310,7 +275,7 @@ describe("draft group.create — bootstrap", () => {
     expect(groupRows[0]![0]!.subject_id).toBe(created.id);
     expect(fieldsOf(groupRows[0]!)["name"]).toBe("Team");
 
-    const memberRows = rowsOf(updates, "groupMember");
+    const memberRows = rowsOf(updates, "grant");
     expect(memberRows).toHaveLength(1);
     expect(fieldsOf(memberRows[0]!)).toMatchObject({
       actor_id: "actor_1",
@@ -318,7 +283,7 @@ describe("draft group.create — bootstrap", () => {
     });
 
     // No `entityGroup` row for the group itself — a group is its own group.
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(0);
+    expect(rowsOf(updates, "membership")).toHaveLength(0);
 
     // Exactly one Action reached the wire.
     expect(actionCalls(seen)).toHaveLength(1);
@@ -330,12 +295,14 @@ describe("draft group.create — bootstrap", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const [memberRow] = rowsOf(updatesOf(seen), "groupMember");
+    const [memberRow] = rowsOf(updatesOf(seen), "grant");
     const permissions = fieldsOf(memberRow!)["permissions"] as readonly string[];
     expect(permissions).toContain("profile.*");
-    expect(permissions).toContain("group.*");
-    expect(permissions).toContain("groupMember.*");
-    expect(permissions).toContain("relationship.*");
+    // Each platform component is its own permission subject (decision 12).
+    expect(permissions).toContain("ebb/group.*");
+    expect(permissions).toContain("ebb/grant.*");
+    expect(permissions).toContain("ebb/membership.*");
+    expect(permissions).toContain("ebb/link.*");
   });
 });
 
@@ -346,9 +313,7 @@ describe("draft group.create — app scope (#732)", () => {
     await client.actions.createGroup({ name: "Team" });
 
     const [groupRow] = rowsOf(updatesOf(seen), "group");
-    expect(componentOf(groupRow!, "apps")).toEqual({
-      map: { notes: { value: true, update_id: expect.any(String), hlc: expect.any(String) } },
-    });
+    expect(fieldsOf(groupRow!)["apps"]).toEqual(["notes"]);
   });
 
   it("omits apps when the client declares no app", async () => {
@@ -360,18 +325,18 @@ describe("draft group.create — app scope (#732)", () => {
     expect(fieldsOf(groupRow!)["apps"]).toBeUndefined();
   });
 
-  it("writes a map envelope for a scope patch so app keys merge independently", async () => {
+  it("rewrites the whole group value when the app scope changes", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("g_1", "group", { name: "Team" }));
+    await storage.entities.set(platformEntity("g_1", "group", { name: "Team" }));
 
-    await client.actions.updateGroupApps({ id: "g_1", apps: { issues: false } });
+    await client.actions.updateGroupApps({ id: "g_1", apps: ["issues"] });
 
-    const [appsComponent] = updatesOf(seen).filter(
-      (update) => update.method !== "delete" && update.component === "group/apps",
+    // An atomic value has no partial write: the patch carries the whole value,
+    // so the name it did not touch survives.
+    const [update] = updatesOf(seen).filter(
+      (candidate) => candidate.method !== "delete" && candidate.component === "ebb/group",
     );
-    expect(appsComponent!.data).toEqual({
-      map: { issues: { value: false, update_id: expect.any(String), hlc: expect.any(String) } },
-    });
+    expect(fieldsOf([update!])).toMatchObject({ name: "Team", apps: ["issues"] });
   });
 });
 
@@ -386,8 +351,9 @@ describe("draft membership.create", () => {
     });
 
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "groupMember");
-    expect(row).toHaveLength(3);
+    const [row] = rowsOf(updates, "grant");
+    // One atomic `ebb/grant` value, not three per-field Updates.
+    expect(row).toHaveLength(1);
     expect(created.id).toMatch(/^e_/);
     expect(row![0]!.subject_id).toBe(created.id);
     expect(fieldsOf(row!)).toMatchObject({
@@ -395,13 +361,13 @@ describe("draft membership.create", () => {
       actor_id: "actor_2",
       permissions: ["profile.*"],
     });
-    expect(rowsOf(updates, "entityGroup")).toHaveLength(0);
+    expect(rowsOf(updates, "membership")).toHaveLength(0);
   });
 });
 
 describe("draft membership — last_group_member refusal", () => {
   const mkMember = (id: string, permissions: readonly string[], groupId = "g_1"): Entity =>
-    mkEntity(id, "groupMember", { group_id: groupId, actor_id: "actor_1", permissions });
+    platformEntity(id, "grant", { group_id: groupId, actor_id: "actor_1", permissions });
 
   it("delete() of the group's last capable member is refused with last_group_member", async () => {
     const { client, storage, seen } = await mkClient();
@@ -453,19 +419,24 @@ describe("draft membership — last_group_member refusal", () => {
 describe("draft system — shared verbs", () => {
   it("group.update emits one patch for the named group", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("g_1", "group", { name: "Team" }));
+    await storage.entities.set(platformEntity("g_1", "group", { name: "Team" }));
 
     await client.actions.updateGroup({ id: "g_1", name: "Renamed" });
 
     const [row] = rowsOf(updatesOf(seen), "group");
     expect(row).toHaveLength(1);
-    expect(row![0]).toMatchObject({ subject_id: "g_1", component: "group/name", method: "merge" });
+    // An atomic value is written whole, so a name patch replaces it.
+    expect(row![0]).toMatchObject({
+      subject_id: "g_1",
+      component: "ebb/group",
+      method: "replace",
+    });
     expect(fieldsOf(row!)["name"]).toBe("Renamed");
   });
 
   it("group.delete emits one delete Update carrying no data", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("g_1", "group", { name: "Team" }));
+    await storage.entities.set(platformEntity("g_1", "group", { name: "Team" }));
 
     await client.actions.deleteGroup({ id: "g_1" });
 
@@ -476,7 +447,7 @@ describe("draft system — shared verbs", () => {
 
   it("group.duplicate copies the row into the requested groups", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("g_src", "group", { name: "Team" }));
+    await storage.entities.set(platformEntity("g_src", "group", { name: "Team" }));
 
     const copy = await client.actions.duplicateGroup({ id: "g_src", groups: ["g_1"] });
 
@@ -485,7 +456,7 @@ describe("draft system — shared verbs", () => {
     expect(copy.id).toMatch(/^e_/);
     expect(put!.every((update) => update.method === "replace")).toBe(true);
     expect(fieldsOf(put!)["name"]).toBe("Team");
-    const filed = rowsOf(updates, "entityGroup").filter(
+    const filed = rowsOf(updates, "membership").filter(
       (row) => fieldsOf(row)["entity_id"] === copy.id,
     );
     expect(filed.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1"]);
@@ -495,7 +466,7 @@ describe("draft system — shared verbs", () => {
   it("membership.duplicate copies the member row onto the handle id", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(
-      mkEntity("gm_src", "groupMember", {
+      platformEntity("gm_src", "grant", {
         group_id: "g_1",
         actor_id: "actor_2",
         permissions: ["profile.*"],
@@ -504,7 +475,7 @@ describe("draft system — shared verbs", () => {
 
     const copy = await client.actions.duplicateMembership({ id: "gm_src" });
 
-    const [put] = rowsOf(updatesOf(seen), "groupMember");
+    const [put] = rowsOf(updatesOf(seen), "grant");
     expect(put![0]!.subject_id).toBe(copy.id);
     expect(put!.every((update) => update.method === "replace")).toBe(true);
     expect(fieldsOf(put!)).toMatchObject({
@@ -519,24 +490,26 @@ describe("draft system — shared verbs", () => {
 
     await client.actions.linkGroupLead({ id: "g_1", profileId: "profile_1" });
 
-    const relationships = rowsOf(updatesOf(seen), "relationship");
+    const relationships = rowsOf(updatesOf(seen), "link");
     expect(relationships).toHaveLength(1);
+    // The link's `type` is the source model the declaration names (`ebb`), not
+    // the logical kind.
     expect(fieldsOf(relationships[0]!)).toMatchObject({
       source_id: "g_1",
       target_id: "profile_1",
       field: "lead",
-      type: "group",
+      type: "ebb",
     });
   });
 
   it("group.unlink deletes the live edge by its row id", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(
-      mkEntity("rel_1", "relationship", {
+      platformEntity("rel_1", "link", {
         source_id: "g_1",
         target_id: "profile_1",
         field: "lead",
-        type: "group",
+        type: "ebb",
       }),
     );
 
@@ -585,23 +558,22 @@ describe("draft system creates — validate pass-through", () => {
 
     await client.actions.createMembershipWith({ permissions: 42, validate: false });
 
-    const [memberRow] = rowsOf(updatesOf(seen), "groupMember");
+    const [memberRow] = rowsOf(updatesOf(seen), "grant");
     expect(fieldsOf(memberRow!)["permissions"]).toBe(42);
   });
 });
 
 describe("system namespace exposure", () => {
-  it("keeps `entityGroup` internal — no namespace, no draft handle", async () => {
+  it("exposes group and membership, and no raw platform namespace", async () => {
     const { client } = await mkClient();
 
-    expect((client as unknown as Record<string, unknown>)["entityGroup"]).toBeUndefined();
-
     const drafts: ActionDrafts<typeof schema> = await client.actions.inspectDrafts();
-    expect(Object.keys(drafts)).not.toContain("entityGroup");
     expect(Object.keys(drafts)).toEqual(expect.arrayContaining(["group", "membership"]));
+    // The four kinds share one model, so there is no `ebb` surface to address them through.
+    expect(Object.keys(drafts)).not.toContain(EBB_MODEL_NAME);
 
-    // An entityGroup row scoping a group or a member is meaningless, so
-    // the membership verbs are not part of the runtime surface either.
+    // A membership row scoping a group or a grant is meaningless, so the
+    // membership verbs are not part of the runtime surface either.
     const group = client.group as unknown as Record<string, unknown>;
     expect(group["addToGroup"]).toBeUndefined();
     expect(group["removeFromGroup"]).toBeUndefined();
@@ -620,10 +592,10 @@ describe("system drafts — one Action", () => {
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
     expect(rowsOf(updates, "group")).toHaveLength(1);
-    expect(rowsOf(updates, "groupMember")).toHaveLength(1);
+    expect(rowsOf(updates, "grant")).toHaveLength(1);
     expect(rowsOf(updates, "profile")).toHaveLength(1);
 
-    const membership = rowsOf(updates, "entityGroup");
+    const membership = rowsOf(updates, "membership");
     expect(membership).toHaveLength(1);
     expect(fieldsOf(membership[0]!)).toEqual({
       entity_id: result.member.id,
@@ -644,9 +616,9 @@ describe("defineAction — addToWorkspace", () => {
 
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
-    expect(rowsOf(updates, "groupMember")).toHaveLength(1);
+    expect(rowsOf(updates, "grant")).toHaveLength(1);
 
-    const membership = rowsOf(updates, "entityGroup");
+    const membership = rowsOf(updates, "membership");
     expect(membership).toHaveLength(1);
     expect(fieldsOf(membership[0]!)).toEqual({
       entity_id: "profile_1",
@@ -661,7 +633,7 @@ describe("client.group read path", () => {
 
     expect(await client.group.get("g_absent")).toBeNull();
 
-    const groupRow = mkEntity("g_1", "group", { name: "Team" });
+    const groupRow = platformEntity("g_1", "group", { name: "Team" });
     seedReplicaRow(client.replica, groupRow);
     await storage.entities.set(groupRow);
     const row = await client.group.get("g_1");
@@ -677,17 +649,9 @@ describe("client.membership typing", () => {
   it("rejects an undeclared field on create", async () => {
     const { client } = await mkClient();
 
-    // The field map must be a TypeBox field record carrying exactly the wire keys.
-    type FieldKeys = keyof GroupMemberFields;
-    const keys: FieldKeys[] = ["group_id", "actor_id", "permissions"];
-    type IsFieldMap = GroupMemberFields extends Record<string, TSchema> ? true : false;
-    const isFieldMap: IsFieldMap = true;
-    void keys;
-    void isFieldMap;
-
     // Never invoked: the @ts-expect-error lines below are the assertion.
     const guard = (): void => {
-      // @ts-expect-error — `bogus` is not declared on the groupMember shape.
+      // @ts-expect-error — `bogus` is not part of the grant value.
       void client.actions.createMembership({ bogus: 1 });
     };
     expect(guard).toBeTypeOf("function");

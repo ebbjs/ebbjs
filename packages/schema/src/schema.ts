@@ -13,12 +13,7 @@ import { MigrationRegistry, type MigrationDef, type VersionedComponent } from ".
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
 import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
-import {
-  entityGroupSystemEntity,
-  groupMemberSystemEntity,
-  groupSystemEntity,
-  relationshipSystemEntity,
-} from "./system-entities";
+import { ebbSystemEntity } from "./system-entities";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -199,15 +194,15 @@ export interface DefineSchemaInput<
  * hard error rather than a silent failure.
  *
  * Models are registered with `ModelRegistry.register` and relationships
- * with `ModelRegistry.registerRelationship`. The system models
- * (`relationship`, `group`, `groupMember`, `entityGroup`) are registered
- * alongside user models so the public relationship-write path (`link` /
- * `unlink` / `setLinks`) can submit Relationship Updates and the
- * membership write path can submit `entityGroup` Updates. Membership is
- * a dedicated `entityGroup` row, not an injected relationship. The
+ * with `ModelRegistry.registerRelationship`. The platform model (`ebb`,
+ * carrying `ebb/group`, `ebb/grant`, `ebb/membership` and `ebb/link`) is
+ * registered alongside user models so the public write paths (`link` /
+ * `unlink` / `setLinks`, group and membership writes) can submit their
+ * Updates. Membership is a dedicated `ebb/membership` row, not an
+ * injected relationship. The
  * registry owns the cardinality / overwrite rules; this builder delegates
  * without adding its own. A relationship whose source or target is
- * neither a system model nor a member of `models` throws
+ * neither a platform component's model nor a member of `models` throws
  * `UnregisteredRelationshipEndpointError` before the schema is frozen.
  * A model registered under a map key other than its own name throws
  * `ModelKeyMismatchError`: the map key is what a namespace is exposed
@@ -252,10 +247,7 @@ export function seedRegistry(
   models: Record<string, AnyModelDef>,
   relationships: Record<string, AnyRelationshipDef> | undefined,
 ): void {
-  registry.register(relationshipSystemEntity);
-  registry.register(groupSystemEntity);
-  registry.register(groupMemberSystemEntity);
-  registry.register(entityGroupSystemEntity);
+  registry.register(ebbSystemEntity);
   for (const [key, model] of Object.entries(models)) {
     if (key !== model.name) throw new ModelKeyMismatchError(key, model.name);
     assertComponentsBelongToModel(model);

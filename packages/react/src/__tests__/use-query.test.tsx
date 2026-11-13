@@ -97,13 +97,13 @@ const mkTodo = (id: string, title: string, completed: boolean): ReplicaRow =>
 
 const mkUser = (id: string, name: string): ReplicaRow => mkRow(id, "user", { name });
 
-/** The forward-one edge a `with({ assignee: true })` join reads. */
+/**
+ * The forward-one edge a `with({ assignee: true })` join reads. A link is one
+ * atomic `ebb/link` component on a row committed as `ebb`.
+ */
 const mkAssigneeLink = (id: string, todoId: string, userId: string): ReplicaRow =>
-  mkRow(id, "relationship", {
-    source_id: todoId,
-    target_id: userId,
-    type: "todo",
-    field: "assignee",
+  mkRow(id, "ebb", {
+    link: { source_id: todoId, target_id: userId, type: "todo", field: "assignee" },
   });
 
 let seedPosition = 0;

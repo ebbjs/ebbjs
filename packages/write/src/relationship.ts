@@ -1,14 +1,24 @@
 /**
  * Wire builders for relationship writes: the pure half of the client's
  * relationship module. Storage-backed traversal stays in `@ebbjs/client`.
+ *
+ * A link and a membership are each one atomic component, so every builder here
+ * emits one Update per row. The emitters themselves live in `system-rows.ts`.
  */
 
-import { componentName, generateId, type FieldValue, type Update } from "@ebbjs/core";
+import { componentName, generateId, type Update } from "@ebbjs/core";
 
 import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
 import { entityGroupId } from "./membership";
 import { normalizePointer, type PointerValue } from "./pointer";
+import {
+  fixedRowIds,
+  linkRowUpdate,
+  membershipRowUpdate,
+  systemRowDelete,
+  type SystemRowIds,
+} from "./system-rows";
 
 /**
  * The value shape for `sourceCardinality: "many"` updates.
@@ -54,8 +64,10 @@ export interface BuildRelationshipWriteOptions {
    * to recover the relationship's group).
    */
   relationshipSubjectId?: string;
+  /** The local clock a link's value is stamped with; absent leaves the leaf unstamped. */
+  hlc?: () => string;
   /**
-   * Mints the Relationship row and Update ids. Defaults to core's
+   * Mints the link row and Update ids. Defaults to core's
    * nanoid `generateId`; a caller that needs a deterministic batch
    * supplies its own seam.
    */
@@ -69,8 +81,8 @@ export interface BuildRelationshipWriteResult {
    */
   entityUpdate?: Update;
   /**
-   * The Relationship row's Updates — one per component, or one `delete`.
-   * Empty for `sourceCardinality: "many"` with no `targetIds`.
+   * The link's Update — one at most — or one `delete`. Empty for
+   * `sourceCardinality: "many"` with no `targetIds`.
    */
   relationshipUpdates: readonly Update[];
 }
@@ -119,24 +131,9 @@ export function resolveCardinality(
   return "one";
 }
 
-/** One `replace` Update for one component of a freshly created row. */
-const createComponent = (
-  subjectId: string,
-  model: string,
-  field: string,
-  value: unknown,
-  updateId: string,
-): Update => ({
-  id: `${updateId}_${field}`,
-  subject_id: subjectId,
-  component: componentName(model, field),
-  method: "replace",
-  data: { value, update_id: `${updateId}_${field}` } as FieldValue,
-});
-
 /**
- * Build the wire-level Updates for a single link: one per component of the
- * Relationship row, or a single `delete` when the target is null.
+ * Build the wire-level Updates for a single link: one `ebb/link` Update carrying
+ * the whole edge, or a single `delete` when the target is null.
  */
 export function buildRelationshipUpdate(args: {
   relationshipId: string;
@@ -145,73 +142,67 @@ export function buildRelationshipUpdate(args: {
   field: string;
   type: string;
   updateId: string;
+  /** Drawn only when a value Update is built: a `delete` must not consume a tick. */
+  hlc?: () => string;
 }): Update[] {
   if (args.targetId === null) {
-    return [
-      {
-        id: args.updateId,
-        subject_id: args.relationshipId,
-        method: "delete",
-        data: null,
-      },
-    ];
+    return [systemRowDelete(args.relationshipId, { updateId: () => args.updateId })];
   }
   return [
-    createComponent(args.relationshipId, "relationship", "source_id", args.sourceId, args.updateId),
-    createComponent(args.relationshipId, "relationship", "target_id", args.targetId, args.updateId),
-    createComponent(args.relationshipId, "relationship", "type", args.type, args.updateId),
-    createComponent(args.relationshipId, "relationship", "field", args.field, args.updateId),
+    linkRowUpdate(
+      {
+        linkId: args.relationshipId,
+        sourceId: args.sourceId,
+        targetId: args.targetId,
+        field: args.field,
+        type: args.type,
+      },
+      fixedRowIds(args.updateId, args.hlc?.()),
+    ),
   ];
 }
 
-/**
- * Build the Updates for an `entityGroup` membership row, scoping `entityId` to
- * `groupId`. One row per (entity, group), one Update per component.
- */
+/** Build the Update for an `ebb/membership` row filing `entityId` into `groupId`. */
 export function buildEntityGroupUpdate(args: {
   membershipId: string;
   entityId: string;
   groupId: string;
   updateId: string;
+  /** The leaf's clock; absent leaves it unstamped. */
+  hlc?: string;
 }): Update[] {
   return [
-    createComponent(args.membershipId, "entityGroup", "entity_id", args.entityId, args.updateId),
-    createComponent(args.membershipId, "entityGroup", "group_id", args.groupId, args.updateId),
+    membershipRowUpdate(
+      {
+        membershipId: args.membershipId,
+        entityId: args.entityId,
+        groupId: args.groupId,
+      },
+      fixedRowIds(args.updateId, args.hlc),
+    ),
   ];
 }
 
 /**
- * Build a `delete` Update for an existing `entityGroup` membership
- * row. The wire delete carries only the membership id; the server
- * recovers the entity/group from its by-id cache, so no `data` is
- * sent.
+ * Build a `delete` Update for an existing membership row. The wire delete
+ * carries only the membership id; the server recovers the entity/group from
+ * its by-id cache, so no `data` is sent.
  */
 export function buildEntityGroupDelete(args: { membershipId: string; updateId: string }): Update {
-  return {
-    id: args.updateId,
-    subject_id: args.membershipId,
-    method: "delete",
-    data: null,
-  };
+  return systemRowDelete(args.membershipId, { updateId: () => args.updateId });
 }
 
 /**
- * Build one `entityGroup` `put` Update per group. Shared by the
- * `createEntity` and `duplicateEntity` operations so membership
- * emission has one definition.
+ * Build one membership `put` Update per group. Shared by the `createEntity`
+ * and `duplicateEntity` operations so membership emission has one definition.
  */
 export function buildEntityGroupUpdates(
   entityId: string,
   groupIds: readonly string[],
-  generateUpdateId: () => string,
+  ids: SystemRowIds,
 ): Update[] {
-  return groupIds.flatMap((groupId) =>
-    buildEntityGroupUpdate({
-      membershipId: entityGroupId(entityId, groupId),
-      entityId,
-      groupId,
-      updateId: generateUpdateId(),
-    }),
+  return groupIds.map((groupId) =>
+    membershipRowUpdate({ membershipId: entityGroupId(entityId, groupId), entityId, groupId }, ids),
   );
 }
 
@@ -302,13 +293,14 @@ function wireTypeFor(registry: ModelRegistry, sourceName: string, as: string): s
   return rel?.type ?? sourceName;
 }
 
-/** Build the Relationship row's Updates for one many-cardinality target. */
+/** Build the link row's one Update for one many-cardinality target. */
 function makeManyRelationshipUpdate(
   sourceId: string,
   as: string,
   wireType: string,
   targetId: string,
   newId: (prefix: string) => string,
+  hlc: (() => string) | undefined,
 ): Update[] {
   return buildRelationshipUpdate({
     relationshipId: newId("rel"),
@@ -317,6 +309,7 @@ function makeManyRelationshipUpdate(
     field: as,
     type: wireType,
     updateId: newId("u"),
+    hlc,
   });
 }
 
@@ -355,10 +348,9 @@ function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): U
  * builder, shared by `SyncClient.buildRelationshipWrite` and the
  * `writeRelationship` operation.
  *
- * One-cardinality: a single Relationship Update addressed by
- * `sourceId` + `targetId` (`null` for a delete). Many-cardinality: one
- * entity Update carrying the canonical FK set plus one Relationship
- * Update per target.
+ * One-cardinality: a single link Update addressed by `sourceId` +
+ * `targetId` (`null` for a delete). Many-cardinality: one entity Update
+ * carrying the canonical FK set plus one link Update per target.
  *
  * Pointer values may be a string id or an entity-shape object
  * (anything with a string `.id`); both normalize to the id. Anything
@@ -387,6 +379,7 @@ export function buildRelationshipWrite(
       field: as,
       type: wireTypeFor(registry, sourceName, as),
       updateId,
+      hlc: opts.hlc,
     });
     return { relationshipUpdates };
   }
@@ -395,6 +388,7 @@ export function buildRelationshipWrite(
   const sourceId = entityUpdate.subject_id;
   const targetIds = opts.targetIds;
   const wireType = wireTypeFor(registry, sourceName, as);
+  const hlc = opts.hlc;
   const updates: Update[] = [];
   if (targetIds === undefined) {
     // No `targetIds` — emit the entity Update with no relationship
@@ -404,18 +398,18 @@ export function buildRelationshipWrite(
   if ("replace" in targetIds) {
     const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
     for (const targetId of normalized) {
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId, hlc));
     }
   } else {
     for (const targetId of targetIds.add) {
       const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
       if (id === null) continue;
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId, hlc));
     }
     for (const targetId of targetIds.remove) {
       const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
       if (id === null) continue;
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId));
+      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId, hlc));
     }
   }
   return { entityUpdate, relationshipUpdates: updates };

@@ -39,9 +39,9 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
 
     test "multiple permissions checks any match" do
-      perms = ["group.read", "group.write", "todo.*"]
+      perms = ["ebb/group.read", "ebb/group.write", "todo.*"]
       assert PermissionHelper.check_permission(perms, "todo", "delete") == true
-      assert PermissionHelper.check_permission(perms, "group", "read") == true
+      assert PermissionHelper.check_permission(perms, "ebb/group", "read") == true
       assert PermissionHelper.check_permission(perms, "post", "create") == false
     end
   end
@@ -50,12 +50,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "maps the groups the actor creates and joins to their declared permissions" do
       mutations = [
         group_put("g_1"),
-        group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.*"]),
+        group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read", "todo.*"]),
         entity_group_put("eg_1", "todo_1", "g_1")
       ]
 
       assert PermissionHelper.bootstrap_group_permissions(mutations, "a_1", fn _ -> false end) ==
-               %{"g_1" => ["group.read", "todo.*"]}
+               %{"g_1" => ["ebb/group.read", "todo.*"]}
     end
 
     test "ignores a groupMember for a different actor" do
@@ -82,7 +82,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "drops a group the existence predicate reports as existing" do
       mutations = [
         group_put("g_1"),
-        group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.*"])
+        group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read", "todo.*"])
       ]
 
       assert PermissionHelper.bootstrap_group_permissions(mutations, "a_1", &(&1 == "g_1")) ==
@@ -93,7 +93,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       mutations = [
         group_put("g_old"),
         group_put("g_new"),
-        group_member_put("gm_old", "a_1", "g_old", ["group.read"]),
+        group_member_put("gm_old", "a_1", "g_old", ["ebb/group.read"]),
         group_member_put("gm_new", "a_1", "g_new", ["todo.*"])
       ]
 
@@ -157,8 +157,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "collects the actor's own membership rows in the groups the action creates" do
       mutations = [
         group_put("g_1"),
-        group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
-        group_member_put("gm_2", "a_2", "g_1", ["group.read"])
+        group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read"]),
+        group_member_put("gm_2", "a_2", "g_1", ["ebb/group.read"])
       ]
 
       assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", fn _ -> false end) ==
@@ -168,8 +168,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "drops a row id the existence predicate reports as existing" do
       mutations = [
         group_put("g_1"),
-        group_member_put("gm_new", "a_1", "g_1", ["group.read"]),
-        group_member_put("gm_old", "a_1", "g_1", ["group.read"])
+        group_member_put("gm_new", "a_1", "g_1", ["ebb/group.read"]),
+        group_member_put("gm_old", "a_1", "g_1", ["ebb/group.read"])
       ]
 
       assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", &(&1 == "gm_old")) ==
@@ -177,7 +177,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
 
     test "ignores a membership row in a group the action does not create" do
-      mutations = [group_member_put("gm_1", "a_1", "g_1", ["group.read"])]
+      mutations = [group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read"])]
 
       assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", fn _ -> false end) ==
                MapSet.new()
@@ -186,7 +186,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
   describe "bootstrap_update?/5" do
     setup do
-      bootstrap = %{"g_1" => ["group.read", "todo.*"]}
+      bootstrap = %{"g_1" => ["ebb/group.read", "todo.*"]}
       created = MapSet.new(["todo_1"])
       membership_rows = MapSet.new(["gm_1"])
 
@@ -214,7 +214,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       created: created,
       membership_rows: membership_rows
     } do
-      row = group_member_put("gm_1", "a_1", "g_1", ["group.read"])
+      row = group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read"])
 
       assert PermissionHelper.bootstrap_update?(
                row,
@@ -230,7 +230,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       created: created,
       membership_rows: membership_rows
     } do
-      row = group_member_put("gm_existing", "a_1", "g_1", ["group.read"])
+      row = group_member_put("gm_existing", "a_1", "g_1", ["ebb/group.read"])
 
       assert PermissionHelper.bootstrap_update?(
                row,
@@ -408,12 +408,16 @@ defmodule EbbServer.Storage.PermissionHelperTest do
   end
 
   describe "build_intra_relationship_sources/1" do
-    test "reads the source from the component Update that carries it" do
+    test "reads the source from the link's atomic value" do
       updates = [
-        validated_component("rel_1", "relationship/source_id", %{"value" => "todo_1"}),
-        validated_component("rel_1", "relationship/target_id", %{"value" => "project_1"}),
-        validated_component("rel_1", "relationship/type", %{"value" => "project"}),
-        validated_component("rel_1", "relationship/field", %{"value" => "project"})
+        validated_component("rel_1", "ebb/link", %{
+          "value" => %{
+            "source_id" => "todo_1",
+            "target_id" => "project_1",
+            "type" => "project",
+            "field" => "project"
+          }
+        })
       ]
 
       assert PermissionHelper.build_intra_relationship_sources(updates) == %{
@@ -421,18 +425,16 @@ defmodule EbbServer.Storage.PermissionHelperTest do
              }
     end
 
-    test "a sibling component does not stand in for the source" do
-      updates = [
-        validated_component("rel_1", "relationship/target_id", %{"value" => "project_1"})
-      ]
+    test "a user component does not stand in for the source" do
+      updates = [validated_component("rel_1", "todo/source_id", %{"value" => "project_1"})]
 
       assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
     end
 
-    test "maps one source per relationship row" do
+    test "maps one source per link row" do
       updates = [
-        validated_component("rel_1", "relationship/source_id", %{"value" => "todo_1"}),
-        validated_component("rel_2", "relationship/source_id", %{"value" => "todo_2"})
+        validated_component("rel_1", "ebb/link", %{"value" => %{"source_id" => "todo_1"}}),
+        validated_component("rel_2", "ebb/link", %{"value" => %{"source_id" => "todo_2"}})
       ]
 
       assert PermissionHelper.build_intra_relationship_sources(updates) == %{
@@ -448,28 +450,51 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "system_models/0" do
-    test "returns expected models" do
-      models = PermissionHelper.system_models()
-      assert "group" in models
-      assert "groupMember" in models
-      assert "relationship" in models
-      assert "entityGroup" in models
+  # A folded platform row carries a `kind` and one object value. Callers keep
+  # the model-style label and `field => value` shape; this builds what the
+  # engine now sees.
+  @components %{
+    "group" => {:group, "group"},
+    "groupMember" => {:grant, "grant"},
+    "entityGroup" => {:membership, "membership"},
+    "relationship" => {:link, "link"}
+  }
+
+  defp mutation(subject_id, model, method, fields \\ %{}) do
+    case Map.fetch(@components, model) do
+      {:ok, {kind, field}} ->
+        %{
+          id: subject_id,
+          subject_id: subject_id,
+          model: "ebb",
+          kind: kind,
+          method: method,
+          data: %{"fields" => %{field => %{"value" => fields}}}
+        }
+
+      :error ->
+        %{
+          id: subject_id,
+          subject_id: subject_id,
+          model: model,
+          kind: nil,
+          method: method,
+          data: %{
+            "fields" => Map.new(fields, fn {field, value} -> {field, %{"value" => value}} end)
+          }
+        }
     end
   end
 
-  defp mutation(subject_id, model, method, fields \\ %{}) do
+  defp delete_mutation(subject_id, model) do
     %{
       id: subject_id,
       subject_id: subject_id,
       model: model,
-      method: method,
-      data: %{"fields" => fields}
+      kind: nil,
+      method: :delete,
+      data: nil
     }
-  end
-
-  defp delete_mutation(subject_id, model) do
-    %{id: subject_id, subject_id: subject_id, model: model, method: :delete, data: nil}
   end
 
   defp group_put(id) do

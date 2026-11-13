@@ -1087,13 +1087,13 @@ accepted (`on_action: &MyApp.WarehouseSink.handle/1`). With the key unset or
 Only `:on_action` is read from application config today. The rest are options
 to `EbbServer.ActionExport.start_link/1`, used by tests and direct starts:
 
-| Option                | Default                          | Purpose                                          |
-| --------------------- | -------------------------------- | ------------------------------------------------ |
-| `:batch_size`         | `500`                            | Actions read per poll                            |
-| `:poll_interval_ms`   | `1000`                           | Delay between polls once caught up               |
-| `:handler_timeout_ms` | `5000`                           | Per-invocation timeout before the task is killed |
-| `:excluded_models`    | `["groupMember", "entityGroup"]` | Update models stripped before export             |
-| `:cursor_name`        | `"action_export"`                | SQLite `cursors` row the exporter resumes from   |
+| Option                 | Default                           | Purpose                                          |
+| ---------------------- | --------------------------------- | ------------------------------------------------ |
+| `:batch_size`          | `500`                             | Actions read per poll                            |
+| `:poll_interval_ms`    | `1000`                            | Delay between polls once caught up               |
+| `:handler_timeout_ms`  | `5000`                            | Per-invocation timeout before the task is killed |
+| `:excluded_components` | `["ebb/grant", "ebb/membership"]` | Update components stripped before export         |
+| `:cursor_name`         | `"action_export"`                 | SQLite `cursors` row the exporter resumes from   |
 
 #### Handler contract
 

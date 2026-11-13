@@ -13,94 +13,95 @@ defmodule EbbServer.Storage.Authorizer do
   ## Bootstrap
 
   An actor creating a group has no membership to check against, so the
-  `group` put and the actor's own `groupMember` put cannot be authorized
-  by the table. Those two — plus the `entityGroup` edge filing an entity
+  `ebb/group` put and the actor's own `ebb/grant` put cannot be authorized
+  by the table. Those two — plus the `ebb/membership` row filing an entity
   the same Action creates into the new group — are exempt
   (`PermissionHelper.bootstrap_update?/5`). Everything else in the
   Action is authorized normally, using the permissions the actor grants
-  themselves in their own `groupMember` put: while the Action is being
-  authorized the actor's new membership is not in the cache yet, so the
+  themselves in their own `ebb/grant` put: while the Action is being
+  authorized the actor's new grant row is not in the cache yet, so the
   declared permissions stand in for it.
 
   The exemption applies only to entities the Action is **creating**: a
-  `group` put qualifies only when the entity-type index does not know
-  the id, the `groupMember` exemption only covers row ids the caches and
-  the index do not know, and the `entityGroup` exemption covers only
+  `ebb/group` put qualifies only when the entity-type index does not know
+  the id, the `ebb/grant` exemption only covers row ids the caches and
+  the index do not know, and the `ebb/membership` exemption covers only
   user entities the Action actually creates. Re-`put`ting a committed
-  group, a committed membership row or a committed entity falls through
+  group, a committed grant row or a committed entity falls through
   to the permission table like any other write (#289, #625), and the
   declared permissions are never unioned into the membership checks for
   entities that already exist.
 
   This is deliberately per-row rather than a whole-Action short-circuit
-  (#246): a third-party `groupMember`, a link edge for an unrelated entity,
+  (#246): a third-party `ebb/grant`, a link edge for an unrelated entity,
   or a patch to an existing entity all fall through to the table even when
   they ride along with a bootstrap.
 
-  ## System entities
+  ## System components
 
-  `group`, `groupMember`, `entityGroup` and `relationship` rows carry
-  `<model>.<verb>` permissions like user entities:
+  `ebb/` is the platform namespace: `ebb/group`, `ebb/grant`,
+  `ebb/membership` and `ebb/link` are atomic components of rows committed
+  under the model `ebb`, and each row carries exactly one of them. Every
+  rule below dispatches on that **kind**, never on a model: the model is
+  `ebb` for all four. Each component carries its own permission
+  (decision 12), so the subject is `ebb/<kind>`, e.g. `ebb/grant.create`:
 
-    - `group` put/patch/delete → `group.create` / `group.update` /
-      `group.delete` in the group. A `group` put only passes through the
-      bootstrap exemption; minting a group and handing it to somebody
-      else is not allowed.
-    - `groupMember` put/patch/delete → `groupMember.create` /
-      `groupMember.update` / `groupMember.delete` in the target group.
-      Adding an actor to a group is `groupMember.create` in that group;
-      the bootstrap covers only the acting actor's own membership row,
-      and only while that row is new. A mutation of an existing row is
-      bound to the group the row already belongs to (#625): a row that
-      moves groups needs the permission in both the group it leaves and
-      the group it enters, and a `groupMember` mutation never runs on the
-      Action's declared bootstrap permissions.
-    - `entityGroup` put → the added entity's `<model>.create` in the
+    - `ebb/group` put/patch/delete → `ebb/group.create` /
+      `ebb/group.update` / `ebb/group.delete` in the group. A group put
+      only passes through the bootstrap exemption; minting a group and
+      handing it to somebody else is not allowed.
+    - `ebb/grant` put/patch/delete → `ebb/grant.create` /
+      `ebb/grant.update` / `ebb/grant.delete` in the target group.
+      Adding an actor to a group is `ebb/grant.create` in that group;
+      the bootstrap covers only the acting actor's own grant row, and
+      only while that row is new. A mutation of an existing row is bound
+      to the group the row already belongs to (#625), and that group is
+      immutable (decision 13): moving an actor between groups is a delete
+      plus a create, so a grant mutation never runs on the Action's
+      declared bootstrap permissions.
+    - `ebb/membership` put → the added entity's `<model>.create` in the
       target group: the group(s) the put files the entity into (#121's
       "Add Entity to Group" row), not the entity's whole group set. The
       model is the committed entity-type index's when the entity already
       exists, otherwise one created by the same Action or by an earlier
       Action of the same request. An unresolvable model is refused
       (`not_authorized`) rather than falling back to the
-      `entityGroup.create` system permission. Filing an entity the index
-      already places in a group is a write to that entity — it adds the
-      target group to the set that authorizes updates and deletes — so
-      it also needs `<model>.update` in one of the entity's current
+      `ebb/membership.create` system permission. Filing an entity the
+      index already places in a group is a write to that entity — it adds
+      the target group to the set that authorizes updates and deletes —
+      so it also needs `<model>.update` in one of the entity's current
       groups; a known id is not authority (#623). Two shapes keep the
       target gate alone: an entity new to the index, because the same
-      Action is creating it, and a put naming the row the pair already
+      Action is creating it, and a put naming the pair the row already
       has, because a no-op adds nothing to the group set and a retried
       Action (#285) was authored without the write permission it would
-      need. Re-putting a membership row may move it to another
-      group but may not re-point it at a different entity, and an entity
-      the index knows but that owns no group is refused rather than
-      claimed. A put may re-put the pair's live row but never mint a
-      second row for the same `(entity, group)`, whatever permission the
-      caller holds (#623). Membership mutations of an existing entity are
-      checked against cached memberships only — the bootstrap's declared
-      permissions stand in only for the membership the same Action
-      creates.
-    - `entityGroup` delete → the entity's `<model>.update` in any group of
-      the entity's current set (union/any-match). The delete names no
-      component, so the row is resolved from the membership index.
-    - `entityGroup` put when the row exists → a `:patch` row mutation, and
-      the same rules: it may move the row to another group but not
-      re-point it at another entity (#623).
-    - `relationship` put (always a domain edge; membership is
-      `entityGroup`) → the source entity's `<model>.update` in the
-      source's group set, where `<model>` is the source entity's true
-      model resolved from the entity index (#323). The row's `type`
-      field is a descriptive label and is never consulted for
-      authorization, so a forged value cannot borrow another model's
-      permission. A relationship row's source is its row identity: a put
-      or patch whose wire `source_id` differs from the stored row's
-      source is refused (#624), whatever permission the caller holds for
-      the new source. Changing the target, type or field of an edge keeps
-      the source and stays a normal write. `relationship` patch/delete →
-      `relationship.update` / `relationship.delete` in the edge's source
-      group set.
-    - A `relationship` delete is scoped by the **stored row's** source,
-      never by a wire `source_id` in a sibling component, and honouring it
+      need. `(entity_id, group_id)` is immutable (decision 13): a
+      re-put may name the pair the row already has, and any other pair is
+      refused rather than applied. An entity the index knows but that
+      owns no group is refused rather than claimed. A put may re-put the
+      pair's live row but never mint a second row for the same
+      `(entity, group)`, whatever permission the caller holds (#623).
+      Membership mutations of an existing entity are checked against
+      cached memberships only — the bootstrap's declared permissions
+      stand in only for the membership the same Action creates.
+    - `ebb/membership` delete → the entity's `<model>.update` in any
+      group of the entity's current set (union/any-match). The delete
+      names no component, so the row is resolved from the membership
+      index.
+    - `ebb/link` put (always a domain edge) → the source entity's
+      `<model>.update` in the source's group set, where `<model>` is the
+      source entity's true model resolved from the entity index (#323).
+      The value's `type` is a descriptive label and is never consulted
+      for authorization, so a forged value cannot borrow another model's
+      permission. A link's `source_id` is its row identity (decision
+      13): a put or patch whose wire `source_id` differs from the stored
+      row's source is refused (#624), whatever permission the caller
+      holds for the new source. Changing the target, type or field of an
+      edge keeps the source and stays a normal write. `ebb/link`
+      patch/delete → `ebb/link.update` / `ebb/link.delete` in the edge's
+      source group set.
+    - An `ebb/link` delete is scoped by the **stored row's** source, never
+      by a wire `source_id` in a sibling component, and honouring it
       would let a caller delete another group's edge with their own
       group's permissions (#624). Only a delete with no stored row — an
       edge created earlier in the request, or one already tombstoned —
@@ -133,8 +134,8 @@ defmodule EbbServer.Storage.Authorizer do
   An entity must keep at least one owning group. Anything that would
   leave it with none is a structural rejection (`last_membership`),
   beside `missing_ownership` (#264). The check is a per-entity net
-  delta: the entity's cached membership set, plus the `entityGroup`
-  puts seen in the request, minus its `entityGroup` deletes, with a
+  delta: the entity's cached membership set, plus the `ebb/membership`
+  puts seen in the request, minus its `ebb/membership` deletes, with a
   removed group cancelled when a put re-adds it. Membership is per
   **row**, so putting a second row for a group the entity already
   belongs to keeps that group even when the same Action (or a later
@@ -149,16 +150,17 @@ defmodule EbbServer.Storage.Authorizer do
   ## Last group member
 
   A group must keep at least one membership holding a non-empty
-  permission list. Anything a `groupMember` put, patch or delete would
+  permission list. Anything an `ebb/grant` put, patch or delete would
   do to leave it with none is a structural rejection
   (`last_group_member`), beside `last_membership` (#479). Permissions
-  live only on `groupMember` rows and `GroupCache.get_permissions/3`
+  live only on `ebb/grant` rows and `GroupCache.get_permissions/3`
   treats an empty list as no membership, so a group with no capable
   row is unreachable through the API.
 
   The check mirrors `last_membership`: the affected groups' cached
-  members, plus the request's puts and patches, minus its deletes, with
-  a member's group change moving it between groups. The delta is
+  members, plus the request's puts and patches, minus its deletes. A
+  grant's group is immutable (decision 13), so a member never moves
+  between groups: moving one is a delete plus a create. The delta is
   carried across the Actions of one request, so two Actions that each
   remove one of a group's two capable members cannot both pass against
   the same cache snapshot.
@@ -177,10 +179,10 @@ defmodule EbbServer.Storage.Authorizer do
   alias EbbServer.Storage.AuthorizationContext
   alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
-  alias EbbServer.Storage.Fields
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.PermissionHelper
   alias EbbServer.Storage.RowMutations
+  alias EbbServer.Storage.SystemComponent
 
   @typep validated_action :: %{
            id: String.t(),
@@ -316,17 +318,20 @@ defmodule EbbServer.Storage.Authorizer do
   # component Update of a row is authorized once, against the row's model and
   # the row's fields.
   defp fold_action(action, opts, sim) do
-    RowMutations.fold(action.updates,
-      created: MapSet.new(Map.keys(sim.models)),
-      # A system row can be certified by its by-id cache while the type index
-      # still lags, and the authorizer's own rules treat that row as existing.
-      # The verb follows the same existence signal, so a write to it is an
-      # update rather than a create.
-      exists?: fn entity_id -> committed_model(entity_id, opts) != nil end,
-      model_resolver: fn entity_id ->
-        committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
-      end
-    )
+    fold_opts =
+      Keyword.merge(opts,
+        created: MapSet.new(Map.keys(sim.models)),
+        # A system row can be certified by its by-id cache while the type
+        # index still lags, and the authorizer's own rules treat that row as
+        # existing. The verb follows the same existence signal, so a write to
+        # it is an update rather than a create.
+        exists?: fn entity_id -> committed_model(entity_id, opts) != nil end,
+        model_resolver: fn entity_id ->
+          committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
+        end
+      )
+
+    RowMutations.fold(action.updates, fold_opts)
   end
 
   defp check_all_mutations(mutations, actor_id, authz) do
@@ -364,13 +369,13 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  defp authorize_update(update, actor_id, authz) do
-    case update.model do
-      "group" -> authorize_group_update(update, actor_id, authz)
-      "groupMember" -> authorize_group_member_update(update, actor_id, authz)
-      "entityGroup" -> authorize_entity_group_update(update, actor_id, authz)
-      "relationship" -> authorize_relationship_update(update, actor_id, authz)
-      model -> authorize_user_entity_update(model, update, actor_id, authz)
+  defp authorize_update(%{kind: kind} = update, actor_id, authz) do
+    case kind do
+      :group -> authorize_group_update(update, actor_id, authz)
+      :grant -> authorize_grant_update(update, actor_id, authz)
+      :membership -> authorize_membership_update(update, actor_id, authz)
+      :link -> authorize_link_update(update, actor_id, authz)
+      nil -> authorize_user_entity_update(update.model, update, actor_id, authz)
     end
   end
 
@@ -378,62 +383,52 @@ defmodule EbbServer.Storage.Authorizer do
     check_group_permission(
       [update.subject_id],
       actor_id,
-      "group",
+      SystemComponent.component(:group),
       permission_for(update.method),
       authz
     )
   end
 
-  defp authorize_group_member_update(update, actor_id, authz) do
-    case existing_group_member(update.subject_id, authz) do
+  defp authorize_grant_update(update, actor_id, authz) do
+    case existing_grant(update.subject_id, authz) do
       :new ->
-        authorize_new_group_member_update(update, actor_id, authz)
+        authorize_new_grant_update(update, actor_id, authz)
 
       :unresolved ->
-        {:error, "not_authorized", "cannot resolve the group of this groupMember row"}
+        {:error, "not_authorized", "cannot resolve the group of this ebb/grant row"}
 
       {:existing, group_id} ->
-        authorize_existing_group_member_update(update, group_id, actor_id, authz)
+        check_group_permission(
+          [group_id],
+          actor_id,
+          SystemComponent.component(:grant),
+          permission_for(update.method),
+          authz
+        )
     end
   end
 
-  defp authorize_new_group_member_update(update, actor_id, authz) do
-    group_ids = system_entity_group_ids(update, "groupMember", authz)
+  defp authorize_new_grant_update(update, actor_id, authz) do
+    group_ids = system_entity_group_ids(update, :grant, authz)
 
     if group_ids == [] do
-      {:error, "not_authorized", "cannot resolve the group for this groupMember"}
+      {:error, "not_authorized", "cannot resolve the group for this ebb/grant row"}
     else
       check_group_permission(
         group_ids,
         actor_id,
-        "groupMember",
+        SystemComponent.component(:grant),
         permission_for(update.method),
         authz
       )
     end
   end
 
-  # #625: an existing row stays bound to the group it belongs to. The
-  # cache is consulted without the bootstrap's declared permissions,
-  # which cover only the membership the same Action creates. A move is
-  # checked in both the group the row leaves and the one it enters.
-  defp authorize_existing_group_member_update(update, existing_group, actor_id, authz) do
-    group_ids = Enum.uniq([existing_group | wire_group_ids(update)])
-
-    check_every_group_permission(
-      group_ids,
-      actor_id,
-      "groupMember",
-      permission_for(update.method),
-      authz
-    )
-  end
-
   # `:new` when nothing knows the id, `{:existing, group_id}` when the
   # by-id index can place the row. `:unresolved` is an id the existence
   # index still knows after the cache dropped it: a tombstone must not be
   # re-filed as a fresh row.
-  defp existing_group_member(member_id, authz) do
+  defp existing_grant(member_id, authz) do
     case GroupCache.get_group_member(member_id, authz.ctx.group_members_by_id_table) do
       nil ->
         if EntityIndex.exists?(member_id, authz.opts), do: :unresolved, else: :new
@@ -445,7 +440,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   # #264: an entity must never resolve to zero owning groups. The check
   # is a net delta per entity — its cached membership, plus the request's
-  # `entityGroup` puts, minus its deletes, with re-added groups cancelled.
+  # `ebb/membership` puts, minus its deletes, with re-added groups cancelled.
   # `build_intra_action_context/1` stays puts-only because other callers
   # rely on it being cache-free; the delete half is resolved here from the
   # membership index.
@@ -492,7 +487,7 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # #479: a group must never resolve to zero memberships holding a
-  # non-empty permission list. Permissions live only on `groupMember`
+  # non-empty permission list. Permissions live only on `ebb/grant`
   # rows and `get_permissions/3` treats an empty list as no membership,
   # so a group with no capable row is unreachable through the API. The
   # check is a net delta per touched group, carried across the request's
@@ -500,7 +495,7 @@ defmodule EbbServer.Storage.Authorizer do
   defp check_last_group_member(authz, sim) do
     sim =
       authz.mutations
-      |> Enum.filter(&(&1.model == "groupMember"))
+      |> Enum.filter(&(&1.kind == :grant))
       |> Enum.reduce(sim, fn update, acc -> apply_group_member(update, authz, acc) end)
 
     if Enum.any?(sim.members_by_group, fn {_group_id, members} -> not capable_group?(members) end) do
@@ -512,9 +507,9 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp apply_group_member(%{method: method} = update, authz, sim) when method in [:put, :patch] do
-    data = update.data || %{}
+    value = SystemComponent.value(update.data, :grant)
     existing = resolve_group_member(update.subject_id, authz, sim)
-    group_id = member_group_id(method, data, existing)
+    group_id = member_group_id(method, value, existing)
 
     if is_nil(group_id) do
       sim
@@ -522,13 +517,10 @@ defmodule EbbServer.Storage.Authorizer do
       row = %{
         id: update.subject_id,
         group_id: group_id,
-        permissions: resulting_permissions(method, data, existing)
+        permissions: resulting_permissions(method, value, existing)
       }
 
-      sim =
-        sim
-        |> remove_moved_member(existing, row, authz)
-        |> add_group_member(row, authz)
+      sim = add_group_member(sim, row, authz)
 
       %{sim | member_overlay: Map.put(sim.member_overlay, row.id, row)}
     end
@@ -545,23 +537,20 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # A put's wire fields are authoritative, so a put that drops the group
-  # is a no-op, matching the Writer. A patch falls back to the row it
-  # names.
-  defp member_group_id(:put, data, _existing), do: Fields.get(data, "group_id")
+  # The grant value is atomic, so it is the whole row: a patch with no value
+  # falls back to the row it names.
+  defp member_group_id(_method, %{} = value, _existing), do: Map.get(value, "group_id")
 
-  defp member_group_id(:patch, data, existing),
-    do: Fields.get(data, "group_id") || (existing && existing.group_id)
+  defp member_group_id(:patch, nil, existing), do: existing && existing.group_id
+  defp member_group_id(_method, nil, _existing), do: nil
 
-  defp resulting_permissions(:put, data, _existing),
-    do: List.wrap(Fields.get(data, "permissions"))
+  defp resulting_permissions(_method, %{} = value, _existing),
+    do: List.wrap(Map.get(value, "permissions"))
 
-  defp resulting_permissions(:patch, data, existing) do
-    case Fields.get(data, "permissions") do
-      nil -> List.wrap(existing && existing.permissions)
-      permissions -> List.wrap(permissions)
-    end
-  end
+  defp resulting_permissions(:patch, nil, existing),
+    do: List.wrap(existing && existing.permissions)
+
+  defp resulting_permissions(_method, nil, _existing), do: []
 
   # The request's own prior effect first, the committed cache otherwise.
   defp resolve_group_member(member_id, authz, sim) do
@@ -580,12 +569,6 @@ defmodule EbbServer.Storage.Authorizer do
         %{id: member_id, group_id: row.group_id, permissions: List.wrap(row.permissions)}
     end
   end
-
-  defp remove_moved_member(sim, %{group_id: old_group, id: id}, %{group_id: new_group}, authz)
-       when old_group != new_group,
-       do: remove_group_member(sim, id, old_group, authz)
-
-  defp remove_moved_member(sim, _existing, _row, _authz), do: sim
 
   defp remove_group_member(sim, member_id, group_id, authz) do
     members = ensure_group(sim.members_by_group, group_id, authz)
@@ -625,7 +608,7 @@ defmodule EbbServer.Storage.Authorizer do
     Enum.any?(members, fn {_member_id, permissions} -> permissions != [] end)
   end
 
-  # Resolve every `entityGroup` delete once; the delete authorization and
+  # Resolve every `ebb/membership` delete once; the delete authorization and
   # the last-membership delta both read the resolved pair from `authz`.
   # Keyed by the membership row id, not the mutation id: two deletes for one
   # row in an Action are already one row mutation, and collapsing them would
@@ -633,7 +616,7 @@ defmodule EbbServer.Storage.Authorizer do
   # last-membership guard (#623).
   defp resolve_deleted_memberships(mutations, opts) do
     mutations
-    |> Enum.filter(&(&1.model == "entityGroup" and &1.method == :delete))
+    |> Enum.filter(&(&1.kind == :membership and &1.method == :delete))
     |> Map.new(fn mutation ->
       {mutation.subject_id, EntityIndex.membership(mutation.subject_id, opts)}
     end)
@@ -649,7 +632,7 @@ defmodule EbbServer.Storage.Authorizer do
   # learns nothing about an entity's memberships from which check refused
   # them. Deletes are read before writes because the Action is one unit: a
   # delete plus a put of the same pair replaces the row, in either wire
-  # order — the shape the refused `entityGroup` patch documents. Puts and
+  # order — the shape the refused `ebb/membership` patch documents. Puts and
   # deletes are also read from the request, since the caches only advance
   # once the Writer commits.
   defp check_membership_rows(authz, sim) do
@@ -668,7 +651,7 @@ defmodule EbbServer.Storage.Authorizer do
       end)
 
     authz.mutations
-    |> Enum.filter(&(&1.model == "entityGroup" and &1.method in [:put, :patch]))
+    |> Enum.filter(&(&1.kind == :membership and &1.method in [:put, :patch]))
     |> Enum.reduce_while({:ok, sim}, fn update, {:ok, acc} ->
       case apply_membership_put(update, authz, acc) do
         {:ok, next} -> {:cont, {:ok, next}}
@@ -678,8 +661,9 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp apply_membership_put(update, authz, sim) do
-    entity_id = Fields.get(update.data, "entity_id")
-    group_id = Fields.get(update.data, "group_id")
+    value = SystemComponent.value(update.data, :membership)
+    entity_id = value && Map.get(value, "entity_id")
+    group_id = value && Map.get(value, "group_id")
     row_id = update.subject_id
 
     cond do
@@ -717,7 +701,7 @@ defmodule EbbServer.Storage.Authorizer do
   # by the entity's whole group set. The type is the committed
   # entity-type index's when the entity already exists, otherwise a type
   # created by this Action or an earlier Action of the request; an
-  # unresolvable type is a refusal (`entityGroup.create` would let any
+  # unresolvable type is a refusal (`ebb/membership.create` would let any
   # group member graft an entity whose type they may not create).
   #
   # That `create` is not the whole gate when the put grows the entity's
@@ -734,24 +718,22 @@ defmodule EbbServer.Storage.Authorizer do
   # update is exempt only when the entity is created by that same Action
   # (#289).
   #
-  # A membership row's write is a `:put` while the row is new and a `:patch`
-  # once it exists. Both are authorized against the row's real identity — the
-  # entity it names and the group it enters — so moving or re-filing a live
-  # row is an ordinary write, never a way to mint a row for an arbitrary
-  # entity (#623). A write that names no entity cannot be placed and is
-  # refused below.
-  defp authorize_entity_group_update(%{method: method} = update, actor_id, authz)
+  # A membership write is authorized against the row's real identity — the
+  # entity and the group it names — so re-filing a live row is never a way to
+  # mint one for an arbitrary entity (#623). The pair is immutable
+  # (decision 13); a write that names no entity is refused below.
+  defp authorize_membership_update(%{method: method} = update, actor_id, authz)
        when method in [:put, :patch] do
     with {:ok, entity_id, group_id} <- membership_identity(update) do
-      authorize_entity_group_put(entity_id, group_id, update.subject_id, actor_id, authz)
+      authorize_membership_put(entity_id, group_id, update.subject_id, actor_id, authz)
     end
   end
 
   # Removing membership is gated by the entity's `<model>.update` in any
-  # group of its current set (union semantics), not by `entityGroup.delete`
+  # group of its current set (union semantics), not by `ebb/membership.delete`
   # in the removed group — the delete names no component, so the row is
   # resolved from the membership index.
-  defp authorize_entity_group_update(%{method: :delete} = update, actor_id, authz) do
+  defp authorize_membership_update(%{method: :delete} = update, actor_id, authz) do
     case Map.get(authz.deleted_memberships, update.subject_id) do
       nil ->
         {:error, "not_authorized", "cannot resolve the entity for this membership"}
@@ -765,17 +747,17 @@ defmodule EbbServer.Storage.Authorizer do
   # corrupt the membership indices; a membership names one entity and one
   # group.
   defp membership_identity(update) do
-    entity_id = Fields.get(update.data, "entity_id")
-    group_id = Fields.get(update.data, "group_id")
+    entity_id = SystemComponent.path(update.data, :membership, "entity_id")
+    group_id = SystemComponent.path(update.data, :membership, "group_id")
 
     if is_binary(entity_id) and entity_id != "" and is_binary(group_id) and group_id != "" do
       {:ok, entity_id, group_id}
     else
-      {:error, "not_authorized", "entityGroup put needs a string entity_id and group_id"}
+      {:error, "not_authorized", "an ebb/membership put needs a string entity_id and group_id"}
     end
   end
 
-  defp authorize_entity_group_put(entity_id, group_id, row_id, actor_id, authz) do
+  defp authorize_membership_put(entity_id, group_id, row_id, actor_id, authz) do
     case entity_model(entity_id, authz) do
       nil ->
         {:error, "not_authorized",
@@ -841,37 +823,56 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
-  # Both verbs reach here: a membership row's write is `:put` while the row
-  # is new and `:patch` once it exists, and the fold derives the verb from
-  # existence, so a check on `:put` alone would never run for a live row.
-  # A `:patch` that names no entity has nothing to check against the stored
-  # row, and `membership_identity/1` refuses it below.
-  defp check_update_row_identity(%{model: "entityGroup", method: method} = update, authz)
+  # A platform row's write is `:put` when new and `:patch` once it exists, so
+  # the identity check runs on both: a key that disagrees with the committed
+  # row is refused before any permission is consulted (decision 13).
+  defp check_update_row_identity(%{kind: :membership, method: method} = update, authz)
        when method in [:put, :patch] do
-    case Fields.get(update.data, "entity_id") do
-      nil -> :ok
-      entity_id -> check_membership_row_entity(update.subject_id, entity_id, authz)
-    end
+    value = SystemComponent.value(update.data, :membership)
+    check_membership_row_identity(update.subject_id, value, authz)
   end
 
-  defp check_update_row_identity(%{model: "relationship", method: method} = update, authz)
+  defp check_update_row_identity(%{kind: :link, method: method} = update, authz)
        when method in [:put, :patch] do
-    check_relationship_row_source(update.subject_id, Fields.get(update.data, "source_id"), authz)
+    check_link_row_source(
+      update.subject_id,
+      SystemComponent.path(update.data, :link, "source_id"),
+      authz
+    )
+  end
+
+  defp check_update_row_identity(%{kind: :grant, method: method} = update, authz)
+       when method in [:put, :patch] do
+    check_grant_row_group(
+      update.subject_id,
+      SystemComponent.path(update.data, :grant, "group_id"),
+      authz
+    )
   end
 
   defp check_update_row_identity(_update, _authz), do: :ok
 
-  # A relationship row's source is its identity, like an `entityGroup`
-  # row's entity (#623): the row fans out to the source's group set, so
-  # re-pointing it would drop the edge out of its owner's projections and
-  # hand it to the caller (#624). A put or patch that keeps the source
-  # stays a normal write (target/type/field may change); moving an edge to
-  # another source is a delete plus a put. The delete is scoped by the
-  # stored row's source, never by a wire `source_id`, so it cannot reach a
-  # row in another group. A patch that omits `source_id` cannot be applied
-  # (`CacheMutationPlanner` drops it), so there is nothing to re-point: the
-  # check answers about the source the request declares, and the stored
-  # row's groups authorize the no-op as before.
+  # `ebb/grant`'s `group_id` is its identity (decision 13): moving a grant
+  # between groups is a delete plus a create, so an existing row is authorized
+  # only in the group it already belongs to (#625).
+  defp check_grant_row_group(grant_id, group_id, authz) do
+    case GroupCache.get_group_member(grant_id, authz.ctx.group_members_by_id_table) do
+      nil ->
+        :ok
+
+      %{group_id: committed} ->
+        if is_nil(group_id) or committed == group_id do
+          :ok
+        else
+          {:error, "not_authorized", "an ebb/grant row cannot be re-pointed at another group"}
+        end
+    end
+  end
+
+  # A link's source is its identity (#623, #624): the row fans out to the
+  # source's group set, so re-pointing it would hand the edge to the caller.
+  # Changing target/type/field keeps the source and stays a normal write;
+  # moving an edge is a delete plus a put.
   #
   # No committed source is not a refusal. A by-id row can be missing because
   # the edge is new, because this request deleted it, or because it is
@@ -881,8 +882,8 @@ defmodule EbbServer.Storage.Authorizer do
   # A delete in the request releases the binding only: the delete itself is
   # authorized against the stored row's groups, so a put cannot ride a
   # delete the caller may not perform.
-  defp check_relationship_row_source(relationship_id, source_id, authz) do
-    committed = committed_relationship_source(relationship_id, authz)
+  defp check_link_row_source(link_id, source_id, authz) do
+    committed = committed_link_source(link_id, authz)
 
     cond do
       is_nil(source_id) ->
@@ -895,27 +896,23 @@ defmodule EbbServer.Storage.Authorizer do
         :ok
 
       true ->
-        {:error, "not_authorized", "a relationship row cannot be re-pointed at another source"}
+        {:error, "not_authorized", "an ebb/link row cannot be re-pointed at another source"}
     end
   end
 
-  defp committed_relationship_source(relationship_id, authz) do
-    if MapSet.member?(authz.deleted_relationships, relationship_id) do
+  defp committed_link_source(link_id, authz) do
+    if MapSet.member?(authz.deleted_relationships, link_id) do
       nil
     else
-      EntityIndex.relationship_source(relationship_id, authz.opts)
+      EntityIndex.relationship_source(link_id, authz.opts)
     end
   end
 
-  # Unlike `entityGroup` deletes, which resolve their row up front because
-  # the authorization and the last-membership delta both need it, a
-  # `relationship` delete only has to release the row's source binding, so
-  # the ids suffice: delete plus put is how an edge moves (#624), and the
-  # caches do not advance until the Writer commits, so without this the id
-  # would still look bound to the source it was just deleted from.
+  # A link delete only has to release the row's source binding, so the id
+  # suffices: delete plus put is how an edge moves (#624).
   defp deleted_relationship_ids(mutations) do
     mutations
-    |> Enum.filter(&(&1.model == "relationship" and &1.method == :delete))
+    |> Enum.filter(&(&1.kind == :link and &1.method == :delete))
     |> MapSet.new(& &1.subject_id)
   end
 
@@ -961,26 +958,34 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # The entity-type index wins whenever it has an entry; failing that, a by-id
-  # cache row carries its system model by construction. Shared with the
+  # cache row carries the platform model by construction. Shared with the
   # Writer's fold, whose delete has the same question (see
   # `EntityIndex.committed_model/2`).
   defp committed_model(entity_id, opts), do: EntityIndex.committed_model(entity_id, opts)
 
-  # A membership row names one `(entity, group)` pair. A re-put may move
-  # the row to another group, but it must not re-point it at a different
-  # entity: the row's old owner would silently lose that membership
-  # without the last-membership guard seeing it, and an orphaned entity
-  # could then be claimed by anyone (#623).
-  defp check_membership_row_entity(membership_id, entity_id, authz) do
+  # `ebb/membership`'s pair is immutable after create (decision 13): the old
+  # owner would silently lose the membership without the last-membership guard
+  # seeing it, and an orphaned entity could then be claimed by anyone (#623).
+  defp check_membership_row_identity(membership_id, value, authz) do
     case EntityIndex.membership(membership_id, authz.opts) do
       nil ->
         :ok
 
-      {^entity_id, _group_id} ->
-        :ok
+      committed ->
+        wire = {value && Map.get(value, "entity_id"), value && Map.get(value, "group_id")}
+        check_membership_pair(committed, wire)
+    end
+  end
 
-      {_other_entity_id, _group_id} ->
-        {:error, "not_authorized", "a membership row cannot be re-pointed at another entity"}
+  defp check_membership_pair(_committed, {nil, _group_id}), do: :ok
+  defp check_membership_pair(_committed, {_entity_id, nil}), do: :ok
+
+  defp check_membership_pair(committed, wire) do
+    if committed == wire do
+      :ok
+    else
+      {:error, "not_authorized",
+       "an ebb/membership row cannot be re-pointed at another entity or group"}
     end
   end
 
@@ -1031,14 +1036,14 @@ defmodule EbbServer.Storage.Authorizer do
   # The permission model follows the source's **true** model, resolved from
   # the entity index — never the row's `type` label, which a client can
   # forge to borrow another model's permission (#323).
-  defp authorize_relationship_update(%{method: :put} = update, actor_id, authz) do
-    case source_entity_model(update, authz) do
+  defp authorize_link_update(%{method: :put} = update, actor_id, authz) do
+    case link_source_model(update, authz) do
       nil ->
-        {:error, "not_authorized", "relationship source model is unresolvable"}
+        {:error, "not_authorized", "ebb/link source model is unresolvable"}
 
       source_model ->
         check_group_permission(
-          relationship_group_ids(update, authz),
+          link_group_ids(update, authz),
           actor_id,
           source_model,
           "update",
@@ -1047,11 +1052,11 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  defp authorize_relationship_update(update, actor_id, authz) do
+  defp authorize_link_update(update, actor_id, authz) do
     check_group_permission(
-      relationship_group_ids(update, authz),
+      link_group_ids(update, authz),
       actor_id,
-      "relationship",
+      SystemComponent.component(:link),
       permission_for(update.method),
       authz
     )
@@ -1060,8 +1065,8 @@ defmodule EbbServer.Storage.Authorizer do
   # The source entity's committed model, or the one the same request created
   # when the index does not know the id yet. A put with no `source_id`, or one
   # the request cannot model, is unresolvable.
-  defp source_entity_model(update, authz) do
-    case Fields.get(update.data, "source_id") do
+  defp link_source_model(update, authz) do
+    case SystemComponent.path(update.data, :link, "source_id") do
       nil -> nil
       source_id -> entity_model(source_id, authz)
     end
@@ -1080,13 +1085,17 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.
+  #
+  # `subject` is a user row's model (`todo`) or a platform component's own
+  # name (`ebb/grant`); either way the grant string is `<subject>.<verb>`.
+  #
   # `permissions_fun` selects the source: the cache unioned with the
   # Action's declared bootstrap permissions by default, or the cache
   # alone for membership mutations of an existing entity.
   defp check_group_permission(
          group_ids,
          actor_id,
-         model,
+         subject,
          permission,
          authz,
          permissions_fun \\ &permissions_for/3
@@ -1100,7 +1109,7 @@ defmodule EbbServer.Storage.Authorizer do
             false
 
           permissions ->
-            PermissionHelper.check_permission(permissions, model, permission)
+            PermissionHelper.check_permission(permissions, subject, permission)
         end
       end)
 
@@ -1109,25 +1118,6 @@ defmodule EbbServer.Storage.Authorizer do
     else
       {:error, "not_authorized", "missing required permission"}
     end
-  end
-
-  # Every group must grant the permission: a mutation that moves a row
-  # between groups needs it on both sides, so the union semantics of
-  # `check_group_permission/6` are not enough here.
-  defp check_every_group_permission(group_ids, actor_id, model, permission, authz) do
-    Enum.reduce_while(group_ids, :ok, fn group_id, :ok ->
-      case check_group_permission(
-             [group_id],
-             actor_id,
-             model,
-             permission,
-             authz,
-             &cached_permissions/3
-           ) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
   end
 
   # Membership mutations of an **existing** entity require a real
@@ -1157,25 +1147,19 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # When the folded row carries the group id, prefer it; otherwise resolve via
-  # the by-id index — required for a system row's delete, which names no
-  # component and so carries no fields.
-  defp system_entity_group_ids(%{data: data, subject_id: id}, model, authz) do
-    case Fields.get(data, "group_id") do
-      nil -> EntityIndex.resolve_groups(model, id, authz.opts)
+  # the by-id index — required for a platform row's delete, which names no
+  # component and so carries no value.
+  defp system_entity_group_ids(%{data: data, subject_id: id}, kind, authz) do
+    case SystemComponent.path(data, kind, "group_id") do
+      nil -> EntityIndex.resolve_groups(kind, id, authz.opts)
       group_id -> [group_id]
     end
   end
 
-  defp wire_group_ids(update) do
-    update.data
-    |> Fields.get("group_id")
-    |> List.wrap()
-  end
-
-  defp relationship_group_ids(update, authz) do
+  defp link_group_ids(update, authz) do
     EntityIndex.relationship_groups(
       update.method,
-      Fields.get(update.data, "source_id"),
+      SystemComponent.path(update.data, :link, "source_id"),
       update.subject_id,
       authz.intra_opts
     )

@@ -21,9 +21,15 @@ import { vi, type MockInstance } from "vitest";
 import {
   componentModel,
   componentName,
+  EBB_COMPONENTS,
+  EBB_COMPONENT_KINDS,
+  EBB_MODEL_NAME,
+  ebbComponentField,
+  isEbbComponent,
   isFieldMap,
   makeHlc,
   type Action,
+  type EbbComponentKind,
   type Entity,
   type Update,
 } from "@ebbjs/core";
@@ -105,6 +111,106 @@ export const seedReplicaRow = (
     updates: [],
   };
   replica.ingest(action, updates, seedPosition);
+};
+
+/** Whether `model` names a platform component rather than a user model. */
+export const isPlatformModel = (model: string): model is EbbComponentKind =>
+  (EBB_COMPONENT_KINDS as readonly string[]).includes(model);
+
+/**
+ * The `(component, value)` pairs a fixture row write emits. A user row emits one
+ * per field; a platform row (`membership`, `grant`, …) emits one whole value.
+ */
+export const rowComponents = (
+  model: string,
+  fields: Record<string, unknown>,
+): readonly (readonly [`${string}/${string}`, unknown])[] =>
+  isPlatformModel(model)
+    ? [[EBB_COMPONENTS[model], fields] as const]
+    : Object.entries(fields).map(([key, value]) => [componentName(model, key), value] as const);
+
+/** A materialized platform row: an `ebb` row carrying one atomic component. */
+export const platformEntity = (
+  id: string,
+  kind: EbbComponentKind,
+  values: Record<string, unknown>,
+  deletedHlc: string | null = null,
+): Entity => ({
+  id,
+  type: EBB_MODEL_NAME,
+  data: {
+    fields: {
+      [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: "1-0" },
+    },
+  },
+  exists: true,
+  created_hlc: "1-0",
+  updated_hlc: "1-0",
+  deleted_hlc: deletedHlc,
+  last_gsn: 0,
+});
+
+/** The Update a platform row write implies: one atomic component, whole value. */
+export const platformUpdate = (
+  subjectId: string,
+  kind: EbbComponentKind,
+  method: "put" | "patch" | "delete",
+  values: Record<string, unknown> = {},
+): Update[] => {
+  if (method === "delete") {
+    return [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }];
+  }
+  return [
+    {
+      id: `u_${subjectId}_${method}`,
+      subject_id: subjectId,
+      component: EBB_COMPONENTS[kind],
+      method: "replace",
+      data: { value: values, update_id: `u_${subjectId}_${method}`, hlc: makeHlc(1) },
+    },
+  ];
+};
+
+/**
+ * Updates grouped by subject, keeping only the rows of `model` — a user model,
+ * or a platform kind, which matches the rows carrying its component.
+ */
+export const rowsByModel = (
+  updates: readonly Update[],
+  model: string,
+): readonly (readonly Update[])[] => {
+  const matches = (update: Update): boolean =>
+    isPlatformModel(model)
+      ? update.method !== "delete" && update.component === EBB_COMPONENTS[model]
+      : updateModel(update) === model;
+  const bySubject = new Map<string, Update[]>();
+  for (const update of updates) {
+    if (!matches(update)) continue;
+    const row = bySubject.get(update.subject_id);
+    if (row === undefined) bySubject.set(update.subject_id, [update]);
+    else row.push(update);
+  }
+  return [...bySubject.values()];
+};
+
+/**
+ * A row's field values, keyed by field. A user row names one component per field;
+ * a platform row's value keys are the fields.
+ */
+export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const update of row) {
+    if (update.method === "drop" || update.method === "delete") continue;
+    const value = (update.data as { value: unknown }).value;
+    if (isEbbComponent(update.component)) {
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        Object.assign(out, value as Record<string, unknown>);
+      }
+      continue;
+    }
+    out[update.component.slice(update.component.indexOf("/") + 1)] = value;
+  }
+  return out;
 };
 
 /** The model an Update commits under; `undefined` for a delete, which names none. */

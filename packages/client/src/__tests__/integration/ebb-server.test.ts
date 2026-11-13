@@ -37,14 +37,21 @@
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  carriesComponent,
   componentName,
   createAction,
   createClock,
   decodeSync,
+  EBB_COMPONENTS,
+  EBB_MODEL_NAME,
   encodeSync,
   localEvent,
   makeHlc,
+  systemValue,
+  systemValueString,
   type Action,
+  type EbbComponentKind,
+  type Entity,
   type Update,
   type UpdateInput,
 } from "@ebbjs/core";
@@ -54,7 +61,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { groupSystemEntity } from "@ebbjs/schema";
+import { ebbSystemEntity } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -63,7 +70,7 @@ const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 const modelOf = (update: Update): string | undefined =>
   update.method === "delete" ? undefined : update.component.slice(0, update.component.indexOf("/"));
 
-/** One wire Update per field, the per-component shape every write emits. */
+/** One wire Update per field: a user model's components write one at a time. */
 const componentUpdates = (
   subjectId: string,
   model: string,
@@ -79,11 +86,92 @@ const componentUpdates = (
     data: { value, update_id: `${updateId}_${field}`, hlc },
   }));
 
+/** One atomic platform Update: the whole value in that component's single leaf. */
+const platformUpdate = (
+  kind: EbbComponentKind,
+  subjectId: string,
+  value: Readonly<Record<string, unknown>>,
+  hlc: string,
+  updateId = "seed",
+): UpdateInput => ({
+  id: `${updateId}_${kind}`,
+  subject_id: subjectId,
+  component: EBB_COMPONENTS[kind],
+  method: "replace" as const,
+  data: { value, update_id: `${updateId}_${kind}`, hlc },
+});
+
+/**
+ * Submit one Action as `actorId`, surfacing the server's per-Action rejections:
+ * an empty `rejected[]` is the only acceptance.
+ */
+async function postAction(actorId: string, action: Action, what: string): Promise<void> {
+  const res = await fetch(`${SERVER_URL}/sync/actions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/msgpack", "x-ebb-actor-id": actorId },
+    body: encodeSync({ actions: [action] }) as BodyInit,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${what}: ${res.status} ${text}`);
+  if (text === "") return;
+  const body = JSON.parse(text) as { rejected?: readonly unknown[] };
+  if (body.rejected !== undefined && body.rejected.length > 0) {
+    throw new Error(`${what} was rejected: ${JSON.stringify(body.rejected)}`);
+  }
+}
+
+/** Every live row carrying `kind` in the local replica. */
+const platformRows = async (client: SyncClient, kind: EbbComponentKind): Promise<Entity[]> =>
+  (await client.storage.entities.query(EBB_MODEL_NAME)).filter((row) =>
+    carriesComponent(row, kind),
+  );
+
+/** The `ebb/link` row leaving `sourceId` under `field`, if materialized. */
+const linkFrom = (rows: readonly Entity[], sourceId: string, field: string): Entity | undefined =>
+  rows.find(
+    (row) =>
+      systemValueString(row, "link", "source_id") === sourceId &&
+      systemValueString(row, "link", "field") === field,
+  );
+
+/** The permissions a regular test member holds in the test group. */
+const MEMBER_PERMISSIONS = [
+  "text_document.*",
+  "ebb/group.read",
+  "ebb/grant.*",
+  "ebb/membership.*",
+  "ebb/link.*",
+] as const;
+
 const TEST_SEEDER = "test_seeder";
+
+/** Add an actor to the test group as one atomic `ebb/grant`, as the seeder. */
+async function addMemberWithPerms(actorId: string, permissions: readonly string[]): Promise<void> {
+  const clock = createClock();
+  const { action } = createAction({
+    actorId: TEST_SEEDER,
+    clock,
+    updates: [
+      platformUpdate(
+        "grant",
+        grantRowId(actorId),
+        { actor_id: actorId, group_id: TEST_GROUP_ID, permissions: [...permissions] },
+        localEvent(clock),
+        "add",
+      ),
+    ],
+  });
+  await postAction(TEST_SEEDER, action, `adding member ${actorId}`);
+}
 
 /** Unique per run so the test is reentrant against the same server. */
 const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 const TEST_GROUP_ID = `grp_it_${RUN_ID}`;
+/**
+ * An actor's `ebb/grant` row id, unique per run: the server's bootstrap exemption
+ * only covers a grant row its existence index has not seen.
+ */
+const grantRowId = (actorId: string): string => `gm_${RUN_ID}_${actorId}`;
 /**
  * Each test that exercises the doc lifecycle gets its own unique
  * docId so the per-test action stream doesn't accumulate across
@@ -137,22 +225,27 @@ beforeAll(async () => {
     return;
   }
 
-  // Bootstrap the test group in ONE action so the server's
-  // group_bootstrap? check passes (it requires group + groupMember for
-  // the actor + entityGroup, all in the same action set).
+  // Bootstrap the test group in ONE action so the server's bootstrap exemption
+  // applies to the group put, the actor's grant, and the membership.
   const bootstrapDocId = testDocId("bootstrap");
   const bootstrapMembershipId = `eg_${RUN_ID}_bootstrap`;
   const clock = createClock();
   const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
-    ...componentUpdates(TEST_GROUP_ID, "group", { name: `Integration Test ${RUN_ID}` }, hlc),
-    ...componentUpdates(
-      `gm_${TEST_SEEDER}`,
-      "groupMember",
+    platformUpdate("group", TEST_GROUP_ID, { name: `Integration Test ${RUN_ID}` }, hlc),
+    platformUpdate(
+      "grant",
+      grantRowId(TEST_SEEDER),
       {
         actor_id: TEST_SEEDER,
         group_id: TEST_GROUP_ID,
-        permissions: ["text_document.*", "group.*", "groupMember.*", "relationship.*"],
+        permissions: [
+          "text_document.*",
+          "ebb/group.*",
+          "ebb/grant.*",
+          "ebb/membership.*",
+          "ebb/link.*",
+        ],
       },
       hlc,
     ),
@@ -162,27 +255,15 @@ beforeAll(async () => {
       method: "replace",
       data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    ...componentUpdates(
+    platformUpdate(
+      "membership",
       bootstrapMembershipId,
-      "entityGroup",
       { entity_id: bootstrapDocId, group_id: TEST_GROUP_ID },
       hlc,
     ),
   ];
   const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
-  const body = encodeSync({ actions: [action] });
-
-  const res = await fetch(`${SERVER_URL}/sync/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/msgpack",
-      "x-ebb-actor-id": TEST_SEEDER,
-    },
-    body: body as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(`failed to seed test group: ${res.status} ${await res.text()}`);
-  }
+  await postAction(TEST_SEEDER, action, "seeding the test group");
 }, 30_000);
 
 afterAll(async () => {
@@ -193,36 +274,10 @@ afterAll(async () => {
 
 /**
  * Add an actor as a member of the test group. Sent on behalf of the
- * seeder (which has groupMember.* permission).
+ * seeder (which holds `ebb/grant.*` in the group).
  */
 async function addMemberAsSeeder(actorId: string): Promise<void> {
-  const clock = createClock();
-  const memberId = `gm_${actorId}`;
-  const updates = componentUpdates(
-    memberId,
-    "groupMember",
-    {
-      actor_id: actorId,
-      group_id: TEST_GROUP_ID,
-      permissions: ["text_document.*", "group.read", "groupMember.*", "relationship.*"],
-    },
-    localEvent(clock),
-    "add",
-  );
-  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
-  const body = encodeSync({ actions: [action] });
-
-  const res = await fetch(`${SERVER_URL}/sync/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/msgpack",
-      "x-ebb-actor-id": TEST_SEEDER,
-    },
-    body: body as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
-  }
+  await addMemberWithPerms(actorId, MEMBER_PERMISSIONS);
 }
 
 /**
@@ -257,8 +312,8 @@ async function fetchActions(fromGsn = 0): Promise<readonly Action[]> {
 }
 
 /**
- * Create an empty text_document in the test group + its `entityGroup`
- * membership row. Tests call this to get a fresh, isolated doc.
+ * Create an empty text_document in the test group plus its `ebb/membership`
+ * row. Tests call this to get a fresh, isolated doc.
  */
 async function createTestDoc(docId: string): Promise<void> {
   const clock = createClock();
@@ -270,26 +325,15 @@ async function createTestDoc(docId: string): Promise<void> {
       method: "replace",
       data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    ...componentUpdates(
+    platformUpdate(
+      "membership",
       `eg_${RUN_ID}_${docId}`,
-      "entityGroup",
       { entity_id: docId, group_id: TEST_GROUP_ID },
       hlc,
     ),
   ];
   const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
-  const body = encodeSync({ actions: [action] });
-  const res = await fetch(`${SERVER_URL}/sync/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/msgpack",
-      "x-ebb-actor-id": TEST_SEEDER,
-    },
-    body: body as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(`failed to create doc ${docId}: ${res.status} ${await res.text()}`);
-  }
+  await postAction(TEST_SEEDER, action, `creating doc ${docId}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -548,37 +592,12 @@ describe("integration: localDelete round-trip", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Add an actor as a member of the test group with `todo.*` permissions.
- * The standard helper grants only text_document / relationship perms,
- * which is insufficient for writes to user-defined entity types.
+ * Add an actor as a member of the test group with `todo.*` permissions on
+ * top of the standard member grant — enough for writes to user-defined
+ * entity types.
  */
 async function addMemberWithTodoPerms(actorId: string): Promise<void> {
-  const clock = createClock();
-  const memberId = `gm_${actorId}`;
-  const updates = componentUpdates(
-    memberId,
-    "groupMember",
-    {
-      actor_id: actorId,
-      group_id: TEST_GROUP_ID,
-      permissions: ["text_document.*", "group.read", "groupMember.*", "relationship.*", "todo.*"],
-    },
-    localEvent(clock),
-    "add",
-  );
-  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
-  const body = encodeSync({ actions: [action] });
-  const res = await fetch(`${SERVER_URL}/sync/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/msgpack",
-      "x-ebb-actor-id": TEST_SEEDER,
-    },
-    body: body as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
-  }
+  await addMemberWithPerms(actorId, [...MEMBER_PERMISSIONS, "todo.*"]);
 }
 
 /**
@@ -662,20 +681,12 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       clock: seedClock,
       updates: [
         ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
-        {
-          id: "u_1_0",
-          subject_id: membershipId,
-          component: "entityGroup/entity_id",
-          method: "replace",
-          data: { value: todoId, update_id: "seed", hlc: seedHlc },
-        },
-        {
-          id: "u_1_1",
-          subject_id: membershipId,
-          component: "entityGroup/group_id",
-          method: "replace",
-          data: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
-        },
+        platformUpdate(
+          "membership",
+          membershipId,
+          { entity_id: todoId, group_id: TEST_GROUP_ID },
+          seedHlc,
+        ),
       ],
     });
     const seed = await seedClient.write([seedAction]);
@@ -738,7 +749,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
     const seeder = "todo_incoming_seeder";
     const receiver = "todo_incoming_receiver";
 
-    // Seeder (no registry): seed the entity + entityGroup membership,
+    // Seeder (no registry): seed the entity + its `ebb/membership` row,
     // then write a schema-violating update. Both writes go through
     // the wire because the seeder has no registry to check against.
     const seederClient = await connectAsTodoActor(seeder);
@@ -751,20 +762,12 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       clock: seedClock,
       updates: [
         ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
-        {
-          id: "u_1_0",
-          subject_id: membershipId,
-          component: "entityGroup/entity_id",
-          method: "replace",
-          data: { value: todoId, update_id: "seed", hlc: seedHlc },
-        },
-        {
-          id: "u_1_1",
-          subject_id: membershipId,
-          component: "entityGroup/group_id",
-          method: "replace",
-          data: { value: TEST_GROUP_ID, update_id: "seed", hlc: seedHlc },
-        },
+        platformUpdate(
+          "membership",
+          membershipId,
+          { entity_id: todoId, group_id: TEST_GROUP_ID },
+          seedHlc,
+        ),
       ],
     });
     const seedResult = await seederClient.write([seedAction]);
@@ -879,7 +882,7 @@ const buildLinkTestSchema = () => {
 };
 
 describe("integration: draft create membership", () => {
-  it("writes one entityGroup row per group in the same Action", async () => {
+  it("writes one ebb/membership row per group in the same Action", async () => {
     if (!(await shouldRun())) return;
     const actor = `membership_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
@@ -910,11 +913,13 @@ describe("integration: draft create membership", () => {
       const todoId = await findTodoByTitle(client, title);
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
-      const rows = await client.storage.entities.query("entityGroup");
-      const membershipRows = rows.filter((e) => e.data?.fields?.["entity_id"]?.value === todoId);
-      expect(membershipRows.map((e) => e.data?.fields?.["group_id"]?.value).sort()).toEqual([
-        TEST_GROUP_ID,
-      ]);
+      const rows = await platformRows(client, "membership");
+      const membershipRows = rows.filter(
+        (row) => systemValue(row, "membership")?.["entity_id"] === todoId,
+      );
+      expect(
+        membershipRows.map((row) => systemValue(row, "membership")?.["group_id"]).sort(),
+      ).toEqual([TEST_GROUP_ID]);
 
       // doc.groups resolves the materialized group.
       const row = await client.todo.get(todoId);
@@ -973,15 +978,11 @@ describe("integration: draft link / unlink", () => {
       ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
-      const links = await client.storage.entities.query("relationship");
-      const materializedLink = links.find(
-        (e) =>
-          e.data?.fields?.["source_id"]?.value === todoId &&
-          e.data?.fields?.["field"]?.value === "list",
-      );
+      const links = await platformRows(client, "link");
+      const materializedLink = linkFrom(links, todoId, "list");
       expect(materializedLink).toBeDefined();
-      expect(materializedLink!.data?.fields?.["target_id"]?.value).toBe("list_target_1");
-      expect(materializedLink!.data?.fields?.["type"]?.value).toBe("todo");
+      expect(systemValueString(materializedLink, "link", "target_id")).toBe("list_target_1");
+      expect(systemValueString(materializedLink, "link", "type")).toBe("todo");
     } finally {
       client.close();
     }
@@ -1018,28 +1019,24 @@ describe("integration: draft link / unlink", () => {
       });
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
 
-      let links = await client.storage.entities.query("relationship");
-      const materializedLink = links.find(
-        (e) =>
-          e.data?.fields?.["source_id"]?.value === todoId &&
-          e.data?.fields?.["field"]?.value === "list",
-      );
+      let links = await platformRows(client, "link");
+      const materializedLink = linkFrom(links, todoId, "list");
       expect(materializedLink).toBeDefined();
-      const relationshipSubjectId = materializedLink!.id;
+      const linkRowId = materializedLink!.id;
 
       await expect(
         client.actions.unlink({ entity: "todo", id: todoId, as: "list" }),
       ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
-      links = await client.storage.entities.query("relationship");
-      const stillMaterialized = links.find((e) => e.id === relationshipSubjectId);
+      links = await platformRows(client, "link");
+      const stillMaterialized = links.find((row) => row.id === linkRowId);
       const isTombstoned =
         stillMaterialized?.deleted_hlc !== null && stillMaterialized?.deleted_hlc !== undefined;
       const isGone = stillMaterialized === undefined;
       expect(
         isGone || isTombstoned,
-        `expected the relationship ${relationshipSubjectId} to be removed or tombstoned after unlink(); got ${JSON.stringify(stillMaterialized)}`,
+        `expected the ebb/link row ${linkRowId} to be removed or tombstoned after unlink(); got ${JSON.stringify(stillMaterialized)}`,
       ).toBe(true);
     } finally {
       client.close();
@@ -1066,7 +1063,7 @@ describe("integration: defineSchema", () => {
     });
     const todo_ownedBy = defineRelationship({
       source: todo,
-      target: groupSystemEntity,
+      target: ebbSystemEntity,
       as: "ownedBy",
     });
     const schema = defineSchema({
@@ -1097,18 +1094,17 @@ describe("integration: defineSchema", () => {
       // works the same as on a hand-built registry.
       const registered = client.registry.getRelationship("todo", "ownedBy");
       expect(registered?.source.name).toBe("todo");
-      expect(registered?.target.name).toBe("group");
+      expect(registered?.target.name).toBe(EBB_MODEL_NAME);
 
-      // Membership is a dedicated entityGroup row, not an injected
-      // relationship on the registry; the system entities are still
-      // registered so their Updates validate and materialize.
+      // Membership is a dedicated `ebb/membership` row, not an injected
+      // relationship on the registry; the platform model is still registered
+      // so its Updates validate and materialize.
       expect(client.registry.getRelationship("todo", "groups")).toBeUndefined();
-      expect(client.registry.has("group")).toBe(true);
-      expect(client.registry.has("entityGroup")).toBe(true);
-      // `group` / `membership` are system namespaces; `entityGroup` stays internal.
+      expect(client.registry.has(EBB_MODEL_NAME)).toBe(true);
+      // The shared platform model has no namespace of its own.
       expect((client as unknown as Record<string, unknown>)["group"]).toBeDefined();
       expect((client as unknown as Record<string, unknown>)["membership"]).toBeDefined();
-      expect((client as unknown as Record<string, unknown>)["entityGroup"]).toBeUndefined();
+      expect((client as unknown as Record<string, unknown>)[EBB_MODEL_NAME]).toBeUndefined();
 
       // The server tolerates schema_version / min_supported_version
       // fields it doesn't understand today.
@@ -1341,7 +1337,7 @@ async function findCreatedTodoId(client: import("../..").SyncClient): Promise<st
  * atomically and materializes every Update, so a multi-entity create
  * round-trips as one unit.
  *
- * Each draft's `{ groups }` option emits an `entityGroup` row into the
+ * Each draft's `{ groups }` option emits an `ebb/membership` row into the
  * same Action, so the entities are indexed into their group atomically.
  */
 describe("integration: multi-entity Action", () => {
@@ -1385,13 +1381,13 @@ describe("integration: multi-entity Action", () => {
       expect(lists.map((e) => e.id)).toContain(created.list.id);
 
       // Both entities were indexed into the test group through the
-      // entityGroup rows emitted by the single atomic Action.
-      const memberships = await client.storage.entities.query("entityGroup");
-      const membershipFor = (sourceId: string): boolean =>
+      // `ebb/membership` components their single atomic Action emitted.
+      const memberships = await platformRows(client, "membership");
+      const membershipFor = (entityId: string): boolean =>
         memberships.some(
-          (e) =>
-            e.data?.fields?.["entity_id"]?.value === sourceId &&
-            e.data?.fields?.["group_id"]?.value === TEST_GROUP_ID,
+          (row) =>
+            systemValue(row, "membership")?.["entity_id"] === entityId &&
+            systemValue(row, "membership")?.["group_id"] === TEST_GROUP_ID,
         );
       expect(membershipFor(created.todo.id)).toBe(true);
       expect(membershipFor(created.list.id)).toBe(true);
@@ -1401,31 +1397,9 @@ describe("integration: multi-entity Action", () => {
   });
 });
 
-/** Add an actor with `todo.*`, `list.*`, and `relationship.*` on the test group. */
+/** Add an actor with `todo.*`, `list.*`, and `ebb/link.*` on the test group. */
 async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
-  const clock = createClock();
-  const memberId = `gm_${actorId}`;
-  const updates = componentUpdates(
-    memberId,
-    "groupMember",
-    {
-      actor_id: actorId,
-      group_id: TEST_GROUP_ID,
-      permissions: ["todo.*", "list.*", "relationship.*"],
-    },
-    localEvent(clock),
-    "add",
-  );
-  const { action } = createAction({ actorId: TEST_SEEDER, updates, clock });
-  const body = encodeSync({ actions: [action] });
-  const res = await fetch(`${SERVER_URL}/sync/actions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/msgpack", "x-ebb-actor-id": TEST_SEEDER },
-    body: body as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(`failed to add member ${actorId}: ${res.status} ${await res.text()}`);
-  }
+  await addMemberWithPerms(actorId, ["todo.*", "list.*", "ebb/link.*"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,7 +1410,7 @@ async function addMemberWithTodoAndListPerms(actorId: string): Promise<void> {
  * A `defineAction` mounted as `client.actions.<name>` runs the same
  * resolver as the callback form: fresh drafts per call, one collector,
  * one wire Action, one `POST /sync/actions`. Each draft's `{ groups }`
- * option emits its `entityGroup` row into that same Action.
+ * option emits its `ebb/membership` row into that same Action.
  */
 describe("integration: client.actions (defineAction)", () => {
   const actionTodo = defineModel("todo", { title: e.string() });
@@ -1481,14 +1455,18 @@ describe("integration: client.actions (defineAction)", () => {
       expect(created.todo.id).toMatch(/^e_/);
       expect(created.list.id).toMatch(/^e_/);
 
-      // One call ⇒ one Action; both entities and both membership rows
-      // ride in that Action.
+      // One call ⇒ one Action; both entities and both membership
+      // components ride in that Action.
       expect(written).toHaveLength(1);
       const updates = written[0]!.updates;
       expect(updates.some((u) => modelOf(u) === "todo")).toBe(true);
       expect(updates.some((u) => modelOf(u) === "list")).toBe(true);
       expect(
-        new Set(updates.filter((u) => modelOf(u) === "entityGroup").map((u) => u.subject_id)).size,
+        new Set(
+          updates
+            .filter((u) => u.method !== "delete" && u.component === EBB_COMPONENTS.membership)
+            .map((u) => u.subject_id),
+        ).size,
       ).toBe(2);
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);

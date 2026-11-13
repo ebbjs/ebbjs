@@ -85,8 +85,8 @@ defmodule EbbServer.Storage.Writer do
   flight by default. Raising `:max_in_flight` (or `:writer_max_in_flight`)
   lets a successor be resolved against the predecessor's planned cache
   overlay while that predecessor commits. A predecessor that planned a
-  membership or relationship move holds the successor at the gate until it
-  is durable, so its abandon rebuilds the chain instead of letting stale
+  membership or link write holds the successor at the gate until it is
+  durable, so its abandon rebuilds the chain instead of letting stale
   scopes reach a durable range. Fan-out still follows claim order at any
   depth because the release stage notifies only the committed prefix.
 
@@ -179,9 +179,9 @@ defmodule EbbServer.Storage.Writer do
   the stored `cf_actions` frame: one group list per Update,
   index-aligned with the payload's Updates. Fan-out and catch-up filter
   an Action by those scopes so each Update is delivered only to the groups
-  it belongs to. The scopes cannot be re-derived later (a
-  `relationship`/`entityGroup` delete's by-id cache entry is gone by
-  then), so this snapshot is the delivery contract.
+  it belongs to. The scopes cannot be re-derived later (an `ebb/link` or
+  `ebb/membership` delete's by-id cache entry is gone by then), so this
+  snapshot is the delivery contract.
 
   System-cache writes are deduplicated the same way. The pre-commit pass
   hands the flush's flattened Updates to
@@ -330,12 +330,12 @@ defmodule EbbServer.Storage.Writer do
   Writer resolves the group **set** the update belongs to. This is
   straightforward when the entity already exists — look it up in
   `EntityGroupCache`. When the membership row is being created in the
-  same action (e.g. a "create todo" update paired with an `entityGroup`
+  same action (e.g. a "create todo" update paired with an `ebb/membership`
   update), the cache has no entry yet.
 
   To handle that, the Writer builds an **intra-action context** before
   processing updates: it maps each `entity_id` to the group ids carried
-  by its `entityGroup` updates. `EntityIndex` unions that with the
+  by its `ebb/membership` updates. `EntityIndex` unions that with the
   cached membership set, so an update is indexed once per group in the
   set.
 
@@ -346,8 +346,8 @@ defmodule EbbServer.Storage.Writer do
 
   The intra-action context becomes
   `%{"todo_123" => ["g_1", "g_2"]}`. The Writer indexes the create
-  and both membership rows into `g_1` and `g_2`. Domain relationship
-  edges do not move an entity between groups.
+  and both membership rows into `g_1` and `g_2`. Domain link edges do not
+  move an entity between groups.
   """
 
   use GenServer
@@ -2098,19 +2098,14 @@ defmodule EbbServer.Storage.Writer do
 
   # Every subject this Action folded is a row the flush has already written,
   # so later Actions of the same flush have to patch it rather than put it.
-  # Keyed by subject id alone, not `{model, id}` as the group-resolution memo
-  # is: ids are not guaranteed model-unique in this codebase, but every
-  # system-model branch of the cache planner projects a `:put` and a `:patch`
-  # identically when no cached row exists, so a cross-model collision cannot
-  # change the plan today.
+  # Keyed by subject id alone: a cross-kind collision cannot change the plan,
+  # since a `:put` and a `:patch` with no cached row project identically.
   defp fold_subjects(mutations, created) do
     Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
   end
 
-  # The row shape an earlier Action of this flush left behind, for the scope
-  # fields an `entityGroup` / `groupMember` / `relationship` row may have
-  # written there. Built from the raw Updates, not the folded mutation, so a
-  # `drop` removes a field and a `delete` removes the row.
+  # The row shape an earlier Action of this flush left behind. Built from the
+  # raw Updates, so a `drop` removes a field and a `delete` removes the row.
   defp remember_flush_rows(rows, updates) do
     Enum.reduce(updates, rows, fn update, rows ->
       case update.method do
@@ -2167,11 +2162,11 @@ defmodule EbbServer.Storage.Writer do
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
   defp prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo) do
-    # Scope is a per-subject decision, never a per-component one: an
-    # `entityGroup` row's `group_id` and a relationship row's `source_id` each
-    # arrive in one component Update while their siblings carry none, so the
-    # folded row decides for every Update of that row.
-    mutations = RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
+    # Scope is a per-subject decision, so the folded row decides for every
+    # Update of it.
+    mutations =
+      RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
+
     intra_action_context = PermissionHelper.build_intra_action_context(mutations)
 
     resolve_opts =
@@ -2198,8 +2193,8 @@ defmodule EbbServer.Storage.Writer do
     # Index-aligned with `action.updates`: the durable record of which
     # groups each Update is delivered to. Every component Update of a row gets
     # the row's scope. Computed here, from the same snapshot
-    # `cf_group_actions` is built from, because the by-id caches for a
-    # relationship/entityGroup delete are gone by fan-out time.
+    # `cf_group_actions` is built from, because the by-id caches for an
+    # `ebb/link`/`ebb/membership` delete are gone by fan-out time.
     scope_by_subject = Map.new(scopes)
     update_scopes = Enum.map(action.updates, &Map.fetch!(scope_by_subject, &1.subject_id))
 
@@ -2609,7 +2604,8 @@ defmodule EbbServer.Storage.Writer do
       entity_groups_by_id: state.entity_groups_by_id,
       entity_types: state.entity_types,
       relationships_by_id: state.relationships_by_id,
-      group_members_by_id: state.group_members_by_id
+      group_members_by_id: state.group_members_by_id,
+      group_apps: state.group_apps
     ]
   end
 
@@ -2638,14 +2634,16 @@ defmodule EbbServer.Storage.Writer do
           {EntityIndex.source_groups_cached(source_id, resolve_opts), source_id}
         end)
 
-      {:by_id, model} ->
-        resolve_memo_groups(memo, model, update.subject_id, resolve_opts)
+      {:by_id, key} ->
+        resolve_memo_groups(memo, key, update.subject_id, resolve_opts)
     end
   end
 
-  defp resolve_memo_groups(memo, model, subject_id, resolve_opts) do
-    resolve_memo(memo, {model, subject_id}, resolve_opts, fn ->
-      EntityIndex.resolve_groups_cached(model, subject_id, resolve_opts)
+  # The key includes the kind: the four components share `ebb` but resolve
+  # differently.
+  defp resolve_memo_groups(memo, key, subject_id, resolve_opts) do
+    resolve_memo(memo, {key, subject_id}, resolve_opts, fn ->
+      EntityIndex.resolve_groups_cached(key, subject_id, resolve_opts)
     end)
   end
 

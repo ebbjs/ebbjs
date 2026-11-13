@@ -11,30 +11,15 @@
  * the result with {@link Replica.evict} and owns the durable base.
  */
 
-import type { Entity } from "@ebbjs/core";
+import {
+  carriesComponent,
+  EBB_MODEL_NAME,
+  systemValueString,
+  type EbbComponentKind,
+  type Entity,
+} from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
-
-import {
-  entityGroupSystemEntity,
-  groupMemberSystemEntity,
-  groupSystemEntity,
-  relationshipSystemEntity,
-} from "@ebbjs/schema";
-
-const systemTypes = new Set<string>([
-  entityGroupSystemEntity.name,
-  groupMemberSystemEntity.name,
-  groupSystemEntity.name,
-  relationshipSystemEntity.name,
-]);
-
-/** A leaf string field; envelopes are not part of this read. */
-const stringField = (row: Entity, field: string): string | null => {
-  const entry = row.data?.fields?.[field];
-  if (entry === undefined || !("value" in entry)) return null;
-  return typeof entry.value === "string" ? entry.value : null;
-};
 
 const addGroup = (map: Map<string, Set<string>>, entityId: string, groupId: string): void => {
   const groups = map.get(entityId);
@@ -43,10 +28,17 @@ const addGroup = (map: Map<string, Set<string>>, entityId: string, groupId: stri
 };
 
 /**
- * The ids to evict so only `groupIds` remain resident. Group rows,
- * group-member rows, and membership rows follow their own `group_id`;
- * content rows follow their live `entityGroup` memberships; a
- * relationship row follows an evicted endpoint.
+ * The replica's rows of one platform kind. A row's kind is the `ebb/*` component
+ * it carries, not its model; a row carrying two lands in both buckets, which is
+ * what an overlay row (#820) needs.
+ */
+const platformRows = (replica: Replica, kind: EbbComponentKind): readonly Entity[] =>
+  replica.iterate(EBB_MODEL_NAME).filter((row) => carriesComponent(row, kind));
+
+/**
+ * The ids to evict so only `groupIds` remain resident. Group, grant, and
+ * membership rows follow their own `group_id`; content rows follow their live
+ * `ebb/membership` rows; a link row follows an evicted endpoint.
  */
 export const evictableRowIds = (
   replica: Replica,
@@ -56,24 +48,27 @@ export const evictableRowIds = (
   const evicted = new Set<string>();
   const memberGroups = new Map<string, Set<string>>();
 
-  for (const row of replica.iterate(entityGroupSystemEntity.name)) {
-    const entityId = stringField(row, "entity_id");
-    const groupId = stringField(row, "group_id");
+  const memberships = platformRows(replica, "membership");
+  for (const row of memberships) {
+    const entityId = systemValueString(row, "membership", "entity_id");
+    const groupId = systemValueString(row, "membership", "group_id");
     if (entityId !== null && groupId !== null) addGroup(memberGroups, entityId, groupId);
     if (groupId !== null && !subscribed.has(groupId)) evicted.add(row.id);
   }
 
-  for (const row of replica.iterate(groupSystemEntity.name)) {
+  for (const row of platformRows(replica, "group")) {
     if (!subscribed.has(row.id)) evicted.add(row.id);
   }
 
-  for (const row of replica.iterate(groupMemberSystemEntity.name)) {
-    const groupId = stringField(row, "group_id");
+  for (const row of platformRows(replica, "grant")) {
+    const groupId = systemValueString(row, "grant", "group_id");
     if (groupId !== null && !subscribed.has(groupId)) evicted.add(row.id);
   }
 
+  // Every other model's rows follow their memberships. `ebb` was bucketed by
+  // component above; an overlay row is committed under its host model.
   for (const type of Object.keys(replica.stats().byType)) {
-    if (systemTypes.has(type)) continue;
+    if (type === EBB_MODEL_NAME) continue;
     for (const row of replica.iterate(type)) {
       const groups = memberGroups.get(row.id);
       if (groups === undefined) continue;
@@ -81,9 +76,9 @@ export const evictableRowIds = (
     }
   }
 
-  for (const row of replica.iterate(relationshipSystemEntity.name)) {
-    const source = stringField(row, "source_id");
-    const target = stringField(row, "target_id");
+  for (const row of platformRows(replica, "link")) {
+    const source = systemValueString(row, "link", "source_id");
+    const target = systemValueString(row, "link", "target_id");
     if ((source !== null && evicted.has(source)) || (target !== null && evicted.has(target))) {
       evicted.add(row.id);
     }
@@ -103,13 +98,18 @@ export const scopeEvictedGroupIds = (
 ): readonly string[] => {
   const subscribed = new Set(groupIds);
   const evicted = new Set<string>();
-  const collect = (row: Entity, field: string | null): void => {
-    const groupId = field === null ? row.id : stringField(row, field);
+  const collect = (groupId: string | null): void => {
     if (groupId !== null && !subscribed.has(groupId)) evicted.add(groupId);
   };
-  for (const row of replica.iterate(groupSystemEntity.name)) collect(row, null);
-  for (const row of replica.iterate(entityGroupSystemEntity.name)) collect(row, "group_id");
-  for (const row of replica.iterate(groupMemberSystemEntity.name)) collect(row, "group_id");
+  for (const row of replica.iterate(EBB_MODEL_NAME)) {
+    if (carriesComponent(row, "group")) {
+      collect(row.id);
+      continue;
+    }
+    for (const kind of ["membership", "grant"] as const) {
+      if (carriesComponent(row, kind)) collect(systemValueString(row, kind, "group_id"));
+    }
+  }
   return [...evicted];
 };
 

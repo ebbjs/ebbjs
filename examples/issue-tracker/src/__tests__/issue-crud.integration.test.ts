@@ -35,7 +35,7 @@ type Client = IssueTrackerClient;
  * A shared group the two test actors both belong to. The seeder
  * bootstraps the group first, then adds the two members in a second
  * Action — a group's first membership rides the server's bootstrap
- * exemption, later ones need the seeder's `groupMember.*` permission.
+ * exemption, later ones need the seeder's `ebb/grant.*` permission.
  */
 async function seedSharedGroup(seeder: Client): Promise<void> {
   const bootstrap: SeedData = {
