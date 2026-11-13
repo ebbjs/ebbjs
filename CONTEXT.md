@@ -193,8 +193,9 @@ _Avoid_: hydrate, denormalize, resolve
 **System component**:
 A component in the `ebb/` namespace the platform owns and interprets:
 `ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is atomic,
-structural (never surfaced as a conflict), declares a scope owner, and carries
-its own permission.
+declares a scope owner, and carries its own permission. The edge, membership,
+and grant components are also structural: they are never surfaced as a
+conflict.
 _Avoid_: system entity type, built-in type
 
 **Scope owner**:

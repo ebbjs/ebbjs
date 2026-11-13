@@ -253,6 +253,12 @@ export interface OutboxDependencies {
    */
   conflictScope: (model: string, component: string) => ConflictScope;
   /**
+   * The model's declared default. A row-scoped write (a `delete`) names no
+   * component, so its entity verdict comes from here. Unknown models default
+   * to `"field"`.
+   */
+  modelConflictScope: (model: string) => ConflictScope;
+  /**
    * Whether a component opts out of detection entirely. Structural
    * components converge last-writer-wins and never surface or hold. Defaults
    * to every declared component being detectable.
@@ -895,18 +901,19 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
         const overlap: ConflictSlot[] = [];
         const heldComponents = new Set<string>();
         const subjectScopes: ConflictScope[] = [];
-        let holdsWholeSubject = false;
-        for (const [component, pendingValue] of pending.components) {
+        // A delete names no component, so its entity verdict comes from the
+        // model default; a component-scope write reads its own declaration.
+        const entityScoped =
+          (pending.components.size === 0 && deps.modelConflictScope(inbound.model) === "entity") ||
+          [...pending.components.keys()].some(
+            (component) => deps.conflictScope(inbound.model, component) === "entity",
+          );
+        let holdsWholeSubject = entityScoped;
+        if (entityScoped) subjectScopes.push("entity");
+        for (const [component, pendingValue] of entityScoped ? [] : pending.components) {
           const declared = deps.conflictScope(inbound.model, component);
           // A structural component's writes converge and are never surfaced.
           if (deps.isStructural?.(inbound.model, component) ?? false) continue;
-          if (declared === "entity") {
-            // An entity-scope component surfaces any concurrent touch of the
-            // row, whatever component the peer wrote.
-            holdsWholeSubject = true;
-            subjectScopes.push("entity");
-            continue;
-          }
           // A non-LWW component never surfaces a position.
           if (!(deps.isLwwField?.(inbound.model, component) ?? true)) continue;
           // A text body's `version` component declares its cell format; it

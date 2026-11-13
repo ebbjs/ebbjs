@@ -178,6 +178,15 @@ export class ModelRegistry {
   }
 
   /**
+   * The model's declared default. A row-scoped write (a `delete`) names no
+   * component, so it falls back to this rather than a component declaration.
+   * Unknown models default to `"field"`.
+   */
+  modelConflictScope(model: string | ModelDef<Record<string, TSchema>>): ConflictScope {
+    return this.models.get(modelNameOf(model))?.conflictScope ?? "field";
+  }
+
+  /**
    * Permission subject for a component: its own `<model>/<leaf>` when it
    * opts in, otherwise the model's `<model>` subject.
    */

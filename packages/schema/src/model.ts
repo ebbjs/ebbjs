@@ -413,7 +413,7 @@ export interface ComponentOptions {
   readonly optional?: boolean;
   /** Replica loading. Defaults to `"eager"`, which keeps the component held. */
   readonly loading?: Loading;
-  /** Conflict granularity. Defaults to `"field"`. */
+  /** Conflict granularity. Defaults to the model's `conflictScope`. */
   readonly conflictScope?: ConflictScope;
   /** Whether this component participates in existence indexes. Defaults to `false`. */
   readonly indexed?: boolean;
@@ -439,7 +439,8 @@ export interface ComponentDef<TShape extends TSchema = TSchema, TName extends st
   readonly marker: FieldMarker;
   readonly optional: boolean;
   readonly loading: Loading;
-  readonly conflictScope: ConflictScope;
+  /** Declared granularity; `undefined` inherits the model's default. */
+  readonly conflictScope: ConflictScope | undefined;
   readonly indexed: boolean;
   readonly structural: boolean;
   readonly permission: "own" | undefined;
@@ -601,7 +602,7 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     marker: deriveMarker(shape),
     optional: options.optional ?? false,
     loading: options.loading ?? "eager",
-    conflictScope: options.conflictScope ?? "field",
+    conflictScope: options.conflictScope,
     indexed: options.indexed ?? false,
     structural: options.structural ?? false,
     permission: options.permission,

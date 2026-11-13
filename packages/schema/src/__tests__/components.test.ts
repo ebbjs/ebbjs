@@ -24,7 +24,7 @@ describe("defineComponent", () => {
         name: "note/title",
         optional: false,
         loading: "eager",
-        conflictScope: "field",
+        conflictScope: undefined,
         indexed: false,
         structural: false,
         permission: undefined,
@@ -83,6 +83,18 @@ describe("defineModel", () => {
     expect(note.components.status.name).toBe("note/status");
     expect(note.shape.properties).toHaveProperty("title");
     expect(note.markers.title).toEqual({ type: "lww" });
+  });
+
+  it("inherits the model's conflict scope when a named component declares none", () => {
+    const note = defineModel(
+      "note",
+      { body: defineComponent("note/body", e.string()) },
+      { conflictScope: "entity" },
+    );
+    const registry = new ModelRegistry();
+    registry.register(note);
+
+    expect(registry.conflictScopeOf("note", "body")).toBe("entity");
   });
 
   it("maps the model's materialization default onto component loading", () => {

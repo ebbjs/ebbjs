@@ -478,6 +478,7 @@ export class SyncClient<
       // default; a client without a schema resolves to `"field"`.
       conflictScope: (model, component) => conflictScopeFor(this.registry, model, component),
       isStructural: (model, component) => isStructuralFor(this.registry, model, component),
+      modelConflictScope: (model) => modelConflictScopeFor(this.registry, model),
       baseGsn: () => this.appliedBaseGsn(),
       hlc: () => this.freshHlc(),
       conflictId: () => generateId("c"),
@@ -2365,6 +2366,11 @@ const conflictScopeFor = (
 const isStructuralFor = (registry: ModelRegistry, model: string, component: string): boolean => {
   if (registry.has(model)) return registry.isStructural(model, component);
   return systemPolicyRegistry.isStructural(model, component);
+};
+
+const modelConflictScopeFor = (registry: ModelRegistry, model: string): ConflictScope => {
+  if (registry.has(model)) return registry.modelConflictScope(model);
+  return systemPolicyRegistry.modelConflictScope(model);
 };
 
 /**

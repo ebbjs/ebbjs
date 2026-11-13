@@ -161,6 +161,7 @@ const mkDeps = (
     store: mkStore(),
     baseGsn: () => 0,
     conflictScope: () => "field" as const,
+    modelConflictScope: () => "field" as const,
     conflictId: vi.fn(() => `c_${++conflicts}`),
     hlc: vi.fn(() => String(++clock)),
     preSyncRow: vi.fn(() => null),
@@ -1255,6 +1256,38 @@ describe("createOutbox conflict detection", () => {
     );
 
     expect(detected).toEqual([{ actionId: "a_local", subjects: ["todo_1"], slots: [] }]);
+  });
+
+  it("entity scope surfaces a delete-only local write on a concurrent touch", async () => {
+    const deps = mkDeps({
+      conflictScope: () => "field",
+      modelConflictScope: () => "entity",
+    });
+    const outbox = createOutbox(deps);
+    await outbox.enqueue({
+      id: "a_local",
+      actor_id: "actor_1",
+      hlc: "10",
+      gsn: 0,
+      updates: [{ id: "u_local", subject_id: "todo_1", method: "delete", data: null }],
+    });
+
+    const detected = await outbox.detectConflicts(
+      [
+        mkFieldAction({
+          id: "a_peer",
+          subjectId: "todo_1",
+          fields: { title: { value: "theirs", update_id: "u_peer", hlc: "20" } },
+          gsn: 5,
+        }),
+      ],
+      "cu_1",
+    );
+
+    expect(detected).toEqual([{ actionId: "a_local", subjects: ["todo_1"], slots: [] }]);
+    expect(outbox.conflicts()[0]?.conflict.holds).toEqual([
+      { kind: "subject", subjectId: "todo_1" },
+    ]);
   });
 
   it("entity scope does not surface a subject whose only inbound touch is not concurrent", async () => {
