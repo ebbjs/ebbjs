@@ -175,13 +175,18 @@ export async function bootstrap(opts: {
   // 2. Handshake.
   const client = createDemoClient({ serverUrl, actorId });
   const { groups } = await client.handshake();
-  const groupIds = groups.map((g) => g.id);
 
-  if (groupIds.length === 0) {
+  // The demo is one document in one group. A grant's group is immutable after
+  // create, so an actor keeps one `ebb/grant` per group it ever joined and the
+  // handshake lists all of them; syncing every group would replay another
+  // group's runs into this document.
+  if (!groups.some((group) => group.id === fallbackGroupId)) {
     throw new Error(
-      `bootstrap: actor '${actorId}' is not a member of any group. Did the seed run?`,
+      `bootstrap: actor '${actorId}' is not a member of ${fallbackGroupId}. Did the seed run?`,
     );
   }
+
+  const groupIds = [fallbackGroupId];
 
   // 3. Catch up — replay every committed action since GSN 0 so the
   // demo doc starts with the current state. Without this, a fresh

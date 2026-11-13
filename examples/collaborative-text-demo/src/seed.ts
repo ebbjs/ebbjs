@@ -75,13 +75,18 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
  * The seed is submitted on behalf of the `demo-seeder` (who already has
  * `ebb/grant.*` permission) — only the seeder can authorize the
  * `ebb/grant` put. The new member's actor_id is in the row.
+ *
+ * The row id is derived from the pair, not the actor alone: a grant's group
+ * is immutable after create (the server refuses a re-point), so one row per
+ * `(group, actor)` is what lets the same actor join the demo group and every
+ * spec's isolated group.
  */
 export function buildAddMemberSeed(actorId: string, groupId: string = DEMO_GROUP_ID): SeedData {
   return {
     groups: [],
     groupMembers: [
       {
-        id: `gm_${actorId}`,
+        id: `gm_${groupId}_${actorId}`,
         actorId,
         groupId,
         permissions: ["text_document.*", "ebb/group.read", "ebb/grant.*", "ebb/link.*"],
