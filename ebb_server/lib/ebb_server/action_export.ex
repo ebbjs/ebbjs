@@ -31,12 +31,14 @@ defmodule EbbServer.ActionExport do
   ## Egress
 
   The exporter bypasses group authorization by design: it reads the log
-  directly. Updates of the system membership models (`groupMember`,
-  `entityGroup`) are stripped by default, and an Action left with no Updates
-  is dropped entirely. A `delete` names no component, so it carries no model
-  to exclude and is always exported. The per-Update delivery scopes (#473)
-  are internal routing metadata, not part of the Action contract, so they
-  are stripped too.
+  directly. Updates of the two structural platform components (`ebb/grant`,
+  `ebb/membership`) are stripped by default, and an Action left with no
+  Updates is dropped entirely. The exclusion names the components, not the
+  model: all four platform components commit under `ebb`, so excluding the
+  model would strip the `ebb/group` creates too. A `delete` names no
+  component, so it carries no component to exclude and is always exported.
+  The per-Update delivery scopes (#473) are internal routing metadata, not
+  part of the Action contract, so they are stripped too.
 
   ## Opt-in
 
@@ -69,15 +71,19 @@ defmodule EbbServer.ActionExport do
   use GenServer
   require Logger
 
-  alias EbbServer.Storage.ActionLog
-  alias EbbServer.Storage.Component
-  alias EbbServer.Storage.RocksDB
-  alias EbbServer.Storage.SQLite
-  alias EbbServer.Storage.WatermarkTracker
+  alias EbbServer.Storage.{ActionLog, RocksDB, SQLite, SystemComponent, WatermarkTracker}
   alias EbbServer.Telemetry
 
   @default_cursor_name "action_export"
-  @default_excluded_models ["groupMember", "entityGroup"]
+
+  # Component names, not model names: `ebb/grant` and `ebb/membership` are the
+  # two structural platform components an export never needs, while
+  # `ebb/group` is the group itself and stays. The option keeps its historical
+  # `:excluded_models` key so a deployment's config does not have to change.
+  @default_excluded_components [
+    SystemComponent.component(:grant),
+    SystemComponent.component(:membership)
+  ]
 
   defstruct [
     :on_action,
@@ -117,7 +123,7 @@ defmodule EbbServer.ActionExport do
       batch_size: Keyword.get(opts, :batch_size, 500),
       poll_interval_ms: Keyword.get(opts, :poll_interval_ms, 1000),
       handler_timeout_ms: Keyword.get(opts, :handler_timeout_ms, 5000),
-      excluded_models: Keyword.get(opts, :excluded_models, @default_excluded_models)
+      excluded_models: Keyword.get(opts, :excluded_models, @default_excluded_components)
     }
 
     send(self(), :poll)
@@ -206,7 +212,7 @@ defmodule EbbServer.ActionExport do
   defp filter_actions(actions, excluded) do
     {kept, dropped} =
       Enum.reduce(actions, {[], 0}, fn action, {kept, dropped} ->
-        updates = Enum.reject(action["updates"], &(update_model(&1) in excluded))
+        updates = Enum.reject(action["updates"], &(update_component(&1) in excluded))
         removed = length(action["updates"]) - length(updates)
 
         case updates do
@@ -228,12 +234,11 @@ defmodule EbbServer.ActionExport do
     kept
   end
 
-  # A delete names the row and no component, so it has no model to exclude.
-  defp update_model(%{"component" => component}) when is_binary(component) do
-    Component.model(component)
-  end
+  # A delete names the row and no component, so it has no component to
+  # exclude.
+  defp update_component(%{"component" => component}) when is_binary(component), do: component
 
-  defp update_model(_update), do: nil
+  defp update_component(_update), do: nil
 
   defp invoke_handlers(actions, state) do
     Enum.reduce_while(actions, :ok, fn action, :ok ->

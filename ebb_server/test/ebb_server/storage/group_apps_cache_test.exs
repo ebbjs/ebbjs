@@ -15,14 +15,6 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
     %{table: table, cache_name: cache_name}
   end
 
-  defp leaf(value, hlc \\ 1, update_id \\ "u1") do
-    %{"value" => value, "hlc" => hlc, "update_id" => update_id}
-  end
-
-  defp apps_field(entries) do
-    %{"map" => Map.new(entries, fn {app_id, value} -> {app_id, leaf(value)} end)}
-  end
-
   describe "get_apps/2" do
     test "an absent entry is unscoped" do
       cache = with_isolated_cache()
@@ -38,16 +30,15 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
       assert GroupAppsCache.get_apps("g_unscoped", cache.table) == :unscoped
     end
 
-    test "a present but empty map is an empty set" do
+    test "an empty list is an empty set, distinct from unscoped" do
       cache = with_isolated_cache()
 
-      :ok =
-        GroupAppsCache.put_group_apps("g_empty", %{"map" => %{}}, group_apps: cache.table)
+      :ok = GroupAppsCache.put_group_apps("g_empty", [], group_apps: cache.table)
 
       assert GroupAppsCache.get_apps("g_empty", cache.table) == MapSet.new()
     end
 
-    test "an unexpected field shape reads as unscoped and warns" do
+    test "an unexpected shape reads as unscoped and warns" do
       cache = with_isolated_cache()
 
       log =
@@ -58,33 +49,23 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
             )
         end)
 
-      assert log =~ "group apps field is not a map"
+      assert log =~ "group apps value is not a list"
       assert GroupAppsCache.get_apps("g_malformed", cache.table) == :unscoped
     end
 
-    test "projects only app ids whose leaf value is exactly true" do
+    test "projects the app ids the group names" do
       cache = with_isolated_cache()
 
-      field = %{
-        "map" => %{
-          "notes" => leaf(true),
-          "issues" => leaf(false),
-          "docs" => leaf(nil),
-          "chat" => leaf("true"),
-          "mail" => leaf(true, 2, "u2")
-        }
-      }
-
-      :ok = GroupAppsCache.put_group_apps("g_mixed", field, group_apps: cache.table)
+      :ok = GroupAppsCache.put_group_apps("g_mixed", ["notes", "mail"], group_apps: cache.table)
 
       assert GroupAppsCache.get_apps("g_mixed", cache.table) == MapSet.new(["notes", "mail"])
     end
   end
 
   describe "get_field/2" do
-    test "returns the raw stored field for a later merge" do
+    test "returns the stored value" do
       cache = with_isolated_cache()
-      field = apps_field(%{"notes" => true, "issues" => false})
+      field = ["notes", "issues"]
 
       :ok = GroupAppsCache.put_group_apps("g_raw", field, group_apps: cache.table)
 
@@ -106,9 +87,7 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
       cache = with_isolated_cache()
 
       :ok =
-        GroupAppsCache.put_group_apps("g_1", apps_field(%{"notes" => true}),
-          group_apps: cache.table
-        )
+        GroupAppsCache.put_group_apps("g_1", ["notes"], group_apps: cache.table)
 
       :ok = GroupAppsCache.delete_group_apps("g_1", group_apps: cache.table)
 
@@ -128,9 +107,7 @@ defmodule EbbServer.Storage.GroupAppsCacheTest do
       cache = with_isolated_cache()
 
       :ok =
-        GroupAppsCache.put_group_apps("g_1", apps_field(%{"notes" => true}),
-          group_apps: cache.table
-        )
+        GroupAppsCache.put_group_apps("g_1", ["notes"], group_apps: cache.table)
 
       :ok = GroupAppsCache.reset(group_apps: cache.table)
 

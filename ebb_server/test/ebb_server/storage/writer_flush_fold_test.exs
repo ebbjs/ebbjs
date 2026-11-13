@@ -41,26 +41,29 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
     create =
       validated_action(%{
         updates: [
-          validated_component(group_id, "group/name", leaf("Old name", hlc), method: :replace),
-          validated_component(group_id, "group/apps", apps_field(%{"notes" => true}, hlc),
-            method: :merge
+          validated_component(
+            group_id,
+            "ebb/group",
+            leaf(%{"name" => "Old name", "apps" => ["notes"]}, hlc)
           )
         ]
       })
 
-    # What a rename of the same group looks like: only the component the
-    # request touched, in the same flush as the create.
+    # The group value is atomic, so a rename re-states the whole value: the
+    # app scope is part of it, never a sibling that a fold can drop.
     rename =
       validated_action(%{
         updates: [
-          validated_component(group_id, "group/name", leaf("New name", hlc + 1), method: :merge)
+          validated_component(
+            group_id,
+            "ebb/group",
+            leaf(%{"name" => "New name", "apps" => ["notes"]}, hlc + 1)
+          )
         ]
       })
 
     assert {:ok, {1, 2}, []} = Writer.write_actions([create, rename], ctx.writer_name)
 
-    # Unscoped here means "every app", so a fold that lost the `apps`
-    # component would widen the group's scope to the whole server.
     assert GroupAppsCache.get_apps(group_id, ctx.group_apps) == MapSet.new(["notes"])
   end
 
@@ -71,77 +74,78 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
     create =
       validated_action(%{
         updates: [
-          validated_component(member_id, "groupMember/actor_id", leaf("actor_1", hlc),
-            method: :replace
-          ),
-          validated_component(member_id, "groupMember/group_id", leaf("group_1", hlc),
-            method: :replace
-          ),
-          validated_component(member_id, "groupMember/permissions", leaf(["todo.read"], hlc),
-            method: :replace
+          validated_component(
+            member_id,
+            "ebb/grant",
+            leaf(
+              %{
+                "actor_id" => "actor_1",
+                "group_id" => "group_1",
+                "permissions" => ["todo.read"]
+              },
+              hlc
+            )
           )
         ]
       })
 
-    # The row's identity components are untouched, so this Action carries
-    # only the component the request changed.
     permissions =
       validated_action(%{
         updates: [
           validated_component(
             member_id,
-            "groupMember/permissions",
-            leaf(["todo.write"], hlc + 1),
-            method: :merge
+            "ebb/grant",
+            leaf(
+              %{
+                "actor_id" => "actor_1",
+                "group_id" => "group_1",
+                "permissions" => ["todo.write"]
+              },
+              hlc + 1
+            )
           )
         ]
       })
 
     assert {:ok, {1, 2}, []} = Writer.write_actions([create, permissions], ctx.writer_name)
 
-    # A `:put` fold would plan no membership row at all (the Action names
-    # neither the actor nor the group), so the cache would keep the
-    # permissions the second Action wrote over.
     assert [%{group_id: "group_1", permissions: ["todo.write"]}] =
              GroupCache.get_actor_groups("actor_1", ctx.group_members)
 
     assert GroupCache.get_permissions("actor_1", "group_1", ctx.group_members) == ["todo.write"]
   end
 
-  test "an entityGroup move after the create in one flush keeps the row and its scope", ctx do
+  test "a later membership write in one flush keeps the row and its scope", ctx do
     hlc = generate_hlc()
     membership_id = "eg_" <> Nanoid.generate()
 
     create =
       validated_action(%{
         updates: [
-          validated_component(membership_id, "entityGroup/entity_id", leaf("todo_1", hlc),
-            method: :replace
-          ),
-          validated_component(membership_id, "entityGroup/group_id", leaf("group_1", hlc),
-            method: :replace
+          validated_component(
+            membership_id,
+            "ebb/membership",
+            leaf(%{"entity_id" => "todo_1", "group_id" => "group_1"}, hlc)
           )
         ]
       })
 
-    # Moving the membership re-states only the component that names it: the
-    # `entity_id` sibling arrives in the create above.
-    move =
+    # The second Action re-states the row's whole value (moving a membership
+    # is a delete plus a create, so a later write of the same row names the
+    # same pair here).
+    later =
       validated_action(%{
         updates: [
-          validated_component(membership_id, "entityGroup/group_id", leaf("group_2", hlc + 1),
-            method: :merge
+          validated_component(
+            membership_id,
+            "ebb/membership",
+            leaf(%{"entity_id" => "todo_1", "group_id" => "group_2"}, hlc + 1)
           )
         ]
       })
 
-    assert {:ok, {1, 2}, []} = Writer.write_actions([create, move], ctx.writer_name)
+    assert {:ok, {1, 2}, []} = Writer.write_actions([create, later], ctx.writer_name)
 
-    # A `:put` fold drops the row: it names no `entity_id`, and a put reads no
-    # prior row, so the move would leave the entity indexed under the old
-    # group with no planned mutation behind it.
-    # The cache row keeps the create's entity under the group the second
-    # Action names, and the entity is indexed under exactly that group.
     assert EntityGroupCache.entity_groups("todo_1", ctx.entity_groups) == ["group_2"]
 
     assert %{id: ^membership_id, entity_id: "todo_1", group_id: "group_2"} =

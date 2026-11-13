@@ -17,6 +17,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     RocksDB,
     SQLite,
     SystemCache,
+    SystemComponent,
     Writer
   }
 
@@ -115,22 +116,23 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
                2
              )
 
-    # `group` only became an eager type when the handshake started reading app
-    # scope at boot; this row is materialized here, then patched without a read.
+    # `ebb/group` only became an eager component when the handshake started
+    # reading app scope at boot; this row is materialized here, then patched
+    # without a read.
     assert {:ok, {4, 4}, []} =
              write(
                writer_name,
                actor_id,
                :replace,
                group_id,
-               "group",
-               %{"name" => lww("Original", base_hlc, 3)},
+               :group,
+               %{"name" => "Original"},
                base_hlc,
                3
              )
 
     assert {:ok, %{last_gsn: 4} = group} = get(ctx, group_id)
-    assert field(group, "name") == "Original"
+    assert platform_field(group, :group, "name") == "Original"
 
     assert {:ok, {5, 5}, []} =
              write(
@@ -138,25 +140,25 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
                actor_id,
                :merge,
                group_id,
-               "group",
-               %{"name" => lww("Patched group", base_hlc, 4)},
+               :group,
+               %{"name" => "Patched group"},
                base_hlc,
                4
              )
 
-    # Membership and filing exist only so `query/4` can see the todos; both are
-    # materialized by the eager boot phases.
+    # A grant and a membership exist only so `query/4` can see the todos; both
+    # are materialized by the eager boot phases.
     assert {:ok, {6, 6}, []} =
              write(
                writer_name,
                actor_id,
                :replace,
                "gm_restart_#{System.unique_integer([:positive])}",
-               "groupMember",
+               :grant,
                %{
-                 "actor_id" => lww(actor_id, base_hlc, 5),
-                 "group_id" => lww(group_id, base_hlc, 5),
-                 "permissions" => lww(["todo.read"], base_hlc, 5)
+                 "actor_id" => actor_id,
+                 "group_id" => group_id,
+                 "permissions" => ["todo.read"]
                },
                base_hlc,
                5
@@ -169,11 +171,8 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
                  actor_id,
                  :replace,
                  "eg_restart_#{counter}",
-                 "entityGroup",
-                 %{
-                   "entity_id" => lww(todo_id, base_hlc, counter),
-                   "group_id" => lww(group_id, base_hlc, counter)
-                 },
+                 :membership,
+                 %{"entity_id" => todo_id, "group_id" => group_id},
                  base_hlc,
                  counter
                )
@@ -187,10 +186,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
 
     # The eager phases materialize and clear the system-type marks; a surviving
     # one would be a repair candidate, not the normal state.
-    assert DirtyTracker.dirty_entity_ids_for_models(
-             ["groupMember", "entityGroup", "group", "relationship"],
-             dirty_set
-           ) == []
+    assert DirtyTracker.dirty_entity_ids_for_models([SystemComponent.model()], dirty_set) == []
 
     assert Enum.sort(DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set)) ==
              Enum.sort([todo_stale, todo_missing])
@@ -204,7 +200,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     assert missing.last_gsn == 3
 
     assert {:ok, post_restart_group} = get(ctx, group_id, restarted)
-    assert field(post_restart_group, "name") == "Patched group"
+    assert platform_field(post_restart_group, :group, "name") == "Patched group"
     assert post_restart_group.last_gsn == 5
 
     assert {:ok, todos} = EntityStore.query("todo", nil, actor_id, store_opts(ctx, restarted))
@@ -266,18 +262,12 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     assert Jason.decode!(cached.data) == %{"fields" => %{}, "components" => []}
   end
 
+  # `model` is a user model string or a platform kind. A user row is one
+  # component per field; a platform row is one atomic component carrying the
+  # whole value, so its `fields` argument is that value.
   defp write(writer_name, actor_id, method, subject_id, model, fields, base_hlc, counter) do
     hlc = TestHelpers.hlc_from(base_hlc, counter)
-
-    updates =
-      Enum.map(fields, fn {field, value} ->
-        TestHelpers.validated_component(
-          subject_id,
-          "#{model}/#{field}",
-          value,
-          method: method
-        )
-      end)
+    updates = component_updates(model, subject_id, fields, method, hlc)
 
     action =
       TestHelpers.validated_action(%{
@@ -289,11 +279,37 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     Writer.write_actions([action], writer_name)
   end
 
+  defp component_updates(kind, subject_id, value, method, hlc) when is_atom(kind) do
+    [
+      TestHelpers.validated_component(
+        subject_id,
+        SystemComponent.component(kind),
+        %{"value" => value, "hlc" => hlc},
+        method: method
+      )
+    ]
+  end
+
+  defp component_updates(model, subject_id, fields, method, _hlc) do
+    Enum.map(fields, fn {field, value} ->
+      TestHelpers.validated_component(
+        subject_id,
+        "#{model}/#{field}",
+        value,
+        method: method
+      )
+    end)
+  end
+
   defp lww(value, base_hlc, counter) do
     %{"type" => "lww", "value" => value, "hlc" => TestHelpers.hlc_from(base_hlc, counter)}
   end
 
   defp field(entity, name), do: get_in(entity.data, ["fields", name, "value"])
+
+  defp platform_field(entity, kind, name) do
+    get_in(entity.data, ["fields", SystemComponent.field(kind), "value", name])
+  end
 
   defp get(ctx, entity_id, stores \\ nil) do
     EntityStore.get(entity_id, "a_test", store_opts(ctx, stores))

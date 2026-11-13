@@ -225,7 +225,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
   # plus the entity-type index, which is what tells the fold a later component
   # Update patches an existing row rather than creating one.
   defp seed_membership(ctx, group_id) do
-    :ok = EntityTypeCache.put_type("eg_chain", "entityGroup", entity_types: ctx.entity_types)
+    :ok = EntityTypeCache.put_type("eg_chain", "ebb", entity_types: ctx.entity_types)
 
     :ok =
       EntityGroupCache.put_entity_group(
@@ -236,10 +236,11 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
       )
   end
 
+  # A membership value is atomic: a write re-states the pair it names.
   defp membership_patch(group_id) do
-    validated_component("eg_chain", "entityGroup/group_id", %{"value" => group_id},
-      method: :merge
-    )
+    validated_component("eg_chain", "ebb/membership", %{
+      "value" => %{"entity_id" => "todo_chain", "group_id" => group_id}
+    })
   end
 
   defp delete_opts do
@@ -252,8 +253,9 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
 
   defp membership_put do
     [
-      validated_component("eg_chain", "entityGroup/entity_id", %{"value" => "todo_chain"}),
-      validated_component("eg_chain", "entityGroup/group_id", %{"value" => "group_chain"})
+      validated_component("eg_chain", "ebb/membership", %{
+        "value" => %{"entity_id" => "todo_chain", "group_id" => "group_chain"}
+      })
     ]
   end
 

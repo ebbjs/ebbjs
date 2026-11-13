@@ -323,7 +323,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "todo.create",
       "todo.update",
       "project.create",
-      "relationship.delete"
+      "ebb/link.delete"
     ])
 
     assert write_entity_in_group(actor_id, project_id, "project", group_id, fields("a project")).status ==
@@ -462,7 +462,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "function." <> name,
       "todo.create",
       "todo.update",
-      "relationship.delete"
+      "ebb/link.delete"
     ])
 
     hlc = generate_hlc()

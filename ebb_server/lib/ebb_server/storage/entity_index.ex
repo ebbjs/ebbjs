@@ -2,28 +2,34 @@ defmodule EbbServer.Storage.EntityIndex do
   @moduledoc """
   Single resolution surface for "which groups own this entity?".
 
-  Every entity — user-defined rows, `Relationship` rows,
-  `entityGroup` membership rows, `groupMember` rows — belongs to one
-  or more Groups. Entity↔Group membership is a dedicated `entityGroup`
-  system entity (`{entity_id, group_id}`); it is the only thing that
-  moves a user entity between groups. The authorizer, the Writer's
+  Every entity — user-defined rows and the platform's four component
+  rows (`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`) — belongs
+  to one or more Groups. Entity↔Group membership is a dedicated
+  `ebb/membership` row (`{entity_id, group_id}`); it is the only thing
+  that moves a user entity between groups. The authorizer, the Writer's
   `cf_group_actions` index, the fan-out router, and the presence router
   all ask the same question through this module and expect the same
   answer.
 
-  Resolution is dispatched by the row's `model`:
+  Resolution is dispatched by the row's `SystemComponent` **kind**, never
+  by a model: all four platform rows commit under the model `ebb`, so the
+  model cannot tell a grant from an edge.
 
-    - `"group"`        → the group is its own id
-    - `"entityGroup"`  → the membership's `group_id`
-    - `"groupMember"`  → the membership's `group_id`
-    - `"relationship"` → the membership set of the edge's source
-    - user models      → the source's membership set
+    - `:group`      → the group is its own id
+    - `:membership` → the membership's `group_id`
+    - `:grant`      → the membership's `group_id`
+    - `:link`       → the membership set of the edge's source
+    - user models   → the entity's own membership set
 
-  A relationship resolves through its **source**, never its own
-  `target_id`: an app may hold a domain link to a `group` entity, and
-  that link must not grant membership. Which source that is depends on
-  the Update: the stored row's for a delete, the wire `source_id` for a
-  put or patch. See `relationship_groups/4`.
+  The dispatch stays a function-head chain here because the declaration
+  table that replaces it is #819: one `scope:` per platform component.
+  Keep every platform kind in the clauses below until then.
+
+  A link resolves through its **source**, never its own `target_id`: an
+  app may hold a domain link to a `group` entity, and that link must not
+  grant membership. Which source that is depends on the Update: the
+  stored row's for a delete, the wire `source_id` for a put or patch. See
+  `relationship_groups/4`.
 
   `source_groups/2` is the same resolution for a caller that already
   knows an entity id — for example a relationship being created in the
@@ -40,19 +46,19 @@ defmodule EbbServer.Storage.EntityIndex do
   it to gate membership mutations, #264, and every entity write, whose
   component prefix must match the committed model, #624),
   `committed_model/2` is the same answer widened with the by-id caches so a
-  lagging index still models a system row, `exists?/2`
+  lagging index still models a platform row, `exists?/2`
   exposes the same index as an existence signal (used by the authorizer to
-  gate the bootstrap self-grant, #289), `membership/2` resolves an
-  `entityGroup` row id to its `{entity_id, group_id}` (the delete wire
+  gate the bootstrap self-grant, #289), `kind/2` answers which of the four
+  platform components a stored id carries, `membership/2` resolves an
+  `ebb/membership` row id to its `{entity_id, group_id}` (the delete wire
   form drops the entity reference), and `relationship_source/2` resolves
-  a relationship row id to the source it is bound to (the authorizer's
+  an `ebb/link` row id to the source it is bound to (the authorizer's
   row-identity check, #624).
   """
 
   alias EbbServer.Storage.{
     EntityGroupCache,
     EntityTypeCache,
-    Fields,
     GroupAppsCache,
     GroupCache,
     RelationshipCache,
@@ -61,18 +67,26 @@ defmodule EbbServer.Storage.EntityIndex do
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
 
+  @model SystemComponent.model()
+
   @typep model :: String.t()
+  @typep scope_key :: SystemComponent.kind() | model()
   @typep subject_id :: String.t()
 
   @doc """
   Returns the group set an entity belongs to.
 
+  The first argument is the row's platform component kind for a platform
+  row, and its committed model for a user row — the model `ebb` is also
+  accepted and resolved to the row's kind.
+
   Required options:
 
     - `:entity_groups`           — used for user-entity resolution
-    - `:entity_groups_by_id`     — used for `"entityGroup"` resolution
-    - `:relationships_by_id`     — used for `"relationship"` resolution
-    - `:group_members_by_id`     — used for `"groupMember"` resolution
+    - `:entity_groups_by_id`     — used for `:membership` resolution
+    - `:relationships_by_id`     — used for `:link` resolution
+    - `:group_members_by_id`     — used for `:grant` resolution
+    - `:group_apps`              — optional, used to resolve `ebb` to `:group`
     - `:intra_action`            — optional membership from the
       current Action, keyed by entity id
     - `:intra_relationship_sources` — optional `relationship` row id →
@@ -83,11 +97,11 @@ defmodule EbbServer.Storage.EntityIndex do
   Missing required options raise `ArgumentError` rather than silently
   falling back to a global default.
   """
-  @spec resolve_groups(model(), subject_id(), keyword()) :: [String.t()]
-  def resolve_groups(model, subject_id, opts \\ [])
+  @spec resolve_groups(scope_key(), subject_id(), keyword()) :: [String.t()]
+  def resolve_groups(key, subject_id, opts \\ [])
 
-  def resolve_groups(model, subject_id, opts) do
-    {groups, source_id} = resolve_groups_cached(model, subject_id, opts)
+  def resolve_groups(key, subject_id, opts) do
+    {groups, source_id} = resolve_groups_cached(key, subject_id, opts)
     apply_intra_action(groups, source_id, opts)
   end
 
@@ -96,20 +110,28 @@ defmodule EbbServer.Storage.EntityIndex do
   `:intra_action` membership.
 
   Returns the cached group set and the entity id whose intra-action
-  membership still has to be unioned on top, or `nil` for a model that
-  carries none (`"group"`, `"entityGroup"`, `"groupMember"`).
+  membership still has to be unioned on top, or `nil` for a kind that
+  carries none (`:group`, `:membership`, `:grant`).
 
   The Writer builds every Action of a coalesced flush against one cache
   snapshot, so it memoizes this per resolution key and calls
   `apply_intra_action/3` once per Action. Keying the memo on the full
-  `{model, subject_id}` keeps a `"relationship"` or `"entityGroup"`
-  lookup from being answered by an unrelated entry with the same id.
+  `{kind, subject_id}` keeps a `:link` or `:membership` lookup from being
+  answered by an unrelated entry with the same id, and an atom kind never
+  collides with a user model's name.
   """
-  @spec resolve_groups_cached(model(), subject_id(), keyword()) ::
+  @spec resolve_groups_cached(scope_key(), subject_id(), keyword()) ::
           {[String.t()], subject_id() | nil}
-  def resolve_groups_cached("group", group_id, _opts), do: {[group_id], nil}
+  def resolve_groups_cached(:group, group_id, _opts), do: {[group_id], nil}
 
-  def resolve_groups_cached("entityGroup", membership_id, opts) do
+  # A caller holding a folded row's committed model (`ebb`) rather than its
+  # kind still resolves through the same clauses: the by-id caches name the
+  # kind, and an id carries exactly one platform component.
+  def resolve_groups_cached(model, subject_id, opts) when model == @model do
+    resolve_groups_cached(kind(subject_id, opts) || :unknown, subject_id, opts)
+  end
+
+  def resolve_groups_cached(:membership, membership_id, opts) do
     table = Keyword.fetch!(opts, :entity_groups_by_id)
 
     case cached_row(opts, :entity_groups_by_id, membership_id, fn ->
@@ -120,7 +142,7 @@ defmodule EbbServer.Storage.EntityIndex do
     end
   end
 
-  def resolve_groups_cached("relationship", rel_id, opts) do
+  def resolve_groups_cached(:link, rel_id, opts) do
     table = Keyword.fetch!(opts, :relationships_by_id)
 
     case cached_row(opts, :relationships_by_id, rel_id, fn ->
@@ -141,7 +163,7 @@ defmodule EbbServer.Storage.EntityIndex do
     end
   end
 
-  def resolve_groups_cached("groupMember", gm_id, opts) do
+  def resolve_groups_cached(:grant, gm_id, opts) do
     table = Keyword.fetch!(opts, :group_members_by_id)
 
     case cached_row(opts, :group_members_by_id, gm_id, fn ->
@@ -151,6 +173,8 @@ defmodule EbbServer.Storage.EntityIndex do
       entry -> {List.wrap(entry_group_id(entry)), nil}
     end
   end
+
+  def resolve_groups_cached(:unknown, _subject_id, _opts), do: {[], nil}
 
   def resolve_groups_cached(_user_model, source_id, opts) do
     {source_groups_cached(source_id, opts), source_id}
@@ -232,6 +256,24 @@ defmodule EbbServer.Storage.EntityIndex do
     end
   end
 
+  @doc """
+  The kind a folded row mutation carries.
+
+  A value Update names its component, so the fold already knows the kind. A
+  `delete` names only the row, so its kind comes from the by-id caches — and
+  only when the row's committed model is the platform model: ids are not
+  model-unique in this codebase, so an id another kind happens to use must not
+  lend its kind to a user row. Returns `nil` for a user row and for a delete
+  nothing can place (an id created earlier in the same request).
+  """
+  @spec kind_of(map(), keyword()) :: SystemComponent.kind() | nil
+  def kind_of(%{kind: kind}, _opts) when not is_nil(kind), do: kind
+
+  def kind_of(%{model: model, subject_id: subject_id}, opts) when model == @model,
+    do: kind(subject_id, opts)
+
+  def kind_of(_mutation, _opts), do: nil
+
   # A group row's cache entry exists even when the row declares no app scope,
   # so presence — not a field value — is the signal.
   defp group_cached?(entity_id, opts) do
@@ -264,38 +306,25 @@ defmodule EbbServer.Storage.EntityIndex do
   Resolves the model an entity id was **committed** under.
 
   The entity-type index wins whenever it has an entry; failing that, a
-  by-id cache row carries its system model by construction (a
-  `groupMember`, `entityGroup` or `relationship` row is a row of that
-  system model wherever else it is indexed). Both signals matter because
-  the entity-type index is rebuilt asynchronously and can lag the caches: a
-  caller that gates a write on this must not read a committed system row
-  as new.
+  by-id cache row is a platform row by construction (`ebb`). Both signals
+  matter because the entity-type index is rebuilt asynchronously and can
+  lag the caches: a caller that gates a write on this must not read a
+  committed platform row as new.
 
   Returns `nil` when nothing knows the id. For by-id caches the caller's
   options do not carry, the corresponding lookup is skipped; the authorizer
-  and the Writer both pass all three.
+  and the Writer both pass all of them.
   """
   @spec committed_model(subject_id(), keyword()) :: model() | nil
   def committed_model(entity_id, opts) do
     model(entity_id, opts) || system_model_by_id(entity_id, opts)
   end
 
-  # A membership or edge row is its own model's row by construction; there is
-  # no other model it could have been committed under.
+  # Every platform row is committed under the platform model, so a by-id
+  # cache entry can only say "this is an ebb row" — the *kind* is what
+  # distinguishes the four, and it is `kind/2` that answers.
   defp system_model_by_id(entity_id, opts) do
-    cond do
-      cached_by_id?(entity_id, opts, :group_members_by_id, &GroupCache.get_group_member/2) ->
-        "groupMember"
-
-      cached_by_id?(entity_id, opts, :entity_groups_by_id, &EntityGroupCache.get_entity_group/2) ->
-        "entityGroup"
-
-      cached_by_id?(entity_id, opts, :relationships_by_id, &RelationshipCache.get_relationship/2) ->
-        "relationship"
-
-      true ->
-        nil
-    end
+    if kind(entity_id, opts), do: @model, else: nil
   end
 
   # A cache the caller's options do not carry is no answer, not a negative
@@ -321,11 +350,11 @@ defmodule EbbServer.Storage.EntityIndex do
   def exists?(entity_id, opts), do: model(entity_id, opts) != nil
 
   @doc """
-  Resolves an `entityGroup` membership row to its `{entity_id, group_id}`.
+  Resolves an `ebb/membership` row to its `{entity_id, group_id}`.
 
-  The `entityGroup` delete wire form carries only the membership row id,
-  so the authorizer needs the row's entity and group to resolve the model
-  and current membership set. Returns `nil` when the row is not cached.
+  The membership delete wire form carries only the row id, so the
+  authorizer needs the row's entity and group to resolve the model and
+  current membership set. Returns `nil` when the row is not cached.
   """
   @spec membership(subject_id(), keyword()) :: {String.t(), String.t()} | nil
   def membership(membership_id, opts) do
@@ -340,9 +369,9 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns the source id a committed `relationship` row is bound to.
+  Returns the source id a committed `ebb/link` row is bound to.
 
-  A relationship row's source is its identity: the row fans out to the
+  A link row's source is its identity: the row fans out to the
   source's group set, so every scope decision follows the stored row
   rather than the wire `source_id` (#624). Returns `nil` when the by-id
   cache has no row — either a new edge or one the request itself deleted.
@@ -360,7 +389,7 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns the group set for a `relationship` row mutation.
+  Returns the group set for an `ebb/link` row mutation.
 
   The row is scoped through the source it is **bound** to, not the source
   the wire claims:
@@ -383,7 +412,7 @@ defmodule EbbServer.Storage.EntityIndex do
         ]
   def relationship_groups(method, source_id, rel_id, opts) do
     case scope_source(method, source_id, rel_id, opts) do
-      nil -> resolve_groups("relationship", rel_id, opts)
+      nil -> resolve_groups(:link, rel_id, opts)
       source -> source_groups(source, opts)
     end
   end
@@ -408,46 +437,49 @@ defmodule EbbServer.Storage.EntityIndex do
 
   The Writer's `cf_group_actions` index and `fan_out_groups/2` both
   consume this decision, so the "wire value wins for a not-yet-cached
-  row" rule lives here once. The row is the unit: a system row's
-  `group_id` or `source_id` may be carried by one component Update while
-  its siblings carry none, so the folded row is what names the scope.
+  row" rule lives here once. The row is the unit: a platform row's
+  `group_id` or `source_id` lives in its one atomic component value, so
+  the folded row is what names the scope.
 
   Returns `{:wire, group_ids}` when the row carries the group on the
-  wire, `{:source, entity_id}` when its scope follows a resolved
-  relationship source, and `{:by_id, model}` when the subject has to be
-  resolved from the caches. A relationship's source is resolved by
-  method here — see `relationship_groups/4` — so fan-out cannot scope a
-  delete more widely than its authorization did (#624).
+  wire, `{:source, entity_id}` when its scope follows a resolved link
+  source, and `{:by_id, kind | model}` when the subject has to be
+  resolved from the caches. A link's source is resolved by method here —
+  see `relationship_groups/4` — so fan-out cannot scope a delete more
+  widely than its authorization did (#624).
   """
   @spec fan_out_preference(map(), keyword()) ::
-          {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, model()}
-  def fan_out_preference(update, opts) do
-    case update.model do
-      "relationship" -> relationship_preference(update, opts)
-      model when model in ["entityGroup", "groupMember"] -> group_preference(model, update, opts)
-      model -> {:by_id, model}
-    end
-  end
+          {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, scope_key()}
+  def fan_out_preference(%{kind: :link} = update, opts), do: relationship_preference(update, opts)
+
+  def fan_out_preference(%{kind: kind} = update, opts) when kind in [:grant, :membership],
+    do: group_preference(kind, update, opts)
+
+  def fan_out_preference(%{kind: kind}, _opts) when kind in [:group],
+    do: {:by_id, kind}
+
+  def fan_out_preference(update, _opts), do: {:by_id, update.model}
 
   # The current Action's value wins: that is the value the authorizer bound
   # (#624). The flush row supplies what an earlier Action of the same commit
   # wrote, which the by-id caches cannot see yet (#813).
-  defp scope_field(update, field, opts) do
-    Fields.get(update.data, field) || flush_field(update.subject_id, field, opts)
+  defp scope_field(update, kind, field, opts) do
+    SystemComponent.path(update.data, kind, field) ||
+      flush_field(update.subject_id, kind, field, opts)
   end
 
   defp relationship_preference(update, opts) do
-    source_id = scope_field(update, "source_id", opts)
+    source_id = scope_field(update, :link, "source_id", opts)
 
     case scope_source(update.method, source_id, update.subject_id, opts) do
-      nil -> {:by_id, "relationship"}
+      nil -> {:by_id, :link}
       source -> {:source, source}
     end
   end
 
-  defp group_preference(model, update, opts) do
-    case scope_field(update, "group_id", opts) do
-      nil -> {:by_id, model}
+  defp group_preference(kind, update, opts) do
+    case scope_field(update, kind, "group_id", opts) do
+      nil -> {:by_id, kind}
       group_id -> {:wire, [group_id]}
     end
   end
@@ -456,16 +488,16 @@ defmodule EbbServer.Storage.EntityIndex do
   Returns the group set a folded row fans out to, before the Writer commits.
 
   Resolves `fan_out_preference/2` against the caches unioned with the
-  Action's `:intra_action` membership. The brand-new `entityGroup` and
-  `groupMember` rows of the Action are not in the by-id caches yet, so
-  those rows prefer the group on the wire.
+  Action's `:intra_action` membership. The brand-new `ebb/membership` and
+  `ebb/grant` rows of the Action are not in the by-id caches yet, so those
+  rows prefer the group on the wire.
   """
   @spec fan_out_groups(map(), keyword()) :: [String.t()]
   def fan_out_groups(update, opts) do
     case fan_out_preference(update, opts) do
       {:wire, group_ids} -> group_ids
       {:source, source_id} -> source_groups(source_id, opts)
-      {:by_id, model} -> resolve_groups(model, update.subject_id, opts)
+      {:by_id, key} -> resolve_groups(key, update.subject_id, opts)
     end
   end
 
@@ -473,9 +505,9 @@ defmodule EbbServer.Storage.EntityIndex do
   # threads it through `:flush_rows`; a caller without it falls back to the
   # by-id caches exactly as before. A field the current Action carries still
   # wins, because that is the value the authorizer bound (#624).
-  defp flush_field(subject_id, field, opts) do
+  defp flush_field(subject_id, kind, field, opts) do
     case Keyword.get(opts, :flush_rows) do
-      %{} = rows -> Fields.get(Map.get(rows, subject_id), field)
+      %{} = rows -> SystemComponent.path(Map.get(rows, subject_id), kind, field)
       _ -> nil
     end
   end

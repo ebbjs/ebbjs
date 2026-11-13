@@ -139,7 +139,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       group_id = unique("g")
       intruder_id = unique("a")
 
-      seed_member(owner_id, group_id, ["groupMember.create", "function." <> name])
+      seed_member(owner_id, group_id, ["ebb/grant.create", "function." <> name])
       assert add_group_member(owner_id, group_id, intruder_id, ["todo.read"]).status == 200
 
       deploy!(dir, name)
@@ -212,7 +212,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       wildcard_id = unique("a")
       stranger_id = unique("a")
 
-      seed_member(owner_id, group_id, ["groupMember.create"])
+      seed_member(owner_id, group_id, ["ebb/grant.create"])
 
       assert add_group_member(owner_id, group_id, literal_id, [
                "function." <> name
@@ -282,7 +282,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       other_group = unique("g")
 
       seed_member(actor_id, group_id, ["function." <> name])
-      seed_member(owner_id, other_group, ["todo.create", "todo.update", "groupMember.create"])
+      seed_member(owner_id, other_group, ["todo.create", "todo.update", "ebb/grant.create"])
 
       foreign_id = unique("todo_other")
 

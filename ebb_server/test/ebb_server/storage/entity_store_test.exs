@@ -2297,6 +2297,126 @@ defmodule EbbServer.Storage.EntityStoreTest do
     end
   end
 
+  describe "platform components" do
+    test "a platform row is committed under `ebb` and indexed by component", ctx do
+      entity_id = "gm_platform"
+      hlc = hlc_from(1_000)
+
+      action =
+        validated_action(%{
+          id: "act_platform_grant",
+          hlc: hlc,
+          updates: [
+            validated_component(
+              entity_id,
+              "ebb/grant",
+              leaf(
+                %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["todo.read"]},
+                hlc
+              ),
+              id: "upd_platform_grant"
+            )
+          ]
+        })
+
+      assert {:ok, _range, []} = Writer.write_actions([action], ctx.writer_name)
+      assert {:ok, entity} = EntityStore.get(entity_id, "a_1", store_opts(ctx))
+
+      assert entity.type == "ebb"
+      assert entity.data["components"] == ["ebb/grant"]
+      assert entity.data["fields"]["grant"]["value"]["group_id"] == "g_1"
+
+      assert {:ok, [^entity_id]} =
+               SQLite.query_component_ids("ebb/grant", 10, ctx.sqlite_name)
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert Jason.decode!(cached.data)["components"] == ["ebb/grant"]
+    end
+
+    test "query/4 selects a platform component by its component name", ctx do
+      hlc = hlc_from(1_000)
+      note_id = "note_overlay"
+
+      # The note is committed under `note` first, so the `ebb/link` overlay
+      # added afterwards neither re-models it nor loses its entry in the
+      # component index.
+      create_note =
+        validated_action(%{
+          id: "act_note",
+          hlc: hlc,
+          updates: [
+            validated_component(note_id, "note/title", leaf("linked", hlc), id: "upd_title")
+          ]
+        })
+
+      add_link =
+        validated_action(%{
+          id: "act_link",
+          hlc: hlc,
+          updates: [
+            validated_component(
+              note_id,
+              "ebb/link",
+              leaf(
+                %{
+                  "source_id" => note_id,
+                  "target_id" => "doc_1",
+                  "type" => "owns",
+                  "field" => "body"
+                },
+                hlc
+              ),
+              id: "upd_link"
+            )
+          ]
+        })
+
+      grant =
+        validated_action(%{
+          id: "act_grant",
+          hlc: hlc,
+          updates: [
+            validated_component(
+              "gm_1",
+              "ebb/grant",
+              leaf(
+                %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => ["note.read"]},
+                hlc
+              ),
+              id: "upd_grant"
+            ),
+            validated_component(
+              "eg_1",
+              "ebb/membership",
+              leaf(%{"entity_id" => note_id, "group_id" => "g_1"}, hlc),
+              id: "upd_membership"
+            )
+          ]
+        })
+
+      assert {:ok, _range, []} =
+               Writer.write_actions([create_note, add_link, grant], ctx.writer_name)
+
+      assert {:ok, note} = EntityStore.get(note_id, "a_1", store_opts(ctx))
+      assert note.type == "note"
+      assert note.data["components"] == ["ebb/link", "note/title"]
+
+      # The overlay's component name is the platform one, not `note/link`.
+      assert {:ok, [^note_id]} = SQLite.query_component_ids("ebb/link", 10, ctx.sqlite_name)
+      assert {:ok, []} = SQLite.query_component_ids("note/link", 10, ctx.sqlite_name)
+
+      assert {:ok, [queried]} =
+               EntityStore.query("ebb/link", nil, "a_1", store_opts(ctx))
+
+      assert queried.id == note_id
+
+      # The same row is still reachable as its own model: the overlay neither
+      # re-modeled it nor hid it from a model query.
+      assert {:ok, [by_model]} = EntityStore.query("note", nil, "a_1", store_opts(ctx))
+      assert by_model.id == note_id
+    end
+  end
+
   describe "durable commit and read ordering" do
     test "a read after the durable commit does not see stale SQLite", ctx do
       entity_id = "todo_after_commit"

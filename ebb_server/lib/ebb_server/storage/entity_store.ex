@@ -115,10 +115,10 @@ defmodule EbbServer.Storage.EntityStore do
     Component,
     DirtyTracker,
     FieldMerge,
-    PermissionHelper,
     QueryFilter,
     RocksDB,
-    SQLite
+    SQLite,
+    SystemComponent
   }
 
   alias EbbServer.Telemetry
@@ -444,7 +444,8 @@ defmodule EbbServer.Storage.EntityStore do
       deleted_by: deleted_by,
       max_gsn: max_gsn,
       data_mode: data_mode,
-      changed: changed
+      changed: changed,
+      written: written
     } = result
 
     entity_row = %{
@@ -458,8 +459,10 @@ defmodule EbbServer.Storage.EntityStore do
     }
 
     # `data.components` is derived, so it is recomputed from the fields this
-    # apply leaves behind rather than trusted from the stored blob.
-    components = component_names(fields_of(merged_data), type)
+    # apply leaves behind rather than trusted from the stored blob. The one
+    # component the delta actually wrote keeps its own name, which is the only
+    # place a component's namespace can disagree with its row's model.
+    components = component_names(fields_of(merged_data), type, written)
 
     merged_data = Map.put(merged_data, "components", components)
 
@@ -540,6 +543,7 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: existing_meta(existing_row, :last_gsn) || 0,
         data_mode: :patch,
         changed: MapSet.new(),
+        written: nil,
         materialized?: existing_row != nil
       },
       fn {gsn, action}, acc ->
@@ -580,7 +584,7 @@ defmodule EbbServer.Storage.EntityStore do
 
     %{
       acc
-      | data: row_data(fields, model),
+      | data: row_data(fields, model, update["component"]),
         # The model is fixed at the row's first write; a later component's
         # prefix must agree with it (the authorizer refuses a relabel).
         type: model,
@@ -590,6 +594,7 @@ defmodule EbbServer.Storage.EntityStore do
         deleted_hlc: nil,
         deleted_by: nil,
         changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
+        written: update["component"],
         materialized?: true
     }
   end
@@ -609,9 +614,10 @@ defmodule EbbServer.Storage.EntityStore do
 
       %{
         acc
-        | data: row_data(fields, acc.type),
+        | data: row_data(fields, acc.type, nil),
           updated_hlc: action["hlc"],
           max_gsn: max(acc.max_gsn, gsn),
+          written: nil,
           data_mode: :replace
       }
     else
@@ -652,18 +658,42 @@ defmodule EbbServer.Storage.EntityStore do
   # keys in sorted order. Sorted, not insertion order: two materializers that
   # converged on the same fields must agree on the canonical JSON byte for
   # byte.
-  defp row_data(fields, model) do
-    %{"fields" => fields, "components" => component_names(fields, model)}
+  defp row_data(fields, model, written) do
+    %{"fields" => fields, "components" => component_names(fields, model, written)}
   end
 
-  defp component_names(fields, model) when is_binary(model) do
+  # `data.components` names components, not `<model>/<field>` pairs: a
+  # platform component's namespace is `ebb`, not necessarily the model the row
+  # is committed under, so a platform row's names come from the platform
+  # vocabulary, the component the delta just wrote keeps its own name, and
+  # only a plain user field falls back to the row's model.
+  defp component_names(fields, model, written) when is_binary(model) do
     fields
     |> Map.keys()
     |> Enum.sort()
-    |> Enum.map(fn field -> model <> "/" <> field end)
+    |> Enum.map(&component_name(&1, model, written))
   end
 
-  defp component_names(_fields, _model), do: []
+  defp component_names(_fields, _model, _written), do: []
+
+  defp component_name(field, model, written) do
+    cond do
+      is_binary(written) and Component.field(written) == field ->
+        written
+
+      model == SystemComponent.model() ->
+        platform_component(field) || model <> "/" <> field
+
+      true ->
+        model <> "/" <> field
+    end
+  end
+
+  defp platform_component(field) do
+    Enum.find_value(SystemComponent.kinds(), fn kind ->
+      if SystemComponent.field(kind) == field, do: SystemComponent.component(kind)
+    end)
+  end
 
   # A write changes the keys it carries, so the JSON paths that need writing
   # are exactly the leaves of the incoming value: a leaf contributes its field
@@ -805,6 +835,12 @@ defmodule EbbServer.Storage.EntityStore do
   to SQLite for the permission-checked query. The model is the row's committed
   model — the query source — while the column it selects on is still `type`.
 
+  A platform component name (`ebb/membership`) is also a query source, and
+  the more precise one: an `ebb/*` component may sit on a row committed under
+  any model, so asking by component returns the rows that carry it rather than
+  the rows of one model. The `ebb` rows themselves are one model, so asking
+  for the model alone would return every kind at once.
+
   ## Options
   - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
   - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
@@ -867,13 +903,15 @@ defmodule EbbServer.Storage.EntityStore do
   defp normalize_offset(_offset), do: {:error, :invalid_offset}
 
   # `model` is the row's committed model — the query source — while the
-  # SQLite column it selects on is still named `type`.
+  # SQLite column it selects on is still named `type`. A platform component
+  # narrows the same committed model to the rows that carry it.
   defp run_query(model, filter, actor_id, limit, offset, opts) do
+    {type, component} = query_source(model)
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(model, dirty_set)
+    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(type, dirty_set)
 
     if dirty_ids != [] do
       Enum.each(dirty_ids, fn id ->
@@ -888,7 +926,11 @@ defmodule EbbServer.Storage.EntityStore do
       :query
     )
 
-    query_params = %{type: model, filter: filter, actor_id: actor_id, limit: limit}
+    query_params = %{type: type, filter: filter, actor_id: actor_id, limit: limit}
+
+    query_params =
+      if component, do: Map.put(query_params, :component, component), else: query_params
+
     query_params = if offset, do: Map.put(query_params, :offset, offset), else: query_params
 
     case SQLite.query_entities(query_params, sqlite_name) do
@@ -908,9 +950,20 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
+  # A platform component names one of the four kinds and selects by
+  # component; anything else is a model and selects on `type`. Either way the
+  # dirty pass runs against the committed model `ebb`, because
+  # materialization is per row and the row's kind cannot narrow it.
+  defp query_source(model) do
+    case SystemComponent.kind(model) do
+      nil -> {model, nil}
+      _kind -> {SystemComponent.model(), model}
+    end
+  end
+
   defp materialize_system_entities(rocks_name, sqlite_name, dirty_set) do
     dirty_ids =
-      DirtyTracker.dirty_entity_ids_for_models(PermissionHelper.system_models(), dirty_set)
+      DirtyTracker.dirty_entity_ids_for_models([SystemComponent.model()], dirty_set)
 
     Enum.each(dirty_ids, fn id ->
       materialize(id, rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set)

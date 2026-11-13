@@ -73,32 +73,34 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp group_put(id) do
-    component_update(id, id, "group/name", :replace, %{"value" => "Test Group"})
+    component_update(id, id, "ebb/group", :replace, %{"value" => %{"name" => "Test Group"}})
   end
 
-  # A row is one component per field, so a system row's fixture expands into
-  # the component Updates the wire would carry.
+  # A platform row carries exactly one atomic component, so its fixture is one
+  # Update whose value is the whole object.
   defp group_member_put(id, actor_id, group_id, permissions) do
-    component_updates(id, id, "groupMember", :replace, %{
-      "actor_id" => actor_id,
-      "group_id" => group_id,
-      "permissions" => permissions
+    component_update(id, id, "ebb/grant", :replace, %{
+      "value" => %{
+        "actor_id" => actor_id,
+        "group_id" => group_id,
+        "permissions" => permissions
+      }
     })
   end
 
-  defp group_member_patch(id, group_id, permissions) do
-    component_updates(
-      "#{id}_patch",
-      id,
-      "groupMember",
-      :merge,
-      %{"group_id" => group_id, "permissions" => permissions}
-    )
+  defp group_member_patch(id, group_id, permissions, actor_id \\ nil) do
+    value = %{"group_id" => group_id, "permissions" => permissions}
+    value = if actor_id, do: Map.put(value, "actor_id", actor_id), else: value
+
+    component_update("#{id}_patch", id, "ebb/grant", :replace, %{"value" => value})
   end
 
-  # A merge carries only the components it changes.
+  # An atomic grant value is the whole row, so a value that omits
+  # `permissions` states an empty permission list.
   defp group_member_patch_without_permissions(id, group_id) do
-    component_updates("#{id}_patch", id, "groupMember", :merge, %{"group_id" => group_id})
+    component_update("#{id}_patch", id, "ebb/grant", :replace, %{
+      "value" => %{"group_id" => group_id}
+    })
   end
 
   defp entity_put(id, model) do
@@ -114,9 +116,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp entity_group_put(id, entity_id, group_id) do
-    component_updates(id, id, "entityGroup", :replace, %{
-      "entity_id" => entity_id,
-      "group_id" => group_id
+    component_update(id, id, "ebb/membership", :replace, %{
+      "value" => %{"entity_id" => entity_id, "group_id" => group_id}
     })
   end
 
@@ -125,18 +126,19 @@ defmodule EbbServer.Storage.AuthorizerTest do
   defp group_member_delete(id), do: delete_update(id, id)
 
   defp relationship_put(id, source_id, target_id, source_type) do
-    component_updates(id, id, "relationship", :replace, %{
-      "source_id" => source_id,
-      "target_id" => target_id,
-      "type" => source_type,
-      "field" => "column"
+    component_update(id, id, "ebb/link", :replace, %{
+      "value" => %{
+        "source_id" => source_id,
+        "target_id" => target_id,
+        "type" => source_type,
+        "field" => "column"
+      }
     })
   end
 
   defp relationship_patch(id, source_id, target_id) do
-    component_updates("#{id}_patch", id, "relationship", :merge, %{
-      "source_id" => source_id,
-      "target_id" => target_id
+    component_update("#{id}_patch", id, "ebb/link", :replace, %{
+      "value" => %{"source_id" => source_id, "target_id" => target_id}
     })
   end
 
@@ -158,15 +160,36 @@ defmodule EbbServer.Storage.AuthorizerTest do
     }
   end
 
-  defp component_updates(id, subject_id, model, method, fields) do
-    fields
-    |> Enum.with_index()
-    |> Enum.map(fn {{field, value}, index} ->
-      component_update("#{id}_#{index}", subject_id, "#{model}/#{field}", method, %{
-        "value" => value
-      })
-    end)
+  # A user row is one component per field; a platform row is one atomic
+  # component whose value is the whole object, so its fields collapse into a
+  # single Update.
+  @system_components %{
+    "group" => "ebb/group",
+    "groupMember" => "ebb/grant",
+    "entityGroup" => "ebb/membership",
+    "relationship" => "ebb/link"
+  }
+
+  defp component_updates(id, subject_id, component, method, fields) do
+    case Map.fetch(@system_components, component) do
+      {:ok, atomic} ->
+        [component_update(id, subject_id, atomic, replace(method), %{"value" => fields})]
+
+      :error ->
+        fields
+        |> Enum.with_index()
+        |> Enum.map(fn {{field, value}, index} ->
+          component_update("#{id}_#{index}", subject_id, "#{component}/#{field}", method, %{
+            "value" => value
+          })
+        end)
+    end
   end
+
+  # `merge` and `replace` are the same write for an atomic component, and the
+  # wire names `replace` for one.
+  defp replace(:merge), do: :replace
+  defp replace(method), do: method
 
   defp delete_update(id, subject_id) do
     %{
@@ -335,15 +358,15 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.update"])
-      put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.update"])
+      put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["ebb/group.read"])
 
       action =
         build_action([
           component_updates("gm_2_patch", "gm_2", "groupMember", :merge, %{
             "group_id" => "g_1",
             "actor_id" => "a_2",
-            "permissions" => ["group.read"]
+            "permissions" => ["ebb/group.read"]
           })
         ])
 
@@ -359,7 +382,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           component_updates("gm_1_patch", "gm_1", "groupMember", :merge, %{
             "group_id" => "g_1",
             "actor_id" => "a_2",
-            "permissions" => ["group.read"]
+            "permissions" => ["ebb/group.read"]
           })
         ])
 
@@ -410,7 +433,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["relationship.delete"])
+      put_group_member(tables, "g_1", ["ebb/link.delete"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_relationship_by_id(tables, "rel_1", "todo_1")
 
@@ -469,7 +492,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
 
       action = build_action([group_member_delete("gm_ghost")])
 
@@ -483,8 +506,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       # The actor's own capable row is what authorizes the delete and
       # what keeps the group administered afterwards, so it must be a
       # different row from the one being deleted.
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       action =
         build_action([
@@ -571,7 +594,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.*"]),
+          group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read", "todo.*"]),
           entity_put("todo_1", "todo"),
           entity_group_put("eg_1", "todo_1", "g_1")
         ])
@@ -602,7 +625,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+          group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read"]),
           group_member_put("gm_2", "a_2", "g_1", ["*"])
         ])
 
@@ -643,7 +666,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read", "todo.create"]),
+          group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read", "todo.create"]),
           entity_group_put("eg_graft", "todo_other", "g_1")
         ])
 
@@ -659,7 +682,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["group.read"]),
+          group_member_put("gm_1", "a_1", "g_1", ["ebb/group.read"]),
           group_member_put("gm_2", "a_2", "g_1", ["*"]),
           %{
             id: "upd_victim",
@@ -679,7 +702,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.create"])
+      put_group_member(tables, "g_1", ["ebb/grant.create"])
 
       action = build_action([group_member_put("gm_2", "a_2", "g_1", ["*"])])
 
@@ -968,7 +991,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.update"])
+      put_group_member(tables, "g_1", ["ebb/grant.update"])
       put_group_member_by_id(tables, "gm_2", "a_2", "g_1", ["*"])
 
       action = build_action([group_member_patch("gm_2", "g_1", ["*"])])
@@ -1046,7 +1069,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       # The attacker holds every permission the wire source needs in their
       # own group, so only the stored row's source stands in the way.
-      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_group_member(tables, "g_attacker", ["todo.*", "ebb/link.*"])
       put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
       put_entity_type(tables, "todo_attacker", "todo")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
@@ -1056,14 +1079,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action([relationship_put("rel_victim", "todo_attacker", "col_x", "todo")])
 
       rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
-      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+      assert rejection.details == "an ebb/link row cannot be re-pointed at another source"
     end
 
     test "refuses a patch that changes the source of an existing row" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_group_member(tables, "g_attacker", ["todo.*", "ebb/link.*"])
       put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
@@ -1071,14 +1094,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action([relationship_patch("rel_victim", "todo_attacker", "col_x")])
 
       rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
-      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+      assert rejection.details == "an ebb/link row cannot be re-pointed at another source"
     end
 
     test "accepts a put that keeps the row's source and changes its target" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["todo.*", "relationship.update"])
+      put_group_member(tables, "g_victim", ["todo.*", "ebb/link.update"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
@@ -1092,7 +1115,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["relationship.update"])
+      put_group_member(tables, "g_victim", ["ebb/link.update"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
 
@@ -1107,7 +1130,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       # The actor is a group member, so the refusal is not a plain
       # permission miss.
-      put_group_member(tables, "g_1", ["relationship.*"])
+      put_group_member(tables, "g_1", ["ebb/link.*"])
 
       # A put with no source has no group set to authorize against, and
       # falling back to the row's own groups would authorize an edge nobody
@@ -1115,11 +1138,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_rel",
         subject_id: "rel_1",
-        component: "relationship/target_id",
-        model: "relationship",
-        field: "target_id",
+        component: "ebb/link",
+        model: "ebb",
+        field: "link",
         method: :replace,
-        data: %{"value" => "col_2"}
+        data: %{"value" => %{"target_id" => "col_2"}}
       }
 
       rejection =
@@ -1128,7 +1151,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
           "not_authorized"
         )
 
-      assert rejection.details == "relationship source model is unresolvable"
+      assert rejection.details == "ebb/link source model is unresolvable"
     end
 
     test "accepts a brand-new relationship row" do
@@ -1151,18 +1174,18 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_attacker", ["relationship.update"])
+      put_group_member(tables, "g_attacker", ["ebb/link.update"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
 
       sourceless_patch = %{
         id: "rel_victim_patch",
         subject_id: "rel_victim",
-        component: "relationship/target_id",
-        model: "relationship",
-        field: "target_id",
-        method: :merge,
-        data: %{"value" => "col_y"}
+        component: "ebb/link",
+        model: "ebb",
+        field: "link",
+        method: :replace,
+        data: %{"value" => %{"target_id" => "col_y"}}
       }
 
       rejection =
@@ -1173,7 +1196,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       assert rejection.details == "missing required permission"
 
-      put_group_member(tables, "g_victim", ["relationship.update"], "gm_victim")
+      put_group_member(tables, "g_victim", ["ebb/link.update"], "gm_victim")
 
       assert_accepted(Authorizer.authorize([build_action([sourceless_patch])], "a_1", ctx))
     end
@@ -1198,7 +1221,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
         ])
 
       rejection = assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
-      assert rejection.details == "a relationship row cannot be re-pointed at another source"
+      assert rejection.details == "an ebb/link row cannot be re-pointed at another source"
     end
 
     # A delete's group scope comes from the stored row, never from the wire
@@ -1208,7 +1231,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"])
+      put_group_member(tables, "g_attacker", ["todo.*", "ebb/link.*"])
       put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
       put_entity_type(tables, "todo_attacker", "todo")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
@@ -1224,7 +1247,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["relationship.delete"])
+      put_group_member(tables, "g_victim", ["ebb/link.delete"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_relationship_by_id(tables, "rel_victim", "todo_victim")
 
@@ -1241,7 +1264,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["relationship.*"])
+      put_group_member(tables, "g_victim", ["ebb/link.*"])
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
 
       # A delete names no component, so a row nothing committed has neither a
@@ -1261,8 +1284,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
-      put_group_member(tables, "g_new", ["todo.*", "relationship.*"], "gm_new")
+      put_group_member(tables, "g_victim", ["ebb/link.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*", "ebb/link.*"], "gm_new")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_membership(tables, "todo_new", "g_new", "eg_new")
@@ -1282,8 +1305,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_victim", ["relationship.*"], "gm_victim")
-      put_group_member(tables, "g_new", ["todo.*", "relationship.*"], "gm_new")
+      put_group_member(tables, "g_victim", ["ebb/link.*"], "gm_victim")
+      put_group_member(tables, "g_new", ["todo.*", "ebb/link.*"], "gm_new")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
       put_entity_type(tables, "todo_victim", "todo")
       put_membership(tables, "todo_new", "g_new", "eg_new")
@@ -1310,7 +1333,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_group_member(tables, "g_attacker", ["todo.*", "ebb/link.*"], "gm_attacker")
       put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
       put_entity_type(tables, "todo_attacker", "todo")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
@@ -1333,7 +1356,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_attacker", ["todo.*", "relationship.*"], "gm_attacker")
+      put_group_member(tables, "g_attacker", ["todo.*", "ebb/link.*"], "gm_attacker")
       put_membership(tables, "todo_attacker", "g_attacker", "eg_attacker")
       put_entity_type(tables, "todo_attacker", "todo")
       put_membership(tables, "todo_victim", "g_victim", "eg_victim")
@@ -1350,7 +1373,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
                Authorizer.authorize([delete_action, put_action], "a_1", ctx)
 
       assert delete_rejection.details == "missing required permission"
-      assert put_rejection.details == "a relationship row cannot be re-pointed at another source"
+      assert put_rejection.details == "an ebb/link row cannot be re-pointed at another source"
     end
   end
 
@@ -1400,7 +1423,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_2", ["entityGroup.create"])
+      put_group_member(tables, "g_2", ["ebb/membership.create"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_type(tables, "todo_1", "todo")
 
@@ -1501,7 +1524,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       # The actor holds the system-entity permission, which used to stand
       # in for the entity's type. It must not.
-      put_group_member(tables, "g_2", ["entityGroup.create", "entityGroup.*", "*"])
+      put_group_member(tables, "g_2", ["ebb/membership.create", "ebb/membership.*", "*"])
       put_membership(tables, "todo_unknown", "g_1", "eg_1")
 
       action = build_action([entity_group_put("eg_new", "todo_unknown", "g_2")])
@@ -1513,7 +1536,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["entityGroup.create"])
+      put_group_member(tables, "g_1", ["ebb/membership.create"])
 
       action =
         build_action([
@@ -1528,7 +1551,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["entityGroup.delete"])
+      put_group_member(tables, "g_1", ["ebb/membership.delete"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_membership(tables, "todo_1", "g_2", "eg_2")
       put_entity_group_by_id(tables, "eg_1", "todo_1", "g_1")
@@ -1566,7 +1589,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_new"),
-          group_member_put("gm_1", "a_1", "g_new", ["group.read"]),
+          group_member_put("gm_1", "a_1", "g_new", ["ebb/group.read"]),
           entity_group_put("eg_graft", "todo_existing", "g_new")
         ])
 
@@ -1713,7 +1736,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
 
     test "deleting a group's only capable membership is refused", %{tables: tables, ctx: ctx} do
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
 
       action = build_action([group_member_delete("gm_actor")])
 
@@ -1727,7 +1750,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
       put_group_member_by_id(tables, "gm_1", "a_2", "g_1", [])
 
       action = build_action([group_member_delete("gm_actor")])
@@ -1736,8 +1759,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
 
     test "deleting one of two capable memberships is allowed", %{tables: tables, ctx: ctx} do
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       action = build_action([group_member_delete("gm_1")])
 
@@ -1748,8 +1771,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       # Each Action is valid against the cache snapshot, but together
       # they net to zero. The running delta must catch the second.
@@ -1768,7 +1791,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor")
 
       action = build_action([group_member_patch("gm_actor", "g_1", [])])
 
@@ -1779,26 +1802,27 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       action = build_action([group_member_patch("gm_1", "g_1", [])])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a patch that omits permissions keeps the row's permission list", %{
+    test "a value that names no permissions empties the row's list", %{
       tables: tables,
       ctx: ctx
     } do
-      # The actor's own row is the group's only capable membership and the
-      # patch does not mention permissions: dropping them would lock the
-      # group out, so a missing field has to mean "unchanged".
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
+      # An atomic value is the whole row: omitting `permissions` states an
+      # empty list rather than leaving the stored one alone, so the actor's
+      # own row — the group's only capable membership — would lock the group
+      # out.
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor")
 
       action = build_action([group_member_patch_without_permissions("gm_actor", "g_1")])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
     end
 
     test "a patch to a row the same Action put resolves against the request", %{ctx: ctx} do
@@ -1809,8 +1833,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_new"),
-          group_member_put("gm_own", "a_1", "g_new", ["groupMember.update"]),
-          group_member_patch_without_permissions("gm_own", "g_new")
+          group_member_put("gm_own", "a_1", "g_new", ["ebb/grant.update"]),
+          group_member_patch("gm_own", "g_new", ["ebb/grant.update"], "a_1")
         ])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
@@ -1820,8 +1844,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.delete"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.delete"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       # The retried delete names a row the request has already removed, so
       # the delta has nothing left to subtract and must not read the row as
@@ -1839,14 +1863,14 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
       # The by-group index can lag the by-id cache; an id it still lists but
       # nothing resolves must be skipped rather than counted or crash.
       :ets.insert(tables.group_members_by_group, {{"g_1", "gm_ghost"}})
 
-      action = build_action([group_member_patch_without_permissions("gm_1", "g_1")])
+      action = build_action([group_member_patch("gm_1", "g_1", ["ebb/group.read"])])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
@@ -1858,33 +1882,32 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_group_member(
         tables,
         "g_1",
-        ["groupMember.delete", "groupMember.create"],
+        ["ebb/grant.delete", "ebb/grant.create"],
         "gm_actor"
       )
 
       action =
         build_action([
           group_member_delete("gm_actor"),
-          group_member_put("gm_new", "a_2", "g_1", ["group.read"])
+          group_member_put("gm_new", "a_2", "g_1", ["ebb/group.read"])
         ])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "a write that empties the permission list is a lockout", %{tables: tables, ctx: ctx} do
-      put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.*"], "gm_actor")
 
-      # Only the permission component is written, so the row keeps its group
-      # and its permission list becomes empty — the group would be left with
-      # no member that can administer it.
+      # The value writes an empty permission list, so the group would be left
+      # with no member that can administer it.
       update = %{
         id: "upd_gm",
         subject_id: "gm_actor",
-        component: "groupMember/permissions",
-        model: "groupMember",
-        field: "permissions",
+        component: "ebb/grant",
+        model: "ebb",
+        field: "grant",
         method: :replace,
-        data: %{"value" => []}
+        data: %{"value" => %{"actor_id" => "a_1", "group_id" => "g_1", "permissions" => []}}
       }
 
       assert_rejected(
@@ -1893,17 +1916,23 @@ defmodule EbbServer.Storage.AuthorizerTest do
       )
     end
 
-    test "moving a membership out of a group that keeps a capable row is allowed", %{
+    test "moving a membership between groups is refused even when both groups authorize", %{
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor_1")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      # Decision 13: a grant's `group_id` is its identity, so moving an actor
+      # between groups is a delete plus a create, never a re-point. Holding
+      # the permission on both sides is not enough.
+      put_group_member(tables, "g_2", ["ebb/grant.update"], "gm_actor")
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor_1")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
-      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+      action = build_action([group_member_patch("gm_1", "g_2", ["ebb/group.read"])])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+
+      assert rejection.details == "an ebb/grant row cannot be re-pointed at another group"
     end
 
     test "moving a group's only capable membership out of it is refused", %{
@@ -1912,10 +1941,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
     } do
       # The actor authorizes the patch in the destination group, but the
       # row is bound to the origin group, where they hold nothing (#625).
-      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor")
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
+      put_group_member(tables, "g_2", ["ebb/grant.update"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
 
-      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+      action = build_action([group_member_patch("gm_1", "g_2", ["ebb/group.read"])])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
@@ -1924,14 +1953,17 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables: tables,
       ctx: ctx
     } do
-      # The actor may write both groups, so the move passes authorization;
-      # only the last-member guard stops the origin from being emptied.
-      put_group_member(tables, "g_1", ["groupMember.update"], "gm_actor")
-      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+      # An atomic grant's group is immutable, so the move is refused as a
+      # re-point before the last-member guard can even see it.
+      put_group_member(tables, "g_1", ["ebb/grant.update"], "gm_actor")
+      put_group_member(tables, "g_2", ["ebb/grant.update"], "gm_actor_2")
 
-      action = build_action([group_member_patch("gm_actor", "g_2", ["groupMember.update"])])
+      action = build_action([group_member_patch("gm_actor", "g_2", ["ebb/grant.update"])])
 
-      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "last_group_member")
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+
+      assert rejection.details == "an ebb/grant row cannot be re-pointed at another group"
     end
   end
 
@@ -1946,9 +1978,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
       # The victim's row in `g_victim`; the actor holds permission only in
       # the group they bootstrapped. `gm_victim_2` keeps the group capable
       # so the last-member guard is not what refuses the move.
-      put_group_member_by_id(tables, "gm_victim", "a_victim", "g_victim", ["group.read"])
-      put_group_member_by_id(tables, "gm_victim_2", "a_victim_2", "g_victim", ["group.read"])
-      put_group_member(tables, "g_attacker", ["groupMember.*"])
+      put_group_member_by_id(tables, "gm_victim", "a_victim", "g_victim", ["ebb/group.read"])
+      put_group_member_by_id(tables, "gm_victim_2", "a_victim_2", "g_victim", ["ebb/group.read"])
+      put_group_member(tables, "g_attacker", ["ebb/grant.*"])
 
       %{tables: tables, ctx: auth_context(tables)}
     end
@@ -1958,7 +1990,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     } do
       action =
         build_action([
-          group_member_put("gm_victim", "a_1", "g_attacker", ["group.read"])
+          group_member_put("gm_victim", "a_1", "g_attacker", ["ebb/group.read"])
         ])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
@@ -1967,7 +1999,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     test "patching an existing row with permission only in the destination group is refused", %{
       ctx: ctx
     } do
-      action = build_action([group_member_patch("gm_victim", "g_attacker", ["group.read"])])
+      action = build_action([group_member_patch("gm_victim", "g_attacker", ["ebb/group.read"])])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
     end
@@ -1979,7 +2011,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["groupMember.*"])
+      put_group_member(tables, "g_1", ["ebb/grant.*"])
       put_entity_type(tables, "gm_tombstone", "groupMember")
 
       action = build_action([group_member_put("gm_tombstone", "a_1", "g_1", ["todo.read"])])
@@ -1991,8 +2023,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_new"),
-          group_member_put("gm_own", "a_1", "g_new", ["groupMember.*"]),
-          group_member_put("gm_victim", "a_1", "g_new", ["group.read"])
+          group_member_put("gm_own", "a_1", "g_new", ["ebb/grant.*"]),
+          group_member_put("gm_victim", "a_1", "g_new", ["ebb/group.read"])
         ])
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
@@ -2003,33 +2035,39 @@ defmodule EbbServer.Storage.AuthorizerTest do
     setup do
       tables = create_isolated_tables()
 
-      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["group.read"])
-      put_group_member(tables, "g_1", ["groupMember.*"], "gm_actor")
+      put_group_member_by_id(tables, "gm_1", "a_2", "g_1", ["ebb/group.read"])
+      put_group_member(tables, "g_1", ["ebb/grant.*"], "gm_actor")
 
       %{tables: tables, ctx: auth_context(tables)}
     end
 
     test "re-putting a row inside its own group is allowed", %{ctx: ctx} do
-      action = build_action([group_member_put("gm_1", "a_2", "g_1", ["group.read", "todo.*"])])
+      action =
+        build_action([group_member_put("gm_1", "a_2", "g_1", ["ebb/group.read", "todo.*"])])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
     test "patching a row inside its own group is allowed", %{ctx: ctx} do
-      action = build_action([group_member_patch("gm_1", "g_1", ["group.read"])])
+      action = build_action([group_member_patch("gm_1", "g_1", ["ebb/group.read"])])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "moving a row is allowed when the actor holds the permission in both groups", %{
+    test "moving a row between groups is refused rather than authorized", %{
       tables: tables,
       ctx: ctx
     } do
-      put_group_member(tables, "g_2", ["groupMember.update"], "gm_actor_2")
+      # Decision 13 makes `group_id` the row's identity: a move is a delete
+      # plus a create, so no permission set authorizes a re-point in place.
+      put_group_member(tables, "g_2", ["ebb/grant.update"], "gm_actor_2")
 
-      action = build_action([group_member_patch("gm_1", "g_2", ["group.read"])])
+      action = build_action([group_member_patch("gm_1", "g_2", ["ebb/group.read"])])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+
+      assert rejection.details == "an ebb/grant row cannot be re-pointed at another group"
     end
   end
 
@@ -2041,7 +2079,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     setup do
       tables = create_isolated_tables()
 
-      put_group_member(tables, "g_atk", ["entityGroup.*"])
+      put_group_member(tables, "g_atk", ["ebb/membership.*"])
 
       %{tables: tables, ctx: auth_context(tables)}
     end
@@ -2073,7 +2111,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_new"),
-          group_member_put("gm_own", "a_1", "g_new", ["entityGroup.*", "todo.create"]),
+          group_member_put("gm_own", "a_1", "g_new", ["ebb/membership.*", "todo.create"]),
           entity_put("todo_new", "todo"),
           entity_group_put("eg_victim", "todo_new", "g_new")
         ])
@@ -2166,7 +2204,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
           "not_authorized"
         )
 
-      assert rejection.details == "a membership row cannot be re-pointed at another entity"
+      assert rejection.details ==
+               "an ebb/membership row cannot be re-pointed at another entity or group"
 
       # The same merge naming the row's own entity is an ordinary write: the
       # check is identity, not a refusal of membership merges.
@@ -2181,7 +2220,9 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([build_action([keep])], "a_1", ctx))
     end
 
-    test "a put may move a membership row it names to another group", %{tables: tables, ctx: ctx} do
+    test "a put cannot move a membership row to another group", %{tables: tables, ctx: ctx} do
+      # `(entity_id, group_id)` is the membership row's identity (decision
+      # 13): a move is a delete plus a create.
       put_group_member(tables, "g_2", ["todo.create"], "gm_2")
       put_group_member(tables, "g_1", ["todo.update"], "gm_g1")
       put_entity_type(tables, "todo_1", "todo")
@@ -2190,7 +2231,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       action = build_action([entity_group_put("eg_old", "todo_1", "g_2")])
 
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+      rejection =
+        assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+
+      assert rejection.details ==
+               "an ebb/membership row cannot be re-pointed at another entity or group"
     end
 
     test "a put cannot claim an entity the index knows but no group owns" do
@@ -2338,7 +2383,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_1"),
-          group_member_put("gm_1", "a_1", "g_1", ["todo.create", "group.read"]),
+          group_member_put("gm_1", "a_1", "g_1", ["todo.create", "ebb/group.read"]),
           entity_put("todo_existing", "todo"),
           entity_group_put("eg_graft", "todo_existing", "g_1")
         ])
@@ -2353,7 +2398,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action =
         build_action([
           group_put("g_new"),
-          group_member_put("gm_1", "a_1", "g_new", ["group.read", "todo.*"]),
+          group_member_put("gm_1", "a_1", "g_new", ["ebb/group.read", "todo.*"]),
           entity_put("todo_new", "todo"),
           entity_group_put("eg_new", "todo_new", "g_new")
         ])
@@ -2366,7 +2411,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       ctx = auth_context(tables)
 
       put_entity_type(tables, "g_1", "group")
-      put_group_member(tables, "g_1", ["group.update"])
+      put_group_member(tables, "g_1", ["ebb/group.update"])
 
       assert_accepted(Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx))
     end
@@ -2393,7 +2438,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_group_member(tables, "g_1", ["group.read"])
+      put_group_member(tables, "g_1", ["ebb/group.read"])
       put_membership(tables, "todo_1", "g_1", "eg_1")
 
       %{tables: tables, ctx: ctx}
@@ -2440,11 +2485,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_rel",
         subject_id: "rel_1",
-        component: "relationship/source_id",
-        model: "relationship",
-        field: "source_id",
-        method: :merge,
-        data: %{"value" => "todo_1"}
+        component: "ebb/link",
+        model: "ebb",
+        field: "link",
+        method: :replace,
+        data: %{"value" => %{"source_id" => "todo_1", "target_id" => "column_1"}}
       }
 
       assert_rejected(
@@ -2485,11 +2530,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
       update = %{
         id: "upd_eg",
         subject_id: "eg_1",
-        component: "entityGroup/group_id",
-        model: "entityGroup",
-        field: "group_id",
-        method: :merge,
-        data: %{"value" => "g_1"}
+        component: "ebb/membership",
+        model: "ebb",
+        field: "membership",
+        method: :replace,
+        data: %{"value" => %{"entity_id" => "todo_1", "group_id" => "g_1"}}
       }
 
       assert_rejected(

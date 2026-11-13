@@ -18,6 +18,16 @@ defmodule EbbServer.Integration.ActionHelpers do
   alias EbbServer.Sync.Router
   alias EbbServer.TestHelpers
 
+  # The platform's four components are atomic and all commit under `ebb`; the
+  # helpers keep the pre-#805 call shape (`"entityGroup"`) and build the folded
+  # row the wire now carries.
+  @system_components %{
+    "group" => "ebb/group",
+    "groupMember" => "ebb/grant",
+    "entityGroup" => "ebb/membership",
+    "relationship" => "ebb/link"
+  }
+
   def post_actions(body, actor_id \\ "a_test") do
     owner = self()
     ref = make_ref()
@@ -94,17 +104,7 @@ defmodule EbbServer.Integration.ActionHelpers do
     gm_id = "gm_" <> Nanoid.generate()
     group_update_id = "upd_group_" <> Nanoid.generate()
 
-    group_updates =
-      [
-        component_update(
-          group_update_id,
-          group_id,
-          "group/name",
-          "replace",
-          %{"value" => "Test Group", "hlc" => hlc}
-        )
-        | group_apps_updates(group_id, apps, hlc, group_update_id)
-      ]
+    group_updates = [group_update(group_update_id, group_id, apps, hlc)]
 
     %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
@@ -115,18 +115,27 @@ defmodule EbbServer.Integration.ActionHelpers do
     }
   end
 
-  defp group_apps_updates(_group_id, nil, _hlc, _update_id), do: []
+  @doc """
+  Builds one `ebb/group` Update whose value carries `name` and the app scope.
 
-  defp group_apps_updates(group_id, apps, hlc, update_id) do
-    [
-      component_update(
-        update_id <> "_apps",
-        group_id,
-        "group/apps",
-        "merge",
-        group_apps_field(apps, hlc, update_id)
-      )
-    ]
+  `apps` is the list of app ids the group is in scope for, or `nil` for a
+  group in scope for every app.
+  """
+  def group_update(update_id, group_id, apps, hlc) do
+    value = %{"name" => "Test Group"}
+
+    # `apps` arrives as `%{app_id => in_scope?}`; the stored value is the list
+    # of app ids the group is in scope for, so a `false` entry is an omission.
+    value =
+      case apps do
+        nil -> value
+        apps -> Map.put(value, "apps", for({id, true} <- apps, do: id))
+      end
+
+    component_update(update_id, group_id, "ebb/group", "replace", %{
+      "value" => value,
+      "hlc" => hlc
+    })
   end
 
   @doc """
@@ -149,20 +158,43 @@ defmodule EbbServer.Integration.ActionHelpers do
   component, because `replace` is refused for a keyed value.
   """
   def component_updates(id_prefix, subject_id, model, fields) do
-    fields
-    |> Enum.with_index()
-    |> Enum.map(fn {{field, value}, index} ->
-      method = if keyed?(value), do: "merge", else: "replace"
+    case Map.fetch(@system_components, model) do
+      {:ok, component} ->
+        # A platform row is one atomic component whose value is the whole
+        # object, so its fields collapse into a single Update. The call shape
+        # stays `%{field => leaf}`; a leaf with `"value"` is unwrapped into the
+        # value object.
+        value = Map.new(fields, fn {field, leaf} -> {field, unwrap_leaf(leaf)} end)
 
-      component_update(
-        "#{id_prefix}_#{index}",
-        subject_id,
-        "#{model}/#{field}",
-        method,
-        value
-      )
-    end)
+        [
+          component_update("#{id_prefix}_0", subject_id, component, "replace", %{"value" => value})
+        ]
+
+      :error ->
+        fields
+        |> Enum.with_index()
+        |> Enum.map(fn {{field, value}, index} ->
+          method = if keyed?(value), do: "merge", else: "replace"
+
+          component_update(
+            "#{id_prefix}_#{index}",
+            subject_id,
+            "#{model}/#{field}",
+            method,
+            value
+          )
+        end)
+    end
   end
+
+  defp unwrap_leaf(%{"value" => value} = leaf) do
+    case Map.keys(leaf) -- ["value", "hlc", "type", "update_id"] do
+      [] -> value
+      _other -> leaf
+    end
+  end
+
+  defp unwrap_leaf(leaf), do: leaf
 
   defp keyed?(%{"map" => entries}) when is_map(entries), do: true
   defp keyed?(_value), do: false

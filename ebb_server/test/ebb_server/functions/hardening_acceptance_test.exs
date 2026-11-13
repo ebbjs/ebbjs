@@ -239,7 +239,7 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
 
       seed_member(actor_id, unique("g"), ["function." <> name])
 
-      seed_member(owner_id, other_group, ["todo.create", "todo.update", "groupMember.create"])
+      seed_member(owner_id, other_group, ["todo.create", "todo.update", "ebb/grant.create"])
 
       assert write_entity_in_group(owner_id, entity_id, "todo", other_group, fields("secret")).status ==
                200

@@ -192,7 +192,9 @@ defmodule EbbServer.Storage.RowMutationsTest do
         entity_groups_by_id: by_id
       )
 
-    assert mutation.model == "entityGroup"
+    # A by-id cache row is a platform row, and every platform row is
+    # committed under the one platform model.
+    assert mutation.model == "ebb"
     assert mutation.method == :delete
   end
 

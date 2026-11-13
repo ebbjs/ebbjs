@@ -14,10 +14,10 @@ defmodule EbbServer.AppScopeIntegrationTest do
 
   describe "group app scope" do
     test "the handshake projects each group's app ids and false removes one" do
-      bootstrap_group(@actor, "g_notes", ["note.*", "group.*"], %{"notes" => true})
-      bootstrap_group(@actor, "g_issues", ["issue.*", "group.*"], %{"issues" => true})
+      bootstrap_group(@actor, "g_notes", ["note.*", "ebb/group.*"], %{"notes" => true})
+      bootstrap_group(@actor, "g_issues", ["issue.*", "ebb/group.*"], %{"issues" => true})
 
-      bootstrap_group(@actor, "g_bridge", ["note.*", "issue.*", "group.*"], %{
+      bootstrap_group(@actor, "g_bridge", ["note.*", "issue.*", "ebb/group.*"], %{
         "notes" => true,
         "issues" => true
       })
@@ -27,20 +27,20 @@ defmodule EbbServer.AppScopeIntegrationTest do
       assert groups["g_issues"]["apps"] == ["issues"]
       assert groups["g_bridge"]["apps"] == ["issues", "notes"]
 
-      assert :ok = patch_group_apps("g_bridge", %{"notes" => false})
+      assert :ok = patch_group_apps("g_bridge", ["issues"])
 
       groups = handshake_groups()
       assert groups["g_bridge"]["apps"] == ["issues"]
 
-      # A false-only map is an empty scope, not an unscoped group.
-      assert :ok = patch_group_apps("g_notes", %{"notes" => false})
+      # An empty list is an empty scope, not an unscoped group.
+      assert :ok = patch_group_apps("g_notes", [])
 
       groups = handshake_groups()
       assert groups["g_notes"]["apps"] == []
     end
 
     test "an unscoped group publishes null rather than an empty list" do
-      bootstrap_group(@actor, "g_unscoped", ["note.*", "group.*"])
+      bootstrap_group(@actor, "g_unscoped", ["note.*", "ebb/group.*"])
 
       groups = handshake_groups()
       assert Map.has_key?(groups["g_unscoped"], "apps")
@@ -63,6 +63,8 @@ defmodule EbbServer.AppScopeIntegrationTest do
     |> Map.new(fn group -> {group["id"], group} end)
   end
 
+  # The group value is atomic, so an app-scope change re-states the whole
+  # value: the scope is the list the caller passes.
   defp patch_group_apps(group_id, apps) do
     # One logical millisecond past the bootstrap so the patch outranks it.
     hlc = TestHelpers.generate_hlc() + 0x10000
@@ -76,9 +78,9 @@ defmodule EbbServer.AppScopeIntegrationTest do
         %{
           "id" => update_id,
           "subject_id" => group_id,
-          "component" => "group/apps",
-          "method" => "merge",
-          "data" => group_apps_field(apps, hlc, update_id)
+          "component" => "ebb/group",
+          "method" => "replace",
+          "data" => %{"value" => %{"name" => "Test Group", "apps" => apps}, "hlc" => hlc}
         }
       ]
     }

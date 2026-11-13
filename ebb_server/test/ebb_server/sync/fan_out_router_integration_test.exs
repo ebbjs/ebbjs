@@ -13,7 +13,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   import EbbServer.TestHelpers
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.{ActionFormat, RocksDB, WatermarkTracker}
+  alias EbbServer.Storage.{ActionFormat, RocksDB, SystemComponent, WatermarkTracker}
   alias EbbServer.Sync.FanOutRouter
 
   describe "subscribe/2 — second subscriber to same group" do
@@ -71,8 +71,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
 
       # One legitimate self-bootstrap Action that also adds a third party
-      # and an entity membership edge, so the chunk carries `group`,
-      # `groupMember` and `entityGroup` updates.
+      # and an entity membership edge, so the chunk carries `ebb/group`,
+      # `ebb/grant` and `ebb/membership` updates.
       hlc = EbbServer.TestHelpers.generate_hlc()
       todo_id = "todo_197_#{:erlang.unique_integer([:positive])}"
 
@@ -82,30 +82,34 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
-            system_updates("group", group_id, "replace", %{
-              "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-            }),
-            system_updates("groupMember", "gm_197_owner", "replace", %{
-              "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{
-                "type" => "lww",
-                "value" => ["todo.*", "groupMember.*"],
-                "hlc" => hlc
-              }
-            }),
-            system_updates("todo", todo_id, "replace", %{
-              "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
-            }),
-            system_updates("entityGroup", "eg_197", "replace", %{
-              "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
-            }),
-            system_updates("groupMember", "gm_197_third", "replace", %{
-              "actor_id" => %{"type" => "lww", "value" => "a_197_third", "hlc" => hlc},
-              "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
-              "permissions" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
-            })
+            platform_update(:group, group_id, %{"name" => "Seed"}, hlc),
+            platform_update(
+              :grant,
+              "gm_197_owner",
+              %{
+                "actor_id" => actor_id,
+                "group_id" => group_id,
+                "permissions" => ["todo.*", "ebb/grant.*", "ebb/membership.*"]
+              },
+              hlc
+            ),
+            user_update(todo_id, "todo/title", "Seed", hlc),
+            platform_update(
+              :membership,
+              "eg_197",
+              %{"entity_id" => todo_id, "group_id" => group_id},
+              hlc
+            ),
+            platform_update(
+              :grant,
+              "gm_197_third",
+              %{
+                "actor_id" => "a_197_third",
+                "group_id" => group_id,
+                "permissions" => ["todo.read"]
+              },
+              hlc
+            )
           ])
       }
 
@@ -121,15 +125,15 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       bytes = receive_sse_data()
       payload = bytes |> single_data_payload() |> Jason.decode!()
 
-      models =
+      components =
         payload["updates"]
-        |> Enum.map(fn update -> update["component"] |> String.split("/") |> hd() end)
+        |> Enum.map(& &1["component"])
         |> Enum.uniq()
         |> Enum.sort()
 
-      assert "group" in models
-      assert "groupMember" in models
-      assert "entityGroup" in models
+      assert "ebb/group" in components
+      assert "ebb/grant" in components
+      assert "ebb/membership" in components
 
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
@@ -212,7 +216,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       ref = attach_telemetry([[:ebb, :fanout, :push_latency_ms]])
 
-      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      conn = bootstrap_group(actor_id, group_id, ["todo.*"])
       assert conn.status == 200
       assert conn.resp_body == ~s({"rejected":[]})
 
@@ -230,7 +234,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       group_id = "g_363_batch_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_363_batch_#{:erlang.unique_integer([:positive])}"
 
-      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      conn = bootstrap_group(actor_id, group_id, ["todo.*"])
       assert conn.status == 200
 
       {:ok, sse_pid} =
@@ -258,7 +262,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
                   "method" => "replace",
                   "data" => %{"type" => "lww", "value" => "Batch #{i}", "hlc" => hlc}
                 }
-              ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+              ] ++ membership_update(entity_id, group_id, hlc, nil)
           }
         end
 
@@ -288,7 +292,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       group_id = "g_583_hops_#{:erlang.unique_integer([:positive])}"
       actor_id = "a_583_hops_#{:erlang.unique_integer([:positive])}"
 
-      conn = ActionHelpers.bootstrap_group(actor_id, group_id, ["todo.*"])
+      conn = bootstrap_group(actor_id, group_id, ["todo.*"])
       assert conn.status == 200
 
       {:ok, sse_pid} =
@@ -313,7 +317,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Hops", "hlc" => hlc}
             }
-          ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+          ] ++ membership_update(entity_id, group_id, hlc, nil)
       }
 
       conn =
@@ -345,17 +349,63 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
     end
   end
 
-  defp system_updates(model, subject_id, method, fields) do
-    fields
-    |> Enum.map(fn {field, value} ->
+  # A platform row is one atomic component: the whole value is the Update's
+  # payload, and the component name says which kind of row it is, never the
+  # model (all four commit under `ebb`).
+  defp platform_update(kind, subject_id, value, hlc) do
+    [
       %{
-        "id" => "upd_197_#{:erlang.unique_integer([:positive])}",
+        "id" => "upd_#{kind}_#{:erlang.unique_integer([:positive])}",
         "subject_id" => subject_id,
-        "component" => "#{model}/#{field}",
-        "method" => method,
-        "data" => value
+        "component" => SystemComponent.component(kind),
+        "method" => "replace",
+        "data" => %{"value" => value, "hlc" => hlc}
       }
-    end)
+    ]
+  end
+
+  defp user_update(subject_id, component, value, hlc) do
+    %{
+      "id" => "upd_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => subject_id,
+      "component" => component,
+      "method" => "replace",
+      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+    }
+  end
+
+  defp bootstrap_group(actor_id, group_id, permissions) do
+    hlc = generate_hlc()
+
+    action = %{
+      "id" => "act_bootstrap_#{:erlang.unique_integer([:positive])}",
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" =>
+        platform_update(:group, group_id, %{"name" => "Test Group"}, hlc) ++
+          platform_update(
+            :grant,
+            "gm_#{:erlang.unique_integer([:positive])}",
+            %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
+            hlc
+          )
+    }
+
+    ActionHelpers.post_actions(
+      ActionHelpers.msgpack_encode!(%{"actions" => [action]}),
+      actor_id
+    )
+  end
+
+  defp membership_update(entity_id, group_id, hlc, eg_id) do
+    eg_id = eg_id || ActionHelpers.membership_row_id(entity_id, group_id)
+
+    platform_update(
+      :membership,
+      eg_id,
+      %{"entity_id" => entity_id, "group_id" => group_id},
+      hlc
+    )
   end
 
   describe "subscriber lifecycle (#278)" do
@@ -410,10 +460,10 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       g1 = "g_473_a_#{:erlang.unique_integer([:positive])}"
       g2 = "g_473_b_#{:erlang.unique_integer([:positive])}"
 
-      assert ActionHelpers.bootstrap_group(actor_id, g1, ["todo.*", "entityGroup.*"]).status ==
+      assert bootstrap_group(actor_id, g1, ["todo.*", "ebb/membership.*"]).status ==
                200
 
-      assert ActionHelpers.bootstrap_group(actor_id, g2, ["todo.*", "entityGroup.*"]).status ==
+      assert bootstrap_group(actor_id, g2, ["todo.*", "ebb/membership.*"]).status ==
                200
 
       # An entity already in g2, so the membership delta can target it.
@@ -424,8 +474,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => "act_473_seed_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" =>
-          [todo_update(other_id, hlc)] ++ ActionHelpers.entity_group_update(other_id, g2, hlc)
+        "updates" => [todo_update(other_id, hlc)] ++ membership_update(other_id, g2, hlc, nil)
       }
 
       assert ActionHelpers.post_actions(
@@ -473,8 +522,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
 
       # One Action; g1 sees only its own write and membership row, g2 only
       # the row for the entity it already holds.
-      assert Enum.sort(g1_ids) == Enum.sort([leaked_id, eg_leak, eg_leak])
-      assert Enum.sort(g2_ids) == [eg_other, eg_other]
+      assert Enum.sort(g1_ids) == Enum.sort([leaked_id, eg_leak])
+      assert Enum.sort(g2_ids) == [eg_other]
 
       :ok = FanOutRouter.unsubscribe(sse1)
       :ok = FanOutRouter.unsubscribe(sse2)
@@ -492,20 +541,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   defp entity_group_put(eg_id, entity_id, group_id, hlc) do
-    [
-      entity_group_component(eg_id, "entity_id", entity_id, hlc, 0),
-      entity_group_component(eg_id, "group_id", group_id, hlc, 1)
-    ]
-  end
-
-  defp entity_group_component(eg_id, field, value, hlc, index) do
-    %{
-      "id" => "#{eg_id}_#{index}",
-      "subject_id" => eg_id,
-      "component" => "entityGroup/#{field}",
-      "method" => "replace",
-      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
-    }
+    platform_update(:membership, eg_id, %{"entity_id" => entity_id, "group_id" => group_id}, hlc)
   end
 
   defp start_collector(tag) do

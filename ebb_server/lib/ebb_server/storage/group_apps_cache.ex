@@ -2,15 +2,15 @@ defmodule EbbServer.Storage.GroupAppsCache do
   @moduledoc """
   GenServer that owns the group app-scope ETS table.
 
-  Holds each group's raw `apps` wire field alongside its projection, so
-  the handshake can answer from ETS instead of lazily materializing every
-  group row. The raw field is kept because a patch merges its incoming
-  `apps` map over the stored one with `FieldMerge.merge/2`; the projection
-  is what readers see: a set of app ids whose leaf value is exactly `true`.
+  Holds each group's `apps` value alongside its projection, so the
+  handshake can answer from ETS instead of lazily materializing every
+  group row. `apps` is one key of the group's atomic `ebb/group` value: the
+  app ids the group is in scope for. The projection is what readers see: a
+  set of app ids.
 
   Scope is a sync/residency filter, not authorization. A group with no
-  cached entry, or a `nil` field, is `:unscoped`; a present-but-empty map
-  projects to an empty set, which is distinct from unscoped.
+  cached entry, or no `apps` key, is `:unscoped`; an empty list projects to
+  an empty set, which is distinct from unscoped.
 
   The GenServer exists solely to own the ETS table lifetime and manage
   startup/shutdown. All public functions are lock-free reads and writes.
@@ -25,7 +25,7 @@ defmodule EbbServer.Storage.GroupAppsCache do
   @default_group_apps :ebb_group_apps
 
   @type apps :: :unscoped | MapSet.t(String.t())
-  @type field :: map() | nil
+  @type field :: [String.t()] | nil
   @type entry :: %{field: field(), apps: apps()}
 
   @type t :: %__MODULE__{group_apps: atom()}
@@ -37,15 +37,14 @@ defmodule EbbServer.Storage.GroupAppsCache do
   end
 
   @doc """
-  Stores a group's raw `apps` field and its projection.
+  Stores a group's `apps` value and its projection.
 
-  `apps_field` is the wire field value (`%{"map" => %{app_id => leaf}}`)
-  or `nil` for an unscoped group. The raw value is retained for later
-  patch merges.
+  `apps_field` is the app-id list from the group's atomic value, or `nil`
+  for an unscoped group.
 
   ## Examples
 
-      iex> GroupAppsCache.put_group_apps("g_1", %{"map" => %{"notes" => %{"value" => true}}})
+      iex> GroupAppsCache.put_group_apps("g_1", ["notes"])
       :ok
 
       iex> GroupAppsCache.put_group_apps("g_2", nil)
@@ -61,8 +60,7 @@ defmodule EbbServer.Storage.GroupAppsCache do
   @doc """
   Returns the projected app ids for a group.
 
-  No entry or a `nil` field is `:unscoped`; a present map with no truthy
-  entry is an empty set.
+  No entry or a `nil` value is `:unscoped`; an empty list is an empty set.
 
   ## Examples
 
@@ -88,13 +86,19 @@ defmodule EbbServer.Storage.GroupAppsCache do
   """
   @spec known?(String.t(), atom() | nil) :: boolean()
   def known?(group_id, table \\ nil) do
-    :ets.member(table || CacheTables.group_apps(), group_id)
+    table = table || CacheTables.group_apps()
+
+    # A caller whose options carry a cache table this process tree never
+    # started (unit tests, an ablated boot) gets "not known" rather than an
+    # `ArgumentError` out of a read path.
+    :ets.info(table, :name) != :undefined and :ets.member(table, group_id)
   end
 
   @doc """
-  Returns the raw stored `apps` field, or `nil` when none is cached.
+  Returns the stored `apps` list, or `nil` when none is cached.
 
-  The planner reads this as the pre-plan value a patch merges over.
+  The planner and the boot replay write this from the group's atomic value;
+  it is the value readers compare against, not a merge base.
   """
   @spec get_field(String.t(), atom()) :: field()
   def get_field(group_id, table \\ nil) do
@@ -155,22 +159,21 @@ defmodule EbbServer.Storage.GroupAppsCache do
     end
   end
 
-  # Scope is in iff the leaf's value is exactly `true`; `false`, `nil` and
-  # tombstoned leaves stay out of the projection without deleting the key.
+  # An absent value is unscoped: the group is in scope for every app. An
+  # empty list is a present statement of "no app".
   defp project(nil), do: :unscoped
 
-  defp project(%{"map" => entries}) when is_map(entries) do
-    entries
-    |> Enum.filter(fn {_app_id, leaf} -> match?(%{"value" => true}, leaf) end)
-    |> Enum.map(fn {app_id, _leaf} -> app_id end)
+  defp project(apps) when is_list(apps) do
+    apps
+    |> Enum.filter(&is_binary/1)
     |> MapSet.new()
   end
 
   defp project(_field) do
-    # A malformed field must not deny delivery: app scope is not a boundary,
+    # A malformed value must not deny delivery: app scope is not a boundary,
     # so an unexpected shape reads as unscoped like an absent one. The write
     # is still visible here rather than silently changing the projection.
-    Logger.warning("group apps field is not a map; treating the group as unscoped")
+    Logger.warning("group apps value is not a list; treating the group as unscoped")
     :unscoped
   end
 

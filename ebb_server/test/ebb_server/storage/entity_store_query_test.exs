@@ -1,7 +1,7 @@
 defmodule EbbServer.Storage.EntityStoreQueryTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{DirtyTracker, EntityStore, SQLite, Writer}
+  alias EbbServer.Storage.{DirtyTracker, EntityStore, SQLite, SystemComponent, Writer}
 
   import EbbServer.TestHelpers
 
@@ -14,15 +14,18 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        validated_component(gm_id, "groupMember/actor_id", %{"value" => actor_id, "hlc" => hlc}),
-        validated_component(gm_id, "groupMember/group_id", %{
-          "value" => group_id,
-          "hlc" => hlc
-        }),
-        validated_component(gm_id, "groupMember/permissions", %{
-          "value" => ["todo.create"],
-          "hlc" => hlc
-        })
+        validated_component(
+          gm_id,
+          SystemComponent.component(:grant),
+          %{
+            "value" => %{
+              "actor_id" => actor_id,
+              "group_id" => group_id,
+              "permissions" => ["todo.create"]
+            },
+            "hlc" => hlc
+          }
+        )
       ]
     }
 
@@ -36,14 +39,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        validated_component(eg_id, "entityGroup/entity_id", %{
-          "value" => group_id,
-          "hlc" => eg_hlc
-        }),
-        validated_component(eg_id, "entityGroup/group_id", %{
-          "value" => group_id,
-          "hlc" => eg_hlc
-        })
+        validated_component(
+          eg_id,
+          SystemComponent.component(:membership),
+          %{
+            "value" => %{"entity_id" => group_id, "group_id" => group_id},
+            "hlc" => eg_hlc
+          }
+        )
       ]
     }
 
@@ -83,14 +86,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        validated_component(eg_id, "entityGroup/entity_id", %{
-          "value" => todo_id,
-          "hlc" => eg_hlc
-        }),
-        validated_component(eg_id, "entityGroup/group_id", %{
-          "value" => group_id,
-          "hlc" => eg_hlc
-        })
+        validated_component(
+          eg_id,
+          SystemComponent.component(:membership),
+          %{
+            "value" => %{"entity_id" => todo_id, "group_id" => group_id},
+            "hlc" => eg_hlc
+          }
+        )
       ]
     }
 
@@ -797,22 +800,19 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        validated_component(rel_id, "relationship/source_id", %{
-          "value" => source_id,
-          "hlc" => hlc
-        }),
-        validated_component(rel_id, "relationship/target_id", %{
-          "value" => target_id,
-          "hlc" => hlc
-        }),
-        validated_component(rel_id, "relationship/type", %{
-          "value" => "assignedTo",
-          "hlc" => hlc
-        }),
-        validated_component(rel_id, "relationship/field", %{
-          "value" => "assignee",
-          "hlc" => hlc
-        })
+        validated_component(
+          rel_id,
+          SystemComponent.component(:link),
+          %{
+            "value" => %{
+              "source_id" => source_id,
+              "target_id" => target_id,
+              "type" => "assignedTo",
+              "field" => "assignee"
+            },
+            "hlc" => hlc
+          }
+        )
       ]
     }
 
@@ -828,7 +828,11 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
-        validated_component(group_id, "group/name", %{"value" => "Test group", "hlc" => hlc})
+        validated_component(
+          group_id,
+          SystemComponent.component(:group),
+          %{"value" => %{"name" => "Test group"}, "hlc" => hlc}
+        )
       ]
     }
 
@@ -858,14 +862,14 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
-        validated_component(eg_id, "entityGroup/entity_id", %{
-          "value" => post_id,
-          "hlc" => eg_hlc
-        }),
-        validated_component(eg_id, "entityGroup/group_id", %{
-          "value" => group_id,
-          "hlc" => eg_hlc
-        })
+        validated_component(
+          eg_id,
+          SystemComponent.component(:membership),
+          %{
+            "value" => %{"entity_id" => post_id, "group_id" => group_id},
+            "hlc" => eg_hlc
+          }
+        )
       ]
     }
 
@@ -878,7 +882,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
   defp seed_queryable_todos(group_id, actor_id, count, sqlite_name) do
     :ok =
       SQLite.upsert_entity(
-        lww_row("gm_seed", "groupMember", %{
+        platform_row("gm_seed", :grant, %{
           "actor_id" => actor_id,
           "group_id" => group_id,
           "permissions" => ["todo.read"]
@@ -897,7 +901,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       :ok =
         SQLite.upsert_entity(
-          lww_row("eg_seed_#{i}", "entityGroup", %{
+          platform_row("eg_seed_#{i}", :membership, %{
             "entity_id" => todo_id,
             "group_id" => group_id
           }),
@@ -925,4 +929,23 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
   end
 
   defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => 1}
+
+  defp platform_row(id, kind, value, created_hlc \\ 1000) do
+    %{
+      id: id,
+      type: SystemComponent.model(),
+      data:
+        Jason.encode!(%{
+          "fields" => %{
+            SystemComponent.field(kind) => %{"value" => value, "hlc" => 1}
+          },
+          "components" => [SystemComponent.component(kind)]
+        }),
+      created_hlc: created_hlc,
+      updated_hlc: created_hlc,
+      deleted_hlc: nil,
+      deleted_by: nil,
+      last_gsn: 1
+    }
+  end
 end

@@ -43,7 +43,7 @@ defmodule EbbServer.Storage.ActionValidator do
   """
 
   import Bitwise
-  alias EbbServer.Storage.Component
+  alias EbbServer.Storage.{Component, SystemComponent}
 
   @type raw_action :: %{String.t() => term()}
   @type raw_update :: %{String.t() => term()}
@@ -180,7 +180,9 @@ defmodule EbbServer.Storage.ActionValidator do
 
       true ->
         with :ok <- validate_updates_structure(action["updates"]) do
-          validate_subject_models(action["updates"])
+          with :ok <- validate_subject_models(action["updates"]) do
+            validate_subject_components(action["updates"])
+          end
         end
     end
   end
@@ -219,6 +221,43 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   defp check_subject_model(_update, models), do: {:cont, models}
+
+  # A row carries at most one platform component (decision 13): each of the
+  # four is atomic and names its own kind, so a second one on the same row
+  # would make the row's kind ambiguous and its cache projection a guess.
+  # This runs after the per-Update checks, so `SystemComponent.kind/1` sees
+  # a well-formed component name.
+  defp validate_subject_components(updates) do
+    case Enum.reduce_while(updates, %{}, &check_subject_component/2) do
+      {:error, _reason, _details} = error -> error
+      _components -> :ok
+    end
+  end
+
+  defp check_subject_component(%{"component" => component, "subject_id" => subject_id}, seen)
+       when is_binary(component) do
+    case SystemComponent.kind(component) do
+      nil ->
+        {:cont, seen}
+
+      _kind ->
+        case Map.fetch(seen, subject_id) do
+          :error ->
+            {:cont, Map.put(seen, subject_id, component)}
+
+          {:ok, ^component} ->
+            {:cont, seen}
+
+          {:ok, other} ->
+            {:halt,
+             {:error, "invalid_structure",
+              "a row carries one platform component: #{inspect(subject_id)} names both " <>
+                "#{inspect(other)} and #{inspect(component)}"}}
+        end
+    end
+  end
+
+  defp check_subject_component(_update, seen), do: {:cont, seen}
 
   defp validate_updates_structure(updates) do
     Enum.reduce_while(updates, :ok, fn update, _acc ->

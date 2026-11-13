@@ -49,21 +49,20 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
     gm_id = "gm_282_cache_#{:erlang.unique_integer([:positive])}"
     hlc = TestHelpers.generate_hlc()
 
-    updates =
-      Enum.map(
+    updates = [
+      TestHelpers.validated_component(
+        gm_id,
+        "ebb/grant",
         %{
-          "actor_id" => actor_id,
-          "group_id" => group_id,
-          "permissions" => ["todo.read"]
-        },
-        fn {field, value} ->
-          TestHelpers.validated_component(
-            gm_id,
-            "groupMember/#{field}",
-            %{"type" => "lww", "value" => value, "hlc" => hlc}
-          )
-        end
+          "value" => %{
+            "actor_id" => actor_id,
+            "group_id" => group_id,
+            "permissions" => ["todo.read"]
+          },
+          "hlc" => hlc
+        }
       )
+    ]
 
     action = %{
       id: "act_282_cache_#{:erlang.unique_integer([:positive])}",
@@ -322,17 +321,40 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
     }
   end
 
+  # A platform row is one atomic component whose value is the whole object;
+  # `fields` keeps the `field => leaf` shape and is unwrapped.
+  @system_components %{
+    "group" => "ebb/group",
+    "groupMember" => "ebb/grant",
+    "entityGroup" => "ebb/membership",
+    "relationship" => "ebb/link"
+  }
+
   defp updates(model, subject_id, method, fields) do
-    fields
-    |> Enum.map(fn {field, value} ->
-      %{
-        "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
-        "subject_id" => subject_id,
-        "component" => "#{model}/#{field}",
-        "method" => method,
-        "data" => value
-      }
-    end)
+    case Map.fetch(@system_components, model) do
+      {:ok, component} ->
+        [
+          %{
+            "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => subject_id,
+            "component" => component,
+            "method" => method,
+            "data" => %{"value" => Map.new(fields, fn {f, leaf} -> {f, leaf["value"]} end)}
+          }
+        ]
+
+      :error ->
+        fields
+        |> Enum.map(fn {field, value} ->
+          %{
+            "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
+            "subject_id" => subject_id,
+            "component" => "#{model}/#{field}",
+            "method" => method,
+            "data" => value
+          }
+        end)
+    end
   end
 end
 

@@ -101,11 +101,11 @@ defmodule EbbServer.RestartReadIntegrationTest do
     assert todo_stale in queried_ids
     assert todo_missing in queried_ids
 
-    # `GET /entities/:id` cannot authorize a group (it has no entityGroup row),
-    # so the group's durability is checked through the read API directly.
+    # `GET /entities/:id` cannot authorize a group (it has no `ebb/membership`
+    # row), so the group's durability is checked through the read API directly.
     assert {:ok, group} = EntityStore.get(group_id, actor_id)
-    assert group.type == "group"
-    assert get_in(group.data, ["fields", "name", "value"]) == "Test Group"
+    assert group.type == "ebb"
+    assert get_in(group.data, ["fields", "group", "value", "name"]) == "Test Group"
   end
 
   defp write_entity!(actor_id, entity_id, group_id, title, hlc) do

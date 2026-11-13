@@ -131,8 +131,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
 
     # A row has one model: the fold keeps the first component's prefix, so a
-    # mixed Action would authorize and materialize a `note` row carrying a
-    # `group_id` field.
+    # mixed Action would authorize and materialize a `note` row carrying an
+    # `ebb/link`. An `ebb/*` overlay on a user row has no write path until
+    # #819/#820, so the platform namespace is a prefix like any other here.
     test "one subject cannot mix model prefixes" do
       action =
         sample_action(%{
@@ -147,9 +148,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "upd_2",
               "subject_id" => "note_1",
-              "component" => "entityGroup/group_id",
-              "method" => "merge",
-              "data" => %{"value" => "g_1"}
+              "component" => "ebb/link",
+              "method" => "replace",
+              "data" => %{"value" => %{"source_id" => "note_1", "target_id" => "col_1"}}
             }
           ]
         })
@@ -158,8 +159,39 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert details =~ "one model"
 
       # Two subjects, each with its own model, are two rows.
-      split = put_in(action, ["updates", Access.at(1), "subject_id"], "eg_1")
+      split = put_in(action, ["updates", Access.at(1), "subject_id"], "rel_1")
       assert ActionValidator.validate_structure(split) == :ok
+    end
+
+    # A platform row carries exactly one of the four atomic components: two
+    # would make the row's kind — and so its cache projection — a guess.
+    test "one subject cannot carry two platform components" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "ebb_1",
+              "component" => "ebb/group",
+              "method" => "replace",
+              "data" => %{"value" => %{"name" => "Test"}}
+            },
+            %{
+              "id" => "upd_2",
+              "subject_id" => "ebb_1",
+              "component" => "ebb/link",
+              "method" => "replace",
+              "data" => %{"value" => %{"source_id" => "note_1", "target_id" => "col_1"}}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(action)
+      assert details =~ "one platform component"
+
+      # The same component twice is the retried write of one row.
+      repeated = update_in(action, ["updates"], &(Enum.take(&1, 1) ++ [hd(&1)]))
+      assert ActionValidator.validate_structure(repeated) == :ok
     end
 
     test "a row-shaped data record is rejected" do

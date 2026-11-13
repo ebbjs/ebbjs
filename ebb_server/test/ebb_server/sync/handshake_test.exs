@@ -70,16 +70,7 @@ defmodule EbbServer.Sync.HandshakeTest do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" =>
-        [
-          %{
-            "id" => group_update_id,
-            "subject_id" => group_id,
-            "component" => "group/name",
-            "method" => "replace",
-            "data" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
-          }
-        ] ++
-          group_apps_updates(group_id, group_update_id, apps, hlc) ++
+        [group_update(group_update_id, group_id, apps, hlc)] ++
           group_member_updates(gm_id, actor_id, group_id, permissions, hlc)
     }
 
@@ -87,47 +78,37 @@ defmodule EbbServer.Sync.HandshakeTest do
     :ok
   end
 
-  defp group_apps_updates(_group_id, _update_id, nil, _hlc), do: []
+  # The group is one atomic component: its app scope is a key of the value.
+  defp group_update(update_id, group_id, apps, hlc) do
+    value = %{"name" => "Test Group"}
+    value = if is_nil(apps), do: value, else: Map.put(value, "apps", Enum.map(apps, &elem(&1, 0)))
 
-  defp group_apps_updates(group_id, update_id, apps, hlc) do
-    [
-      %{
-        "id" => update_id <> "_apps",
-        "subject_id" => group_id,
-        "component" => "group/apps",
-        "method" => "merge",
-        "data" => %{
-          "map" =>
-            Map.new(apps, fn {app_id, value} ->
-              {app_id,
-               %{
-                 "type" => "lww",
-                 "value" => value,
-                 "hlc" => hlc,
-                 "update_id" => update_id
-               }}
-            end)
-        }
-      }
-    ]
+    %{
+      "id" => update_id,
+      "subject_id" => group_id,
+      "component" => "ebb/group",
+      "method" => "replace",
+      "data" => %{"value" => value, "hlc" => hlc}
+    }
   end
 
   defp group_member_updates(gm_id, actor_id, group_id, permissions, hlc) do
     [
-      {"actor_id", actor_id},
-      {"group_id", group_id},
-      {"permissions", permissions}
-    ]
-    |> Enum.with_index()
-    |> Enum.map(fn {{field, value}, index} ->
       %{
-        "id" => "#{gm_id}_#{index}",
+        "id" => "#{gm_id}_grant",
         "subject_id" => gm_id,
-        "component" => "groupMember/#{field}",
+        "component" => "ebb/grant",
         "method" => "replace",
-        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+        "data" => %{
+          "value" => %{
+            "actor_id" => actor_id,
+            "group_id" => group_id,
+            "permissions" => permissions
+          },
+          "hlc" => hlc
+        }
       }
-    end)
+    ]
   end
 
   describe "POST /sync/handshake" do

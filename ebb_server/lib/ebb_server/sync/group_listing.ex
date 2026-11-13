@@ -10,20 +10,20 @@ defmodule EbbServer.Sync.GroupListing do
   one); every Action above `W` is the caller's tail. That split is what lets
   a client seed a local base and then tail from `W` without a gap.
 
-  The row set is the group's state, not just its contents: the `group` row,
-  its live `groupMember` rows, every live `entityGroup` row in the group,
-  the live entities those rows name, and the live `relationship` rows whose
-  source one of those entities is. `group` and `groupMember` carry no
-  `entityGroup` row, so a membership join alone would miss them.
+  The row set is the group's state, not just its contents: the `ebb/group`
+  row, its live `ebb/grant` rows, every live `ebb/membership` row in the
+  group, the live entities those rows name, and the live `ebb/link` rows
+  whose source one of those entities is. A group row and a grant row carry
+  no membership row of their own, so a membership join alone would miss them.
 
-  A relationship row is scoped by its source and never gets an `entityGroup`
-  row of its own, so enumerating memberships alone never named one. Nothing
-  else on the cold path fetches them either, which left a replica seeded from
-  this listing with no relationship row created before its watermark —
-  derived rows and domain rows alike — and every accessor that traverses one
-  reporting a live link as absent. A relationship row rides the page its
-  source appears on, scoped by that source: it is shipped only when its
-  source is one of the page's live membership rows.
+  A link row is scoped by its source and never gets a membership row of its
+  own, so enumerating memberships alone never named one. Nothing else on the
+  cold path fetches them either, which left a replica seeded from this
+  listing with no link row created before its watermark — derived rows and
+  domain rows alike — and every accessor that traverses one reporting a live
+  link as absent. A link row rides the page its source appears on, scoped by
+  that source: it is shipped only when its source is one of the page's live
+  membership rows.
 
   A membership row deleted between the page's two reads is the one window
   this leaves: the source still ships, its rows do not, because the page's
@@ -44,17 +44,17 @@ defmodule EbbServer.Sync.GroupListing do
 
   ## Pagination
 
-  Keyset, never `OFFSET`. Phase 0 is the bounded prefix — the `group` row,
-  then its `groupMember` rows keyed on `(actor_id, id)` through
-  `idx_entities_group_member`. Phase 1 pages the group's `entityGroup` rows
-  by row id through `idx_entities_entity_group_page`, fetching the named
-  entities and the relationship rows of the page's sources.
+  Keyset, never `OFFSET`. Phase 0 is the bounded prefix — the `ebb/group`
+  row, then its `ebb/grant` rows keyed on `(actor_id, id)` through
+  `idx_entities_group_member`. Phase 1 pages the group's `ebb/membership`
+  rows by row id through `idx_entities_entity_group_page`, fetching the
+  named entities and the link rows of the page's sources.
 
-  An `entityGroup` row may name an entity that is also named by another
+  An `ebb/membership` row may name an entity that is also named by another
   membership row; a repeat is idempotent for the client, whose store is
   keyed by entity id. Rows are deduplicated within a page only, and so are
-  the relationship rows two membership rows naming one source would
-  otherwise repeat.
+  the link rows two membership rows naming one source would otherwise
+  repeat.
 
   The cursor is opaque: base64url of `{v, group_id, w, key}`. The `w` is
   echoed on every page so a client can assert it did not move, and a cursor
@@ -67,15 +67,17 @@ defmodule EbbServer.Sync.GroupListing do
     DirtyTracker,
     EntityStore,
     PermissionChecker,
-    PermissionHelper,
     SQLite,
+    SystemComponent,
     WatermarkTracker
   }
 
   @default_limit 200
   @max_limit 1000
   @token_version 1
-  @system_models PermissionHelper.system_models()
+  # Every platform row commits under one model, so the boot repair is one
+  # dirty lookup; the four kinds are told apart by the component they carry.
+  @system_model SystemComponent.model()
 
   @default_sqlite_name EbbServer.Storage.SQLite
   @default_dirty_set :ebb_dirty_set
@@ -222,7 +224,7 @@ defmodule EbbServer.Sync.GroupListing do
   # unconditionally by `load_live_rows/2`, and a membership committed after
   # the pinned W belongs to the tail.
   defp materialize_prefix(:start, opts) do
-    @system_models
+    [@system_model]
     |> DirtyTracker.dirty_entity_ids_for_models(dirty_set(opts))
     |> materialize_all(opts)
   end
@@ -332,7 +334,7 @@ defmodule EbbServer.Sync.GroupListing do
     with {:ok, rows_by_id} <- load_live_rows(ids, opts) do
       {:ok,
        ids
-       |> Enum.flat_map(&typed_row(rows_by_id, &1, "relationship"))
+       |> Enum.flat_map(&typed_row(rows_by_id, &1, :link))
        |> Enum.filter(&MapSet.member?(page_sources, source_of(&1)))}
     end
   end
@@ -381,23 +383,27 @@ defmodule EbbServer.Sync.GroupListing do
 
   defp fetch_group_row(group_id, opts) do
     case EntityStore.materialize(group_id, opts) do
-      {:ok, %{type: "group"} = row} -> {:ok, row}
-      {:ok, _other} -> {:ok, nil}
-      :not_found -> {:ok, nil}
-      {:error, _reason} -> {:error, :materialization_failed}
+      {:ok, row} ->
+        if SystemComponent.present?(row.data, :group), do: {:ok, row}, else: {:ok, nil}
+
+      :not_found ->
+        {:ok, nil}
+
+      {:error, _reason} ->
+        {:error, :materialization_failed}
     end
   end
 
   # The prefix rows are materialized unconditionally too: reading a cached
-  # `groupMember` row that is behind the log would place it under the wrong
-  # group or actor in the keyset, so the keyset must not trust the dirty set.
+  # grant row that is behind the log would place it under the wrong group or
+  # actor in the keyset, so the keyset must not trust the dirty set.
   defp emit_members(group_id, taken, opts) do
     ids = Enum.map(taken, fn {id, _actor_id} -> id end)
 
     with {:ok, by_id} <- load_live_rows(ids, opts) do
       rows =
         taken
-        |> Enum.flat_map(fn {id, _actor_id} -> typed_row(by_id, id, "groupMember") end)
+        |> Enum.flat_map(fn {id, _actor_id} -> typed_row(by_id, id, :grant) end)
         |> Enum.filter(&(group_field(&1) == group_id))
 
       {:ok, rows}
@@ -435,10 +441,13 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  defp typed_row(by_id, id, type) do
+  # A row is the kind it carries, never the model it commits under: every
+  # platform row's model is `ebb`, so a model test would accept a link where a
+  # grant belongs.
+  defp typed_row(by_id, id, kind) do
     case Map.fetch(by_id, id) do
-      {:ok, %{type: ^type} = row} -> [row]
-      _ -> []
+      {:ok, row} -> if SystemComponent.present?(row.data, kind), do: [row], else: []
+      :error -> []
     end
   end
 
@@ -458,13 +467,9 @@ defmodule EbbServer.Sync.GroupListing do
     SQLite.list_entity_group_memberships(group_id, after_id, 1, sqlite_name(opts)) != []
   end
 
-  defp group_field(%{data: %{"fields" => %{"group_id" => %{"value" => group_id}}}}), do: group_id
-  defp group_field(_row), do: nil
+  defp group_field(row), do: SystemComponent.path(row.data, :grant, "group_id")
 
-  defp source_of(%{data: %{"fields" => %{"source_id" => %{"value" => source_id}}}}),
-    do: source_id
-
-  defp source_of(_row), do: nil
+  defp source_of(row), do: SystemComponent.path(row.data, :link, "source_id")
 
   defp decode_row(%{data: data} = row) when is_binary(data),
     do: %{row | data: Jason.decode!(data)}

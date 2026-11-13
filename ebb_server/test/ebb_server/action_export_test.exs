@@ -270,7 +270,9 @@ defmodule EbbServer.ActionExportTest do
   end
 
   describe "system row filtering" do
-    test "strips system updates, keeps domain updates, and drops system-only actions", ctx do
+    test "strips the structural platform components, keeps domain updates, and drops " <>
+           "system-only actions",
+         ctx do
       ref = attach_telemetry(@export_events)
 
       write(
@@ -279,13 +281,23 @@ defmodule EbbServer.ActionExportTest do
             id: "act_mixed",
             updates: [
               validated_update(%{id: "u_todo", subject_id: "todo_1"}),
-              validated_component("gm_1", "groupMember/permissions", %{"value" => ["todo.read"]})
+              validated_component("gm_1", "ebb/grant", %{
+                "value" => %{
+                  "actor_id" => "a_1",
+                  "group_id" => "g_1",
+                  "permissions" => ["todo.read"]
+                },
+                "hlc" => generate_hlc()
+              })
             ]
           }),
           validated_action(%{
             id: "act_system",
             updates: [
-              validated_component("eg_1", "entityGroup/group_id", %{"value" => "g_1"})
+              validated_component("eg_1", "ebb/membership", %{
+                "value" => %{"entity_id" => "todo_1", "group_id" => "g_1"},
+                "hlc" => generate_hlc()
+              })
             ]
           })
         ],

@@ -54,6 +54,44 @@ defmodule EbbServer.Storage.FieldMergeTest do
     end
   end
 
+  # A platform component is one leaf whose value is the whole object, so two
+  # concurrent writers converge on one of the two values. There is no field for
+  # a merge to reach into, which is what makes a torn edge, membership or grant
+  # unrepresentable rather than merely unlikely.
+  defp link(overrides, hlc, update_id) do
+    leaf(
+      Map.merge(
+        %{
+          "source_id" => "todo_1",
+          "target_id" => "todo_2",
+          "type" => "todo",
+          "field" => "dependsOn"
+        },
+        overrides
+      ),
+      hlc,
+      update_id
+    )
+  end
+
+  describe "merge/2 atomic component value (#805)" do
+    test "a newer whole value wins, in whichever order the writes arrive" do
+      older = link(%{"target_id" => "todo_2"}, 1, "u_a")
+      newer = link(%{"target_id" => "todo_3"}, 2, "u_b")
+
+      assert FieldMerge.merge(older, newer) == newer
+      assert FieldMerge.merge(newer, older) == newer
+    end
+
+    test "the result is never one writer's source with another's target" do
+      a = link(%{"source_id" => "todo_1", "target_id" => "todo_2"}, 1, "u_a")
+      b = link(%{"source_id" => "todo_9", "target_id" => "todo_3"}, 2, "u_b")
+
+      assert FieldMerge.merge(a, b)["value"] == b["value"]
+      assert FieldMerge.merge(b, a)["value"] == b["value"]
+    end
+  end
+
   describe "merge/2 nil existing" do
     test "returns the incoming value unchanged" do
       incoming = %{"map" => %{"a" => leaf("v", 1, "id-1")}}

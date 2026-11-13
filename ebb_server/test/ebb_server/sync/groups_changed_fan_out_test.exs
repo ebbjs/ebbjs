@@ -27,7 +27,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
     test "an own membership put pushes one control event to the actor's connection" do
       actor_id = unique("a")
       group_id = unique("g")
-      bootstrap!(actor_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(actor_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
@@ -44,7 +44,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       owner_id = unique("a")
       member_id = unique("a")
       group_id = unique("g")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, owner_conn} = subscribe_as(:owner, group_id, owner_id)
       {:ok, member_conn} = subscribe_as(:member, group_id, member_id)
@@ -65,10 +65,10 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       owner_id = unique("a")
       group_id = unique("g")
       gm_owner = unique("gm")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], gm_owner)
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], gm_owner)
       # A second capable member keeps the #479 last-capable-member guard
       # from refusing the owner's own delete.
-      put_member!(owner_id, group_id, unique("a"), ["groupMember.*"], unique("gm"))
+      put_member!(owner_id, group_id, unique("a"), ["ebb/grant.*"], unique("gm"))
 
       {:ok, sse_pid} = subscribe(group_id, owner_id)
 
@@ -99,7 +99,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       actor_id = unique("a")
       group_id = unique("g")
       gm_id = unique("gm")
-      permissions = ["todo.*", "groupMember.*"]
+      permissions = ["todo.*", "ebb/grant.*"]
       bootstrap!(actor_id, group_id, permissions, gm_id)
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
@@ -118,7 +118,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       actor_id = unique("a")
       group_id = unique("g")
       gm_id = unique("gm")
-      bootstrap!(actor_id, group_id, ["todo.*", "groupMember.*"], gm_id)
+      bootstrap!(actor_id, group_id, ["todo.*", "ebb/grant.*"], gm_id)
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
@@ -132,9 +132,16 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
           %{
             "id" => unique("upd"),
             "subject_id" => gm_id,
-            "component" => "groupMember/permissions",
-            "method" => "merge",
-            "data" => %{"type" => "lww", "value" => ["todo.read"], "hlc" => hlc}
+            "component" => "ebb/grant",
+            "method" => "replace",
+            "data" => %{
+              "value" => %{
+                "actor_id" => actor_id,
+                "group_id" => group_id,
+                "permissions" => ["todo.read"]
+              },
+              "hlc" => hlc
+            }
           }
         ]
       })
@@ -151,7 +158,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       new_actor = unique("a")
       group_id = unique("g")
       gm_id = unique("gm")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
       put_member!(owner_id, group_id, old_actor, ["todo.read"], gm_id)
 
       {:ok, old_conn} = subscribe_as(:old, group_id, old_actor)
@@ -171,7 +178,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
     test "a commit that changes several rows for one actor pushes one event" do
       owner_id = unique("a")
       group_id = unique("g")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, sse_pid} = subscribe(group_id, owner_id)
 
@@ -202,7 +209,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       member_id = unique("a")
       group_id = unique("g")
       other_group = unique("g")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       # The membership row is scoped to `group_id`, so nothing is pushed to
       # this connection; the actor earns the wake-up from its identity, not
@@ -223,7 +230,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
     test "an Action that touches no groupMember pushes no control event" do
       actor_id = unique("a")
       group_id = unique("g")
-      bootstrap!(actor_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(actor_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
@@ -244,7 +251,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
     test "a changed actor with no live connection pushes no control event" do
       owner_id = unique("a")
       group_id = unique("g")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, sse_pid} = subscribe(group_id, owner_id)
 
@@ -262,7 +269,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       owner_id = unique("a")
       member_id = unique("a")
       group_id = unique("g")
-      bootstrap!(owner_id, group_id, ["todo.*", "groupMember.*"], unique("gm"))
+      bootstrap!(owner_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
 
       {:ok, member_conn} = subscribe_as(:member, group_id, member_id)
 
@@ -294,9 +301,9 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
           %{
             "id" => unique("upd"),
             "subject_id" => group_id,
-            "component" => "group/name",
+            "component" => "ebb/group",
             "method" => "replace",
-            "data" => %{"type" => "lww", "value" => "Test Group", "hlc" => hlc}
+            "data" => %{"value" => %{"name" => "Test Group"}, "hlc" => hlc}
           }
         ] ++ member_update(gm_id, actor_id, group_id, permissions, hlc)
     })
@@ -314,20 +321,22 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
   end
 
   defp member_update(gm_id, member_actor_id, group_id, permissions, hlc) do
-    %{
-      "actor_id" => member_actor_id,
-      "group_id" => group_id,
-      "permissions" => permissions
-    }
-    |> Enum.map(fn {field, value} ->
+    [
       %{
-        "id" => "#{gm_id}_#{field}",
+        "id" => "#{gm_id}_grant",
         "subject_id" => gm_id,
-        "component" => "groupMember/#{field}",
+        "component" => "ebb/grant",
         "method" => "replace",
-        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+        "data" => %{
+          "value" => %{
+            "actor_id" => member_actor_id,
+            "group_id" => group_id,
+            "permissions" => permissions
+          },
+          "hlc" => hlc
+        }
       }
-    end)
+    ]
   end
 
   defp post!(action) do

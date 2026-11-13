@@ -18,7 +18,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache}
+  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache, SystemComponent}
   alias EbbServer.Sync.FanOutRouter.GroupResolution
 
   setup do
@@ -117,6 +117,17 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     }
   end
 
+  # A platform row is one atomic component: the whole value is the payload.
+  defp platform_update(subject_id, kind, value) do
+    %{
+      "id" => "upd_" <> subject_id,
+      "subject_id" => subject_id,
+      "component" => SystemComponent.component(kind),
+      "method" => "replace",
+      "data" => %{"value" => value, "hlc" => 1}
+    }
+  end
+
   defp delete_update(subject_id) do
     %{
       "id" => "upd_" <> subject_id,
@@ -161,7 +172,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
   describe "resolve_group_ids/2 — system-entity updates (#197)" do
     test "routes a group update to the group itself", %{resolve_opts: opts} do
-      action = %{"updates" => [row_update("g_1", "group/name", "Test Group")]}
+      action = %{"updates" => [platform_update("g_1", :group, %{"name" => "Test Group"})]}
 
       assert GroupResolution.resolve_group_ids(action, opts) == ["g_1"]
     end
@@ -171,7 +182,14 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_relationship(t, "rel_1", "todo_1", "col_1")
 
       action = %{
-        "updates" => [row_update("rel_1", "relationship/source_id", "todo_1")]
+        "updates" => [
+          platform_update("rel_1", :link, %{
+            "source_id" => "todo_1",
+            "target_id" => "col_1",
+            "type" => "todo",
+            "field" => "owns"
+          })
+        ]
       }
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
@@ -181,8 +199,10 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       action = %{
         "updates" => [
           row_update("todo_new", "todo/title"),
-          row_update("eg_new", "entityGroup/entity_id", "todo_new"),
-          row_update("eg_new", "entityGroup/group_id", "g_intra")
+          platform_update("eg_new", :membership, %{
+            "entity_id" => "todo_new",
+            "group_id" => "g_intra"
+          })
         ]
       }
 
@@ -202,7 +222,14 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_relationship(t, "rel_link", "todo_1", "doc_1")
 
       action = %{
-        "updates" => [row_update("rel_link", "relationship/source_id", "todo_1")]
+        "updates" => [
+          platform_update("rel_link", :link, %{
+            "source_id" => "todo_1",
+            "target_id" => "doc_1",
+            "type" => "todo",
+            "field" => "owns"
+          })
+        ]
       }
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == []
@@ -214,7 +241,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
       :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
       :ok = put_relationship(t, "rel_1", "todo_victim", "col_1")
-      :ets.insert(t.entity_types, {"rel_1", "relationship"})
+      :ets.insert(t.entity_types, {"rel_1", SystemComponent.model()})
 
       action = %{"updates" => [delete_update("rel_1")]}
 
@@ -230,7 +257,15 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
           group_members_by_group: t.group_members_by_group
         )
 
-      action = %{"updates" => [row_update("gm_1", "groupMember/group_id", "g_1")]}
+      action = %{
+        "updates" => [
+          platform_update("gm_1", :grant, %{
+            "actor_id" => "a_1",
+            "group_id" => "g_1",
+            "permissions" => ["todo.create"]
+          })
+        ]
+      }
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_1"]
     end
@@ -243,8 +278,18 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
       action = %{
         "updates" => [
-          row_update("rel_1", "relationship/source_id", "todo_1"),
-          row_update("rel_2", "relationship/source_id", "todo_2")
+          platform_update("rel_1", :link, %{
+            "source_id" => "todo_1",
+            "target_id" => "col_1",
+            "type" => "todo",
+            "field" => "owns"
+          }),
+          platform_update("rel_2", :link, %{
+            "source_id" => "todo_2",
+            "target_id" => "col_2",
+            "type" => "todo",
+            "field" => "owns"
+          })
         ]
       }
 
@@ -255,7 +300,12 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
          %{resolve_opts: opts} do
       action = %{
         "updates" => [
-          row_update("rel_unknown", "relationship/source_id", "todo_unknown"),
+          platform_update("rel_unknown", :link, %{
+            "source_id" => "todo_unknown",
+            "target_id" => "col_unknown",
+            "type" => "todo",
+            "field" => "owns"
+          }),
           row_update("todo_unknown", "todo/title")
         ]
       }
@@ -271,8 +321,13 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       action = %{
         "updates" => [
           row_update("todo_1", "todo/title"),
-          row_update("rel_2", "relationship/source_id", "todo_2"),
-          row_update("g_2", "group/name", "Group 2")
+          platform_update("rel_2", :link, %{
+            "source_id" => "todo_2",
+            "target_id" => "col_2",
+            "type" => "todo",
+            "field" => "owns"
+          }),
+          platform_update("g_2", :group, %{"name" => "Group 2"})
         ]
       }
 
