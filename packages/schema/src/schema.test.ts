@@ -10,12 +10,10 @@ import {
   defineRelationship,
   defineSchema,
   e,
-  entityGroupSystemEntity,
-  groupMemberSystemEntity,
-  groupSystemEntity,
+  EBB_MODEL_NAME,
+  ebbSystemEntity,
   ModelKeyMismatchError,
   ModelRegistry,
-  RESERVED_ENTITY_NAMES,
   ReservedNameError,
   UnregisteredRelationshipEndpointError,
 } from "./index";
@@ -34,7 +32,7 @@ const user = defineModel("user", { name: e.string() });
 const issue_belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
 const todo_ownedBy = defineRelationship({
   source: todo,
-  target: groupSystemEntity,
+  target: ebbSystemEntity,
   as: "ownedBy",
   sourceCardinality: "many",
 });
@@ -77,10 +75,10 @@ describe("defineSchema", () => {
       "issue_belongsTo",
       "todo_ownedBy",
     ]);
-    // The system entities are the app's too: resolveRelationship and the
-    // membership write path address them by name.
+    // The platform model is the app's too: resolveRelationship and the
+    // membership write path address it by name.
     expect([...schema._registry.modelNames()].sort()).toEqual(
-      [...RESERVED_ENTITY_NAMES, "issue", "project", "todo", "user"].sort(),
+      [EBB_MODEL_NAME, "issue", "project", "todo", "user"].sort(),
     );
   });
 
@@ -117,9 +115,7 @@ describe("defineSchema registry", () => {
     expect(schema._registry.has("user")).toBe(true);
     expect(schema._registry.get("todo")).toBe(todo);
     expect(schema._registry.get("user")).toBe(user);
-    expect(schema._registry.get("group")).toBe(groupSystemEntity);
-    expect(schema._registry.get("groupMember")).toBe(groupMemberSystemEntity);
-    expect(schema._registry.get("entityGroup")).toBe(entityGroupSystemEntity);
+    expect(schema._registry.get(EBB_MODEL_NAME)).toBe(ebbSystemEntity);
   });
 
   it("registers every declared relationship on the composed registry", () => {
@@ -136,7 +132,7 @@ describe("defineSchema registry", () => {
 
     const ownedBy = schema._registry.getRelationship("todo", "ownedBy");
     expect(ownedBy?.source.name).toBe("todo");
-    expect(ownedBy?.target.name).toBe("group");
+    expect(ownedBy?.target.name).toBe(EBB_MODEL_NAME);
     expect(ownedBy?.sourceCardinality).toBe("many");
   });
 
@@ -163,10 +159,9 @@ describe("defineSchema registry", () => {
 describe("defineSchema materialization", () => {
   const page = defineModel("page", { title: e.string() });
 
-  it("leaves system entities held", () => {
+  it("leaves the platform model held", () => {
     const schema = defineSchema({ models: { page }, version: 1 });
-    expect(schema._registry.get("relationship")?.materialization).toBe("held");
-    expect(schema._registry.get("group")?.materialization).toBe("held");
+    expect(schema._registry.get(EBB_MODEL_NAME)?.materialization).toBe("held");
   });
 });
 
@@ -178,19 +173,16 @@ describe("defineSchema system entities + membership", () => {
     }
   });
 
-  it("rejects an app entity that collides with a system entity name", () => {
-    expect(() => defineSchema({ models: { group: groupSystemEntity }, version: 1 })).toThrow(
+  it("rejects an app entity that claims the platform namespace", () => {
+    expect(() => defineSchema({ models: { ebb: ebbSystemEntity }, version: 1 })).toThrow(
       ReservedNameError,
     );
-    expect(() =>
-      defineSchema({ models: { entityGroup: entityGroupSystemEntity }, version: 1 }),
-    ).toThrow(ReservedNameError);
   });
 
   it("rejects an app relationship that collides with the groups accessor", () => {
     const colliding = {
       source: todo,
-      target: groupSystemEntity,
+      target: ebbSystemEntity,
       as: "groups",
       sourceCardinality: "many" as const,
       type: "todo",
@@ -234,10 +226,10 @@ describe("defineSchema relationship endpoint validation", () => {
     expect(error.message).toContain('"models"');
   });
 
-  it("accepts a relationship whose target is a system entity", () => {
+  it("accepts a relationship whose target is the platform model", () => {
     const todo_ownedBy = defineRelationship({
       source: todo,
-      target: groupSystemEntity,
+      target: ebbSystemEntity,
       as: "ownedBy",
       sourceCardinality: "many",
     });
@@ -249,9 +241,9 @@ describe("defineSchema relationship endpoint validation", () => {
     expect(schema._registry.getRelationship("todo", "ownedBy")).toBeDefined();
   });
 
-  it("accepts a relationship whose source is a system entity", () => {
+  it("accepts a relationship whose source is the platform model", () => {
     const group_todos = defineRelationship({
-      source: groupSystemEntity,
+      source: ebbSystemEntity,
       target: todo,
       as: "todos",
       sourceCardinality: "many",
@@ -261,7 +253,7 @@ describe("defineSchema relationship endpoint validation", () => {
       relationships: { group_todos },
       version: 1,
     });
-    expect(schema._registry.getRelationship("group", "todos")).toBeDefined();
+    expect(schema._registry.getRelationship(EBB_MODEL_NAME, "todos")).toBeDefined();
   });
 
   it("reports the source when the source is the missing endpoint", () => {

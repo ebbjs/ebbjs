@@ -1,15 +1,17 @@
 /**
- * Names the SDK reserves for its system entities and the injected
- * membership accessor. `defineModel` / `defineRelationship` reject an
- * app-authored collision at schema build time so the canonical surface
- * can't be shadowed.
+ * Names the SDK reserves for its own surface: the platform namespace model
+ * and the injected membership accessor. `defineModel` / `defineRelationship`
+ * reject an app-authored collision at schema build time so the canonical
+ * surface can't be shadowed.
  */
 
-/** Server-recognized system entity types; the client mirrors them. */
-const SYSTEM_ENTITY_NAMES = ["group", "groupMember", "entityGroup", "relationship"] as const;
-
-/** Every entity name the SDK reserves. */
-export const RESERVED_ENTITY_NAMES = [...SYSTEM_ENTITY_NAMES] as const;
+/**
+ * The model namespace the platform's own components live under (`ebb/group`,
+ * `ebb/grant`, `ebb/membership`, `ebb/link`). An app may not declare a model
+ * with this name: a component's namespace is its permission subject, so
+ * claiming it would let an app mint the platform's permissions.
+ */
+export const PLATFORM_NAMESPACE = "ebb";
 
 /**
  * The injected membership accessor. Also reserved as an entity field
@@ -29,10 +31,14 @@ export class ReservedNameError extends Error {
   }
 }
 
-/** Reject a `defineModel` name that collides with a system entity. */
+/** Reject a `defineModel` name that claims the platform namespace. */
 export const assertEntityNameAvailable = (name: string): void => {
-  if ((RESERVED_ENTITY_NAMES as readonly string[]).includes(name)) {
-    throw new ReservedNameError(name, `Entity name "${name}" is reserved by the SDK`);
+  if (name === PLATFORM_NAMESPACE) {
+    throw new ReservedNameError(
+      name,
+      `Entity name "${name}" is reserved: the \`${PLATFORM_NAMESPACE}/\` namespace holds the ` +
+        `platform's own components.`,
+    );
   }
 };
 
