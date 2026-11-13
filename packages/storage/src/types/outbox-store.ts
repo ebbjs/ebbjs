@@ -77,13 +77,16 @@ export interface ConflictSubjectState {
 /**
  * One position an open conflict holds off the wire. A component-scope or
  * field-scope loss holds just the contested component; an entity-scope loss
- * holds the whole subject. An absent `component` means the whole subject.
+ * holds the whole subject.
  */
-export interface ConflictHold {
-  readonly subjectId: string;
-  /** The `<model>/<field>` component held; absent holds every component. */
-  readonly component?: string;
-}
+export type ConflictHold =
+  | { readonly kind: "subject"; readonly subjectId: string }
+  | {
+      readonly kind: "component";
+      readonly subjectId: string;
+      /** The `<model>/<field>` component held. */
+      readonly component: string;
+    };
 
 /**
  * The conflict payload detection stamps onto a losing Action's outbox

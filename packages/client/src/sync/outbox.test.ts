@@ -924,7 +924,9 @@ describe("createOutbox conflict detection", () => {
     ]);
     const conflict = outbox.conflicts()[0]?.conflict;
     expect(conflict?.scope).toBe("component");
-    expect(conflict?.holds).toEqual([{ subjectId: "todo_1", component: "todo/content" }]);
+    expect(conflict?.holds).toEqual([
+      { kind: "component", subjectId: "todo_1", component: "todo/content" },
+    ]);
   });
 
   it("holds the contested component without blocking a sibling component's flush", async () => {
@@ -2175,7 +2177,7 @@ describe("createOutbox heldPending + dropHeld", () => {
     await outbox.enqueue(heldWrite);
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    const held = outbox.heldPending([{ subjectId: "todo_1" }]);
+    const held = outbox.heldPending([{ kind: "subject", subjectId: "todo_1" }]);
     expect(held.map((entry) => entry.action.id)).toEqual(["a_held"]);
 
     // A write made after the snapshot was never held; even though it names
@@ -2206,7 +2208,7 @@ describe("createOutbox heldPending + dropHeld", () => {
     };
     await outbox.enqueue(both);
 
-    const held = outbox.heldPending([{ subjectId: "todo_1" }]);
+    const held = outbox.heldPending([{ kind: "subject", subjectId: "todo_1" }]);
     expect(held.map((entry) => entry.action.id)).toEqual(["a_both"]);
     const dropped = await outbox.dropHeld(held.map((entry) => entry.action.id));
 
@@ -2226,7 +2228,9 @@ describe("createOutbox heldPending + dropHeld", () => {
       }),
     );
 
-    const held = outbox.heldPending([{ subjectId: "todo_1", component: "todo/title" }]);
+    const held = outbox.heldPending([
+      { kind: "component", subjectId: "todo_1", component: "todo/title" },
+    ]);
 
     expect(held.map((entry) => entry.action.id)).toEqual(["a_title"]);
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_title", "a_status"]);
@@ -2236,7 +2240,7 @@ describe("createOutbox heldPending + dropHeld", () => {
     const { deps, outbox } = await seed();
     await outbox.enqueue(writeTo("a_free", "todo_2"));
 
-    expect(outbox.heldPending([{ subjectId: "todo_4" }])).toEqual([]);
+    expect(outbox.heldPending([{ kind: "subject", subjectId: "todo_4" }])).toEqual([]);
     await expect(outbox.dropHeld(["a_missing"])).resolves.toEqual([]);
 
     expect(outbox.pending().map((entry) => entry.action.id)).toEqual(["a_free"]);

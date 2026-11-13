@@ -25,7 +25,7 @@ import {
   type Update,
 } from "@ebbjs/core";
 import type { ConflictScope } from "@ebbjs/schema";
-import type { ConflictHold, ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
+import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 import { projectFieldValue } from "./query-builder";
 
@@ -141,38 +141,6 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
     });
   }
   return writes;
-};
-
-/** Stable key for one held position: the subject, and `*` for the whole subject. */
-export const holdKey = (hold: Pick<ConflictHold, "subjectId" | "component">): string =>
-  `${hold.subjectId}\u0000${hold.component ?? "*"}`;
-
-/**
- * The holds a conflict payload carries. A row written before the component
- * hold names only subjects, and holds each of them whole — the behavior it
- * was detected under.
- */
-export const conflictHolds = (conflict: {
-  readonly subjects: readonly string[];
-  readonly holds?: readonly ConflictHold[];
-}): readonly ConflictHold[] =>
-  conflict.holds ?? conflict.subjects.map((subjectId) => ({ subjectId }));
-
-/**
- * Whether an Action writes any held position. An Action cannot be submitted
- * in part, so touching one held component holds the whole Action; a
- * `delete` Update detaches every component of its subject.
- */
-export const actionTouchesHolds = (action: Action, holds: readonly ConflictHold[]): boolean => {
-  if (holds.length === 0) return false;
-  for (const update of action.updates) {
-    for (const hold of holds) {
-      if (hold.subjectId !== update.subject_id) continue;
-      if (hold.component === undefined) return true;
-      if (update.method === "delete" || update.component === hold.component) return true;
-    }
-  }
-  return false;
 };
 
 /**

@@ -100,10 +100,9 @@ interface Conflict {
   readonly remoteActions: readonly ConflictRemoteAction[];
 }
 
-interface ConflictHold {
-  readonly subjectId: string;
-  readonly component?: string; // absent holds the whole subject
-}
+type ConflictHold =
+  | { readonly kind: "subject"; readonly subjectId: string }
+  | { readonly kind: "component"; readonly subjectId: string; readonly component: string };
 
 interface ConflictEntry {
   readonly action: Action; // the losing local Action, verbatim

@@ -3,7 +3,7 @@
 "@ebbjs/write": minor
 "@ebbjs/storage": minor
 "@ebbjs/client": minor
-"@ebbjs/react": patch
+"@ebbjs/react": minor
 ---
 
 Conflict scope is declared and held per component.

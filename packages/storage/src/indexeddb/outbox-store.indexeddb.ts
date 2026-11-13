@@ -20,7 +20,7 @@ const toConflict = (conflict: StoredOutboxConflict): OutboxConflict => ({
   ...conflict,
   scope: conflict.scope ?? "field",
   remoteActions: conflict.remoteActions ?? [],
-  holds: conflict.holds ?? conflict.subjects.map((subjectId) => ({ subjectId })),
+  holds: conflict.holds ?? conflict.subjects.map((subjectId) => ({ kind: "subject", subjectId })),
 });
 
 const toEntry = (row: StoredOutboxEntry): OutboxEntry => ({

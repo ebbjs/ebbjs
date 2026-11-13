@@ -741,7 +741,9 @@ describe("client.conflicts (#781)", () => {
 
     const conflict = await onlyConflict(client);
     expect(conflict.scope).toBe("component");
-    expect(conflict.holds).toEqual([{ subjectId: "board_1", component: "board/tags" }]);
+    expect(conflict.holds).toEqual([
+      { kind: "component", subjectId: "board_1", component: "board/tags" },
+    ]);
     expect(slotPaths(conflict.entries[0])).toEqual([
       { subjectId: "board_1", component: "board/tags", path: [] },
     ]);

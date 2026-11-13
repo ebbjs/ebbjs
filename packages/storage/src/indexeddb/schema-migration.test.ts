@@ -218,7 +218,7 @@ describe("IndexedDB pre-v10 conflict payload", () => {
     const entry = await createIndexedDBOutboxStore(db).get(action.id);
     expect(entry?.conflict?.scope).toBe("field");
     expect(entry?.conflict?.remoteActions).toEqual([]);
-    expect(entry?.conflict?.holds).toEqual([{ subjectId: "todo_1" }]);
+    expect(entry?.conflict?.holds).toEqual([{ kind: "subject", subjectId: "todo_1" }]);
   });
 });
 

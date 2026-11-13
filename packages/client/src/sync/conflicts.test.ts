@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, type Mock } from "vitest";
 import { makeHlc, type Action, type Entity, type FieldValue } from "@ebbjs/core";
 import type {
+  ConflictHold,
   ConflictRemoteAction,
   ConflictSlot,
   ConflictSubjectState,
@@ -91,7 +92,7 @@ const mkRow = (
     readonly subjects?: readonly string[];
     readonly subjectStates?: readonly ConflictSubjectState[];
     readonly slots?: readonly ConflictSlot[];
-    readonly holds?: readonly { readonly subjectId: string; readonly component?: string }[];
+    readonly holds?: readonly ConflictHold[];
     readonly scope?: "field" | "component" | "entity";
     readonly remoteActions?: readonly ConflictRemoteAction[];
     readonly action?: Action;
@@ -110,8 +111,8 @@ const mkRow = (
       overrides.holds ??
       (overrides.subjects ?? ["todo_1"]).map((subjectId) =>
         (overrides.scope ?? "field") === "entity"
-          ? { subjectId }
-          : { subjectId, component: "todo/title" },
+          ? { kind: "subject" as const, subjectId }
+          : { kind: "component" as const, subjectId, component: "todo/title" },
       ),
     remoteActions: overrides.remoteActions ?? [mkRemote("act_peer")],
     catchUpId: "cu_1",
@@ -299,7 +300,7 @@ describe("createConflicts", () => {
     // Snapshot first, while the conflicted row still holds the subject; a
     // write made after the hold lifts is never named and so never dropped.
     expect(harness.heldPending).toHaveBeenCalledWith([
-      { subjectId: "todo_1", component: "todo/title" },
+      { kind: "component", subjectId: "todo_1", component: "todo/title" },
     ]);
     expect(harness.dropHeld).toHaveBeenCalledWith(["act_later"]);
     expect(harness.reMaterialize.mock.calls.map((call) => call[0])).toEqual([
@@ -336,12 +337,7 @@ describe("createConflicts", () => {
 
   it("reads a pre-v10 conflicted row as field scope with no remote context", async () => {
     const legacy = mkRow("act_local", "1");
-    const {
-      scope: _scope,
-      remoteActions: _remoteActions,
-      holds: _holds,
-      ...rest
-    } = legacy.conflict;
+    const { scope: _scope, remoteActions: _remoteActions, ...rest } = legacy.conflict;
     const harness = mkDeps([{ ...legacy, conflict: rest as unknown as OutboxConflict }]);
     const { conflicts } = createConflicts(harness.deps);
     await conflicts.rehydrate();
@@ -349,8 +345,9 @@ describe("createConflicts", () => {
     const [projected] = await conflicts.list();
     expect(projected?.scope).toBe("field");
     expect(projected?.remoteActions).toEqual([]);
-    // A row written before the component hold holds each subject whole.
-    expect(projected?.holds).toEqual([{ subjectId: "todo_1" }]);
+    expect(projected?.holds).toEqual([
+      { kind: "component", subjectId: "todo_1", component: "todo/title" },
+    ]);
     expect(projected?.entries[0]?.scope).toBe("field");
     expect(projected?.entries[0]?.slots).toHaveLength(1);
     expect(conflicts.count()).toBe(1);

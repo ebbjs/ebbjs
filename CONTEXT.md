@@ -176,6 +176,12 @@ pending write to the row. A _structural_ component opts out of detection
 entirely rather than declaring a scope.
 _Avoid_: conflict level, conflict granularity
 
+**Hold**:
+The positions an open conflict keeps off the wire: the contested component for
+a field- or component-scope loss, the whole subject for an entity-scope loss.
+Derived from the durable `conflicted` outbox rows.
+_Avoid_: lock, block, freeze
+
 **Project**:
 Derive the value a reader sees from a component's stored leaves — resolve
 declared defaults, hide tombstones. An `optional` component declares no default,

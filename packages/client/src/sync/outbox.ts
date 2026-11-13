@@ -62,14 +62,12 @@ import type {
 } from "@ebbjs/storage/types";
 
 import type { Rejection, WriteResponse } from "./types";
+import { actionTouchesHolds, holdKey } from "./conflict-holds";
 import {
-  actionTouchesHolds,
   actionWrites,
   coarsestScope,
-  conflictHolds,
   conflictSlot,
   foldInboundWindow,
-  holdKey,
   inboundSubjects,
   overlappingPaths,
   slotKey,
@@ -116,7 +114,7 @@ const heldPositions = (entries: readonly OutboxEntry[]): readonly ConflictHold[]
   const byKey = new Map<string, ConflictHold>();
   for (const entry of entries) {
     if (!isConflicted(entry)) continue;
-    for (const hold of conflictHolds(entry.conflict)) byKey.set(holdKey(hold), hold);
+    for (const hold of entry.conflict.holds) byKey.set(holdKey(hold), hold);
   }
   return [...byKey.values()];
 };
@@ -919,30 +917,33 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
           ) {
             continue;
           }
-          for (const actionInbound of concurrent) {
-            const remoteField = inbound.components.get(component);
-            const winner = actionInbound.components.get(component);
-            if (declared === "component") {
-              // Any concurrent touch of this component contests it, even a
-              // write to a different map key.
-              if (winner === undefined && !actionInbound.deleted) continue;
-              const key = slotKey({ subjectId, component, path: [] });
-              if (!seen.has(key)) {
-                seen.add(key);
-                overlap.push(
-                  conflictSlot({
-                    subjectId,
-                    component,
-                    path: [],
-                    pending: pendingValue,
-                    remote: remoteField,
-                  }),
-                );
-              }
-              heldComponents.add(component);
-              subjectScopes.push("component");
-              continue;
+          const remoteField = inbound.components.get(component);
+          if (declared === "component") {
+            // Any concurrent touch of this component contests it, even a
+            // write to a different map key.
+            const contested = concurrent.some(
+              (actionInbound) => actionInbound.deleted || actionInbound.components.has(component),
+            );
+            if (!contested) continue;
+            const key = slotKey({ subjectId, component, path: [] });
+            if (!seen.has(key)) {
+              seen.add(key);
+              overlap.push(
+                conflictSlot({
+                  subjectId,
+                  component,
+                  path: [],
+                  pending: pendingValue,
+                  remote: remoteField,
+                }),
+              );
             }
+            heldComponents.add(component);
+            subjectScopes.push("component");
+            continue;
+          }
+          for (const actionInbound of concurrent) {
+            const winner = actionInbound.components.get(component);
             const paths = winner !== undefined ? overlappingPaths(pendingValue, winner) : [];
             // A concurrent delete reverts every component the entry writes,
             // even one it omits.
@@ -975,8 +976,10 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
           before: deps.preSyncRow(catchUpId, subjectId),
         });
         slots.push(...overlap);
-        if (holdsWholeSubject) holds.push({ subjectId });
-        else for (const component of heldComponents) holds.push({ subjectId, component });
+        if (holdsWholeSubject) holds.push({ kind: "subject", subjectId });
+        else
+          for (const component of heldComponents)
+            holds.push({ kind: "component", subjectId, component });
         // The conflict is as coarse as its loosest losing position.
         scopes.push(coarsestScope(subjectScopes));
       }

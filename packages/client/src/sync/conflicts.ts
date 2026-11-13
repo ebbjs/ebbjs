@@ -27,7 +27,8 @@ import type {
   ConflictSubjectState,
 } from "@ebbjs/storage/types";
 import { diffEntity, type EntityDiff } from "@ebbjs/write";
-import { actionTouchesHolds, coarsestScope, conflictHolds, holdKey } from "./conflict-slots";
+import { actionTouchesHolds, holdKey } from "./conflict-holds";
+import { coarsestScope } from "./conflict-slots";
 import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createObservable, type ReadonlyObservable } from "./observable";
 
@@ -346,7 +347,7 @@ const toEntry = (entry: ConflictedOutboxEntry): ConflictEntry => {
     action: entry.action,
     subjects: entry.conflict.subjects,
     slots: scope === "entity" ? undefined : entry.conflict.slots.map(toSlotView),
-    holds: conflictHolds(entry.conflict),
+    holds: entry.conflict.holds,
     scope,
     remoteActions: entry.conflict.remoteActions ?? [],
     basedOnGsn: entry.basedOnGsn,
@@ -386,6 +387,19 @@ const aggregateSubjectStates = (
   return views;
 };
 
+/** First value per key, in first-seen order. */
+const unionBy = <T>(values: readonly T[], keyOf: (value: T) => string): T[] => {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const value of values) {
+    const key = keyOf(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+};
+
 /** Earliest detection HLC in a conflict; the set's ordering key. */
 const earliestHlc = (conflict: Conflict): string => conflict.entries[0]?.detectedAtHlc ?? "";
 
@@ -408,34 +422,18 @@ const groupConflicts = (
   const conflicts: Conflict[] = [];
   for (const [id, group] of groups) {
     const ordered = [...group].sort((a, b) => compare(a.detectedAtHlc, b.detectedAtHlc));
-    const subjects: string[] = [];
-    const seen = new Set<string>();
-    for (const entry of ordered) {
-      for (const subject of entry.subjects) {
-        if (seen.has(subject)) continue;
-        seen.add(subject);
-        subjects.push(subject);
-      }
-    }
-    const holds: ConflictHold[] = [];
-    const holdSeen = new Set<string>();
-    for (const entry of ordered) {
-      for (const hold of entry.holds) {
-        const key = holdKey(hold);
-        if (holdSeen.has(key)) continue;
-        holdSeen.add(key);
-        holds.push(hold);
-      }
-    }
-    const remoteActions: ConflictRemoteAction[] = [];
-    const remoteSeen = new Set<string>();
-    for (const entry of ordered) {
-      for (const remote of entry.remoteActions) {
-        if (remoteSeen.has(remote.actionId)) continue;
-        remoteSeen.add(remote.actionId);
-        remoteActions.push(remote);
-      }
-    }
+    const subjects = unionBy(
+      ordered.flatMap((entry) => entry.subjects),
+      (subject) => subject,
+    );
+    const holds = unionBy(
+      ordered.flatMap((entry) => entry.holds),
+      holdKey,
+    );
+    const remoteActions = unionBy(
+      ordered.flatMap((entry) => entry.remoteActions),
+      (remote) => remote.actionId,
+    );
     conflicts.push({
       id,
       scope: coarsestScope(ordered.map((entry) => entry.scope)),
@@ -544,7 +542,7 @@ export function createConflicts(deps: ConflictsDependencies): ConflictManager {
       const stillHeld = new Set(
         deps.outbox
           .conflicts()
-          .flatMap((row) => conflictHolds(row.conflict))
+          .flatMap((row) => row.conflict.holds)
           .map(holdKey),
       );
       const released = conflict.holds.filter((hold) => !stillHeld.has(holdKey(hold)));

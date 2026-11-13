@@ -314,7 +314,7 @@ export const buildOutboxConflict = (detectedAtMs = 1): OutboxConflict => ({
       after: buildTodoEntity("todo_1", "Updated", makeHlc(HLC_BASE, detectedAtMs)),
     },
   ],
-  holds: [{ subjectId: "todo_1", component: "todo/title" }],
+  holds: [{ kind: "component", subjectId: "todo_1", component: "todo/title" }],
   slots: [
     {
       subjectId: "todo_1",
