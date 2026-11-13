@@ -14,7 +14,6 @@ defmodule EbbServer.Storage.CommitterTest do
   alias EbbServer.Storage.{
     ActionFormat,
     Committer,
-    ComponentEntityIndex,
     PreparedAction,
     RocksDB
   }
@@ -27,7 +26,7 @@ defmodule EbbServer.Storage.CommitterTest do
   end
 
   describe "op assembly" do
-    test "builds one batch in source order: log, dedup, group index, entity index, component index",
+    test "builds one batch in source order: log, dedup, group index, entity index",
          ctx do
       test_pid = self()
       ref = make_ref()
@@ -60,7 +59,6 @@ defmodule EbbServer.Storage.CommitterTest do
       cf_dedup = RocksDB.cf_action_dedup(ctx.rocks_name)
       cf_group = RocksDB.cf_group_actions(ctx.rocks_name)
       cf_entity = RocksDB.cf_entity_actions(ctx.rocks_name)
-      cf_component = RocksDB.cf_component_entities(ctx.rocks_name)
 
       assert [
                {:put, ^cf_actions, gsn_5, etf_1},
@@ -81,9 +79,8 @@ defmodule EbbServer.Storage.CommitterTest do
       assert dedup_5 == RocksDB.encode_gsn_key(5)
       assert dedup_6 == RocksDB.encode_gsn_key(6)
 
-      # The entity and component-entity keys are flush-scoped (no per-Action
-      # grouping): one coalesced entity row per subject, then one sorted op
-      # per distinct key, both appended after the per-Action ops.
+      # The entity keys are flush-scoped (no per-Action grouping): one
+      # coalesced entity row per subject, appended after the per-Action ops.
       entity_ops = for {:put, ^cf_entity, _key, _value} = op <- flush_ops, do: op
 
       assert entity_ops == [
@@ -95,23 +92,7 @@ defmodule EbbServer.Storage.CommitterTest do
                 RocksDB.encode_gsn_list([6])}
              ]
 
-      component_ops = for {_op, ^cf_component, _key, _value} = op <- flush_ops, do: op
-
-      expected_keys =
-        [
-          {"todo", "todo_1"},
-          {"todo/title", "todo_1"},
-          {"todo", "todo_2"},
-          {"todo/title", "todo_2"},
-          {"todo", "todo_3"},
-          {"todo/title", "todo_3"}
-        ]
-        |> Enum.map(fn {name, id} -> RocksDB.encode_component_entity_key(name, id) end)
-        |> Enum.sort()
-        |> Enum.map(fn key -> {:put, cf_component, key, <<>>} end)
-
-      assert component_ops == expected_keys
-      assert flush_ops == entity_ops ++ component_ops
+      assert flush_ops == entity_ops
 
       assert stored_action(etf_1, 5) == %{
                "id" => "act_1",
@@ -267,93 +248,6 @@ defmodule EbbServer.Storage.CommitterTest do
       assert stored["gsn"] == 7
       assert stored["update_scopes"] == [["g_prebuilt"]]
       assert [%{"id" => "upd_prebuilt", "subject_id" => "todo_prebuilt"}] = stored["updates"]
-    end
-
-    test "writes one cf_component_entities op per unique key across the batch", ctx do
-      test_pid = self()
-      ref = make_ref()
-
-      shared = [update("upd_a", "todo_shared"), update("upd_b", "todo_shared")]
-
-      committer =
-        start_committer(ctx, fn ops, _opts ->
-          send(test_pid, {:ops, ops})
-          :ok
-        end)
-
-      :ok =
-        Committer.commit(
-          committer,
-          ref,
-          [
-            prepared_action("act_a", shared),
-            prepared_action("act_b", [update("upd_c", "todo_shared")])
-          ],
-          1,
-          2
-        )
-
-      assert_receive {:ops, ops}
-      assert_receive {:committer_result, ^ref, :ok}
-
-      index_ops =
-        for {_op, cf, _key, _value} <- ops,
-            cf == RocksDB.cf_component_entities(ctx.rocks_name),
-            do: :ok
-
-      # `todo_shared` repeats across both Actions, and both write the same
-      # `todo/title` component: one model entry plus one component entry.
-      assert length(index_ops) == 2
-    end
-
-    test "a drop deletes the component entry and keeps the model entry", ctx do
-      ops = capture_batch_ops(ctx, [prepared_action("act_drop", [drop_update("todo_drop")])])
-
-      assert index_ops(ops, ctx.rocks_name) == [
-               {:put, component_key("todo", "todo_drop")},
-               {:delete, component_key("todo/title", "todo_drop")}
-             ]
-    end
-
-    test "a drop then a re-write in one Action ends with the entry present", ctx do
-      ops =
-        capture_batch_ops(ctx, [
-          prepared_action("act_cycle", [
-            drop_update("todo_cycle"),
-            update("upd_reput", "todo_cycle")
-          ])
-        ])
-
-      assert index_ops(ops, ctx.rocks_name) == [
-               {:put, component_key("todo", "todo_cycle")},
-               {:put, component_key("todo/title", "todo_cycle")}
-             ]
-    end
-
-    test "the last Action wins a key written by several Actions of one flush", ctx do
-      drop = prepared_action("act_first_drop", [drop_update("todo_lww")])
-      put = prepared_action("act_second_put", [update("upd_lww", "todo_lww")])
-
-      model = component_key("todo", "todo_lww")
-      component = component_key("todo/title", "todo_lww")
-
-      assert ctx |> capture_batch_ops([drop, put]) |> index_ops(ctx.rocks_name) ==
-               [{:put, model}, {:put, component}]
-
-      assert ctx |> capture_batch_ops([put, drop]) |> index_ops(ctx.rocks_name) ==
-               [{:put, model}, {:delete, component}]
-    end
-
-    test "a delete names no component, so only the model entry is written", ctx do
-      # The Writer resolves a delete's committed model while folding the
-      # Action; the Committer only writes the ops it is handed.
-      delete =
-        prepared_action("act_delete", [delete_update("todo_gone")],
-          component_entity_ops: [{:put, component_key("todo", "todo_gone")}]
-        )
-
-      assert capture_batch_ops(ctx, [delete]) |> index_ops(ctx.rocks_name) ==
-               [{:put, component_key("todo", "todo_gone")}]
     end
 
     test "ablations drop only their own ops", ctx do
@@ -557,7 +451,6 @@ defmodule EbbServer.Storage.CommitterTest do
         end),
       update_scopes: Keyword.get(opts, :update_scopes, Enum.map(updates, fn _update -> [] end)),
       groups: Keyword.get(opts, :groups, []),
-      component_entity_ops: Keyword.get(opts, :component_entity_ops, default_index_ops(updates)),
       affected_entities:
         Keyword.get(opts, :affected_entities, Enum.map(updates, &affected_entity/1))
     }
@@ -576,49 +469,6 @@ defmodule EbbServer.Storage.CommitterTest do
       method: Keyword.get(opts, :method, :replace),
       data: Keyword.get(opts, :data, %{"value" => "x"})
     }
-  end
-
-  defp drop_update(subject_id) do
-    update("upd_drop_#{subject_id}", subject_id, method: :drop, data: nil)
-  end
-
-  defp delete_update(subject_id) do
-    %{
-      id: "upd_delete_#{subject_id}",
-      subject_id: subject_id,
-      component: nil,
-      model: nil,
-      field: nil,
-      method: :delete,
-      data: nil
-    }
-  end
-
-  defp capture_batch_ops(ctx, prepared) do
-    test_pid = self()
-    ref = make_ref()
-    committer = start_committer(ctx, fn ops, _opts -> send(test_pid, {:ops, ops}) && :ok end)
-
-    :ok = Committer.commit(committer, ref, prepared, 1, length(prepared))
-    assert_receive {:ops, ops}
-    assert_receive {:committer_result, ^ref, :ok}
-
-    ops
-  end
-
-  defp index_ops(ops, rocks_name) do
-    cf = RocksDB.cf_component_entities(rocks_name)
-
-    for op <- ops, elem(op, 1) == cf, do: {elem(op, 0), elem(op, 2)}
-  end
-
-  defp component_key(name, subject_id) do
-    RocksDB.encode_component_entity_key(name, subject_id)
-  end
-
-  defp default_index_ops(updates) do
-    ComponentEntityIndex.update_ops(updates) ++
-      ComponentEntityIndex.model_ops(Enum.map(updates, &{&1.model, &1.subject_id}))
   end
 
   defp affected_entity(update), do: {update.subject_id, update.model}

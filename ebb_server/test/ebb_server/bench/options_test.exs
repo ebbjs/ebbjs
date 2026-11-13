@@ -452,21 +452,28 @@ defmodule EbbServer.Bench.OptionsTest do
       assert config.ablate == [:dedup, :entity_index, :group_index]
     end
 
-    test "accepts the entity-index halves separately and keeps the combined alias" do
+    test "accepts the entity index separately and keeps the combined alias" do
       assert {:ok, split} =
                Options.parse([
                  "--tier",
                  "t5",
                  "--ablate",
-                 "dedup,entity_actions,component_entities,group_index"
+                 "dedup,entity_actions,group_index"
                ])
 
-      assert split.ablate == [:dedup, :entity_actions, :component_entities, :group_index]
+      assert split.ablate == [:dedup, :entity_actions, :group_index]
 
       assert {:ok, combined} =
                Options.parse(["--tier", "t5", "--ablate", "entity_index"])
 
       assert combined.ablate == [:entity_index]
+    end
+
+    test "rejects the derived component-index phases, which t5 no longer writes" do
+      for phase <- ~w(component_entries component_entities) do
+        assert {:error, message} = Options.parse(["--tier", "t5", "--ablate", phase])
+        assert message =~ "is not supported with --tier t5"
+      end
     end
 
     test "rejects an ablation that names a Writer phase" do

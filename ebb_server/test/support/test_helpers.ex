@@ -50,6 +50,7 @@ defmodule EbbServer.TestHelpers do
 
   alias EbbServer.Storage.{
     CacheTables,
+    ComponentEntityIndex,
     DirtyTracker,
     EntityGroupCache,
     EntityTypeCache,
@@ -221,6 +222,8 @@ defmodule EbbServer.TestHelpers do
     eg_by_id_table = :"ebb_eg_by_id_#{unique_id}"
     eg_by_group_table = :"ebb_eg_by_group_#{unique_id}"
     entity_types_table = :"ebb_entity_types_#{unique_id}"
+    component_index_table = :"ebb_component_index_#{unique_id}"
+    component_entity_labels_table = :"ebb_component_entity_labels_#{unique_id}"
     group_apps_table = :"ebb_group_apps_#{unique_id}"
     rel_table = :"ebb_rel_#{unique_id}"
     rbi_table = :"ebb_rbi_#{unique_id}"
@@ -229,6 +232,7 @@ defmodule EbbServer.TestHelpers do
     egc_name = :"egc_#{unique_id}"
     gac_name = :"gac_#{unique_id}"
     etc_name = :"etc_#{unique_id}"
+    cei_name = :"cei_#{unique_id}"
     rc_name = :"rc_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
@@ -270,6 +274,13 @@ defmodule EbbServer.TestHelpers do
     {:ok, _pid_gac} = GroupAppsCache.start_link(name: gac_name, group_apps: group_apps_table)
     {:ok, _pid_etc} = EntityTypeCache.start_link(name: etc_name, entity_types: entity_types_table)
 
+    {:ok, _pid_cei} =
+      ComponentEntityIndex.start_link(
+        name: cei_name,
+        component_index: component_index_table,
+        component_entity_labels: component_entity_labels_table
+      )
+
     {:ok, _pid_rc} =
       RelationshipCache.start_link(
         name: rc_name,
@@ -282,7 +293,17 @@ defmodule EbbServer.TestHelpers do
     {:ok, _pid_ifa} = InFlightActions.start_link(name: ifa_name, table: ifa_table)
 
     on_exit(fn ->
-      for name <- [dt_name, gc_name, egc_name, gac_name, etc_name, rc_name, wt_name, ifa_name],
+      for name <- [
+            dt_name,
+            gc_name,
+            egc_name,
+            gac_name,
+            etc_name,
+            cei_name,
+            rc_name,
+            wt_name,
+            ifa_name
+          ],
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
@@ -296,6 +317,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityGroupCache, :entity_groups_by_group})
       :persistent_term.erase({EntityTypeCache, :entity_types})
       :persistent_term.erase({GroupAppsCache, :group_apps})
+      :persistent_term.erase({ComponentEntityIndex, :tables})
       :persistent_term.erase({RelationshipCache, :relationships})
       :persistent_term.erase({ifa_name, :table})
     end)
@@ -310,6 +332,8 @@ defmodule EbbServer.TestHelpers do
       entity_groups_by_id: eg_by_id_table,
       entity_groups_by_group: eg_by_group_table,
       entity_types: entity_types_table,
+      component_index: component_index_table,
+      component_entity_labels: component_entity_labels_table,
       group_apps: group_apps_table,
       relationships: rel_table,
       relationships_by_id: rbi_table,
@@ -398,6 +422,9 @@ defmodule EbbServer.TestHelpers do
               "Get them from start_isolated_cache/0."
     end
 
+    {default_component_index, default_component_entity_labels} =
+      ComponentEntityIndex.tables()
+
     writer_opts =
       [
         name: name,
@@ -410,6 +437,9 @@ defmodule EbbServer.TestHelpers do
         entity_groups_by_id: opts.entity_groups_by_id,
         entity_groups_by_group: opts.entity_groups_by_group,
         entity_types: Map.get(opts, :entity_types) || CacheTables.entity_types(),
+        component_index: Map.get(opts, :component_index) || default_component_index,
+        component_entity_labels:
+          Map.get(opts, :component_entity_labels) || default_component_entity_labels,
         group_apps: Map.get(opts, :group_apps) || CacheTables.group_apps(),
         relationships: opts.relationships,
         relationships_by_id: opts.relationships_by_id,
@@ -459,6 +489,8 @@ defmodule EbbServer.TestHelpers do
       entity_groups_by_id: ctx.entity_groups_by_id,
       entity_groups_by_group: ctx.entity_groups_by_group,
       group_apps: Map.get(ctx, :group_apps) || CacheTables.group_apps(),
+      component_index: Map.get(ctx, :component_index),
+      component_entity_labels: Map.get(ctx, :component_entity_labels),
       relationships: ctx.relationships,
       relationships_by_id: ctx.relationships_by_id,
       watermark_tracker: ctx.watermark_tracker,

@@ -35,7 +35,7 @@ defmodule EbbServer.Sync.GroupListing do
 
   The SQLite read model is materialized lazily and `DirtyTracker` marks are
   in-memory only. Boot repairs the gap that leaves: the cache rebuild
-  re-marks every `cf_component_entities` model entry dirty (#564), so the
+  re-marks every modeled row in the derived component index dirty (#564), so the
   first read or per-type query after a restart replays the row's delta. This module still
   materializes the group's dirty system rows before paging and **every**
   returned row unconditionally as it is read. A seeded row that is stale at

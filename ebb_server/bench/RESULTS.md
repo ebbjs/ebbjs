@@ -163,6 +163,57 @@ watermark lag of 0, and both passed the #577 guardrails. Run 1's p50 sits
 canonical-budget rule above, that is a candidate for a rotated A/B, not a
 regression.
 
+## Component existence index: write cost and resident set (#799, #849)
+
+`mix bench.component_index` prices the component existence index at
+k = 2 / 4 / 8 components per entity through the real `Writer`, and — since
+[#849](https://github.com/ebbjs/ebbjs/issues/849) — also fills an ETS
+`:ordered_set` with the index's actual key shape to report its resident set.
+The 10,000-row point is the #503 document-set shape; 100,000 is the headroom
+check. The fill goes through `ComponentEntityIndex.apply_ops/2`, so the key
+shape and label interning are the production ones; the label table adds only a
+few KiB. Bytes per entry are the entry table's own allocator accounting; the
+RSS delta is the process increment across that fill and includes allocator
+slack.
+
+```sh
+cd ebb_server
+mix bench.component_index
+```
+
+Measured **2026-11-12** on `recsy-vps`, base `9be529ea`, Elixir 1.17.3 /
+OTP 27. Five interleaved runs per arm per k; medians below.
+
+|   k | Index ops | Actions/s (model only) | Actions/s (model + components) | Added cost | Actions/s (no index) |
+| --: | --------: | ---------------------: | -----------------------------: | ---------: | -------------------: |
+|   2 |         2 |       5401 (4666–5429) |               4687 (4072–5112) |      13.2% |     5755 (5682–6266) |
+|   4 |         4 |       4450 (4258–4892) |               3905 (3126–3981) |      12.2% |     4730 (2988–4880) |
+|   8 |         8 |       3631 (3445–3754) |               2782 (2449–2941) |      23.4% |     3631 (3491–3647) |
+
+|    Rows |   k | Entries | ETS bytes | RSS delta | Bytes/entry (ETS) |
+| ------: | --: | ------: | --------: | --------: | ----------------: |
+|  10,000 |   2 |  30,000 |   4.3 MiB |       0 B |             151.2 |
+|  10,000 |   4 |  50,000 |   7.2 MiB |   7.6 MiB |             151.2 |
+|  10,000 |   8 |  90,000 |  13.0 MiB |  13.7 MiB |             151.2 |
+| 100,000 |   2 | 300,000 |  43.5 MiB |  44.8 MiB |             151.9 |
+| 100,000 |   4 | 500,000 |  72.4 MiB |  76.3 MiB |             151.9 |
+| 100,000 |   8 | 900,000 | 130.4 MiB | 126.9 MiB |             151.9 |
+
+The shape is the same as #799's first pass: cost grows with k, not with bytes,
+and the index's share is 12–23% depending on the arm's noise. The resident set
+at the realistic 10,000-document shape is 13.0 MiB at k = 8; the 100,000-row
+extrapolation is 130.4 MiB of ETS data. The gate passes. These runs are the
+derived store: the index's cost is the in-memory apply, not a durable batch.
+
+A paired `t0` c=1 run at batch 100 and 2 Updates per Action puts that apply in
+context: **12,750 vs 13,070 Actions/s** and **2,885 vs 2,801 µs client-call
+p50**, with and without the index. The flush's `apply` phase p50 is **95 vs
+66 µs**, so the in-memory apply costs **~29 µs per flush** — a small fraction
+of the pre-6b **0.65 ms/flush** durable marginal. This run is `hot`, so its
+last-wins reduction collapses ~400 ops to a handful of inserts; the k = 2/4/8
+table above prices a spread flush, where each Action's entries are distinct.
+`--ablate component_entities` now prices only this apply.
+
 ## Environment
 
 | Field        | Value                                                                   |
@@ -340,8 +391,10 @@ same subject, and `hot` is where the index cost was measured.
 (`:entity_actions`, `:component_entities`; `:entity_index` remains the combined
 alias, so the published commands keep their meaning). The phase was called
 `:type_entities` when the rows below were measured; [#799](https://github.com/ebbjs/ebbjs/issues/799)
-renamed it to `:component_entities` along with the column family. Medians of
-three 20 s passes on the changed build:
+renamed it to `:component_entities` along with the column family. The rows
+below describe that #575-era shape; [#849](https://github.com/ebbjs/ebbjs/issues/849)
+later removed the component index from the durable batch, so the `t5` op set no
+longer contains it. Medians of three 20 s passes on the changed build:
 
 | `t5` K=8 op set                              | puts / 100-Action batch | Actions/s | vs full |
 | -------------------------------------------- | ----------------------: | --------: | ------: |

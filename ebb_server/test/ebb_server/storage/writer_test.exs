@@ -51,6 +51,8 @@ defmodule EbbServer.Storage.WriterTest do
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
       entity_types: entity_types,
+      component_index: component_index,
+      component_entity_labels: component_entity_labels,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     } = start_isolated_cache()
@@ -67,6 +69,8 @@ defmodule EbbServer.Storage.WriterTest do
         entity_groups: entity_groups,
         entity_groups_by_id: entity_groups_by_id,
         entity_groups_by_group: entity_groups_by_group,
+        component_index: component_index,
+        component_entity_labels: component_entity_labels,
         relationships: relationships,
         relationships_by_id: relationships_by_id
       })
@@ -83,6 +87,8 @@ defmodule EbbServer.Storage.WriterTest do
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
       entity_types: entity_types,
+      component_index: component_index,
+      component_entity_labels: component_entity_labels,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     }
@@ -166,13 +172,6 @@ defmodule EbbServer.Storage.WriterTest do
                )
 
       assert RocksDB.decode_gsn_list(entity_gsns) == [1]
-
-      cf = RocksDB.cf_component_entities(rocks_name)
-      model_key = RocksDB.encode_component_entity_key("todo", "todo_test_123")
-      component_key = RocksDB.encode_component_entity_key("todo/title", "todo_test_123")
-
-      assert {:ok, <<>>} = RocksDB.get(cf, model_key, name: rocks_name)
-      assert {:ok, <<>>} = RocksDB.get(cf, component_key, name: rocks_name)
 
       assert {:ok, ^gsn_key} =
                RocksDB.get(RocksDB.cf_action_dedup(rocks_name), action.id, name: rocks_name)
@@ -264,7 +263,8 @@ defmodule EbbServer.Storage.WriterTest do
     end
 
     test "reads the candidate rows carrying a component in one index range", ctx do
-      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+      %{writer_name: writer_name} = ctx
+      opts = index_opts(ctx)
 
       write =
         validated_action(%{
@@ -276,9 +276,11 @@ defmodule EbbServer.Storage.WriterTest do
           ]
         })
 
+      # The in-memory index is visible as soon as the write returns: there is
+      # no separate projection step to wait for.
       assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
 
-      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [
                "todo_read_a",
                "todo_read_b"
              ]
@@ -291,7 +293,7 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
 
-      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [
                "todo_read_b"
              ]
 
@@ -305,14 +307,13 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {3, 3}, []} = Writer.write_actions([delete], writer_name)
 
-      assert ComponentEntityIndex.component_entry_ids("todo/title", name: rocks_name) == [
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [
                "todo_read_b"
              ]
     end
 
     test "dedups repeated index puts across the flush", ctx do
-      %{name: writer_name} =
-        start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
+      opts = index_opts(ctx)
 
       action1 =
         validated_action(%{
@@ -332,36 +333,28 @@ defmodule EbbServer.Storage.WriterTest do
           ]
         })
 
-      assert {:ok, {1, 2}, []} = Writer.write_actions([action1, action2], writer_name)
+      assert {:ok, {1, 2}, []} = Writer.write_actions([action1, action2], ctx.writer_name)
 
-      assert_receive {:captured_ops, ops}
-
-      cf = RocksDB.cf_component_entities(ctx.rocks_name)
-      puts = puts_to(ops, cf)
-
-      # `todo_shared` repeats across both Actions; only its model entry and
-      # component entry, plus the same pair for the two unique rows, are
-      # written: 6 puts, one op per key.
-      assert length(puts) == 6
+      # `todo_shared` repeats across both Actions; the flush reduces to one
+      # write per key, so three subjects yield three model entries and three
+      # component entries, not eight.
+      assert ComponentEntityIndex.size(opts) == 6
 
       for subject_id <- ["todo_shared", "todo_unique_1", "todo_unique_2"] do
-        assert {:ok, <<>>} =
-                 RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
-                   name: ctx.rocks_name
-                 )
+        assert Enum.count(
+                 ComponentEntityIndex.component_entry_ids("todo", opts),
+                 &(&1 == subject_id)
+               ) == 1
 
-        assert {:ok, <<>>} =
-                 RocksDB.get(
-                   cf,
-                   RocksDB.encode_component_entity_key("todo/title", subject_id),
-                   name: ctx.rocks_name
-                 )
+        assert Enum.count(
+                 ComponentEntityIndex.component_entry_ids("todo/title", opts),
+                 &(&1 == subject_id)
+               ) == 1
       end
     end
 
     test "a k-component write indexes k component entries plus one model entry", ctx do
-      %{name: writer_name} =
-        start_writer(Map.put(ctx, :commit_fn, capturing_commit_fn(self())))
+      opts = index_opts(ctx)
 
       for k <- [1, 2, 3] do
         subject_id = "todo_k_#{k}"
@@ -371,31 +364,32 @@ defmodule EbbServer.Storage.WriterTest do
             validated_component(subject_id, "todo/field_#{i}", %{"value" => i})
           end)
 
-        action = validated_action(%{id: "act_k_#{k}", updates: updates})
-        assert {:ok, {_start, _end}, []} = Writer.write_actions([action], writer_name)
-        assert_receive {:captured_ops, ops}
+        before = ComponentEntityIndex.size(opts)
 
-        cf = RocksDB.cf_component_entities(ctx.rocks_name)
-        puts = puts_to(ops, cf)
+        action = validated_action(%{id: "act_k_#{k}", updates: updates})
+        assert {:ok, {_start, _end}, []} = Writer.write_actions([action], ctx.writer_name)
 
         # Write amplification is the pinned shape: k component entries plus
         # the constant model entry.
-        assert length(puts) == k + 1
+        assert ComponentEntityIndex.size(opts) == before + k + 1
 
         for i <- 1..k do
-          key = RocksDB.encode_component_entity_key("todo/field_#{i}", subject_id)
-          assert {:ok, <<>>} = RocksDB.get(cf, key, name: ctx.rocks_name)
+          assert subject_id in ComponentEntityIndex.component_entry_ids(
+                   "todo/field_#{i}",
+                   opts
+                 )
         end
 
-        assert {:ok, <<>>} =
-                 RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
-                   name: ctx.rocks_name
-                 )
+        assert Enum.count(
+                 ComponentEntityIndex.component_entry_ids("todo", opts),
+                 &(&1 == subject_id)
+               ) == 1
       end
     end
 
     test "a drop deletes the component entry and keeps the model entry", ctx do
-      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+      %{writer_name: writer_name} = ctx
+      opts = index_opts(ctx)
 
       subject_id = "todo_dropped"
 
@@ -405,6 +399,7 @@ defmodule EbbServer.Storage.WriterTest do
         })
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([write], writer_name)
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [subject_id]
 
       drop =
         validated_action(%{
@@ -413,23 +408,13 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([drop], writer_name)
 
-      cf = RocksDB.cf_component_entities(rocks_name)
-
-      assert :not_found =
-               RocksDB.get(
-                 cf,
-                 RocksDB.encode_component_entity_key("todo/title", subject_id),
-                 name: rocks_name
-               )
-
-      assert {:ok, <<>>} =
-               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
-                 name: rocks_name
-               )
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == []
+      assert ComponentEntityIndex.component_entry_ids("todo", opts) == [subject_id]
     end
 
     test "a delete leaves the model entry and the row's stale component entries", ctx do
-      %{rocks_name: rocks_name, writer_name: writer_name} = ctx
+      %{writer_name: writer_name} = ctx
+      opts = index_opts(ctx)
 
       subject_id = "todo_deleted"
 
@@ -447,21 +432,10 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete], writer_name)
 
-      cf = RocksDB.cf_component_entities(rocks_name)
-
       # A delete names the row, not its components, so the component entries
       # stay behind. Existence is the model entry, which survives (#799).
-      assert {:ok, <<>>} =
-               RocksDB.get(cf, RocksDB.encode_component_entity_key("todo", subject_id),
-                 name: rocks_name
-               )
-
-      assert {:ok, <<>>} =
-               RocksDB.get(
-                 cf,
-                 RocksDB.encode_component_entity_key("todo/title", subject_id),
-                 name: rocks_name
-               )
+      assert ComponentEntityIndex.component_entry_ids("todo", opts) == [subject_id]
+      assert ComponentEntityIndex.component_entry_ids("todo/title", opts) == [subject_id]
     end
   end
 
@@ -1718,5 +1692,12 @@ defmodule EbbServer.Storage.WriterTest do
 
   defp puts_to(ops, cf) do
     for {:put, ^cf, _key, _value} <- ops, do: :ok
+  end
+
+  defp index_opts(ctx) do
+    [
+      component_index: ctx.component_index,
+      component_entity_labels: ctx.component_entity_labels
+    ]
   end
 end

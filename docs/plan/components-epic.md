@@ -155,7 +155,7 @@ core        Update { subject_id, component, method, data: FieldValue }
 protocol    component replaces subject_type            → one Update per (entity, component)
 systems     scope table + permission table + projections
             one scope owner per ebb/* component        → replaces resolve_groups_cached/3's cases
-storage     cf_component_entities (component, id)      → replaces cf_type_entities, ebb/* first
+storage     derived index (component, id) in ETS    → replaces cf_type_entities, ebb/* first
             replica: modelIndex + componentIndex      → replaces typeIndex
                       (+ archetypeIndex, optional)    → an afterthought, not the model
             ReplicaChange { components }               → replaces { type }
@@ -488,6 +488,7 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
       components the change touched (present-and-differing fields, plus all of them on a tombstone
       transition), which is what #800 invalidates on.
 - [x] `cf_component_entities` written once per `(component, entity)`; `cf_type_entities` deleted.
+      (Later moved in memory by #849.)
 - [x] SQLite: `data.components` plus the normalized `entity_components` mirror (see the amendment
       above); `idx_entities_type` kept.
 - [x] IndexedDB: `multiEntry` index on the component-name array; version 11; reset, no migration.
@@ -505,22 +506,26 @@ only**, plus the model column SQLite already indexes. SQLite keeps one row per e
 **Acceptance.** The k = 2/4/8 table is recorded in the epic and the resulting write cost is
 accepted or the design is amended. An existence query touches one index range per component named
 and filters the row-level tombstone: `ComponentEntityIndex.component_entry_ids/2` is the raw range
-on RocksDB (a delete leaves its entries as candidates), and `SQLite.query_component_ids/2` joins
-`deleted_hlc IS NULL` on the read model. No scan path reads `type` to find an entity's rows:
+on the in-memory index (a delete leaves its entries as candidates), and
+`SQLite.query_component_ids/2` joins `deleted_hlc IS NULL` on the read model. No scan path reads `type` to find an entity's rows:
 `iterate` reads `modelIndex`, and the server's model entries are existence and committed-model
 lookups, not row scans. The SQLite listing paths keep `idx_entities_type`, as this slice's scope
 says they do.
 
 **Depends on.** 4, 5.
 
-**Current state.** Shipped in [#799](https://github.com/ebbjs/ebbjs/issues/799). The client replica's
+**Current state.** Shipped in [#799](https://github.com/ebbjs/ebbjs/issues/799), then the index's
+storage became derived state in [#849](https://github.com/ebbjs/ebbjs/issues/849): the column
+family is gone, the Writer applies the same ops to an in-memory ETS index after the range is
+durable, and every boot reconstructs it by replaying `cf_actions`. The key kinds, writers, and
+readers are unchanged; the resident set is the documented gate. The client replica's
 `typeIndex` is `modelIndex`; `ReplicaChange` carries `components`; the IndexedDB `entities` store has
 a `multiEntry` component index that `EntityStore.queryByComponent` reads; the schema bump to 11
-resets rather than migrating. On the server, `cf_component_entities` replaces `cf_type_entities` with
-a model entry plus a component entry per component, `SystemCache` boot and the one-time backfill
-rebuild both, and a drop deletes its component entry while a delete leaves the model entry and the
-row's component entries in place (the entries are existence candidates; the row tombstone is the
-liveness filter). SQLite mirrors components into `entity_components` and answers
+resets rather than migrating. On the server, the derived component index replaces
+`cf_type_entities` with a model entry plus a component entry per component, `SystemCache` boot
+replays the log to rebuild both, and a drop deletes its component entry while a delete leaves the
+model entry and the row's component entries in place (the entries are existence candidates; the
+row tombstone is the liveness filter). SQLite mirrors components into `entity_components` and answers
 `query_component_ids/2` from `idx_entity_components_component`. The k = 2/4/8 Writer measurement is
 recorded below and the cost is accepted. The server read seam is exercised by tests but is not yet a
 wire query: `has`/`hasNot` remain builder-only (#798's limit) until a slice owns the component
@@ -783,8 +788,8 @@ and a link a replica missed arrives with its source during backfill — which to
 
 **Scope.** `ebb/link` moves from an atomic value on its own row to a keyed component of its source;
 the edge row and the `entityGroup` rows it mirrors are deleted; the forward half of
-`RelationshipCache` and the `rowId → yieldedId` layer of `reverse-index.ts` go; the server keeps a
-reverse index `(type, target_id) → source ids`. `contained: true` becomes a resolution-time rule
+`RelationshipCache` and the `rowId → yieldedId` layer of `reverse-index.ts` go; the server keeps an
+**in-memory** reverse index `(type, target_id) → source ids`, with no column family. `contained: true` becomes a resolution-time rule
 (`source ∪ target`).
 
 **The gate.** Price the containment hop inside the authorizer against the ~21k Actions/s budget
@@ -795,7 +800,8 @@ before committing; `docs/research/membership-and-links-as-components.md` §6 is 
 - [ ] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
 - [ ] Delete the edge row, the mirrored `entityGroup` rows, `RelationshipCache`'s forward direction,
       and `reverse-index.ts`'s row layer.
-- [ ] Server reverse index `(type, target_id) → source ids`, rebuilt at boot like the others.
+- [ ] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
+      component index (#849).
 - [ ] `contained: true` as a resolution-time union; measure the hop.
 - [ ] Backfill: a missed link arrives with its source; assert it.
 - [ ] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a

@@ -166,10 +166,11 @@ defmodule EbbServer.Storage.Writer do
   `groups_changed` control event that it causes is pushed only after the
   membership is visible.
 
-  Redundant index writes are dropped during op construction: a
-  `cf_component_entities` key has no GSN component, so the Action's ordered
-  put/delete ops are reduced last-wins per key across the flush and written
-  once. `cf_entity_actions` is coalesced per subject across the whole flush:
+  Redundant index writes are dropped during op construction: a component-index
+  key has no GSN component, so the Action's ordered put/delete ops are reduced
+  last-wins per key across the flush and applied once to the derived in-memory
+  index after the range is durable. `cf_entity_actions` is coalesced per
+  subject across the whole flush:
   one row keyed at the subject's highest GSN, holding that subject's sorted
   GSN list, however many Updates or Actions touched it. `cf_group_actions`
   is emitted once per Action from the union of resolved group ids.
@@ -316,10 +317,10 @@ defmodule EbbServer.Storage.Writer do
   `:entity_actions`, `:component_entries`, `:component_entities`,
   `:group_index`, `:dirty`, `:cache`, `:watermark`, `:fanout` — so
   `mix bench.actions --ablate` can price each one. `:component_entries`
-  drops only the per-component half of `cf_component_entities`, leaving the
-  model entry that is today's one row per row; `:component_entities` drops
-  the whole column family. `:entity_index` remains the combined alias that
-  drops both entity index halves. `:dedup` also skips the in-flight claim,
+  drops only the per-component half of the derived component index, leaving
+  the model entry that is today's one row per row; `:component_entities`
+  drops the whole in-memory apply. `:entity_index` remains the combined alias
+  that drops both entity index halves. `:dedup` also skips the in-flight claim,
   which is dedup work. It is never set in production, and an empty list
   emits exactly the same ops as before. See `EbbServer.Bench.Options`.
 
@@ -426,6 +427,8 @@ defmodule EbbServer.Storage.Writer do
           entity_groups_by_id: atom(),
           entity_groups_by_group: atom(),
           entity_types: atom(),
+          component_index: atom(),
+          component_entity_labels: atom(),
           group_apps: atom(),
           relationships: atom(),
           relationships_by_id: atom(),
@@ -467,6 +470,8 @@ defmodule EbbServer.Storage.Writer do
     :entity_groups_by_id,
     :entity_groups_by_group,
     :entity_types,
+    :component_index,
+    :component_entity_labels,
     :group_apps,
     :relationships,
     :relationships_by_id,
@@ -595,6 +600,15 @@ defmodule EbbServer.Storage.Writer do
     end
   end
 
+  # A Writer restart must target the tables the live SystemCache built, not
+  # whatever a previous instance left in persistent_term.
+  defp component_index_tables(opts) do
+    {entries, labels} = ComponentEntityIndex.tables()
+
+    {Keyword.get(opts, :component_index) || entries,
+     Keyword.get(opts, :component_entity_labels) || labels}
+  end
+
   @impl true
   @spec init(keyword()) :: {:ok, t()}
   def init(opts) do
@@ -653,6 +667,8 @@ defmodule EbbServer.Storage.Writer do
         :entity_types,
         CacheTables.entity_types()
       )
+
+    {component_index, component_entity_labels} = component_index_tables(opts)
 
     group_apps =
       Keyword.get(
@@ -823,6 +839,8 @@ defmodule EbbServer.Storage.Writer do
       entity_groups_by_id: entity_groups_by_id,
       entity_groups_by_group: entity_groups_by_group,
       entity_types: entity_types,
+      component_index: component_index,
+      component_entity_labels: component_entity_labels,
       group_apps: group_apps,
       relationships: relationships,
       relationships_by_id: relationships_by_id,
@@ -926,11 +944,11 @@ defmodule EbbServer.Storage.Writer do
      - cf_action_dedup: action_id → GSN (duplicate detection)
      - cf_entity_actions: (subject_id, max GSN in this flush) → the
        subject's sorted GSN list for the flush (materialization index)
-     - cf_component_entities: (name, subject_id) → <<>>, one model entry per
-       row plus one component entry per component the row carries
      - cf_group_actions: (group_id, GSN) → action_id (group catch-up index)
 
-     Updates are stored once, inside the `cf_actions` value.
+     Updates are stored once, inside the `cf_actions` value. After the range
+     is durable the derived component index is applied in memory: one model
+     entry per row plus one component entry per component the row carries.
   4. Marks affected entities dirty and replies to each caller with its
      contiguous sub-range.
 
@@ -2259,9 +2277,29 @@ defmodule EbbServer.Storage.Writer do
         apply_cache_mutations(batch.cache_mutations, state)
       end
 
+    apply_component_index(batch, state)
+
     {:ok, affected_actors}
   rescue
     error -> {:error, error}
+  end
+
+  # Derived state: the index is applied only once the range is durable, so a
+  # failed commit never leaves an entry a restart would have to undo. The
+  # flush's per-Action ops reduce last-wins per key, exactly as the old
+  # column-family batch did.
+  defp apply_component_index(%Batch{prepared: prepared}, state) do
+    if component_entities_ablated?(state) do
+      :ok
+    else
+      prepared
+      |> Enum.map(& &1.component_entity_ops)
+      |> ComponentEntityIndex.reduce_batch_ops()
+      |> ComponentEntityIndex.apply_ops(
+        component_index: state.component_index,
+        component_entity_labels: state.component_entity_labels
+      )
+    end
   end
 
   defp apply_cache_mutations(mutations, state) do
@@ -2374,8 +2412,8 @@ defmodule EbbServer.Storage.Writer do
   # Writer, and the new Writer reconciles on init.
   defp escalate_cache_failure(gsn_start, gsn_end, reason) do
     Logger.error(
-      "Writer committed GSN range #{gsn_start}..#{gsn_end} but a cache update failed " <>
-        "(#{inspect(reason)}); terminating SystemCache to rebuild the storage tree"
+      "Writer committed GSN range #{gsn_start}..#{gsn_end} but a cache or derived-index " <>
+        "update failed (#{inspect(reason)}); terminating SystemCache to rebuild the storage tree"
     )
 
     case Process.whereis(EbbServer.Storage.SystemCache) do
