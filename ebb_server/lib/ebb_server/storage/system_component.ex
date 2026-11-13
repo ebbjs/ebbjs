@@ -4,16 +4,31 @@ defmodule EbbServer.Storage.SystemComponent do
 
   `ebb/` is the platform namespace. A row that carries only platform
   components is committed under the model `ebb`; the **component** is what
-  names its kind, so every module asks `kind/1` about a component rather than
-  a model, and reads `source_id` and friends through the component's value
-  here.
+  names its kind, so every module asks `kind/1` about a component rather
+  than a model, and reads `source_id` and friends through the component's
+  value here.
 
-  | kind         | component        | value                                        |
-  | ------------ | ---------------- | -------------------------------------------- |
-  | `:group`     | `ebb/group`      | `{name, apps}`                               |
-  | `:grant`     | `ebb/grant`      | `{actor_id, group_id, permissions}`          |
-  | `:membership`| `ebb/membership` | `{entity_id, group_id}`                      |
-  | `:link`      | `ebb/link`       | `{source_id, target_id, type, field}`        |
+  | kind          | component        | value                                 | scope owner | by-id cache           |
+  | ------------- | ---------------- | ------------------------------------- | ----------- | --------------------- |
+  | `:grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`   | `group_id`  | `:group_members_by_id` |
+  | `:membership` | `ebb/membership` | `{entity_id, group_id}`               | `group_id`  | `:entity_groups_by_id` |
+  | `:link`       | `ebb/link`       | `{source_id, target_id, type, field}` | `source_id` | `:relationships_by_id` |
+  | `:group`      | `ebb/group`      | `{name, apps}`                        | `self`      | `:group_apps`          |
+
+  The **scope owner** is how a row's write finds its group set, and
+  `EbbServer.Storage.EntityIndex` reads it here rather than dispatching on
+  a kind. There are three shapes: `:self` means the row's own id is its
+  group set; `{:field, name, :group}` means the value at `name` is a group
+  id and a group owns itself; `{:field, name, :entity}` means the value at
+  `name` is an entity id and the scope is that entity's membership set.
+  A component with no declaration is a user component, whose scope is its
+  own membership set.
+
+  The **by-id cache** is the `opts` key of the one cache that can answer
+  "which row has this id?" for the kind. All four store `{id, row}` rows,
+  so a reader needs one generic lookup rather than a per-kind module call.
+  `:group_apps` stays optional: a caller that only resolves user entities
+  need not pass it.
 
   Each value is **atomic**: one Update carries the whole object, so a torn
   edge, membership, or grant is unrepresentable and there is no "wire value
@@ -25,34 +40,88 @@ defmodule EbbServer.Storage.SystemComponent do
   (`(entity_id, group_id)` and `source_id`); the authorizer refuses a
   re-point and says so. Which of the four a *stored* id carries cannot be
   read off an Update — a delete names no component — so that question is
-  `EbbServer.Storage.EntityIndex.kind/2`, which reads the by-id caches.
+  `EbbServer.Storage.EntityIndex.kind/2`, which scans the by-id caches in
+  `kinds/0` order.
   """
 
   @model "ebb"
 
-  @kinds [:group, :grant, :membership, :link]
+  # Declaration order is the by-id precedence of `EntityIndex.kind/2`.
+  @declarations [
+    grant: %{
+      name: "ebb/grant",
+      scope: {:field, "group_id", :group},
+      by_id: :group_members_by_id
+    },
+    membership: %{
+      name: "ebb/membership",
+      scope: {:field, "group_id", :group},
+      by_id: :entity_groups_by_id
+    },
+    link: %{
+      name: "ebb/link",
+      scope: {:field, "source_id", :entity},
+      by_id: :relationships_by_id
+    },
+    group: %{
+      name: "ebb/group",
+      scope: :self,
+      by_id: :group_apps
+    }
+  ]
 
-  @components %{
-    group: "ebb/group",
-    grant: "ebb/grant",
-    membership: "ebb/membership",
-    link: "ebb/link"
-  }
-  @kinds_by_component Map.new(@components, fn {kind, name} -> {name, kind} end)
+  @kinds Keyword.keys(@declarations)
+  @components Map.new(@declarations)
+  @kinds_by_component Map.new(@declarations, fn {kind, declaration} ->
+                        {declaration.name, kind}
+                      end)
 
   @type kind :: :group | :grant | :membership | :link
+  @type scope :: :self | {:field, String.t(), :group | :entity}
 
   @doc "The model every platform row is committed under."
   @spec model() :: String.t()
   def model, do: @model
 
-  @doc "The four kinds, in declaration order."
+  @doc """
+  The four kinds in declaration order.
+
+  That order is `EbbServer.Storage.EntityIndex.kind/2`'s by-id
+  precedence: ids are not model-unique here, so a colliding id answers the
+  same kind it always has.
+  """
   @spec kinds() :: [kind()]
   def kinds, do: @kinds
 
   @doc "The component name for a kind."
   @spec component(kind()) :: String.t()
-  def component(kind), do: Map.fetch!(@components, kind)
+  def component(kind), do: Map.fetch!(@components, kind).name
+
+  @doc """
+  How a kind's write resolves its group set.
+
+  `:self`, `{:field, name, :group}`, `{:field, name, :entity}`, or `nil`
+  for something that is not a platform kind.
+  """
+  @spec scope(term()) :: scope() | nil
+  def scope(kind) do
+    case Map.fetch(@components, kind) do
+      {:ok, %{scope: scope}} -> scope
+      :error -> nil
+    end
+  end
+
+  @doc """
+  The `opts` key of the kind's by-id cache, or `nil` for a non-platform
+  kind.
+  """
+  @spec by_id(term()) :: atom() | nil
+  def by_id(kind) do
+    case Map.fetch(@components, kind) do
+      {:ok, %{by_id: cache}} -> cache
+      :error -> nil
+    end
+  end
 
   @doc "The kind a component name names, or `nil` for a non-platform component."
   @spec kind(term()) :: kind() | nil

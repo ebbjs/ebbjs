@@ -5,6 +5,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
   alias EbbServer.Storage.EntityGroupCache
   alias EbbServer.Storage.EntityIndex
   alias EbbServer.Storage.EntityTypeCache
+  alias EbbServer.Storage.GroupAppsCache
   alias EbbServer.Storage.GroupCache
   alias EbbServer.Storage.RelationshipCache
 
@@ -18,6 +19,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
     eg_by_id = :"ei_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"ei_egbg_#{System.unique_integer([:positive])}"
     entity_types = :"ei_et_#{System.unique_integer([:positive])}"
+    group_apps = :"ei_ga_#{System.unique_integer([:positive])}"
+    :ets.new(group_apps, [:set, :public, :named_table])
 
     {:ok, _} =
       RelationshipCache.start_link(
@@ -68,7 +71,18 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       EntityTypeCache.reset(entity_types: entity_types)
 
-      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_types] do
+      for t <- [
+            rel,
+            rbi,
+            gm,
+            gm_by_id,
+            gm_by_group,
+            eg,
+            eg_by_id,
+            eg_by_group,
+            entity_types,
+            group_apps
+          ] do
         try do
           :ets.delete(t)
         rescue
@@ -86,7 +100,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
       entity_groups: eg,
       entity_groups_by_id: eg_by_id,
       entity_groups_by_group: eg_by_group,
-      entity_types: entity_types
+      entity_types: entity_types,
+      group_apps: group_apps
     }
   end
 
@@ -96,7 +111,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
       entity_groups_by_id: t.entity_groups_by_id,
       entity_types: t.entity_types,
       relationships_by_id: t.relationships_by_id,
-      group_members_by_id: t.group_members_by_id
+      group_members_by_id: t.group_members_by_id,
+      group_apps: t.group_apps
     ]
   end
 
@@ -105,6 +121,10 @@ defmodule EbbServer.Storage.EntityIndexTest do
       relationships: t.relationships,
       relationships_by_id: t.relationships_by_id
     )
+  end
+
+  defp put_group(t, group_id, apps \\ []) do
+    GroupAppsCache.put_group_apps(group_id, apps, group_apps: t.group_apps)
   end
 
   defp put_membership(t, entity_id, group_id, id) do
@@ -299,6 +319,80 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
+  describe "kind/2" do
+    test "answers each platform kind from its by-id cache" do
+      t = tables()
+
+      :ok = put_group(t, "g_1", ["notes"])
+
+      :ok =
+        GroupCache.put_group_member(
+          %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: []},
+          group_members: t.group_members,
+          group_members_by_id: t.group_members_by_id,
+          group_members_by_group: t.group_members_by_group
+        )
+
+      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
+      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
+
+      assert EntityIndex.kind("gm_1", opts(t)) == :grant
+      assert EntityIndex.kind("eg_1", opts(t)) == :membership
+      assert EntityIndex.kind("rel_1", opts(t)) == :link
+      assert EntityIndex.kind("g_1", opts(t)) == :group
+      assert EntityIndex.kind("todo_1", opts(t)) == nil
+    end
+
+    # The declaration order is the by-id precedence: ids are not model-unique,
+    # so a colliding id must keep answering the kind it always has.
+    test "prefers the earlier declaration when an id collides" do
+      t = tables()
+
+      :ok = put_group(t, "collision")
+      :ok = put_membership(t, "todo_1", "g_1", "collision")
+
+      assert EntityIndex.kind("collision", opts(t)) == :membership
+    end
+
+    test "a cache the caller omits holds no row" do
+      t = tables()
+
+      :ok = put_group(t, "g_1")
+
+      assert EntityIndex.kind("g_1", Keyword.delete(opts(t), :group_apps)) == nil
+    end
+
+    # A planned group row shadows the cache. Its `apps` value may be nil
+    # (unscoped) while the row still exists.
+    test "counts a planned group row whose apps value is nil" do
+      t = tables()
+
+      overlay =
+        CacheMutationPlanner.Overlay.put(
+          CacheMutationPlanner.Overlay.empty(),
+          {:group_apps, "g_planned"},
+          nil
+        )
+
+      assert EntityIndex.kind("g_planned", opts(t) ++ [overlay: overlay]) == :group
+    end
+
+    test "a planned tombstone hides a cached group" do
+      t = tables()
+
+      :ok = put_group(t, "g_1")
+
+      overlay =
+        CacheMutationPlanner.Overlay.put(
+          CacheMutationPlanner.Overlay.empty(),
+          {:group_apps, "g_1"},
+          :deleted
+        )
+
+      assert EntityIndex.kind("g_1", opts(t) ++ [overlay: overlay]) == nil
+    end
+  end
+
   describe "fan_out_groups/2" do
     test "prefers the wire group for a not-yet-cached membership row" do
       t = tables()
@@ -438,42 +532,29 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
-  describe "relationship_groups/4" do
-    test "prefers the wire source_id for a put on a not-yet-cached row" do
+  # A link row the Action itself wrote has no stored row yet; the put's source
+  # is the only scope the delete can have (`:intra_relationship_sources`).
+  describe "resolve_groups/3 for a link row the Action wrote" do
+    test "falls back to the Action's own source when the row is not cached" do
       t = tables()
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      assert EntityIndex.relationship_groups(:put, "todo_1", "rel_new", opts(t)) == ["g_1"]
+      opts = opts(t) ++ [intra_relationship_sources: %{"rel_new" => "todo_1"}]
+
+      assert EntityIndex.resolve_groups(:link, "rel_new", opts) == ["g_1"]
     end
 
-    test "falls back to the by-id edge's source on a delete (no wire source)" do
-      t = tables()
-
-      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
-      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
-
-      assert EntityIndex.relationship_groups(:delete, nil, "rel_1", opts(t)) == ["g_1"]
-    end
-
-    test "resolves a delete from the stored row, whatever the wire source says" do
-      t = tables()
-
-      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
-      :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
-      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
-
-      assert EntityIndex.relationship_groups(:delete, "todo_attacker", "rel_victim", opts(t)) == [
-               "g_victim"
-             ]
-    end
-
-    test "uses the wire source for a delete when no committed row exists" do
+    test "scopes a link delete with no stored row through the Action's source" do
       t = tables()
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      assert EntityIndex.relationship_groups(:delete, "todo_1", "rel_new", opts(t)) == ["g_1"]
+      update = system_update(:link, "rel_new", :delete, nil)
+      opts = opts(t) ++ [intra_relationship_sources: %{"rel_new" => "todo_1"}]
+
+      assert EntityIndex.fan_out_preference(update, opts) == {:by_id, :link}
+      assert EntityIndex.fan_out_groups(update, opts) == ["g_1"]
     end
   end
 end
