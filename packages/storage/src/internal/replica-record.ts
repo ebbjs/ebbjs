@@ -2,14 +2,10 @@ import type { Entity } from "@ebbjs/core";
 import type { ReplicaRecord } from "../types/replica-store";
 
 /**
- * The record shape this build writes. A record written by another format
- * is treated as absent rather than partially hydrated, so a shape change
- * can never smuggle a stale base into the replica.
- *
- * Format 3 added `notResident`: residency is per component, so a persisted
- * row may carry only its held components.
+ * The record shape this build writes. A record written by another format reads
+ * as absent, so a shape change cannot smuggle a stale base into the replica.
  */
-export const REPLICA_RECORD_FORMAT = 3;
+export const REPLICA_RECORD_FORMAT = 4;
 
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
@@ -23,6 +19,23 @@ const isRowShape = (value: unknown): value is Entity =>
   ((value as { created_hlc?: unknown }).created_hlc === null ||
     typeof (value as { created_hlc?: unknown }).created_hlc === "string");
 
+/** A positive integer version stamp, or `false` for anything else. */
+const isVersion = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1;
+
+const isComponentVersionsShape = (
+  value: unknown,
+): value is Record<string, Readonly<Record<string, number>>> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (versions) =>
+      typeof versions === "object" &&
+      versions !== null &&
+      !Array.isArray(versions) &&
+      Object.values(versions).every(isVersion),
+  );
+};
+
 const isNotResidentShape = (value: unknown): value is Record<string, readonly string[]> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   return Object.values(value).every(
@@ -34,9 +47,9 @@ const isNotResidentShape = (value: unknown): value is Record<string, readonly st
 /**
  * A record is readable only when it names a format this build understands
  * and is structurally whole. Anything else — a bad format, a negative or
- * fractional watermark, a non-array entity set, a malformed row, or a
- * malformed not-resident map — reads as absent, so load falls back to full
- * replay.
+ * fractional watermark, a non-array entity set, a malformed row, a malformed
+ * not-resident map, or a malformed component-version map — reads as absent, so
+ * load falls back to full replay.
  */
 export const isValidReplicaRecord = (value: unknown): value is ReplicaRecord => {
   if (typeof value !== "object" || value === null) return false;
@@ -46,5 +59,6 @@ export const isValidReplicaRecord = (value: unknown): value is ReplicaRecord => 
   if (!isNonNegativeInteger(record.revision)) return false;
   if (!Array.isArray(record.entities)) return false;
   if (record.notResident !== undefined && !isNotResidentShape(record.notResident)) return false;
+  if (!isComponentVersionsShape(record.componentVersions)) return false;
   return record.entities.every(isRowShape);
 };

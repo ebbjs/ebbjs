@@ -39,8 +39,23 @@ export interface MaterializationPolicy {
   holds(component: string): boolean;
 }
 
+/**
+ * The declared version of a component (`<model>/<leaf>`). The replica stamps
+ * this on a write so a later schema upgrade can read-migrate a stored value
+ * from the version it was materialized at (#804).
+ */
+export interface ComponentVersionPolicy {
+  declared(component: string): number;
+}
+
 export interface ReplicaOptions {
   readonly materialization?: MaterializationPolicy;
+  /**
+   * Declared component versions. A write stamps its component at the declared
+   * version; a loaded record keeps the stamps it persisted. Without it every
+   * component is version 1.
+   */
+  readonly versions?: ComponentVersionPolicy;
   /**
    * Reads one component from the local stores when `open(id, component)` misses.
    * The returned row carries the component's value and the row metadata; the
@@ -186,6 +201,12 @@ export interface Replica {
   isComponentResident(id: string, component: string): boolean;
   /** Component names whose value is resident for `id`, in field order. */
   residentComponents(id: string): readonly string[];
+  /**
+   * The declared version `id`'s component was last materialized at, or
+   * `undefined` when the replica holds no stamp for it. A composed view with
+   * an optimistic write to the component reports the declared version.
+   */
+  componentVersion(id: string, component: string): number | undefined;
   /**
    * Changes newer than `revision`, ascending. Empty when the cursor predates
    * `changeFloor`, where the trimmed journal can no longer answer it.

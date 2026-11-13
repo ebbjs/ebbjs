@@ -45,6 +45,7 @@ describe("IndexedDB ReplicaStore corruption", () => {
     await db.put("replicaCursor", {
       id: REPLICA_CURSOR_ID,
       format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
       position: 0,
       revision: 0,
     });

@@ -52,10 +52,12 @@ import type { IndexRows } from "../internal/reverse-index";
  * 12 adds `holds` to the persisted conflict payload (issue #801): the
  * positions a detected conflict keeps off the wire. The payload shape changed,
  * so a database below 12 is discarded rather than reading a conflict without
- * its holds. Bump this when adding or changing object stores, or when a
- * persisted row shape changes.
+ * its holds. Version 13 adds `componentVersions` to the replica cursor (issue
+ * #804): the persisted record gained the version each component was
+ * materialized at, so a database below 13 is discarded. Bump this when adding
+ * or changing object stores, or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 12;
+export const EBB_SCHEMA_VERSION = 13;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -74,6 +76,9 @@ const COMPONENT_INDEX_RESET_VERSION = 11;
 
 /** The version at which a persisted conflict gained its component holds. */
 const COMPONENT_HOLD_RESET_VERSION = 12;
+
+/** The version at which the replica record gained component version stamps. */
+const COMPONENT_VERSION_RESET_VERSION = 13;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -199,7 +204,13 @@ export interface EbbDBSchema extends DBSchema {
    */
   replicaCursor: {
     key: string;
-    value: { id: string; format: number; position: number; revision: number };
+    value: {
+      id: string;
+      format: number;
+      position: number;
+      revision: number;
+      componentVersions: Readonly<Record<string, Readonly<Record<string, number>>>>;
+    };
   };
 }
 
@@ -237,6 +248,7 @@ export const createEbbStores = (
     TEXT_CELL_FORMAT_RESET_VERSION,
     COMPONENT_INDEX_RESET_VERSION,
     COMPONENT_HOLD_RESET_VERSION,
+    COMPONENT_VERSION_RESET_VERSION,
   ];
   const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {

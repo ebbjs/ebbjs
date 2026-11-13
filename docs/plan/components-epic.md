@@ -862,17 +862,41 @@ migrations only, as #124 specifies; the log stays untouched.
 
 **Work.**
 
-- [ ] `version` on `defineComponent`, defaulting to 1; the schema hash covers it.
-- [ ] `defineMigration(component, from, to, fn)`; the registry rejects gaps and cycles.
-- [ ] Materialization runs migrations per component, memoised by `(component, version)`.
-- [ ] `minSupportedVersion` stays per model (it gates the handshake, which is a whole-client
+- [x] `version` on `defineComponent`, defaulting to 1; the schema hash covers it.
+- [x] `defineMigration(component, from, to, fn)`; the registry rejects gaps and cycles.
+- [x] Materialization runs migrations per component, memoised by `(component, version)`.
+- [x] `minSupportedVersion` stays per model (it gates the handshake, which is a whole-client
       question), not per component.
-- [ ] A component whose stored version exceeds the declared one fails loudly (#698's surface).
+- [x] A component whose stored version exceeds the declared one fails loudly (#698's surface).
 
 **Acceptance.** A renamed leaf on one component migrates without touching the other components of
 the same row; a missing migration step fails at boot, not at read.
 
 **Depends on.** 2.
+
+**Current state.** Shipped in [#804](https://github.com/ebbjs/ebbjs/issues/804). `version` is
+declared on `defineComponent` (an integer >= 1, default 1) and is already in the schema hash
+through the model's component map. `defineMigration(component, from, to, fn)` declares one up step;
+`defineSchema({ migrations })` builds the registry and validates it at boot: every step names a
+declared component, the chain starts at 1, is contiguous and acyclic, and lands exactly on the
+declared version, so a missing step throws from `defineSchema` rather than surfacing on a read. The
+replica persists a `componentVersions` map beside a record's rows and bumps the record to format
+4, stamps a write at the declared version, and exposes
+`componentVersion(id, component)`. Projection (`projectEntity` / `projectedFieldValue`) applies the
+composed chain, memoised per `(component, from, declared)` with a projected map memoised by value
+identity; a stored version above the declaration throws `ComponentVersionAheadError`.
+`minSupportedVersion` stays the schema's handshake floor, not a per-component declaration.
+
+Three limits are recorded rather than resolved. The wire and the log carry no version, so a value
+this session materialized from the log or a cold read is assumed current: read migrations cover
+the client's own persisted upgrade path, not data another client wrote against an older schema.
+Migrations run at projection, so the materialized base keeps the stored shape — `replica.get`,
+`toRaw()`, conflict slots, and history read the log-side value, while projected rows, ordering, and
+the relationship/membership/reverse accessor chains see the migrated one. A forward-one accessor
+returns the stored `Entity` and a field _filter_ still compares the stored wire value, so a renamed
+leaf is not visible there until the discipline's write populates it. And `defineComponent` now
+validates `version`, so a non-integer or non-positive declaration fails at construction instead of
+being stored and comparing oddly.
 
 ---
 

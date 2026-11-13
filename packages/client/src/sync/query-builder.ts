@@ -55,7 +55,7 @@
  * is untouched.
  */
 
-import type { Entity } from "@ebbjs/core";
+import { componentName, type Entity } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
@@ -81,6 +81,7 @@ import {
   type PlanExecutor,
 } from "./query-execute";
 import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
+import type { ComponentMigrations } from "./migrations";
 
 /**
  * Raised when a chain's source type is materialized on demand. A scan is
@@ -129,10 +130,11 @@ export { projectFieldValue } from "@ebbjs/write";
 export function projectEntity<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): Static<TObject<ShapeFields<TFields>>> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
-    out[key] = resolveFieldValue(entity, key, shape.properties[key]);
+    out[key] = resolveFieldValue(entity, key, shape.properties[key], migrations);
   }
   return out as Static<TObject<ShapeFields<TFields>>>;
 }
@@ -147,10 +149,16 @@ const resolveFieldValue = (
   entity: Entity,
   field: string,
   property: TSchema | undefined,
+  migrations?: ComponentMigrations,
 ): unknown => {
   const raw = entity.data?.fields?.[field];
-  const stored = raw === undefined ? undefined : projectFieldValue(raw);
-  return stored ?? readDefault(property);
+  if (raw === undefined) return readDefault(property);
+  const stored = projectFieldValue(raw);
+  const value =
+    migrations === undefined
+      ? stored
+      : migrations.project(entity.id, componentName(entity.type, field), stored);
+  return value ?? readDefault(property);
 };
 
 /**
@@ -161,7 +169,8 @@ export const projectedFieldValue = (
   entity: Entity,
   field: string,
   shape: TObject<Record<string, TSchema>>,
-): unknown => resolveFieldValue(entity, field, shape.properties[field]);
+  migrations?: ComponentMigrations,
+): unknown => resolveFieldValue(entity, field, shape.properties[field], migrations);
 
 /**
  * A materialized entity projected to the schema's shape, plus the
@@ -211,16 +220,18 @@ export type QueryRow<TFields extends Record<string, TSchema>> = Omit<
 export function projectRow<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): ProjectedRow<TFields> {
-  return { ...projectEntity(entity, shape), id: entity.id };
+  return { ...projectEntity(entity, shape, migrations), id: entity.id };
 }
 
 /** Project every row in a list. Pure; each row carries the entity id. */
 export function projectRows<TFields extends Record<string, TSchema>>(
   rows: readonly Entity[],
   shape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): readonly ProjectedRow<TFields>[] {
-  return rows.map((row) => projectRow(row, shape));
+  return rows.map((row) => projectRow(row, shape, migrations));
 }
 
 /**
@@ -233,8 +244,9 @@ export function projectQueryRow<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
   groupIds: readonly string[],
+  migrations?: ComponentMigrations,
 ): QueryRow<TFields> {
-  return { ...projectEntity(entity, shape), id: entity.id, groupIds };
+  return { ...projectEntity(entity, shape, migrations), id: entity.id, groupIds };
 }
 
 /** What a query without schema relationships can join: nothing. */
@@ -346,6 +358,8 @@ export interface QueryContext {
   hydrated(): boolean;
   /** Bring the replica up to date before the plan runs. Memoized by the client. */
   hydrate(): Promise<void>;
+  /** Read migrations for stored component versions, when the schema declares any. */
+  readonly migrations?: ComponentMigrations;
 }
 
 /** Loader for the candidate entity list. Resolved lazily on each materialization. */
@@ -524,9 +538,10 @@ export interface QueryBuilder<
 export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
   candidates: readonly Entity[],
   shape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => candidates;
-  return buildLazyQueryBuilder(loader, shape);
+  return buildLazyQueryBuilder(loader, shape, migrations);
 }
 
 /**
@@ -538,10 +553,11 @@ export function buildQueryBuilder<TFields extends Record<string, TSchema>>(
 export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
   loadCandidates: LoadEntities,
   shape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): QueryBuilder<TFields> {
   const loadExecutor = async (): Promise<PlanExecutor> =>
     createRowsExecutor(await loadCandidates());
-  const projectBase = (row: Entity): ProjectedRow<TFields> => projectRow(row, shape);
+  const projectBase = (row: Entity): ProjectedRow<TFields> => projectRow(row, shape, migrations);
   return buildChain(emptyQuery(""), shape, undefined, loadExecutor, projectBase);
 }
 
@@ -562,12 +578,12 @@ export function buildReplicaQueryBuilder<
 ): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
   if (!modelIsHeld(context, source)) throw new OnDemandQueryError(source);
   const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
-    projectQueryRow(row, shape, entityGroupIds(row.id, executor));
+    projectQueryRow(row, shape, entityGroupIds(row.id, executor), context.migrations);
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = createReplicaExecutor(context.replica);
     return projectResultRows(
       executePlan(planQuery(query), executor, (entity, field) =>
-        projectedFieldValue(entity, field, shape),
+        projectedFieldValue(entity, field, shape, context.migrations),
       ),
       query,
       executor,
@@ -577,7 +593,7 @@ export function buildReplicaQueryBuilder<
   };
   const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
     const run = await runProjectingPlan(query, replicaExecutor(context), context, (entity, field) =>
-      projectedFieldValue(entity, field, shape),
+      projectedFieldValue(entity, field, shape, context.migrations),
     );
     return projectResultRows(run.rows, query, run.executor, context, projectBase);
   };
@@ -730,7 +746,7 @@ const readJoinedRow = (
 ): ProjectedRow<Record<string, TSchema>> | null => {
   const row = executor.get(id);
   if (row === undefined || row.deleted_hlc !== null || row.type !== join.target) return null;
-  return projectRow(row, shapeForJoin(context, join.target));
+  return projectRow(row, shapeForJoin(context, join.target), context?.migrations);
 };
 
 const resolveJoin = (
@@ -865,7 +881,7 @@ function buildChain<
   // Ordering reads the field as projection does, so a defaulted field sorts
   // by its default instead of sorting unset rows elsewhere.
   const resolveOrderField: FieldResolver = (entity, field) =>
-    projectedFieldValue(entity, field, shape);
+    projectedFieldValue(entity, field, shape, context?.migrations);
   const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     if (context === undefined || syncRun === undefined) {
       return createLocalQueryStore(async () => {

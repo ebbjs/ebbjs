@@ -20,6 +20,7 @@ import type {
 } from "@ebbjs/storage/types";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
+import type { ComponentMigrations } from "./migrations";
 import { type LoadEntities, type QueryBuilder, buildLazyQueryBuilder } from "./query-builder";
 import { recordTraversalRows } from "./traversal-counter";
 
@@ -117,6 +118,7 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
   targetShape: TObject<TFields>,
   field: string,
   type: string,
+  migrations?: ComponentMigrations,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
     const source = await loadEntity(readLocalEntity, sourceId);
@@ -127,7 +129,7 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
     const targetIds = [...new Set(links.map((link) => link.targetId))];
     return loadRows(readLocalEntity, targetIds, targetName);
   };
-  return buildLazyQueryBuilder(loader, targetShape);
+  return buildLazyQueryBuilder(loader, targetShape, migrations);
 }
 
 /**
@@ -141,6 +143,7 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
   sourceId: string,
   targetName: string,
   targetShape: TObject<TFields>,
+  migrations?: ComponentMigrations,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
     const memberships = await adjacency.membershipsOf(sourceId);
@@ -150,7 +153,7 @@ export function membershipGroups<TFields extends Record<string, TSchema>>(
     const groupIds = [...new Set(memberships.map((membership) => membership.groupId))];
     return loadRows(readLocalEntity, groupIds, targetName);
   };
-  return buildLazyQueryBuilder(loader, targetShape);
+  return buildLazyQueryBuilder(loader, targetShape, migrations);
 }
 
 /**
@@ -172,13 +175,14 @@ export function reverse<TFields extends Record<string, TSchema>>(
   sourceShape: TObject<TFields>,
   field: string,
   type: string,
+  migrations?: ComponentMigrations,
 ): QueryBuilder<TFields> {
   const loader: LoadEntities = async () => {
     const sourceIds = await adjacency.reverseSourceIds({ as: field, type, targetId });
     recordTraversalRows(sourceIds.length);
     return loadRows(readLocalEntity, sourceIds, sourceName);
   };
-  return buildLazyQueryBuilder(loader, sourceShape);
+  return buildLazyQueryBuilder(loader, sourceShape, migrations);
 }
 
 /** Load one row and count it as examined by the traversal. */

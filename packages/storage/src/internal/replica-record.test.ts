@@ -8,6 +8,7 @@ const validRecord = (): unknown => ({
   position: 3,
   revision: 1,
   entities: [buildTodoEntity("todo_1", "Hello", makeHlc(HLC_BASE))],
+  componentVersions: {},
 });
 
 describe("isValidReplicaRecord", () => {

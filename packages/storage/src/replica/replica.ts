@@ -147,8 +147,12 @@ interface Snapshot {
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const policy = options?.materialization ?? holdAll;
   const holds = (component: string): boolean => policy.holds(component);
+  const declaredVersion = (component: string): number =>
+    options?.versions?.declared(component) ?? 1;
 
   const entities = new Map<string, Entity>();
+  /** The declared version each component's value was materialized at (#804). */
+  const componentVersions = new Map<string, Map<string, number>>();
   const dormant = new Map<string, Set<string>>();
   const modelIndex = new Map<string, Set<string>>();
   let componentIndex: ComponentIndex = new Map();
@@ -414,6 +418,20 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
+  /** Record the version an explicit component write materializes at. */
+  const stampVersion = (id: string, component: string, version: number): void => {
+    const stamps = componentVersions.get(id);
+    if (stamps === undefined) componentVersions.set(id, new Map([[component, version]]));
+    else stamps.set(component, version);
+  };
+
+  const forgetVersion = (id: string, component: string): void => {
+    const stamps = componentVersions.get(id);
+    if (stamps === undefined) return;
+    stamps.delete(component);
+    if (stamps.size === 0) componentVersions.delete(id);
+  };
+
   const applyBaseUpdate = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
     const previous = entities.get(id) ?? null;
@@ -426,6 +444,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return;
     }
 
+    if (update.method === "drop") forgetVersion(id, update.component);
+    else if (update.method !== "delete") {
+      stampVersion(id, update.component, declaredVersion(update.component));
+    }
+
     if (update.method !== "delete") {
       const component = update.component;
       const residentComponent = holds(component) || pins.has(pinKey(id, component));
@@ -434,6 +457,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
           // A component the policy does not hold and no pin covers is not
           // retained. Its existence is all the replica remembers until a held
           // component makes the row resident.
+          forgetVersion(id, component);
           notePendingPresence(id, component, update.method !== "drop");
           return;
         }
@@ -463,6 +487,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       entities.delete(id);
       dormant.delete(id);
+      componentVersions.delete(id);
       removeFromModel(previous.type, id);
       return;
     }
@@ -476,6 +501,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       // `resync` journals that removal from the composed-view comparison.
       entities.delete(id);
       dormant.delete(id);
+      componentVersions.delete(id);
       if (previous !== null) removeFromModel(previous.type, id);
       else orphans.delete(id);
       return;
@@ -661,6 +687,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const removeRow = (id: string): void => {
     const base = entities.get(id);
     entities.delete(id);
+    componentVersions.delete(id);
     dormant.delete(id);
     overlay.delete(id);
     effective.delete(id);
@@ -699,6 +726,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     entities.clear();
     modelIndex.clear();
     dormant.clear();
+    componentVersions.clear();
     orphans.clear();
     overlay.clear();
     effective.clear();
@@ -737,7 +765,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         }
       }
       const carried = Object.keys(entity.data.fields).length > 0 || offloaded.size > 0;
-      if (carried && Object.keys(fields).length === 0) continue;
+      const carriedComponents = [
+        ...Object.keys(entity.data.fields).map((field) => componentName(entity.type, field)),
+        ...offloaded,
+      ];
+      const stamps = new Map<string, number>();
+      for (const component of carriedComponents) {
+        stamps.set(
+          component,
+          record.componentVersions[entity.id]?.[component] ?? declaredVersion(component),
+        );
+      }
+      if (carried && Object.keys(fields).length === 0) {
+        // The row is not resident, but an open later reads it from the store.
+        if (stamps.size > 0) componentVersions.set(entity.id, stamps);
+        continue;
+      }
       // A row with every component held is adopted whole: the record's row is
       // the row the replica keeps, so a load does not duplicate it.
       const row =
@@ -751,11 +794,18 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         ...Object.keys(fields).map((field) => componentName(row.type, field)),
         ...offloaded,
       ];
+      if (stamps.size > 0) componentVersions.set(row.id, stamps);
       presence.push({ id: row.id, components });
       const reverseEntry = indexEntryFor(row);
       if (reverseEntry !== null) add(reverse, reverseEntry);
       const forwardEntry = forwardIndexEntryFor(row);
       if (forwardEntry !== null) add(forward, forwardEntry);
+    }
+    // An all-on-demand row has no `entities` entry; its stamps come back here.
+    for (const [id, stamps] of Object.entries(record.componentVersions)) {
+      if (componentVersions.has(id)) continue;
+      const entries = Object.entries(stamps);
+      if (entries.length > 0) componentVersions.set(id, new Map(entries));
     }
     componentIndex = buildComponentIndexFrom(presence);
     reverseIndex = reverse;
@@ -784,6 +834,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // value still persists its existence.
     const persisted: Entity[] = [];
     const notResident: Record<string, readonly string[]> = {};
+    const versions: Record<string, Record<string, number>> = {};
     for (const row of entities.values()) {
       const components = presenceOfRow(row.id, row);
       const held = components.filter(holds);
@@ -795,12 +846,26 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       persisted.push(withWireMapFields({ ...row, data: { fields } }));
       const offloaded = components.filter((component) => !holds(component));
       if (offloaded.length > 0) notResident[row.id] = offloaded;
+      // A session-materialized component has no stamp; persist the declaration.
+      const stamps: Record<string, number> = {};
+      for (const component of components) {
+        stamps[component] =
+          componentVersions.get(row.id)?.get(component) ?? declaredVersion(component);
+      }
+      if (Object.keys(stamps).length > 0) versions[row.id] = stamps;
+    }
+    // All-on-demand rows are not in `entities`; persist their stamps here.
+    for (const [id, stamps] of componentVersions) {
+      if (versions[id] !== undefined || stamps.size === 0) continue;
+      versions[id] = Object.fromEntries(stamps);
+      notResident[id] = [...stamps.keys()];
     }
     const record: ReplicaRecord = {
       format: REPLICA_RECORD_FORMAT,
       position,
       revision,
       entities: persisted,
+      componentVersions: versions,
     };
     return Object.keys(notResident).length === 0 ? record : { ...record, notResident };
   };
@@ -1046,6 +1111,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return row === null ? [] : fieldComponentsOf(row);
   };
 
+  const componentVersion = (id: string, component: string): number | undefined => {
+    // An optimistic write is at the declaration it was validated against.
+    const writes = overlay.get(id);
+    if (
+      writes?.some(
+        (write) =>
+          write.update.method !== "delete" &&
+          write.update.method !== "drop" &&
+          write.update.component === component,
+      ) === true
+    ) {
+      return declaredVersion(component);
+    }
+    return componentVersions.get(id)?.get(component);
+  };
+
   return {
     get revision() {
       return revision;
@@ -1063,6 +1144,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     isOpen,
     isComponentResident,
     residentComponents,
+    componentVersion,
     changesSince,
     stats,
     relationships: (query: RelationshipQuery): readonly string[] => {

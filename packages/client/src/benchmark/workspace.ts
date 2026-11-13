@@ -34,7 +34,7 @@ export const UPDATED_AT_BASE = 1_700_000_000_000;
  * Not exported from the package, and `load` ignores a record with any other
  * value, so the fixture has to state it.
  */
-const REPLICA_RECORD_FORMAT = 3;
+const REPLICA_RECORD_FORMAT = 4;
 
 /**
  * Distinct bodies the store materializes so the windowed read path is real.
@@ -269,6 +269,7 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
 
   const record: ReplicaRecord = {
     format: REPLICA_RECORD_FORMAT,
+    componentVersions: {},
     position: 0,
     revision: 1,
     entities: [...metadata, ...recordBodyRows],

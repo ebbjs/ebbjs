@@ -29,6 +29,8 @@ export interface ReplicaRecord {
    * keyed by entity id. Existence survives a restart without the value.
    */
   readonly notResident?: Readonly<Record<string, readonly string[]>>;
+  /** The declared version each persisted component was materialized at (#804). */
+  readonly componentVersions: Readonly<Record<string, Readonly<Record<string, number>>>>;
 }
 
 /**

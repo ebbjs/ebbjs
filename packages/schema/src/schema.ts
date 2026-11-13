@@ -9,6 +9,7 @@
 
 import type { ModelDef } from "./model";
 import { ModelRegistry } from "./model-registry";
+import { MigrationRegistry, type MigrationDef, type VersionedComponent } from "./migrations";
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
 import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
@@ -172,6 +173,8 @@ export interface Schema<TModels extends Record<string, AnyModelDef>, TRelationsh
   readonly minSupportedVersion?: number;
   /** Runtime registry seeded by `defineSchema`. */
   readonly _registry: ModelRegistry;
+  /** Read-migration steps, validated against the declared component versions. */
+  readonly _migrations: MigrationRegistry;
 }
 
 /**
@@ -186,6 +189,8 @@ export interface DefineSchemaInput<
   readonly relationships?: TRelationships;
   readonly version: number;
   readonly minSupportedVersion?: number;
+  /** Up-only read migrations, one step per `(component, fromVersion)`. */
+  readonly migrations?: readonly MigrationDef[];
 }
 
 /**
@@ -214,14 +219,25 @@ export function defineSchema<
 >(input: DefineSchemaInput<TModels, TRelationships>): Schema<TModels, TRelationships> {
   const registry = new ModelRegistry();
   seedRegistry(registry, input.models, input.relationships);
+  const migrations = new MigrationRegistry();
+  for (const migration of input.migrations ?? []) migrations.register(migration);
+  migrations.validate(declaredComponents(registry));
   return Object.freeze({
     models: input.models,
     relationships: input.relationships,
     version: input.version,
     minSupportedVersion: input.minSupportedVersion,
     _registry: registry,
+    _migrations: migrations,
   }) as unknown as Schema<TModels, TRelationships>;
 }
+
+/** Every declared component, for the migration coverage check. */
+const declaredComponents = (registry: ModelRegistry): readonly VersionedComponent[] =>
+  registry
+    .modelNames()
+    .flatMap((model) => registry.componentsOf(model))
+    .map((component) => ({ name: component.name, version: component.version }));
 
 /**
  * Register the system models and the user models/relationships onto

@@ -163,6 +163,16 @@ export class ModelRegistry {
     return this.componentOf(model, name)?.loading ?? "eager";
   }
 
+  /** Version declared by a field key or full `<model>/<leaf>` name; unknown is 1. */
+  versionOf(model: string | ModelDef<Record<string, TSchema>>, name?: string): number {
+    if (name !== undefined) return this.componentOf(model, name)?.version ?? 1;
+    // A single argument is a full component name; a bare model name is not.
+    const full = modelNameOf(model);
+    const slash = full.indexOf("/");
+    if (slash < 1) return 1;
+    return this.componentOf(full.slice(0, slash), full)?.version ?? 1;
+  }
+
   /** Whether a component opts out of conflict detection. Unknown components do not. */
   isStructural(model: string | ModelDef<Record<string, TSchema>>, name: string): boolean {
     return this.componentOf(model, name)?.structural ?? false;
