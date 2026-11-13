@@ -142,11 +142,7 @@ const mkOutbox = (initial: readonly ConflictedOutboxEntry[] = []) => {
     rows = rows.filter((row) => row.action.id !== actionId);
     emit();
   });
-  const heldPending = vi.fn(
-    (
-      _holds: readonly { readonly subjectId: string; readonly component?: string }[],
-    ): readonly OutboxEntry[] => [],
-  );
+  const heldPending = vi.fn((_holds: readonly ConflictHold[]): readonly OutboxEntry[] => []);
   const dropHeld = vi.fn(async (_actionIds: readonly string[]): Promise<readonly Action[]> => []);
 
   return {
