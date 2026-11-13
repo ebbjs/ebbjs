@@ -25,6 +25,7 @@ import {
   createCounterSet,
   createCountingStore,
   createIndexCounter,
+  holdsRow,
   heldMetadata,
   replicaAdjacency,
   replicaRowReader,
@@ -61,7 +62,7 @@ const setup = (n: number) => {
   const store = createCountingStore(workspace.rows);
   const replica = createReplica({
     materialization: heldMetadata,
-    readEntity: store.read,
+    readComponent: store.read,
     pinnedCapacity: 1,
     pinnedTtlMs: 0,
   });
@@ -139,9 +140,7 @@ describe("replica read-model workspace", () => {
   it("builds the held rows the workspace record holds", () => {
     const { workspace } = setup(N);
     const held = createHeldRows(workspace.config);
-    const recordHeld = workspace.record.entities.filter((entity) =>
-      heldMetadata.holds(entity.type),
-    );
+    const recordHeld = workspace.record.entities.filter(holdsRow);
 
     expect(held.length).toBe(workspace.counts.heldRows);
     expect(held.length).toBe(recordHeld.length);
@@ -241,7 +240,7 @@ describe("replica read-model workspace", () => {
     expect(replica.get(body)).toBeUndefined();
 
     store.reset();
-    const opened = await replica.open(body);
+    const opened = await replica.open(body, `${ON_DEMAND_TYPE}/content`);
     expect(opened?.id).toBe(body);
     expect(store.snapshot()).toEqual({ calls: 1, rows: 1 });
     const content = opened?.data.fields["content"];
@@ -250,16 +249,16 @@ describe("replica read-model workspace", () => {
     );
 
     // A second open finds the pinned row: no second read.
-    await replica.open(body);
+    await replica.open(body, `${ON_DEMAND_TYPE}/content`);
     expect(store.snapshot().calls).toBe(1);
 
     // Closed with TTL 0 the row leaves, so the next open reads it again.
-    replica.close(body);
+    replica.close(body, `${ON_DEMAND_TYPE}/content`);
     expect(replica.get(body)).toBeUndefined();
-    await replica.open(body);
+    await replica.open(body, `${ON_DEMAND_TYPE}/content`);
     expect(store.snapshot().calls).toBe(2);
 
-    replica.close(body);
+    replica.close(body, `${ON_DEMAND_TYPE}/content`);
     expect(replica.stats().pinned).toBe(0);
     expect(replica.stats().byType.page_content).toBeUndefined();
   });

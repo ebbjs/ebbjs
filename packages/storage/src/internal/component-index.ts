@@ -128,3 +128,72 @@ export const buildComponentIndex = (entities: Iterable<Entity>): ComponentIndex 
 /** Ids currently carrying `component`, ascending like every other index read. */
 export const componentIds = (index: ComponentIndex, component: string): readonly string[] =>
   sortSourceIds(index.get(component) ?? []);
+
+/**
+ * The existence change a row's previous→next component sets imply. The replica
+ * derives presence from both the held values and the components it knows exist
+ * without holding (#802), so it cannot use {@link componentDelta} over rows
+ * alone.
+ */
+export const componentSetDelta = (
+  rowId: string,
+  previous: readonly string[],
+  next: readonly string[],
+): ComponentDelta | null => {
+  const before = new Set(previous);
+  const after = new Set(next);
+  const remove = previous.filter((component) => !after.has(component));
+  const add = next.filter((component) => !before.has(component));
+  if (remove.length === 0 && add.length === 0) return null;
+  return { rowId, remove, add };
+};
+
+/** Build a component index from explicit row→component sets in one linear pass. */
+export const buildComponentIndexFrom = (
+  rows: Iterable<{ readonly id: string; readonly components: readonly string[] }>,
+): ComponentIndex => {
+  const index = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const component of row.components) {
+      const ids = index.get(component);
+      if (ids === undefined) index.set(component, new Set([row.id]));
+      else ids.add(row.id);
+    }
+  }
+  return index;
+};
+
+/**
+ * Components a reader can observe changing between two versions of a row.
+ * Presence is the union of held values and known-but-not-resident components
+ * (#802), so a component can change existence without either side carrying a
+ * value. A value counts as changed by reference, matching the merge rule; a
+ * component dormant on both sides has no value on either, so it is untouched.
+ */
+export const touchedComponentSet = (
+  previous: Entity | null | undefined,
+  previousComponents: readonly string[],
+  next: Entity | null | undefined,
+  nextComponents: readonly string[],
+): readonly string[] => {
+  if (previous === next && previousComponents === nextComponents) return [];
+  if (previous === null || previous === undefined) {
+    return next === null || next === undefined ? [] : [...nextComponents];
+  }
+  if (next === null || next === undefined) return [...previousComponents];
+  if (previous.type !== next.type || tombstoned(previous) !== tombstoned(next)) {
+    return [...new Set([...previousComponents, ...nextComponents])];
+  }
+  const before = new Set(previousComponents);
+  const after = new Set(nextComponents);
+  const touched: string[] = [];
+  for (const component of new Set([...previousComponents, ...nextComponents])) {
+    if (before.has(component) !== after.has(component)) {
+      touched.push(component);
+      continue;
+    }
+    const field = component.slice(component.indexOf("/") + 1);
+    if (previous.data.fields[field] !== next.data.fields[field]) touched.push(component);
+  }
+  return touched;
+};

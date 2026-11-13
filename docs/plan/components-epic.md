@@ -1,7 +1,7 @@
 # epic(components): components are the unit of identity
 
 Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
-Slices 1–7 landed (#794–#800); 8–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Slices 1–7 and 9 landed (#794–#800, #802); 8 and 10–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -621,12 +621,12 @@ individually.
 
 **Work.**
 
-- [ ] "A row is resident iff any of its components is held, or the row is pinned."
-- [ ] `open`/`close`/`readEntity` address a `(entity, component)`; the cold-read seam returns one
+- [x] "A row is resident iff any of its components is held, or the row is pinned."
+- [x] `open`/`close`/`readEntity` address a `(entity, component)`; the cold-read seam returns one
       component's value.
-- [ ] `ReplicaStats` reports per-component residency.
-- [ ] The `materialization` option on `defineModel` becomes a default for its components.
-- [ ] Prove the #775 case end to end: a note whose body is an on-demand component holds 200 bytes
+- [x] `ReplicaStats` reports per-component residency.
+- [x] The `materialization` option on `defineModel` becomes a default for its components.
+- [x] Prove the #775 case end to end: a note whose body is an on-demand component holds 200 bytes
       of metadata and zero body bytes, and opening the body reads one component.
 
 **Acceptance.** A row with one on-demand component and three held components reports exactly one
@@ -634,6 +634,29 @@ component non-resident; a cold read reads exactly one component from storage; th
 benchmark in `503-replica-read-model.md` re-runs with resident bytes attributed per component.
 
 **Depends on.** 5, 6. **Unblocks** #665.
+
+**Current state.** Shipped in [#802](https://github.com/ebbjs/ebbjs/issues/802).
+`MaterializationPolicy.holds` takes a component (`<model>/<leaf>`) rather than a row type, and the
+client derives it from `ModelRegistry.loadingOf`, so a model-level `materialization: "on-demand"`
+seeds `lazy` on each of its components and a single lazy component on a held model works without a
+model declaration. The replica's base row is partial: it carries held and pinned component values,
+while `dormant` names the components it knows exist without holding. `components()` reads held and
+dormant presence, so `has()` still answers on an unopened body, and a component the replica never
+retains does not advance the row's metadata or journal a change. Pins are keyed
+`(entity, component)`, so `open(id, component)` reads exactly that component through the
+`readComponent` seam and `close(id, component)` releases exactly it; there is no row-level open.
+`pinnedCapacity` and the TTL count component pins, and `ReplicaStats.pinned` is the pin count
+per component (`pinnedComponents` splits it by name). `ReplicaStats` adds `components`,
+`residentComponents`, `heldComponents`, `pinnedComponents`, `nonResidentComponents`, and
+`nonResident`.
+
+Three limits are recorded rather than resolved. `toRecord` bumps the replica record to format 3:
+persisted rows carry their held components and `notResident` carries the absent components'
+existence, so a restart keeps `has(note/body)` without the body. The local `EntityStore` is still
+row-shaped, so `readComponent` projects a component out of one by-id row read; a per-component
+store read is #665's payload path, not this slice's. And a row that carries no component stays
+resident even though the rule says "any component is held": there is nothing to retain, and its
+existence must survive so a later component write attaches to it.
 
 ---
 

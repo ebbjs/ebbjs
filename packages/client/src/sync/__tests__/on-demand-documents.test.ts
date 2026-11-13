@@ -25,6 +25,7 @@ import type { TSchema } from "@sinclair/typebox/type";
 import {
   CURRENT_TEXT_VERSION,
   e,
+  defineComponent,
   defineModel,
   makeRunId,
   ROOT_ANCHOR,
@@ -104,6 +105,14 @@ const pageSchema = defineSchema({
   version: 1,
 });
 const bodyDocType = "page_body";
+const bodyComponents = ["page_body/content", "page_body/version"] as const;
+
+const closeBody = (
+  client: { replica: { close(id: string, component: string): void } },
+  id: string,
+): void => {
+  for (const component of bodyComponents) client.replica.close(id, component);
+};
 
 let seededDocument = 0;
 
@@ -218,13 +227,13 @@ describe("on-demand document residency", () => {
     const body = await client.page_body.get(bodyId);
 
     expect(textOf(body!.content ?? {})).toBe("hello");
-    expect(client.replica.isOpen(bodyId)).toBe(true);
+    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
     expect(client.replica.get(bodyId)).toBeDefined();
-    expect(client.replicaStats.pinned).toBe(1);
+    expect(client.replicaStats.pinned).toBe(2);
 
-    client.replica.close(bodyId);
+    closeBody(client, bodyId);
 
-    expect(client.replica.isOpen(bodyId)).toBe(false);
+    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(false);
     expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replicaStats.pinned).toBe(0);
   });
@@ -234,9 +243,9 @@ describe("on-demand document residency", () => {
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
     await client.page_body.get(bodyId);
-    client.replica.close(bodyId);
+    closeBody(client, bodyId);
 
-    expect(client.replica.isOpen(bodyId)).toBe(false);
+    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(false);
     expect(client.replica.get(bodyId)).toBeDefined();
 
     await waitFor(() => client.replica.get(bodyId) === undefined);
@@ -244,17 +253,17 @@ describe("on-demand document residency", () => {
   });
 
   it("releases the least recently opened body when the pinned window overflows", async () => {
-    const { client, written } = harness(pageSchema, { pinnedCapacity: 1, pinnedTtlMs: 0 });
+    const { client, written } = harness(pageSchema, { pinnedCapacity: 2, pinnedTtlMs: 0 });
     const first = await createPage(client, written, { title: "One", body: "hello" });
     const second = await createPage(client, written, { title: "Two", body: "world" });
 
     await client.page_body.get(first.bodyId);
-    expect(client.replica.isOpen(first.bodyId)).toBe(true);
+    expect(client.replica.isOpen(first.bodyId, "page_body/content")).toBe(true);
 
     const secondBody = await client.page_body.get(second.bodyId);
     expect(textOf(secondBody!.content ?? {})).toBe("world");
-    expect(client.replica.isOpen(second.bodyId)).toBe(true);
-    expect(client.replica.isOpen(first.bodyId)).toBe(false);
+    expect(client.replica.isOpen(second.bodyId, "page_body/content")).toBe(true);
+    expect(client.replica.isOpen(first.bodyId, "page_body/content")).toBe(false);
     expect(client.replica.get(first.bodyId)).toBeUndefined();
   });
 
@@ -263,7 +272,7 @@ describe("on-demand document residency", () => {
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" }, 1);
 
     await client.page_body.get(bodyId);
-    expect(client.replica.isOpen(bodyId)).toBe(true);
+    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
 
     await client.persistReplica();
 
@@ -273,6 +282,74 @@ describe("on-demand document residency", () => {
     expect(types).toContain("page");
     expect(types).toContain("relationship");
     expect(types).toContain("entityGroup");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Residency per component (#802)
+// ---------------------------------------------------------------------------
+
+describe("residency per component", () => {
+  // #775's shape: the note's metadata and its body are components of one row,
+  // and only the body is on demand.
+  const note = defineModel("note", {
+    title: e.string(),
+    status: e.string(),
+    updated_at: e.number(),
+    body: defineComponent("note/body", e.string(), { loading: "lazy" }),
+  });
+  const noteSchema = defineSchema({ models: { note }, version: 1 });
+  const noteId = "note_1";
+
+  const seedNote = (client: ReturnType<typeof harness<typeof noteSchema>>["client"]) =>
+    callApplyAction(
+      client,
+      put(1, noteId, "note", {
+        title: "One",
+        status: "open",
+        updated_at: 7,
+        body: "300 KB body",
+      }),
+    );
+
+  it("holds the metadata components and windows only the body", async () => {
+    const { client } = harness(noteSchema, { pinnedTtlMs: 0 });
+    await seedNote(client);
+
+    expect(Object.keys(client.replica.get(noteId)?.data.fields ?? {}).sort()).toEqual([
+      "status",
+      "title",
+      "updated_at",
+    ]);
+    expect(client.replicaStats).toMatchObject({
+      held: 1,
+      components: 4,
+      residentComponents: 3,
+      nonResident: 1,
+      nonResidentComponents: { "note/body": 1 },
+    });
+
+    const row = await client.note.get(noteId);
+    expect(row?.body).toBe("300 KB body");
+    expect(client.replica.get(noteId)?.data.fields.body).toBeDefined();
+    expect(client.replica.isOpen(noteId, "note/body")).toBe(true);
+
+    client.replica.close(noteId, "note/body");
+    expect(client.replica.get(noteId)?.data.fields.body).toBeUndefined();
+    expect(client.replica.components("note/body")).toEqual([noteId]);
+    expect(client.replicaStats).toMatchObject({ nonResident: 1, pinned: 0 });
+  });
+
+  it("keeps the lazy value in the local store when the replica mirrors a write", async () => {
+    const { client, storage } = harness(noteSchema);
+    await seedNote(client);
+
+    const stored = await storage.entities.get(noteId);
+    expect(stored?.data.fields.body).toEqual(expect.objectContaining({ value: "300 KB body" }));
+
+    await client.note.get(noteId);
+    const reopened = await client.note.get(noteId);
+    expect(reopened?.body).toBe("300 KB body");
   });
 });
 
@@ -351,7 +428,7 @@ describe("held source with an on-demand join", () => {
     const joined = (): { id: string; text: string } | null | undefined =>
       store.getSnapshot().data?.[0]?.content as { id: string; text: string } | null | undefined;
     expect(joined()).toMatchObject({ id: "page_content_1", text: "body" });
-    expect(client.replica.isOpen("page_content_1")).toBe(true);
+    expect(client.replica.isOpen("page_content_1", "page_content/text")).toBe(true);
 
     const contentRow = await storage.entities.get("page_content_1");
     expect(contentRow).not.toBeNull();
@@ -368,7 +445,7 @@ describe("held source with an on-demand join", () => {
 
     // Closing the pin evicts the joined row, so the cached result re-runs and
     // must load it again. The load stays pending until the gate opens.
-    client.replica.close("page_content_1");
+    client.replica.close("page_content_1", "page_content/text");
     await flush();
 
     expect(store.getSnapshot().status).toBe("stale");
@@ -378,7 +455,7 @@ describe("held source with an on-demand join", () => {
     release();
     await waitFor(() => store.getSnapshot().status === "current");
     expect(joined()).toMatchObject({ id: "page_content_1", text: "body" });
-    expect(client.replica.isOpen("page_content_1")).toBe(true);
+    expect(client.replica.isOpen("page_content_1", "page_content/text")).toBe(true);
 
     getSpy.mockRestore();
     unsubscribe();

@@ -433,7 +433,7 @@ export class SyncClient<
     }
     this.replica = createReplica({
       materialization: residencyFromRegistry(this.registry),
-      readEntity: (id) => this.storage.entities.get(id),
+      readComponent: (id, component) => this.readStoredComponent(id, component),
       pinnedCapacity: opts.pinnedCapacity ?? DEFAULT_PINNED_CAPACITY,
       pinnedTtlMs: opts.pinnedTtlMs ?? DEFAULT_PINNED_TTL_MS,
     });
@@ -2212,14 +2212,28 @@ export class SyncClient<
   }
 
   /**
+   * The component-level cold-read seam. The local store is row-shaped, so the
+   * component is projected out of one by-id read; a caller counting component
+   * reads sees exactly the one it asked for.
+   */
+  private async readStoredComponent(id: string, component: string): Promise<Entity | null> {
+    const row = await this.storage.entities.get(id);
+    if (row === null) return null;
+    const field = componentField(component);
+    const value = row.data.fields[field];
+    return value === undefined ? row : { ...row, data: { fields: { [field]: value } } };
+  }
+
+  /**
    * Replace the durable rows in the `storage.entities` shim with the
    * replica's composed view, clearing the dirty flag so a later read does
    * not replay the log over them.
    *
-   * An on-demand type has no composed replica row to mirror: the replica
-   * drops it unless it is open. The store is that type's read source, so the
-   * update is applied to the stored row directly. A later `open` then installs
-   * and pins it, exactly as it would a row read back from the server.
+   * Only a row whose components are all held mirrors the replica. A row with
+   * an on-demand component is partial in the replica (#802) and the store is
+   * that component's read source, so the Update is applied to the stored row
+   * instead. A later `open` installs and pins the component, exactly as it
+   * would a row read back from the server.
    *
    * A subject the replica drops is normally left untouched — the shim
    * cannot represent absence, and the echo corrects it. A `delete` is the
@@ -2234,24 +2248,16 @@ export class SyncClient<
     options: { readonly revert?: boolean } = {},
   ): Promise<void> {
     for (const update of action.updates) {
-      let row = this.replica.get(update.subject_id);
-      const model =
-        update.method === "delete"
-          ? (this.replica.get(update.subject_id)?.type ?? "")
-          : componentModel(update.component);
-      if (row === undefined && !this.replica.isHeld(model)) {
-        const base = await this.storage.entities.get(update.subject_id);
-        row = applyUpdate(base, update, 0, action.hlc) ?? undefined;
+      const replicaRow = this.replica.get(update.subject_id);
+      if (replicaRow !== undefined && this.replica.isRowHeld(replicaRow)) {
+        await this.storage.dirtyTracker.clear(update.subject_id);
+        await this.storage.entities.set(replicaRow);
+        continue;
       }
-      if (row === undefined) {
-        if (options.revert !== true && update.method === "delete") {
-          const base = await this.storage.entities.get(update.subject_id);
-          const tombstone = applyUpdate(base, update, 0, action.hlc);
-          if (tombstone !== null) {
-            await this.storage.dirtyTracker.clear(update.subject_id);
-            await this.storage.entities.set(tombstone);
-          }
-        }
+      const base = await this.storage.entities.get(update.subject_id);
+      const row = applyUpdate(base ?? replicaRow ?? null, update, 0, action.hlc);
+      if (row === null) continue;
+      if (options.revert === true && replicaRow === undefined && update.method === "delete") {
         continue;
       }
       await this.storage.dirtyTracker.clear(update.subject_id);
@@ -2336,12 +2342,14 @@ const buildRegistryFromSchema = (schema: AnySchema | undefined): ModelRegistry =
 };
 
 /**
- * Replica residency declared by the entity registry. A type marked
- * `on-demand` is materialized only while open; anything else — including a
- * type the registry does not declare — stays held.
+ * Replica residency declared by the entity registry. Residency is per
+ * component: a model marked `on-demand` seeds `lazy` on each of its components
+ * (#795), and a component may declare `loading: "lazy"` on its own. An
+ * undeclared component stays held.
  */
 const residencyFromRegistry = (registry: ModelRegistry): MaterializationPolicy => ({
-  holds: (type) => registry.get(type)?.materialization !== "on-demand",
+  holds: (component) =>
+    registry.loadingOf(componentModel(component), componentField(component)) === "eager",
 });
 
 /**

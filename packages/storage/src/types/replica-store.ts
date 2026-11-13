@@ -9,6 +9,11 @@ import type { Entity } from "@ebbjs/core";
  * row-shaped entity set; derived indices are rebuilt on load, never
  * persisted, because IndexedDB cannot index nested `FieldValue` paths,
  * express live-row filtering, or query a stored map.
+ *
+ * Residency is per component (#802): `entities` carry only the components the
+ * policy holds, and `notResident` names the components a persisted row still
+ * has without its value. A row whose every component is on demand is not
+ * persisted at all.
  */
 export interface ReplicaRecord {
   /** Shape version of this record. A record of an unknown format reads as absent. */
@@ -17,7 +22,13 @@ export interface ReplicaRecord {
   readonly position: number;
   /** The replica's revision when the record was taken. */
   readonly revision: number;
+  /** Rows with their held components only. */
   readonly entities: readonly Entity[];
+  /**
+   * Component names present on a persisted row whose value is not resident,
+   * keyed by entity id. Existence survives a restart without the value.
+   */
+  readonly notResident?: Readonly<Record<string, readonly string[]>>;
 }
 
 /**

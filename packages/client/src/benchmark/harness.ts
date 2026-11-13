@@ -11,17 +11,21 @@
  * is what must stay at zero (or at the row's degree).
  */
 
-import type { Entity } from "@ebbjs/core";
+import { componentName, type Entity } from "@ebbjs/core";
 import type { MaterializationPolicy, Replica } from "@ebbjs/storage/replica";
 
 import type { AdjacencyReader } from "../sync/relationship";
 import { traversalCounter } from "../sync/traversal-counter";
 import { ON_DEMAND_TYPE } from "./workspace";
 
-/** The client's shipped residency: everything held except the on-demand type. */
+/** The client's shipped residency: every component except the on-demand model's. */
 export const heldMetadata: MaterializationPolicy = {
-  holds: (type) => type !== ON_DEMAND_TYPE,
+  holds: (component) => !component.startsWith(`${ON_DEMAND_TYPE}/`),
 };
+
+/** Whether every component the row carries is held, so the replica retains it whole. */
+export const holdsRow = (row: Entity): boolean =>
+  Object.keys(row.data.fields).every((field) => heldMetadata.holds(componentName(row.type, field)));
 
 // ---------------------------------------------------------------------------
 // Counted store

@@ -23,7 +23,7 @@
 
 import { arch, cpus, platform, release } from "node:os";
 import { Type } from "@sinclair/typebox";
-import type { Entity } from "@ebbjs/core";
+import { componentName, type Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
@@ -39,6 +39,7 @@ import {
   createIndexCounter,
   entityDegree,
   heldMetadata,
+  holdsRow,
   maxOf,
   median,
   minOf,
@@ -120,7 +121,7 @@ const workspace = createWorkspace(config);
 const generateMs = performance.now() - generateStart;
 log(`workspace generated in ${ms(generateMs)}`);
 
-const heldRows = workspace.record.entities.filter((entity) => heldMetadata.holds(entity.type));
+const heldRows = workspace.record.entities.filter(holdsRow);
 const store = createCountingStore(workspace.rows);
 
 // ---------------------------------------------------------------------------
@@ -179,7 +180,7 @@ const measureHeap = (
 ): HeapAccounts => {
   // The record's on-demand rows ride along with every rep so `load` is still
   // seen dropping a held type, exactly as on the workspace record.
-  const bodyRows = seed.entities.filter((entity) => !heldMetadata.holds(entity.type));
+  const bodyRows = seed.entities.filter((entity) => !holdsRow(entity));
   const recordFor = (rows: readonly Entity[]): Workspace["record"] => ({
     ...seed,
     entities: [...rows, ...bodyRows],
@@ -259,7 +260,7 @@ const measureHeap = (
 
 const loadOptions = {
   materialization: heldMetadata,
-  readEntity: store.read,
+  readComponent: store.read,
   pinnedCapacity: 1,
   pinnedTtlMs: 0,
 } as const;
@@ -541,33 +542,34 @@ for (const searchCase of searchCases) {
 const bodySample = workspace.bodyIds.slice(0, Math.min(100, workspace.bodyIds.length));
 const primaryBody = bodySample[0];
 if (primaryBody === undefined) throw new Error("fixture produced no windowed bodies");
+const bodyComponent = `${ON_DEMAND_TYPE}/content`;
 
 // Warm the on-demand path so the first timed open is not JIT + first-read.
 for (const id of bodySample.slice(0, 3)) {
-  await replica.open(id);
-  replica.close(id);
+  await replica.open(id, bodyComponent);
+  replica.close(id, bodyComponent);
 }
 
 const openSamples: number[] = [];
 let openReads = 0;
 for (const id of bodySample) {
-  replica.close(id);
+  replica.close(id, bodyComponent);
   store.reset();
   const start = performance.now();
-  const opened = await replica.open(id);
+  const opened = await replica.open(id, bodyComponent);
   openSamples.push(performance.now() - start);
   openReads = Math.max(openReads, store.snapshot().calls);
-  replica.close(id);
+  replica.close(id, bodyComponent);
   if (opened === null) throw new Error(`windowed body self-check: ${id} did not open`);
 }
 const openMedian = median(openSamples);
 
 store.reset();
-await replica.open(primaryBody);
+await replica.open(primaryBody, bodyComponent);
 const pinnedFirstReads = store.snapshot().calls;
-await replica.open(primaryBody);
+await replica.open(primaryBody, bodyComponent);
 const pinnedReReads = store.snapshot().calls - pinnedFirstReads;
-replica.close(primaryBody);
+replica.close(primaryBody, bodyComponent);
 const bodiesResidentAfterRelease = replica.stats().byType[ON_DEMAND_TYPE] ?? 0;
 if (openReads !== 1) throw new Error(`windowed body self-check: cold open read ${openReads} rows`);
 if (pinnedReReads !== 0) {
@@ -645,6 +647,42 @@ push(
   "field here carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–22",
   "chars, close to a 21-char nanoid) where the spike used short `u_${n}` placeholders, so the",
   "row bytes are not a like-for-like comparison with the spike.",
+  "",
+);
+
+// Per-component attribution of the held bytes (#802): the replica now keeps a
+// row's held components and leaves the lazy ones to the store, so the footprint
+// has to be readable per component rather than per row.
+const componentBytes = new Map<string, { rows: number; bytes: number }>();
+for (const row of heldRows) {
+  for (const [field, value] of Object.entries(row.data.fields)) {
+    const component = componentName(row.type, field);
+    if (!heldMetadata.holds(component)) continue;
+    const bucket = componentBytes.get(component) ?? { rows: 0, bytes: 0 };
+    bucket.rows += 1;
+    bucket.bytes += jsonBytes(value);
+    componentBytes.set(component, bucket);
+  }
+}
+const componentRows = [...componentBytes.entries()].sort(([, a], [, b]) => b.bytes - a.bytes);
+const componentSubtotal = componentRows.reduce((sum, [, bucket]) => sum + bucket.bytes, 0);
+
+push("### Resident bytes by component", "");
+push(
+  "Every held component of every held row, attributed by its value bytes. This is the #802",
+  "residency view: the row-level buckets above are models, these are the units the replica keeps",
+  "or leaves to the store.",
+  "",
+  "| component | rows carrying | JSON bytes | size | % of held components |",
+  "| --- | ---: | ---: | ---: | ---: |",
+);
+for (const [component, bucket] of componentRows) {
+  push(
+    `| \`${component}\` | ${grouped(bucket.rows)} | ${bytes(bucket.bytes)} | ${mb(bucket.bytes)} | ${pct(bucket.bytes, componentSubtotal)} |`,
+  );
+}
+push(
+  `| **held components subtotal** | — | ${bytes(componentSubtotal)} | ${mb(componentSubtotal)} | 100.0% |`,
   "",
 );
 
@@ -826,7 +864,7 @@ push(
   "## 5. Windowed bodies",
   "",
   `\`${ON_DEMAND_TYPE}\` is the schema's on-demand type: not held, so \`load\` drops it and`,
-  "`replica.open(id)` reads it through the store into a pinned window (`pinnedCapacity: 1`,",
+  "`replica.open(id, component)` reads it through the store into a pinned window (`pinnedCapacity: 1`,",
   "`pinnedTtlMs: 0`). Each open below follows a `close`, so every call is a cold read.",
   "",
   "| measure | value |",

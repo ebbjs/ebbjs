@@ -156,10 +156,10 @@ describe("replica map fields over the flip point", () => {
     };
     const replica = createReplica({
       materialization: { holds: () => false },
-      readEntity: async () => row,
+      readComponent: async () => row,
     });
 
-    const opened = await replica.open("doc_1");
+    const opened = await replica.open("doc_1", "doc/content");
     const openedContent = contentOf(opened ?? undefined);
     expect(openedContent !== undefined && isShardedMapField(openedContent)).toBe(true);
   });
