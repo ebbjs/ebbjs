@@ -32,7 +32,7 @@ defmodule EbbServer.Storage.SystemComponentTest do
   # A fifth platform component is a registration in the declaration table.
   # Scope resolution reads the table, so it has no clause per kind.
   test "scope resolution is not dispatched on a platform kind" do
-    source = File.read!("lib/ebb_server/storage/entity_index.ex")
+    source = File.read!(Path.expand("../../../lib/ebb_server/storage/entity_index.ex", __DIR__))
 
     refute source =~ ~r/def resolve_groups_cached\(:(grant|membership|link|group)\b/
     refute source =~ ~r/def fan_out_preference\(%\{kind: :(grant|membership|link|group)\} /

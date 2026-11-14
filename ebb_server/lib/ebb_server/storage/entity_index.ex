@@ -409,7 +409,7 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   defp stored_field(subject_id, kind, field, opts) do
-    case by_id_row(SystemComponent.by_id(kind), subject_id, opts) do
+    case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
       nil -> nil
       row -> row_field(row, field)
     end
@@ -456,14 +456,6 @@ defmodule EbbServer.Storage.EntityIndex do
 
       _ ->
         fetch.()
-    end
-  end
-
-  # The lenient read: a cache the caller's options do not carry holds no row.
-  defp by_id_row(cache, id, opts) do
-    case Keyword.fetch(opts, cache) do
-      {:ok, table} -> cached_row(opts, cache, id, fn -> ets_row(table, id) end)
-      :error -> nil
     end
   end
 
