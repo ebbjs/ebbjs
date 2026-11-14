@@ -370,8 +370,8 @@ mechanical and wide, which is exactly why it should be its own slice with its ow
 
 **Scope.** `subject_type` → `component`; `put`/`patch`/`delete` → `merge`/`replace`/`drop`/`delete`;
 `data` carries a component's value rather than a row's field record, so `data.fields` disappears.
-Validator, `ActionFormat`, dedup, `update_scopes`, catch-up frames, `InboundSubject`, the outbox,
-and the fixtures move with it.
+Validator, `ActionFormat`, dedup, the scope list (now `subject_scopes` — #814), catch-up frames,
+`InboundSubject`, the outbox, and the fixtures move with it.
 
 **Work.**
 

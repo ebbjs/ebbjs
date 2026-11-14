@@ -11,12 +11,13 @@ defmodule EbbServer.Storage.ActionScope do
 
   ## Fallbacks
 
-  A stored Action always carries the list, so a missing or non-list value
-  means the record is corrupt. Resolving it from the caches is not safe: a
-  `relationship`/`entityGroup` delete's by-id entry is already gone. Such a
-  record, and any Update whose subject is absent from a present list, is
-  treated as unscoped and delivered to every group the Action is indexed
-  under (fail open) rather than dropped.
+  Every decode validates the list's shape, so a map whose value is missing or
+  differently shaped only reaches here from a caller that built it by hand.
+  Resolving the record from the caches instead is not safe: a
+  `relationship`/`entityGroup` delete's by-id entry is already gone by
+  fan-out time. Such a map, and any Update whose subject is absent from an
+  otherwise well-formed list, is treated as unscoped and delivered to every
+  group the Action is indexed under (fail open) rather than dropped.
 
   A subject listed with `[]` is neither fallback: it means "deliver to
   nobody", and its Updates are withheld.
