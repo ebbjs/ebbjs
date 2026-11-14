@@ -151,14 +151,14 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
     assert %{id: ^membership_id, entity_id: "todo_1", group_id: "group_2"} =
              EntityGroupCache.get_entity_group(membership_id, ctx.entity_groups_by_id)
 
-    assert update_scopes(ctx.rocks_name, 2) == [["group_2"]]
+    assert subject_scopes(ctx.rocks_name, 2) == [{membership_id, ["group_2"]}]
   end
 
-  defp update_scopes(rocks_name, gsn) do
+  defp subject_scopes(rocks_name, gsn) do
     {:ok, frame} =
       RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(gsn), name: rocks_name)
 
-    ActionFormat.decode(frame, gsn)["update_scopes"]
+    ActionFormat.decode(frame, gsn)["subject_scopes"]
   end
 
   defp leaf(value, hlc) do

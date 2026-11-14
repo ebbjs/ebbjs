@@ -30,7 +30,7 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
       first_gsn = RocksDB.get_max_gsn() + 1
       last_gsn = first_gsn + 1
 
-      # Two Actions in one range. The first scopes one Update to each group,
+      # Two Actions in one range. The first scopes one subject to each group,
       # so the per-group split gives the first group both Actions and the
       # second group only the first.
       carried =
@@ -212,20 +212,20 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
     assert state.pending_groups == %{}
   end
 
-  defp put_framed_action!(gsn, scopes, actor_id, action_id) do
-    {payload_etf, scopes} = carried_payload(scopes, action_id, actor_id)
+  defp put_framed_action!(gsn, groups_per_subject, actor_id, action_id) do
+    {payload_etf, subject_scopes} = carried_payload(groups_per_subject, action_id, actor_id)
 
-    group_ids = scopes |> List.flatten() |> Enum.uniq()
+    group_ids = subject_scopes |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq()
 
     :ok =
       RocksDB.write_batch(
         [
           {:put, RocksDB.cf_actions(), RocksDB.encode_gsn_key(gsn),
-           ActionFormat.frame(payload_etf, scopes)}
+           ActionFormat.frame(payload_etf, subject_scopes)}
         ] ++ group_index_puts(group_ids, gsn, action_id)
       )
 
-    {payload_etf, scopes}
+    {payload_etf, subject_scopes}
   end
 
   defp group_index_puts(group_ids, gsn, action_id) do
@@ -235,28 +235,36 @@ defmodule EbbServer.Sync.FanOutRouterCarriedPayloadTest do
     end)
   end
 
-  defp carried_payload(scopes, action_id, actor_id \\ "a_584") do
+  # Each entry is one folded subject's group list, and the Action gets one
+  # component Update per subject — the shape the Writer now commits.
+  defp carried_payload(groups_per_subject, action_id, actor_id \\ "a_584") do
     hlc = generate_hlc()
+
+    subject_scopes =
+      groups_per_subject
+      |> Enum.with_index()
+      |> Enum.map(fn {group_ids, index} -> {"todo_#{action_id}_#{index}", group_ids} end)
 
     payload_etf =
       %{
         id: action_id,
         actor_id: actor_id,
         hlc: hlc,
-        updates: Enum.map(scopes, &carried_update(&1, action_id, hlc))
+        updates:
+          Enum.map(subject_scopes, fn {subject_id, _} -> carried_update(subject_id, hlc) end)
       }
       |> ActionFormat.build()
       |> ActionFormat.encode()
 
-    {payload_etf, scopes}
+    {payload_etf, subject_scopes}
   end
 
-  defp carried_update(group_ids, action_id, hlc) do
-    update_id = "upd_#{action_id}_#{Enum.join(group_ids, "_")}"
+  defp carried_update(subject_id, hlc) do
+    update_id = "upd_#{subject_id}"
 
     %{
       id: update_id,
-      subject_id: "todo_#{update_id}",
+      subject_id: subject_id,
       component: "todo/title",
       method: :replace,
       data: %{"type" => "lww", "value" => update_id, "hlc" => hlc}

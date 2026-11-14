@@ -172,7 +172,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      frame = ActionFormat.frame(payload, [[group_id]])
+      frame = ActionFormat.frame(payload, [{"todo_532", [group_id]}])
 
       :ok =
         RocksDB.write_batch([
@@ -188,7 +188,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
       send(
         FanOutRouter,
         {:batch_committed, gsn, gsn, %{gsn => [group_id]}, System.monotonic_time(),
-         [{payload, [[group_id]]}]}
+         [{payload, [{"todo_532", [group_id]}]}]}
       )
 
       bytes = receive_sse_data()

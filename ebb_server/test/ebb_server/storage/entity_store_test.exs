@@ -77,12 +77,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
   defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
 
   defp stored_frame(action) do
-    scopes = Enum.map(action.updates, fn _update -> [] end)
-
     action
     |> ActionFormat.build()
     |> ActionFormat.encode()
-    |> ActionFormat.frame(scopes)
+    |> ActionFormat.frame(subject_scopes(action.updates))
   end
 
   defp events_named(events, name) do
@@ -196,7 +194,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         |> ActionFormat.build()
         |> ActionFormat.encode()
 
-      frame = ActionFormat.frame(payload, [[]])
+      frame = ActionFormat.frame(payload, [{entity_id, []}])
 
       :ok =
         RocksDB.write_batch(

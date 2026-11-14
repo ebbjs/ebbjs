@@ -330,7 +330,7 @@ defmodule EbbServer.Bench.Envelope.Runner do
   defp shape_input(action, gsn) do
     %{
       payload_etf: action |> ActionFormat.build() |> ActionFormat.encode(),
-      update_scopes: Enum.map(action.updates, fn _ -> [Workbook.group_id()] end),
+      subject_scopes: Workbook.subject_scopes(action.updates),
       gsn: gsn
     }
   end

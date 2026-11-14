@@ -109,7 +109,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
     action
     |> ActionFormat.build()
     |> ActionFormat.encode()
-    |> ActionFormat.frame([[]])
+    |> ActionFormat.frame(subject_scopes(action.updates))
   end
 
   setup do

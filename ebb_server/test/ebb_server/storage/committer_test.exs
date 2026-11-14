@@ -33,13 +33,13 @@ defmodule EbbServer.Storage.CommitterTest do
 
       action_1 =
         prepared_action("act_1", [update("upd_1", "todo_1")],
-          update_scopes: [["g_1", "g_2"]],
+          subject_scopes: [{"todo_1", ["g_1", "g_2"]}],
           groups: ["g_1", "g_2"]
         )
 
       action_2 =
         prepared_action("act_2", [update("upd_2", "todo_2"), update("upd_3", "todo_3")],
-          update_scopes: [["g_2"], ["g_2"]],
+          subject_scopes: [{"todo_2", ["g_2"]}, {"todo_3", ["g_2"]}],
           groups: ["g_2"]
         )
 
@@ -99,7 +99,7 @@ defmodule EbbServer.Storage.CommitterTest do
                "actor_id" => "a_committer",
                "hlc" => 1,
                "gsn" => 5,
-               "update_scopes" => [["g_1", "g_2"]],
+               "subject_scopes" => [{"todo_1", ["g_1", "g_2"]}],
                "updates" => [
                  %{
                    "id" => "upd_1",
@@ -111,7 +111,10 @@ defmodule EbbServer.Storage.CommitterTest do
                ]
              }
 
-      assert stored_action(etf_2, 6)["update_scopes"] == [["g_2"], ["g_2"]]
+      assert stored_action(etf_2, 6)["subject_scopes"] == [
+               {"todo_2", ["g_2"]},
+               {"todo_3", ["g_2"]}
+             ]
     end
 
     test "writes one cf_entity_actions row per subject in a flush", ctx do
@@ -220,7 +223,7 @@ defmodule EbbServer.Storage.CommitterTest do
       action =
         prepared_action("act_boundary", [update("upd_boundary", "todo_boundary")],
           payload_etf: payload_etf,
-          update_scopes: [["g_prebuilt"]]
+          subject_scopes: [{"todo_prebuilt", ["g_prebuilt"]}]
         )
 
       committer =
@@ -246,7 +249,7 @@ defmodule EbbServer.Storage.CommitterTest do
       assert stored["actor_id"] == "a_prebuilt"
       assert stored["hlc"] == 99
       assert stored["gsn"] == 7
-      assert stored["update_scopes"] == [["g_prebuilt"]]
+      assert stored["subject_scopes"] == [{"todo_prebuilt", ["g_prebuilt"]}]
       assert [%{"id" => "upd_prebuilt", "subject_id" => "todo_prebuilt"}] = stored["updates"]
     end
 
@@ -266,7 +269,7 @@ defmodule EbbServer.Storage.CommitterTest do
 
       action =
         prepared_action("act_ablated", [update("upd_ablated", "todo_ablated")],
-          update_scopes: [["g_ablated"]],
+          subject_scopes: [{"todo_ablated", ["g_ablated"]}],
           groups: ["g_ablated"]
         )
 
@@ -449,7 +452,7 @@ defmodule EbbServer.Storage.CommitterTest do
         Keyword.get_lazy(opts, :payload_etf, fn ->
           action |> ActionFormat.build() |> ActionFormat.encode()
         end),
-      update_scopes: Keyword.get(opts, :update_scopes, Enum.map(updates, fn _update -> [] end)),
+      subject_scopes: Keyword.get(opts, :subject_scopes, subject_scopes(updates)),
       groups: Keyword.get(opts, :groups, []),
       affected_entities:
         Keyword.get(opts, :affected_entities, Enum.map(updates, &affected_entity/1))

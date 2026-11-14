@@ -66,7 +66,7 @@ defmodule EbbServer.Sync.FanOutRouter.FramesTest do
       # receives a strict subset of `updates`.
       scoped =
         action("act_scoped", updates, 1)
-        |> Map.put("update_scopes", [["g_a"], ["g_b"]])
+        |> Map.put("subject_scopes", [{"s_upd_a", ["g_a"]}, {"s_upd_b", ["g_b"]}])
 
       memberships = [
         {"g_a", Map.put(scoped, "updates", [first])},
@@ -83,7 +83,7 @@ defmodule EbbServer.Sync.FanOutRouter.FramesTest do
     test "the same Action and Update subset reaching several groups shares its bytes" do
       scoped =
         action("act_shared", [update("upd_1"), update("upd_2")], 1)
-        |> Map.put("update_scopes", [["g_a", "g_b"], ["g_a"]])
+        |> Map.put("subject_scopes", [{"s_upd_1", ["g_a", "g_b"]}, {"s_upd_2", ["g_a"]}])
 
       memberships = [
         {"g_a", Map.put(scoped, "updates", [update("upd_1"), update("upd_2")])},
@@ -102,7 +102,7 @@ defmodule EbbServer.Sync.FanOutRouter.FramesTest do
 
       scoped =
         action("act_partial_first", [first, second], 1)
-        |> Map.put("update_scopes", [["g_a", "g_b"], ["g_b"]])
+        |> Map.put("subject_scopes", [{"s_upd_a", ["g_a", "g_b"]}, {"s_upd_b", ["g_b"]}])
 
       memberships = [
         {"g_a", Map.put(scoped, "updates", [first])},
@@ -121,7 +121,7 @@ defmodule EbbServer.Sync.FanOutRouter.FramesTest do
 
       scoped =
         action("act_key", [first, second], 1)
-        |> Map.put("update_scopes", [["g_a", "g_b"], ["g_b"]])
+        |> Map.put("subject_scopes", [{"s_upd_a", ["g_a", "g_b"]}, {"s_upd_b", ["g_b"]}])
 
       memberships = [
         {"g_a", Map.put(scoped, "updates", [first])},

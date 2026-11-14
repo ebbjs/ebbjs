@@ -60,7 +60,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
       assert_receive {:commit_started, _worker, :later}, 2_000
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
 
-      assert [%{"update_scopes" => [["group_chain"]]}] =
+      assert [%{"subject_scopes" => [{"todo_chain", ["group_chain"]}]}] =
                ActionLog.read(2, 2, rocks_name: ctx.rocks_name)
     end
   end
@@ -107,7 +107,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
       assert {:ok, {1, 1}, []} = Task.await(first_task, 2_000)
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
 
-      assert [%{"update_scopes" => [["group_new"]]}] =
+      assert [%{"subject_scopes" => [{"todo_chain", ["group_new"]}]}] =
                ActionLog.read(2, 2, rocks_name: ctx.rocks_name)
     end
   end
@@ -154,7 +154,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
       assert {:ok, {1, 1}, []} = Task.await(first_task, 2_000)
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
 
-      assert [%{"update_scopes" => [[]]}] =
+      assert [%{"subject_scopes" => [{"todo_chain", []}]}] =
                ActionLog.read(2, 2, rocks_name: ctx.rocks_name)
     end
   end
@@ -195,7 +195,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
       assert {:error, {:rocksdb_write_failed, :injected}} = Task.await(first_task, 2_000)
       assert {:ok, {2, 2}, []} = Task.await(second_task, 2_000)
 
-      assert [%{"update_scopes" => [[]]}] =
+      assert [%{"subject_scopes" => [{"todo_chain", []}]}] =
                ActionLog.read(2, 2, rocks_name: ctx.rocks_name)
     end
   end

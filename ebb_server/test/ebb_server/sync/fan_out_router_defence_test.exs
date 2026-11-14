@@ -178,7 +178,7 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
       unscoped_sse = subscribe!(unscoped_group, actor_id)
 
       gsn = WatermarkTracker.committed_watermark() + 1
-      carried = carried_payload([[scoped_group]], action_id, actor_id)
+      carried = carried_payload([{"todo_641_10_scoped", [scoped_group]}], action_id, actor_id)
 
       :ok = WatermarkTracker.mark_range_committed(gsn, gsn)
       assert WatermarkTracker.advance_watermark() == gsn
@@ -220,7 +220,7 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
     RocksDB.get_max_gsn()
   end
 
-  defp carried_payload(scopes, action_id, actor_id) do
+  defp carried_payload(subject_scopes, action_id, actor_id) do
     hlc = generate_hlc()
 
     payload_etf =
@@ -228,20 +228,20 @@ defmodule EbbServer.Sync.FanOutRouterDefenceTest do
         id: action_id,
         actor_id: actor_id,
         hlc: hlc,
-        updates: Enum.map(scopes, &carried_update(&1, action_id, hlc))
+        updates: Enum.map(subject_scopes, &carried_update(&1, action_id, hlc))
       }
       |> ActionFormat.build()
       |> ActionFormat.encode()
 
-    {payload_etf, scopes}
+    {payload_etf, subject_scopes}
   end
 
-  defp carried_update(group_ids, action_id, hlc) do
+  defp carried_update({subject_id, group_ids}, action_id, hlc) do
     update_id = "upd_#{action_id}_#{Enum.join(group_ids, "_")}"
 
     %{
       id: update_id,
-      subject_id: "todo_#{update_id}",
+      subject_id: subject_id,
       component: "todo/title",
       method: :replace,
       data: %{"type" => "lww", "value" => update_id, "hlc" => hlc}

@@ -10,9 +10,17 @@ defmodule EbbServer.Storage.ActionFormat do
 
   where `payload_etf = encode(build(action))` holds only `id`, `actor_id`,
   `hlc`, and `updates`. The GSN lives in the `cf_actions` key and readers
-  inject it after decode. `scopes_etf` holds `update_scopes`, which stay
-  outside the payload because they are cache-dependent and only known at
-  claim time.
+  inject it after decode. `scopes_etf` holds `subject_scopes`: one
+  `{subject_id, [group_id]}` entry per folded subject, in first-appearance
+  order. They stay outside the payload because they are cache-dependent and
+  only known at claim time.
+
+  ## Scope belongs to the subject
+
+  A subject's group set is one decision, so the frame records it once per
+  subject rather than once per Update. The C component Updates of one row
+  share one entry; an Update is delivered through its subject's entry. The
+  `cf_group_actions` index still holds the distinct union, once per Action.
 
   The frame is *not* one ETF term. Storing the scopes beside the payload
   rather than inside the same term lets a reader slice out the payload
@@ -52,10 +60,16 @@ defmodule EbbServer.Storage.ActionFormat do
 
   Log readers (`decode/2`, catch-up, materialization, export) join the two
   halves out of the stored frame. Live fan-out does not read the frame: the
-  Writer hands the Router `payload_etf` and `update_scopes` beside the
+  Writer hands the Router `payload_etf` and `subject_scopes` beside the
   commit notification, and `decode_carried/3` rejoins them from there. Both
   readers share the same payload decode, so the live path and the log path
   cannot drift.
+
+  ## Migration
+
+  The pre-#814 frame stored one group list per Update under `update_scopes`,
+  index-aligned with the Update list. That shape raises: this build never
+  wrote it, and there is no migration or read-through.
   """
 
   alias EbbServer.Storage.Component
@@ -64,7 +78,14 @@ defmodule EbbServer.Storage.ActionFormat do
 
   @type payload :: map()
   @type action :: map()
-  @type carried_payload :: {payload_etf :: binary(), update_scopes :: [[String.t()]]}
+  @typedoc """
+  One folded subject's delivery scope, in first-appearance order. The empty
+  group list means "deliver to nobody", which is different from an absent
+  entry (an unscoped or corrupt record).
+  """
+  @type subject_scope :: {subject_id :: String.t(), [group_id :: String.t()]}
+
+  @type carried_payload :: {payload_etf :: binary(), subject_scopes :: [subject_scope()]}
 
   @doc """
   Builds the GSN-free, scopes-free storage map for an Action.
@@ -87,16 +108,18 @@ defmodule EbbServer.Storage.ActionFormat do
   def encode(payload), do: :erlang.term_to_binary(payload)
 
   @doc """
-  Frames an already-encoded payload with the Action's per-Update scopes.
+  Frames an already-encoded payload with the Action's per-subject scopes.
 
   The payload binary is copied, not traversed, so a claim pays one small
   `term_to_binary` of the scopes plus the copy.
   """
-  @spec frame(binary(), [[String.t()]]) :: binary()
-  def frame(payload_etf, update_scopes) when is_list(update_scopes) do
+  @spec frame(binary(), [subject_scope()]) :: binary()
+  def frame(payload_etf, subject_scopes) do
+    subject_scopes = validate_subject_scopes!(subject_scopes)
+
     case payload_etf do
       <<@etf_magic, _rest::binary>> ->
-        scopes_etf = :erlang.term_to_binary(update_scopes)
+        scopes_etf = :erlang.term_to_binary(subject_scopes)
         <<byte_size(payload_etf)::32, payload_etf::binary, scopes_etf::binary>>
 
       other ->
@@ -105,16 +128,11 @@ defmodule EbbServer.Storage.ActionFormat do
     end
   end
 
-  def frame(_payload_etf, update_scopes) do
-    raise ArgumentError,
-          "a cf_actions frame holds one group list per Update, got: #{inspect(update_scopes, limit: 4)}"
-  end
-
   @doc """
   Decodes a stored Action into the full map readers expect.
 
-  `"gsn"` comes from the `cf_actions` key; `"update_scopes"` comes from the
-  frame and is the per-Update delivery contract.
+  `"gsn"` comes from the `cf_actions` key; `"subject_scopes"` comes from the
+  frame and is the per-subject delivery contract.
   """
   @spec decode(binary(), non_neg_integer()) :: action()
   def decode(value, gsn) do
@@ -130,15 +148,15 @@ defmodule EbbServer.Storage.ActionFormat do
   This is the same map `decode/2` returns for the stored frame, without the
   frame split or the scopes decode.
   """
-  @spec decode_carried(binary(), [[String.t()]], non_neg_integer()) :: action()
-  def decode_carried(payload_etf, update_scopes, gsn) when is_list(update_scopes) do
+  @spec decode_carried(binary(), [subject_scope()], non_neg_integer()) :: action()
+  def decode_carried(payload_etf, subject_scopes, gsn) do
     payload_etf
     |> decode_payload_term(gsn)
-    |> Map.put("update_scopes", update_scopes)
+    |> Map.put("subject_scopes", validate_subject_scopes!(subject_scopes))
   end
 
   @doc """
-  Decodes the payload of a stored Action, leaving `"update_scopes"` out.
+  Decodes the payload of a stored Action, leaving `"subject_scopes"` out.
 
   This is the read for a path that only replays Updates — materialization,
   query, group listing, and the boot backfill — and it skips the scopes
@@ -173,6 +191,29 @@ defmodule EbbServer.Storage.ActionFormat do
   end
 
   defp decode_term(binary), do: :erlang.binary_to_term(binary, [:safe])
+
+  # The scopes half is exactly one `{subject_id, [group_id]}` entry per folded
+  # subject. Anything else — including the pre-#814 per-Update list — is
+  # corrupt or from another build, and must not decode as unscoped. This is the
+  # one gate on that shape (`ActionScope` reads a decoded Action, not a raw
+  # record), so there is no second predicate to keep in step.
+  defp validate_subject_scopes!(scopes) do
+    if subject_scopes?(scopes), do: scopes, else: reject_subject_scopes(scopes)
+  end
+
+  defp subject_scopes?(scopes) when is_list(scopes), do: Enum.all?(scopes, &subject_scope?/1)
+  defp subject_scopes?(_scopes), do: false
+
+  defp subject_scope?({subject_id, group_ids}) when is_binary(subject_id) and is_list(group_ids),
+    do: Enum.all?(group_ids, &is_binary/1)
+
+  defp subject_scope?(_scope), do: false
+
+  defp reject_subject_scopes(scopes) do
+    raise ArgumentError,
+          "a cf_actions frame holds one group list per subject, got: " <>
+            inspect(scopes, limit: 8)
+  end
 
   # Enough of a rejected value to identify it, without dumping a whole
   # record into a log line.

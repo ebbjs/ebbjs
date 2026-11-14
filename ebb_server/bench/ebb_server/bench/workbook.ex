@@ -40,6 +40,18 @@ defmodule EbbServer.Bench.Workbook do
   def actor_id, do: @actor_id
 
   @doc """
+  The scopes half of a stored frame for `updates`: one entry per distinct
+  subject, all scoped to the single bench group.
+  """
+  @spec subject_scopes([map()]) :: [EbbServer.Storage.ActionFormat.subject_scope()]
+  def subject_scopes(updates) do
+    updates
+    |> Enum.map(& &1.subject_id)
+    |> Enum.uniq()
+    |> Enum.map(&{&1, [@group_id]})
+  end
+
+  @doc """
   Writes the bootstrap group + membership and any preloaded entities
   before the measured window.
   """

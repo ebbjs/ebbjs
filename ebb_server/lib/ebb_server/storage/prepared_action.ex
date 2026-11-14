@@ -5,7 +5,7 @@ defmodule EbbServer.Storage.PreparedAction do
 
   The sequencer owns everything that needs a live view of the system
   caches or the resolution frontier: dedup, the GSN claim, group
-  resolution, the per-Update `update_scopes` snapshot, and the provisional
+  resolution, the per-subject `subject_scopes` snapshot, and the provisional
   dirty marks. The GSN-free payload build and ETF encode happened in the
   `EbbServer.Storage.PreparePool` before the call entered the pipeline.
   `PreparedAction` is what is left over — the Action's durable content,
@@ -18,15 +18,17 @@ defmodule EbbServer.Storage.PreparedAction do
   - `id`, `actor_id`, `hlc` — Action identity, as validated.
   - `updates` — the validated Updates, in order.
   - `payload_etf` — the pre-claim ETF of the GSN-free Action payload
-    (`id`, `actor_id`, `hlc`, `updates`). `update_scopes` stay outside it
+    (`id`, `actor_id`, `hlc`, `updates`). `subject_scopes` stay outside it
     because they are cache-dependent; the Committer frames the two at
     claim time without re-encoding the payload.
-  - `update_scopes` — group ids per Update, index-aligned with `updates`.
-    Stored as the scopes half of the `cf_actions` frame; it cannot be
-    re-derived after the commit, so it doubles as the fan-out delivery
-    contract.
-  - `groups` — the union of `update_scopes`; each group is indexed once
-    per Action in `cf_group_actions`.
+  - `subject_scopes` — `{subject_id, group_ids}` per folded subject, in
+    first-appearance order. Stored as the scopes half of the `cf_actions`
+    frame; it cannot be re-derived after the commit, so it doubles as the
+    fan-out delivery contract. Every Update of a subject is delivered
+    through that subject's entry, so a row's C components cost one list,
+    not C.
+  - `groups` — the distinct union of `subject_scopes`; each group is
+    indexed once per Action in `cf_group_actions`.
   - `component_entity_ops` — ordered writes the Action's Updates imply for
     the derived component existence index: one put or delete per component
     Update, then one put per folded subject's model. The Writer applies them
@@ -44,7 +46,7 @@ defmodule EbbServer.Storage.PreparedAction do
     :hlc,
     :updates,
     :payload_etf,
-    :update_scopes
+    :subject_scopes
   ]
   defstruct [
     :id,
@@ -52,7 +54,7 @@ defmodule EbbServer.Storage.PreparedAction do
     :hlc,
     :updates,
     :payload_etf,
-    :update_scopes,
+    :subject_scopes,
     groups: [],
     component_entity_ops: [],
     affected_entities: []
@@ -66,7 +68,7 @@ defmodule EbbServer.Storage.PreparedAction do
           hlc: integer(),
           updates: [map()],
           payload_etf: binary(),
-          update_scopes: [[String.t()]],
+          subject_scopes: [EbbServer.Storage.ActionFormat.subject_scope()],
           groups: [String.t()],
           component_entity_ops: [EbbServer.Storage.ComponentEntityIndex.op()],
           affected_entities: [entity_mark()]

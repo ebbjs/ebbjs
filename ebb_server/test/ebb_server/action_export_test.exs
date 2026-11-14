@@ -313,8 +313,8 @@ defmodule EbbServer.ActionExportTest do
       assert action["id"] == "act_mixed"
       assert Enum.map(action["updates"], & &1["id"]) == ["u_todo"]
 
-      # The per-Update delivery scopes are internal routing metadata.
-      refute Map.has_key?(action, "update_scopes")
+      # The per-subject delivery scopes are internal routing metadata.
+      refute Map.has_key?(action, "subject_scopes")
 
       refute_receive {:exported, _action}, 200
 

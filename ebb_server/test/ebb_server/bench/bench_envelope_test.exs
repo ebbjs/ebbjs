@@ -24,8 +24,8 @@ defmodule EbbServer.Bench.EnvelopeTest do
                    }
                  ]
                })
-  @scopes [["g_1"]]
-  @input %{payload_etf: @payload_etf, update_scopes: @scopes, gsn: 42}
+  @scopes [{"todo_1", ["g_1"]}]
+  @input %{payload_etf: @payload_etf, subject_scopes: @scopes, gsn: 42}
 
   describe "options" do
     test "defaults compare all four shapes at 100 and 152 Actions per flush" do
@@ -133,11 +133,11 @@ defmodule EbbServer.Bench.EnvelopeTest do
     test "wrapper round-trips through decode/2 and decode_payload/2" do
       stored = Shapes.stored(:wrapper, Shapes.cf_actions_value(:wrapper, @input))
 
-      assert %{"id" => "act_1", "gsn" => 42, "update_scopes" => @scopes} =
+      assert %{"id" => "act_1", "gsn" => 42, "subject_scopes" => @scopes} =
                Shapes.decode(stored, 42)
 
       assert %{"id" => "act_1", "gsn" => 42} = payload = Shapes.decode_payload(stored, 42)
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
     end
 
     test "versioned_wrapper is the wrapper tuple plus a version integer" do
@@ -147,11 +147,11 @@ defmodule EbbServer.Bench.EnvelopeTest do
       stored =
         Shapes.stored(:versioned_wrapper, Shapes.cf_actions_value(:versioned_wrapper, @input))
 
-      assert %{"id" => "act_1", "gsn" => 42, "update_scopes" => @scopes} =
+      assert %{"id" => "act_1", "gsn" => 42, "subject_scopes" => @scopes} =
                Shapes.decode(stored, 42)
 
       assert %{"id" => "act_1", "gsn" => 42} = payload = Shapes.decode_payload(stored, 42)
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
 
       assert Shapes.extra_ops(:versioned_wrapper, @input) == []
       assert %{value: bytes, extra: 0} = Shapes.stored_bytes(:versioned_wrapper, @input)
@@ -166,11 +166,11 @@ defmodule EbbServer.Bench.EnvelopeTest do
 
       stored = Shapes.stored(:companion, value, @scopes)
 
-      assert %{"id" => "act_1", "gsn" => 42, "update_scopes" => @scopes} =
+      assert %{"id" => "act_1", "gsn" => 42, "subject_scopes" => @scopes} =
                Shapes.decode(stored, 42)
 
       assert %{"id" => "act_1", "gsn" => 42} = payload = Shapes.decode_payload(stored, 42)
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
     end
 
     test "companion's scopes round-trip through its extra put and point read" do
@@ -188,7 +188,7 @@ defmodule EbbServer.Bench.EnvelopeTest do
 
       assert Shapes.read_scopes(@input.gsn, rocks_name) == @scopes
 
-      assert %{"gsn" => 42, "update_scopes" => @scopes} =
+      assert %{"gsn" => 42, "subject_scopes" => @scopes} =
                Shapes.decode(
                  Shapes.stored(
                    :companion,
@@ -202,11 +202,11 @@ defmodule EbbServer.Bench.EnvelopeTest do
     test "frame round-trips through decode/2 and decode_payload/2" do
       stored = Shapes.stored(:frame, Shapes.cf_actions_value(:frame, @input))
 
-      assert %{"id" => "act_1", "gsn" => 42, "update_scopes" => @scopes} =
+      assert %{"id" => "act_1", "gsn" => 42, "subject_scopes" => @scopes} =
                Shapes.decode(stored, 42)
 
       assert %{"id" => "act_1", "gsn" => 42} = payload = Shapes.decode_payload(stored, 42)
-      refute Map.has_key?(payload, "update_scopes")
+      refute Map.has_key?(payload, "subject_scopes")
     end
 
     test "the frame shape's value is byte-identical to ActionFormat.frame/2" do
