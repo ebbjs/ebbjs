@@ -9,36 +9,33 @@ defmodule EbbServer.Storage.ActionScope do
   catch-up use this so an Update reaches exactly the groups its subject
   scopes to.
 
-  ## Fallbacks
+  `EbbServer.Storage.ActionFormat` is the one gate on the list's shape: every
+  reader of a committed Action goes through it, and it raises rather than
+  returning a record with a missing or mistyped half. There is no second
+  shape check here.
 
-  Every decode validates the list's shape, so a map whose value is missing or
-  differently shaped only reaches here from a caller that built it by hand.
-  Resolving the record from the caches instead is not safe: a
-  `relationship`/`entityGroup` delete's by-id entry is already gone by
-  fan-out time. Such a map, and any Update whose subject is absent from an
-  otherwise well-formed list, is treated as unscoped and delivered to every
-  group the Action is indexed under (fail open) rather than dropped.
+  ## A subject with no entry
 
-  A subject listed with `[]` is neither fallback: it means "deliver to
-  nobody", and its Updates are withheld.
+  A listed subject with `[]` means "deliver to nobody", and its Updates are
+  withheld. An Update whose subject is absent from an otherwise well-formed
+  list is delivered to every group the Action is indexed under: the shape says
+  nothing about whether the list covers every subject, and the delivery filter
+  must not drop an Update the Action committed. Resolving the record from the
+  caches instead is not possible this late — a `relationship`/`entityGroup`
+  delete's by-id entry is already gone.
   """
-
-  alias EbbServer.Storage.ActionFormat
 
   @doc """
   Returns the Updates of `action` whose own subject's scope includes
   `group_id`.
-
-  Unscoped Actions return every Update.
   """
   @spec updates_for_group(map(), String.t()) :: [map()]
   def updates_for_group(action, group_id) do
-    updates = action["updates"] || []
+    scopes = Map.new(action["subject_scopes"])
 
-    case subject_scopes_by_subject(action["subject_scopes"]) do
-      {:ok, scopes} -> Enum.filter(updates, &delivered_to?(&1, scopes, group_id))
-      :error -> updates
-    end
+    action
+    |> Map.get("updates", [])
+    |> Enum.filter(&delivered_to?(&1, scopes, group_id))
   end
 
   defp delivered_to?(update, scopes, group_id) do
@@ -46,9 +43,5 @@ defmodule EbbServer.Storage.ActionScope do
       {:ok, group_ids} -> group_id in group_ids
       :error -> true
     end
-  end
-
-  defp subject_scopes_by_subject(scopes) do
-    if ActionFormat.subject_scopes?(scopes), do: {:ok, Map.new(scopes)}, else: :error
   end
 end

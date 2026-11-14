@@ -192,29 +192,22 @@ defmodule EbbServer.Storage.ActionFormat do
 
   defp decode_term(binary), do: :erlang.binary_to_term(binary, [:safe])
 
-  @doc """
-  Whether `scopes` is a well-formed scopes half: one `{subject_id, [group_id]}`
-  entry per folded subject.
+  # The scopes half is exactly one `{subject_id, [group_id]}` entry per folded
+  # subject. Anything else — including the pre-#814 per-Update list — is
+  # corrupt or from another build, and must not decode as unscoped. This is the
+  # one gate on that shape (`ActionScope` reads a decoded Action, not a raw
+  # record), so there is no second predicate to keep in step.
+  defp validate_subject_scopes!(scopes) do
+    if subject_scopes?(scopes), do: scopes, else: reject_subject_scopes(scopes)
+  end
 
-  The frame's shape is defined here so the Writer, the log readers, and the
-  delivery filter cannot disagree about it; `ActionScope` treats anything this
-  rejects as an unscoped record.
-  """
-  @spec subject_scopes?(term()) :: boolean()
-  def subject_scopes?(scopes) when is_list(scopes), do: Enum.all?(scopes, &subject_scope?/1)
-  def subject_scopes?(_scopes), do: false
+  defp subject_scopes?(scopes) when is_list(scopes), do: Enum.all?(scopes, &subject_scope?/1)
+  defp subject_scopes?(_scopes), do: false
 
   defp subject_scope?({subject_id, group_ids}) when is_binary(subject_id) and is_list(group_ids),
     do: Enum.all?(group_ids, &is_binary/1)
 
   defp subject_scope?(_scope), do: false
-
-  # The scopes half is exactly one `{subject_id, [group_id]}` entry per folded
-  # subject. Anything else — including the pre-#814 per-Update list — is
-  # corrupt or from another build, and must not decode as unscoped.
-  defp validate_subject_scopes!(scopes) do
-    if subject_scopes?(scopes), do: scopes, else: reject_subject_scopes(scopes)
-  end
 
   defp reject_subject_scopes(scopes) do
     raise ArgumentError,

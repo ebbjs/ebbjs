@@ -201,17 +201,17 @@ defmodule EbbServer.Storage.WriterTest do
         RocksDB.get(RocksDB.cf_actions(rocks_name), RocksDB.encode_gsn_key(1), name: rocks_name)
 
       # The Action spans group_1 (todo_a) and group_2 (todo_b and its
-      # membership row); the stored per-subject scopes keep them apart. One
-      # entry per subject, in first-appearance order.
+      # membership row); the stored per-subject scopes keep them apart, one
+      # entry per subject. Order is not part of what delivery reads.
       decoded = ActionFormat.decode(binary, 1)
 
-      assert %{
-               "subject_scopes" => [
-                 {"todo_a", ["group_1"]},
-                 {"todo_b", ["group_2"]},
-                 {"eg_b", ["group_2"]}
-               ]
-             } = decoded
+      assert length(decoded["subject_scopes"]) == 3
+
+      assert Map.new(decoded["subject_scopes"]) == %{
+               "todo_a" => ["group_1"],
+               "todo_b" => ["group_2"],
+               "eg_b" => ["group_2"]
+             }
 
       # The join each group's delivery reads: group_1 gets todo_a's Update,
       # group_2 gets todo_b's and the membership row's, and neither leaks.

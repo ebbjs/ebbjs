@@ -116,12 +116,11 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert_receive {:captured_ops, ops}
       assert puts_to(ops, RocksDB.cf_group_actions(ctx.rocks_name)) == []
 
-      # Resolution still happened: the stored scopes carry the group, once
-      # per subject of the Action.
-      assert stored_scopes(ops, ctx.rocks_name) == [
-               {"todo_grouped", ["g_grouped"]},
-               {"eg_grouped", ["g_grouped"]}
-             ]
+      # Resolution still happened: the stored scopes carry the group for both
+      # subjects of the Action, one entry each.
+      scopes = stored_scopes(ops, ctx.rocks_name)
+      assert length(scopes) == 2
+      assert Map.new(scopes) == %{"todo_grouped" => ["g_grouped"], "eg_grouped" => ["g_grouped"]}
     end
 
     test ":group_resolution lists every subject with no groups", ctx do
@@ -132,10 +131,9 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert_receive {:captured_ops, ops}
       # Ablated resolution is not an absent list: every folded subject is
       # listed with `[]`, so the frame still records one entry per subject.
-      assert stored_scopes(ops, ctx.rocks_name) == [
-               {"todo_grouped", []},
-               {"eg_grouped", []}
-             ]
+      scopes = stored_scopes(ops, ctx.rocks_name)
+      assert length(scopes) == 2
+      assert Map.new(scopes) == %{"todo_grouped" => [], "eg_grouped" => []}
     end
 
     test ":build stores an empty payload", ctx do

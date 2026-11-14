@@ -54,25 +54,12 @@ defmodule EbbServer.Storage.ActionScopeTest do
     assert ids(action, "g_1") == ["u_2", "u_3"]
   end
 
-  test "an Update whose subject is absent from a present list is returned" do
-    # Fail open: the list is present, so this is not the corrupt-record
-    # fallback, but nothing may silently drop an Update with no entry.
+  test "an Update whose subject is absent from the list is returned" do
+    # The shape is well formed, so this is not the decode gate's business:
+    # nothing here may silently drop an Update the Action committed, even
+    # though its subject has no entry.
     action = action([{"todo_1", ["g_1"]}, {"todo_2", ["g_2"]}])
 
     assert ids(action, "g_1") == ["u_1", "u_3"]
-  end
-
-  test "returns every Update when the list is missing" do
-    action = action(nil) |> Map.delete("subject_scopes")
-
-    assert ids(action, "g_9") == ["u_1", "u_2", "u_3"]
-  end
-
-  test "returns every Update when the list is not a subject scope list" do
-    # The pre-#814 per-Update shape never reaches a reader, but a corrupt
-    # record must not decode as "scope to nobody".
-    action = action([["g_1"]])
-
-    assert ids(action, "g_9") == ["u_1", "u_2", "u_3"]
   end
 end

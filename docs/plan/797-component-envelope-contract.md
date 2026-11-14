@@ -262,8 +262,8 @@ is what loses it.
 ## 6. Migration note
 
 Ebb is greenfield: there is no migration. The old wire is simply unreadable. This is the
-one place the old names are recorded, so nothing in `packages/core/src` or `ebb_server/lib`
-has to mention them.
+one place the old names are recorded, so neither `packages/core/src` nor `ebb_server/lib` mentions
+them outside a stored-format note that explains why a record raises.
 
 | Old                                                       | New                                                                         |
 | --------------------------------------------------------- | --------------------------------------------------------------------------- |
