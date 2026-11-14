@@ -239,6 +239,16 @@ write path (validate, scope, authorize) or a _projection_ off the committed log
 Action changes state.
 _Avoid_: handler, service, processor, job
 
+**Predicate**:
+A System on the write path — validate, scope, authorize — deciding whether an
+Action may proceed. It reads committed state (the caches and indexes as of the
+request's claim) unioned with the earlier Updates of the same Action carried in
+the Action itself; it never expects a cache to hold a write the Writer has not
+committed. A predicate that needs the request's own prefix — a membership the
+Action adds, a link it creates — is handed that prefix, so it neither waits on
+the commit it is deciding nor scopes by state that commit has yet to produce.
+_Avoid_: check, rule, hook
+
 ### Materialization
 
 **Held**:
