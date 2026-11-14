@@ -232,8 +232,8 @@ defmodule EbbServer.Storage.EntityIndex do
 
   The scan follows `SystemComponent.kinds/0`'s declaration order, which is
   the by-id precedence: ids are not model-unique here, so a colliding id
-  answers the same kind it always has. A cache the caller's options do not
-  carry holds no row.
+  resolves to the first kind whose cache holds it. A cache the caller's
+  options do not carry holds no row.
   """
   @spec kind(subject_id(), keyword()) :: SystemComponent.kind() | nil
   def kind(entity_id, opts) do

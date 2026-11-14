@@ -87,8 +87,8 @@ defmodule EbbServer.Storage.SystemComponent do
   The four kinds in declaration order.
 
   That order is `EbbServer.Storage.EntityIndex.kind/2`'s by-id
-  precedence: ids are not model-unique here, so a colliding id answers the
-  same kind it always has.
+  precedence: ids are not model-unique here, so a colliding id resolves to
+  the first kind whose cache holds it.
   """
   @spec kinds() :: [kind()]
   def kinds, do: @kinds

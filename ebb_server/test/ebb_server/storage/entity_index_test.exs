@@ -344,7 +344,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
 
     # The declaration order is the by-id precedence: ids are not model-unique,
-    # so a colliding id must keep answering the kind it always has.
+    # so a colliding id resolves to the first declared kind.
     test "prefers the earlier declaration when an id collides" do
       t = tables()
 
