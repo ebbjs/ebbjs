@@ -130,8 +130,11 @@ defmodule EbbServer.Bench.RunnerTest do
 
       stats = Runner.new_stats(1_000, now)
 
+      # The deadline bounds when a call may start; it must outlast the first
+      # call's module load or the loop starts nothing and the assertions below
+      # compare an empty run.
       stats =
-        Runner.pipelined(3, now, now + 30_000, stats, perform,
+        Runner.pipelined(3, now, now + 2_000_000, stats, perform,
           seq_step: 10,
           reply_timeout_ms: 1_000
         )
@@ -144,7 +147,7 @@ defmodule EbbServer.Bench.RunnerTest do
       assert stats.seq == length(seqs) * 10
       assert stats.accepted == length(seqs) * 5
       assert stats.in_flight_peak == 3
-      assert length(Metrics.reservoir_items(stats.reservoir)) == length(seqs)
+      assert length(Metrics.reservoir_items(stats.reservoir)) == min(length(seqs), 1_000)
     end
 
     test "stops starting new calls at the deadline and drains the outstanding ones" do
