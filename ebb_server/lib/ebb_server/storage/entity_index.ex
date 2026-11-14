@@ -151,7 +151,7 @@ defmodule EbbServer.Storage.EntityIndex do
   defp resolve_owner(kind, subject_id, field, owner, opts) do
     case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
       nil -> resolve_uncached(subject_id, owner, opts)
-      row -> resolve_owner_value(row_field(row, field), owner, opts)
+      row -> resolve_owner_value(Map.get(row, field), owner, opts)
     end
   end
 
@@ -323,7 +323,7 @@ defmodule EbbServer.Storage.EntityIndex do
   def membership(membership_id, opts) do
     case by_id_row!(:entity_groups_by_id, membership_id, opts) do
       nil -> nil
-      row -> {row_field(row, "entity_id"), row_field(row, "group_id")}
+      row -> {Map.get(row, :entity_id), Map.get(row, :group_id)}
     end
   end
 
@@ -339,7 +339,7 @@ defmodule EbbServer.Storage.EntityIndex do
   def relationship_source(rel_id, opts) do
     case by_id_row!(:relationships_by_id, rel_id, opts) do
       nil -> nil
-      row -> row_field(row, "source_id")
+      row -> Map.get(row, :source_id)
     end
   end
 
@@ -402,14 +402,14 @@ defmodule EbbServer.Storage.EntityIndex do
   # (#624). The flush row supplies what an earlier Action of the same commit
   # wrote, which the by-id caches cannot see yet (#813).
   defp scope_field(update, kind, field, opts) do
-    SystemComponent.path(update.data, kind, field) ||
+    SystemComponent.path(update.data, kind, Atom.to_string(field)) ||
       flush_field(update.subject_id, kind, field, opts)
   end
 
   defp stored_field(subject_id, kind, field, opts) do
     case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
       nil -> nil
-      row -> row_field(row, field)
+      row -> Map.get(row, field)
     end
   end
 
@@ -436,7 +436,7 @@ defmodule EbbServer.Storage.EntityIndex do
   # wins, because that is the value the authorizer bound (#624).
   defp flush_field(subject_id, kind, field, opts) do
     case Keyword.get(opts, :flush_rows) do
-      %{} = rows -> SystemComponent.path(Map.get(rows, subject_id), kind, field)
+      %{} = rows -> SystemComponent.path(Map.get(rows, subject_id), kind, Atom.to_string(field))
       _ -> nil
     end
   end
@@ -461,20 +461,14 @@ defmodule EbbServer.Storage.EntityIndex do
   # row still exists, so a planned entry answers present unless it is a
   # tombstone.
   defp by_id_present?(cache, id, opts) do
-    case Keyword.fetch(opts, cache) do
-      {:ok, table} -> planned_or_cached?(table, cache, id, opts)
-      :error -> false
+    case {Keyword.fetch(opts, cache), Keyword.get(opts, :overlay)} do
+      {{:ok, table}, %Overlay{} = overlay} -> planned_present?(overlay, table, cache, id)
+      {{:ok, table}, _} -> ets_row(table, id) != nil
+      {:error, _} -> false
     end
   end
 
-  defp planned_or_cached?(table, cache, id, opts) do
-    case Keyword.get(opts, :overlay) do
-      %Overlay{} = overlay -> planned_present?(overlay, cache, id, table)
-      _ -> ets_row(table, id) != nil
-    end
-  end
-
-  defp planned_present?(overlay, cache, id, table) do
+  defp planned_present?(overlay, table, cache, id) do
     case Overlay.fetch(overlay, cache, id) do
       {:ok, :deleted} -> false
       {:ok, _row} -> true
@@ -499,18 +493,5 @@ defmodule EbbServer.Storage.EntityIndex do
           [] -> nil
         end
     end
-  end
-
-  defp row_field(row, name) do
-    case existing_atom(name) do
-      nil -> Map.get(row, name)
-      key -> Map.get(row, key) || Map.get(row, name)
-    end
-  end
-
-  defp existing_atom(name) do
-    String.to_existing_atom(name)
-  rescue
-    ArgumentError -> nil
   end
 end

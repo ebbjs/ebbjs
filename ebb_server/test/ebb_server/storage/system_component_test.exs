@@ -5,9 +5,9 @@ defmodule EbbServer.Storage.SystemComponentTest do
 
   test "every kind declares its component, scope owner, and by-id cache" do
     assert [
-             {:grant, {:field, "group_id", :group}, :group_members_by_id},
-             {:membership, {:field, "group_id", :group}, :entity_groups_by_id},
-             {:link, {:field, "source_id", :entity}, :relationships_by_id},
+             {:grant, {:field, :group_id, :group}, :group_members_by_id},
+             {:membership, {:field, :group_id, :group}, :entity_groups_by_id},
+             {:link, {:field, :source_id, :entity}, :relationships_by_id},
              {:group, :self, :group_apps}
            ] ==
              Enum.map(SystemComponent.kinds(), fn kind ->

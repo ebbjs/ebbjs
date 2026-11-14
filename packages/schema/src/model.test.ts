@@ -128,25 +128,6 @@ describe("component scope owner", () => {
     }
   });
 
-  it("rejects a scope naming no field of the component's value", () => {
-    let caught: unknown;
-    try {
-      defineComponent("ebb/grant", { group_id: e.string() }, { scope: "groupid" });
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(ComponentScopeError);
-    expect((caught as Error).message).toContain('"groupid"');
-    expect((caught as Error).message).toContain('"group_id"');
-  });
-
-  it("leaves a bare field builder without a field check", () => {
-    // A one-value component names itself, so `self` is the only scope it can
-    // carry a field for.
-    expect(defineComponent("ebb/group", e.string(), { scope: "self" }).scope).toBe("self");
-  });
-
   it("leaves an anonymous component inheriting the entity's membership", () => {
     const todo = defineModel("todo", { title: e.string() });
 

@@ -548,7 +548,7 @@ export class InvalidComponentVersionError extends Error {
 
 /**
  * Raised when a component declares a scope owner it may not have, or one that
- * names nothing. Only the platform's own components declare a scope.
+ * is not a scope shape. Only the platform's own components declare a scope.
  */
 export class ComponentScopeError extends Error {
   readonly componentName: string;
@@ -565,19 +565,11 @@ export class ComponentScopeError extends Error {
 /** A field-shaped scope: one non-empty segment, since a scope names no path. */
 const SCOPE_FIELD_PATTERN = /^[^/\s]+$/;
 
-/** The property names of an object shape, or `undefined` for any other shape. */
-const shapeFieldNames = (shape: TSchema): readonly string[] | undefined => {
-  const properties = (shape as { properties?: Record<string, unknown> }).properties;
-  if (properties === undefined || typeof properties !== "object") return undefined;
-  return Object.keys(properties);
-};
-
 /**
  * Reject a scope owner a component may not declare. A scope naming a group
- * decides where a write is delivered, so only the platform may hold one; and a
- * scope naming no field of the value would silently resolve no group set.
+ * decides where a write is delivered, so only the platform may hold one.
  */
-const assertComponentScope = (name: string, scope: string, shape: TSchema): void => {
+const assertComponentScope = (name: string, scope: string): void => {
   if (!name.startsWith(`${EBB_MODEL_NAME}/`)) {
     throw new ComponentScopeError(
       name,
@@ -594,17 +586,6 @@ const assertComponentScope = (name: string, scope: string, shape: TSchema): void
         `row's own id) or the name of one field of the component's value.`,
     );
   }
-  if (scope === "self") return;
-
-  const fields = shapeFieldNames(shape);
-  if (fields === undefined || fields.includes(scope)) return;
-  throw new ComponentScopeError(
-    name,
-    scope,
-    `Component "${name}" declares scope "${scope}", which is not one of its fields ` +
-      `(${fields.map((field) => `"${field}"`).join(", ")}). A scope naming no field resolves ` +
-      `no group set.`,
-  );
 };
 
 /** True when a value is a component declaration rather than a bare schema. */
@@ -690,7 +671,7 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     throw new InvalidComponentVersionError(name, options.version);
   }
 
-  if (options.scope !== undefined) assertComponentScope(name, options.scope, shape);
+  if (options.scope !== undefined) assertComponentScope(name, options.scope);
 
   return Object.freeze({
     kind: "component",
@@ -727,7 +708,8 @@ type DeclaredComponentShape<
  *
  * Throws {@link OptionalDefaultConflictError} when `optional: true` is
  * combined with a declared `.default()`, and {@link ComponentScopeError}
- * when a `scope` is declared outside the `ebb/` namespace or names no field.
+ * when a `scope` is declared outside the `ebb/` namespace or is not a scope
+ * shape.
  */
 export function defineComponent<
   const TShape extends ComponentShapeInput,

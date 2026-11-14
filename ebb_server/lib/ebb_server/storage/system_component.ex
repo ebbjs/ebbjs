@@ -50,17 +50,17 @@ defmodule EbbServer.Storage.SystemComponent do
   @declarations [
     grant: %{
       name: "ebb/grant",
-      scope: {:field, "group_id", :group},
+      scope: {:field, :group_id, :group},
       by_id: :group_members_by_id
     },
     membership: %{
       name: "ebb/membership",
-      scope: {:field, "group_id", :group},
+      scope: {:field, :group_id, :group},
       by_id: :entity_groups_by_id
     },
     link: %{
       name: "ebb/link",
-      scope: {:field, "source_id", :entity},
+      scope: {:field, :source_id, :entity},
       by_id: :relationships_by_id
     },
     group: %{
@@ -77,7 +77,7 @@ defmodule EbbServer.Storage.SystemComponent do
                       end)
 
   @type kind :: :group | :grant | :membership | :link
-  @type scope :: :self | {:field, String.t(), :group | :entity}
+  @type scope :: :self | {:field, atom(), :group | :entity}
 
   @doc "The model every platform row is committed under."
   @spec model() :: String.t()
@@ -100,8 +100,9 @@ defmodule EbbServer.Storage.SystemComponent do
   @doc """
   How a kind's write resolves its group set.
 
-  `:self`, `{:field, name, :group}`, `{:field, name, :entity}`, or `nil`
-  for something that is not a platform kind.
+  `:self`, `{:field, key, :group}`, `{:field, key, :entity}`, or `nil` for
+  something that is not a platform kind. `key` is the atom key the value is
+  read at in a by-id cache row.
   """
   @spec scope(term()) :: scope() | nil
   def scope(kind) do
