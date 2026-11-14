@@ -16,16 +16,17 @@ defmodule EbbServer.Storage.EntityIndex do
   Which owner a row's group set comes from is declared on the platform
   component (`EbbServer.Storage.SystemComponent`), and this module reads
   that declaration: one table read plus one recursion, so a fifth `ebb/*`
-  component is one registration and no edit here. There are three shapes:
+  component is one registration and no edit here. There are three shapes,
+  and the table names which kind declares which:
 
-    - `:self` — the row's own id is its group set, as `ebb/group` is.
+    - `:self` — the row's own id is its group set.
     - `{:field, name, :group}` — the value at `name` is a group id, and a
-      group owns itself, so the scope is `[that id]` (`ebb/grant`,
-      `ebb/membership`). This recurses to the `:self` case without reading
-      the group's row: a group created in the same Action is not cached
-      yet, and the group by-id table is optional for some callers.
+      group owns itself, so the scope is `[that id]`. This recurses to the
+      `:self` case without reading the group's row: a group created in the
+      same Action is not cached yet, and the group by-id table is optional
+      for some callers.
     - `{:field, name, :entity}` — the value at `name` is an entity id, and
-      the scope is that entity's membership set (`ebb/link`).
+      the scope is that entity's membership set.
 
   A component with no declaration is a user component, whose scope is the
   entity's own membership set.
@@ -135,11 +136,6 @@ defmodule EbbServer.Storage.EntityIndex do
     resolve_groups_cached(kind(subject_id, opts) || :unknown, subject_id, opts)
   end
 
-  # The scope owner `{:field, name, :entity}` recurses to here: an entity id
-  # whose group set is its membership set.
-  def resolve_groups_cached(:entity, source_id, opts),
-    do: {source_groups_cached(source_id, opts), source_id}
-
   def resolve_groups_cached(key, subject_id, opts) when is_atom(key) do
     case SystemComponent.scope(key) do
       :self -> {[subject_id], nil}
@@ -151,9 +147,7 @@ defmodule EbbServer.Storage.EntityIndex do
   def resolve_groups_cached(_user_model, source_id, opts),
     do: {source_groups_cached(source_id, opts), source_id}
 
-  # The declaration names the field; the row supplies its value. The recursion
-  # is the declaration's owner, so a group value lands on `:self` and an
-  # entity value on its membership set.
+  # The declaration names the field; the row supplies its value.
   defp resolve_owner(kind, subject_id, field, owner, opts) do
     case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
       nil -> resolve_uncached(subject_id, owner, opts)
@@ -162,7 +156,11 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   defp resolve_owner_value(nil, _owner, _opts), do: {[], nil}
-  defp resolve_owner_value(value, owner, opts), do: resolve_groups_cached(owner, value, opts)
+
+  defp resolve_owner_value(value, :group, opts), do: resolve_groups_cached(:group, value, opts)
+
+  defp resolve_owner_value(value, :entity, opts),
+    do: {source_groups_cached(value, opts), value}
 
   # A row the Action itself wrote has no stored row yet. The value that write
   # carried is the scope it was authorized and fanned out against — the

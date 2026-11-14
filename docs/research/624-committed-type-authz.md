@@ -107,7 +107,7 @@ loosely, and materialization is keyed by `subject_id` alone:
 
 - `relationship` put with `subject_id` = any entity id. Authorization looks
   only at the wire `source_id`'s set (`authorizer.ex:732-746`,
-  `EntityIndex.relationship_groups/3`), so an actor who may update _their own_
+  `EntityIndex.fan_out_groups/2`), so an actor who may update _their own_
   entity can name a victim's id as the edge id. It then writes
   `cf_entities[victim_id]` with the relationship's fields and
   `type: "relationship"` (`entity_store.ex:493-511`) plus a

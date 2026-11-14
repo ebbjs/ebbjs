@@ -798,7 +798,9 @@ names. `ebb/membership` is never written for either.
       per-kind scope clauses.
 
 **Acceptance.** No module dispatches on a model string to decide scope. Adding a fifth `ebb/*`
-component changes one registration and no dispatch site. Every #624/#623/#789 vector still rejects.
+component changes one **scope** registration and no scope dispatch site. Every #624/#623/#789 vector
+still rejects. (A fifth component still needs its cache projection, its row-identity rule, and its
+client declaration — the claim is about scope resolution, which is what this slice owns.)
 
 **Depends on.** 10. **Blocks** 12, 13.
 
@@ -807,14 +809,15 @@ component changes one registration and no dispatch site. Every #624/#623/#789 ve
 order is the by-id precedence `EntityIndex.kind/2` scans. `scope` is `:self` (a group is its own
 group set), `{:field, name, :group}` (the value names a group, which owns itself — `ebb/grant`,
 `ebb/membership`), or `{:field, name, :entity}` (the value names an entity whose membership is the
-scope — `ebb/link`). `EntityIndex.resolve_groups_cached/3` is one table read plus one recursion;
-`fan_out_preference/2` reads the same declaration; `kind/2` scans `kinds/0`; and
+scope — `ebb/link`). `EntityIndex.resolve_groups_cached/3` is one table read and one owner
+resolution; `fan_out_preference/2` reads the same declaration; `kind/2` scans `kinds/0`; and
 `relationship_groups/4` is gone, with its method rule (the wire for a put or patch, the stored row
 for a delete, #624) now inside `fan_out_preference/2`. `FanOutRouter.GroupResolution` and
 `Authorizer` lost their per-kind scope helpers and call `resolve_groups/3` / `fan_out_groups/2`.
 Both sides of the declaration exist, because the server stays schema-free: the client declares
 `scope` on the same four components and rejects it outside `ebb/` at declaration time
-(`ComponentScopeError`), while the server keeps its own static table.
+(`ComponentScopeError`), while the server keeps its own static table. Nothing cross-checks the two,
+so changing a scope owner is a two-sided edit.
 
 The table carries the kind's **by-id cache** beside its scope. That is the one addition beyond the
 literal `scope:` field: a fifth component would otherwise need a second registration for `kind/2`
@@ -1143,7 +1146,8 @@ out.
 6. What does the containment hop cost when `ebb/link` moves onto its source? Slice 13 is gated on
    it; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
 7. Does the group → members index survive the `ebb/*` rename, or does it collapse into the
-   component index? **Still open.** Slice 11's scope table reads the by-id caches
+   component index? **Still open, and unowned.** Slice 11's scope table reads the by-id caches
    (`group_members_by_id`), not the by-group index, so it neither replaces nor prices
-   `group_members_by_group`; a k = 2/4/8 measurement needs a group-listing workload, not a
-   scope-resolution one.
+   `group_members_by_group`; a k = 2/4/8 measurement needs a group-listing workload, and belongs
+   with the next slice that touches those tables (slice 13's forward-index deletion, or the
+   indexing follow-on that supersedes #815).
