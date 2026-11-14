@@ -1,5 +1,118 @@
 # @ebbjs/client
 
+## 1.2.0
+
+### Minor Changes
+
+- a682fe8: Conflict scope is declared and held per component.
+
+  `conflictScope` gains the middle rung on the ladder and is read per
+  component rather than per model: `"field"` surfaces an overlapping map
+  position, `"component"` any concurrent touch of the same component, and
+  `"entity"` any concurrent touch of the row. A field- or component-scope
+  loss holds only the contested component, so a sibling component of the same
+  row keeps flushing; an entity-scope loss holds the whole subject. The hold
+  is still derived from the durable `conflicted` rows. The persisted conflict
+  payload changed shape, so a store from an earlier release is discarded.
+
+  `structural: true` is the exemption the system rows declare. `STRUCTURAL_MODELS`
+  is gone: every component of `relationship`, `entityGroup`, and `groupMember`
+  opts out of detection, so an offline edge, membership, or grant write
+  converges and is never surfaced or held. A schema-less client resolves those
+  static declarations without a per-client registry. The exemption is a
+  component flag, not a fourth scope.
+
+  `EntityDiff` now reports `component` — the full `<model>/<field>` name —
+  beside `path`, matching the slot vocabulary, instead of a bare field name.
+  `Conflict` and `ConflictEntry` carry `holds`, the positions kept off the
+  wire.
+
+  Ebb is pre-1.0, so the breaking API changes ship as a minor, following the
+  #692 precedent.
+
+- d2cb29e: Hold, pin, and cold-read replica data per component instead of per row model.
+
+  `MaterializationPolicy.holds` now takes a component (`<model>/<leaf>`), and the client
+  derives it from the model registry, so a model's `materialization: "on-demand"` seeds
+  `lazy` on each of its components and a single lazy component on a held model works with no
+  extra declaration. A row is resident iff any of its components is held, or the row is
+  pinned; its base row can be partial, with the components it knows exist but does not hold
+  tracked as dormant. `Replica.open(id, component)` / `close(id, component)` address one
+  component, the new `readComponent` seam returns one component's value, and
+  `ReplicaStats` reports `components`, `residentComponents`, `heldComponents`,
+  `pinnedComponents`, `nonResidentComponents`, and `nonResident`. `ReplicaStats.pinned`
+  counts component pins, as do `pinnedCapacity` and the TTL.
+
+  The persisted replica record moves to format 3: rows carry their held components and a new
+  `notResident` map carries the components whose values are not persisted. An older record
+  reads as absent, which resets local records as decision 9 allows.
+
+- 0c5c5d5: Read migrations are declared per component, not per model.
+
+  `defineComponent` already carried `version`; it now validates it as an integer >= 1.
+  `defineMigration(component, from, to, fn)` declares one up-only step that transforms a
+  component's projected value, and `defineSchema({ migrations })` proves the steps form one
+  contiguous chain from version 1 to each declared version. A gap, step past the
+  declaration, duplicate `(component, from)` pair, or migration for an undeclared component
+  throws from `defineSchema` — boot, not the first read.
+
+  The replica persists a `componentVersions` map beside a record's rows and bumps the record to
+  format 4. A write stamps its component at the declared version; a loaded record keeps the
+  stamps it persisted. Projection compares that stamp with the declaration and runs the composed migration
+  chain, memoised per `(component, from, declared)`. A component stored at a version newer
+  than the client declares throws `ComponentVersionAheadError` instead of being read as the
+  older shape. The Action log and the materialized base are untouched; `replica.get`,
+  `toRaw()`, and history still read the stored shape.
+
+  The wire and the log carry no version, so a value materialized by the current session is
+  assumed current. Migrations therefore cover the client's own persisted upgrade path, not
+  data another client wrote against an older schema.
+
+- 437c80d: The four system types are now `ebb/*` components of one `ebb` model.
+
+  `group`, `groupMember`, `entityGroup` and `relationship` are `ebb/group`, `ebb/grant`,
+  `ebb/membership` and `ebb/link`: four **atomic** components, each carrying one object value in one
+  Update. A torn edge, membership or grant is unrepresentable.
+
+  ```diff
+  -Update { component: "relationship/source_id", method: "patch", data: { value: "todo_1" } }
+  -Update { component: "relationship/target_id", method: "patch", data: { value: "todo_2" } }
+  -Update { component: "relationship/type",      method: "patch", data: { value: "todo" } }
+  -Update { component: "relationship/field",     method: "patch", data: { value: "dependsOn" } }
+  +Update { component: "ebb/link", method: "replace",
+  +         data: { value: { source_id: "todo_1", target_id: "todo_2",
+  +                          type: "todo", field: "dependsOn" } } }
+  ```
+
+  `ebb/membership`'s pair, `ebb/link`'s source and `ebb/grant`'s group are fixed at create; moving one
+  is a delete plus a create.
+
+  Permission subjects are the component: `group.*` → `ebb/group.*`, `groupMember.*` → `ebb/grant.*`,
+  `relationship.update|delete` → `ebb/link.update|delete`. A membership write authorizes as the
+  entity's `<model>.create` / `.update`, unchanged.
+
+  A group's `apps` is the list of app ids it is in scope for (`["notes"]`) rather than a map, because
+  an atomic value cannot contain a map. Absent is unscoped, `[]` is no app, and a scope edit writes
+  the whole `ebb/group` value.
+
+  `@ebbjs/core` exports the component vocabulary — `EBB_COMPONENTS`, `systemValue` — and no longer
+  declares the `Group`, `GroupMember` and `Relationship` row schemas; the component values are the
+  shapes. `GroupSeed.apps` is a `string[]`.
+
+  The client's replica store moves to v13 and starts empty: its adjacency index keys name components,
+  and a stored row is one atomic value.
+
+### Patch Changes
+
+- Updated dependencies [a682fe8]
+- Updated dependencies [d2cb29e]
+- Updated dependencies [0c5c5d5]
+- Updated dependencies [437c80d]
+  - @ebbjs/schema@1.2.0
+  - @ebbjs/write@1.2.0
+  - @ebbjs/storage@1.2.0
+  - @ebbjs/core@1.2.0
+
 ## 1.1.0
 
 ### Minor Changes

@@ -1,5 +1,77 @@
 # @ebbjs/write
 
+## 1.2.0
+
+### Minor Changes
+
+- a682fe8: Conflict scope is declared and held per component.
+
+  `conflictScope` gains the middle rung on the ladder and is read per
+  component rather than per model: `"field"` surfaces an overlapping map
+  position, `"component"` any concurrent touch of the same component, and
+  `"entity"` any concurrent touch of the row. A field- or component-scope
+  loss holds only the contested component, so a sibling component of the same
+  row keeps flushing; an entity-scope loss holds the whole subject. The hold
+  is still derived from the durable `conflicted` rows. The persisted conflict
+  payload changed shape, so a store from an earlier release is discarded.
+
+  `structural: true` is the exemption the system rows declare. `STRUCTURAL_MODELS`
+  is gone: every component of `relationship`, `entityGroup`, and `groupMember`
+  opts out of detection, so an offline edge, membership, or grant write
+  converges and is never surfaced or held. A schema-less client resolves those
+  static declarations without a per-client registry. The exemption is a
+  component flag, not a fourth scope.
+
+  `EntityDiff` now reports `component` — the full `<model>/<field>` name —
+  beside `path`, matching the slot vocabulary, instead of a bare field name.
+  `Conflict` and `ConflictEntry` carry `holds`, the positions kept off the
+  wire.
+
+  Ebb is pre-1.0, so the breaking API changes ship as a minor, following the
+  #692 precedent.
+
+- 437c80d: The four system types are now `ebb/*` components of one `ebb` model.
+
+  `group`, `groupMember`, `entityGroup` and `relationship` are `ebb/group`, `ebb/grant`,
+  `ebb/membership` and `ebb/link`: four **atomic** components, each carrying one object value in one
+  Update. A torn edge, membership or grant is unrepresentable.
+
+  ```diff
+  -Update { component: "relationship/source_id", method: "patch", data: { value: "todo_1" } }
+  -Update { component: "relationship/target_id", method: "patch", data: { value: "todo_2" } }
+  -Update { component: "relationship/type",      method: "patch", data: { value: "todo" } }
+  -Update { component: "relationship/field",     method: "patch", data: { value: "dependsOn" } }
+  +Update { component: "ebb/link", method: "replace",
+  +         data: { value: { source_id: "todo_1", target_id: "todo_2",
+  +                          type: "todo", field: "dependsOn" } } }
+  ```
+
+  `ebb/membership`'s pair, `ebb/link`'s source and `ebb/grant`'s group are fixed at create; moving one
+  is a delete plus a create.
+
+  Permission subjects are the component: `group.*` → `ebb/group.*`, `groupMember.*` → `ebb/grant.*`,
+  `relationship.update|delete` → `ebb/link.update|delete`. A membership write authorizes as the
+  entity's `<model>.create` / `.update`, unchanged.
+
+  A group's `apps` is the list of app ids it is in scope for (`["notes"]`) rather than a map, because
+  an atomic value cannot contain a map. Absent is unscoped, `[]` is no app, and a scope edit writes
+  the whole `ebb/group` value.
+
+  `@ebbjs/core` exports the component vocabulary — `EBB_COMPONENTS`, `systemValue` — and no longer
+  declares the `Group`, `GroupMember` and `Relationship` row schemas; the component values are the
+  shapes. `GroupSeed.apps` is a `string[]`.
+
+  The client's replica store moves to v13 and starts empty: its adjacency index keys name components,
+  and a stored row is one atomic value.
+
+### Patch Changes
+
+- Updated dependencies [a682fe8]
+- Updated dependencies [0c5c5d5]
+- Updated dependencies [437c80d]
+  - @ebbjs/schema@1.2.0
+  - @ebbjs/core@1.2.0
+
 ## 1.1.0
 
 ### Minor Changes

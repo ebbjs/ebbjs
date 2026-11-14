@@ -1,5 +1,15 @@
 # @ebbjs/codemirror
 
+## 1.2.0
+
+### Patch Changes
+
+- Updated dependencies [a682fe8]
+- Updated dependencies [d2cb29e]
+- Updated dependencies [0c5c5d5]
+- Updated dependencies [437c80d]
+  - @ebbjs/client@1.2.0
+
 ## 1.1.0
 
 ### Patch Changes

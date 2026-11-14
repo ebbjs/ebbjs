@@ -1,6 +1,6 @@
 {
   "name": "@ebbjs/write",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": false,
   "description": "The shared ebbjs write planner: operations and pure wire builders that turn mutations into Updates.",
   "homepage": "https://ebbjs.com",
