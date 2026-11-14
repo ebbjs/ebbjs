@@ -51,7 +51,7 @@ describe("buildActorSeed", () => {
 
   it("creates the actor's group and own membership with the seed permissions", () => {
     expect(seed.groups).toEqual([{ id: ids.groupId, name: "alice's Workspace", apps: [APP_ID] }]);
-    expect(seed.groupMembers).toEqual([
+    expect(seed.grants).toEqual([
       {
         id: ids.memberId,
         actorId,
@@ -62,14 +62,14 @@ describe("buildActorSeed", () => {
   });
 
   it("creates the workspace and profile rows as the schema's entity types", () => {
-    expect(entity(seed, ids.workspaceId).type).toBe("workspace");
+    expect(entity(seed, ids.workspaceId).model).toBe("workspace");
     expect(entityFields(seed, ids.workspaceId)).toEqual({
       name: "alice's Workspace",
       slug: "alice",
       description: "Personal workspace for alice",
     });
 
-    expect(entity(seed, ids.profileId).type).toBe("profile");
+    expect(entity(seed, ids.profileId).model).toBe("profile");
     expect(entityFields(seed, ids.profileId)).toEqual({
       actor_id: "alice",
       display_name: "alice",
@@ -78,7 +78,7 @@ describe("buildActorSeed", () => {
   });
 
   it("files the workspace and profile into the actor's group", () => {
-    expect(seed.entityGroups).toEqual([
+    expect(seed.memberships).toEqual([
       {
         id: ids.workspaceMembershipId,
         entityId: ids.workspaceId,
@@ -109,7 +109,7 @@ describe("buildSharedSeed", () => {
     expect(seed.groups).toEqual([
       { id: SHARED_GROUP_ID, name: "Shared Workspace", apps: [APP_ID] },
     ]);
-    expect(seed.groupMembers).toEqual([
+    expect(seed.grants).toEqual([
       {
         id: SHARED_MEMBER_ID,
         actorId: SEEDER_ACTOR_ID,
@@ -120,14 +120,14 @@ describe("buildSharedSeed", () => {
   });
 
   it("creates the shared workspace with a sample issue", () => {
-    expect(entity(seed, SHARED_WORKSPACE_ID).type).toBe("workspace");
+    expect(entity(seed, SHARED_WORKSPACE_ID).model).toBe("workspace");
     expect(entityFields(seed, SHARED_WORKSPACE_ID)).toEqual({
       name: "Shared Workspace",
       slug: SHARED_WORKSPACE_SLUG,
       description: "Issues shared with every member.",
     });
 
-    expect(entity(seed, SAMPLE_ISSUE_ID).type).toBe("issue");
+    expect(entity(seed, SAMPLE_ISSUE_ID).model).toBe("issue");
     expect(entityFields(seed, SAMPLE_ISSUE_ID)).toEqual({
       title: "Welcome to ebb",
       status: "todo",
@@ -136,7 +136,7 @@ describe("buildSharedSeed", () => {
   });
 
   it("files the shared workspace and sample issue into the shared group", () => {
-    expect(seed.entityGroups).toEqual([
+    expect(seed.memberships).toEqual([
       {
         id: SHARED_WORKSPACE_MEMBERSHIP_ID,
         entityId: SHARED_WORKSPACE_ID,

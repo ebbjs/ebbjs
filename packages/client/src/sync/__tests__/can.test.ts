@@ -97,7 +97,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "*",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -149,7 +149,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "*",
         required: "todo.update",
         groupIds: [],
@@ -195,7 +195,7 @@ describe("client.can — per-entity form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.delete",
         groupIds: ["g_1"],
