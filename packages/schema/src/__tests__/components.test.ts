@@ -28,6 +28,7 @@ describe("defineComponent", () => {
         indexed: false,
         structural: false,
         permission: undefined,
+        scope: undefined,
         version: 1,
       }),
     );

@@ -6,6 +6,11 @@
  * the whole value — and the membership and link keys are immutable after create,
  * so a move is a delete plus a create.
  *
+ * Each also declares its *scope owner*, the entity its write's group set
+ * resolves against: `ebb/group` is `self`, `ebb/grant` and `ebb/membership`
+ * name `group_id`, and `ebb/link` names `source_id`. Declared here because only
+ * the `ebb/` namespace may name a group.
+ *
  * `defineSchema` registers this model alongside the app's models, so the public
  * write paths can submit their Updates without callers hand-registering
  * anything. Kept out of `schema.ts` to avoid a cyclic import with `client.ts`,
@@ -68,24 +73,28 @@ const linkShape = e.object({
 const groupComponent = defineComponent(EBB_COMPONENTS.group, groupShape, {
   optional: true,
   permission: "own",
+  scope: "self",
 });
 
 const grantComponent = defineComponent(EBB_COMPONENTS.grant, grantShape, {
   optional: true,
   structural: true,
   permission: "own",
+  scope: "group_id",
 });
 
 const membershipComponent = defineComponent(EBB_COMPONENTS.membership, membershipShape, {
   optional: true,
   structural: true,
   permission: "own",
+  scope: "group_id",
 });
 
 const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
   optional: true,
   structural: true,
   permission: "own",
+  scope: "source_id",
 });
 
 /**

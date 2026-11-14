@@ -215,6 +215,14 @@ and grant components are also structural: they are never surfaced as a
 conflict.
 _Avoid_: system entity type, built-in type
 
+**Kind**:
+The atom naming which system component a row carries or a write names:
+`:group`, `:grant`, `:membership`, `:link`. It is neither the component's name
+(`ebb/group`) nor a model: a row carrying only system components is committed
+under the model `ebb`, and a user row has no kind. A delete names no component,
+so the kind is what places the row without reading a value.
+_Avoid_: system type, component type, row type
+
 **Scope owner**:
 The entity whose group set a component's write is authorized and delivered
 against: the entity itself, an entity one of its values names, or the entity
@@ -238,6 +246,16 @@ write path (validate, scope, authorize) or a _projection_ off the committed log
 (index, cache, read model). Never a scheduler, and never a mutation — only an
 Action changes state.
 _Avoid_: handler, service, processor, job
+
+**Predicate**:
+A System on the write path — validate, scope, authorize — deciding whether an
+Action may proceed. It reads committed state (the caches and indexes as of the
+request's claim) unioned with the earlier Updates of the same Action carried in
+the Action itself; it never expects a cache to hold a write the Writer has not
+committed. A predicate that needs the request's own prefix — a membership the
+Action adds, a link it creates — is handed that prefix, so it neither waits on
+the commit it is deciding nor scopes by state that commit has yet to produce.
+_Avoid_: check, rule, hook
 
 ### Materialization
 
@@ -302,7 +320,8 @@ The sequence of field names naming one leaf inside a component — `updates`, or
 _Avoid_: key path, pointer
 
 **Relationship**:
-A named, typed link from a source entity to a target entity.
+A named, typed link from a source entity to a target entity. Its `type` is the
+relationship's name (`dependsOn`), never a model.
 _Avoid_: edge, reference, foreign key
 
 **Membership**:

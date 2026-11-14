@@ -1,7 +1,7 @@
 # epic(components): components are the unit of identity
 
 Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
-Slices 1–7 and 9 landed (#794–#800, #802); 8 and 10–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Slices 1–7 and 9–11 landed (#794–#800, #802, #805, #819); 8 and 12–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -781,22 +781,53 @@ names. `ebb/membership` is never written for either.
 
 **Work.**
 
-- [ ] `scope:` accepted on `ebb/*` only; a user component that declares one is rejected at schema
+- [x] `scope:` accepted on `ebb/*` only; a user component that declares one is rejected at schema
       load, because a component that can name a group could mint its own delivery scope.
-- [ ] `EntityIndex`: one table read plus one recursion, replacing the five clauses.
-- [ ] `fan_out_preference` reads the declaration rather than naming `relationship`/`entityGroup`/
+- [x] `EntityIndex`: one table read plus one recursion, replacing the five clauses.
+- [x] `fan_out_preference` reads the declaration rather than naming `relationship`/`entityGroup`/
       `groupMember`.
-- [ ] A membership write's scope is the `old ∪ new` group set; the authorizer checks the entity's
-      `<model>.update` in the old set and `ebb/membership.create` in the new one.
-- [ ] Delete `PermissionHelper.system_models/0` and `GroupListing`'s copy.
-- [ ] Record the snapshot rule: predicates read stored state unioned with the current Action's
-      earlier Updates, never the caches.
-- [ ] Delete the model-string dispatch in `EntityIndex`, `Writer`, `SystemCache`, and `Authorizer`.
+- [x] A membership write's scope is the `old ∪ new` group set; the authorizer checks the entity's
+      `<model>.update` in the old set and `ebb/membership.create` in the new one. Already held after
+      #805: the pair is immutable, so a move is a delete plus a create and each row's check is the
+      pair it names.
+- [x] Delete `PermissionHelper.system_models/0` and `GroupListing`'s copy. Already gone in #805.
+- [x] Record the snapshot rule: predicates read stored state unioned with the current Action's
+      earlier Updates, never the caches. Recorded in `CONTEXT.md` under **Predicate**.
+- [x] Delete the model-string dispatch in `EntityIndex`, `Writer`, `SystemCache`, and `Authorizer`.
+      #805 did the `Writer`/`SystemCache`/`Authorizer` halves; this slice removed `EntityIndex`'s
+      per-kind scope clauses.
 
 **Acceptance.** No module dispatches on a model string to decide scope. Adding a fifth `ebb/*`
-component changes one registration and no dispatch site. Every #624/#623/#789 vector still rejects.
+component changes one **scope** registration and no scope dispatch site. Every #624/#623/#789 vector
+still rejects. (A fifth component still needs its cache projection, its row-identity rule, and its
+client declaration — the claim is about scope resolution, which is what this slice owns.)
 
 **Depends on.** 10. **Blocks** 12, 13.
+
+**Current state.** Shipped in [#819](https://github.com/ebbjs/ebbjs/issues/819).
+`SystemComponent` holds the four declarations as `%{name, scope, by_id}` entries, and declaration
+order is the by-id precedence `EntityIndex.kind/2` scans. `scope` is `:self` (a group is its own
+group set), `{:field, name, :group}` (the value names a group, which owns itself — `ebb/grant`,
+`ebb/membership`), or `{:field, name, :entity}` (the value names an entity whose membership is the
+scope — `ebb/link`). `EntityIndex.resolve_groups_cached/3` is one table read and one owner
+resolution; `fan_out_preference/2` reads the same declaration; `kind/2` scans `kinds/0`; and
+`relationship_groups/4` is gone, with its method rule (the wire for a put or patch, the stored row
+for a delete, #624) now inside `fan_out_preference/2`. `FanOutRouter.GroupResolution` and
+`Authorizer` lost their per-kind scope helpers and call `resolve_groups/3` / `fan_out_groups/2`.
+Both sides of the declaration exist, because the server stays schema-free: the client declares
+`scope` on the same four components and rejects it outside `ebb/` at declaration time
+(`ComponentScopeError`), while the server keeps its own static table. Nothing cross-checks the two,
+so changing a scope owner is a two-sided edit.
+
+The table carries the kind's **by-id cache** beside its scope. That is the one addition beyond the
+literal `scope:` field: a fifth component would otherwise need a second registration for `kind/2`
+and for reading the scope field, and the four by-id caches share one `{id, row}` ETS shape, so a
+single lookup serves all of them. Atomicity and decision 13 made three checklist items no-ops:
+`system_models/0` and `GroupListing`'s copy were already gone in #805, and the `old ∪ new`
+membership rule already held because the membership pair is immutable, so a move is a delete plus a
+create. Open question 7 (below) is **not** answered here: the scope table reads
+`group_members_by_id`, not the by-group index, so it neither replaces nor prices
+`group_members_by_group`, which still answers group listings and the last-group-member guard.
 
 ---
 
@@ -1115,4 +1146,8 @@ out.
 6. What does the containment hop cost when `ebb/link` moves onto its source? Slice 13 is gated on
    it; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
 7. Does the group → members index survive the `ebb/*` rename, or does it collapse into the
-   component index? Slice 11 measures it at k = 2/4/8 alongside the scope table.
+   component index? **Still open, and unowned.** Slice 11's scope table reads the by-id caches
+   (`group_members_by_id`), not the by-group index, so it neither replaces nor prices
+   `group_members_by_group`; a k = 2/4/8 measurement needs a group-listing workload, and belongs
+   with the next slice that touches those tables (slice 13's forward-index deletion, or the
+   indexing follow-on that supersedes #815).

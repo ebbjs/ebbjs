@@ -25,6 +25,8 @@ import type {
   Static,
 } from "@sinclair/typebox/type";
 
+import { EBB_MODEL_NAME } from "@ebbjs/core";
+
 import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved";
 
 /** Merge-semantics marker. Marker and shape are independent axes. */
@@ -425,6 +427,13 @@ export interface ComponentOptions {
   readonly structural?: boolean;
   /** Opt in to `<model>/<component>.<verb>` permissions. Defaults to the model. */
   readonly permission?: "own";
+  /**
+   * The entity whose group set this component's write resolves against.
+   * `"self"` is the row itself; a string names a field of the component's
+   * value, whose entity carries the groups. Platform-only: a user component
+   * that could name a group could mint its own delivery scope.
+   */
+  readonly scope?: "self" | string;
   /** Component version for read migrations. Defaults to `1`. */
   readonly version?: number;
 }
@@ -444,6 +453,11 @@ export interface ComponentDef<TShape extends TSchema = TSchema, TName extends st
   readonly indexed: boolean;
   readonly structural: boolean;
   readonly permission: "own" | undefined;
+  /**
+   * Scope owner: `"self"`, a field name, or `undefined` to inherit the
+   * entity's membership. Only `ebb/*` components may declare one.
+   */
+  readonly scope: string | undefined;
   readonly version: number;
 }
 
@@ -532,6 +546,48 @@ export class InvalidComponentVersionError extends Error {
   }
 }
 
+/**
+ * Raised when a component declares a scope owner it may not have, or one that
+ * is not a scope shape. Only the platform's own components declare a scope.
+ */
+export class ComponentScopeError extends Error {
+  readonly componentName: string;
+  readonly scope: unknown;
+
+  constructor(componentName: string, scope: unknown, message: string) {
+    super(message);
+    this.name = "ComponentScopeError";
+    this.componentName = componentName;
+    this.scope = scope;
+  }
+}
+
+/** A field-shaped scope: one non-empty segment, since a scope names no path. */
+const SCOPE_FIELD_PATTERN = /^[^/\s]+$/;
+
+/**
+ * Reject a scope owner a component may not declare. A scope naming a group
+ * decides where a write is delivered, so only the platform may hold one.
+ */
+const assertComponentScope = (name: string, scope: string): void => {
+  if (!name.startsWith(`${EBB_MODEL_NAME}/`)) {
+    throw new ComponentScopeError(
+      name,
+      scope,
+      `Component "${name}" declares a scope owner, but only the \`${EBB_MODEL_NAME}/\` ` +
+        `namespace may: a component that can name a group could mint its own delivery scope.`,
+    );
+  }
+  if (scope !== "self" && !SCOPE_FIELD_PATTERN.test(scope)) {
+    throw new ComponentScopeError(
+      name,
+      scope,
+      `Component "${name}" declares scope ${JSON.stringify(scope)}: a scope is "self" (the ` +
+        `row's own id) or the name of one field of the component's value.`,
+    );
+  }
+};
+
 /** True when a value is a component declaration rather than a bare schema. */
 const isComponentDef = (value: ComponentInput): value is ComponentDef =>
   typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "component";
@@ -615,6 +671,8 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     throw new InvalidComponentVersionError(name, options.version);
   }
 
+  if (options.scope !== undefined) assertComponentScope(name, options.scope);
+
   return Object.freeze({
     kind: "component",
     name,
@@ -627,6 +685,7 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     indexed: options.indexed ?? false,
     structural: options.structural ?? false,
     permission: options.permission,
+    scope: options.scope,
     version,
   });
 }
@@ -645,10 +704,12 @@ type DeclaredComponentShape<
 /**
  * Declare a component under `<model>/<leaf>`. The result is frozen and
  * carries the policy later slices read: existence, loading, conflict
- * scope, indexing, permission, and version.
+ * scope, indexing, permission, scope owner, and version.
  *
  * Throws {@link OptionalDefaultConflictError} when `optional: true` is
- * combined with a declared `.default()`.
+ * combined with a declared `.default()`, and {@link ComponentScopeError}
+ * when a `scope` is declared outside the `ebb/` namespace or is not a scope
+ * shape.
  */
 export function defineComponent<
   const TShape extends ComponentShapeInput,

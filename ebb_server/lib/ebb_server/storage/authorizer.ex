@@ -43,7 +43,10 @@ defmodule EbbServer.Storage.Authorizer do
   `ebb/membership` and `ebb/link` are atomic components of rows committed
   under the model `ebb`, and each row carries exactly one of them. Every
   rule below dispatches on that **kind**, never on a model: the model is
-  `ebb` for all four. Each component carries its own permission
+  `ebb` for all four. Which group set a write resolves to is not a rule
+  here — it is declared on the component and read through `SystemComponent`
+  and `EntityIndex` (`fan_out_groups/2`) — so these are the **permission**
+  rules that ride on that scope. Each component carries its own permission
   (decision 12), so the subject is `ebb/<kind>`, e.g. `ebb/grant.create`:
 
     - `ebb/group` put/patch/delete → `ebb/group.create` /
@@ -101,11 +104,12 @@ defmodule EbbServer.Storage.Authorizer do
       patch/delete → `ebb/link.update` / `ebb/link.delete` in the edge's
       source group set.
     - An `ebb/link` delete is scoped by the **stored row's** source, never
-      by a wire `source_id` in a sibling component, and honouring it
+      by a wire `source_id` in a sibling component: honouring the wire
       would let a caller delete another group's edge with their own
-      group's permissions (#624). Only a delete with no stored row — an
-      edge created earlier in the request, or one already tombstoned —
-      falls back to the wire source.
+      group's permissions (#624). `EntityIndex.fan_out_groups/2` owns that
+      rule; only a delete with no stored row — an edge created earlier in
+      the request, or one already tombstoned — falls back to the wire
+      source.
 
   Moving an edge to another source is a delete plus a put in two Actions
   of the same request (or in a later request): the request's own accepted
@@ -409,7 +413,7 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   defp authorize_new_grant_update(update, actor_id, authz) do
-    group_ids = system_entity_group_ids(update, :grant, authz)
+    group_ids = EntityIndex.fan_out_groups(update, authz.intra_opts)
 
     if group_ids == [] do
       {:error, "not_authorized", "cannot resolve the group for this ebb/grant row"}
@@ -1043,7 +1047,7 @@ defmodule EbbServer.Storage.Authorizer do
 
       source_model ->
         check_group_permission(
-          link_group_ids(update, authz),
+          EntityIndex.fan_out_groups(update, authz.intra_opts),
           actor_id,
           source_model,
           "update",
@@ -1054,7 +1058,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp authorize_link_update(update, actor_id, authz) do
     check_group_permission(
-      link_group_ids(update, authz),
+      EntityIndex.fan_out_groups(update, authz.intra_opts),
       actor_id,
       SystemComponent.component(:link),
       permission_for(update.method),
@@ -1144,25 +1148,6 @@ defmodule EbbServer.Storage.Authorizer do
     else
       Enum.uniq((cached || []) ++ (declared || []))
     end
-  end
-
-  # When the folded row carries the group id, prefer it; otherwise resolve via
-  # the by-id index — required for a platform row's delete, which names no
-  # component and so carries no value.
-  defp system_entity_group_ids(%{data: data, subject_id: id}, kind, authz) do
-    case SystemComponent.path(data, kind, "group_id") do
-      nil -> EntityIndex.resolve_groups(kind, id, authz.opts)
-      group_id -> [group_id]
-    end
-  end
-
-  defp link_group_ids(update, authz) do
-    EntityIndex.relationship_groups(
-      update.method,
-      SystemComponent.path(update.data, :link, "source_id"),
-      update.subject_id,
-      authz.intra_opts
-    )
   end
 
   defp permission_for(method), do: PermissionHelper.method_to_permission(method)
