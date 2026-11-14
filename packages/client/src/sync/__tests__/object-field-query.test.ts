@@ -40,7 +40,7 @@ const field = (value: unknown, updateId: string): FieldValue => ({
 /** A materialized row whose field entries are plain leaf values. */
 const entity = (id: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type: "wall",
+  model: "wall",
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [key, field(value, `u_${id}`)]),
@@ -161,7 +161,7 @@ describe("e.object end to end", () => {
 
     return {
       id,
-      type: "plan",
+      model: "plan",
       data: { fields: { anchor: write!.data as FieldValue } },
       exists: true,
       created_hlc: makeHlc(1),

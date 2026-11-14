@@ -193,12 +193,12 @@ builders do.
 
 ## Module map
 
-| Module                    | What it ships                                                        |
-| ------------------------- | -------------------------------------------------------------------- |
-| `src/model.ts`            | `defineComponent`, `defineModel`, `e`, field markers, model types.   |
-| `src/model-registry.ts`   | `ModelRegistry`, `validatePayload`, `EntityValidationError`.         |
-| `src/relationship.ts`     | `defineRelationship` and relationship types.                         |
-| `src/schema.ts`           | `defineSchema`, schema errors.                                       |
-| `src/system-entities.ts`  | `group`, `groupMember`, `entityGroup`, `relationship` system models. |
-| `src/reserved.ts`         | Reserved entity and membership names.                                |
-| `src/collaborative-text/` | Cell schemas, wire adapters, tree, and `TextDocument`.               |
+| Module                    | What it ships                                                      |
+| ------------------------- | ------------------------------------------------------------------ |
+| `src/model.ts`            | `defineComponent`, `defineModel`, `e`, field markers, model types. |
+| `src/model-registry.ts`   | `ModelRegistry`, `validatePayload`, `EntityValidationError`.       |
+| `src/relationship.ts`     | `defineRelationship` and relationship types.                       |
+| `src/schema.ts`           | `defineSchema`, schema errors.                                     |
+| `src/system-entities.ts`  | `group`, `grant`, `membership`, `relationship` system models.      |
+| `src/reserved.ts`         | Reserved entity and membership names.                              |
+| `src/collaborative-text/` | Cell schemas, wire adapters, tree, and `TextDocument`.             |

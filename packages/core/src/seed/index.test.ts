@@ -22,7 +22,7 @@ const rejection = (reason: string): SeedRejection => ({ id: "action_1", reason }
 /** A representative seed exercising every row kind. */
 const buildRepresentativeSeed = (): SeedData => ({
   groups: [{ id: "grp_1", name: "Group One" }],
-  groupMembers: [
+  grants: [
     {
       id: "gm_1",
       actorId: "actor_1",
@@ -33,7 +33,7 @@ const buildRepresentativeSeed = (): SeedData => ({
   entities: [
     {
       id: "todo_1",
-      type: "todo",
+      model: "todo",
       patches: [
         { fields: { title: "Ship it" } },
         { fields: { status: "todo", assignee_id: null } },
@@ -49,7 +49,7 @@ const buildRepresentativeSeed = (): SeedData => ({
       field: "list",
     },
   ],
-  entityGroups: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
+  memberships: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
 });
 
 /** The one Update carrying `component`, or a failure naming the miss. */
@@ -102,7 +102,7 @@ describe("buildSeedAction", () => {
   it("writes a group's app scope into the group's one atomic value", () => {
     const action = buildSeedAction("actor_1", {
       groups: [{ id: "grp_1", name: "Shared", apps: ["notes", "issues"] }],
-      groupMembers: [],
+      grants: [],
       entities: [],
     });
 
@@ -117,12 +117,12 @@ describe("buildSeedAction", () => {
   it("distinguishes an unscoped group from one scoped to no app", () => {
     const unscoped = buildSeedAction("actor_1", {
       groups: [{ id: "grp_1", name: "Shared" }],
-      groupMembers: [],
+      grants: [],
       entities: [],
     });
     const noApps = buildSeedAction("actor_1", {
       groups: [{ id: "grp_1", name: "Shared", apps: [] }],
-      groupMembers: [],
+      grants: [],
       entities: [],
     });
 

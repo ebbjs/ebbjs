@@ -42,7 +42,7 @@ const wire = (opts: {
   const hlc = opts.hlc ?? HLC;
   return {
     id: opts.id,
-    type: opts.type,
+    model: opts.type,
     data: {
       fields: Object.fromEntries(
         Object.entries(opts.fields).map(([key, value]) => [
@@ -488,7 +488,7 @@ const putAction = (opts: {
   id: string;
   gsn: number;
   entityId: string;
-  entityType?: string;
+  model?: string;
   fields: Record<string, unknown>;
   hlc?: string;
 }): Action => {
@@ -498,7 +498,7 @@ const putAction = (opts: {
     actor_id: "a_peer",
     hlc,
     gsn: opts.gsn,
-    updates: rowComponents(opts.entityType ?? "blog_post", opts.fields).map(
+    updates: rowComponents(opts.model ?? "blog_post", opts.fields).map(
       ([component, value]): Update => ({
         id: `u_${opts.id}_${component}`,
         subject_id: opts.entityId,
@@ -567,7 +567,7 @@ describe("SyncClient group listing", () => {
         id: "act_link",
         gsn: 35,
         entityId: "rel_1",
-        entityType: "link",
+        model: "link",
         fields: {
           source_id: "post_2",
           target_id: "post_1",
@@ -1155,7 +1155,7 @@ describe("SyncClient group listing", () => {
 
 const replicaIds = (client: ReturnType<typeof createClient>): string[] => {
   const ids: string[] = [];
-  for (const type of Object.keys(client.replicaStats.byType)) {
+  for (const type of Object.keys(client.replicaStats.byModel)) {
     for (const row of client.replica.iterate(type)) ids.push(row.id);
   }
   return ids.sort();

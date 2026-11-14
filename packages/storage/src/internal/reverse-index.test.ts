@@ -11,9 +11,9 @@ import {
   relationshipEntryFor,
 } from "./reverse-index";
 
-const entity = (fields: Record<string, unknown>, type = "ebb"): Entity => ({
+const entity = (fields: Record<string, unknown>, model = "ebb"): Entity => ({
   id: "row_1",
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [key, { value, update_id: "u", hlc: "1-0" }]),

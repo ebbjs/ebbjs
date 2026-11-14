@@ -13,17 +13,17 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
   and an `ebb/link` row's `source_id` each arrive in the row's one atomic
   component value. Which owner that value names is the component's
   declaration (`EbbServer.Storage.SystemComponent`), read through
-  `EntityIndex`.
+  `EntityScope`.
   """
 
-  alias EbbServer.Storage.{EntityIndex, PermissionHelper, RowMutations}
+  alias EbbServer.Storage.{EntityScope, PermissionHelper, RowMutations}
 
   @doc """
   Resolves the set of group ids an Action should fan out to.
 
-  Dispatches each folded row through `EntityIndex`, folding in the
+  Dispatches each folded row through `EntityScope`, folding in the
   membership rows carried by the Action itself so that a create and its
-  `ebb/membership` rows land in the same groups. See `EntityIndex` for the
+  `ebb/membership` rows land in the same groups. See `EntityScope` for the
   per-kind resolution rules. Rows whose entity is missing from the index
   are silently dropped; the client catches them up via
   `/sync/groups/:id?offset=` instead.
@@ -58,12 +58,12 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
   # A row's scope follows its component kind, never its model; only a delete's
   # kind has to be resolved from the by-id caches.
   defp resolve_mutation_group_ids(mutation, opts) do
-    EntityIndex.resolve_groups(scope_key(mutation, opts), mutation.subject_id, opts)
+    EntityScope.resolve_groups(scope_key(mutation, opts), mutation.subject_id, opts)
   end
 
   defp scope_key(%{kind: kind}, _opts) when not is_nil(kind), do: kind
 
   defp scope_key(mutation, opts) do
-    EntityIndex.kind(mutation.subject_id, opts) || mutation.model
+    EntityScope.kind(mutation.subject_id, opts) || mutation.model
   end
 end

@@ -392,7 +392,7 @@ component only calls the mounted action.
 
 A multi-entity action reads the same way — everything its callback drafts is
 one Action, or none of it commits. The issue-tracker demo's `leaveWorkspace`
-drafts two writes (a profile leaving a group, its `groupMember` row going with
+drafts two writes (a profile leaving a group, its `grant` row going with
 it) and still costs one call:
 
 ```tsx

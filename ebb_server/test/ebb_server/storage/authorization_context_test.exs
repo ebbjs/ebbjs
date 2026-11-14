@@ -7,11 +7,11 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
     test "uses default values when no opts provided" do
       ctx = AuthorizationContext.build([])
 
-      assert ctx.group_members_table == :ebb_group_members
-      assert ctx.group_members_by_id_table == :ebb_group_members_by_id
-      assert ctx.group_members_by_group_table == :ebb_group_members_by_group
-      assert ctx.entity_groups_table == :ebb_entity_groups
-      assert ctx.entity_groups_by_id_table == :ebb_entity_groups_by_id
+      assert ctx.grants_table == :ebb_grants
+      assert ctx.grants_by_id_table == :ebb_grants_by_id
+      assert ctx.grants_by_group_table == :ebb_grants_by_group
+      assert ctx.memberships_table == :ebb_memberships
+      assert ctx.memberships_by_id_table == :ebb_memberships_by_id
       assert ctx.relationships_by_id_table == :ebb_relationships_by_id
       assert ctx.now_ms == nil
     end
@@ -19,19 +19,19 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
     test "accepts custom table names via opts" do
       ctx =
         AuthorizationContext.build(
-          group_members: :custom_gm,
-          group_members_by_id: :custom_gm_by_id,
-          group_members_by_group: :custom_gm_by_group,
-          entity_groups: :custom_eg,
-          entity_groups_by_id: :custom_eg_by_id,
+          grants: :custom_gm,
+          grants_by_id: :custom_gm_by_id,
+          grants_by_group: :custom_gm_by_group,
+          memberships: :custom_eg,
+          memberships_by_id: :custom_eg_by_id,
           relationships_by_id: :custom_rbi
         )
 
-      assert ctx.group_members_table == :custom_gm
-      assert ctx.group_members_by_id_table == :custom_gm_by_id
-      assert ctx.group_members_by_group_table == :custom_gm_by_group
-      assert ctx.entity_groups_table == :custom_eg
-      assert ctx.entity_groups_by_id_table == :custom_eg_by_id
+      assert ctx.grants_table == :custom_gm
+      assert ctx.grants_by_id_table == :custom_gm_by_id
+      assert ctx.grants_by_group_table == :custom_gm_by_group
+      assert ctx.memberships_table == :custom_eg
+      assert ctx.memberships_by_id_table == :custom_eg_by_id
       assert ctx.relationships_by_id_table == :custom_rbi
     end
 
@@ -42,11 +42,11 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
     end
 
     test "accepts mixed options" do
-      ctx = AuthorizationContext.build(group_members: :test_gm, now_ms: 123)
+      ctx = AuthorizationContext.build(grants: :test_gm, now_ms: 123)
 
-      assert ctx.group_members_table == :test_gm
+      assert ctx.grants_table == :test_gm
       assert ctx.now_ms == 123
-      assert ctx.entity_groups_table == :ebb_entity_groups
+      assert ctx.memberships_table == :ebb_memberships
     end
 
     test "handles empty keyword list same as no args" do
@@ -61,11 +61,11 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
     test "has expected fields" do
       ctx = AuthorizationContext.build()
 
-      assert Map.has_key?(ctx, :group_members_table)
-      assert Map.has_key?(ctx, :group_members_by_id_table)
-      assert Map.has_key?(ctx, :group_members_by_group_table)
-      assert Map.has_key?(ctx, :entity_groups_table)
-      assert Map.has_key?(ctx, :entity_groups_by_id_table)
+      assert Map.has_key?(ctx, :grants_table)
+      assert Map.has_key?(ctx, :grants_by_id_table)
+      assert Map.has_key?(ctx, :grants_by_group_table)
+      assert Map.has_key?(ctx, :memberships_table)
+      assert Map.has_key?(ctx, :memberships_by_id_table)
       assert Map.has_key?(ctx, :relationships_by_id_table)
       assert Map.has_key?(ctx, :now_ms)
     end

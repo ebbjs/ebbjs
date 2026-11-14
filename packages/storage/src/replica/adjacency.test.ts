@@ -31,7 +31,7 @@ interface WriteSpec {
   readonly actionId: string;
   readonly updateId: string;
   readonly entityId: string;
-  readonly type: string;
+  readonly model: string;
   readonly gsn?: number;
   readonly ms?: number;
   readonly fields: Record<string, FieldValue>;
@@ -42,7 +42,7 @@ const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[
   Object.entries(spec.fields).map(([field, value]) => ({
     id: `${spec.updateId}_${field}`,
     subject_id: spec.entityId,
-    component: componentName(spec.type, field),
+    component: componentName(spec.model, field),
     method: isFieldMap(value) ? "merge" : method,
     data: value,
   }));
@@ -85,7 +85,7 @@ const edge = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "ebb",
+    model: "ebb",
     gsn,
     ms,
     fields: {
@@ -106,7 +106,7 @@ const member = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "ebb",
+    model: "ebb",
     gsn,
     ms,
     fields: {
@@ -184,7 +184,7 @@ describe("replica adjacency: membership reads", () => {
         actionId: "a_2",
         updateId: "u_del",
         entityId: "m_1",
-        type: "ebb",
+        model: "ebb",
         gsn: 2,
         ms: 2,
       }),
@@ -208,7 +208,7 @@ describe("replica adjacency: row removal", () => {
         actionId: "a_3",
         updateId: "u_del",
         entityId: "r_1",
-        type: "ebb",
+        model: "ebb",
         gsn: 3,
         ms: 3,
       }),
@@ -232,7 +232,7 @@ describe("replica adjacency: row removal", () => {
         actionId: "a_2",
         updateId: "u_del",
         entityId: "r_1",
-        type: "ebb",
+        model: "ebb",
         gsn: 2,
         ms: 2,
       }),
@@ -297,7 +297,7 @@ const relationshipRow = (
   targetId: string,
 ): Entity => ({
   id,
-  type: "ebb",
+  model: "ebb",
   data: {
     fields: {
       link: leaf({ source_id: sourceId, target_id: targetId, type, field }, `u_${id}`, 1),
@@ -312,7 +312,7 @@ const relationshipRow = (
 
 const membershipRow = (id: string, groupId: string, entityId: string): Entity => ({
   id,
-  type: "ebb",
+  model: "ebb",
   data: {
     fields: { membership: leaf({ entity_id: entityId, group_id: groupId }, `u_${id}`, 1) },
   },

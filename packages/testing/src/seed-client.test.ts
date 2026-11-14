@@ -17,9 +17,9 @@ const rejection = (reason: string) => ({ id: "action_1", reason });
 /** A small fixture exercising each row kind the builder emits. */
 const seedData: SeedData = {
   groups: [{ id: "grp_1", name: "Group One" }],
-  groupMembers: [{ id: "gm_1", actorId: "actor_1", groupId: "grp_1", permissions: ["todo.*"] }],
-  entities: [{ id: "todo_1", type: "todo", patches: [{ fields: { title: "Ship it" } }] }],
-  entityGroups: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
+  grants: [{ id: "gm_1", actorId: "actor_1", groupId: "grp_1", permissions: ["todo.*"] }],
+  entities: [{ id: "todo_1", model: "todo", patches: [{ fields: { title: "Ship it" } }] }],
+  memberships: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
 };
 
 const okResponse = (body: unknown): Response =>

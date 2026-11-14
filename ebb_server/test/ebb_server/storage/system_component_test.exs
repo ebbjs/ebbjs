@@ -5,8 +5,8 @@ defmodule EbbServer.Storage.SystemComponentTest do
 
   test "every kind declares its component, scope owner, and by-id cache" do
     assert [
-             {:grant, {:field, :group_id, :group}, :group_members_by_id},
-             {:membership, {:field, :group_id, :group}, :entity_groups_by_id},
+             {:grant, {:field, :group_id, :group}, :grants_by_id},
+             {:membership, {:field, :group_id, :group}, :memberships_by_id},
              {:link, {:field, :source_id, :entity}, :relationships_by_id},
              {:group, :self, :group_apps}
            ] ==
@@ -32,7 +32,7 @@ defmodule EbbServer.Storage.SystemComponentTest do
   # A fifth platform component is a registration in the declaration table.
   # Scope resolution reads the table, so it has no clause per kind.
   test "scope resolution is not dispatched on a platform kind" do
-    source = File.read!(Path.expand("../../../lib/ebb_server/storage/entity_index.ex", __DIR__))
+    source = File.read!(Path.expand("../../../lib/ebb_server/storage/entity_scope.ex", __DIR__))
 
     refute source =~ ~r/def resolve_groups_cached\(:(grant|membership|link|group)\b/
     refute source =~ ~r/def fan_out_preference\(%\{kind: :(grant|membership|link|group)\} /

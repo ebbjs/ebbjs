@@ -13,7 +13,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
   4. PermissionChecker validates structure, HLC, then authorizes
   5. Writer assigns GSNs and writes to RocksDB
   6. DirtyTracker marks affected entities as dirty
-  7. System caches (GroupCache, RelationshipCache) are updated
+  7. System caches (GrantCache, RelationshipCache) are updated
 
   ## Key Concepts
 
@@ -67,7 +67,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Valid Action", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -129,7 +129,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "First", "hlc" => hlc1}
             }
-          ] ++ entity_group_update(entity1, "g_test", hlc1)
+          ] ++ membership_update(entity1, "g_test", hlc1)
       }
 
       action2 = %{
@@ -145,7 +145,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Second", "hlc" => hlc2}
             }
-          ] ++ entity_group_update(entity2, "g_test", hlc2)
+          ] ++ membership_update(entity2, "g_test", hlc2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action1]}))
@@ -194,7 +194,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Dedup", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       body = msgpack_encode!(%{"actions" => [action_body]})
@@ -239,7 +239,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Dirty Test", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))

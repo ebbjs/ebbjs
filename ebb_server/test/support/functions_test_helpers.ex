@@ -17,7 +17,7 @@ defmodule EbbServer.FunctionsTestHelpers do
   alias EbbServer.Functions.Router, as: FunctionsRouter
   alias EbbServer.Functions.Worker.Bun, as: BunWorker
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
   alias EbbServer.Sync.Router
   alias EbbServer.TestFunctions.Bun, as: BunSupport
 
@@ -110,16 +110,16 @@ defmodule EbbServer.FunctionsTestHelpers do
   @doc "Grants `permissions` to `actor_id` in the shared functions test group."
   def grant_function(tables, actor_id, permissions) do
     :ok =
-      GroupCache.put_group_member(
+      GrantCache.put_grant(
         %{
           id: unique("gm"),
           actor_id: actor_id,
           group_id: @grant_group,
           permissions: permissions
         },
-        group_members: tables.group_members,
-        group_members_by_id: tables.group_members_by_id,
-        group_members_by_group: tables.group_members_by_group
+        grants: tables.grants,
+        grants_by_id: tables.grants_by_id,
+        grants_by_group: tables.grants_by_group
       )
   end
 
@@ -129,7 +129,7 @@ defmodule EbbServer.FunctionsTestHelpers do
   Identity and the admin credential are request-level: pass `:actor_id`
   (`nil` for an anonymous request) and `:authorization` (the raw header value).
   The router's own options are passed through unchanged: `:store`, `:cache`,
-  `:group_members_table`, `:admin_token`.
+  `:grants_table`, `:admin_token`.
   """
   def call_functions(method, path, body, opts \\ []) do
     conn(method, path, body)
@@ -174,5 +174,5 @@ defmodule EbbServer.FunctionsTestHelpers do
   defp put_optional_header(conn, _name, nil), do: conn
   defp put_optional_header(conn, name, value), do: put_req_header(conn, name, value)
 
-  defp router_option_keys, do: [:store, :cache, :group_members_table, :admin_token]
+  defp router_option_keys, do: [:store, :cache, :grants_table, :admin_token]
 end

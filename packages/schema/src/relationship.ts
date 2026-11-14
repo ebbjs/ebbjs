@@ -4,13 +4,12 @@
  * The builder is a pure factory returning a frozen relationship
  * definition; no behavior at registration time. The runtime registry
  * (`ModelRegistry`) consumes the definition when the caller registers
- * it, and the row accessors on `client.<entity>.get(id)` consume it
+ * it, and the row accessors on `client.<model>.get(id)` consume it
  * for traversal.
  *
- * Both ends of the link must be `defineModel` outputs. The wire shape
- * (`Relationship` system entity in `@ebbjs/core`) is unchanged; this
- * builder is the schema-layer surface that produces wire Updates via
- * `SyncClient.buildRelationshipWrite`.
+ * Both ends of the link must be `defineModel` outputs. The wire shape is
+ * the `ebb/link` component in `@ebbjs/core`; this builder is the
+ * schema-layer surface that produces its Updates.
  */
 
 import type { ModelDef } from "./model";

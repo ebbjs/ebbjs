@@ -49,7 +49,7 @@ defmodule EbbServer.Functions.HostTest do
       assert {:ok, view} = Host.get(%{"id" => "e_doc"}, @context)
 
       assert view["id"] == "e_doc"
-      assert view["type"] == "doc"
+      assert view["model"] == "doc"
       assert view["data"]["fields"]["title"]["value"] == "Original"
     end
 

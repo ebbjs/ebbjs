@@ -27,7 +27,7 @@ interface GroupSeed {
   name: string;
 }
 
-interface GroupMemberSeed {
+interface GrantSeed {
   id: string;
   actorId: string;
   groupId: string;
@@ -51,7 +51,7 @@ interface RelationshipSeed {
   field: string;
 }
 
-interface EntityGroupSeed {
+interface MembershipSeed {
   id: string;
   entityId: string;
   groupId: string;
@@ -59,10 +59,10 @@ interface EntityGroupSeed {
 
 interface SeedData {
   groups: GroupSeed[];
-  groupMembers: GroupMemberSeed[];
+  grants: GrantSeed[];
   entities: EntitySeed[];
   relationships?: RelationshipSeed[];
-  entityGroups?: EntityGroupSeed[];
+  memberships?: MembershipSeed[];
   /** Reserved; the builder stamps HLCs per field and does not read this. */
   baseHlc?: number;
 }
@@ -80,8 +80,8 @@ public write path, so a browser app seeds with the client it already has.
 ## How seeding works
 
 `buildSeedAction` emits **one Action** containing every row as an `Update`:
-`group` and `groupMember` puts, one `put` per entity patch, `relationship`
-puts, and `entityGroup` puts. Every plain field value is stamped into the
+`group` and `grant` puts, one `put` per entity patch, `relationship`
+puts, and `membership` puts. Every plain field value is stamped into the
 wire's per-field envelope (`update_id: "seed_update"` and a fresh HLC). The
 acting `actorId` is the Action's actor, which is what the server's per-Action
 authorization reads.

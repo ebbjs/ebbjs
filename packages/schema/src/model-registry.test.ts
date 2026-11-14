@@ -163,7 +163,7 @@ describe("ModelRegistry.validateFilter", () => {
     expect(v[0]?.message).toContain("group 0");
   });
 
-  it("reports unknown entity type", () => {
+  it("reports unknown model", () => {
     const r = buildRegistry();
     const v = r.validateFilter("list", [{ x: 1 }]);
     expect(v).toHaveLength(1);

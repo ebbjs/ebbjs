@@ -1,6 +1,6 @@
 /**
  * Tests for `QueryBuilder.subscribe` — the reactive trigger scoped to
- * the chain's source entity type.
+ * the chain's source model.
  *
  * `builder.subscribe(listener)` fires whenever an entity of the
  * builder's source type materializes. The listener is a bare
@@ -94,7 +94,7 @@ describe("QueryBuilder.subscribe", () => {
     unsub();
   });
 
-  it("does not fire for a change to a different entity type", async () => {
+  it("does not fire for a change to a different model", async () => {
     const client = createClient({
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
@@ -155,7 +155,7 @@ describe("QueryBuilder.subscribe", () => {
 
     const entity: Entity = {
       id: "todo_1",
-      type: "todo",
+      model: "todo",
       data: {
         fields: {
           title: { value: "T", update_id: "u", hlc: makeHlc(1) },

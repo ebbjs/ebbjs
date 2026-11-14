@@ -18,7 +18,7 @@ import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction } from "../../schema/action";
 import { EntityValidationError } from "@ebbjs/schema";
-import { entityGroupId } from "@ebbjs/write";
+import { membershipRowId } from "@ebbjs/write";
 import { ActionRejectedError } from "@ebbjs/write";
 import { ActionResolutionError, type ActionDrafts, type GroupRef } from "../drafts";
 import { createClient } from "../client";
@@ -297,9 +297,9 @@ const rowsOf = (updates: readonly Update[], model: string): readonly (readonly U
 /** A row's component values, keyed by field. */
 const fieldsOf = (row: readonly Update[]): Record<string, unknown> => rowFields(row);
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [
@@ -329,7 +329,7 @@ const mkRelationship = (id: string, sourceId: string, targetId: string): Entity 
     type: "todo",
   });
 
-/** Seed a `todo` row plus its `entityGroup` memberships. */
+/** Seed a `todo` row plus its `membership` memberships. */
 const seedTodo = async (
   storage: ReturnType<typeof createMemoryAdapter>,
   id: string,
@@ -541,7 +541,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     const rows = rowsOf(updates, "membership");
     expect(rows).toHaveLength(1);
     const added = rows[0]!;
-    expect(added[0]!.subject_id).toBe(entityGroupId("todo_1", "g_3"));
+    expect(added[0]!.subject_id).toBe(membershipRowId("todo_1", "g_3"));
     expect(fieldsOf(added)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
     const deleted = updates.find((update) => update.method === "delete")!;
     // The row the local view knows, not the derived id: the delete names
@@ -604,9 +604,9 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     );
     // Derived, not the deleted row's id, so a second device sharing the same
     // pair converges on this one row.
-    expect(puts.map((update) => update.subject_id)).toEqual([entityGroupId("todo_1", "g_1")]);
+    expect(puts.map((update) => update.subject_id)).toEqual([membershipRowId("todo_1", "g_1")]);
     // The derivation has to stay unambiguous for ids containing ids of their own.
-    expect(entityGroupId("a_b", "c")).not.toBe(entityGroupId("a", "b_c"));
+    expect(membershipRowId("a_b", "c")).not.toBe(membershipRowId("a", "b_c"));
   });
 
   it("refuses a malformed or empty group set before any network call", async () => {
@@ -682,7 +682,7 @@ describe("drafts — membership.update / membership.delete", () => {
 
     expect(error).toBeInstanceOf(ActionRejectedError);
     expect((error as ActionRejectedError).rejections.map((rejection) => rejection.reason)).toEqual([
-      "last_group_member",
+      "last_grant",
     ]);
     expect(actionCalls(seen)).toHaveLength(0);
   });
@@ -697,7 +697,7 @@ describe("drafts — membership.update / membership.delete", () => {
 
     expect(error).toBeInstanceOf(ActionRejectedError);
     expect((error as ActionRejectedError).rejections.map((rejection) => rejection.reason)).toEqual([
-      "last_group_member",
+      "last_grant",
     ]);
     expect(actionCalls(seen)).toHaveLength(0);
   });
@@ -738,7 +738,7 @@ describe("drafts — call order is wire order", () => {
     expect(updates[0]).toMatchObject({ subject_id: created.id, component: "todo/title" });
     const memberships = rowsOf(updates, "membership");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
-    expect(memberships[1]![0]!.subject_id).toBe(entityGroupId(created.id, "g_2"));
+    expect(memberships[1]![0]!.subject_id).toBe(membershipRowId(created.id, "g_2"));
   });
 
   it("skips a share of the group the batch's own create already filed", async () => {
@@ -773,9 +773,9 @@ describe("drafts — typed surface", () => {
       void drafts.note.drop("note_1", ["body"]);
       // @ts-expect-error — a system component is a torn edge or membership (#805/#803).
       void drafts.group.drop("g_1", ["name"]);
-      // @ts-expect-error — an `entityGroup` row scoping a group is meaningless.
+      // @ts-expect-error — an `membership` row scoping a group is meaningless.
       void drafts.group.addToGroup("g_1", "g_2");
-      // @ts-expect-error — same for a `groupMember`.
+      // @ts-expect-error — same for a `grant`.
       void drafts.membership.setGroups("gm_1", ["g_1"]);
     };
     expect(typecheck).toBeTypeOf("function");

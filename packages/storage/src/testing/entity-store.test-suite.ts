@@ -13,8 +13,8 @@ import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
-  buildEntityGroupDeleteAction,
-  buildEntityGroupPutAction,
+  buildMembershipDeleteAction,
+  buildMembershipPutAction,
   buildPatchAction,
   buildPutAction,
   buildRelationshipDeleteAction,
@@ -34,7 +34,7 @@ export interface EntityStoreTestSuiteOptions {
 
 const makeEntity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "todo_2",
-  type: "todo",
+  model: "todo",
   data: { fields: { title: { value: "Direct", update_id: "u_direct", hlc: makeHlc(1) } } },
   exists: true,
   created_hlc: makeHlc(1),
@@ -124,7 +124,7 @@ const makeRelationshipEntity = (
 
   return {
     id,
-    type: "ebb",
+    model: "ebb",
     data: {
       fields: {
         link: {
@@ -148,7 +148,7 @@ const makeRelationshipEntity = (
 };
 
 /** A materialized `ebb/membership` row, for direct `set()` writes. */
-const makeEntityGroupEntity = (
+const makeMembershipEntity = (
   overrides: {
     id?: string;
     entityId?: string;
@@ -160,7 +160,7 @@ const makeEntityGroupEntity = (
 
   return {
     id,
-    type: "ebb",
+    model: "ebb",
     data: {
       fields: {
         membership: {
@@ -212,7 +212,7 @@ const seedMembership = async (
   row: { id: string; entityId: string; groupId: string },
 ): Promise<void> => {
   await actionLog.append(
-    buildEntityGroupPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
+    buildMembershipPutAction({ id: row.id, entityId: row.entityId, groupId: row.groupId }),
   );
   await dirtyTracker.mark(row.id, "ebb");
 };
@@ -286,7 +286,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const entity = await entityStore.get("todo_1");
         expect(entity).not.toBe(null);
         expect(entity!.id).toBe("todo_1");
-        expect(entity!.type).toBe("todo");
+        expect(entity!.model).toBe("todo");
         expect(entity!.last_gsn).toBe(1);
       });
 
@@ -339,7 +339,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         await dirtyTracker.mark("todo_1", "todo");
 
         const created = await entityStore.get("todo_1");
-        expect(created!.type).toBe("todo");
+        expect(created!.model).toBe("todo");
         expect((created!.data.fields.title as { value: unknown }).value).toBe("Updated");
         expect(created!.exists).toBe(false);
         expect(created!.created_hlc).toBe(null);
@@ -564,7 +564,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
     });
 
     describe("query", () => {
-      it("returns all entities of type", async () => {
+      it("returns all entities of model", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await actionLog.append(buildPutAction());
         await dirtyTracker.mark("todo_1", "todo");
@@ -593,8 +593,8 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("returns only entities of the requested type", async () => {
         const { entityStore } = await factory();
-        await entityStore.set(makeEntity({ id: "todo_1", type: "todo" }));
-        await entityStore.set(makeEntity({ id: "doc_1", type: "document" }));
+        await entityStore.set(makeEntity({ id: "todo_1", model: "todo" }));
+        await entityStore.set(makeEntity({ id: "doc_1", model: "document" }));
 
         const todos = await entityStore.query("todo");
         expect(todos.map((e) => e.id)).toEqual(["todo_1"]);
@@ -908,7 +908,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("does not index non-relationship entities that carry the same field names", async () => {
         const { entityStore } = await factory();
         await entityStore.set({
-          ...makeEntity({ id: "todo_9", type: "todo" }),
+          ...makeEntity({ id: "todo_9", model: "todo" }),
           data: {
             fields: {
               source_id: { value: "todo_9", update_id: "u_9" },
@@ -1103,7 +1103,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("does not index non-relationship entities that carry the same field names", async () => {
         const { entityStore } = await factory();
         await entityStore.set({
-          ...makeEntity({ id: "todo_9", type: "todo" }),
+          ...makeEntity({ id: "todo_9", model: "todo" }),
           data: {
             fields: {
               source_id: { value: "todo_1", update_id: "u_9" },
@@ -1231,7 +1231,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         });
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
 
-        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
+        await actionLog.append(buildMembershipDeleteAction({ id: "eg_1" }, 2));
         await dirtyTracker.mark("eg_1", "ebb");
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
@@ -1239,11 +1239,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("drops the member when set() tombstones the row", async () => {
         const { entityStore } = await factory();
-        await entityStore.set(makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2" }));
+        await entityStore.set(makeMembershipEntity({ id: "eg_2", entityId: "todo_2" }));
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
 
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", deleted: makeHlc(2) }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_2", deleted: makeHlc(2) }),
         );
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
@@ -1259,7 +1259,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
 
         await actionLog.append(
-          buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_2" }, 2),
+          buildMembershipPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_2" }, 2),
         );
         await dirtyTracker.mark("eg_1", "ebb");
 
@@ -1281,11 +1281,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         });
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
 
-        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b" }, 2));
+        await actionLog.append(buildMembershipDeleteAction({ id: "eg_b" }, 2));
         await dirtyTracker.mark("eg_b", "ebb");
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_b"]);
 
-        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_b2" }, 3));
+        await actionLog.append(buildMembershipDeleteAction({ id: "eg_b2" }, 3));
         await dirtyTracker.mark("eg_b2", "ebb");
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
       });
@@ -1293,7 +1293,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("indexes rows written through set()", async () => {
         const { entityStore } = await factory();
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
         );
 
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
@@ -1302,11 +1302,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("moves the member when set() changes group_id", async () => {
         const { entityStore } = await factory();
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
         );
 
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_2" }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_2" }),
         );
 
         expect(await entityStore.queryByMembership("group_1")).toEqual([]);
@@ -1316,7 +1316,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("does not index rows without the membership component that carry the same field names", async () => {
         const { entityStore } = await factory();
         await entityStore.set({
-          ...makeEntity({ id: "todo_9", type: "todo" }),
+          ...makeEntity({ id: "todo_9", model: "todo" }),
           data: {
             fields: {
               entity_id: { value: "todo_9", update_id: "u_9" },
@@ -1331,7 +1331,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("clears the membership index on reset", async () => {
         const { entityStore } = await factory();
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_2", groupId: "group_1" }),
         );
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_2"]);
 
@@ -1407,11 +1407,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
           "eg_2",
         ]);
 
-        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_1" }, 2));
+        await actionLog.append(buildMembershipDeleteAction({ id: "eg_1" }, 2));
         await dirtyTracker.mark("eg_1", "ebb");
         expect((await entityQuery(entityStore)).map((m) => m.membershipId)).toEqual(["eg_2"]);
 
-        await actionLog.append(buildEntityGroupDeleteAction({ id: "eg_2" }, 3));
+        await actionLog.append(buildMembershipDeleteAction({ id: "eg_2" }, 3));
         await dirtyTracker.mark("eg_2", "ebb");
         expect(await entityQuery(entityStore)).toEqual([]);
       });
@@ -1425,7 +1425,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         });
 
         await actionLog.append(
-          buildEntityGroupPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_1" }, 2),
+          buildMembershipPutAction({ id: "eg_1", entityId: "todo_2", groupId: "group_1" }, 2),
         );
         await dirtyTracker.mark("eg_1", "ebb");
 
@@ -1439,10 +1439,10 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         const { entityStore } = await factory();
         // `group_1` is both a group and a member entity id.
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_member", entityId: "group_1", groupId: "group_2" }),
+          makeMembershipEntity({ id: "eg_member", entityId: "group_1", groupId: "group_2" }),
         );
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_group", entityId: "todo_1", groupId: "group_1" }),
+          makeMembershipEntity({ id: "eg_group", entityId: "todo_1", groupId: "group_1" }),
         );
 
         expect(await entityStore.queryByMembership("group_1")).toEqual(["todo_1"]);
@@ -1454,7 +1454,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("clears the member index on reset", async () => {
         const { entityStore } = await factory();
         await entityStore.set(
-          makeEntityGroupEntity({ id: "eg_2", entityId: "todo_1", groupId: "group_1" }),
+          makeMembershipEntity({ id: "eg_2", entityId: "todo_1", groupId: "group_1" }),
         );
         expect(await entityQuery(entityStore)).toEqual([
           { membershipId: "eg_2", groupId: "group_1" },
@@ -1473,11 +1473,11 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
        * group scope. Both copies keep the Action's id and GSN.
        */
       const moveAction = (): Action => {
-        const put = buildEntityGroupPutAction(
+        const put = buildMembershipPutAction(
           { id: "eg_new", entityId: "todo_1", groupId: "group_new" },
           7,
         );
-        const del = buildEntityGroupDeleteAction({ id: "eg_old" }, 7);
+        const del = buildMembershipDeleteAction({ id: "eg_old" }, 7);
         return { ...put, updates: [...put.updates, ...del.updates] };
       };
 

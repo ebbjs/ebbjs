@@ -81,7 +81,7 @@ async function tailscaleModeAvailable(): Promise<boolean> {
 async function seedGroup(client: SyncClient): Promise<void> {
   await client.seed({
     groups: [{ id: GROUP_ID, name: `Tailscale ${RUN_ID}` }],
-    groupMembers: [
+    grants: [
       {
         id: MEMBER_ID,
         actorId: LOGIN,
@@ -92,11 +92,11 @@ async function seedGroup(client: SyncClient): Promise<void> {
     entities: [
       {
         id: SEEDED_ENTITY,
-        type: "issue",
+        model: "issue",
         patches: [{ fields: { title: "seeded" } }],
       },
     ],
-    entityGroups: [{ id: `eg_seed_${RUN_ID}`, entityId: SEEDED_ENTITY, groupId: GROUP_ID }],
+    memberships: [{ id: `eg_seed_${RUN_ID}`, entityId: SEEDED_ENTITY, groupId: GROUP_ID }],
   });
 }
 
@@ -154,15 +154,15 @@ describe("integration: server-derived identity", () => {
 
     const write = buildSeedAction(LOGIN, {
       groups: [],
-      groupMembers: [],
+      grants: [],
       entities: [
         {
           id: WRITTEN_ENTITY,
-          type: "issue",
+          model: "issue",
           patches: [{ fields: { title: "written" } }],
         },
       ],
-      entityGroups: [{ id: `eg_write_${RUN_ID}`, entityId: WRITTEN_ENTITY, groupId: GROUP_ID }],
+      memberships: [{ id: `eg_write_${RUN_ID}`, entityId: WRITTEN_ENTITY, groupId: GROUP_ID }],
     });
 
     try {
@@ -194,11 +194,11 @@ describe("integration: server-derived identity", () => {
     try {
       const staleWrite = buildSeedAction(staleActor, {
         groups: [],
-        groupMembers: [],
+        grants: [],
         entities: [
           {
             id: `issue_ts_stale_${RUN_ID}`,
-            type: "issue",
+            model: "issue",
             patches: [{ fields: { title: "stale" } }],
           },
         ],

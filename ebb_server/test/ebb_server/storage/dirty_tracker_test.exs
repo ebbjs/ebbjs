@@ -50,10 +50,10 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
     test "a nil model never replaces a model an earlier mark recorded" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
-      :ok = DirtyTracker.mark_dirty_batch([{"eg_1", "entityGroup"}], dirty_set)
+      :ok = DirtyTracker.mark_dirty_batch([{"eg_1", "membership"}], dirty_set)
       :ok = DirtyTracker.mark_dirty_batch([{"eg_1", nil}], dirty_set)
 
-      assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", dirty_set) == ["eg_1"]
+      assert DirtyTracker.dirty_entity_ids_for_model("membership", dirty_set) == ["eg_1"]
       assert DirtyTracker.dirty?("eg_1", dirty_set)
     end
 
@@ -63,7 +63,7 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       :ok = DirtyTracker.mark_dirty_batch([{"unknown_1", nil}], dirty_set)
 
       assert DirtyTracker.dirty?("unknown_1", dirty_set)
-      assert DirtyTracker.dirty_entity_ids_for_model("entityGroup", dirty_set) == []
+      assert DirtyTracker.dirty_entity_ids_for_model("membership", dirty_set) == []
     end
 
     test "ids in one batch share the batch generation" do
@@ -183,13 +183,13 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
     test "settle_all_pending/1 preserves each mark's recorded model" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
-      DirtyTracker.mark_pending_batch([{"e_abc", "todo"}, {"gm_xyz", "groupMember"}], dirty_set)
+      DirtyTracker.mark_pending_batch([{"e_abc", "todo"}, {"gm_xyz", "grant"}], dirty_set)
 
       :ok = DirtyTracker.settle_all_pending(dirty_set)
 
       assert DirtyTracker.dirty_entity_ids_for_model("todo", dirty_set) == ["e_abc"]
 
-      assert DirtyTracker.dirty_entity_ids_for_model("groupMember", dirty_set) == ["gm_xyz"]
+      assert DirtyTracker.dirty_entity_ids_for_model("grant", dirty_set) == ["gm_xyz"]
     end
   end
 
@@ -304,17 +304,17 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert DirtyTracker.dirty_entity_ids_for_model("post", dirty_set) == ["post_123"]
     end
 
-    test "handles groupMember model regardless of ID shape" do
+    test "handles grant model regardless of ID shape" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
         DirtyTracker.mark_dirty_batch(
-          [{"gm_abc", "groupMember"}, {"groupMember_xyz", "groupMember"}],
+          [{"gm_abc", "grant"}, {"grant_xyz", "grant"}],
           dirty_set
         )
 
-      ids = DirtyTracker.dirty_entity_ids_for_model("groupMember", dirty_set)
-      assert Enum.sort(ids) == ["gm_abc", "groupMember_xyz"]
+      ids = DirtyTracker.dirty_entity_ids_for_model("grant", dirty_set)
+      assert Enum.sort(ids) == ["gm_abc", "grant_xyz"]
     end
 
     test "handles relationship model regardless of ID shape" do
@@ -338,8 +338,8 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       :ok =
         DirtyTracker.mark_dirty_batch(
           [
-            {"gm_abc", "groupMember"},
-            {"eg_xyz", "entityGroup"},
+            {"gm_abc", "grant"},
+            {"eg_xyz", "membership"},
             {"rel_1", "relationship"},
             {"grp_1", "group"},
             {"todo_1", "todo"}
@@ -349,7 +349,7 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
 
       ids =
         DirtyTracker.dirty_entity_ids_for_models(
-          ["group", "groupMember", "relationship", "entityGroup"],
+          ["group", "grant", "relationship", "membership"],
           dirty_set
         )
 

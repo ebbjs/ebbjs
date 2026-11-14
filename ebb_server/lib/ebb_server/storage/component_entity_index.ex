@@ -6,8 +6,8 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
 
     - **model entries**, `(model, entity_id)` — every row committed under a
       model, whichever optional components it carries. This is what
-      `EbbServer.Storage.EntityTypeCache` resolves id → model from at boot and
-      for a delete, and the range `SystemCache.populate_type/6` scans.
+      `EbbServer.Storage.EntityModelCache` resolves id → model from at boot and
+      for a delete, and the range `SystemCache.populate_component/6` scans.
     - **component entries**, `(component, entity_id)` where the component is
       `<model>/<field>` — the components a row's writes have put. The range is
       the existence candidate set; a row `delete` leaves its entries behind,
@@ -265,7 +265,7 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
   @doc """
   Calls `fun` with each id for `component`, one bounded chunk at a time.
 
-  Boot's per-type walk uses this so a large model does not build its whole id
+  Boot's per-component walk uses this so a large model does not build its whole id
   list before materializing a row.
   """
   @spec each_component_entry_id(String.t(), (String.t() -> any()), keyword()) :: :ok

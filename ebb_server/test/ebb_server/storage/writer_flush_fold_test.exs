@@ -16,9 +16,9 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
 
   alias EbbServer.Storage.{
     ActionFormat,
-    EntityGroupCache,
+    MembershipCache,
     GroupAppsCache,
-    GroupCache,
+    GrantCache,
     RocksDB,
     Writer
   }
@@ -67,7 +67,7 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
     assert GroupAppsCache.get_apps(group_id, ctx.group_apps) == MapSet.new(["notes"])
   end
 
-  test "a groupMember permissions write after the create in one flush reaches the caches", ctx do
+  test "a grant permissions write after the create in one flush reaches the caches", ctx do
     hlc = generate_hlc()
     member_id = "gm_" <> Nanoid.generate()
 
@@ -110,9 +110,9 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
     assert {:ok, {1, 2}, []} = Writer.write_actions([create, permissions], ctx.writer_name)
 
     assert [%{group_id: "group_1", permissions: ["todo.write"]}] =
-             GroupCache.get_actor_groups("actor_1", ctx.group_members)
+             GrantCache.get_actor_groups("actor_1", ctx.grants)
 
-    assert GroupCache.get_permissions("actor_1", "group_1", ctx.group_members) == ["todo.write"]
+    assert GrantCache.get_permissions("actor_1", "group_1", ctx.grants) == ["todo.write"]
   end
 
   test "a later membership write in one flush keeps the row and its scope", ctx do
@@ -146,10 +146,10 @@ defmodule EbbServer.Storage.WriterFlushFoldTest do
 
     assert {:ok, {1, 2}, []} = Writer.write_actions([create, later], ctx.writer_name)
 
-    assert EntityGroupCache.entity_groups("todo_1", ctx.entity_groups) == ["group_2"]
+    assert MembershipCache.memberships("todo_1", ctx.memberships) == ["group_2"]
 
     assert %{id: ^membership_id, entity_id: "todo_1", group_id: "group_2"} =
-             EntityGroupCache.get_entity_group(membership_id, ctx.entity_groups_by_id)
+             MembershipCache.get_membership(membership_id, ctx.memberships_by_id)
 
     assert subject_scopes(ctx.rocks_name, 2) == [{membership_id, ["group_2"]}]
   end

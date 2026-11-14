@@ -8,11 +8,11 @@ import { describe, expect, it } from "vitest";
 import { componentName, EBB_COMPONENTS, type EbbComponentKind, type Update } from "@ebbjs/core";
 
 import {
-  lastGroupMemberViolation,
+  lastGrantViolation,
   lastMembershipViolation,
   membershipScope,
   resultingGroups,
-  type LiveGroupMember,
+  type LiveGrant,
   type MembershipView,
 } from "./membership";
 
@@ -179,14 +179,14 @@ describe("membership checker — last membership net delta", () => {
 });
 
 describe("membership checker — last group member net delta", () => {
-  const member = (
-    id: string,
-    permissions: readonly string[],
-    groupId = "g_1",
-  ): LiveGroupMember => ({ id, groupId, permissions });
+  const member = (id: string, permissions: readonly string[], groupId = "g_1"): LiveGrant => ({
+    id,
+    groupId,
+    permissions,
+  });
 
   it("refuses removing the group's last capable member", () => {
-    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"])], {
+    const violation = lastGrantViolation([member("gm_1", ["group.*"])], {
       removedIds: ["gm_1"],
       upserts: [],
     });
@@ -195,7 +195,7 @@ describe("membership checker — last group member net delta", () => {
 
   it("allows removing one of two capable members", () => {
     expect(
-      lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
+      lastGrantViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
         removedIds: ["gm_1"],
         upserts: [],
       }),
@@ -203,7 +203,7 @@ describe("membership checker — last group member net delta", () => {
   });
 
   it("counts an empty-list member as incapable when the capable one is removed", () => {
-    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", [])], {
+    const violation = lastGrantViolation([member("gm_1", ["group.*"]), member("gm_2", [])], {
       removedIds: ["gm_1"],
       upserts: [],
     });
@@ -211,7 +211,7 @@ describe("membership checker — last group member net delta", () => {
   });
 
   it("refuses emptying the group's only non-empty permission list", () => {
-    const violation = lastGroupMemberViolation([member("gm_1", ["group.*"])], {
+    const violation = lastGrantViolation([member("gm_1", ["group.*"])], {
       removedIds: [],
       upserts: [{ id: "gm_1", permissions: [] }],
     });
@@ -220,7 +220,7 @@ describe("membership checker — last group member net delta", () => {
 
   it("allows patching one of several members to an empty list", () => {
     expect(
-      lastGroupMemberViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
+      lastGrantViolation([member("gm_1", ["group.*"]), member("gm_2", ["group.*"])], {
         removedIds: [],
         upserts: [{ id: "gm_1", permissions: [] }],
       }),
@@ -228,9 +228,7 @@ describe("membership checker — last group member net delta", () => {
   });
 
   it("defers when the local view cannot say whether the group is unowned", () => {
-    expect(
-      lastGroupMemberViolation(undefined, { removedIds: ["gm_1"], upserts: [] }),
-    ).toBeUndefined();
-    expect(lastGroupMemberViolation([], { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
+    expect(lastGrantViolation(undefined, { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
+    expect(lastGrantViolation([], { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
   });
 });

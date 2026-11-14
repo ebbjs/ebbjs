@@ -11,7 +11,7 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{ActionLog, EntityGroupCache, EntityTypeCache, Writer}
+  alias EbbServer.Storage.{ActionLog, MembershipCache, EntityModelCache, Writer}
 
   import EbbServer.TestHelpers
 
@@ -222,17 +222,17 @@ defmodule EbbServer.Storage.WriterOverlayChainTest do
   end
 
   # Seeds the committed row the way the caches hold it: the membership by id
-  # plus the entity-type index, which is what tells the fold a later component
+  # plus the entity-model cache, which is what tells the fold a later component
   # Update patches an existing row rather than creating one.
   defp seed_membership(ctx, group_id) do
-    :ok = EntityTypeCache.put_type("eg_chain", "ebb", entity_types: ctx.entity_types)
+    :ok = EntityModelCache.put_model("eg_chain", "ebb", entity_models: ctx.entity_models)
 
     :ok =
-      EntityGroupCache.put_entity_group(
+      MembershipCache.put_membership(
         %{id: "eg_chain", entity_id: "todo_chain", group_id: group_id},
-        entity_groups: ctx.entity_groups,
-        entity_groups_by_id: ctx.entity_groups_by_id,
-        entity_groups_by_group: ctx.entity_groups_by_group
+        memberships: ctx.memberships,
+        memberships_by_id: ctx.memberships_by_id,
+        memberships_by_group: ctx.memberships_by_group
       )
   end
 

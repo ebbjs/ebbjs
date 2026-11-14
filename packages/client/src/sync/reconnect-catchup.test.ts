@@ -30,7 +30,7 @@ const putAction = (opts: {
   updateId: string;
   title: string;
   subjectId?: string;
-  subjectType?: string;
+  model?: string;
 }): Action => ({
   id: opts.id,
   actor_id: "a_peer",
@@ -40,7 +40,7 @@ const putAction = (opts: {
     {
       id: `${opts.updateId}_0`,
       subject_id: opts.subjectId ?? "todo_1",
-      component: componentName(opts.subjectType ?? "todo", "title"),
+      component: componentName(opts.model ?? "todo", "title"),
       method: "replace",
       data: { value: opts.title, update_id: opts.updateId, hlc: opts.hlc },
     },

@@ -108,9 +108,9 @@ const expectEmptyCurrentSchema = async (database: IDBPDatabase<EbbDBSchema>): Pr
   );
 
   const entities = database.transaction("entities", "readonly").store;
-  expect(Array.from(entities.indexNames)).toEqual(expect.arrayContaining(["type", "components"]));
+  expect(Array.from(entities.indexNames)).toEqual(expect.arrayContaining(["model", "components"]));
   expect(entities.index("components").multiEntry).toBe(true);
-  expect(entities.index("type").multiEntry).toBe(false);
+  expect(entities.index("model").multiEntry).toBe(false);
 
   expect(await database.get("sequence", ACTION_POSITION_SEQUENCE_ID)).toEqual({
     id: ACTION_POSITION_SEQUENCE_ID,
@@ -215,7 +215,7 @@ describe("IndexedDB v11 → v12 component-hold reset", () => {
 });
 
 describe("IndexedDB v12 → v13 system-component reset", () => {
-  it("discards a v12 database rather than reading entityGroup adjacency keys", async () => {
+  it("discards a v12 database rather than reading membership adjacency keys", async () => {
     const dbName = legacyDbName();
     const action = buildPutAction();
 
@@ -223,12 +223,12 @@ describe("IndexedDB v12 → v13 system-component reset", () => {
       upgrade: createLegacyStores,
     });
     await v12.put("relationships", {
-      key: "groups\u0000entityGroup\u0000group_1",
+      key: "groups\u0000membership\u0000group_1",
       rows: { eg_1: "todo_1" },
     });
     await v12.put("entities", {
       id: "eg_1",
-      type: "entityGroup",
+      type: "membership",
       data: { fields: { group_id: { value: "group_1", update_id: "u_1", hlc: action.hlc } } },
     });
     expect(await v12.count("relationships")).toBe(1);

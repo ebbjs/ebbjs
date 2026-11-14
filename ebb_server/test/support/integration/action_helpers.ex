@@ -6,9 +6,9 @@ defmodule EbbServer.Integration.ActionHelpers do
   - `post_actions/2` - POST action(s) to /sync/actions endpoint
   - `get_entity/2` - GET an entity by ID
   - `bootstrap_group/3` - Create a test group with permissions
-  - `add_group_member/4` - Grant an actor permissions in an existing group
+  - `add_grant/4` - Grant an actor permissions in an existing group
   - `write_entity_in_group/5` - Write an entity to a group
-  - `entity_group_update/3` - Build a same-Action `entityGroup` create
+  - `membership_update/3` - Build a same-Action `membership` create
   - `msgpack_encode!/1` - Encode data as MessagePack binary
   """
 
@@ -23,8 +23,8 @@ defmodule EbbServer.Integration.ActionHelpers do
   # helpers build the single Update the wire carries.
   @system_components %{
     "group" => "ebb/group",
-    "groupMember" => "ebb/grant",
-    "entityGroup" => "ebb/membership",
+    "grant" => "ebb/grant",
+    "membership" => "ebb/membership",
     "relationship" => "ebb/link"
   }
 
@@ -95,7 +95,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   def membership_row_id(entity_id, group_id), do: "eg_" <> entity_id <> "_" <> group_id
 
   @doc """
-  Builds the same-Action group + owner `groupMember` bootstrap that
+  Builds the same-Action group + owner `grant` bootstrap that
   `bootstrap_group/4` posts, without sending it. Callers that need the wire
   body (for example to drive the real Router over HTTP) encode it themselves.
   """
@@ -110,8 +110,7 @@ defmodule EbbServer.Integration.ActionHelpers do
       "id" => "act_bootstrap_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" =>
-        group_updates ++ group_member_updates(gm_id, actor_id, group_id, permissions, hlc)
+      "updates" => group_updates ++ grant_updates(gm_id, actor_id, group_id, permissions, hlc)
     }
   end
 
@@ -224,9 +223,9 @@ defmodule EbbServer.Integration.ActionHelpers do
   Adds `member_actor_id` to an existing `group_id` with `permissions`.
 
   The row goes through the permission table, not the bootstrap exemption,
-  so `actor_id` must already hold `groupMember.create` there.
+  so `actor_id` must already hold `grant.create` there.
   """
-  def add_group_member(actor_id, group_id, member_actor_id, permissions) do
+  def add_grant(actor_id, group_id, member_actor_id, permissions) do
     hlc = TestHelpers.generate_hlc()
     gm_id = "gm_" <> Nanoid.generate()
 
@@ -234,21 +233,21 @@ defmodule EbbServer.Integration.ActionHelpers do
       "id" => "act_gm_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => group_member_updates(gm_id, member_actor_id, group_id, permissions, hlc)
+      "updates" => grant_updates(gm_id, member_actor_id, group_id, permissions, hlc)
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  defp group_member_updates(gm_id, member_actor_id, group_id, permissions, hlc) do
-    component_updates("upd_#{gm_id}", gm_id, "groupMember", %{
+  defp grant_updates(gm_id, member_actor_id, group_id, permissions, hlc) do
+    component_updates("upd_#{gm_id}", gm_id, "grant", %{
       "actor_id" => %{"value" => member_actor_id, "hlc" => hlc},
       "group_id" => %{"value" => group_id, "hlc" => hlc},
       "permissions" => %{"value" => permissions, "hlc" => hlc}
     })
   end
 
-  def write_entity_in_group(actor_id, entity_id, entity_type, group_id, fields) do
+  def write_entity_in_group(actor_id, entity_id, entity_model, group_id, fields) do
     hlc = TestHelpers.generate_hlc()
 
     action = %{
@@ -256,29 +255,29 @@ defmodule EbbServer.Integration.ActionHelpers do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" =>
-        component_updates("upd_entity_" <> Nanoid.generate(), entity_id, entity_type, fields) ++
-          entity_group_update(entity_id, group_id, hlc)
+        component_updates("upd_entity_" <> Nanoid.generate(), entity_id, entity_model, fields) ++
+          membership_update(entity_id, group_id, hlc)
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  def entity_group_update(entity_id, group_id, hlc, eg_id \\ nil) do
+  def membership_update(entity_id, group_id, hlc, eg_id \\ nil) do
     eg_id = eg_id || membership_row_id(entity_id, group_id)
 
-    component_updates("upd_#{eg_id}", eg_id, "entityGroup", %{
+    component_updates("upd_#{eg_id}", eg_id, "membership", %{
       "entity_id" => %{"value" => entity_id, "hlc" => hlc},
       "group_id" => %{"value" => group_id, "hlc" => hlc}
     })
   end
 
   @doc """
-  Builds a component-less `entityGroup` delete for an existing membership row.
+  Builds a component-less `membership` delete for an existing membership row.
 
   The wire form names only the membership row id; the server recovers the
   entity and group from its by-id cache.
   """
-  def entity_group_delete(membership_id) do
+  def membership_delete(membership_id) do
     %{
       "id" => "upd_eg_delete_" <> Nanoid.generate(),
       "subject_id" => membership_id,

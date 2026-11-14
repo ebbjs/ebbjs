@@ -7,7 +7,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   import Plug.Conn
   import Plug.Test
 
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
   alias EbbServer.Sync.Router
 
   describe "multi-group membership" do
@@ -35,8 +35,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Multi", "hlc" => hlc}
             },
-            entity_group_update(entity_id, "group_1", hlc),
-            entity_group_update(entity_id, "group_2", hlc)
+            membership_update(entity_id, "group_1", hlc),
+            membership_update(entity_id, "group_2", hlc)
           ])
       }
 
@@ -67,7 +67,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(other_id, hlc),
-            entity_group_put(eg_other, other_id, "group_2", hlc)
+            membership_put(eg_other, other_id, "group_2", hlc)
           ])
       }
 
@@ -86,8 +86,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(leaked_id, hlc),
-            entity_group_put(eg_leak, leaked_id, "group_1", hlc),
-            entity_group_put(eg_other_2, other_id, "group_2", hlc)
+            membership_put(eg_leak, leaked_id, "group_1", hlc),
+            membership_put(eg_other_2, other_id, "group_2", hlc)
           ])
       }
 
@@ -121,7 +121,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_old, entity_id, "group_1", hlc)
+            membership_put(eg_old, entity_id, "group_1", hlc)
           ])
       }
 
@@ -133,7 +133,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
-            entity_group_put(eg_new, entity_id, "group_2", hlc),
+            membership_put(eg_new, entity_id, "group_2", hlc),
             %{
               "id" => "upd_move_#{Nanoid.generate()}",
               "subject_id" => eg_old,
@@ -171,7 +171,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(ok_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", ok_id, "group_1", hlc)
+            membership_put("eg_#{Nanoid.generate()}", ok_id, "group_1", hlc)
           ])
       }
 
@@ -184,7 +184,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(bad_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", bad_id, "group_2", hlc)
+            membership_put("eg_#{Nanoid.generate()}", bad_id, "group_2", hlc)
           ])
       }
 
@@ -226,7 +226,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Authorized Todo", "hlc" => hlc}
             },
-            entity_group_update(entity_id, "group_1", hlc)
+            membership_update(entity_id, "group_1", hlc)
           ])
       }
 
@@ -243,7 +243,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert entity["data"]["fields"]["title"]["value"] == "Authorized Todo"
     end
 
-    test "intra-action resolution: new entity + entityGroup in same action" do
+    test "intra-action resolution: new entity + membership in same action" do
       bootstrap_group("actor_1", "group_1", ["todo.*", "post.*"])
 
       entity_id = "todo_intra_1"
@@ -262,7 +262,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Intra Action", "hlc" => hlc}
             },
-            entity_group_update(entity_id, "group_1", hlc)
+            membership_update(entity_id, "group_1", hlc)
           ])
       }
 
@@ -419,7 +419,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_1, entity_id, "group_1", hlc)
+            membership_put(eg_1, entity_id, "group_1", hlc)
           ])
       }
 
@@ -431,7 +431,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_add_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_put(eg_2, entity_id, "group_2", hlc)])
+        "updates" => List.flatten([membership_put(eg_2, entity_id, "group_2", hlc)])
       }
 
       assert %{"rejected" => []} = post_membership_action(add)
@@ -458,7 +458,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_1, entity_id, "group_1", hlc)
+            membership_put(eg_1, entity_id, "group_1", hlc)
           ])
       }
 
@@ -466,7 +466,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_batchtype_add_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_put(eg_2, entity_id, "group_2", hlc)])
+        "updates" => List.flatten([membership_put(eg_2, entity_id, "group_2", hlc)])
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [create, add]}), "actor_1")
@@ -495,8 +495,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_1, entity_id, "group_1", hlc),
-            entity_group_put(eg_2, entity_id, "group_2", hlc)
+            membership_put(eg_1, entity_id, "group_1", hlc),
+            membership_put(eg_2, entity_id, "group_2", hlc)
           ])
       }
 
@@ -506,7 +506,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_remove_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_delete(eg_2)])
+        "updates" => List.flatten([membership_delete(eg_2)])
       }
 
       assert %{"rejected" => []} = post_membership_action(remove)
@@ -527,7 +527,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_1, entity_id, "group_1", hlc)
+            membership_put(eg_1, entity_id, "group_1", hlc)
           ])
       }
 
@@ -537,7 +537,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_last_remove_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_delete(eg_1)])
+        "updates" => List.flatten([membership_delete(eg_1)])
       }
 
       response = post_membership_action(remove)
@@ -564,7 +564,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_old, entity_id, "group_1", hlc)
+            membership_put(eg_old, entity_id, "group_1", hlc)
           ])
       }
 
@@ -578,8 +578,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
-            entity_group_put(eg_new, entity_id, "group_2", hlc),
-            entity_group_delete(eg_old)
+            membership_put(eg_new, entity_id, "group_2", hlc),
+            membership_delete(eg_old)
           ])
       }
 
@@ -608,8 +608,8 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(entity_id, hlc),
-            entity_group_put(eg_1, entity_id, "group_1", hlc),
-            entity_group_put(eg_2, entity_id, "group_2", hlc)
+            membership_put(eg_1, entity_id, "group_1", hlc),
+            membership_put(eg_2, entity_id, "group_2", hlc)
           ])
       }
 
@@ -619,14 +619,14 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_bypass_a_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_delete(eg_1)])
+        "updates" => List.flatten([membership_delete(eg_1)])
       }
 
       remove_2 = %{
         "id" => "act_bypass_b_#{Nanoid.generate()}",
         "actor_id" => "actor_1",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_delete(eg_2)])
+        "updates" => List.flatten([membership_delete(eg_2)])
       }
 
       response =
@@ -652,7 +652,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
           "todo.read"
         ])
 
-      gm_id = group_member_id(bootstrap)
+      gm_id = grant_id(bootstrap)
 
       assert %{"rejected" => []} = post_membership_action(bootstrap)
 
@@ -675,13 +675,13 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       response = post_membership_action(remove)
       assert [rejection] = response["rejected"]
-      assert rejection["reason"] == "last_group_member"
+      assert rejection["reason"] == "last_grant"
       assert is_binary(rejection["details"])
 
       # The refusal is structural, so nothing was written: actor_1 still
       # holds the group and can still reach it.
-      assert GroupCache.get_permissions("actor_1", "group_1") != nil
-      assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1")
+      assert GrantCache.get_permissions("actor_1", "group_1") != nil
+      assert [%{group_id: "group_1"}] = GrantCache.get_actor_groups("actor_1")
     end
   end
 
@@ -720,7 +720,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
-  defp group_member_id(action) do
+  defp grant_id(action) do
     action["updates"]
     |> Enum.find(&String.starts_with?(&1["component"] || "", "ebb/grant"))
     |> Map.fetch!("subject_id")
@@ -729,7 +729,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # #623: filing an existing entity into a group is the share/invite
   # primitive (the target group's `<type>.create` is the gate); the row it
   # is written through is not. These cover the row-identity vectors.
-  describe "cross-tenant entityGroup row identity (#623)" do
+  describe "cross-tenant membership row identity (#623)" do
     test "an outsider cannot file an entity in, and the owner's share lets them read it" do
       bootstrap_group("victim", "g_victim", ["todo.create", "todo.update", "todo.read"])
       bootstrap_group("attacker", "g_atk", ["todo.create", "todo.update", "ebb/grant.create"])
@@ -744,7 +744,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(secret_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
+            membership_put("eg_#{Nanoid.generate()}", secret_id, "g_victim", hlc)
           ])
       }
 
@@ -758,7 +758,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "actor_id" => "attacker",
         "hlc" => hlc,
         "updates" =>
-          List.flatten([entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
+          List.flatten([membership_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(graft, "attacker")
@@ -766,7 +766,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
       # The owner shares it into the group they now both belong to: update
       # where the entity lives, create in the target.
-      added = add_group_member("attacker", "g_atk", "victim", ["todo.create"])
+      added = add_grant("attacker", "g_atk", "victim", ["todo.create"])
       assert Jason.decode!(added.resp_body) == %{"rejected" => []}
 
       share = %{
@@ -774,7 +774,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "actor_id" => "victim",
         "hlc" => hlc,
         "updates" =>
-          List.flatten([entity_group_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
+          List.flatten([membership_put("eg_#{Nanoid.generate()}", secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => []} = submit(share, "victim")
@@ -796,7 +796,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(secret_id, hlc),
-            entity_group_put(secret_eg, secret_id, "g_victim", hlc)
+            membership_put(secret_eg, secret_id, "g_victim", hlc)
           ])
       }
 
@@ -816,7 +816,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(own_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
+            membership_put("eg_#{Nanoid.generate()}", own_id, "g_atk", hlc)
           ])
       }
 
@@ -830,7 +830,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_repoint_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_put(secret_eg, own_id, "g_atk", hlc)])
+        "updates" => List.flatten([membership_put(secret_eg, own_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
@@ -841,7 +841,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => "act_graft_patch_#{Nanoid.generate()}",
         "actor_id" => "attacker",
         "hlc" => hlc,
-        "updates" => List.flatten([entity_group_put(patch_eg, secret_id, "g_atk", hlc)])
+        "updates" => List.flatten([membership_put(patch_eg, secret_id, "g_atk", hlc)])
       }
 
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(patch_graft, "attacker")
@@ -866,7 +866,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
                "amount" => %{"type" => "lww", "value" => 100, "hlc" => hlc}
              }).status == 200
 
-      member = add_group_member("victim", "g_1", "actor_2", ["todo.*"])
+      member = add_grant("victim", "g_1", "actor_2", ["todo.*"])
       assert member.status == 200
       assert Jason.decode!(member.resp_body) == %{"rejected" => []}
 
@@ -889,7 +889,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
 
       invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
-      assert invoice["type"] == "invoice"
+      assert invoice["model"] == "invoice"
       assert invoice["data"]["fields"]["amount"]["value"] == 100
 
       # Positive control: the same actor's same-type write in the same
@@ -905,19 +905,19 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(todo_id, legit_hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
+            membership_put("eg_#{Nanoid.generate()}", todo_id, "g_1", legit_hlc)
           ])
       }
 
       assert %{"rejected" => []} = submit(legit, "actor_2")
-      assert Jason.decode!(get_entity(todo_id, "actor_2").resp_body)["type"] == "todo"
+      assert Jason.decode!(get_entity(todo_id, "actor_2").resp_body)["model"] == "todo"
     end
 
     test "a refused patch or delete leaves the committed row untouched" do
       bootstrap_group("victim", "g_1", ["invoice.*", "ebb/grant.create"])
 
       member =
-        add_group_member("victim", "g_1", "actor_2", ["todo.create", "todo.update", "todo.delete"])
+        add_grant("victim", "g_1", "actor_2", ["todo.create", "todo.update", "todo.delete"])
 
       assert member.status == 200
       assert Jason.decode!(member.resp_body) == %{"rejected" => []}
@@ -956,7 +956,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "actor_2")
 
         invoice = Jason.decode!(get_entity(invoice_id, "victim").resp_body)
-        assert invoice["type"] == "invoice"
+        assert invoice["model"] == "invoice"
         assert invoice["data"]["fields"]["amount"]["value"] == 100
       end
     end
@@ -974,7 +974,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(todo_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+            membership_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
           ])
       }
 
@@ -993,7 +993,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => 999_999, "hlc" => hlc}
             },
-            entity_group_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
+            membership_put("eg_#{Nanoid.generate()}", todo_id, "g_1", hlc)
           ])
       }
 
@@ -1006,7 +1006,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
       assert rejected_id == relabel["id"]
 
       todo = Jason.decode!(get_entity(todo_id, "actor_2").resp_body)
-      assert todo["type"] == "todo"
+      assert todo["model"] == "todo"
       refute Map.has_key?(todo["data"]["fields"], "amount")
     end
   end
@@ -1029,7 +1029,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(victim_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
             relationship_put(victim_edge, victim_id, "col_x", hlc)
           ])
       }
@@ -1050,7 +1050,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(attacker_id, attacker_hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
+            membership_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
             relationship_put(attacker_edge, attacker_id, "col_x", attacker_hlc)
           ])
       }
@@ -1099,7 +1099,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(victim_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
             relationship_put(victim_edge, victim_id, "col_x", hlc)
           ])
       }
@@ -1117,7 +1117,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(attacker_id, attacker_hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
+            membership_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
           ])
       }
 
@@ -1167,9 +1167,9 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "updates" =>
           List.flatten([
             todo_put(victim_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
+            membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
             todo_put(new_id, hlc),
-            entity_group_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
+            membership_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
             relationship_put(edge, victim_id, "col_x", hlc)
           ])
       }
@@ -1236,7 +1236,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     ]
   end
 
-  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+  defp membership_put(eg_id, entity_id, group_id, hlc) do
     [
       %{
         "id" => eg_id <> "_membership",

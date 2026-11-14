@@ -36,7 +36,7 @@ export interface MembershipLink {
 }
 
 /**
- * EntityStore — materialized entity cache supporting get-by-ID and query-by-type.
+ * EntityStore — materialized entity cache supporting get-by-ID and query-by-model.
  *
  * Entities are materialized on-demand from the action log when they are dirty.
  * The entity store is not responsible for marking entities dirty — that is
@@ -57,7 +57,7 @@ export interface MembershipLink {
  * ## Methods
  * - `get(id)` — returns entity by ID, materializes if dirty
  * - `set(entity)` — directly sets an entity (bypasses materialization)
- * - `query(type)` — returns all materialized entities of a type
+ * - `query(model)` — returns all materialized entities of a model
  * - `queryByComponent(component)` — returns the live ids carrying that
  *   `<model>/<field>` component in ascending order, materializing dirty rows
  *   of the component's model first
@@ -78,7 +78,7 @@ export interface MembershipLink {
 export interface EntityStore {
   get(id: string): Promise<Entity | null>;
   set(entity: Entity): Promise<void>;
-  query(type: string): Promise<readonly Entity[]>;
+  query(model: string): Promise<readonly Entity[]>;
   /**
    * Live rows currently carrying `component` (`<model>/<field>`), ascending by
    * id. Existence is the set of present fields on a row, so this is an index

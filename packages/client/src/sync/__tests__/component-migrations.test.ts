@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { makeHlc, type Action, type FieldValue } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
+import { REPLICA_RECORD_FORMAT } from "@ebbjs/storage/replica";
 import { defineComponent, defineMigration, defineModel, defineSchema, e } from "@ebbjs/schema";
 
 import { createClient } from "../client";
@@ -48,13 +49,13 @@ const leaf = (value: unknown, updateId: string, ms: number): FieldValue => ({
 });
 
 const recordWith = (labelValue: FieldValue, storedVersion: number): ReplicaRecord => ({
-  format: 4,
+  format: REPLICA_RECORD_FORMAT,
   position: 1,
   revision: 1,
   entities: [
     {
       id: "note_1",
-      type: "note",
+      model: "note",
       data: {
         fields: {
           label: labelValue,

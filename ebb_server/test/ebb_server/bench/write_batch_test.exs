@@ -52,7 +52,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "--distribution",
           "hot",
           "--ablate",
-          "dedup,entity_index,group_index"
+          "dedup,entity_scope,group_index"
         ])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
@@ -85,7 +85,7 @@ defmodule EbbServer.Bench.WriteBatchTest do
           "--distribution",
           "hot",
           "--ablate",
-          "entity_index"
+          "entity_scope"
         ])
 
       {:ok, no_entity_actions} =

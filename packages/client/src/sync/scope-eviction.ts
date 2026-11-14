@@ -67,7 +67,7 @@ export const evictableRowIds = (
 
   // Every other model's rows follow their memberships. `ebb` was bucketed by
   // component above; an overlay row is committed under its host model.
-  for (const type of Object.keys(replica.stats().byType)) {
+  for (const type of Object.keys(replica.stats().byModel)) {
     if (type === EBB_MODEL_NAME) continue;
     for (const row of replica.iterate(type)) {
       const groups = memberGroups.get(row.id);

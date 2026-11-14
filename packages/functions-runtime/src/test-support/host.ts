@@ -86,14 +86,14 @@ const wireField = (value: unknown, stamp: string): FieldValue =>
 /** A stored row as the host's `get` returns it: `data.fields` are wire leaves. */
 export const hostRow = (
   id: string,
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
   extra: Partial<EntityResponse> = {},
 ): EntityResponse => {
   const stamp = "111690000000000000";
   return {
     id,
-    type,
+    model,
     data: {
       fields: Object.fromEntries(
         Object.entries(fields).map(([key, value]) => [key, wireField(value, stamp)]),

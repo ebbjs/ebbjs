@@ -74,7 +74,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   A group qualifies only when the Action both `put`s the group and
   `put`s the acting actor's own `ebb/grant` in it **and** the group
   does not already exist (`exists?` is the authorizer's existence
-  predicate, backed by the entity-type index). Re-`put`ting a committed
+  predicate, backed by the entity-model cache). Re-`put`ting a committed
   group is not a bootstrap: it falls through to the permission table.
   Creating a group for somebody else is not a bootstrap.
 

@@ -25,7 +25,7 @@ defmodule EbbServer.Functions.Access do
   """
 
   alias EbbServer.Functions.Bundle
-  alias EbbServer.Storage.{CacheTables, GroupCache}
+  alias EbbServer.Storage.{CacheTables, GrantCache}
 
   @type access :: String.t() | nil
   @type principal :: EbbServer.Functions.Principal.t() | String.t()
@@ -44,7 +44,7 @@ defmodule EbbServer.Functions.Access do
   Options:
 
     * `:table` — the ETS table holding actor memberships (default
-      `CacheTables.group_members/0`). Tests pass their own table to stay
+      `CacheTables.grants/0`). Tests pass their own table to stay
       isolated from the running cache.
   """
   @spec authorize(access(), principal(), term(), keyword()) :: :ok | error()
@@ -80,7 +80,7 @@ defmodule EbbServer.Functions.Access do
   end
 
   defp decide("granted", %{kind: :actor, actor_id: actor_id}, name, opts) do
-    table = Keyword.get(opts, :table, CacheTables.group_members())
+    table = Keyword.get(opts, :table, CacheTables.grants())
 
     if granted?(actor_id, name, table), do: :ok, else: {:error, :denied}
   end
@@ -92,7 +92,7 @@ defmodule EbbServer.Functions.Access do
 
   defp granted?(actor_id, name, table) do
     actor_id
-    |> GroupCache.get_actor_groups(table)
+    |> GrantCache.get_actor_groups(table)
     |> Enum.any?(fn membership -> holds_grant?(membership[:permissions], name) end)
   end
 

@@ -14,7 +14,7 @@ defmodule EbbServer.AppsCORSIntegrationTest do
   import EbbServer.TestHelpers, only: [put_config: 2, safe_stop: 1, tmp_dir: 1]
 
   alias EbbServer.Apps
-  alias EbbServer.Storage.{CacheTables, GroupCache, WatermarkTracker}
+  alias EbbServer.Storage.{CacheTables, GrantCache, WatermarkTracker}
   alias EbbServer.Sync.Router
 
   @token "integration-admin"
@@ -106,16 +106,16 @@ defmodule EbbServer.AppsCORSIntegrationTest do
     group_id = "g_cors_#{System.unique_integer([:positive])}"
 
     :ok =
-      GroupCache.put_group_member(
+      GrantCache.put_grant(
         %{
           id: "gm_#{System.unique_integer([:positive])}",
           actor_id: "actor_1",
           group_id: group_id,
           permissions: ["read"]
         },
-        group_members: CacheTables.group_members(),
-        group_members_by_id: CacheTables.group_members_by_id(),
-        group_members_by_group: CacheTables.group_members_by_group()
+        grants: CacheTables.grants(),
+        grants_by_id: CacheTables.grants_by_id(),
+        grants_by_group: CacheTables.grants_by_group()
       )
 
     cursor = WatermarkTracker.committed_watermark() + 1

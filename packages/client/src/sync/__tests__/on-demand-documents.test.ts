@@ -97,7 +97,7 @@ const pageSchema = defineSchema({
   },
   version: 1,
 });
-const bodyDocType = "page_body";
+const bodyDocModel = "page_body";
 const bodyComponents = ["page_body/content", "page_body/version"] as const;
 
 const closeBody = (
@@ -155,7 +155,7 @@ const createPage = async (
     for (const action of created) await callApplyAction(client, { ...action, gsn });
   }
   const bodyId = created[0]!.updates.find(
-    (update) => updateModel(update) === bodyDocType,
+    (update) => updateModel(update) === bodyDocModel,
   )!.subject_id;
   return { pageId, bodyId };
 };
@@ -204,8 +204,8 @@ describe("on-demand document residency", () => {
 
     // The link and the two memberships are platform rows, so they share the
     // `ebb` model and the component is what distinguishes them.
-    expect(client.replicaStats.byType).toMatchObject({ page: 1, ebb: 3 });
-    expect(client.replicaStats.byType[bodyDocType]).toBeUndefined();
+    expect(client.replicaStats.byModel).toMatchObject({ page: 1, ebb: 3 });
+    expect(client.replicaStats.byModel[bodyDocModel]).toBeUndefined();
     expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replica.get(pageId)?.data.fields.title.value).toBe("One");
 
@@ -270,8 +270,8 @@ describe("on-demand document residency", () => {
     await client.persistReplica();
 
     const record = await storage.replica.load();
-    const types = (record?.entities ?? []).map((row) => row.type);
-    expect(types).not.toContain(bodyDocType);
+    const types = (record?.entities ?? []).map((row) => row.model);
+    expect(types).not.toContain(bodyDocModel);
     expect(types).toContain("page");
     // The link row and the two membership rows are all `ebb` rows.
     expect(types.filter((type) => type === "ebb")).toHaveLength(3);

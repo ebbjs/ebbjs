@@ -139,7 +139,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
       router_name = :"build_failure_router_#{System.unique_integer([:positive])}"
       true = Process.register(test_pid, router_name)
 
-      # `entity_groups` names a table that does not exist, so group
+      # `memberships` names a table that does not exist, so group
       # resolution raises while the batch is being built — after the GSN
       # range is claimed but before any commit. The range must still be
       # abandoned and resolved, exactly like a commit failure.
@@ -147,7 +147,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
         start_writer(
           Map.merge(ctx, %{
             fan_out_router: router_name,
-            entity_groups: :ebb_336_missing_table
+            memberships: :ebb_336_missing_table
           })
         )
 
@@ -353,7 +353,7 @@ defmodule EbbServer.Storage.WriterFailurePolicyTest do
             # Only group resolution reads this table. The first Action is a
             # `group` update whose group set needs no cache read, so it
             # commits; the queued `todo` Action's resolution raises.
-            entity_groups: :ebb_531_missing_table
+            memberships: :ebb_531_missing_table
           })
         )
 

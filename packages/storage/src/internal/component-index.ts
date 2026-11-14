@@ -21,7 +21,7 @@ export type ComponentIndex = ReadonlyMap<string, ReadonlySet<string>>;
 
 /** The component names a row carries, one per present field of its type. */
 export const componentsOf = (entity: Entity): readonly string[] =>
-  Object.keys(entity.data?.fields ?? {}).map((field) => componentName(entity.type, field));
+  Object.keys(entity.data?.fields ?? {}).map((field) => componentName(entity.model, field));
 
 /** The existence change one row's previous→next write implies. */
 export interface ComponentDelta {
@@ -52,7 +52,7 @@ export const touchedComponents = (
     return next === null || next === undefined ? [] : componentsOf(next);
   }
   if (next === null || next === undefined) return componentsOf(previous);
-  if (previous.type !== next.type || tombstoned(previous) !== tombstoned(next)) {
+  if (previous.model !== next.model || tombstoned(previous) !== tombstoned(next)) {
     return [...new Set([...componentsOf(previous), ...componentsOf(next)])];
   }
   const previousFields = previous.data?.fields ?? {};
@@ -61,7 +61,7 @@ export const touchedComponents = (
   const fields = new Set([...Object.keys(previousFields), ...Object.keys(nextFields)]);
   for (const field of fields) {
     if (previousFields[field] === nextFields[field]) continue;
-    touched.push(componentName(next.type, field));
+    touched.push(componentName(next.model, field));
   }
   return touched;
 };
@@ -182,7 +182,7 @@ export const touchedComponentSet = (
     return next === null || next === undefined ? [] : [...nextComponents];
   }
   if (next === null || next === undefined) return [...previousComponents];
-  if (previous.type !== next.type || tombstoned(previous) !== tombstoned(next)) {
+  if (previous.model !== next.model || tombstoned(previous) !== tombstoned(next)) {
     return [...new Set([...previousComponents, ...nextComponents])];
   }
   const before = new Set(previousComponents);

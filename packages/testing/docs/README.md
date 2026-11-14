@@ -55,7 +55,7 @@ import { seed } from "@ebbjs/testing";
 
 await seed(server.url, "actor_test", {
   groups: [{ id: "grp_001", name: "Test Group" }],
-  groupMembers: [
+  grants: [
     {
       id: "gm_001",
       actorId: "actor_test",

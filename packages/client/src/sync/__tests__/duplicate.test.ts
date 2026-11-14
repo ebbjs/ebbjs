@@ -95,9 +95,9 @@ const mkFetch = (seen: RecordedRequest[]): typeof fetch =>
     return new Response("{}", { status: 200 });
   }) as unknown as typeof fetch;
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [
@@ -259,7 +259,7 @@ describe("duplicate — field copy", () => {
     expect(copy?.deleted_hlc).toBeNull();
   });
 
-  it("throws when the source id names another entity type", async () => {
+  it("throws when the source id names another model", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(mkEntity("d_1", "doc", {}));
     await expect(client.actions.duplicateTodo({ id: "d_1" })).rejects.toBeInstanceOf(
@@ -357,9 +357,9 @@ const mkConflict = (before: Entity): Conflict => ({
   subjectStates: [
     {
       subjectId: before.id,
-      model: before.type,
+      model: before.model,
       before,
-      after: mkEntity(before.id, before.type, { title: "merged", completed: false }),
+      after: mkEntity(before.id, before.model, { title: "merged", completed: false }),
       diff: [],
     },
   ],

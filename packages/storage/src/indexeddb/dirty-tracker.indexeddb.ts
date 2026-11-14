@@ -6,15 +6,15 @@ import type { EbbDBSchema } from "./schema";
  * IndexedDB-backed DirtyTracker.
  *
  * Each dirty entity is one row in the `dirty` object store keyed by
- * entityId. The store carries an index on `entityType` so
- * `getDirtyForType` can answer without a full scan.
+ * entityId. The store carries an index on `model` so
+ * `getDirtyForModel` can answer without a full scan.
  */
 export const createIndexedDBDirtyTracker = (db: IDBPDatabase<EbbDBSchema>): DirtyTracker => {
   return {
-    async mark(entityId: string, entityType: string): Promise<void> {
+    async mark(entityId: string, model: string): Promise<void> {
       const existing = await db.get("dirty", entityId);
       if (existing) return;
-      await db.put("dirty", { entityId, entityType } as EbbDBSchema["dirty"]["value"]);
+      await db.put("dirty", { entityId, model } as EbbDBSchema["dirty"]["value"]);
     },
 
     async isDirty(entityId: string): Promise<boolean> {
@@ -22,8 +22,8 @@ export const createIndexedDBDirtyTracker = (db: IDBPDatabase<EbbDBSchema>): Dirt
       return row !== undefined;
     },
 
-    async getDirtyForType(entityType: string): Promise<readonly string[]> {
-      const rows = await db.getAllFromIndex("dirty", "entityType", entityType);
+    async getDirtyForModel(model: string): Promise<readonly string[]> {
+      const rows = await db.getAllFromIndex("dirty", "model", model);
       return rows.map((row) => row.entityId as string);
     },
 

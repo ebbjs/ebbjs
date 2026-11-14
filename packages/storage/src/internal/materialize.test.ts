@@ -10,7 +10,7 @@ const leaf = (value: unknown, hlc: string, updateId: string): FieldValue => ({
 
 const entity = (): Entity => ({
   id: "doc_1",
-  type: "doc",
+  model: "doc",
   data: {
     fields: {
       content: { map: { a: leaf("a", "1", "u_a"), b: leaf("b", "1", "u_b") } },
@@ -118,7 +118,7 @@ describe("foldEntityAction", () => {
 
     expect(folded).toEqual({
       id: "doc_1",
-      type: "doc",
+      model: "doc",
       data: {
         fields: { title: leaf("t", "9", "u_t"), content: leaf("c", "10", "u_c") },
       },
@@ -149,7 +149,7 @@ describe("foldEntityAction", () => {
 
     expect(folded).toEqual({
       id: "doc_1",
-      type: "doc",
+      model: "doc",
       data: { fields: { title: leaf("second", "7", "u_patch") } },
       exists: true,
       created_hlc: "3",
@@ -178,7 +178,7 @@ describe("foldEntityAction", () => {
     // which is what the server's materialization does too.
     expect(folded).toEqual({
       id: "doc_1",
-      type: "doc",
+      model: "doc",
       data: { fields: {} },
       exists: true,
       created_hlc: "3",
@@ -206,7 +206,7 @@ describe("foldEntityActions", () => {
 
     expect(folded).toEqual({
       id: "doc_1",
-      type: "doc",
+      model: "doc",
       data: { fields: { title: leaf("third", "7", "u_patch") } },
       exists: true,
       created_hlc: "3",

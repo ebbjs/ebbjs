@@ -61,7 +61,7 @@ describe("readMembership", () => {
   it("returns null for a row that carries no ebb/membership component", async () => {
     const row: Entity = {
       id: "eg_1",
-      type: "todo",
+      model: "todo",
       data: { fields: { title: { value: "Ship", update_id: "u" } } },
       exists: true,
       created_hlc: "1",

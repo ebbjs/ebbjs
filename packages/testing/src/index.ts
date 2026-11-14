@@ -9,7 +9,7 @@ export {
   seed,
   buildSeedAction,
   type GroupSeed,
-  type GroupMemberSeed,
+  type GrantSeed,
   type EntitySeed,
   type SeedData,
   type Action,

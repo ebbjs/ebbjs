@@ -19,7 +19,7 @@ defmodule EbbServer.Bench.WriteBatch do
   `--ablate` narrows the op set to the phases that name an op group —
   `:dedup` (drop `cf_action_dedup`), `:entity_actions` (drop
   `cf_entity_actions`), `:group_index` (drop `cf_group_actions`), and
-  `:entity_index` as the alias that drops `cf_entity_actions`.
+  `:entity_scope` as the alias that drops `cf_entity_actions`.
   Ablating every group leaves a `cf_actions`-only batch, which is the cheapest
   durable write an Action can have; the report prints the ablated phases so a narrowed run is
   never mistaken for the full shape.
@@ -194,5 +194,5 @@ defmodule EbbServer.Bench.WriteBatch do
   end
 
   defp entity_actions_ablated?(ablate),
-    do: :entity_actions in ablate or :entity_index in ablate
+    do: :entity_actions in ablate or :entity_scope in ablate
 end

@@ -13,9 +13,9 @@
  * Each edit emits two Updates addressed to the document (`subject_id` =
  * docId), one per component:
  *
- * - `<docType>/content`: a keyed component whose map is keyed by cell id,
+ * - `<docModel>/content`: a keyed component whose map is keyed by cell id,
  *   each `{ value: RunCell | CutCell, update_id, hlc }`;
- * - `<docType>/version`: the cell-format leaf, written by every edit.
+ * - `<docModel>/version`: the cell-format leaf, written by every edit.
  *
  * Runs are immutable and cuts are additive, so a write only ever adds map
  * keys. The map's per-key merge therefore never drops a peer's edit, and a
@@ -60,7 +60,7 @@ import {
   assertAppendOnly,
   assertKnownVersion,
   docActionToUpdate,
-  DEFAULT_DOC_SUBJECT_TYPE,
+  DEFAULT_DOC_MODEL,
   parseContentField,
 } from "./wire";
 import { DOC_CONTENT_FIELD } from "./schema";
@@ -152,7 +152,7 @@ export class TextDocument {
    * The model the document entity is committed under. Defaults to
    * "text_document"; override only if you need a custom model.
    */
-  readonly docType: string;
+  readonly docModel: string;
 
   private state: DocState = createDocState();
   private readonly updateListeners = new Set<UpdateListener>();
@@ -176,10 +176,10 @@ export class TextDocument {
     this.submit = submit;
   }
 
-  constructor(opts: { docId: string; actorId: string; docType?: string }) {
+  constructor(opts: { docId: string; actorId: string; docModel?: string }) {
     this.docId = opts.docId;
     this.actorId = opts.actorId;
-    this.docType = opts.docType ?? DEFAULT_DOC_SUBJECT_TYPE;
+    this.docModel = opts.docModel ?? DEFAULT_DOC_MODEL;
   }
 
   // -------------------------------------------------------------------------
@@ -234,7 +234,7 @@ export class TextDocument {
   applyActions(actions: readonly Action[]): void {
     if (actions.length === 0) return;
 
-    const { state, applied, sourceActions } = applyActions(this.state, actions, this.docType);
+    const { state, applied, sourceActions } = applyActions(this.state, actions, this.docModel);
     if (state === this.state) return;
     this.state = state;
 
@@ -383,7 +383,7 @@ export class TextDocument {
     const updates = docActionToUpdate(cells, {
       docId: this.docId,
       updateId,
-      docSubjectType: this.docType,
+      docModel: this.docModel,
     });
     if (updates === null) return null;
 
@@ -498,12 +498,12 @@ export class TextDocumentRegistry {
   private readonly docs = new Map<string, TextDocument>();
 
   /** Get or create a TextDocument for the given docId. */
-  open(opts: { docId: string; actorId: string; docType?: string }): TextDocument {
+  open(opts: { docId: string; actorId: string; docModel?: string }): TextDocument {
     const existing = this.docs.get(opts.docId);
     if (
       existing &&
       existing.actorId === opts.actorId &&
-      (opts.docType ?? DEFAULT_DOC_SUBJECT_TYPE) === existing.docType
+      (opts.docModel ?? DEFAULT_DOC_MODEL) === existing.docModel
     ) {
       return existing;
     }
@@ -532,5 +532,5 @@ export class TextDocumentRegistry {
 // Re-exports for callers
 // ---------------------------------------------------------------------------
 
-export { applyActions, docActionToUpdate, DEFAULT_DOC_SUBJECT_TYPE, DOC_CONTENT_FIELD };
+export { applyActions, docActionToUpdate, DEFAULT_DOC_MODEL, DOC_CONTENT_FIELD };
 export type { DocState, RunCell, CutCell, TextCell, CellFieldValue } from "./tree";

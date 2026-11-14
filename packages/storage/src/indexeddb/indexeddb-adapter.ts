@@ -109,16 +109,16 @@ export const createIndexedDBAdapter = async (
     entities: entityStore,
 
     dirtyTracker: {
-      async mark(entityId: string, entityType: string): Promise<void> {
-        await dirtyTracker.mark(entityId, entityType);
+      async mark(entityId: string, model: string): Promise<void> {
+        await dirtyTracker.mark(entityId, model);
       },
 
       async isDirty(entityId: string): Promise<boolean> {
         return dirtyTracker.isDirty(entityId);
       },
 
-      async getDirtyForType(entityType: string): Promise<readonly string[]> {
-        return dirtyTracker.getDirtyForType(entityType);
+      async getDirtyForModel(model: string): Promise<readonly string[]> {
+        return dirtyTracker.getDirtyForModel(model);
       },
 
       async clear(entityId: string): Promise<void> {

@@ -19,7 +19,7 @@ defmodule EbbServer.Sync.FanOutRouter do
      range.
   3. Takes each Action's group set from the Writer's commit snapshot,
      falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
-     via `EntityIndex`) only when the notifier did not annotate the GSN.
+     via `EntityScope`) only when the notifier did not annotate the GSN.
   4. Filters each Action's Updates to the ones whose subject's persisted
      scope includes the recipient group. An Update scoped to one group is
      never delivered to another group that the same Action also touches.
@@ -90,7 +90,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   `event: control` with `{"groups_changed": true, "reason":
   "membership"}` to every live connection of every affected actor. The
   event carries no delta: the client re-handshakes, and the handshake
-  reads `GroupCache`.
+  reads `GrantCache`.
 
   The Writer decides which actors were affected while it applies its
   planned cache mutations, so the set rides the `{:batch_committed, ...}`
@@ -544,11 +544,11 @@ defmodule EbbServer.Sync.FanOutRouter do
     # All five caches, so a delete naming no component still resolves its
     # row's kind, and so its scope.
     resolve_opts = [
-      entity_groups: CacheTables.entity_groups(),
-      entity_groups_by_id: CacheTables.entity_groups_by_id(),
-      entity_types: CacheTables.entity_types(),
+      memberships: CacheTables.memberships(),
+      memberships_by_id: CacheTables.memberships_by_id(),
+      entity_models: CacheTables.entity_models(),
       relationships_by_id: CacheTables.relationships_by_id(),
-      group_members_by_id: CacheTables.group_members_by_id(),
+      grants_by_id: CacheTables.grants_by_id(),
       group_apps: CacheTables.group_apps()
     ]
 
@@ -560,7 +560,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
     memberships =
       actions
-      |> Stream.flat_map(&group_memberships(&1, groups_by_gsn, resolve_opts))
+      |> Stream.flat_map(&grantships(&1, groups_by_gsn, resolve_opts))
       |> Enum.to_list()
 
     Telemetry.fanout_hop(:router_decode, System.monotonic_time() - decode_started_at, nil)
@@ -653,7 +653,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   # One push per group per committed range, so a batch that fans out to a
   # group is dispatched — and sampled — once, not once per Action. Each
   # copy is filtered to the Updates whose own scope includes the group.
-  defp group_memberships(action, groups_by_gsn, resolve_opts) do
+  defp grantships(action, groups_by_gsn, resolve_opts) do
     group_ids =
       case Map.fetch(groups_by_gsn, action["gsn"]) do
         {:ok, group_ids} -> group_ids

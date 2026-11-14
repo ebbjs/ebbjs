@@ -5,14 +5,14 @@
  *
  * A collaborative-text document is an ebb entity whose model is the document
  * model the app declares (a raw document opened directly defaults to
- * `text_document`). Its cells live in one keyed component, `<docType>/content`,
+ * `text_document`). Its cells live in one keyed component, `<docModel>/content`,
  * whose value is a map from cell id to
  * `{ value: RunCell | CutCell, update_id, hlc }`.
  *
  * The component is a *keyed* component, so the merge is per key. Every write
  * only adds keys: a run is never rewritten, a cut is additive, and two
  * peers can never contest one position. The body's `version` leaf travels
- * with every write, in its own `<docType>/version` Update, so a reader can
+ * with every write, in its own `<docModel>/version` Update, so a reader can
  * refuse a cell shape it does not know.
  *
  * Wire-format shape for one edit (two Updates in the same Action):
@@ -61,7 +61,7 @@ import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./sc
 // ---------------------------------------------------------------------------
 
 /** Default document model for collaborative-text documents. */
-export const DEFAULT_DOC_SUBJECT_TYPE = "text_document";
+export const DEFAULT_DOC_MODEL = "text_document";
 
 // ---------------------------------------------------------------------------
 // Version
@@ -112,8 +112,8 @@ export const versionField = (
  * non-doc updates pass through unchanged). A `delete` names no component and
  * so belongs to no single component of the row; it is not a cell delivery.
  */
-export const isDocSubjectUpdate = (update: Update, docSubjectType: string): boolean =>
-  update.method !== "delete" && componentModel(update.component) === docSubjectType;
+export const isDocModelUpdate = (update: Update, docModel: string): boolean =>
+  update.method !== "delete" && componentModel(update.component) === docModel;
 
 // ---------------------------------------------------------------------------
 // Read side: parse a content map into cells
@@ -198,7 +198,7 @@ export type AppliedCell = {
 export const applyActions = (
   state: DocState,
   actions: readonly Action[],
-  docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
+  docModel: string = DEFAULT_DOC_MODEL,
 ): { state: DocState; applied: AppliedCell[]; sourceActions: Action[] } => {
   let current = state;
   const applied: AppliedCell[] = [];
@@ -206,7 +206,7 @@ export const applyActions = (
 
   for (const action of actions) {
     for (const update of action.updates) {
-      if (!isDocSubjectUpdate(update, docSubjectType)) continue;
+      if (!isDocModelUpdate(update, docModel)) continue;
 
       if (update.method === "drop" || update.method === "delete") continue;
       const field = componentField(update.component);
@@ -239,7 +239,7 @@ export const applyActions = (
 export const applyUpdate = (
   state: DocState,
   update: Update,
-  docSubjectType: string = DEFAULT_DOC_SUBJECT_TYPE,
+  docModel: string = DEFAULT_DOC_MODEL,
 ): { state: DocState; applied: AppliedCell[]; sourceActions: Action[] } => {
   const action: Action = {
     id: update.id,
@@ -248,7 +248,7 @@ export const applyUpdate = (
     gsn: 0,
     updates: [update],
   };
-  return applyActions(state, [action], docSubjectType);
+  return applyActions(state, [action], docModel);
 };
 
 // ---------------------------------------------------------------------------
@@ -278,23 +278,23 @@ export const contentFieldFromCells = (
  */
 export const docActionToUpdate = (
   cells: readonly TextCell[],
-  opts: { readonly docId: string; readonly updateId: string; readonly docSubjectType?: string },
+  opts: { readonly docId: string; readonly updateId: string; readonly docModel?: string },
 ): Update[] | null => {
   if (cells.length === 0) return null;
-  const docType = opts.docSubjectType ?? DEFAULT_DOC_SUBJECT_TYPE;
+  const docModel = opts.docModel ?? DEFAULT_DOC_MODEL;
   const versionUpdateId = `${opts.updateId}v`;
   return [
     {
       id: opts.updateId,
       subject_id: opts.docId,
-      component: componentName(docType, DOC_CONTENT_FIELD),
+      component: componentName(docModel, DOC_CONTENT_FIELD),
       method: "merge",
       data: contentFieldFromCells(cells, opts.updateId),
     },
     {
       id: versionUpdateId,
       subject_id: opts.docId,
-      component: componentName(docType, DOC_VERSION_FIELD),
+      component: componentName(docModel, DOC_VERSION_FIELD),
       method: "merge",
       data: versionField(hlcOf(cells), versionUpdateId),
     },

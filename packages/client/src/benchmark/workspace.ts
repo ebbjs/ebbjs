@@ -24,9 +24,10 @@ import {
   type Entity,
   type FieldValue,
 } from "@ebbjs/core";
+import { REPLICA_RECORD_FORMAT } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
-/** The entity type the shipped residency policy leaves windowed. */
+/** The model the shipped residency policy leaves windowed. */
 export const ON_DEMAND_TYPE = "page_content";
 
 /** The one group every page is filed into. */
@@ -34,13 +35,6 @@ export const WORKSPACE_GROUP_ID = "grp_ws";
 
 /** `updated_at` of page `i` is `UPDATED_AT_BASE + i`; a test fixture value, not a clock. */
 export const UPDATED_AT_BASE = 1_700_000_000_000;
-
-/**
- * The record shape version in `@ebbjs/storage`'s `internal/replica-record.ts`.
- * Not exported from the package, and `load` ignores a record with any other
- * value, so the fixture has to state it.
- */
-const REPLICA_RECORD_FORMAT = 4;
 
 /**
  * Distinct bodies the store materializes so the windowed read path is real.
@@ -108,7 +102,7 @@ export const configWith = (overrides: Partial<BenchConfig>): BenchConfig => ({
 export interface WorkspaceCounts {
   readonly pages: number;
   readonly relationships: number;
-  readonly entityGroups: number;
+  readonly memberships: number;
   readonly groups: number;
   /** Rows `load` holds resident. */
   readonly heldRows: number;
@@ -137,7 +131,7 @@ export interface Workspace {
 
 export const pageId = (index: number): string => `page_${index}`;
 export const bodyId = (index: number): string => `body_${index}`;
-export const entityGroupId = (index: number): string => `eg_${index}`;
+export const membershipRowId = (index: number): string => `eg_${index}`;
 
 /** The page index a page's `parent` edge points at (`page_0` is the root). */
 export const parentIndexOf = (index: number, branch: number): number =>
@@ -159,9 +153,9 @@ export const spreadIndices = (n: number, count: number): readonly number[] => {
 
 const leaf = (updateId: string, value: unknown): FieldValue => ({ value, update_id: updateId });
 
-const row = (id: string, type: string, fields: Record<string, FieldValue>): Entity => ({
+const row = (id: string, model: string, fields: Record<string, FieldValue>): Entity => ({
   id,
-  type,
+  model,
   data: { fields },
   exists: true,
   created_hlc: "1",
@@ -216,9 +210,9 @@ const referenceRow = (index: number, ref: number, n: number): Entity => {
   });
 };
 
-const entityGroupRow = (index: number): Entity =>
-  row(entityGroupId(index), "ebb", {
-    membership: leaf(`u_${entityGroupId(index)}`, {
+const membershipRow = (index: number): Entity =>
+  row(membershipRowId(index), "ebb", {
+    membership: leaf(`u_${membershipRowId(index)}`, {
       entity_id: pageId(index),
       group_id: WORKSPACE_GROUP_ID,
     }),
@@ -242,13 +236,13 @@ const referenceRows = (config: BenchConfig): readonly Entity[] =>
       );
 
 /**
- * The four held buckets, in load order: pages, entityGroups, the workspace
+ * The four held buckets, in load order: pages, memberships, the workspace
  * group, then the relationship rows. `createHeldRows` and `createWorkspace`
  * both build from here so their id sets cannot drift apart.
  */
 const heldRowSet = (config: BenchConfig) => {
   const pages = Array.from({ length: config.n }, (_, index) => pageRow(index));
-  const entityGroups = Array.from({ length: config.n }, (_, index) => entityGroupRow(index));
+  const memberships = Array.from({ length: config.n }, (_, index) => membershipRow(index));
   const parents = Array.from({ length: Math.max(0, config.n - 1) }, (_, k) =>
     parentRow(k + 1, config.branch),
   );
@@ -256,10 +250,10 @@ const heldRowSet = (config: BenchConfig) => {
   const groups = [groupRow()];
   return {
     pages,
-    entityGroups,
+    memberships,
     relationships,
     groups,
-    rows: [...pages, ...entityGroups, ...groups, ...relationships],
+    rows: [...pages, ...memberships, ...groups, ...relationships],
   };
 };
 
@@ -273,7 +267,7 @@ export const createHeldRows = (config: BenchConfig): readonly Entity[] => heldRo
 
 export const createWorkspace = (config: BenchConfig): Workspace => {
   const content = bodyContent(config);
-  const { pages, entityGroups, relationships, groups, rows: metadata } = heldRowSet(config);
+  const { pages, memberships, relationships, groups, rows: metadata } = heldRowSet(config);
 
   const bodyIndices = spreadIndices(config.n, BODY_DOCS);
   const bodies = bodyIndices.map((index) => bodyRow(index, content));
@@ -298,7 +292,7 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
     counts: {
       pages: pages.length,
       relationships: relationships.length,
-      entityGroups: entityGroups.length,
+      memberships: memberships.length,
       groups: groups.length,
       heldRows: metadata.length,
       bodyRows: bodies.length,

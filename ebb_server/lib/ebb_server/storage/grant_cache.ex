@@ -1,12 +1,12 @@
-defmodule EbbServer.Storage.GroupCache do
+defmodule EbbServer.Storage.GrantCache do
   @moduledoc """
-  GenServer that owns the group membership ETS tables.
+  GenServer that owns the grant ETS tables.
 
-  Manages actor-to-group mappings, permissions, a secondary index
-  keyed by member id that allows resolving a membership by its entity
-  id, and a by-group index that enumerates a group's members (#479,
-  the last-capable-member guard). The GenServer exists solely to own
-  the ETS table lifetime and manage startup/shutdown.
+  Manages `ebb/grant` rows: an actor's permissions in a group, a
+  secondary index keyed by grant id that allows resolving one by its row
+  id, and a by-group index that enumerates a group's grants (#479, the
+  last-capable-member guard). The GenServer exists solely to own the ETS
+  table lifetime and manage startup/shutdown.
 
   All public functions are lock-free (ETS reads/writes) and do not
   route through `GenServer.call`.
@@ -16,16 +16,16 @@ defmodule EbbServer.Storage.GroupCache do
 
   alias EbbServer.Storage.CacheTables
 
-  @default_group_members :ebb_group_members
-  @default_group_members_by_id :ebb_group_members_by_id
-  @default_group_members_by_group :ebb_group_members_by_group
+  @default_grants :ebb_grants
+  @default_grants_by_id :ebb_grants_by_id
+  @default_grants_by_group :ebb_grants_by_group
 
   @type t :: %__MODULE__{
-          group_members: atom(),
-          group_members_by_id: atom(),
-          group_members_by_group: atom()
+          grants: atom(),
+          grants_by_id: atom(),
+          grants_by_group: atom()
         }
-  defstruct [:group_members, :group_members_by_id, :group_members_by_group]
+  defstruct [:grants, :grants_by_id, :grants_by_group]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -36,7 +36,7 @@ defmodule EbbServer.Storage.GroupCache do
   Stores a group membership entry.
 
   `opts` carries the tables of the cache instance the row belongs to:
-  `:group_members`, `:group_members_by_id` and `:group_members_by_group`.
+  `:grants`, `:grants_by_id` and `:grants_by_group`.
   A caller holding a specific cache set must pass all three; any omitted
   table falls back to the one published for the running cache.
 
@@ -44,15 +44,15 @@ defmodule EbbServer.Storage.GroupCache do
 
   ## Examples
 
-      iex> GroupCache.put_group_member(%{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["read"]})
+      iex> GrantCache.put_grant(%{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["read"]})
       :ok
   """
-  @spec put_group_member(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
-  def put_group_member(member, opts \\ []) do
+  @spec put_grant(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
+  def put_grant(member, opts \\ []) do
     %{
-      group_members: table,
-      group_members_by_id: by_id_table,
-      group_members_by_group: by_group_table
+      grants: table,
+      grants_by_id: by_id_table,
+      grants_by_group: by_group_table
     } =
       resolve_tables(opts)
 
@@ -93,19 +93,19 @@ defmodule EbbServer.Storage.GroupCache do
   @doc """
   Deletes a group membership entry by member ID.
 
-  `opts` names the cache instance's tables, as in `put_group_member/2`.
+  `opts` names the cache instance's tables, as in `put_grant/2`.
 
   ## Examples
 
-      iex> GroupCache.delete_group_member("gm_1")
+      iex> GrantCache.delete_grant("gm_1")
       :ok
   """
-  @spec delete_group_member(String.t(), keyword()) :: :ok
-  def delete_group_member(member_id, opts \\ []) do
+  @spec delete_grant(String.t(), keyword()) :: :ok
+  def delete_grant(member_id, opts \\ []) do
     %{
-      group_members: table,
-      group_members_by_id: by_id_table,
-      group_members_by_group: by_group_table
+      grants: table,
+      grants_by_id: by_id_table,
+      grants_by_group: by_group_table
     } =
       resolve_tables(opts)
 
@@ -141,14 +141,14 @@ defmodule EbbServer.Storage.GroupCache do
 
   ## Examples
 
-      iex> GroupCache.get_group_member("gm_1")
+      iex> GrantCache.get_grant("gm_1")
       %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["read"]}
 
-      iex> GroupCache.get_group_member("unknown")
+      iex> GrantCache.get_grant("unknown")
       nil
   """
-  @spec get_group_member(String.t(), atom()) :: map() | nil
-  def get_group_member(member_id, table \\ CacheTables.group_members_by_id()) do
+  @spec get_grant(String.t(), atom()) :: map() | nil
+  def get_grant(member_id, table \\ CacheTables.grants_by_id()) do
     case :ets.lookup(table, member_id) do
       [{_, entry}] -> entry
       [] -> nil
@@ -160,19 +160,19 @@ defmodule EbbServer.Storage.GroupCache do
 
   Reads the `:ordered_set` by the partially-bound composite key, so cost
   scales with the group's member count rather than the size of the whole
-  index. The authorizer uses it to decide whether a `groupMember`
+  index. The authorizer uses it to decide whether a `grant`
   mutation would strand the group (#479).
 
   ## Examples
 
-      iex> GroupCache.group_member_ids("g_1")
+      iex> GrantCache.grant_ids("g_1")
       ["gm_1", "gm_2"]
 
-      iex> GroupCache.group_member_ids("unknown")
+      iex> GrantCache.grant_ids("unknown")
       []
   """
-  @spec group_member_ids(String.t(), atom()) :: [String.t()]
-  def group_member_ids(group_id, table \\ CacheTables.group_members_by_group()) do
+  @spec grant_ids(String.t(), atom()) :: [String.t()]
+  def grant_ids(group_id, table \\ CacheTables.grants_by_group()) do
     :ets.select(table, [{{{group_id, :"$1"}}, [], [:"$1"]}])
   end
 
@@ -181,11 +181,11 @@ defmodule EbbServer.Storage.GroupCache do
 
   ## Examples
 
-      iex> GroupCache.get_actor_groups("a_1")
+      iex> GrantCache.get_actor_groups("a_1")
       [%{group_id: "g_1", permissions: ["read", "write"]}]
   """
   @spec get_actor_groups(String.t(), atom()) :: [%{group_id: String.t(), permissions: list()}]
-  def get_actor_groups(actor_id, table \\ @default_group_members) do
+  def get_actor_groups(actor_id, table \\ @default_grants) do
     case resolve_table(table) do
       nil ->
         []
@@ -205,14 +205,14 @@ defmodule EbbServer.Storage.GroupCache do
 
   ## Examples
 
-      iex> GroupCache.get_permissions("a_1", "g_1")
+      iex> GrantCache.get_permissions("a_1", "g_1")
       ["read", "write"]
 
-      iex> GroupCache.get_permissions("a_1", "g_nonexistent")
+      iex> GrantCache.get_permissions("a_1", "g_nonexistent")
       nil
   """
   @spec get_permissions(String.t(), String.t(), atom()) :: list() | nil
-  def get_permissions(actor_id, group_id, table \\ @default_group_members) do
+  def get_permissions(actor_id, group_id, table \\ @default_grants) do
     case resolve_table(table) do
       nil ->
         nil
@@ -230,19 +230,19 @@ defmodule EbbServer.Storage.GroupCache do
   @doc """
   Resets the group cache by clearing all entries.
 
-  `opts` names the cache instance's tables, as in `put_group_member/2`.
+  `opts` names the cache instance's tables, as in `put_grant/2`.
 
   ## Examples
 
-      iex> GroupCache.reset()
+      iex> GrantCache.reset()
       :ok
   """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     %{
-      group_members: table,
-      group_members_by_id: by_id_table,
-      group_members_by_group: by_group_table
+      grants: table,
+      grants_by_id: by_id_table,
+      grants_by_group: by_group_table
     } =
       resolve_tables(opts)
 
@@ -258,11 +258,9 @@ defmodule EbbServer.Storage.GroupCache do
   # indexes (#424).
   defp resolve_tables(opts) do
     %{
-      group_members: Keyword.get(opts, :group_members) || CacheTables.group_members(),
-      group_members_by_id:
-        Keyword.get(opts, :group_members_by_id) || CacheTables.group_members_by_id(),
-      group_members_by_group:
-        Keyword.get(opts, :group_members_by_group) || CacheTables.group_members_by_group()
+      grants: Keyword.get(opts, :grants) || CacheTables.grants(),
+      grants_by_id: Keyword.get(opts, :grants_by_id) || CacheTables.grants_by_id(),
+      grants_by_group: Keyword.get(opts, :grants_by_group) || CacheTables.grants_by_group()
     }
   end
 
@@ -306,30 +304,30 @@ defmodule EbbServer.Storage.GroupCache do
 
   @impl true
   def init(opts) do
-    table = Keyword.get(opts, :table, @default_group_members)
-    by_id_table = Keyword.get(opts, :group_members_by_id, @default_group_members_by_id)
+    table = Keyword.get(opts, :table, @default_grants)
+    by_id_table = Keyword.get(opts, :grants_by_id, @default_grants_by_id)
 
     by_group_table =
-      Keyword.get(opts, :group_members_by_group, @default_group_members_by_group)
+      Keyword.get(opts, :grants_by_group, @default_grants_by_group)
 
-    :persistent_term.put({__MODULE__, :group_members}, table)
-    :persistent_term.put({__MODULE__, :group_members_by_id}, by_id_table)
-    :persistent_term.put({__MODULE__, :group_members_by_group}, by_group_table)
+    :persistent_term.put({__MODULE__, :grants}, table)
+    :persistent_term.put({__MODULE__, :grants_by_id}, by_id_table)
+    :persistent_term.put({__MODULE__, :grants_by_group}, by_group_table)
     :ets.new(table, [:bag, :public, :named_table])
     :ets.new(by_id_table, [:set, :public, :named_table])
     :ets.new(by_group_table, [:ordered_set, :public, :named_table])
 
     {:ok,
      %__MODULE__{
-       group_members: table,
-       group_members_by_id: by_id_table,
-       group_members_by_group: by_group_table
+       grants: table,
+       grants_by_id: by_id_table,
+       grants_by_group: by_group_table
      }}
   end
 
   @impl true
   def terminate(_reason, state) do
-    for table <- [state.group_members, state.group_members_by_id, state.group_members_by_group] do
+    for table <- [state.grants, state.grants_by_id, state.grants_by_group] do
       try do
         :ets.delete(table)
       rescue

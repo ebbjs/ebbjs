@@ -34,7 +34,7 @@ describe("ctx.get overlay", () => {
     );
     const view = await ctx.get(created.id);
 
-    expect(view).toMatchObject({ id: "e_new", type: "issue", last_gsn: 0, deleted_hlc: null });
+    expect(view).toMatchObject({ id: "e_new", model: "issue", last_gsn: 0, deleted_hlc: null });
     expect(projectFields(view?.data.fields ?? {})).toEqual({
       title: "New",
       done: false,
@@ -134,7 +134,7 @@ describe("ctx.get overlay", () => {
     ctx.update("issue", "e_hidden", { title: "Invisible" });
 
     const view = await ctx.get("e_hidden");
-    expect(view).toMatchObject({ id: "e_hidden", type: "issue", created_hlc: "" });
+    expect(view).toMatchObject({ id: "e_hidden", model: "issue", created_hlc: "" });
     expect(projectFields(view?.data.fields ?? {})).toEqual({ title: "Invisible" });
   });
 });
@@ -154,7 +154,7 @@ describe("the overlay's component compare", () => {
   const overlayOf = (...writes: Update[]) =>
     createOverlay({
       updatesFor: (id) => (id === "e_issue1" ? writes : []),
-      typeOf: () => "issue",
+      modelOf: () => "issue",
       readHost: async () => stored(),
     });
 

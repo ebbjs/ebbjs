@@ -20,9 +20,9 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
 
   @cache_children [
     DirtyTracker,
-    EbbServer.Storage.GroupCache,
-    EbbServer.Storage.EntityGroupCache,
-    EbbServer.Storage.EntityTypeCache,
+    EbbServer.Storage.GrantCache,
+    EbbServer.Storage.MembershipCache,
+    EbbServer.Storage.EntityModelCache,
     EbbServer.Storage.RelationshipCache
   ]
 

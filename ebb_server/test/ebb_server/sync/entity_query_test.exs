@@ -175,7 +175,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
       conn =
-        conn(:post, "/entities/query", Jason.encode!(%{"type" => "todo"}))
+        conn(:post, "/entities/query", Jason.encode!(%{"model" => "todo"}))
         |> put_req_header("content-type", "application/json")
         |> Router.call([])
 
@@ -201,7 +201,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       put_config(:entities_query_max_body_bytes, 1_024)
 
       body =
-        Jason.encode!(%{"type" => "todo", "pad" => String.duplicate("x", 2_048)})
+        Jason.encode!(%{"model" => "todo", "pad" => String.duplicate("x", 2_048)})
 
       conn =
         conn(:post, "/entities/query", body)
@@ -216,7 +216,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
     test "query returns empty array when no entities exist" do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
-      conn = post_query(%{"type" => "nonexistent"})
+      conn = post_query(%{"model" => "nonexistent"})
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -230,13 +230,13 @@ defmodule EbbServer.Sync.EntityQueryTest do
       write_todo("todo_query_1", "g_query_1", "a_1")
       write_todo("todo_query_2", "g_query_1", "a_1")
 
-      conn = post_query(%{"type" => "todo"}, "a_1")
+      conn = post_query(%{"model" => "todo"}, "a_1")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
       assert is_list(response)
       assert length(response) == 2
-      assert Enum.all?(response, fn entity -> entity["type"] == "todo" end)
+      assert Enum.all?(response, fn entity -> entity["model"] == "todo" end)
     end
 
     test "query respects permissions" do
@@ -245,12 +245,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
       bootstrap_group("a_1", "g_perm_1", ["todo.*"])
       write_todo("todo_perm_1", "g_perm_1", "a_1")
 
-      conn_a1 = post_query(%{"type" => "todo"}, "a_1")
+      conn_a1 = post_query(%{"model" => "todo"}, "a_1")
       assert conn_a1.status == 200
       {:ok, response_a1} = Jason.decode(conn_a1.resp_body)
       assert length(response_a1) == 1
 
-      conn_a2 = post_query(%{"type" => "todo"}, "a_2")
+      conn_a2 = post_query(%{"model" => "todo"}, "a_2")
       assert conn_a2.status == 200
       {:ok, response_a2} = Jason.decode(conn_a2.resp_body)
       assert response_a2 == []
@@ -262,7 +262,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       bootstrap_group("a_revoked", "g_revoked", [])
       write_todo("todo_revoked", "g_revoked", "a_revoked")
 
-      conn = post_query(%{"type" => "todo"}, "a_revoked")
+      conn = post_query(%{"model" => "todo"}, "a_revoked")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -275,7 +275,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       bootstrap_group("a_kept", "g_kept", ["todo.read"])
       write_todo("todo_kept", "g_kept", "a_kept")
 
-      conn = post_query(%{"type" => "todo"}, "a_kept")
+      conn = post_query(%{"model" => "todo"}, "a_kept")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -289,7 +289,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       write_todo("todo_filter_1", "g_filter_1", "a_filter", completed: true, title: "Done task")
       write_todo("todo_filter_2", "g_filter_1", "a_filter", completed: false, title: "Not done")
 
-      conn = post_query(%{"type" => "todo", "filter" => [%{"completed" => true}]}, "a_filter")
+      conn = post_query(%{"model" => "todo", "filter" => [%{"completed" => true}]}, "a_filter")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -306,7 +306,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert is_pid(sqlite_pid)
 
       for filter <- malformed_query_filters() do
-        conn = post_query(%{"type" => "todo", "filter" => filter})
+        conn = post_query(%{"model" => "todo", "filter" => filter})
 
         assert conn.status == 422, "expected #{inspect(filter)} to be rejected"
         assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_filter"}
@@ -321,7 +321,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert is_pid(sqlite_pid)
 
       for _ <- 1..4 do
-        conn = post_query(%{"type" => "todo", "filter" => [%{"a b" => "x"}]})
+        conn = post_query(%{"model" => "todo", "filter" => [%{"a b" => "x"}]})
         assert conn.status == 422
       end
 
@@ -347,7 +347,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       ]
 
       for {filter, expected_ids} <- cases do
-        conn = post_query(%{"type" => "todo", "filter" => filter}, "a_scalar")
+        conn = post_query(%{"model" => "todo", "filter" => filter}, "a_scalar")
 
         assert conn.status == 200, "expected #{inspect(filter)} to be accepted"
 
@@ -367,7 +367,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
       for limit <- [0, -1, 1.5, "10", 1001] do
-        conn = post_query(%{"type" => "todo", "limit" => limit})
+        conn = post_query(%{"model" => "todo", "limit" => limit})
 
         assert conn.status == 422, "expected #{inspect(limit)} to be rejected"
         assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_limit"}
@@ -381,7 +381,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       assert is_pid(sqlite_pid)
 
       for offset <- [-1, 9_223_372_036_854_775_808] do
-        conn = post_query(%{"type" => "todo", "offset" => offset})
+        conn = post_query(%{"model" => "todo", "offset" => offset})
 
         assert conn.status == 422
         assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_offset"}
@@ -393,12 +393,12 @@ defmodule EbbServer.Sync.EntityQueryTest do
       Application.put_env(:ebb_server, :auth_mode, :bypass)
 
       assert %{"error" => "invalid_limit"} =
-               post_query(%{"type" => "todo", "limit" => false})
+               post_query(%{"model" => "todo", "limit" => false})
                |> Map.get(:resp_body)
                |> Jason.decode!()
 
       assert %{"error" => "invalid_offset"} =
-               post_query(%{"type" => "todo", "offset" => false})
+               post_query(%{"model" => "todo", "offset" => false})
                |> Map.get(:resp_body)
                |> Jason.decode!()
     end
@@ -409,7 +409,7 @@ defmodule EbbServer.Sync.EntityQueryTest do
       bootstrap_group("a_limit_max", "g_limit_max", ["todo.*"])
       write_todo("todo_limit_max", "g_limit_max", "a_limit_max")
 
-      conn = post_query(%{"type" => "todo", "limit" => 1000}, "a_limit_max")
+      conn = post_query(%{"model" => "todo", "limit" => 1000}, "a_limit_max")
 
       assert conn.status == 200
       {:ok, response} = Jason.decode(conn.resp_body)

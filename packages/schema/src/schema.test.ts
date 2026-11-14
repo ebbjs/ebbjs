@@ -1,6 +1,6 @@
 /**
- * Tests for `defineSchema` — the composition of models, relationships, system
- * entities, and reserved names into one frozen `Schema` value.
+ * Tests for `defineSchema` — the composition of models, relationships, the
+ * platform model, and reserved names into one frozen `Schema` value.
  */
 
 import { describe, it, expect } from "vitest";
@@ -11,7 +11,7 @@ import {
   defineSchema,
   e,
   EBB_MODEL_NAME,
-  ebbSystemEntity,
+  ebbModel,
   ModelKeyMismatchError,
   ModelRegistry,
   ReservedNameError,
@@ -32,7 +32,7 @@ const user = defineModel("user", { name: e.string() });
 const issue_belongsTo = defineRelationship({ source: issue, target: project, as: "project" });
 const todo_ownedBy = defineRelationship({
   source: todo,
-  target: ebbSystemEntity,
+  target: ebbModel,
   as: "ownedBy",
   sourceCardinality: "many",
 });
@@ -105,7 +105,7 @@ describe("defineSchema", () => {
 });
 
 describe("defineSchema registry", () => {
-  it("exposes a runtime ModelRegistry with every model and system entity registered", () => {
+  it("exposes a runtime ModelRegistry with every model, the platform model included", () => {
     const schema = defineSchema({
       models: { todo, user },
       version: 1,
@@ -115,7 +115,7 @@ describe("defineSchema registry", () => {
     expect(schema._registry.has("user")).toBe(true);
     expect(schema._registry.get("todo")).toBe(todo);
     expect(schema._registry.get("user")).toBe(user);
-    expect(schema._registry.get(EBB_MODEL_NAME)).toBe(ebbSystemEntity);
+    expect(schema._registry.get(EBB_MODEL_NAME)).toBe(ebbModel);
   });
 
   it("registers every declared relationship on the composed registry", () => {
@@ -165,7 +165,7 @@ describe("defineSchema materialization", () => {
   });
 });
 
-describe("defineSchema system entities + membership", () => {
+describe("defineSchema platform model + membership", () => {
   it("does not inject a groups relationship for user entities", () => {
     const schema = defineSchema({ models: { todo, user }, version: 1 });
     for (const name of ["todo", "user"] as const) {
@@ -174,7 +174,7 @@ describe("defineSchema system entities + membership", () => {
   });
 
   it("rejects an app entity that claims the platform namespace", () => {
-    expect(() => defineSchema({ models: { ebb: ebbSystemEntity }, version: 1 })).toThrow(
+    expect(() => defineSchema({ models: { ebb: ebbModel }, version: 1 })).toThrow(
       ReservedNameError,
     );
   });
@@ -182,7 +182,7 @@ describe("defineSchema system entities + membership", () => {
   it("rejects an app relationship that collides with the groups accessor", () => {
     const colliding = {
       source: todo,
-      target: ebbSystemEntity,
+      target: ebbModel,
       as: "groups",
       sourceCardinality: "many" as const,
       type: "todo",
@@ -229,7 +229,7 @@ describe("defineSchema relationship endpoint validation", () => {
   it("accepts a relationship whose target is the platform model", () => {
     const todo_ownedBy = defineRelationship({
       source: todo,
-      target: ebbSystemEntity,
+      target: ebbModel,
       as: "ownedBy",
       sourceCardinality: "many",
     });
@@ -243,7 +243,7 @@ describe("defineSchema relationship endpoint validation", () => {
 
   it("accepts a relationship whose source is the platform model", () => {
     const group_todos = defineRelationship({
-      source: ebbSystemEntity,
+      source: ebbModel,
       target: todo,
       as: "todos",
       sourceCardinality: "many",

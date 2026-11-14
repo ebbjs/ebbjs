@@ -331,10 +331,10 @@ defmodule EbbServer.Storage.WriterTelemetryTest do
     test "a resolve-time abandon reports queue, prepare, and resolve only", ctx do
       ref = attach_telemetry(@writer_events)
 
-      # `entity_groups` names a table that does not exist, so group
+      # `memberships` names a table that does not exist, so group
       # resolution raises inside `dispatch/8` after the range is claimed.
       %{name: writer_name, pid: writer_pid} =
-        start_writer(writer_opts(ctx, %{entity_groups: :ebb_537_missing_table}))
+        start_writer(writer_opts(ctx, %{memberships: :ebb_537_missing_table}))
 
       Process.unlink(writer_pid)
 

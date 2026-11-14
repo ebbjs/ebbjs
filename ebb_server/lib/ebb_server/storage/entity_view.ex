@@ -55,7 +55,7 @@ defmodule EbbServer.Storage.EntityView do
 
   def filter_components(%{"data" => %{"fields" => fields}} = view, components)
       when is_map(fields) do
-    model = view["type"]
+    model = view["model"]
 
     kept =
       Map.filter(fields, fn {field, _value} ->
@@ -76,7 +76,7 @@ defmodule EbbServer.Storage.EntityView do
   def json(entity) do
     %{
       "id" => entity.id,
-      "type" => entity.type,
+      "model" => entity.model,
       "data" => project_data(entity.data),
       "created_hlc" => entity.created_hlc,
       "updated_hlc" => entity.updated_hlc,

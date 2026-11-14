@@ -28,7 +28,7 @@ export interface OverlaySource {
   /** The buffered Updates addressing `id`, in wire order. */
   updatesFor(id: string): readonly Update[];
   /** The model of the last buffered write for `id`. */
-  typeOf(id: string): string | undefined;
+  modelOf(id: string): string | undefined;
   /** The host's view of `id` (`ctx.get` without the overlay). */
   readHost(id: string): Promise<EntityResponse | null>;
 }
@@ -98,7 +98,7 @@ const readOverlay = async (source: OverlaySource, id: string): Promise<EntityRes
 
   return {
     id,
-    type: source.typeOf(id) ?? host?.type ?? "",
+    model: source.modelOf(id) ?? host?.model ?? "",
     data: { fields },
     created_hlc: createdHlc,
     updated_hlc: updatedHlc,

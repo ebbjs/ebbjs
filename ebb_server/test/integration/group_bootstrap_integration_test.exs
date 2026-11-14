@@ -4,7 +4,7 @@ defmodule EbbServer.GroupBootstrapIntegrationTest do
 
   import EbbServer.Integration.ActionHelpers
 
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
 
   describe "group bootstrap" do
     test "group bootstrap accepted without prior permissions" do
@@ -14,7 +14,7 @@ defmodule EbbServer.GroupBootstrapIntegrationTest do
       {:ok, response} = Jason.decode(conn.resp_body)
       assert response == %{"rejected" => []}
 
-      assert GroupCache.get_actor_groups("actor_1")
+      assert GrantCache.get_actor_groups("actor_1")
              |> Enum.any?(fn gm -> gm.group_id == "group_1" end)
     end
   end

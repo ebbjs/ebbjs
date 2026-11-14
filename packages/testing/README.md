@@ -16,17 +16,17 @@ See [`docs/`](./docs/) for the contributor docs — the
 
 Everything below is re-exported from [`src/index.ts`](./src/index.ts):
 
-| Export                                                   | Kind     | Purpose                                                                                        |
-| -------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `RELEASE_BIN_PATH`                                       | const    | Absolute path to the bundled `ebb_server` release binary under `dist/`.                        |
-| `startServer`                                            | function | Spawn the release and resolve a `RunningServer` once it is ready.                              |
-| `waitForReady`                                           | function | Poll a base URL until the server answers routed requests (or time out).                        |
-| `ServerOptions`                                          | type     | `{ dataDir, port?, env? }` accepted by `startServer`.                                          |
-| `RunningServer`                                          | type     | `{ pid, port, url, dataDir, kill() }` returned by `startServer`.                               |
-| `seed`                                                   | function | POST a `SeedData` fixture to `/sync/actions`.                                                  |
-| `buildSeedAction`                                        | function | Build the `Action` that `seed` sends, without doing HTTP. Re-exported from `@ebbjs/core/seed`. |
-| `GroupSeed`, `GroupMemberSeed`, `EntitySeed`, `SeedData` | types    | Shape of the fixture data `seed` accepts.                                                      |
-| `Action`                                                 | type     | Re-exported from `@ebbjs/core/seed`.                                                           |
+| Export                                             | Kind     | Purpose                                                                                        |
+| -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `RELEASE_BIN_PATH`                                 | const    | Absolute path to the bundled `ebb_server` release binary under `dist/`.                        |
+| `startServer`                                      | function | Spawn the release and resolve a `RunningServer` once it is ready.                              |
+| `waitForReady`                                     | function | Poll a base URL until the server answers routed requests (or time out).                        |
+| `ServerOptions`                                    | type     | `{ dataDir, port?, env? }` accepted by `startServer`.                                          |
+| `RunningServer`                                    | type     | `{ pid, port, url, dataDir, kill() }` returned by `startServer`.                               |
+| `seed`                                             | function | POST a `SeedData` fixture to `/sync/actions`.                                                  |
+| `buildSeedAction`                                  | function | Build the `Action` that `seed` sends, without doing HTTP. Re-exported from `@ebbjs/core/seed`. |
+| `GroupSeed`, `GrantSeed`, `EntitySeed`, `SeedData` | types    | Shape of the fixture data `seed` accepts.                                                      |
+| `Action`                                           | type     | Re-exported from `@ebbjs/core/seed`.                                                           |
 
 The harness lives in [`src/harness.ts`](./src/harness.ts). The browser-safe
 seed builder and the `Seed*` types live in the
@@ -54,7 +54,7 @@ const server = await startServer({
 try {
   await seed(server.url, "actor_test", {
     groups: [{ id: "grp_001", name: "Test Group" }],
-    groupMembers: [
+    grants: [
       {
         id: "gm_001",
         actorId: "actor_test",

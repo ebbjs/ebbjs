@@ -50,7 +50,7 @@ export const contentChanged = (
   next: Entity | null | undefined,
 ): boolean => {
   if (absent(prev) || absent(next)) return absent(prev) !== absent(next);
-  if (prev.type !== next.type) return true;
+  if (prev.model !== next.model) return true;
   if (prev.exists !== next.exists) return true;
   if (prev.created_hlc !== next.created_hlc) return true;
   if (prev.updated_hlc !== next.updated_hlc) return true;

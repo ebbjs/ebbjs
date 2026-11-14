@@ -10,13 +10,13 @@ defmodule EbbServer.Storage.SystemComponent do
 
   | kind          | component        | value                                 | scope owner | by-id cache           |
   | ------------- | ---------------- | ------------------------------------- | ----------- | --------------------- |
-  | `:grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`   | `group_id`  | `:group_members_by_id` |
-  | `:membership` | `ebb/membership` | `{entity_id, group_id}`               | `group_id`  | `:entity_groups_by_id` |
+  | `:grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`   | `group_id`  | `:grants_by_id` |
+  | `:membership` | `ebb/membership` | `{entity_id, group_id}`               | `group_id`  | `:memberships_by_id` |
   | `:link`       | `ebb/link`       | `{source_id, target_id, type, field}` | `source_id` | `:relationships_by_id` |
   | `:group`      | `ebb/group`      | `{name, apps}`                        | `self`      | `:group_apps`          |
 
   The **scope owner** is how a row's write finds its group set, and
-  `EbbServer.Storage.EntityIndex` reads it here rather than dispatching on
+  `EbbServer.Storage.EntityScope` reads it here rather than dispatching on
   a kind. There are three shapes: `:self` means the row's own id is its
   group set; `{:field, name, :group}` means the value at `name` is a group
   id and a group owns itself; `{:field, name, :entity}` means the value at
@@ -40,23 +40,23 @@ defmodule EbbServer.Storage.SystemComponent do
   (`(entity_id, group_id)` and `source_id`); the authorizer refuses a
   re-point and says so. Which of the four a *stored* id carries cannot be
   read off an Update — a delete names no component — so that question is
-  `EbbServer.Storage.EntityIndex.kind/2`, which scans the by-id caches in
+  `EbbServer.Storage.EntityScope.kind/2`, which scans the by-id caches in
   `kinds/0` order.
   """
 
   @model "ebb"
 
-  # Declaration order is the by-id precedence of `EntityIndex.kind/2`.
+  # Declaration order is the by-id precedence of `EntityScope.kind/2`.
   @declarations [
     grant: %{
       name: "ebb/grant",
       scope: {:field, :group_id, :group},
-      by_id: :group_members_by_id
+      by_id: :grants_by_id
     },
     membership: %{
       name: "ebb/membership",
       scope: {:field, :group_id, :group},
-      by_id: :entity_groups_by_id
+      by_id: :memberships_by_id
     },
     link: %{
       name: "ebb/link",
@@ -86,7 +86,7 @@ defmodule EbbServer.Storage.SystemComponent do
   @doc """
   The four kinds in declaration order.
 
-  That order is `EbbServer.Storage.EntityIndex.kind/2`'s by-id
+  That order is `EbbServer.Storage.EntityScope.kind/2`'s by-id
   precedence: ids are not model-unique here, so a colliding id resolves to
   the first kind whose cache holds it.
   """
@@ -171,8 +171,8 @@ defmodule EbbServer.Storage.SystemComponent do
   end
 
   @doc "Whether a row carries `kind` at all (a present component with any value)."
-  @spec present?(map() | nil, kind()) :: boolean()
-  def present?(data, kind), do: component_data(data, kind) != nil
+  @spec carries?(map() | nil, kind()) :: boolean()
+  def carries?(data, kind), do: component_data(data, kind) != nil
 
   # A raw Update carries the component's value; a row record nests it.
   defp component_data(%{field: field, data: data}, kind) when is_binary(field) do

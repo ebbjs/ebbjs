@@ -11,7 +11,7 @@ defmodule EbbServer.Sync.CatchUpTest do
     ActionFormat,
     ActionLog,
     EntityStore,
-    GroupCache,
+    GrantCache,
     RocksDB,
     WatermarkTracker
   }
@@ -446,7 +446,7 @@ defmodule EbbServer.Sync.CatchUpTest do
   # group's rows directly and need the frontier left where they put it.
   defp join_group(actor_id, group_id) do
     :ok =
-      GroupCache.put_group_member(%{
+      GrantCache.put_grant(%{
         id: "gm_#{Nanoid.generate()}",
         actor_id: actor_id,
         group_id: group_id,

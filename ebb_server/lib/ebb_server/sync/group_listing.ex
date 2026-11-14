@@ -36,7 +36,7 @@ defmodule EbbServer.Sync.GroupListing do
   The SQLite read model is materialized lazily and `DirtyTracker` marks are
   in-memory only. Boot repairs the gap that leaves: the cache rebuild
   re-marks every modeled row in the derived component index dirty (#564), so the
-  first read or per-type query after a restart replays the row's delta. This module still
+  first read or per-model query after a restart replays the row's delta. This module still
   materializes the group's dirty system rows before paging and **every**
   returned row unconditionally as it is read. A seeded row that is stale at
   `W` would be stale forever, because the tail never revisits it, and that
@@ -46,8 +46,8 @@ defmodule EbbServer.Sync.GroupListing do
 
   Keyset, never `OFFSET`. Phase 0 is the bounded prefix — the `ebb/group`
   row, then its `ebb/grant` rows keyed on `(actor_id, id)` through
-  `idx_entities_group_member`. Phase 1 pages the group's `ebb/membership`
-  rows by row id through `idx_entities_entity_group_page`, fetching the
+  `idx_entities_grant`. Phase 1 pages the group's `ebb/membership`
+  rows by row id through `idx_entities_membership_page`, fetching the
   named entities and the link rows of the page's sources.
 
   An `ebb/membership` row may name an entity that is also named by another
@@ -248,7 +248,7 @@ defmodule EbbServer.Sync.GroupListing do
 
   # Phase 0 — the bounded prefix. The group row is materialized
   # unconditionally: `group` has no eager boot populator, so it stays lazy
-  # like a user type and the listing's `W` guarantee must not rest on the
+  # like a user model and the listing's `W` guarantee must not rest on the
   # dirty mark being present.
   defp build_prefix(group_id, limit, :start, opts) do
     case fetch_group_row(group_id, opts) do
@@ -272,7 +272,7 @@ defmodule EbbServer.Sync.GroupListing do
   end
 
   defp build_prefix_members(group_id, limit, after_key, acc, opts) do
-    members = SQLite.list_group_members(group_id, after_key, limit + 1, sqlite_name(opts))
+    members = SQLite.list_grants(group_id, after_key, limit + 1, sqlite_name(opts))
     {taken, rest} = Enum.split(members, limit)
     remaining = if(rest == [], do: limit - length(taken), else: 0)
 
@@ -289,7 +289,7 @@ defmodule EbbServer.Sync.GroupListing do
 
   defp build_membership_page(group_id, limit, prefix, after_id, opts) do
     entries =
-      SQLite.list_entity_group_memberships(group_id, after_id, limit + 1, sqlite_name(opts))
+      SQLite.list_memberships(group_id, after_id, limit + 1, sqlite_name(opts))
 
     {taken, rest} = Enum.split(entries, limit)
 
@@ -386,7 +386,7 @@ defmodule EbbServer.Sync.GroupListing do
   defp fetch_group_row(group_id, opts) do
     case EntityStore.materialize(group_id, opts) do
       {:ok, row} ->
-        if SystemComponent.present?(row.data, :group), do: {:ok, row}, else: {:ok, nil}
+        if SystemComponent.carries?(row.data, :group), do: {:ok, row}, else: {:ok, nil}
 
       :not_found ->
         {:ok, nil}
@@ -446,7 +446,7 @@ defmodule EbbServer.Sync.GroupListing do
   # A row is the kind it carries; a model test would accept a link for a grant.
   defp typed_row(by_id, id, kind) do
     case Map.fetch(by_id, id) do
-      {:ok, row} -> if SystemComponent.present?(row.data, kind), do: [row], else: []
+      {:ok, row} -> if SystemComponent.carries?(row.data, kind), do: [row], else: []
       :error -> []
     end
   end
@@ -459,12 +459,12 @@ defmodule EbbServer.Sync.GroupListing do
   end
 
   defp rows_after?(group_id, {:members, actor_id, id}, opts) do
-    SQLite.list_group_members(group_id, after_pair(actor_id, id), 1, sqlite_name(opts)) != [] or
-      SQLite.list_entity_group_memberships(group_id, nil, 1, sqlite_name(opts)) != []
+    SQLite.list_grants(group_id, after_pair(actor_id, id), 1, sqlite_name(opts)) != [] or
+      SQLite.list_memberships(group_id, nil, 1, sqlite_name(opts)) != []
   end
 
   defp rows_after?(group_id, {:memberships, after_id}, opts) do
-    SQLite.list_entity_group_memberships(group_id, after_id, 1, sqlite_name(opts)) != []
+    SQLite.list_memberships(group_id, after_id, 1, sqlite_name(opts)) != []
   end
 
   defp decode_row(%{data: data} = row) when is_binary(data),

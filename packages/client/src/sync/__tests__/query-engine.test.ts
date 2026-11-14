@@ -90,7 +90,7 @@ const ids = (rows: readonly { readonly id: string }[]): readonly string[] =>
 /** The wire entity a direct `storage.entities.set` writes — shim-only. */
 const shimIssue = (id: string, title: string): Entity => ({
   id,
-  type: "issue",
+  model: "issue",
   data: { fields: { title: field(title, `u_${id}`), status: field("open", `u_${id}`) } },
   exists: true,
   created_hlc: "1",
@@ -160,7 +160,7 @@ describe("client.<entity>.query() — replica read path", () => {
 
     const byRelationship = vi.spyOn(client.storage.entities, "queryByRelationship");
     const byMembership = vi.spyOn(client.storage.entities, "queryByMembership");
-    const byType = vi.spyOn(client.storage.entities, "query");
+    const byModel = vi.spyOn(client.storage.entities, "query");
     const replicaRelationships = vi.spyOn(client.replica, "relationships");
     const replicaIterate = vi.spyOn(client.replica, "iterate");
 
@@ -175,7 +175,7 @@ describe("client.<entity>.query() — replica read path", () => {
     expect(replicaIterate).not.toHaveBeenCalled();
     expect(byRelationship).not.toHaveBeenCalled();
     expect(byMembership).not.toHaveBeenCalled();
-    expect(byType).not.toHaveBeenCalled();
+    expect(byModel).not.toHaveBeenCalled();
   });
 
   it("reflects a replica change on the next await (delete through the funnel)", async () => {

@@ -5,7 +5,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
   A committed, applied Action that changes an actor's group view pushes
   `event: control` with `{"groups_changed": true, "reason": "membership"}`
   to every live connection of every affected actor. The event carries no
-  delta: the client re-handshakes, which reads `GroupCache`. These tests
+  delta: the client re-handshakes, which reads `GrantCache`. These tests
   drive the real Writer and fan-out, so the event's arrival also pins the
   post-apply ordering — a control that raced ahead of the cache write
   would let a client handshake into the old state.
@@ -18,7 +18,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
 
   alias EbbServer.Integration.ActionHelpers
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
   alias EbbServer.Sync.{FanOutRouter, SSEConnection}
 
   @control %{"groups_changed" => true, "reason" => "membership"}
@@ -164,7 +164,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       {:ok, old_conn} = subscribe_as(:old, group_id, old_actor)
       {:ok, new_conn} = subscribe_as(:new, group_id, new_actor)
 
-      # The same row id now names the new actor; GroupCache drops the
+      # The same row id now names the new actor; GrantCache drops the
       # stale row, so the old actor's group view changed too.
       put_member!(owner_id, group_id, new_actor, ["todo.read"], gm_id)
 
@@ -227,7 +227,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
   end
 
   describe "unaffected writes" do
-    test "an Action that touches no groupMember pushes no control event" do
+    test "an Action that touches no grant pushes no control event" do
       actor_id = unique("a")
       group_id = unique("g")
       bootstrap!(actor_id, group_id, ["todo.*", "ebb/grant.*"], unique("gm"))
@@ -276,9 +276,9 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       put_member!(owner_id, group_id, member_id, ["todo.read"], unique("gm"))
 
       assert_receive {:member, :control, _payload}, 5_000
-      # The event is a wake-up for a handshake that reads GroupCache, so
+      # The event is a wake-up for a handshake that reads GrantCache, so
       # it must never arrive before the membership is visible.
-      assert GroupCache.get_permissions(member_id, group_id) == ["todo.read"]
+      assert GrantCache.get_permissions(member_id, group_id) == ["todo.read"]
 
       # The range's data frames reach the same connection in the same
       # release; SSE is a stream, so their arrival is asserted, not their

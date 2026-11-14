@@ -2,7 +2,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   @moduledoc """
   Regression tests for #251.
 
-  An `entityGroup` or `groupMember` delete is indexed into
+  An `membership` or `grant` delete is indexed into
   `cf_group_actions` from the *pre-update* cache, so catch-up delivers
   it. The FanOutRouter used to re-resolve the Action's groups from the
   *post-update* cache at dispatch time: by then the by-id entry is gone
@@ -24,12 +24,12 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   alias EbbServer.SSEHelpers
 
   describe "delete fan-out uses the commit snapshot (#251)" do
-    test "entityGroup delete reaches live subscribers and cf_group_actions" do
+    test "membership delete reaches live subscribers and cf_group_actions" do
       %{actor_id: actor_id, group_id: group_id, eg_id: eg_id} = setup_membership()
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
-      delete = entity_group_delete_action(actor_id, eg_id)
+      delete = membership_delete_action(actor_id, eg_id)
       :ok = post!(delete, actor_id)
 
       pushed = assert_pushed(group_id, actor_id, eg_id)
@@ -38,16 +38,16 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       :ok = FanOutRouter.unsubscribe(sse_pid)
     end
 
-    test "groupMember delete reaches live subscribers and cf_group_actions" do
+    test "grant delete reaches live subscribers and cf_group_actions" do
       %{actor_id: actor_id, group_id: group_id} = setup_membership()
 
       member_actor_id = "a_251_member_#{:erlang.unique_integer([:positive])}"
       gm_id = "gm_251_#{:erlang.unique_integer([:positive])}"
-      :ok = post!(group_member_put_action(actor_id, member_actor_id, gm_id, group_id), actor_id)
+      :ok = post!(grant_put_action(actor_id, member_actor_id, gm_id, group_id), actor_id)
 
       {:ok, sse_pid} = subscribe(group_id, actor_id)
 
-      delete = group_member_delete_action(actor_id, gm_id)
+      delete = grant_delete_action(actor_id, gm_id)
       :ok = post!(delete, actor_id)
 
       pushed = assert_pushed(group_id, actor_id, gm_id)
@@ -166,8 +166,8 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
             "data" => %{"type" => "lww", "value" => "Snapshot", "hlc" => hlc}
           }
         ] ++
-          entity_group_update(eg_id, todo_id, group_id, "replace", hlc) ++
-          entity_group_update(eg_other_id, todo_id, other_group_id, "replace", hlc)
+          membership_update(eg_id, todo_id, group_id, "replace", hlc) ++
+          membership_update(eg_other_id, todo_id, other_group_id, "replace", hlc)
     }
 
     :ok = post!(action, actor_id)
@@ -175,16 +175,16 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     %{actor_id: actor_id, group_id: group_id, todo_id: todo_id, eg_id: eg_id}
   end
 
-  defp entity_group_delete_action(actor_id, eg_id) do
+  defp membership_delete_action(actor_id, eg_id) do
     %{
       "id" => "act_251_del_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
       "hlc" => TestHelpers.generate_hlc(),
-      "updates" => entity_group_update(eg_id, nil, nil, "delete", TestHelpers.generate_hlc())
+      "updates" => membership_update(eg_id, nil, nil, "delete", TestHelpers.generate_hlc())
     }
   end
 
-  defp group_member_put_action(actor_id, member_actor_id, gm_id, group_id) do
+  defp grant_put_action(actor_id, member_actor_id, gm_id, group_id) do
     hlc = TestHelpers.generate_hlc()
 
     %{
@@ -195,7 +195,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
         component_updates(
           gm_id,
           gm_id,
-          "groupMember",
+          "grant",
           "replace",
           %{
             "actor_id" => member_actor_id,
@@ -207,7 +207,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     }
   end
 
-  defp group_member_delete_action(actor_id, gm_id) do
+  defp grant_delete_action(actor_id, gm_id) do
     %{
       "id" => "act_251_gm_del_#{:erlang.unique_integer([:positive])}",
       "actor_id" => actor_id,
@@ -223,7 +223,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     }
   end
 
-  defp entity_group_update(eg_id, entity_id, group_id, method, hlc) do
+  defp membership_update(eg_id, entity_id, group_id, method, hlc) do
     if method == "delete" do
       [
         %{
@@ -237,7 +237,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       component_updates(
         eg_id,
         eg_id,
-        "entityGroup",
+        "membership",
         "replace",
         %{
           "entity_id" => entity_id,
@@ -251,8 +251,8 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   # A platform row is one atomic component whose value is the whole object.
   @system_components %{
     "group" => "ebb/group",
-    "groupMember" => "ebb/grant",
-    "entityGroup" => "ebb/membership",
+    "grant" => "ebb/grant",
+    "membership" => "ebb/membership",
     "relationship" => "ebb/link"
   }
 

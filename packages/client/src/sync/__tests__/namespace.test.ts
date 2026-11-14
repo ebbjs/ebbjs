@@ -33,9 +33,9 @@ const schema = defineSchema({
   version: 1,
 });
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
@@ -118,7 +118,7 @@ describe("client.<entity>.query()", () => {
     );
 
     const out = await client.todo.query().where("completed", false).toRaw();
-    expect(out[0]?.type).toBe("todo");
+    expect(out[0]?.model).toBe("todo");
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
   });
 
@@ -376,7 +376,7 @@ const mkRelEntity = (
 ): Entity => platformEntity(id, "link", { source_id: sourceId, target_id: targetId, type, field });
 
 /** Materialize one `ebb/membership` row into the local cache. */
-const mkEntityGroup = (id: string, entityId: string, groupId: string): Entity =>
+const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
   platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 /**
@@ -415,7 +415,7 @@ const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise
 /**
  * `todo` carries an `owner` FIELD alongside an `owner` RELATIONSHIP so
  * the collision test can prove the relationship wins. `document`
- * exercises built-in `groups` membership, answered from `entityGroup`
+ * exercises built-in `groups` membership, answered from `membership`
  * rows rather than a declared relationship.
  */
 const whereTodo = defineModel("todo", {
@@ -478,16 +478,16 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d2", "g2"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d2", "g2"));
     const out = await client.document.query().where("groups", "g1");
     expect(out.map((r) => r.title)).toEqual(["one"]);
   });
 
-  it('where("groups", groupId) does not scan entityGroup (uses the membership index)', async () => {
+  it('where("groups", groupId) does not scan membership (uses the membership index)', async () => {
     const { storage, client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
     const querySpy = vi.spyOn(storage.entities, "query");
     const membershipSpy = vi.spyOn(client.replica, "memberships");
 
@@ -502,9 +502,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { storage, client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d1", "g2"));
-    await seed(mkEntityGroup("eg3", "d2", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d1", "g2"));
+    await seed(mkMembership("eg3", "d2", "g1"));
     const querySpy = vi.spyOn(storage.entities, "query");
     const membershipSpy = vi.spyOn(client.replica, "memberships");
 
@@ -514,7 +514,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
       { title: "one", groupIds: ["g1", "g2"] },
       { title: "two", groupIds: ["g1"] },
     ]);
-    // One entity-keyed index lookup per projected row, no entityGroup scan.
+    // One entity-keyed index lookup per projected row, no membership scan.
     expect(membershipSpy.mock.calls).toEqual([[{ entityId: "d1" }], [{ entityId: "d2" }]]);
     expect(querySpy).not.toHaveBeenCalled();
   });
@@ -529,16 +529,16 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
   it(".first() carries groupIds", async () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
     const row = await client.document.query().first();
     expect(row?.groupIds).toEqual(["g1"]);
   });
 
-  it("a tombstoned entityGroup row is not in groupIds", async () => {
+  it("a tombstoned membership row is not in groupIds", async () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed({ ...mkEntityGroup("eg1", "d1", "g1"), deleted_hlc: "2" });
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed({ ...mkMembership("eg1", "d1", "g1"), deleted_hlc: "2" });
     const [row] = await client.document.query();
     expect(row?.groupIds).toEqual([]);
   });
@@ -548,19 +548,19 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
     await seed(mkEntity("d3", "document", { title: "three" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d2", "g2"));
-    await seed(mkEntityGroup("eg3", "d3", "g3"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d2", "g2"));
+    await seed(mkMembership("eg3", "d3", "g3"));
     const out = await client.document.query().where("groups", ["g1", "g3"]);
     expect(out.map((r) => r.title).sort()).toEqual(["one", "three"]);
   });
 
-  it("a tombstoned entityGroup row is not a membership", async () => {
+  it("a tombstoned membership row is not a membership", async () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
     expect(await client.document.query().where("groups", "g1")).toHaveLength(1);
-    await seed({ ...mkEntityGroup("eg1", "d1", "g1"), deleted_hlc: "2" });
+    await seed({ ...mkMembership("eg1", "d1", "g1"), deleted_hlc: "2" });
     expect(await client.document.query().where("groups", "g1")).toEqual([]);
   });
 
@@ -568,7 +568,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { storage, client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("grp1", "group", { name: "team" }));
-    await seed(mkEntityGroup("eg1", "d1", "grp1"));
+    await seed(mkMembership("eg1", "d1", "grp1"));
     const byHandle = await client.document.query().where("groups", { id: "grp1" });
     expect(byHandle.map((r) => r.title)).toEqual(["one"]);
     const handle = await storage.entities.get("grp1");
@@ -580,7 +580,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
   it("a null / undefined / empty membership target matches nothing", async () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
     expect(await client.document.query().where("groups", null)).toEqual([]);
     expect(await client.document.query().where("groups", undefined)).toEqual([]);
     expect(await client.document.query().where("groups", [])).toEqual([]);
@@ -590,8 +590,8 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d2", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d2", "g1"));
     const out = await client.document.query().where("groups", "g1").where("title", "one");
     expect(out.map((r) => r.title)).toEqual(["one"]);
   });
@@ -600,8 +600,8 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { client, seed } = await buildClient();
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
-    await seed(mkEntityGroup("eg1", "t1", "g1"));
-    await seed(mkEntityGroup("eg2", "t2", "g1"));
+    await seed(mkMembership("eg1", "t1", "g1"));
+    await seed(mkMembership("eg2", "t2", "g1"));
     await seed(mkRelEntity("r1", "t1", "l1", "list", "todo"));
     const out = await client.todo.query().where("groups", "g1").where("list", "l1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
@@ -611,9 +611,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { client, seed } = await buildClient();
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d1", "g2"));
-    await seed(mkEntityGroup("eg3", "d2", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d1", "g2"));
+    await seed(mkMembership("eg3", "d2", "g1"));
     const out = await client.document.query().where("groups", "g1").where("groups", "g2");
     expect(out.map((r) => r.title)).toEqual(["one"]);
   });
@@ -699,7 +699,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t2", "b"));
     await seed(todo("t3", "c"));
     await seed(mkRelEntity("r1", "t1", "l1", "list", "todo"));
-    await seed(mkEntityGroup("eg1", "t2", "g1"));
+    await seed(mkMembership("eg1", "t2", "g1"));
     const out = await client.todo.query().where("list", "l1").or("groups", "g1");
     expect(out.map((r) => r.title).sort()).toEqual(["a", "b"]);
   });
@@ -709,7 +709,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
     await seed(mkEntity("d3", "document", { title: "three" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
     // d1 is in g1 AND matches the field branch: it must appear once.
     const out = await client.document.query().where("title", "one").or("groups", "g1");
     expect(out.map((r) => r.title)).toEqual(["one"]);
@@ -745,8 +745,8 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(mkEntity("d1", "document", { title: "one" }));
     await seed(mkEntity("d2", "document", { title: "two" }));
     await seed(mkEntity("d3", "document", { title: "three" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d2", "g2"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d2", "g2"));
     const out = await client.document.query().or("groups", ["g1", "g2"]);
     expect(out.map((r) => r.title).sort()).toEqual(["one", "two"]);
   });
@@ -807,9 +807,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(mkEntity("d1", "document", { title: "b" }));
     await seed(mkEntity("d2", "document", { title: "a" }));
     await seed(mkEntity("d3", "document", { title: "c" }));
-    await seed(mkEntityGroup("eg1", "d1", "g1"));
-    await seed(mkEntityGroup("eg2", "d2", "g1"));
-    await seed(mkEntityGroup("eg3", "d3", "g1"));
+    await seed(mkMembership("eg1", "d1", "g1"));
+    await seed(mkMembership("eg2", "d2", "g1"));
+    await seed(mkMembership("eg3", "d3", "g1"));
     const out = await client.document
       .query()
       .where("groups", "g1")
@@ -858,7 +858,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     await storage.entities.set(mkEntity("g1", "group", { name: "G" }));
     await storage.entities.set(mkRelEntity("rel-a", "t1", "lbl-a", "tags", "todo"));
     await storage.entities.set(mkRelEntity("rel-parent", "t1", "l1", "parentList", "todo"));
-    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
+    await storage.entities.set(mkMembership("eg-1", "t1", "g1"));
 
     const client = createClient({
       serverUrl: "http://x",
@@ -915,7 +915,7 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const ownerPromise: Promise<Entity | null | undefined> = row.owner;
     const owner: Entity | null | undefined = await ownerPromise;
     expect(owner?.id).toBe("u1");
-    expect(owner?.type).toBe("user");
+    expect(owner?.model).toBe("user");
   });
 
   it("forward-one accessor returns null when no Relationship edge exists", async () => {
@@ -1173,7 +1173,7 @@ describe("doc.groups — built-in membership accessor", () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(mkEntity("t1", "todo", { title: "Ship", completed: false }));
     await storage.entities.set(platformEntity("g1", "group", { name: "Demo" }));
-    await storage.entities.set(mkEntityGroup("eg-1", "t1", "g1"));
+    await storage.entities.set(mkMembership("eg-1", "t1", "g1"));
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",

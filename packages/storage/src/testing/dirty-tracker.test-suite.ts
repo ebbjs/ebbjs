@@ -28,7 +28,7 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
         const tracker = await factory();
         await tracker.mark("todo_1", "todo");
         await tracker.mark("todo_1", "todo");
-        const dirty = await tracker.getDirtyForType("todo");
+        const dirty = await tracker.getDirtyForModel("todo");
         expect(dirty).toHaveLength(1);
       });
     });
@@ -41,13 +41,13 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
       });
     });
 
-    describe("getDirtyForType", () => {
+    describe("getDirtyForModel", () => {
       it("returns all dirty entities of a type", async () => {
         const tracker = await factory();
         await tracker.mark("todo_1", "todo");
         await tracker.mark("todo_2", "todo");
         await tracker.mark("doc_1", "document");
-        const dirty = await tracker.getDirtyForType("todo");
+        const dirty = await tracker.getDirtyForModel("todo");
         expect(dirty).toHaveLength(2);
         expect(dirty).toContain("todo_1");
         expect(dirty).toContain("todo_2");
@@ -55,7 +55,7 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
 
       it("returns empty array for unknown type", async () => {
         const tracker = await factory();
-        const dirty = await tracker.getDirtyForType("unknown");
+        const dirty = await tracker.getDirtyForModel("unknown");
         expect(dirty).toEqual([]);
       });
     });
@@ -68,11 +68,11 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
         expect(await tracker.isDirty("todo_1")).toBe(false);
       });
 
-      it("removes entity from type index", async () => {
+      it("removes entity from model index", async () => {
         const tracker = await factory();
         await tracker.mark("todo_1", "todo");
         await tracker.clear("todo_1");
-        const dirty = await tracker.getDirtyForType("todo");
+        const dirty = await tracker.getDirtyForModel("todo");
         expect(dirty).toEqual([]);
       });
 
@@ -91,7 +91,7 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
         await tracker.clearAll();
         expect(await tracker.isDirty("todo_1")).toBe(false);
         expect(await tracker.isDirty("todo_2")).toBe(false);
-        expect(await tracker.getDirtyForType("todo")).toEqual([]);
+        expect(await tracker.getDirtyForModel("todo")).toEqual([]);
       });
     });
   });

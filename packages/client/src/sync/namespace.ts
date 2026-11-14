@@ -534,7 +534,7 @@ function buildRowAccessors(
   const out: Record<string, RowAccessor> = {};
   const readLocalEntity = (id: string): Promise<Entity | null> => storage.entities.get(id);
   // Traversals read the adjacency index rather than scanning the
-  // `relationship` / `entityGroup` type, so their cost tracks the
+  // `relationship` / `membership` type, so their cost tracks the
   // source row's degree. The replica owns the index once supplied;
   // otherwise the storage adapter's async index stays the default.
   const adjacency: AdjacencyReader =
@@ -671,7 +671,7 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
 ): (() => void) => {
   if (watcher === null) return () => {};
   const fire = (row: Entity | undefined): void => {
-    if (row === undefined || row.type !== entityName) return;
+    if (row === undefined || row.model !== entityName) return;
     const visible = visibleRow(row, view);
     if (visible === null) return;
     // SAFETY: the view is the same row with the component's value as its
@@ -733,11 +733,11 @@ export function createEntityNamespace<
 
   /** Project one replica row and attach its accessors plus signal handles. */
   const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {
-    // Wrong-type reads (different `entity.type`) resolve to `null`
+    // Wrong-type reads (different `entity.model`) resolve to `null`
     // alongside unknown ids. Callers don't distinguish — a missing
     // row and a wrong-type row are both "no row here". A value namespace
     // adds "does not carry my component" to that list.
-    if (entity.type !== entityName) return null;
+    if (entity.model !== entityName) return null;
     const row = visibleRow(entity, view);
     if (row === null) return null;
     const accessors = buildRowAccessors(
@@ -821,7 +821,7 @@ export function createEntityNamespace<
       // opened here, including one the replica has never seen and one whose
       // current value is only an unacknowledged overlay write.
       for (const field of Object.keys(entity.data.fields)) {
-        const component = componentName(entity.type, field);
+        const component = componentName(entity.model, field);
         if (!replica.replica.isHeld(component)) await replica.replica.open(id, component);
       }
       return buildRow(replica.replica.get(id) ?? entity);
@@ -852,7 +852,7 @@ export function createEntityNamespace<
           return executePlan(planQuery(query), executor, (entity, field) =>
             projectedFieldValue(entity, field, shape, read.migrations),
           )
-            .filter((row) => row.type === entityName)
+            .filter((row) => row.model === entityName)
             .map((row) => row.id);
         },
       });

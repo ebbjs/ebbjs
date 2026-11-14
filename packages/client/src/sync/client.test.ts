@@ -647,7 +647,7 @@ describe("SyncClient.getEntity and queryEntities", () => {
       {
         body: JSON.stringify({
           id: "todo_1",
-          type: "todo",
+          model: "todo",
           data: { fields: { title: { value: "Hi", update_id: "u_1", hlc: "1" } } },
           created_hlc: "1",
           updated_hlc: "1",
@@ -663,7 +663,7 @@ describe("SyncClient.getEntity and queryEntities", () => {
     });
     const entity = await client.getEntity("todo_1");
     expect(entity?.id).toBe("todo_1");
-    expect(entity?.type).toBe("todo");
+    expect(entity?.model).toBe("todo");
     expect(calls[0].url).toContain("/entities/todo_1");
     expect(calls[0].url).not.toContain("actor_id=");
   });
@@ -678,13 +678,13 @@ describe("SyncClient.getEntity and queryEntities", () => {
     expect(await client.getEntity("missing")).toBeNull();
   });
 
-  it("queries entities by type", async () => {
+  it("queries entities by model", async () => {
     const { fn, calls } = makeFetchMock([
       {
         body: JSON.stringify([
           {
             id: "todo_1",
-            type: "todo",
+            model: "todo",
             data: { fields: {} },
             created_hlc: "1",
             updated_hlc: "1",
@@ -702,7 +702,7 @@ describe("SyncClient.getEntity and queryEntities", () => {
     const list = await client.queryEntities("todo", { limit: 10, offset: 0 });
     expect(list).toHaveLength(1);
     const body = JSON.parse(calls[0].init.body as string);
-    expect(body).toEqual({ type: "todo", filter: undefined, limit: 10, offset: 0 });
+    expect(body).toEqual({ model: "todo", filter: undefined, limit: 10, offset: 0 });
   });
 });
 
@@ -932,7 +932,7 @@ describe("SyncClient.queryEntities with ModelRegistry (#143)", () => {
         body: JSON.stringify([
           {
             id: "todo_1",
-            type: "todo",
+            model: "todo",
             data: { fields: {} },
             created_hlc: "1",
             updated_hlc: "1",
@@ -1112,13 +1112,10 @@ describe("SyncClient._applyAction incoming validation (#143)", () => {
     client: ReturnType<typeof createClient>,
     action: Action,
     groupId?: string,
-  ): Promise<{ entityId: string; entityType: string }[]> =>
+  ): Promise<{ entityId: string; model: string }[]> =>
     (
       client as unknown as {
-        _applyAction: (
-          a: Action,
-          g?: string,
-        ) => Promise<{ entityId: string; entityType: string }[]>;
+        _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; model: string }[]>;
       }
     )._applyAction.call(client, action, groupId);
 
@@ -1203,13 +1200,10 @@ describe("SyncClient.onRegistryViolation hook", () => {
     client: ReturnType<typeof createClient>,
     action: Action,
     groupId?: string,
-  ): Promise<{ entityId: string; entityType: string }[]> =>
+  ): Promise<{ entityId: string; model: string }[]> =>
     (
       client as unknown as {
-        _applyAction: (
-          a: Action,
-          g?: string,
-        ) => Promise<{ entityId: string; entityType: string }[]>;
+        _applyAction: (a: Action, g?: string) => Promise<{ entityId: string; model: string }[]>;
       }
     )._applyAction.call(client, action, groupId);
 
@@ -1622,7 +1616,7 @@ describe("app scope (#732)", () => {
       calls: { init: RequestInit }[],
       groups: { id: string; name: string; apps?: readonly string[] }[],
     ): Promise<Action> => {
-      await client.seed({ groups, groupMembers: [], entities: [] });
+      await client.seed({ groups, grants: [], entities: [] });
       const body = calls[0]!.init.body as Uint8Array;
       return decodeSync<{ actions: Action[] }>(body).actions[0]!;
     };

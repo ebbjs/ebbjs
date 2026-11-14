@@ -37,7 +37,7 @@ const wire = (opts: {
   lastGsn: number;
 }): EntityResponse => ({
   id: opts.id,
-  type: opts.type,
+  model: opts.type,
   data: {
     fields: Object.fromEntries(
       Object.entries(opts.fields).map(([key, value]) => [
@@ -130,7 +130,7 @@ const mkServer = (opts: ServerOptions = {}) => {
         groups: state.groups.map((id) => ({
           id,
           apps: null,
-          permissions: ["blog_post.*", "entityGroup.*"],
+          permissions: ["blog_post.*", "membership.*"],
           cursor_valid: true,
           reason: null,
           cursor: opts.cursor ?? 0,

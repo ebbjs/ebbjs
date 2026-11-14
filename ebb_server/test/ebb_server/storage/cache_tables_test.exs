@@ -2,9 +2,9 @@ defmodule EbbServer.Storage.CacheTablesTest do
   @moduledoc """
   Tests the single resolution surface for cache module table names.
 
-  GroupCache and RelationshipCache publish their ETS table names via
+  GrantCache and RelationshipCache publish their ETS table names via
   `:persistent_term` at boot. `CacheTables` exposes those names as
-  accessor functions so callers (Writer, EntityIndex, etc.) read from
+  accessor functions so callers (Writer, EntityScope, etc.) read from
   one place rather than duplicating the `:persistent_term.get(..., default)`
   pattern.
 
@@ -19,16 +19,16 @@ defmodule EbbServer.Storage.CacheTablesTest do
 
   alias EbbServer.Storage.{
     CacheTables,
-    EntityGroupCache,
-    EntityTypeCache,
+    MembershipCache,
+    EntityModelCache,
     GroupAppsCache,
-    GroupCache,
+    GrantCache,
     RelationshipCache
   }
 
   # Erase the published keys before any test in this module runs so a
   # prior test's leftover `:persistent_term` (e.g., from
-  # `entity_index_test.exs`, which starts RelationshipCache/GroupCache
+  # `entity_index_test.exs`, which starts RelationshipCache/GrantCache
   # in-process and only cleans up the ETS tables) doesn't make the
   # "no publication yet" assertions fail. The test was order-dependent
   # on `mix test` ExUnit scheduling — see #197 follow-up.
@@ -36,13 +36,13 @@ defmodule EbbServer.Storage.CacheTablesTest do
     for {module, key} <- [
           {RelationshipCache, :relationships},
           {RelationshipCache, :relationships_by_id},
-          {GroupCache, :group_members},
-          {GroupCache, :group_members_by_id},
-          {GroupCache, :group_members_by_group},
-          {EntityGroupCache, :entity_groups},
-          {EntityGroupCache, :entity_groups_by_id},
-          {EntityGroupCache, :entity_groups_by_group},
-          {EntityTypeCache, :entity_types},
+          {GrantCache, :grants},
+          {GrantCache, :grants_by_id},
+          {GrantCache, :grants_by_group},
+          {MembershipCache, :memberships},
+          {MembershipCache, :memberships_by_id},
+          {MembershipCache, :memberships_by_group},
+          {EntityModelCache, :entity_models},
           {GroupAppsCache, :group_apps}
         ] do
       try do
@@ -72,94 +72,94 @@ defmodule EbbServer.Storage.CacheTablesTest do
     value
   end
 
-  describe "group_members/0" do
-    test "returns the canonical default when GroupCache has not published" do
-      assert CacheTables.group_members() == :ebb_group_members
+  describe "grants/0" do
+    test "returns the canonical default when GrantCache has not published" do
+      assert CacheTables.grants() == :ebb_grants
     end
 
-    test "returns whatever GroupCache published" do
+    test "returns whatever GrantCache published" do
       name = :"gm_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.GroupCache, :group_members, name)
+      publish_and_cleanup(EbbServer.Storage.GrantCache, :grants, name)
 
-      assert CacheTables.group_members() == name
+      assert CacheTables.grants() == name
     end
   end
 
-  describe "group_members_by_id/0" do
-    test "returns the canonical default when GroupCache has not published" do
-      assert CacheTables.group_members_by_id() == :ebb_group_members_by_id
+  describe "grants_by_id/0" do
+    test "returns the canonical default when GrantCache has not published" do
+      assert CacheTables.grants_by_id() == :ebb_grants_by_id
     end
 
-    test "returns whatever GroupCache published" do
+    test "returns whatever GrantCache published" do
       name = :"gm_by_id_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.GroupCache, :group_members_by_id, name)
+      publish_and_cleanup(EbbServer.Storage.GrantCache, :grants_by_id, name)
 
-      assert CacheTables.group_members_by_id() == name
+      assert CacheTables.grants_by_id() == name
     end
   end
 
-  describe "group_members_by_group/0" do
-    test "returns the canonical default when GroupCache has not published" do
-      assert CacheTables.group_members_by_group() == :ebb_group_members_by_group
+  describe "grants_by_group/0" do
+    test "returns the canonical default when GrantCache has not published" do
+      assert CacheTables.grants_by_group() == :ebb_grants_by_group
     end
 
-    test "returns whatever GroupCache published" do
+    test "returns whatever GrantCache published" do
       name = :"gm_by_group_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.GroupCache, :group_members_by_group, name)
+      publish_and_cleanup(EbbServer.Storage.GrantCache, :grants_by_group, name)
 
-      assert CacheTables.group_members_by_group() == name
+      assert CacheTables.grants_by_group() == name
     end
   end
 
-  describe "entity_groups/0" do
-    test "returns the canonical default when EntityGroupCache has not published" do
-      assert CacheTables.entity_groups() == :ebb_entity_groups
+  describe "memberships/0" do
+    test "returns the canonical default when MembershipCache has not published" do
+      assert CacheTables.memberships() == :ebb_memberships
     end
 
-    test "returns whatever EntityGroupCache published" do
+    test "returns whatever MembershipCache published" do
       name = :"eg_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EntityGroupCache, :entity_groups, name)
+      publish_and_cleanup(MembershipCache, :memberships, name)
 
-      assert CacheTables.entity_groups() == name
+      assert CacheTables.memberships() == name
     end
   end
 
-  describe "entity_groups_by_id/0" do
-    test "returns the canonical default when EntityGroupCache has not published" do
-      assert CacheTables.entity_groups_by_id() == :ebb_entity_groups_by_id
+  describe "memberships_by_id/0" do
+    test "returns the canonical default when MembershipCache has not published" do
+      assert CacheTables.memberships_by_id() == :ebb_memberships_by_id
     end
 
-    test "returns whatever EntityGroupCache published" do
+    test "returns whatever MembershipCache published" do
       name = :"eg_by_id_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EntityGroupCache, :entity_groups_by_id, name)
+      publish_and_cleanup(MembershipCache, :memberships_by_id, name)
 
-      assert CacheTables.entity_groups_by_id() == name
+      assert CacheTables.memberships_by_id() == name
     end
   end
 
-  describe "entity_groups_by_group/0" do
-    test "returns the canonical default when EntityGroupCache has not published" do
-      assert CacheTables.entity_groups_by_group() == :ebb_entity_groups_by_group
+  describe "memberships_by_group/0" do
+    test "returns the canonical default when MembershipCache has not published" do
+      assert CacheTables.memberships_by_group() == :ebb_memberships_by_group
     end
 
-    test "returns whatever EntityGroupCache published" do
+    test "returns whatever MembershipCache published" do
       name = :"eg_by_group_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EntityGroupCache, :entity_groups_by_group, name)
+      publish_and_cleanup(MembershipCache, :memberships_by_group, name)
 
-      assert CacheTables.entity_groups_by_group() == name
+      assert CacheTables.memberships_by_group() == name
     end
   end
 
-  describe "entity_types/0" do
-    test "returns the canonical default when EntityTypeCache has not published" do
-      assert CacheTables.entity_types() == :ebb_entity_types
+  describe "entity_models/0" do
+    test "returns the canonical default when EntityModelCache has not published" do
+      assert CacheTables.entity_models() == :ebb_entity_models
     end
 
-    test "returns whatever EntityTypeCache published" do
+    test "returns whatever EntityModelCache published" do
       name = :"et_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EntityTypeCache, :entity_types, name)
+      publish_and_cleanup(EntityModelCache, :entity_models, name)
 
-      assert CacheTables.entity_types() == name
+      assert CacheTables.entity_models() == name
     end
   end
 

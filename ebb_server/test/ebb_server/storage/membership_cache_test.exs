@@ -1,7 +1,7 @@
-defmodule EbbServer.Storage.EntityGroupCacheTest do
+defmodule EbbServer.Storage.MembershipCacheTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.EntityGroupCache
+  alias EbbServer.Storage.MembershipCache
 
   defp with_isolated_cache do
     table = :"test_eg_#{System.unique_integer([:positive])}"
@@ -10,18 +10,18 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
     cache_name = :"test_egc_#{System.unique_integer([:positive])}"
 
     {:ok, _pid} =
-      EntityGroupCache.start_link(
+      MembershipCache.start_link(
         name: cache_name,
-        entity_groups: table,
-        entity_groups_by_id: by_id,
-        entity_groups_by_group: by_group
+        memberships: table,
+        memberships_by_id: by_id,
+        memberships_by_group: by_group
       )
 
     on_exit(fn ->
-      EntityGroupCache.reset(
-        entity_groups: table,
-        entity_groups_by_id: by_id,
-        entity_groups_by_group: by_group
+      MembershipCache.reset(
+        memberships: table,
+        memberships_by_id: by_id,
+        memberships_by_group: by_group
       )
     end)
 
@@ -30,9 +30,9 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
 
   defp opts(cache) do
     [
-      entity_groups: cache.table,
-      entity_groups_by_id: cache.by_id,
-      entity_groups_by_group: cache.by_group
+      memberships: cache.table,
+      memberships_by_id: cache.by_id,
+      memberships_by_group: cache.by_group
     ]
   end
 
@@ -47,7 +47,7 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
       cache = with_isolated_cache()
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
           opts(cache)
         )
@@ -55,7 +55,7 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
       assert :ets.member(cache.by_group, {"g_1", "todo_1"})
       assert :ets.info(cache.by_group, :size) == 1
 
-      :ok = EntityGroupCache.delete_entity_group("eg_1", opts(cache))
+      :ok = MembershipCache.delete_membership("eg_1", opts(cache))
 
       refute :ets.member(cache.by_group, {"g_1", "todo_1"})
     end
@@ -68,61 +68,61 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
 
       for entity_id <- entity_ids do
         :ok =
-          EntityGroupCache.put_entity_group(
+          MembershipCache.put_membership(
             %{id: "eg_#{entity_id}", entity_id: entity_id, group_id: "g_1"},
             opts(cache)
           )
       end
 
-      assert EntityGroupCache.group_entities("g_1", cache.by_group)
+      assert MembershipCache.group_entities("g_1", cache.by_group)
              |> Enum.sort() == Enum.sort(entity_ids)
     end
 
     test "returns an empty list for a group with no members" do
       cache = with_isolated_cache()
 
-      assert EntityGroupCache.group_entities("g_empty", cache.by_group) == []
+      assert MembershipCache.group_entities("g_empty", cache.by_group) == []
     end
   end
 
-  describe "put_entity_group/2" do
+  describe "put_membership/2" do
     test "stores a membership entry addressable by entity, id, and group" do
       cache = with_isolated_cache()
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
           opts(cache)
         )
 
-      assert EntityGroupCache.entity_groups("todo_1", cache.table) == ["g_1"]
-      assert EntityGroupCache.get_entity_group("eg_1", cache.by_id).group_id == "g_1"
-      assert EntityGroupCache.group_entities("g_1", cache.by_group) == ["todo_1"]
+      assert MembershipCache.memberships("todo_1", cache.table) == ["g_1"]
+      assert MembershipCache.get_membership("eg_1", cache.by_id).group_id == "g_1"
+      assert MembershipCache.group_entities("g_1", cache.by_group) == ["todo_1"]
     end
 
     test "accepts string keys" do
       cache = with_isolated_cache()
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{"id" => "eg_1", "entity_id" => "todo_1", "group_id" => "g_1"},
           opts(cache)
         )
 
-      assert EntityGroupCache.entity_groups("todo_1", cache.table) == ["g_1"]
+      assert MembershipCache.memberships("todo_1", cache.table) == ["g_1"]
     end
 
     test "rejects nil values" do
       cache = with_isolated_cache()
 
       assert {:error, :nil_values_not_allowed} =
-               EntityGroupCache.put_entity_group(
+               MembershipCache.put_membership(
                  %{id: nil, entity_id: "todo_1", group_id: "g_1"},
                  opts(cache)
                )
 
       assert {:error, :nil_values_not_allowed} =
-               EntityGroupCache.put_entity_group(
+               MembershipCache.put_membership(
                  %{id: "eg_1", entity_id: nil, group_id: "g_1"},
                  opts(cache)
                )
@@ -132,19 +132,19 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
       cache = with_isolated_cache()
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
           opts(cache)
         )
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_1", entity_id: "todo_1", group_id: "g_2"},
           opts(cache)
         )
 
-      assert EntityGroupCache.entity_groups("todo_1", cache.table) == ["g_2"]
-      assert EntityGroupCache.group_entities("g_1", cache.by_group) == []
+      assert MembershipCache.memberships("todo_1", cache.table) == ["g_2"]
+      assert MembershipCache.group_entities("g_1", cache.by_group) == []
     end
 
     test "returns every group for a multi-membership entity" do
@@ -152,48 +152,48 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
 
       for {id, group} <- [{"eg_1", "g_1"}, {"eg_2", "g_2"}] do
         :ok =
-          EntityGroupCache.put_entity_group(
+          MembershipCache.put_membership(
             %{id: id, entity_id: "todo_1", group_id: group},
             opts(cache)
           )
       end
 
-      assert EntityGroupCache.entity_groups("todo_1", cache.table) |> Enum.sort() == [
+      assert MembershipCache.memberships("todo_1", cache.table) |> Enum.sort() == [
                "g_1",
                "g_2"
              ]
     end
   end
 
-  describe "get_entity_group/2" do
+  describe "get_membership/2" do
     test "returns nil for unknown id" do
       cache = with_isolated_cache()
 
-      assert EntityGroupCache.get_entity_group("unknown", cache.by_id) == nil
+      assert MembershipCache.get_membership("unknown", cache.by_id) == nil
     end
   end
 
-  describe "delete_entity_group/2" do
+  describe "delete_membership/2" do
     test "removes the membership from all tables" do
       cache = with_isolated_cache()
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
           opts(cache)
         )
 
-      :ok = EntityGroupCache.delete_entity_group("eg_1", opts(cache))
+      :ok = MembershipCache.delete_membership("eg_1", opts(cache))
 
-      assert EntityGroupCache.entity_groups("todo_1", cache.table) == []
-      assert EntityGroupCache.get_entity_group("eg_1", cache.by_id) == nil
-      assert EntityGroupCache.group_entities("g_1", cache.by_group) == []
+      assert MembershipCache.memberships("todo_1", cache.table) == []
+      assert MembershipCache.get_membership("eg_1", cache.by_id) == nil
+      assert MembershipCache.group_entities("g_1", cache.by_group) == []
     end
 
     test "is a no-op for an unknown id" do
       cache = with_isolated_cache()
 
-      assert :ok = EntityGroupCache.delete_entity_group("unknown", opts(cache))
+      assert :ok = MembershipCache.delete_membership("unknown", opts(cache))
     end
   end
 
@@ -203,21 +203,21 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
     test "an identical re-put never exposes an empty membership set" do
       cache = with_isolated_cache()
       entry = membership("g_1")
-      :ok = EntityGroupCache.put_entity_group(entry, opts(cache))
+      :ok = MembershipCache.put_membership(entry, opts(cache))
 
       assert_no_empty_membership_reads(cache, fn ->
-        EntityGroupCache.put_entity_group(entry, opts(cache))
+        MembershipCache.put_membership(entry, opts(cache))
       end)
     end
 
     test "a moved re-put never exposes an empty membership set" do
       cache = with_isolated_cache()
 
-      :ok = EntityGroupCache.put_entity_group(membership("g_1"), opts(cache))
+      :ok = MembershipCache.put_membership(membership("g_1"), opts(cache))
 
       assert_no_empty_membership_reads(cache, fn ->
         for group_id <- ["g_1", "g_2"] do
-          EntityGroupCache.put_entity_group(membership(group_id), opts(cache))
+          MembershipCache.put_membership(membership(group_id), opts(cache))
         end
 
         :ok
@@ -297,12 +297,12 @@ defmodule EbbServer.Storage.EntityGroupCacheTest do
   end
 
   defp read_once(cache) do
-    if EntityGroupCache.entity_groups("todo_1", cache.table) == [], do: 1, else: 0
+    if MembershipCache.memberships("todo_1", cache.table) == [], do: 1, else: 0
   end
 
   defp read_empties(cache, done, entity_id, empties, reads) do
     empties =
-      if EntityGroupCache.entity_groups(entity_id, cache.table) == [],
+      if MembershipCache.memberships(entity_id, cache.table) == [],
         do: empties + 1,
         else: empties
 

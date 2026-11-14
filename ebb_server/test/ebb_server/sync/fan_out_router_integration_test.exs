@@ -55,9 +55,9 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   describe "system-entity fan-out (#197)" do
-    test "entityGroup and groupMember actions reach the per-group GroupServer" do
-      # Pinned by #197: the FanOutRouter must route entityGroup /
-      # groupMember / group updates to the right GroupServer. Subscribe
+    test "membership and grant actions reach the per-group GroupServer" do
+      # Pinned by #197: the FanOutRouter must route membership /
+      # grant / group updates to the right GroupServer. Subscribe
       # an SSEConnection to the bootstrap group, write the seed, and
       # verify the chunk carries all three system-entity subject types.
       # Parent the SSEConnection to `self()` so `assert_receive` can
@@ -504,8 +504,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           [todo_update(leaked_id, hlc)] ++
-            entity_group_put(eg_leak, leaked_id, g1, hlc) ++
-            entity_group_put(eg_other, other_id, g2, hlc)
+            membership_put(eg_leak, leaked_id, g1, hlc) ++
+            membership_put(eg_other, other_id, g2, hlc)
       }
 
       conn =
@@ -540,7 +540,7 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
     }
   end
 
-  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+  defp membership_put(eg_id, entity_id, group_id, hlc) do
     platform_update(:membership, eg_id, %{"entity_id" => entity_id, "group_id" => group_id}, hlc)
   end
 

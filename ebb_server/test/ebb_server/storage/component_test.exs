@@ -14,8 +14,8 @@ defmodule EbbServer.Storage.ComponentTest do
 
   test "splits a well-formed name into model and field" do
     assert Component.split("note/title") == {"note", "title"}
-    assert Component.model("entityGroup/group_id") == "entityGroup"
-    assert Component.field("entityGroup/group_id") == "group_id"
+    assert Component.model("membership/group_id") == "membership"
+    assert Component.field("membership/group_id") == "group_id"
   end
 
   test "a name is exactly one slash with both segments non-empty" do

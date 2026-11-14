@@ -26,7 +26,7 @@ interface WriteSpec {
   readonly actionId: string;
   readonly updateId: string;
   readonly entityId?: string;
-  readonly type?: string;
+  readonly model?: string;
   readonly gsn?: number;
   readonly ms?: number;
   readonly fields: Record<string, FieldValue>;
@@ -37,7 +37,7 @@ const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[
   Object.entries(spec.fields).map(([field, value]) => ({
     id: `${spec.updateId}_${field}`,
     subject_id: spec.entityId ?? "e_1",
-    component: componentName(spec.type ?? "todo", field),
+    component: componentName(spec.model ?? "todo", field),
     method: isFieldMap(value) ? "merge" : method,
     data: value,
   }));
@@ -82,7 +82,7 @@ const drop = (spec: WriteSpec): Action => ({
   updates: Object.keys(spec.fields).map((field) => ({
     id: `${spec.updateId}_${field}`,
     subject_id: spec.entityId ?? "e_1",
-    component: componentName(spec.type ?? "todo", field),
+    component: componentName(spec.model ?? "todo", field),
     method: "drop" as const,
     data: null,
   })),
@@ -101,7 +101,7 @@ const relationship = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "ebb",
+    model: "ebb",
     gsn,
     ms,
     fields: {
@@ -126,7 +126,7 @@ const membership = (
     actionId,
     updateId: `u_${rowId}`,
     entityId: rowId,
-    type: "ebb",
+    model: "ebb",
     gsn,
     ms,
     fields: {
@@ -139,7 +139,7 @@ const ingest = (replica: Replica, write: Action, position: number): number =>
 
 const entity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "e_1",
-  type: "todo",
+  model: "todo",
   data: { fields: {} },
   exists: true,
   created_hlc: makeHlc(1),
@@ -150,7 +150,7 @@ const entity = (overrides: Partial<Entity> = {}): Entity => ({
 });
 
 describe("replica: durable fold", () => {
-  it("materializes a put into the base and the type index", () => {
+  it("materializes a put into the base and the model index", () => {
     const replica = createReplica();
     expect(
       ingest(
@@ -165,7 +165,7 @@ describe("replica: durable fold", () => {
       ),
     ).toBe(1);
     const row = replica.get("e_1");
-    expect(row?.type).toBe("todo");
+    expect(row?.model).toBe("todo");
     expect(row?.data.fields.title).toEqual(leaf("Hello", "u_1", 10));
     expect(row?.last_gsn).toBe(1);
     expect(replica.iterate("todo")).toEqual([row]);
@@ -399,7 +399,7 @@ describe("replica: durable fold", () => {
       put({
         actionId: "a_1",
         updateId: "u_title",
-        type: "note",
+        model: "note",
         ms: 10,
         fields: { title: leaf("First", "u_title", 10), status },
       }),
@@ -419,7 +419,7 @@ describe("replica: durable fold", () => {
       patch({
         actionId: "a_2",
         updateId: "u_2",
-        type: "note",
+        model: "note",
         gsn: 2,
         ms: 20,
         fields: { title: leaf("Second", "u_2", 20) },
@@ -496,7 +496,7 @@ describe("replica: durable fold", () => {
         actionId: "a_1",
         updateId: "u_1",
         entityId: "note_1",
-        type: "note",
+        model: "note",
         ms: 10,
         fields: { title: leaf("Note", "u_1", 10) },
       }),
@@ -508,7 +508,7 @@ describe("replica: durable fold", () => {
         actionId: "a_2",
         updateId: "u_2",
         entityId: "note_2",
-        type: "note",
+        model: "note",
         ms: 10,
         fields: { title: leaf("Other", "u_2", 10) },
       }),
@@ -523,7 +523,7 @@ describe("replica: durable fold", () => {
         actionId: "a_local",
         updateId: "u_local",
         entityId: "note_1",
-        type: "page",
+        model: "page",
         ms: 20,
         fields: { title: leaf("Promoted", "u_local", 20) },
       }),
@@ -549,7 +549,7 @@ describe("replica: durable fold", () => {
         actionId: "a_2",
         updateId: "u_2",
         gsn: 2,
-        type: "note",
+        model: "note",
         ms: 20,
         fields: { title: leaf("Note", "u_2", 20) },
       }),
@@ -557,7 +557,7 @@ describe("replica: durable fold", () => {
     );
     expect(replica.iterate("todo")).toEqual([]);
     expect(replica.iterate("note")).toHaveLength(1);
-    expect(replica.get("e_1")?.type).toBe("note");
+    expect(replica.get("e_1")?.model).toBe("note");
   });
 
   it("folds only the delta, so a re-delivered put cannot revert a newer patch", () => {
@@ -908,7 +908,7 @@ describe("replica: materialization policy", () => {
         actionId: "a_1",
         updateId: "u_1",
         entityId: "e_cold",
-        type: "cold",
+        model: "cold",
         ms: 10,
         fields: { title: leaf("Cold", "u_1", 10) },
       }),
@@ -941,7 +941,7 @@ describe("replica: materialization policy", () => {
         actionId: "a_2",
         updateId: "u_2",
         gsn: 2,
-        type: "cold",
+        model: "cold",
         ms: 20,
         fields: { title: leaf("Cold", "u_2", 20) },
       }),
@@ -1030,12 +1030,12 @@ describe("replica: change signal", () => {
       componentVersions: {},
       position: 0,
       revision: 7,
-      entities: [entity({ id: "e_9", type: "note" })],
+      entities: [entity({ id: "e_9", model: "note" })],
     });
 
     expect(fired).toBe(1);
     expect(replica.revision).toBe(7);
-    expect(replica.get("e_9")?.type).toBe("note");
+    expect(replica.get("e_9")?.model).toBe("note");
   });
 });
 
@@ -1155,7 +1155,7 @@ describe("replica: journal capacity (#499)", () => {
       componentVersions: {},
       position: 9,
       revision: 2,
-      entities: [entity({ id: "e_9", type: "note" })],
+      entities: [entity({ id: "e_9", model: "note" })],
     };
     // The record is older than the resident revision, so load moves the
     // revision forward rather than backwards.
@@ -1166,9 +1166,9 @@ describe("replica: journal capacity (#499)", () => {
     expect(replica.changeFloor).toBe(4);
     expect(replica.stats()).toEqual({
       entities: 1,
-      byType: { note: 1 },
+      byModel: { note: 1 },
       held: 1,
-      heldByType: { note: 1 },
+      heldByModel: { note: 1 },
       revision: 4,
       position: 9,
       changes: 0,
@@ -1191,7 +1191,7 @@ describe("replica: journal capacity (#499)", () => {
       componentVersions: {},
       position: 4,
       revision: 2,
-      entities: [entity({ id: "e_9", type: "note" })],
+      entities: [entity({ id: "e_9", model: "note" })],
     };
 
     expect(replica.load(record)).toBe(2);
@@ -1214,12 +1214,12 @@ describe("replica: stats (#499)", () => {
 
     expect(replica.stats()).toMatchObject({
       entities: 1,
-      byType: { todo: 1 },
+      byModel: { todo: 1 },
       revision: 1,
     });
   });
 
-  it("reports materialized counts by type, the revision, and the durable position", () => {
+  it("reports materialized counts by model, the revision, and the durable position", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -1232,7 +1232,7 @@ describe("replica: stats (#499)", () => {
         actionId: "a_2",
         updateId: "u_2",
         entityId: "e_2",
-        type: "note",
+        model: "note",
         gsn: 2,
         ms: 20,
         fields: { title: leaf("Note", "u_2", 20) },
@@ -1244,9 +1244,9 @@ describe("replica: stats (#499)", () => {
     // A tombstone is still a materialized row, so both counts include it.
     expect(replica.stats()).toEqual({
       entities: 2,
-      byType: { todo: 1, note: 1 },
+      byModel: { todo: 1, note: 1 },
       held: 2,
-      heldByType: { todo: 1, note: 1 },
+      heldByModel: { todo: 1, note: 1 },
       revision: 3,
       position: 7,
       changes: 3,
@@ -1272,7 +1272,7 @@ describe("replica: on-demand residency (#500)", () => {
   const documentRow = (id: string, text = `body ${id}`): Entity =>
     entity({
       id,
-      type: "document",
+      model: "document",
       data: { fields: { text: leaf(text, `u_${id}`, 5) } },
       last_gsn: 5,
     });
@@ -1311,7 +1311,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
     expect(replica.iterate("document")).toEqual([documentRow("doc_1")]);
     expect(replica.isOpen("doc_1", "document/text")).toBe(true);
-    expect(replica.stats()).toMatchObject({ entities: 1, byType: { document: 1 }, pinned: 1 });
+    expect(replica.stats()).toMatchObject({ entities: 1, byModel: { document: 1 }, pinned: 1 });
     expect(fired).toBe(1);
     // A derived reader must see the row arrive.
     expect(replica.changesSince(0)).toEqual([
@@ -1378,7 +1378,7 @@ describe("replica: on-demand residency (#500)", () => {
         actionId: "a_live",
         updateId: "u_live",
         entityId: "doc_1",
-        type: "document",
+        model: "document",
         gsn: 6,
         ms: 6,
         fields: { text: leaf("live", "u_live", 6) },
@@ -1390,7 +1390,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(await opening).toEqual(
       entity({
         id: "doc_1",
-        type: "document",
+        model: "document",
         data: { fields: { text: leaf("live", "u_live", 6) } },
         updated_hlc: makeHlc(6),
         last_gsn: 6,
@@ -1440,7 +1440,7 @@ describe("replica: on-demand residency (#500)", () => {
         actionId: "a_move",
         updateId: "u_move",
         entityId: "doc_1",
-        type: "todo",
+        model: "todo",
         gsn: 9,
         ms: 9,
         fields: { title: leaf("Now held", "u_move", 9) },
@@ -1448,12 +1448,12 @@ describe("replica: on-demand residency (#500)", () => {
       9,
     );
 
-    expect(replica.get("doc_1")?.type).toBe("todo");
+    expect(replica.get("doc_1")?.model).toBe("todo");
     expect(replica.isOpen("doc_1", "document/text")).toBe(false);
     expect(replica.stats().pinned).toBe(0);
 
     replica.close("doc_1", "document/text");
-    expect(replica.get("doc_1")?.type).toBe("todo");
+    expect(replica.get("doc_1")?.model).toBe("todo");
   });
 
   it("keeps folding live updates into a pinned row", async () => {
@@ -1467,7 +1467,7 @@ describe("replica: on-demand residency (#500)", () => {
         actionId: "a_live",
         updateId: "u_live",
         entityId: "doc_1",
-        type: "document",
+        model: "document",
         gsn: 6,
         ms: 6,
         fields: { text: leaf("live", "u_live", 6) },
@@ -1488,7 +1488,7 @@ describe("replica: on-demand residency (#500)", () => {
         actionId: "a_cold",
         updateId: "u_cold",
         entityId: "doc_1",
-        type: "document",
+        model: "document",
         gsn: 7,
         ms: 7,
         fields: { text: leaf("cold", "u_cold", 7) },
@@ -1508,7 +1508,7 @@ describe("replica: on-demand residency (#500)", () => {
     // The #500 shape at 10k documents: page metadata is held, bodies are not.
     const entities: Entity[] = [];
     for (let i = 0; i < 10_000; i += 1) {
-      entities.push(entity({ id: `page_${i}`, type: "page" }));
+      entities.push(entity({ id: `page_${i}`, model: "page" }));
       entities.push(documentRow(`doc_${i}`));
     }
     const rows = { doc_0: documentRow("doc_0") };
@@ -1528,17 +1528,17 @@ describe("replica: on-demand residency (#500)", () => {
 
     expect(replica.stats()).toMatchObject({
       held: 10_000,
-      heldByType: { page: 10_000 },
-      byType: { page: 10_000 },
+      heldByModel: { page: 10_000 },
+      byModel: { page: 10_000 },
       pinned: 0,
     });
-    expect(replica.stats().byType.document).toBeUndefined();
+    expect(replica.stats().byModel.document).toBeUndefined();
 
     await replica.open("doc_0", "document/text");
 
     expect(replica.stats()).toMatchObject({
       held: 10_000,
-      byType: { page: 10_000, document: 1 },
+      byModel: { page: 10_000, document: 1 },
       pinned: 1,
     });
   });
@@ -1573,7 +1573,7 @@ describe("replica: on-demand residency (#500)", () => {
     ]);
 
     replica.close("e_1", "todo/title");
-    expect(replica.get("e_1")?.type).toBe("todo");
+    expect(replica.get("e_1")?.model).toBe("todo");
   });
 
   it("evicts a row and drops its pin", async () => {
@@ -1624,7 +1624,7 @@ describe("replica: on-demand residency (#500)", () => {
     for (const id of Object.keys(rows)) await replica.open(id, "document/text");
 
     expect(replica.stats().pinned).toBe(20);
-    expect(replica.stats().byType).toEqual({ document: 20 });
+    expect(replica.stats().byModel).toEqual({ document: 20 });
   });
 
   it("persists held rows only, never a pinned body", async () => {
@@ -1644,7 +1644,7 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.toRecord().entities).toEqual([
       entity({
         id: "e_1",
-        type: "todo",
+        model: "todo",
         data: { fields: { title: leaf("Todo", "u_1", 10) } },
         exists: true,
         created_hlc: makeHlc(10),
@@ -1668,14 +1668,14 @@ describe("replica: on-demand residency (#500)", () => {
       componentVersions: {},
       position: 0,
       revision: 5,
-      entities: [documentRow("doc_2"), entity({ id: "e_1", type: "todo" })],
+      entities: [documentRow("doc_2"), entity({ id: "e_1", model: "todo" })],
     });
 
     expect(replica.isOpen("doc_1", "document/text")).toBe(false);
     expect(replica.get("doc_1")).toBeUndefined();
     expect(replica.get("doc_2")).toBeUndefined();
-    expect(replica.get("e_1")?.type).toBe("todo");
-    expect(replica.stats()).toMatchObject({ entities: 1, byType: { todo: 1 }, pinned: 0 });
+    expect(replica.get("e_1")?.model).toBe("todo");
+    expect(replica.stats()).toMatchObject({ entities: 1, byModel: { todo: 1 }, pinned: 0 });
   });
 
   describe("pinned TTL", () => {
@@ -1902,7 +1902,7 @@ describe("replica: residency per component (#802)", () => {
   const noteRow = (body = "300 KB body"): Entity =>
     entity({
       id: noteId,
-      type: "note",
+      model: "note",
       data: {
         fields: {
           title: leaf("One", "u_title", 10),
@@ -2021,7 +2021,7 @@ describe("replica: residency per component (#802)", () => {
         actionId: "a_body",
         updateId: "u_body_live",
         entityId: noteId,
-        type: "note",
+        model: "note",
         gsn: 2,
         ms: 20,
         fields: { body: leaf("new body", "u_body_live", 20) },
@@ -2059,7 +2059,7 @@ describe("replica: residency per component (#802)", () => {
         actionId: "a_move",
         updateId: "u_move",
         entityId: noteId,
-        type: "page",
+        model: "page",
         gsn: 2,
         ms: 20,
         fields: { title: leaf("Page title", "u_move", 20) },
@@ -2067,7 +2067,7 @@ describe("replica: residency per component (#802)", () => {
       2,
     );
 
-    expect(replica.get(noteId)?.type).toBe("page");
+    expect(replica.get(noteId)?.model).toBe("page");
     expect(replica.components("note/body")).toEqual([]);
     expect(replica.components("page/title")).toEqual([noteId]);
     expect(replica.stats()).toMatchObject({ nonResident: 0 });
@@ -2081,7 +2081,7 @@ describe("replica: residency per component (#802)", () => {
         actionId: "a_drop",
         updateId: "u_drop",
         entityId: noteId,
-        type: "note",
+        model: "note",
         gsn: 2,
         ms: 20,
         fields: { body: leaf(null, "u_drop", 20) },
@@ -2090,7 +2090,7 @@ describe("replica: residency per component (#802)", () => {
     );
 
     expect(replica.components("note/body")).toEqual([]);
-    expect(replica.get(noteId)?.type).toBe("note");
+    expect(replica.get(noteId)?.model).toBe("note");
     expect(replica.stats()).toMatchObject({ components: 3, nonResident: 0 });
   });
 
@@ -2101,7 +2101,7 @@ describe("replica: residency per component (#802)", () => {
       readComponent: async () =>
         entity({
           id: "doc_1",
-          type: "document",
+          model: "document",
           data: { fields: { text: leaf("body", "u_1", 10) } },
           created_hlc: makeHlc(10),
           updated_hlc: makeHlc(10),
@@ -2113,7 +2113,7 @@ describe("replica: residency per component (#802)", () => {
         actionId: "a_1",
         updateId: "u_1",
         entityId: "doc_1",
-        type: "document",
+        model: "document",
         ms: 10,
         fields: { text: leaf("body", "u_1", 10) },
       }),

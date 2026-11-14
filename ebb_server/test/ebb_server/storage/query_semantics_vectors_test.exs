@@ -24,11 +24,11 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
     %{
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: gm_table,
-      group_members_by_id: gm_by_id_table,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id_table,
-      entity_groups_by_group: eg_by_group_table,
+      grants: gm_table,
+      grants_by_id: gm_by_id_table,
+      memberships: eg_table,
+      memberships_by_id: eg_by_id_table,
+      memberships_by_group: eg_by_group_table,
       relationships: rel_table,
       relationships_by_id: rbi_table
     } = start_isolated_cache()
@@ -41,11 +41,11 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
         rocks_name: rocks_name,
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
-        group_members: gm_table,
-        group_members_by_id: gm_by_id_table,
-        entity_groups: eg_table,
-        entity_groups_by_id: eg_by_id_table,
-        entity_groups_by_group: eg_by_group_table,
+        grants: gm_table,
+        grants_by_id: gm_by_id_table,
+        memberships: eg_table,
+        memberships_by_id: eg_by_id_table,
+        memberships_by_group: eg_by_group_table,
         relationships: rel_table,
         relationships_by_id: rbi_table
       })

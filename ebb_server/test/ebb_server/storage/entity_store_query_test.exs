@@ -105,11 +105,11 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
     %{
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: gm_table,
-      group_members_by_id: gm_by_id_table,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id_table,
-      entity_groups_by_group: eg_by_group_table,
+      grants: gm_table,
+      grants_by_id: gm_by_id_table,
+      memberships: eg_table,
+      memberships_by_id: eg_by_id_table,
+      memberships_by_group: eg_by_group_table,
       relationships: rel_table,
       relationships_by_id: rbi_table
     } = start_isolated_cache()
@@ -122,11 +122,11 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         rocks_name: rocks_name,
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
-        group_members: gm_table,
-        group_members_by_id: gm_by_id_table,
-        entity_groups: eg_table,
-        entity_groups_by_id: eg_by_id_table,
-        entity_groups_by_group: eg_by_group_table,
+        grants: gm_table,
+        grants_by_id: gm_by_id_table,
+        memberships: eg_table,
+        memberships_by_id: eg_by_id_table,
+        memberships_by_group: eg_by_group_table,
         relationships: rel_table,
         relationships_by_id: rbi_table
       })
@@ -165,7 +165,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         )
 
       assert length(todos) == 2
-      assert Enum.all?(todos, fn e -> e.type == "todo" end)
+      assert Enum.all?(todos, fn e -> e.model == "todo" end)
 
       {:ok, posts} =
         EntityStore.query("post", nil, actor_id,
@@ -175,7 +175,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         )
 
       assert length(posts) == 1
-      assert hd(posts).type == "post"
+      assert hd(posts).model == "post"
     end
 
     test "a row whose only component was dropped is still returned", %{
@@ -207,7 +207,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       assert {:ok, [row]} = EntityStore.query("todo", nil, actor_id, opts)
       assert row.id == todo_id
-      assert row.type == "todo"
+      assert row.model == "todo"
       assert row.deleted_hlc == nil
       assert row.data == %{"fields" => %{}, "components" => []}
     end
@@ -915,7 +915,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
   defp lww_row(id, type, fields, created_hlc \\ 1000) do
     %{
       id: id,
-      type: type,
+      model: type,
       data:
         Jason.encode!(%{
           "fields" => Map.new(fields, fn {field, value} -> {field, lww(value)} end)
@@ -933,7 +933,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
   defp platform_row(id, kind, value, created_hlc \\ 1000) do
     %{
       id: id,
-      type: SystemComponent.model(),
+      model: SystemComponent.model(),
       data:
         Jason.encode!(%{
           "fields" => %{

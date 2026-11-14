@@ -45,7 +45,7 @@ export const defineAdapterTests = ({ name, factory }: AdapterTestSuiteOptions): 
         const entity = await adapter.entities.get("todo_1");
         expect(entity).not.toBe(null);
         expect(entity!.id).toBe("todo_1");
-        expect(entity!.type).toBe("todo");
+        expect(entity!.model).toBe("todo");
       });
     });
 

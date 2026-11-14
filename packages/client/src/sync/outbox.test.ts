@@ -37,11 +37,11 @@ const mkFieldAction = (args: {
   subjectId: string;
   fields: Record<string, FieldValue>;
   /** The model the row is committed under; defaults to `todo`. */
-  subjectType?: string;
+  model?: string;
   method?: "merge" | "replace";
   gsn?: number;
 }): Action => {
-  const model = args.subjectType ?? "todo";
+  const model = args.model ?? "todo";
   return {
     id: args.id,
     actor_id: "actor_1",
@@ -128,7 +128,7 @@ const mkStore = (
 /** A full entity row for the before/after capture fixtures. */
 const mkEntity = (id: string, title: string): Entity => ({
   id,
-  type: "todo",
+  model: "todo",
   data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: "1" } } },
   exists: true,
   created_hlc: "1",
@@ -1210,23 +1210,23 @@ describe("createOutbox conflict detection", () => {
       ["ebb", "membership"],
       ["ebb", "grant"],
     ];
-    for (const [subjectType, field] of structural) {
+    for (const [model, field] of structural) {
       await outbox.enqueue(
         mkFieldAction({
-          id: `a_${subjectType}`,
-          subjectId: `row_${subjectType}`,
-          subjectType,
+          id: `a_${model}`,
+          subjectId: `row_${model}`,
+          model,
           fields: { [field]: { value: "mine", update_id: "u_local", hlc: "10" } },
         }),
       );
     }
 
     const detected = await outbox.detectConflicts(
-      structural.map(([subjectType, field]) =>
+      structural.map(([model, field]) =>
         mkFieldAction({
-          id: `a_peer_${subjectType}`,
-          subjectId: `row_${subjectType}`,
-          subjectType,
+          id: `a_peer_${model}`,
+          subjectId: `row_${model}`,
+          model,
           fields: { [field]: { value: "theirs", update_id: "u_peer", hlc: "20" } },
           gsn: 5,
         }),

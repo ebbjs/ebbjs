@@ -30,7 +30,7 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   ## Stateless by design
 
-  All state comes from ETS lookups via the cache modules (`GroupCache`,
+  All state comes from ETS lookups via the cache modules (`GrantCache`,
   `RelationshipCache`, `EbbServer.Storage.AuthorizationContext`). The
   permission decision for an Action is a pure function of the Action
   + the actor's current group memberships. Keeping this stateless means
@@ -38,9 +38,9 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   ## What "permission" means here
 
-  Permissions are stored on the Group system entity as a list of
+  Permissions are stored on the Group system component as a list of
   `<model>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`). The
-  actor's per-group permissions are loaded into `GroupCache` on startup;
+  actor's per-group permissions are loaded into `GrantCache` on startup;
   a write to a Group updates the cache in place. Writes that arrive
   referencing an entity whose group the actor is not a member of, or
   referencing a permission the actor doesn't have, are rejected with
@@ -59,7 +59,7 @@ defmodule EbbServer.Storage.PermissionChecker do
     - `member_group_ids/3` — the subset of a group list the actor may
       read, used to narrow a presence broadcast.
     - `can_read?/3` — resolves an entity's groups through
-      `EntityIndex.source_groups/2` and passes when the actor is a
+      `EntityScope.source_groups/2` and passes when the actor is a
       member of at least one. Group-scoped, matching the write model;
       there are no per-entity or per-field read permissions yet.
 
@@ -72,8 +72,8 @@ defmodule EbbServer.Storage.PermissionChecker do
   alias EbbServer.Storage.AuthorizationContext
   alias EbbServer.Storage.Authorizer
   alias EbbServer.Storage.CacheTables
-  alias EbbServer.Storage.EntityIndex
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.EntityScope
+  alias EbbServer.Storage.GrantCache
 
   @type raw_action :: ActionValidator.raw_action()
   @type raw_update :: ActionValidator.raw_update()
@@ -126,13 +126,13 @@ defmodule EbbServer.Storage.PermissionChecker do
   @doc """
   Returns true when the actor holds a membership in the group.
 
-  Mirrors `GroupCache.get_permissions/3`: a membership whose permission
+  Mirrors `GrantCache.get_permissions/3`: a membership whose permission
   list is empty does not count, matching how the write pipeline decides
   group ownership.
   """
   @spec member_of_group?(String.t(), String.t(), keyword()) :: boolean()
   def member_of_group?(group_id, actor_id, opts \\ []) do
-    GroupCache.get_permissions(actor_id, group_id, group_members_table(opts)) != nil
+    GrantCache.get_permissions(actor_id, group_id, grants_table(opts)) != nil
   end
 
   @doc """
@@ -160,26 +160,26 @@ defmodule EbbServer.Storage.PermissionChecker do
   @doc """
   Returns true when the actor may read the entity.
 
-  Resolves the entity's groups with `EntityIndex.source_groups/2` and
+  Resolves the entity's groups with `EntityScope.source_groups/2` and
   passes when the actor is a member of at least one. An entity in no
   group is readable by nobody — including its would-be author — matching
   the group scoping of the write model.
 
-  Membership follows `GroupCache.get_permissions/3`, so a `groupMember`
+  Membership follows `GrantCache.get_permissions/3`, so a `grant`
   row whose permission list is empty does not grant read access. The
   `query/3` SQL JOIN applies the same rule, so both read paths revoke
   together.
   """
   @spec can_read?(String.t(), String.t(), keyword()) :: boolean()
   def can_read?(entity_id, actor_id, opts \\ []) do
-    group_ids = EntityIndex.source_groups(entity_id, entity_groups: entity_groups_table(opts))
+    group_ids = EntityScope.source_groups(entity_id, memberships: memberships_table(opts))
 
     member_group_ids(group_ids, actor_id, opts) != []
   end
 
-  defp group_members_table(opts),
-    do: Keyword.get(opts, :group_members, CacheTables.group_members())
+  defp grants_table(opts),
+    do: Keyword.get(opts, :grants, CacheTables.grants())
 
-  defp entity_groups_table(opts),
-    do: Keyword.get(opts, :entity_groups, CacheTables.entity_groups())
+  defp memberships_table(opts),
+    do: Keyword.get(opts, :memberships, CacheTables.memberships())
 end

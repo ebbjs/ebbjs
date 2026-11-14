@@ -15,7 +15,7 @@ import { createMemoryReplicaStore } from "./replica-store.memory";
  *
  * ## Composition
  * - ActionLog — stores actions, provides entity-level queries
- * - DirtyTracker — tracks dirty entities, queryable by type
+ * - DirtyTracker — tracks dirty entities, queryable by model
  * - EntityStore — materialized entity cache
  * - CursorStore — per-group GSN cursors
  * - OutboxStore — durable pending local Actions; a detected conflict is
@@ -108,16 +108,16 @@ export const createMemoryAdapter = (): StorageAdapter => {
     entities: entityStore,
 
     dirtyTracker: {
-      async mark(entityId: string, entityType: string): Promise<void> {
-        await dirtyTracker.mark(entityId, entityType);
+      async mark(entityId: string, model: string): Promise<void> {
+        await dirtyTracker.mark(entityId, model);
       },
 
       async isDirty(entityId: string): Promise<boolean> {
         return dirtyTracker.isDirty(entityId);
       },
 
-      async getDirtyForType(entityType: string): Promise<readonly string[]> {
-        return dirtyTracker.getDirtyForType(entityType);
+      async getDirtyForModel(model: string): Promise<readonly string[]> {
+        return dirtyTracker.getDirtyForModel(model);
       },
 
       async clear(entityId: string): Promise<void> {

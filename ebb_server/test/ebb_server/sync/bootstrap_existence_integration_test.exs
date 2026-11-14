@@ -4,7 +4,7 @@ defmodule EbbServer.Sync.BootstrapExistenceIntegrationTest do
 
   The self-bootstrap exemption applies only to a group the Action is
   creating. Committing a group and then re-submitting the same group id
-  with a self-granting `groupMember` must be rejected against the
+  with a self-granting `grant` must be rejected against the
   permission table (the committed group is no longer a bootstrap).
   """
 
@@ -21,7 +21,7 @@ defmodule EbbServer.Sync.BootstrapExistenceIntegrationTest do
     assert first.status == 200
     assert first.resp_body == ~s({"rejected":[]})
 
-    # The first Action committed, so the entity-type index now knows the
+    # The first Action committed, so the entity-model cache now knows the
     # group. Re-putting it with a fresh self-granting membership is no
     # longer a bootstrap.
     replay = ActionHelpers.bootstrap_group(actor_id, group_id, ["*"])

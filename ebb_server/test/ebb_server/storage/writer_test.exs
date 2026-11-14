@@ -10,7 +10,7 @@ defmodule EbbServer.Storage.WriterTest do
   - GSN assignment: monotonic, gap-free sequence numbers
   - Column family population: all 5 RocksDB CFs written correctly
   - Dirty tracking: marks entities dirty for later materialization
-  - System cache updates: GroupCache, RelationshipCache, and EntityGroupCache
+  - System cache updates: GrantCache, RelationshipCache, and MembershipCache
     kept in sync
   - ETF serialization: actions encoded/decoded correctly
   - Durability: data survives restarts
@@ -31,9 +31,9 @@ defmodule EbbServer.Storage.WriterTest do
     ActionScope,
     ComponentEntityIndex,
     DirtyTracker,
-    EntityGroupCache,
-    EntityTypeCache,
-    GroupCache,
+    MembershipCache,
+    EntityModelCache,
+    GrantCache,
     RelationshipCache,
     RocksDB,
     Writer
@@ -45,12 +45,12 @@ defmodule EbbServer.Storage.WriterTest do
     %{
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      entity_types: entity_types,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
+      entity_models: entity_models,
       component_index: component_index,
       component_entity_labels: component_entity_labels,
       relationships: relationships,
@@ -64,11 +64,11 @@ defmodule EbbServer.Storage.WriterTest do
         rocks_name: rocks_name,
         dirty_set: dirty_set,
         gsn_counter: gsn_counter,
-        group_members: group_members,
-        group_members_by_id: group_members_by_id,
-        entity_groups: entity_groups,
-        entity_groups_by_id: entity_groups_by_id,
-        entity_groups_by_group: entity_groups_by_group,
+        grants: grants,
+        grants_by_id: grants_by_id,
+        memberships: memberships,
+        memberships_by_id: memberships_by_id,
+        memberships_by_group: memberships_by_group,
         component_index: component_index,
         component_entity_labels: component_entity_labels,
         relationships: relationships,
@@ -81,12 +81,12 @@ defmodule EbbServer.Storage.WriterTest do
       rocks_dir: rocks_dir,
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      entity_types: entity_types,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
+      entity_models: entity_models,
       component_index: component_index,
       component_entity_labels: component_entity_labels,
       relationships: relationships,
@@ -181,17 +181,17 @@ defmodule EbbServer.Storage.WriterTest do
       %{rocks_name: rocks_name, writer_name: writer_name} = ctx
 
       :ok =
-        EntityGroupCache.put_entity_group(
+        MembershipCache.put_membership(
           %{id: "eg_a", entity_id: "todo_a", group_id: "group_1"},
-          entity_groups: ctx.entity_groups,
-          entity_groups_by_id: ctx.entity_groups_by_id,
-          entity_groups_by_group: ctx.entity_groups_by_group
+          memberships: ctx.memberships,
+          memberships_by_id: ctx.memberships_by_id,
+          memberships_by_group: ctx.memberships_by_group
         )
 
       update_a = validated_update(%{subject_id: "todo_a"})
       update_b = validated_update(%{subject_id: "todo_b"})
 
-      update_eg_b = entity_group_updates("eg_b", "todo_b", "group_2", generate_hlc())
+      update_eg_b = membership_updates("eg_b", "todo_b", "group_2", generate_hlc())
 
       action = validated_action(%{updates: [update_a, update_b] ++ update_eg_b})
 
@@ -236,11 +236,11 @@ defmodule EbbServer.Storage.WriterTest do
 
       for group_id <- ["group_1", "group_2"] do
         :ok =
-          EntityGroupCache.put_entity_group(
+          MembershipCache.put_membership(
             %{id: "eg_#{group_id}_c", entity_id: "todo_c", group_id: group_id},
-            entity_groups: ctx.entity_groups,
-            entity_groups_by_id: ctx.entity_groups_by_id,
-            entity_groups_by_group: ctx.entity_groups_by_group
+            memberships: ctx.memberships,
+            memberships_by_id: ctx.memberships_by_id,
+            memberships_by_group: ctx.memberships_by_group
           )
       end
 
@@ -288,7 +288,7 @@ defmodule EbbServer.Storage.WriterTest do
       create =
         validated_action(%{
           id: "act_813_create",
-          updates: entity_group_updates("eg_813", "todo_813", "group_813", generate_hlc())
+          updates: membership_updates("eg_813", "todo_813", "group_813", generate_hlc())
         })
 
       # A value that omits the group cannot name its own scope, so the flush's
@@ -624,11 +624,11 @@ defmodule EbbServer.Storage.WriterTest do
     test "data survives Writer and RocksDB restart", %{
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     } do
@@ -648,11 +648,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: rocks_name1,
           dirty_set: dirty_set,
           gsn_counter: gsn_counter,
-          group_members: group_members,
-          group_members_by_id: group_members_by_id,
-          entity_groups: entity_groups,
-          entity_groups_by_id: entity_groups_by_id,
-          entity_groups_by_group: entity_groups_by_group,
+          grants: grants,
+          grants_by_id: grants_by_id,
+          memberships: memberships,
+          memberships_by_id: memberships_by_id,
+          memberships_by_group: memberships_by_group,
           relationships: relationships,
           relationships_by_id: relationships_by_id
         )
@@ -673,11 +673,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: rocks_name2,
           dirty_set: dirty_set,
           gsn_counter: gsn_counter,
-          group_members: group_members,
-          group_members_by_id: group_members_by_id,
-          entity_groups: entity_groups,
-          entity_groups_by_id: entity_groups_by_id,
-          entity_groups_by_group: entity_groups_by_group,
+          grants: grants,
+          grants_by_id: grants_by_id,
+          memberships: memberships,
+          memberships_by_id: memberships_by_id,
+          memberships_by_group: memberships_by_group,
           relationships: relationships,
           relationships_by_id: relationships_by_id
         )
@@ -776,10 +776,10 @@ defmodule EbbServer.Storage.WriterTest do
   end
 
   describe "system cache updates" do
-    test "groupMember PUT updates ETS",
+    test "grant PUT updates ETS",
          %{
            writer_name: writer_name,
-           group_members: gm_table
+           grants: gm_table
          } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
@@ -788,22 +788,22 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: group_member_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+        updates: grant_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
       assert [%{group_id: "group_1", permissions: ["todo.create"]}] =
-               GroupCache.get_actor_groups("actor_1", gm_table)
+               GrantCache.get_actor_groups("actor_1", gm_table)
 
-      assert ["todo.create"] = GroupCache.get_permissions("actor_1", "group_1", gm_table)
+      assert ["todo.create"] = GrantCache.get_permissions("actor_1", "group_1", gm_table)
     end
 
-    test "entityGroup PUT updates ETS",
+    test "membership PUT updates ETS",
          %{
            writer_name: writer_name,
-           entity_groups: eg_table,
-           entity_groups_by_group: eg_by_group
+           memberships: eg_table,
+           memberships_by_group: eg_by_group
          } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
@@ -812,20 +812,20 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates(eg_id, "todo_1", "group_1", hlc)
+        updates: membership_updates(eg_id, "todo_1", "group_1", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityGroupCache.entity_groups("todo_1", eg_table) == ["group_1"]
-      assert EntityGroupCache.group_entities("group_1", eg_by_group) == ["todo_1"]
+      assert MembershipCache.memberships("todo_1", eg_table) == ["group_1"]
+      assert MembershipCache.group_entities("group_1", eg_by_group) == ["todo_1"]
     end
 
-    test "entityGroup PATCH projects the whole wire value",
+    test "membership PATCH projects the whole wire value",
          %{
            writer_name: writer_name,
-           entity_groups: eg_table,
-           entity_groups_by_id: eg_by_id
+           memberships: eg_table,
+           memberships_by_id: eg_by_id
          } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
@@ -834,7 +834,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates(eg_id, "todo_1", "group_1", hlc)
+        updates: membership_updates(eg_id, "todo_1", "group_1", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
@@ -843,19 +843,19 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: generate_hlc(),
-        updates: entity_group_patch(eg_id, "todo_1", "group_2", hlc)
+        updates: membership_patch(eg_id, "todo_1", "group_2", hlc)
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([patch_action], writer_name)
 
-      assert EntityGroupCache.entity_groups("todo_1", eg_table) == ["group_2"]
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id).entity_id == "todo_1"
+      assert MembershipCache.memberships("todo_1", eg_table) == ["group_2"]
+      assert MembershipCache.get_membership(eg_id, eg_by_id).entity_id == "todo_1"
     end
 
-    test "an entityGroup value that omits the entity is not projected",
+    test "an membership value that omits the entity is not projected",
          %{
            writer_name: writer_name,
-           entity_groups_by_id: eg_by_id
+           memberships_by_id: eg_by_id
          } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
@@ -864,17 +864,17 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: [entity_group_partial_patch(eg_id, "group_1", hlc)]
+        updates: [membership_partial_patch(eg_id, "group_1", hlc)]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([patch_action], writer_name)
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
     end
 
-    test "groupMember PATCH projects the whole wire value",
+    test "grant PATCH projects the whole wire value",
          %{
            writer_name: writer_name,
-           group_members: gm_table
+           grants: gm_table
          } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
@@ -883,7 +883,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: group_member_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+        updates: grant_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
@@ -892,19 +892,19 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: generate_hlc(),
-        updates: group_member_patch(gm_id, "actor_1", "group_1", ["todo.read"], hlc)
+        updates: grant_patch(gm_id, "actor_1", "group_1", ["todo.read"], hlc)
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([patch_action], writer_name)
 
       assert [%{group_id: "group_1", permissions: ["todo.read"]}] =
-               GroupCache.get_actor_groups("actor_1", gm_table)
+               GrantCache.get_actor_groups("actor_1", gm_table)
     end
 
-    test "a groupMember value that omits the actor is not projected",
+    test "a grant value that omits the actor is not projected",
          %{
            writer_name: writer_name,
-           group_members_by_id: gm_by_id
+           grants_by_id: gm_by_id
          } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
@@ -913,11 +913,11 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: [group_member_partial_patch(gm_id, ["todo.read"], hlc)]
+        updates: [grant_partial_patch(gm_id, ["todo.read"], hlc)]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([patch_action], writer_name)
-      assert GroupCache.get_group_member(gm_id, gm_by_id) == nil
+      assert GrantCache.get_grant(gm_id, gm_by_id) == nil
     end
 
     test "relationship PUT updates the domain edge indexes",
@@ -942,10 +942,10 @@ defmodule EbbServer.Storage.WriterTest do
       assert [{"todo_1", _entry}] = :ets.lookup(rel_table, "todo_1")
     end
 
-    test "groupMember DELETE removes from ETS",
+    test "grant DELETE removes from ETS",
          %{
            writer_name: writer_name,
-           group_members: gm_table
+           grants: gm_table
          } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
@@ -954,11 +954,11 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: group_member_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+        updates: grant_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
-      assert [_] = GroupCache.get_actor_groups("actor_1", gm_table)
+      assert [_] = GrantCache.get_actor_groups("actor_1", gm_table)
 
       delete_action = %{
         id: "act_" <> Nanoid.generate(),
@@ -968,14 +968,14 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
-      assert [] = GroupCache.get_actor_groups("actor_1", gm_table)
+      assert [] = GrantCache.get_actor_groups("actor_1", gm_table)
     end
 
-    test "entityGroup DELETE removes from ETS",
+    test "membership DELETE removes from ETS",
          %{
            writer_name: writer_name,
-           entity_groups: eg_table,
-           entity_groups_by_id: eg_by_id
+           memberships: eg_table,
+           memberships_by_id: eg_by_id
          } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
@@ -984,12 +984,12 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_" <> Nanoid.generate(),
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates(eg_id, "todo_1", "group_1", hlc)
+        updates: membership_updates(eg_id, "todo_1", "group_1", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
-      assert EntityGroupCache.entity_groups("todo_1", eg_table) == ["group_1"]
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) != nil
+      assert MembershipCache.memberships("todo_1", eg_table) == ["group_1"]
+      assert MembershipCache.get_membership(eg_id, eg_by_id) != nil
 
       delete_action = %{
         id: "act_" <> Nanoid.generate(),
@@ -999,8 +999,8 @@ defmodule EbbServer.Storage.WriterTest do
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
-      assert EntityGroupCache.entity_groups("todo_1", eg_table) == []
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
+      assert MembershipCache.memberships("todo_1", eg_table) == []
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
     end
 
     test "relationship DELETE removes from ETS",
@@ -1034,25 +1034,25 @@ defmodule EbbServer.Storage.WriterTest do
       assert :ets.lookup(rel_table, "todo_1") == []
     end
 
-    test "non-system entity updates do not affect ETS",
+    test "non-system component updates do not affect ETS",
          %{
            writer_name: writer_name,
-           group_members: gm_table,
-           entity_groups: eg_table
+           grants: gm_table,
+           memberships: eg_table
          } do
       action = validated_action()
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert [] = GroupCache.get_actor_groups("a_test", gm_table)
-      assert EntityGroupCache.entity_groups("todo_test", eg_table) == []
+      assert [] = GrantCache.get_actor_groups("a_test", gm_table)
+      assert MembershipCache.memberships("todo_test", eg_table) == []
     end
 
     test "mixed batch - system and user entities",
          %{
            writer_name: writer_name,
-           group_members: gm_table,
-           entity_groups: eg_table
+           grants: gm_table,
+           memberships: eg_table
          } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
@@ -1063,20 +1063,20 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: hlc,
         updates:
           [todo_update("upd_" <> Nanoid.generate(), "todo_1", "Test", hlc)] ++
-            group_member_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+            grant_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert [%{group_id: "group_1"}] = GroupCache.get_actor_groups("actor_1", gm_table)
-      assert EntityGroupCache.entity_groups("todo_1", eg_table) == []
+      assert [%{group_id: "group_1"}] = GrantCache.get_actor_groups("actor_1", gm_table)
+      assert MembershipCache.memberships("todo_1", eg_table) == []
     end
 
     # #264 Option A: the authorizer resolves an existing entity's type
     # from here, so every user-entity Update must populate the index.
     test "indexes the type of a user-entity update", %{
       writer_name: writer_name,
-      entity_types: entity_types
+      entity_models: entity_models
     } do
       action =
         validated_action(%{
@@ -1087,78 +1087,78 @@ defmodule EbbServer.Storage.WriterTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityTypeCache.get_type("todo_typed", entity_types) == "todo"
+      assert EntityModelCache.get_model("todo_typed", entity_models) == "todo"
     end
 
-    test "a same-flush entityGroup put then patch caches the merged row", %{
+    test "a same-flush membership put then patch caches the merged row", %{
       writer_name: writer_name,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id
+      memberships: eg_table,
+      memberships_by_id: eg_by_id
     } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
 
-      put = entity_group_updates(eg_id, "todo_merge", "group_1", hlc)
-      patch = entity_group_patch(eg_id, "todo_merge", "group_2", hlc)
+      put = membership_updates(eg_id, "todo_merge", "group_1", hlc)
+      patch = membership_patch(eg_id, "todo_merge", "group_2", hlc)
 
       action = validated_action(%{id: "act_merge", updates: put ++ patch})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityGroupCache.entity_groups("todo_merge", eg_table) == ["group_2"]
+      assert MembershipCache.memberships("todo_merge", eg_table) == ["group_2"]
 
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == %{
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == %{
                id: eg_id,
                entity_id: "todo_merge",
                group_id: "group_2"
              }
     end
 
-    test "a same-flush put then delete leaves the entityGroup row gone", %{
+    test "a same-flush put then delete leaves the membership row gone", %{
       writer_name: writer_name,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id
+      memberships: eg_table,
+      memberships_by_id: eg_by_id
     } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
 
-      put = entity_group_updates(eg_id, "todo_pd", "group_1", hlc)
+      put = membership_updates(eg_id, "todo_pd", "group_1", hlc)
       delete = system_delete_update(eg_id)
 
       action = validated_action(%{id: "act_pd", updates: put ++ [delete]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
-      assert EntityGroupCache.entity_groups("todo_pd", eg_table) == []
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
+      assert MembershipCache.memberships("todo_pd", eg_table) == []
     end
 
     # A delete names the row, not a component, so the fold collapses the row
     # to one delete however its component Updates are ordered: a delete in the
     # same Action cannot be undone by a put beside it.
-    test "a same-flush delete then put leaves the entityGroup row deleted", %{
+    test "a same-flush delete then put leaves the membership row deleted", %{
       writer_name: writer_name,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id
+      memberships: eg_table,
+      memberships_by_id: eg_by_id
     } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
 
       delete = system_delete_update(eg_id)
-      put = entity_group_updates(eg_id, "todo_dp", "group_2", hlc)
+      put = membership_updates(eg_id, "todo_dp", "group_2", hlc)
 
       action = validated_action(%{id: "act_dp", updates: [delete] ++ put})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
-      assert EntityGroupCache.entity_groups("todo_dp", eg_table) == []
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
+      assert MembershipCache.memberships("todo_dp", eg_table) == []
     end
 
-    test "a same-flush entityGroup delete then patch does not resurrect the row", %{
+    test "a same-flush membership delete then patch does not resurrect the row", %{
       writer_name: writer_name,
-      entity_groups: eg_table,
-      entity_groups_by_id: eg_by_id
+      memberships: eg_table,
+      memberships_by_id: eg_by_id
     } do
       hlc = generate_hlc()
       eg_id = "eg_" <> Nanoid.generate()
@@ -1166,67 +1166,67 @@ defmodule EbbServer.Storage.WriterTest do
       seed =
         validated_action(%{
           id: "act_resurrect_seed",
-          updates: entity_group_updates(eg_id, "todo_resurrect", "group_1", hlc)
+          updates: membership_updates(eg_id, "todo_resurrect", "group_1", hlc)
         })
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) != nil
+      assert MembershipCache.get_membership(eg_id, eg_by_id) != nil
 
       delete = system_delete_update(eg_id)
-      patch = entity_group_patch(eg_id, "todo_merge", "group_2", hlc)
+      patch = membership_patch(eg_id, "todo_merge", "group_2", hlc)
 
       action = validated_action(%{id: "act_resurrect", updates: [delete] ++ patch})
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([action], writer_name)
 
-      assert EntityGroupCache.get_entity_group(eg_id, eg_by_id) == nil
-      assert EntityGroupCache.entity_groups("todo_resurrect", eg_table) == []
+      assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
+      assert MembershipCache.memberships("todo_resurrect", eg_table) == []
     end
 
-    test "a same-flush groupMember put then delete removes the membership", %{
+    test "a same-flush grant put then delete removes the membership", %{
       writer_name: writer_name,
-      group_members: gm_table,
-      group_members_by_id: gm_by_id
+      grants: gm_table,
+      grants_by_id: gm_by_id
     } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
 
-      put = group_member_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
+      put = grant_updates(gm_id, "actor_1", "group_1", ["todo.create"], hlc)
       delete = system_delete_update(gm_id)
 
       action = validated_action(%{id: "act_gm_pd", updates: put ++ [delete]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert GroupCache.get_group_member(gm_id, gm_by_id) == nil
-      assert GroupCache.get_actor_groups("actor_1", gm_table) == []
+      assert GrantCache.get_grant(gm_id, gm_by_id) == nil
+      assert GrantCache.get_actor_groups("actor_1", gm_table) == []
     end
 
     # A membership id names one row with one actor. An actor change in a
     # single flush re-keys that row: the last put wins, and the previous
     # actor must not keep a primary entry for it (#625). Leaving the old
     # entry behind would grant a membership the durable row no longer has.
-    test "a same-flush groupMember actor change leaves one row under the final actor", %{
+    test "a same-flush grant actor change leaves one row under the final actor", %{
       writer_name: writer_name,
-      group_members: gm_table,
-      group_members_by_id: gm_by_id
+      grants: gm_table,
+      grants_by_id: gm_by_id
     } do
       hlc = generate_hlc()
       gm_id = "gm_" <> Nanoid.generate()
 
-      put_a = group_member_updates(gm_id, "actor_a", "group_1", ["todo.create"], hlc)
-      put_b = group_member_updates(gm_id, "actor_b", "group_1", ["todo.read"], hlc)
+      put_a = grant_updates(gm_id, "actor_a", "group_1", ["todo.create"], hlc)
+      put_b = grant_updates(gm_id, "actor_b", "group_1", ["todo.read"], hlc)
 
       action = validated_action(%{id: "act_gm_actor_swap", updates: put_a ++ put_b})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      assert GroupCache.get_actor_groups("actor_a", gm_table) == []
+      assert GrantCache.get_actor_groups("actor_a", gm_table) == []
 
       assert [%{group_id: "group_1", permissions: ["todo.read"]}] =
-               GroupCache.get_actor_groups("actor_b", gm_table)
+               GrantCache.get_actor_groups("actor_b", gm_table)
 
-      assert GroupCache.get_group_member(gm_id, gm_by_id).actor_id == "actor_b"
+      assert GrantCache.get_grant(gm_id, gm_by_id).actor_id == "actor_b"
     end
   end
 
@@ -1243,8 +1243,8 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: hlc,
         updates:
           [todo_update("upd_todo", "todo_multi", "x", hlc)] ++
-            entity_group_updates("eg_g1", "todo_multi", "g_1", hlc) ++
-            entity_group_updates("eg_g2", "todo_multi", "g_2", hlc)
+            membership_updates("eg_g1", "todo_multi", "g_1", hlc) ++
+            membership_updates("eg_g2", "todo_multi", "g_2", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -1269,7 +1269,7 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: hlc,
         updates:
           [todo_update("upd_todo", "todo_same_group", "x", hlc)] ++
-            entity_group_updates("eg_same_group", "todo_same_group", "g_bench", hlc)
+            membership_updates("eg_same_group", "todo_same_group", "g_bench", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -1296,7 +1296,7 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: hlc,
         updates:
           [todo_update("upd_todo", "todo_link", "x", hlc)] ++
-            entity_group_updates("eg_member", "todo_link", "g_1", hlc) ++
+            membership_updates("eg_member", "todo_link", "g_1", hlc) ++
             relationship_updates("rel_domain", "todo_link", "doc_1", hlc)
       }
 
@@ -1311,7 +1311,7 @@ defmodule EbbServer.Storage.WriterTest do
     test "a re-put moves the entity to the new group for later writes", %{
       writer_name: writer_name,
       rocks_name: rocks_name,
-      entity_groups: eg_table
+      memberships: eg_table
     } do
       hlc = generate_hlc()
 
@@ -1319,20 +1319,20 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_first",
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates("eg_1", "todo_move", "g_1", hlc)
+        updates: membership_updates("eg_1", "todo_move", "g_1", hlc)
       }
 
       second = %{
         id: "act_second",
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates("eg_1", "todo_move", "g_2", hlc)
+        updates: membership_updates("eg_1", "todo_move", "g_2", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([first], writer_name)
       assert {:ok, {2, 2}, []} = Writer.write_actions([second], writer_name)
 
-      assert EntityGroupCache.entity_groups("todo_move", eg_table) == ["g_2"]
+      assert MembershipCache.memberships("todo_move", eg_table) == ["g_2"]
 
       cf = RocksDB.cf_group_actions(rocks_name)
       assert {:ok, "act_first"} = RocksDB.get(cf, group_gsn_key("g_1", 1), name: rocks_name)
@@ -1351,7 +1351,7 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: hlc,
         updates:
           [todo_update("upd_memo_first", "todo_memo", "x", hlc)] ++
-            entity_group_updates("eg_memo_a", "todo_memo", "g_a", hlc)
+            membership_updates("eg_memo_a", "todo_memo", "g_a", hlc)
       }
 
       second = %{
@@ -1360,7 +1360,7 @@ defmodule EbbServer.Storage.WriterTest do
         hlc: generate_hlc(),
         updates:
           [todo_update("upd_memo_second", "todo_memo", "x", hlc)] ++
-            entity_group_updates("eg_memo_b", "todo_memo", "g_b", hlc)
+            membership_updates("eg_memo_b", "todo_memo", "g_b", hlc)
       }
 
       # Both Actions build in one flush, against the pre-write cache. The
@@ -1385,13 +1385,13 @@ defmodule EbbServer.Storage.WriterTest do
         actor_id: "actor_1",
         hlc: hlc,
         updates:
-          entity_group_updates("shared", "todo_other", "g_membership", hlc) ++
-            entity_group_updates("eg_user", "shared", "g_user", hlc)
+          membership_updates("shared", "todo_other", "g_membership", hlc) ++
+            membership_updates("eg_user", "shared", "g_user", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
 
-      # `shared` is both a membership row id (entityGroup) and an entity
+      # `shared` is both a membership row id (membership) and an entity
       # id (todo) with different group sets. Both are prepared in one flush,
       # so the memo must key them apart by model rather than by id alone.
       delete_membership = %{
@@ -1431,11 +1431,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: ctx.rocks_name,
           dirty_set: ctx.dirty_set,
           gsn_counter: ctx.gsn_counter,
-          group_members: ctx.group_members,
-          group_members_by_id: ctx.group_members_by_id,
-          entity_groups: ctx.entity_groups,
-          entity_groups_by_id: ctx.entity_groups_by_id,
-          entity_groups_by_group: ctx.entity_groups_by_group,
+          grants: ctx.grants,
+          grants_by_id: ctx.grants_by_id,
+          memberships: ctx.memberships,
+          memberships_by_id: ctx.memberships_by_id,
+          memberships_by_group: ctx.memberships_by_group,
           relationships: ctx.relationships,
           relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
@@ -1462,11 +1462,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: ctx.rocks_name,
           dirty_set: ctx.dirty_set,
           gsn_counter: ctx.gsn_counter,
-          group_members: ctx.group_members,
-          group_members_by_id: ctx.group_members_by_id,
-          entity_groups: ctx.entity_groups,
-          entity_groups_by_id: ctx.entity_groups_by_id,
-          entity_groups_by_group: ctx.entity_groups_by_group,
+          grants: ctx.grants,
+          grants_by_id: ctx.grants_by_id,
+          memberships: ctx.memberships,
+          memberships_by_id: ctx.memberships_by_id,
+          memberships_by_group: ctx.memberships_by_group,
           relationships: ctx.relationships,
           relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
@@ -1477,8 +1477,7 @@ defmodule EbbServer.Storage.WriterTest do
       member =
         validated_action(%{
           id: "act_member_actor",
-          updates:
-            group_member_updates("gm_member_actor", "a_member", "g_member", ["todo.read"], hlc)
+          updates: grant_updates("gm_member_actor", "a_member", "g_member", ["todo.read"], hlc)
         })
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([member], writer_name)
@@ -1493,15 +1492,15 @@ defmodule EbbServer.Storage.WriterTest do
       assert_receive {:batch_committed, 2, 2, _groups, _committed_at, _payloads, []}
     end
 
-    test "carries the pre-update group set for an entityGroup delete", %{
+    test "carries the pre-update group set for an membership delete", %{
       rocks_name: rocks_name,
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     } do
@@ -1513,11 +1512,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: rocks_name,
           dirty_set: dirty_set,
           gsn_counter: gsn_counter,
-          group_members: group_members,
-          group_members_by_id: group_members_by_id,
-          entity_groups: entity_groups,
-          entity_groups_by_id: entity_groups_by_id,
-          entity_groups_by_group: entity_groups_by_group,
+          grants: grants,
+          grants_by_id: grants_by_id,
+          memberships: memberships,
+          memberships_by_id: memberships_by_id,
+          memberships_by_group: memberships_by_group,
           relationships: relationships,
           relationships_by_id: relationships_by_id,
           fan_out_router: router_name
@@ -1529,7 +1528,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_snapshot_put",
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates("eg_snapshot", "todo_snapshot", "g_snapshot", hlc)
+        updates: membership_updates("eg_snapshot", "todo_snapshot", "g_snapshot", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([put], writer_name)
@@ -1549,7 +1548,7 @@ defmodule EbbServer.Storage.WriterTest do
       # The by-id entry is gone once the caches update, so the delete's
       # group set must come from the same pre-update pass that built
       # cf_group_actions — not from a later re-resolution.
-      assert EntityGroupCache.entity_groups("todo_snapshot", entity_groups) == []
+      assert MembershipCache.memberships("todo_snapshot", memberships) == []
 
       assert_receive {:batch_committed, 2, 2, %{2 => ["g_snapshot"]}, _committed_at, _payloads,
                       _actors}
@@ -1559,12 +1558,12 @@ defmodule EbbServer.Storage.WriterTest do
       rocks_name: rocks_name,
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      entity_types: entity_types,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
+      entity_models: entity_models,
       relationships: relationships,
       relationships_by_id: relationships_by_id
     } do
@@ -1576,12 +1575,12 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: rocks_name,
           dirty_set: dirty_set,
           gsn_counter: gsn_counter,
-          group_members: group_members,
-          group_members_by_id: group_members_by_id,
-          entity_groups: entity_groups,
-          entity_groups_by_id: entity_groups_by_id,
-          entity_groups_by_group: entity_groups_by_group,
-          entity_types: entity_types,
+          grants: grants,
+          grants_by_id: grants_by_id,
+          memberships: memberships,
+          memberships_by_id: memberships_by_id,
+          memberships_by_group: memberships_by_group,
+          entity_models: entity_models,
           relationships: relationships,
           relationships_by_id: relationships_by_id,
           fan_out_router: router_name
@@ -1593,7 +1592,7 @@ defmodule EbbServer.Storage.WriterTest do
         id: "act_setgroups_seed",
         actor_id: "actor_1",
         hlc: hlc,
-        updates: entity_group_updates("eg_old", "todo_set", "g_old", hlc)
+        updates: membership_updates("eg_old", "todo_set", "g_old", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([seed], writer_name)
@@ -1606,15 +1605,15 @@ defmodule EbbServer.Storage.WriterTest do
         actor_id: "actor_1",
         hlc: generate_hlc(),
         updates:
-          entity_group_updates("eg_new", "todo_set", "g_new", hlc) ++
+          membership_updates("eg_new", "todo_set", "g_new", hlc) ++
             [system_delete_update("eg_old")]
       }
 
       assert {:ok, {2, 2}, []} = Writer.write_actions([swap], writer_name)
 
       # The cache ends at the new set; the delete row is gone.
-      assert EntityGroupCache.entity_groups("todo_set", entity_groups) == ["g_new"]
-      assert EntityGroupCache.get_entity_group("eg_old", entity_groups_by_id) == nil
+      assert MembershipCache.memberships("todo_set", memberships) == ["g_new"]
+      assert MembershipCache.get_membership("eg_old", memberships_by_id) == nil
 
       # The delete is indexed under the group it left, the put under the
       # group it joined.
@@ -1639,11 +1638,11 @@ defmodule EbbServer.Storage.WriterTest do
           rocks_name: ctx.rocks_name,
           dirty_set: ctx.dirty_set,
           gsn_counter: ctx.gsn_counter,
-          group_members: ctx.group_members,
-          group_members_by_id: ctx.group_members_by_id,
-          entity_groups: ctx.entity_groups,
-          entity_groups_by_id: ctx.entity_groups_by_id,
-          entity_groups_by_group: ctx.entity_groups_by_group,
+          grants: ctx.grants,
+          grants_by_id: ctx.grants_by_id,
+          memberships: ctx.memberships,
+          memberships_by_id: ctx.memberships_by_id,
+          memberships_by_group: ctx.memberships_by_group,
           relationships: ctx.relationships,
           relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
@@ -1675,7 +1674,7 @@ defmodule EbbServer.Storage.WriterTest do
 
   # A platform row is one atomic component, so its fixture is one Update
   # whose value is the whole object.
-  defp entity_group_updates(id, entity_id, group_id, hlc) do
+  defp membership_updates(id, entity_id, group_id, hlc) do
     [
       validated_component(
         id,
@@ -1685,13 +1684,13 @@ defmodule EbbServer.Storage.WriterTest do
     ]
   end
 
-  defp entity_group_patch(id, entity_id, group_id, hlc) do
-    entity_group_updates(id, entity_id, group_id, hlc)
+  defp membership_patch(id, entity_id, group_id, hlc) do
+    membership_updates(id, entity_id, group_id, hlc)
   end
 
   # A value that omits the entity cannot be projected into the membership
   # cache.
-  defp entity_group_partial_patch(id, group_id, hlc) do
+  defp membership_partial_patch(id, group_id, hlc) do
     validated_component(id, "ebb/membership", %{
       "value" => %{"group_id" => group_id},
       "hlc" => hlc
@@ -1706,7 +1705,7 @@ defmodule EbbServer.Storage.WriterTest do
     validated_update(%{subject_id: subject_id, method: :delete})
   end
 
-  defp group_member_updates(id, actor_id, group_id, permissions, hlc) do
+  defp grant_updates(id, actor_id, group_id, permissions, hlc) do
     [
       validated_component(id, "ebb/grant", %{
         "value" => %{
@@ -1719,12 +1718,12 @@ defmodule EbbServer.Storage.WriterTest do
     ]
   end
 
-  defp group_member_patch(id, actor_id, group_id, permissions, hlc) do
-    group_member_updates(id, actor_id, group_id, permissions, hlc)
+  defp grant_patch(id, actor_id, group_id, permissions, hlc) do
+    grant_updates(id, actor_id, group_id, permissions, hlc)
   end
 
   # A value that omits the actor cannot be projected into the grant caches.
-  defp group_member_partial_patch(id, permissions, hlc) do
+  defp grant_partial_patch(id, permissions, hlc) do
     validated_component(id, "ebb/grant", %{
       "value" => %{"permissions" => permissions},
       "hlc" => hlc

@@ -33,9 +33,9 @@ import {
 import { platformEntity } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
@@ -69,7 +69,7 @@ const ingestRow = (replica: ReturnType<typeof createReplica>, entity: Entity, po
   const updates: Update[] = Object.entries(entity.data.fields).map(([field, value]) => ({
     id: `u_${entity.id}_${field}`,
     subject_id: entity.id,
-    component: componentName(entity.type, field),
+    component: componentName(entity.model, field),
     method: isFieldMap(value) ? "merge" : "replace",
     data: value,
   }));

@@ -33,6 +33,7 @@ describe("@ebbjs/storage subpaths", () => {
     expect(Object.keys(mod).sort()).toEqual([
       "DEFAULT_PINNED_CAPACITY",
       "DEFAULT_PINNED_TTL_MS",
+      "REPLICA_RECORD_FORMAT",
       "applyUpdate",
       "contentChanged",
       "createReplica",

@@ -318,7 +318,7 @@ defmodule EbbServer.Storage.Writer do
   `mix bench.actions --ablate` can price each one. `:component_entries`
   drops only the per-component half of the derived component index, leaving
   the model entry that is today's one row per row; `:component_entities`
-  drops the whole in-memory apply. `:entity_index` remains the combined alias
+  drops the whole in-memory apply. `:entity_scope` remains the combined alias
   that drops both entity index halves. `:dedup` also skips the in-flight claim,
   which is dedup work. It is never set in production, and an empty list
   emits exactly the same ops as before. See `EbbServer.Bench.Options`.
@@ -328,13 +328,13 @@ defmodule EbbServer.Storage.Writer do
   When building the `cf_group_actions` index entry for an update, the
   Writer resolves the group **set** the update belongs to. This is
   straightforward when the entity already exists — look it up in
-  `EntityGroupCache`. When the membership row is being created in the
+  `MembershipCache`. When the membership row is being created in the
   same action (e.g. a "create todo" update paired with an `ebb/membership`
   update), the cache has no entry yet.
 
   To handle that, the Writer builds an **intra-action context** before
   processing updates: it maps each `entity_id` to the group ids carried
-  by its `ebb/membership` updates. `EntityIndex` unions that with the
+  by its `ebb/membership` updates. `EntityScope` unions that with the
   cached membership set, so an update is indexed once per group in the
   set.
 
@@ -366,13 +366,13 @@ defmodule EbbServer.Storage.Writer do
     CommitterPool,
     ComponentEntityIndex,
     DirtyTracker,
-    EntityGroupCache,
-    EntityIndex,
-    EntityTypeCache,
+    EntityModelCache,
+    EntityScope,
+    GrantCache,
     GroupAppsCache,
-    GroupCache,
     GsnCounter,
     InFlightActions,
+    MembershipCache,
     PreparedAction,
     PreparePool,
     Preparer,
@@ -419,13 +419,13 @@ defmodule EbbServer.Storage.Writer do
           rocks_name: GenServer.name(),
           dirty_set: atom(),
           gsn_counter: :atomics.atomics(),
-          group_members: atom(),
-          group_members_by_id: atom(),
-          group_members_by_group: atom(),
-          entity_groups: atom(),
-          entity_groups_by_id: atom(),
-          entity_groups_by_group: atom(),
-          entity_types: atom(),
+          grants: atom(),
+          grants_by_id: atom(),
+          grants_by_group: atom(),
+          memberships: atom(),
+          memberships_by_id: atom(),
+          memberships_by_group: atom(),
+          entity_models: atom(),
           component_index: atom(),
           component_entity_labels: atom(),
           group_apps: atom(),
@@ -462,13 +462,13 @@ defmodule EbbServer.Storage.Writer do
     :rocks_name,
     :dirty_set,
     :gsn_counter,
-    :group_members,
-    :group_members_by_id,
-    :group_members_by_group,
-    :entity_groups,
-    :entity_groups_by_id,
-    :entity_groups_by_group,
-    :entity_types,
+    :grants,
+    :grants_by_id,
+    :grants_by_group,
+    :memberships,
+    :memberships_by_id,
+    :memberships_by_group,
+    :entity_models,
     :component_index,
     :component_entity_labels,
     :group_apps,
@@ -618,53 +618,53 @@ defmodule EbbServer.Storage.Writer do
 
     gsn_counter = Keyword.get(opts, :gsn_counter, GsnCounter.get_resources().gsn_counter)
 
-    group_members =
+    grants =
       Keyword.get(
         opts,
-        :group_members,
-        CacheTables.group_members()
+        :grants,
+        CacheTables.grants()
       )
 
-    group_members_by_id =
+    grants_by_id =
       Keyword.get(
         opts,
-        :group_members_by_id,
-        CacheTables.group_members_by_id()
+        :grants_by_id,
+        CacheTables.grants_by_id()
       )
 
-    group_members_by_group =
+    grants_by_group =
       Keyword.get(
         opts,
-        :group_members_by_group,
-        CacheTables.group_members_by_group()
+        :grants_by_group,
+        CacheTables.grants_by_group()
       )
 
-    entity_groups =
+    memberships =
       Keyword.get(
         opts,
-        :entity_groups,
-        CacheTables.entity_groups()
+        :memberships,
+        CacheTables.memberships()
       )
 
-    entity_groups_by_id =
+    memberships_by_id =
       Keyword.get(
         opts,
-        :entity_groups_by_id,
-        CacheTables.entity_groups_by_id()
+        :memberships_by_id,
+        CacheTables.memberships_by_id()
       )
 
-    entity_groups_by_group =
+    memberships_by_group =
       Keyword.get(
         opts,
-        :entity_groups_by_group,
-        CacheTables.entity_groups_by_group()
+        :memberships_by_group,
+        CacheTables.memberships_by_group()
       )
 
-    entity_types =
+    entity_models =
       Keyword.get(
         opts,
-        :entity_types,
-        CacheTables.entity_types()
+        :entity_models,
+        CacheTables.entity_models()
       )
 
     {component_index, component_entity_labels} = component_index_tables(opts)
@@ -831,13 +831,13 @@ defmodule EbbServer.Storage.Writer do
       rocks_name: rocks_name,
       dirty_set: dirty_set,
       gsn_counter: gsn_counter,
-      group_members: group_members,
-      group_members_by_id: group_members_by_id,
-      group_members_by_group: group_members_by_group,
-      entity_groups: entity_groups,
-      entity_groups_by_id: entity_groups_by_id,
-      entity_groups_by_group: entity_groups_by_group,
-      entity_types: entity_types,
+      grants: grants,
+      grants_by_id: grants_by_id,
+      grants_by_group: grants_by_group,
+      memberships: memberships,
+      memberships_by_id: memberships_by_id,
+      memberships_by_group: memberships_by_group,
+      entity_models: entity_models,
       component_index: component_index,
       component_entity_labels: component_entity_labels,
       group_apps: group_apps,
@@ -2033,7 +2033,7 @@ defmodule EbbServer.Storage.Writer do
   # One flush resolves every Action against one cache snapshot plus the
   # unapplied slices of the batches ahead of it, so the cache-only part of
   # group resolution is memoized across the whole flush (see
-  # `EntityIndex.resolve_groups_cached/3`). Each Action still unions its own
+  # `EntityScope.resolve_groups_cached/3`). Each Action still unions its own
   # intra-action membership on top, so two Actions that move the same entity
   # cannot see each other's membership.
   #
@@ -2310,16 +2310,16 @@ defmodule EbbServer.Storage.Writer do
   # actor's view too. A delete's wire form carries only the row id, so its
   # actor has to be resolved from the by-id cache before the delete drops
   # it.
-  defp group_view_actors({:group_member_put, row}, state) do
-    case GroupCache.get_group_member(row.id, state.group_members_by_id) do
+  defp group_view_actors({:grant_put, row}, state) do
+    case GrantCache.get_grant(row.id, state.grants_by_id) do
       nil -> [row.actor_id]
       ^row -> []
       previous -> [row.actor_id, previous.actor_id]
     end
   end
 
-  defp group_view_actors({:group_member_delete, id}, state) do
-    case GroupCache.get_group_member(id, state.group_members_by_id) do
+  defp group_view_actors({:grant_delete, id}, state) do
+    case GrantCache.get_grant(id, state.grants_by_id) do
       nil -> []
       row -> [row.actor_id]
     end
@@ -2331,39 +2331,39 @@ defmodule EbbServer.Storage.Writer do
   # itself; this Writer only applies the result.
   defp plan_tables(state) do
     %{
-      group_members_by_id: state.group_members_by_id,
-      entity_groups_by_id: state.entity_groups_by_id,
+      grants_by_id: state.grants_by_id,
+      memberships_by_id: state.memberships_by_id,
       relationships_by_id: state.relationships_by_id,
       group_apps: state.group_apps
     }
   end
 
   @spec apply_cache_mutation(CacheMutationPlanner.mutation(), t()) :: any()
-  defp apply_cache_mutation({:entity_type, id, type}, state) do
-    EntityTypeCache.put_type(id, type, entity_types: state.entity_types)
+  defp apply_cache_mutation({:entity_model, id, model}, state) do
+    EntityModelCache.put_model(id, model, entity_models: state.entity_models)
   end
 
-  defp apply_cache_mutation({:group_member_put, row}, state) do
-    GroupCache.put_group_member(row, group_cache_opts(state))
+  defp apply_cache_mutation({:grant_put, row}, state) do
+    GrantCache.put_grant(row, group_cache_opts(state))
   end
 
-  defp apply_cache_mutation({:group_member_delete, id}, state) do
-    GroupCache.delete_group_member(id, group_cache_opts(state))
+  defp apply_cache_mutation({:grant_delete, id}, state) do
+    GrantCache.delete_grant(id, group_cache_opts(state))
   end
 
-  defp apply_cache_mutation({:entity_group_put, row}, state) do
-    EntityGroupCache.put_entity_group(row,
-      entity_groups: state.entity_groups,
-      entity_groups_by_id: state.entity_groups_by_id,
-      entity_groups_by_group: state.entity_groups_by_group
+  defp apply_cache_mutation({:membership_put, row}, state) do
+    MembershipCache.put_membership(row,
+      memberships: state.memberships,
+      memberships_by_id: state.memberships_by_id,
+      memberships_by_group: state.memberships_by_group
     )
   end
 
-  defp apply_cache_mutation({:entity_group_delete, id}, state) do
-    EntityGroupCache.delete_entity_group(id,
-      entity_groups: state.entity_groups,
-      entity_groups_by_id: state.entity_groups_by_id,
-      entity_groups_by_group: state.entity_groups_by_group
+  defp apply_cache_mutation({:membership_delete, id}, state) do
+    MembershipCache.delete_membership(id,
+      memberships: state.memberships,
+      memberships_by_id: state.memberships_by_id,
+      memberships_by_group: state.memberships_by_group
     )
   end
 
@@ -2588,19 +2588,19 @@ defmodule EbbServer.Storage.Writer do
 
   defp group_cache_opts(state) do
     [
-      group_members: state.group_members,
-      group_members_by_id: state.group_members_by_id,
-      group_members_by_group: state.group_members_by_group
+      grants: state.grants,
+      grants_by_id: state.grants_by_id,
+      grants_by_group: state.grants_by_group
     ]
   end
 
   defp resolve_cache_opts(state) do
     [
-      entity_groups: state.entity_groups,
-      entity_groups_by_id: state.entity_groups_by_id,
-      entity_types: state.entity_types,
+      memberships: state.memberships,
+      memberships_by_id: state.memberships_by_id,
+      entity_models: state.entity_models,
       relationships_by_id: state.relationships_by_id,
-      group_members_by_id: state.group_members_by_id,
+      grants_by_id: state.grants_by_id,
       group_apps: state.group_apps
     ]
   end
@@ -2609,25 +2609,25 @@ defmodule EbbServer.Storage.Writer do
 
   defp ablate(state), do: Keyword.get(state.commit_opts, :ablate, [])
 
-  # `:entity_index` is the combined alias the published bench commands use.
+  # `:entity_scope` is the combined alias the published bench commands use.
   defp component_entities_ablated?(state),
-    do: ablate?(:component_entities, state) or ablate?(:entity_index, state)
+    do: ablate?(:component_entities, state) or ablate?(:entity_scope, state)
 
   defp group_ids_for_mutation(mutation, resolve_opts, memo) do
-    case Keyword.get(resolve_opts, :entity_groups) do
+    case Keyword.get(resolve_opts, :memberships) do
       nil -> {[], memo}
       _table -> resolve_mutation_groups(mutation, resolve_opts, memo)
     end
   end
 
   defp resolve_mutation_groups(update, resolve_opts, memo) do
-    case EntityIndex.fan_out_preference(update, resolve_opts) do
+    case EntityScope.fan_out_preference(update, resolve_opts) do
       {:wire, group_ids} ->
         {group_ids, memo}
 
       {:source, source_id} ->
         resolve_memo(memo, {:source, source_id}, resolve_opts, fn ->
-          {EntityIndex.source_groups_cached(source_id, resolve_opts), source_id}
+          {EntityScope.source_groups_cached(source_id, resolve_opts), source_id}
         end)
 
       {:by_id, key} ->
@@ -2639,13 +2639,13 @@ defmodule EbbServer.Storage.Writer do
   # differently.
   defp resolve_memo_groups(memo, key, subject_id, resolve_opts) do
     resolve_memo(memo, {key, subject_id}, resolve_opts, fn ->
-      EntityIndex.resolve_groups_cached(key, subject_id, resolve_opts)
+      EntityScope.resolve_groups_cached(key, subject_id, resolve_opts)
     end)
   end
 
   defp resolve_memo(memo, key, opts, resolve) do
     {{groups, source_id}, memo} = memo_fetch(memo, key, resolve)
-    {EntityIndex.apply_intra_action(groups, source_id, opts), memo}
+    {EntityScope.apply_intra_action(groups, source_id, opts), memo}
   end
 
   defp memo_fetch(memo, key, resolve) do

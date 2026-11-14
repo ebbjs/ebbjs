@@ -23,7 +23,7 @@ defmodule EbbServer.Storage.RowMutations do
     mutation with `data: nil`; a delete names the row, not a component.
   - Otherwise the component values fold in order: `merge` merges the field
     with `FieldMerge`, `replace` sets it whole, `drop` removes it.
-  - `:put` when the row is new — the entity-type index does not know the id
+  - `:put` when the row is new — the entity-model cache does not know the id
     and no earlier Action of the same request created it — and `:patch` when
     it exists. Deriving the method from existence is what makes
     `<model>.create` mean "first write to a row" and `<model>.update` mean "a
@@ -32,12 +32,12 @@ defmodule EbbServer.Storage.RowMutations do
 
   The model is the component's prefix. A `delete` names no component, so its
   model is the committed one, resolved through the `:model_resolver` option
-  (the entity-type index widened with the by-id caches, by default). A
+  (the entity-model cache widened with the by-id caches, by default). A
   resolver that answers `nil` for an id nothing knows keeps the delete's
   model `nil` rather than inventing one.
   """
 
-  alias EbbServer.Storage.{Component, EntityIndex, FieldMerge, SystemComponent}
+  alias EbbServer.Storage.{Component, EntityScope, FieldMerge, SystemComponent}
 
   @typedoc """
   One whole-row projection of an Action's component Updates.
@@ -87,16 +87,16 @@ defmodule EbbServer.Storage.RowMutations do
     the same flush, which is one commit) folded, as a `MapSet` or a map keyed
     by id. A row in this set is not new.
   - `:exists?` — `(entity_id -> boolean)` deciding whether a row already
-    exists. Defaults to the entity-type index. A caller that has existence
+    exists. Defaults to the entity-model cache. A caller that has existence
     signals the index can lag (the authorizer's by-id caches) passes its own
     predicate, so the verb keeps meaning what that caller's rules mean.
   - `:model_resolver` — `(entity_id -> model | nil)` used for a delete, whose
-    Update names no component. Defaults to `EntityIndex.committed_model/2`
-    against `:entity_types` and the by-id caches in the same options.
-  - `:entity_types`, `:overlay` — the existence and committed-model reads,
-    passed through to `EntityIndex`.
+    Update names no component. Defaults to `EntityScope.committed_model/2`
+    against `:entity_models` and the by-id caches in the same options.
+  - `:entity_models`, `:overlay` — the existence and committed-model reads,
+    passed through to `EntityScope`.
 
-  One of `:entity_types`, or both predicates, is required: without an
+  One of `:entity_models`, or both predicates, is required: without an
   existence signal every row would fold to `:put`, which the rule engine
   reads as `<model>.create`, and without a committed-model signal a delete
   would forget the model it was authorized under.
@@ -126,7 +126,7 @@ defmodule EbbServer.Storage.RowMutations do
 
   # A delete names no component, so its kind exists only in the by-id caches.
   defp resolve_kind(%{kind: nil} = mutation, opts),
-    do: %{mutation | kind: EntityIndex.kind_of(mutation, opts)}
+    do: %{mutation | kind: EntityScope.kind_of(mutation, opts)}
 
   defp resolve_kind(mutation, _opts), do: mutation
 
@@ -212,8 +212,8 @@ defmodule EbbServer.Storage.RowMutations do
         fun
 
       nil ->
-        require_read!(opts, "an existence signal", ":entity_types or :exists?")
-        fn subject_id -> EntityIndex.exists?(subject_id, opts) end
+        require_read!(opts, "an existence signal", ":entity_models or :exists?")
+        fn subject_id -> EntityScope.exists?(subject_id, opts) end
 
       other ->
         raise ArgumentError,
@@ -228,8 +228,8 @@ defmodule EbbServer.Storage.RowMutations do
         fun
 
       nil ->
-        require_read!(opts, "a committed-model signal", ":entity_types or :model_resolver")
-        fn subject_id -> EntityIndex.committed_model(subject_id, opts) end
+        require_read!(opts, "a committed-model signal", ":entity_models or :model_resolver")
+        fn subject_id -> EntityScope.committed_model(subject_id, opts) end
 
       other ->
         raise ArgumentError,
@@ -242,7 +242,7 @@ defmodule EbbServer.Storage.RowMutations do
   # `:patch` or a delete's model, and guessing either silently changes what
   # the rule engine authorizes. The caller says which reads it has.
   defp require_read!(opts, what, expected) do
-    unless Keyword.has_key?(opts, :entity_types) do
+    unless Keyword.has_key?(opts, :entity_models) do
       raise ArgumentError, "RowMutations.fold/2 needs #{what}: pass #{expected}"
     end
 

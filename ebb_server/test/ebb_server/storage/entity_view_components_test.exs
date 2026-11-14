@@ -3,10 +3,10 @@ defmodule EbbServer.Storage.EntityViewComponentsTest do
 
   alias EbbServer.Storage.EntityView
 
-  defp view(type, fields) do
+  defp view(model, fields) do
     %{
       "id" => "note_1",
-      "type" => type,
+      "model" => model,
       "data" => %{"fields" => fields},
       "created_hlc" => 1,
       "updated_hlc" => 2,
@@ -54,7 +54,7 @@ defmodule EbbServer.Storage.EntityViewComponentsTest do
   test "json/1 hides the read model's derived components key" do
     entity = %{
       id: "note_1",
-      type: "note",
+      model: "note",
       data: %{"fields" => %{"title" => 1}, "components" => ["note/title"]},
       created_hlc: 1,
       updated_hlc: 2,
@@ -72,7 +72,7 @@ defmodule EbbServer.Storage.EntityViewComponentsTest do
   test "nil and filtered projections strip a derived components key from a raw view" do
     view = %{
       "id" => "note_1",
-      "type" => "note",
+      "model" => "note",
       "data" => %{"fields" => %{"title" => 1}, "components" => ["note/title"]}
     }
 

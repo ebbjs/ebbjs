@@ -28,7 +28,7 @@ defmodule EbbServer.BackwardCompatibilityIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Compatibility Test", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))

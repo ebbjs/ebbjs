@@ -2,10 +2,10 @@ defmodule EbbServer.Storage.CacheTables do
   @moduledoc """
   Single resolution surface for cache module table names.
 
-  GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache and
+  GrantCache, MembershipCache, EntityModelCache, RelationshipCache and
   GroupAppsCache publish their ETS table names via `:persistent_term` at
   boot. Callers that need to hand a table name to a downstream module
-  (Writer, EntityIndex, SystemCache, etc.) read it through this module
+  (Writer, EntityScope, SystemCache, etc.) read it through this module
   rather than re-implementing the `:persistent_term.get(..., default)`
   pattern.
 
@@ -15,60 +15,59 @@ defmodule EbbServer.Storage.CacheTables do
   """
 
   alias EbbServer.Storage.{
-    EntityGroupCache,
-    EntityTypeCache,
+    EntityModelCache,
+    GrantCache,
     GroupAppsCache,
-    GroupCache,
+    MembershipCache,
     RelationshipCache
   }
 
-  @default_group_members :ebb_group_members
-  @default_group_members_by_id :ebb_group_members_by_id
-  @default_group_members_by_group :ebb_group_members_by_group
-  @default_entity_groups :ebb_entity_groups
-  @default_entity_groups_by_id :ebb_entity_groups_by_id
-  @default_entity_groups_by_group :ebb_entity_groups_by_group
-  @default_entity_types :ebb_entity_types
+  @default_grants :ebb_grants
+  @default_grants_by_id :ebb_grants_by_id
+  @default_grants_by_group :ebb_grants_by_group
+  @default_memberships :ebb_memberships
+  @default_memberships_by_id :ebb_memberships_by_id
+  @default_memberships_by_group :ebb_memberships_by_group
+  @default_entity_models :ebb_entity_models
   @default_group_apps :ebb_group_apps
   @default_relationships :ebb_relationships
   @default_relationships_by_id :ebb_relationships_by_id
 
-  @spec group_members() :: atom()
-  def group_members,
-    do: :persistent_term.get({GroupCache, :group_members}, @default_group_members)
+  @spec grants() :: atom()
+  def grants,
+    do: :persistent_term.get({GrantCache, :grants}, @default_grants)
 
-  @spec group_members_by_id() :: atom()
-  def group_members_by_id,
-    do: :persistent_term.get({GroupCache, :group_members_by_id}, @default_group_members_by_id)
+  @spec grants_by_id() :: atom()
+  def grants_by_id,
+    do: :persistent_term.get({GrantCache, :grants_by_id}, @default_grants_by_id)
 
-  @spec group_members_by_group() :: atom()
-  def group_members_by_group,
-    do:
-      :persistent_term.get({GroupCache, :group_members_by_group}, @default_group_members_by_group)
+  @spec grants_by_group() :: atom()
+  def grants_by_group,
+    do: :persistent_term.get({GrantCache, :grants_by_group}, @default_grants_by_group)
 
-  @spec entity_groups() :: atom()
-  def entity_groups,
-    do: :persistent_term.get({EntityGroupCache, :entity_groups}, @default_entity_groups)
+  @spec memberships() :: atom()
+  def memberships,
+    do: :persistent_term.get({MembershipCache, :memberships}, @default_memberships)
 
-  @spec entity_groups_by_id() :: atom()
-  def entity_groups_by_id,
-    do:
-      :persistent_term.get(
-        {EntityGroupCache, :entity_groups_by_id},
-        @default_entity_groups_by_id
-      )
-
-  @spec entity_groups_by_group() :: atom()
-  def entity_groups_by_group,
+  @spec memberships_by_id() :: atom()
+  def memberships_by_id,
     do:
       :persistent_term.get(
-        {EntityGroupCache, :entity_groups_by_group},
-        @default_entity_groups_by_group
+        {MembershipCache, :memberships_by_id},
+        @default_memberships_by_id
       )
 
-  @spec entity_types() :: atom()
-  def entity_types,
-    do: :persistent_term.get({EntityTypeCache, :entity_types}, @default_entity_types)
+  @spec memberships_by_group() :: atom()
+  def memberships_by_group,
+    do:
+      :persistent_term.get(
+        {MembershipCache, :memberships_by_group},
+        @default_memberships_by_group
+      )
+
+  @spec entity_models() :: atom()
+  def entity_models,
+    do: :persistent_term.get({EntityModelCache, :entity_models}, @default_entity_models)
 
   @spec group_apps() :: atom()
   def group_apps,

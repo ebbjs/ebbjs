@@ -12,7 +12,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
   import Plug.Conn
   import EbbServer.TestHelpers, only: [attach_telemetry: 1, telemetry_events: 1]
 
-  alias EbbServer.Storage.{GroupCache, WatermarkTracker}
+  alias EbbServer.Storage.{GrantCache, WatermarkTracker}
   alias EbbServer.Sync.{GroupRegistry, Router, SSEConnectionSupervisor, SSEHandler}
 
   @await_timeout_ms 5_000
@@ -286,7 +286,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       actor_id = "a_test_#{:erlang.unique_integer([:positive])}"
       group_id = "g_test_#{:erlang.unique_integer([:positive])}"
 
-      GroupCache.put_group_member(%{
+      GrantCache.put_grant(%{
         id: "gm_test",
         actor_id: actor_id,
         group_id: group_id,
@@ -320,7 +320,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       actor_id = "a_stale_#{:erlang.unique_integer([:positive])}"
       group_id = "g_stale_#{:erlang.unique_integer([:positive])}"
 
-      GroupCache.put_group_member(%{
+      GrantCache.put_grant(%{
         id: "gm_stale_#{:erlang.unique_integer([:positive])}",
         actor_id: actor_id,
         group_id: group_id,
@@ -354,7 +354,7 @@ defmodule EbbServer.Sync.SSEHandlerTest do
     group_id = "g_#{prefix}_#{suffix}"
     actor_id = "a_#{prefix}_#{suffix}"
 
-    GroupCache.put_group_member(%{
+    GrantCache.put_grant(%{
       id: "gm_#{prefix}_#{suffix}",
       actor_id: actor_id,
       group_id: group_id,

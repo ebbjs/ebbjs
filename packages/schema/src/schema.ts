@@ -13,7 +13,7 @@ import { MigrationRegistry, type MigrationDef, type VersionedComponent } from ".
 import type { RelationshipDef } from "./relationship";
 import type { TSchema } from "@sinclair/typebox/type";
 import { assertAccessorNameAvailable, assertEntityNameAvailable } from "./reserved";
-import { ebbSystemEntity } from "./system-entities";
+import { ebbModel } from "./platform-model";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -247,7 +247,7 @@ export function seedRegistry(
   models: Record<string, AnyModelDef>,
   relationships: Record<string, AnyRelationshipDef> | undefined,
 ): void {
-  registry.register(ebbSystemEntity);
+  registry.register(ebbModel);
   for (const [key, model] of Object.entries(models)) {
     if (key !== model.name) throw new ModelKeyMismatchError(key, model.name);
     assertComponentsBelongToModel(model);

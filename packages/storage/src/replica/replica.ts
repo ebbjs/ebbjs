@@ -221,7 +221,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   /** Present components of a row's field map, under the row's own model. */
   const fieldComponentsOf = (row: Entity): readonly string[] =>
-    Object.keys(row.data.fields).map((field) => componentName(row.type, field));
+    Object.keys(row.data.fields).map((field) => componentName(row.model, field));
 
   /**
    * Every component a resident row is known to carry: held values plus the
@@ -363,7 +363,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // row between models without touching the base, so its overrides win.
     const ids = new Set(modelIndex.get(model) ?? []);
     for (const [id, row] of effective) {
-      if (row !== null && row.type === model) ids.add(id);
+      if (row !== null && row.model === model) ids.add(id);
       else ids.delete(id);
     }
     const rows: Entity[] = [];
@@ -395,11 +395,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   /** Remove a non-held component's value from a base row and keep its existence. */
   const stripToResidency = (id: string, row: Entity): Entity => {
-    dropStaleDormant(id, row.type);
+    dropStaleDormant(id, row.model);
     let changed = false;
     const fields: Record<string, FieldValue> = {};
     for (const [field, value] of Object.entries(row.data.fields)) {
-      const component = componentName(row.type, field);
+      const component = componentName(row.model, field);
       if (holds(component) || pins.has(pinKey(id, component))) {
         fields[field] = value;
       } else {
@@ -462,7 +462,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
           notePendingPresence(id, component, update.method !== "drop");
           return;
         }
-        const sameModel = componentModel(component) === previous.type;
+        const sameModel = componentModel(component) === previous.model;
         if (update.method === "drop") forgetDormant(id, component);
         else ensureDormant(id, component);
         // A write in the row's own model changes no retained value, so it must
@@ -489,7 +489,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       entities.delete(id);
       dormant.delete(id);
       componentVersions.delete(id);
-      removeFromModel(previous.type, id);
+      removeFromModel(previous.model, id);
       return;
     }
 
@@ -503,14 +503,14 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       entities.delete(id);
       dormant.delete(id);
       componentVersions.delete(id);
-      if (previous !== null) removeFromModel(previous.type, id);
+      if (previous !== null) removeFromModel(previous.model, id);
       else orphans.delete(id);
       return;
     }
 
     entities.set(id, stripped);
-    if (previous !== null && previous.type !== stripped.type) removeFromModel(previous.type, id);
-    addToModel(stripped.type, id);
+    if (previous !== null && previous.model !== stripped.model) removeFromModel(previous.model, id);
+    addToModel(stripped.model, id);
 
     if (previous === null) {
       const pending = orphans.get(id);
@@ -528,9 +528,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         if (row !== stripped) {
           const residentRow = stripToResidency(id, row);
           entities.set(id, residentRow);
-          if (stripped.type !== residentRow.type) {
-            removeFromModel(stripped.type, id);
-            addToModel(residentRow.type, id);
+          if (stripped.model !== residentRow.model) {
+            removeFromModel(stripped.model, id);
+            addToModel(residentRow.model, id);
           }
         }
       }
@@ -697,7 +697,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     pendingOpens.delete(id);
     cancelOpensFor(id);
     dropPinsFor(id);
-    if (base !== undefined) removeFromModel(base.type, id);
+    if (base !== undefined) removeFromModel(base.model, id);
   };
 
   /**
@@ -755,19 +755,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const fields: Record<string, FieldValue> = {};
       const offloaded = new Set<string>();
       for (const [field, value] of Object.entries(entity.data.fields)) {
-        const component = componentName(entity.type, field);
+        const component = componentName(entity.model, field);
         if (holds(component)) fields[field] = value;
         else offloaded.add(component);
       }
       for (const component of notResident[entity.id] ?? []) {
         const model = componentModel(component);
-        if (!holds(component) && (model === entity.type || model === EBB_MODEL_NAME)) {
+        if (!holds(component) && (model === entity.model || model === EBB_MODEL_NAME)) {
           offloaded.add(component);
         }
       }
       const carried = Object.keys(entity.data.fields).length > 0 || offloaded.size > 0;
       const carriedComponents = [
-        ...Object.keys(entity.data.fields).map((field) => componentName(entity.type, field)),
+        ...Object.keys(entity.data.fields).map((field) => componentName(entity.model, field)),
         ...offloaded,
       ];
       const stamps = new Map<string, number>();
@@ -789,10 +789,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
           ? withAdoptedMapFields(entity)
           : withAdoptedMapFields({ ...entity, data: { fields } });
       entities.set(row.id, row);
-      addToModel(row.type, row.id);
+      addToModel(row.model, row.id);
       if (offloaded.size > 0) dormant.set(row.id, offloaded);
       const components = [
-        ...Object.keys(fields).map((field) => componentName(row.type, field)),
+        ...Object.keys(fields).map((field) => componentName(row.model, field)),
         ...offloaded,
       ];
       if (stamps.size > 0) componentVersions.set(row.id, stamps);
@@ -840,7 +840,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (components.length > 0 && held.length === 0) continue;
       const fields: Record<string, FieldValue> = {};
       for (const [field, value] of Object.entries(row.data.fields)) {
-        if (holds(componentName(row.type, field))) fields[field] = value;
+        if (holds(componentName(row.model, field))) fields[field] = value;
       }
       persisted.push(withWireMapFields({ ...row, data: { fields } }));
       const offloaded = components.filter((component) => !holds(component));
@@ -870,8 +870,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   const stats = (): ReplicaStats => {
-    const byType: Record<string, number> = {};
-    const heldByType: Record<string, number> = {};
+    const byModel: Record<string, number> = {};
+    const heldByModel: Record<string, number> = {};
     const heldComponents: Record<string, number> = {};
     const pinnedComponents: Record<string, number> = {};
     const nonResidentComponents: Record<string, number> = {};
@@ -889,10 +889,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const row = viewOf(id);
       if (row === null) continue;
       total += 1;
-      byType[row.type] = (byType[row.type] ?? 0) + 1;
+      byModel[row.model] = (byModel[row.model] ?? 0) + 1;
       const carried = presenceOfRow(id, row);
       if (carried.length === 0 || carried.some(holds)) {
-        heldByType[row.type] = (heldByType[row.type] ?? 0) + 1;
+        heldByModel[row.model] = (heldByModel[row.model] ?? 0) + 1;
         heldTotal += 1;
       }
       for (const component of new Set(carried)) {
@@ -911,9 +911,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
     return {
       entities: total,
-      byType,
+      byModel,
       held: heldTotal,
-      heldByType,
+      heldByModel,
       pinned: pins.size,
       components,
       residentComponents,
@@ -1026,7 +1026,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const row: Entity = {
       ...(base ?? loaded),
       id,
-      type: loaded.type,
+      model: loaded.model,
       data: { fields },
       exists: loaded.exists,
       created_hlc: loaded.created_hlc,
@@ -1035,7 +1035,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       last_gsn: Math.max(base?.last_gsn ?? 0, loaded.last_gsn),
     };
     entities.set(id, row);
-    addToModel(row.type, id);
+    addToModel(row.model, id);
     forgetDormant(id, component);
     if (base === null) absorbPendingPresence(id);
     if (!holds(component)) pinComponent(id, component);

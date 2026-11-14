@@ -23,7 +23,7 @@ import type { RelationshipDef } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
-import { entityGroupId } from "@ebbjs/write";
+import { membershipRowId } from "@ebbjs/write";
 import { ActionRejectedError, ActionResolutionError, resolveReferences } from "../drafts";
 import type { Rejection } from "../types";
 import { createClient } from "../client";
@@ -141,7 +141,7 @@ describe("drafts — one Action, forward references", () => {
   /** Membership option every `create` in this block carries (#244). */
   const groups = { groups: ["g_1"] } as const;
 
-  it("emits exactly one POST with an entity Update per create and an entityGroup row per group", async () => {
+  it("emits exactly one POST with an entity Update per create and an membership row per group", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
@@ -186,7 +186,7 @@ describe("drafts — one Action, forward references", () => {
     );
   });
 
-  it("emits one entityGroup row per distinct group into the same Action", async () => {
+  it("emits one membership row per distinct group into the same Action", async () => {
     const { client, seen } = mkClient();
     await client.handshake();
 
@@ -370,7 +370,7 @@ describe("drafts — one Action, forward references", () => {
 
 describe("drafts — per-Update delivery (#473)", () => {
   // Group sets come from the required per-create `groups` option (#244),
-  // which also emits the `entityGroup` rows.
+  // which also emits the `membership` rows.
   const deliveryTodo = defineModel("todo", { title: e.string() });
   const deliveryList = defineModel("list", { name: e.string() });
   const deliverySchema = defineSchema({
@@ -489,7 +489,7 @@ describe("drafts — setGroups delta", () => {
     // g_2 survives the swap, so only g_1's row may be deleted.
     expect(
       updates.filter((update) => update.method === "delete").map((update) => update.subject_id),
-    ).toEqual([entityGroupId(created.id, "g_1")]);
+    ).toEqual([membershipRowId(created.id, "g_1")]);
     expect(rowsOf(updates, "membership")).toEqual([]);
   });
 });

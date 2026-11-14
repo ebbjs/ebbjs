@@ -248,7 +248,7 @@ describe("replayEntity", () => {
 
     expect(row).toMatchObject({
       id: WALL,
-      type: "wall",
+      model: "wall",
       data: { fields: { title: { value: "wall" } } },
       deleted_hlc: null,
       last_gsn: 1,

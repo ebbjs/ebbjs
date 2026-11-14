@@ -146,7 +146,7 @@ describe("replica map fields over the flip point", () => {
   it("adopts a large map read through open", async () => {
     const row: Entity = {
       id: "doc_1",
-      type: "doc",
+      model: "doc",
       data: { fields: { title: leaf("Doc"), content: { map: content(600) } } },
       exists: true,
       created_hlc: makeHlc(1),

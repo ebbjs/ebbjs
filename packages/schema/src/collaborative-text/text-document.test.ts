@@ -85,16 +85,16 @@ const actionFrom = (doc: TextDocument, updates: Update[]): Action => ({
 
 const cellUpdate = (
   cells: readonly (RunCell | CutCell)[],
-  opts: { docId?: string; subjectType?: string; hlc?: HLCTimestamp; version?: number } = {},
+  opts: { docId?: string; model?: string; hlc?: HLCTimestamp; version?: number } = {},
 ): Update[] => {
   const t = opts.hlc ?? makeHlc(999);
   const updateId = `u_${cells[0]?.id ?? "none"}`;
-  const docType = opts.subjectType ?? "text_document";
+  const docModel = opts.model ?? "text_document";
   return [
     {
       id: updateId,
       subject_id: opts.docId ?? DOC_ID,
-      component: componentName(docType, DOC_CONTENT_FIELD),
+      component: componentName(docModel, DOC_CONTENT_FIELD),
       method: "merge",
       data: {
         map: Object.fromEntries(
@@ -105,7 +105,7 @@ const cellUpdate = (
     {
       id: `${updateId}v`,
       subject_id: opts.docId ?? DOC_ID,
-      component: componentName(docType, DOC_VERSION_FIELD),
+      component: componentName(docModel, DOC_VERSION_FIELD),
       method: "merge",
       data: versionField(t, `${updateId}v`, opts.version),
     },
@@ -135,7 +135,7 @@ describe("TextDocument — constructor", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     expect(doc.docId).toBe(DOC_ID);
     expect(doc.actorId).toBe("a");
-    expect(doc.docType).toBe("text_document");
+    expect(doc.docModel).toBe("text_document");
     expect(doc.text).toBe("");
     expect(doc.docState.cells.size).toBe(0);
     expect(doc.rootRunId).toBe("ROOT");
@@ -419,7 +419,7 @@ describe("TextDocument.applyActions", () => {
   it("ignores actions for another document type", () => {
     const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
     const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    doc.applyActions([actionFrom(doc, cellUpdate([base], { subjectType: "other" }))]);
+    doc.applyActions([actionFrom(doc, cellUpdate([base], { model: "other" }))]);
     expect(doc.text).toBe("");
   });
 

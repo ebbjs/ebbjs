@@ -87,7 +87,7 @@ defmodule EbbServer.Storage.EntityStore do
       whichever of `merge` or `replace` it is. The column is the row's
       creation time and nothing else; no path may read it as a signal, and a
       later write never restates it;
-    - `drop` removes the field; the row survives, keeps its type and its
+    - `drop` removes the field; the row survives, keeps its model and its
       `created_hlc`, and is not tombstoned. `drop` and `delete` never stamp
       `created_hlc`. A `drop` for a row that was never materialized is a
       no-op, exactly as it is on the client;
@@ -98,7 +98,7 @@ defmodule EbbServer.Storage.EntityStore do
   row: a delta that carries only a `drop` or a `delete` must not rewrite the
   metadata the earlier Actions established.
 
-  The row's `type` is the component's model. A `delete` names no component
+  The row's `model` is the component's prefix. A `delete` names no component
   and keeps the committed model.
 
   ## Hot path
@@ -264,7 +264,7 @@ defmodule EbbServer.Storage.EntityStore do
 
     model =
       case result do
-        {:ok, %{type: model}} -> model
+        {:ok, %{model: model}} -> model
         _ -> nil
       end
 
@@ -432,12 +432,12 @@ defmodule EbbServer.Storage.EntityStore do
          observed_generation,
          dirty_set,
          sqlite_name,
-         base_present?,
+         base_exists?,
          current_data
        ) do
     %{
       data: merged_data,
-      type: type,
+      model: model,
       created_hlc: created_hlc,
       updated_hlc: updated_hlc,
       deleted_hlc: deleted_hlc,
@@ -450,7 +450,7 @@ defmodule EbbServer.Storage.EntityStore do
 
     entity_row = %{
       id: entity_id,
-      type: type || "unknown",
+      model: model || "unknown",
       created_hlc: created_hlc,
       updated_hlc: updated_hlc,
       deleted_hlc: deleted_hlc,
@@ -461,7 +461,7 @@ defmodule EbbServer.Storage.EntityStore do
     # `data.components` is derived, so it is recomputed from the fields this
     # apply leaves behind. The component the delta wrote keeps its own name:
     # that is the one place a namespace can disagree with the row's model.
-    components = component_names(fields_of(merged_data), type, written)
+    components = component_names(fields_of(merged_data), model, written)
 
     merged_data = Map.put(merged_data, "components", components)
 
@@ -469,13 +469,13 @@ defmodule EbbServer.Storage.EntityStore do
     # that is what stops a later clean read from resurrecting the entity.
     # SQLite replaces the component mirror in the same transaction as the row
     # write, so the index cannot describe a row it does not match.
-    if data_mode == :patch and base_present? and safe_changed_paths?(changed) do
+    if data_mode == :patch and base_exists? and safe_changed_paths?(changed) do
       changed_json =
         timed(:encode, fn -> build_patch_fields(changed, current_data, merged_data) end)
 
       meta =
         Map.take(entity_row, [
-          :type,
+          :model,
           :created_hlc,
           :updated_hlc,
           :deleted_hlc,
@@ -534,7 +534,7 @@ defmodule EbbServer.Storage.EntityStore do
       actions,
       %{
         data: initial_data,
-        type: existing_meta(existing_row, :type),
+        model: existing_meta(existing_row, :model),
         created_hlc: existing_meta(existing_row, :created_hlc),
         updated_hlc: existing_meta(existing_row, :updated_hlc) || 0,
         deleted_hlc: existing_meta(existing_row, :deleted_hlc),
@@ -579,14 +579,14 @@ defmodule EbbServer.Storage.EntityStore do
     incoming = FieldMerge.stamp(update["data"], update["id"])
     existing_fields = fields_of(acc.data)
     fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
-    model = acc.type || model
+    model = acc.model || model
 
     %{
       acc
       | data: row_data(fields, model, update["component"]),
         # The model is fixed at the row's first write; a later component's
         # prefix must agree with it (the authorizer refuses a relabel).
-        type: model,
+        model: model,
         created_hlc: created_hlc(acc.created_hlc, action),
         updated_hlc: action["hlc"],
         max_gsn: max(acc.max_gsn, gsn),
@@ -613,7 +613,7 @@ defmodule EbbServer.Storage.EntityStore do
 
       %{
         acc
-        | data: row_data(fields, acc.type, nil),
+        | data: row_data(fields, acc.model, nil),
           updated_hlc: action["hlc"],
           max_gsn: max(acc.max_gsn, gsn),
           written: nil,
@@ -829,7 +829,7 @@ defmodule EbbServer.Storage.EntityStore do
 
   First materializes any dirty entities of the requested model, then delegates
   to SQLite for the permission-checked query. The model is the row's committed
-  model — the query source — while the column it selects on is still `type`.
+  model — the query source and the column it selects on.
 
   A platform component name (`ebb/membership`) is also a query source, and
   the more precise one: an `ebb/*` component may sit on a row committed under
@@ -897,14 +897,14 @@ defmodule EbbServer.Storage.EntityStore do
 
   defp normalize_offset(_offset), do: {:error, :invalid_offset}
 
-  # `model` is the query source; the SQLite column it selects on is `type`.
+  # `model` is the query source and the SQLite column it selects on.
   defp run_query(model, filter, actor_id, limit, offset, opts) do
-    {type, component} = query_source(model)
+    {query_model, component} = query_source(model)
     rocks_name = Keyword.get(opts, :rocks_name, @default_rocks_name)
     sqlite_name = Keyword.get(opts, :sqlite_name, @default_sqlite_name)
     dirty_set = Keyword.get(opts, :dirty_set, @default_dirty_set)
 
-    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(type, dirty_set)
+    dirty_ids = DirtyTracker.dirty_entity_ids_for_model(query_model, dirty_set)
 
     if dirty_ids != [] do
       Enum.each(dirty_ids, fn id ->
@@ -919,7 +919,7 @@ defmodule EbbServer.Storage.EntityStore do
       :query
     )
 
-    query_params = %{type: type, filter: filter, actor_id: actor_id, limit: limit}
+    query_params = %{model: query_model, filter: filter, actor_id: actor_id, limit: limit}
 
     query_params =
       if component, do: Map.put(query_params, :component, component), else: query_params
@@ -943,7 +943,7 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
-  # A platform component selects by component, anything else by `type`; the
+  # A platform component selects by component, anything else by model; the
   # dirty pass always runs against `ebb`, since materialization is per row.
   defp query_source(model) do
     case SystemComponent.kind(model) do

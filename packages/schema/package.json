@@ -2,7 +2,7 @@
   "name": "@ebbjs/schema",
   "version": "1.1.0",
   "private": false,
-  "description": "Entity, relationship, and schema definitions for ebbjs: registry, validation, system entities, and the collaborative-text field type.",
+  "description": "Entity, relationship, and schema definitions for ebbjs: registry, validation, platform model, and the collaborative-text field type.",
   "homepage": "https://ebbjs.com",
   "bugs": {
     "url": "https://github.com/ebbjs/ebbjs/issues"

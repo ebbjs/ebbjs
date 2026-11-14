@@ -12,9 +12,9 @@ import {
 
 const leaf = (value: unknown): FieldValue => ({ value, update_id: "u", hlc: makeHlc(1) });
 
-const row = (id: string, type: string, fields: Record<string, FieldValue>): Entity => ({
+const row = (id: string, model: string, fields: Record<string, FieldValue>): Entity => ({
   id,
-  type,
+  model,
   data: { fields },
   exists: true,
   created_hlc: makeHlc(1),

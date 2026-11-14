@@ -61,7 +61,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { ebbSystemEntity } from "@ebbjs/schema";
+import { ebbModel } from "@ebbjs/schema";
 import { testActions } from "../../sync/__tests__/test-actions";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
@@ -594,7 +594,7 @@ describe("integration: localDelete round-trip", () => {
 /**
  * Add an actor as a member of the test group with `todo.*` permissions on
  * top of the standard member grant — enough for writes to user-defined
- * entity types.
+ * models.
  */
 async function addMemberWithTodoPerms(actorId: string): Promise<void> {
   await addMemberWithPerms(actorId, [...MEMBER_PERMISSIONS, "todo.*"]);
@@ -738,7 +738,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       // Server should have stored the entity; read back via getEntity.
       const stored = await client.getEntity(todoId);
       expect(stored).not.toBeNull();
-      expect(stored!.type).toBe("todo");
+      expect(stored!.model).toBe("todo");
     } finally {
       client.close();
     }
@@ -1063,7 +1063,7 @@ describe("integration: defineSchema", () => {
     });
     const todo_ownedBy = defineRelationship({
       source: todo,
-      target: ebbSystemEntity,
+      target: ebbModel,
       as: "ownedBy",
     });
     const schema = defineSchema({
@@ -1254,7 +1254,7 @@ describe("integration: draft create() runtime validation (#172)", () => {
       const createdId = await findCreatedTodoId(client);
       const stored = await client.getEntity(createdId);
       expect(stored).not.toBeNull();
-      expect(stored!.type).toBe("todo");
+      expect(stored!.model).toBe("todo");
     } finally {
       client.close();
     }

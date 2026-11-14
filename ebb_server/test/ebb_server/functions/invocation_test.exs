@@ -251,7 +251,7 @@ defmodule EbbServer.Functions.InvocationTest do
 
     test "an unexpected frame type fails the invocation" do
       assert {:error, 500, "protocol_error", message, %{}} =
-               run_script([%{"send" => %{"type" => "mystery"}}])
+               run_script([%{"send" => %{"model" => "mystery"}}])
 
       assert message =~ "unexpected frame"
     end
