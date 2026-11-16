@@ -5,8 +5,13 @@ import {
   UpdateSchema,
   UpdateInputSchema,
   ComponentNameSchema,
+  ModelNameSchema,
   UpdateMethodSchema,
   FieldValueSchema,
+  isComponentUpdate,
+  isRowCreate,
+  updateComponentValue,
+  type Update,
 } from "./action";
 
 describe("ComponentNameSchema", () => {
@@ -23,9 +28,23 @@ describe("ComponentNameSchema", () => {
   });
 });
 
+describe("ModelNameSchema", () => {
+  it("accepts a bare model name", () => {
+    for (const name of ["todo", "ebb", "text_document", "a1"]) {
+      expect(Value.Check(ModelNameSchema, name)).toBe(true);
+    }
+  });
+
+  it("rejects an empty name or one containing a slash", () => {
+    for (const name of ["", "todo/title", "/todo", "todo/"]) {
+      expect(Value.Check(ModelNameSchema, name)).toBe(false);
+    }
+  });
+});
+
 describe("UpdateMethodSchema", () => {
-  it("accepts the four methods", () => {
-    for (const method of ["merge", "replace", "drop", "delete"]) {
+  it("accepts the five methods", () => {
+    for (const method of ["create", "merge", "replace", "drop", "delete"]) {
       expect(Value.Check(UpdateMethodSchema, method)).toBe(true);
     }
   });
@@ -142,6 +161,81 @@ describe("UpdateSchema", () => {
     ).toBe(false);
   });
 
+  it("accepts a create naming a model and its creation HLC", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a create that names a component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "todo/title",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create without a model", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create without its creation HLC", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create carrying component data", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: leaf,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects the old frame in which a create spelled no model and no HLC", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "create",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
   it("rejects a component method with no component", () => {
     expect(
       Value.Check(UpdateSchema, {
@@ -194,6 +288,74 @@ describe("UpdateInputSchema", () => {
       }),
     ).toBe(true);
   });
+
+  it("accepts an unstamped create", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects an unstamped create missing its model", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        subject_id: "a_actor",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("row-scoped and component-scoped updates", () => {
+  const create: Update = {
+    id: "u_create",
+    subject_id: "a_actor",
+    model: "todo",
+    method: "create",
+    hlc: "1234567890123",
+    data: null,
+  };
+  const merge: Update = {
+    id: "u_merge",
+    subject_id: "a_actor",
+    component: "todo/title",
+    method: "merge",
+    data: leaf,
+  };
+  const drop: Update = {
+    id: "u_drop",
+    subject_id: "a_actor",
+    component: "todo/title",
+    method: "drop",
+    data: null,
+  };
+  const del: Update = { id: "u_delete", subject_id: "a_actor", method: "delete", data: null };
+
+  it("isRowCreate narrows only the create", () => {
+    expect(isRowCreate(create)).toBe(true);
+    for (const update of [merge, drop, del]) expect(isRowCreate(update)).toBe(false);
+    if (isRowCreate(create)) expect(create.model).toBe("todo");
+  });
+
+  it("isComponentUpdate names the three component methods", () => {
+    expect(isComponentUpdate(merge)).toBe(true);
+    expect(isComponentUpdate(drop)).toBe(true);
+    expect(isComponentUpdate(create)).toBe(false);
+    expect(isComponentUpdate(del)).toBe(false);
+    if (isComponentUpdate(merge)) expect(merge.component).toBe("todo/title");
+  });
+
+  it("updateComponentValue answers only for a written component", () => {
+    expect(updateComponentValue(merge)).toEqual(leaf);
+    for (const update of [drop, create, del]) expect(updateComponentValue(update)).toBeUndefined();
+  });
 });
 
 describe("ActionSchema", () => {
@@ -217,6 +379,26 @@ describe("ActionSchema", () => {
           component: "group/apps",
           method: "merge",
           data: { map: { app: leaf } },
+        },
+      ],
+    };
+    expect(Value.Check(ActionSchema, action)).toBe(true);
+  });
+
+  it("accepts an action whose only update is a zero-component create", () => {
+    const action = {
+      id: "a_testid",
+      actor_id: "a_actorid",
+      hlc: "123456789",
+      gsn: 5,
+      updates: [
+        {
+          id: "u_upd1",
+          subject_id: "a_target",
+          model: "todo",
+          method: "create",
+          hlc: "123456789",
+          data: null,
         },
       ],
     };

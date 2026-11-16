@@ -14,6 +14,15 @@ export interface CreateActionOptions {
 const stampUpdate = (update: UpdateInput): Update => {
   const id = update.id ?? generateId(ID_PREFIX_UPDATE);
   switch (update.method) {
+    case "create":
+      return {
+        id,
+        subject_id: update.subject_id,
+        model: update.model,
+        method: "create",
+        hlc: update.hlc,
+        data: null,
+      };
     case "delete":
       return { id, subject_id: update.subject_id, method: "delete", data: null };
     case "drop":

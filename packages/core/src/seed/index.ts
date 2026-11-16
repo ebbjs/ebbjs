@@ -5,9 +5,11 @@
  * Seeds are schema-less plain data: rows carry explicit ids and plain
  * field values. {@link buildSeedAction} turns a {@link SeedData} into a
  * single wire `Action`, stamping every component value with a uniform
- * `{ value, update_id, hlc }` envelope. A platform row is one atomic
- * component, so it seeds as one Update carrying its whole value. Both submit
- * paths apply the same rejection-tolerance policy via
+ * `{ value, update_id, hlc }` envelope. Every row opens with its create, so a
+ * seeded row exists whether or not it carries any component: an entity seed
+ * with `patches: []` is a complete row. A platform row is one atomic
+ * component, so it seeds as its create plus one Update carrying its whole
+ * value. Both submit paths apply the same rejection-tolerance policy via
  * {@link assertSeedAccepted}.
  *
  * The only runtime dependencies are sibling `@ebbjs/core` modules, so
@@ -16,7 +18,7 @@
 
 import { createAction } from "../action";
 import { createClock, localEvent } from "../hlc";
-import { ebbComponent, type EbbComponentKind } from "../system";
+import { EBB_COMPONENTS, EBB_MODEL_NAME, type EbbComponentKind } from "../system";
 import type { Action, FieldValue, UpdateInput } from "../types/action";
 import type { HLCState } from "../hlc/types";
 
@@ -42,7 +44,11 @@ export interface GrantSeed {
 export interface EntitySeed {
   id: string;
   model: string;
-  /** Ordered field patches; values are plain, stamped by the builder. */
+  /**
+   * Ordered field patches; values are plain, stamped by the builder. Empty
+   * patches seed a zero-component row, which the row's create alone makes
+   * exist.
+   */
   patches: Array<{ fields: Record<string, unknown> }>;
 }
 
@@ -91,6 +97,19 @@ const stamp = (value: unknown, clock: HLCState) => ({
 });
 
 /**
+ * The create every seeded row opens with: the row's existence and its creation
+ * time, both from the builder's own clock so the row's creation time never
+ * trails the data written to it.
+ */
+const rowCreate = (subjectId: string, model: string, clock: HLCState): UpdateInput => ({
+  subject_id: subjectId,
+  model,
+  method: "create",
+  hlc: localEvent(clock),
+  data: null,
+});
+
+/**
  * One component Update: `data` is the component's own value, and the
  * component is `<model>/<field>` because a seed row names its model and
  * fields directly.
@@ -103,18 +122,21 @@ const componentUpdate = (
   method: "merge" | "replace" = "replace",
 ): UpdateInput => ({ subject_id: subjectId, component: `${model}/${field}`, method, data });
 
-/** One platform row's Update: an atomic component's whole value, stamped once. */
-const systemUpdate = (
+/** One platform row: its create, then its one atomic component's whole value. */
+const platformRow = (
   kind: EbbComponentKind,
   subjectId: string,
   value: Record<string, unknown>,
   clock: HLCState,
-): UpdateInput => ({
-  subject_id: subjectId,
-  component: ebbComponent(kind),
-  method: "replace",
-  data: stamp(value, clock),
-});
+): UpdateInput[] => [
+  rowCreate(subjectId, EBB_MODEL_NAME, clock),
+  {
+    subject_id: subjectId,
+    component: EBB_COMPONENTS[kind],
+    method: "replace",
+    data: stamp(value, clock),
+  },
+];
 
 export function buildSeedAction(actorId: string, data: SeedData): Action {
   const clock = createClock();
@@ -123,7 +145,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
 
   for (const group of data.groups) {
     updates.push(
-      systemUpdate(
+      ...platformRow(
         "group",
         group.id,
         group.apps === undefined
@@ -136,7 +158,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
 
   for (const member of data.grants) {
     updates.push(
-      systemUpdate(
+      ...platformRow(
         "grant",
         member.id,
         {
@@ -150,6 +172,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
   }
 
   for (const entity of data.entities ?? []) {
+    updates.push(rowCreate(entity.id, entity.model, clock));
     for (const patch of entity.patches) {
       for (const [key, value] of Object.entries(patch.fields)) {
         updates.push(componentUpdate(entity.id, entity.model, key, stamp(value, clock)));
@@ -159,7 +182,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
 
   for (const rel of data.relationships ?? []) {
     updates.push(
-      systemUpdate(
+      ...platformRow(
         "link",
         rel.id,
         {
@@ -175,7 +198,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
 
   for (const membership of data.memberships ?? []) {
     updates.push(
-      systemUpdate(
+      ...platformRow(
         "membership",
         membership.id,
         { entity_id: membership.entityId, group_id: membership.groupId },

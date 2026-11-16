@@ -12,7 +12,16 @@ import { compare } from "../hlc";
 export const ComponentNameSchema = Type.String({ pattern: "^[^/]+/[^/]+$" });
 export type ComponentName = `${string}/${string}`;
 
+/**
+ * A row's model name: the identity the row is filed under. It never contains
+ * a `/`, which is what keeps a bare model name distinct from a
+ * `<model>/<field>` component name.
+ */
+export const ModelNameSchema = Type.String({ pattern: "^[^/]+$" });
+export type ModelName = Static<typeof ModelNameSchema>;
+
 export const UpdateMethodSchema = Type.Union([
+  Type.Literal("create"),
   Type.Literal("merge"),
   Type.Literal("replace"),
   Type.Literal("drop"),
@@ -129,6 +138,17 @@ export const UpdateInputSchema = Type.Union([
     {
       id: Type.Optional(NanoIdSchema),
       subject_id: NanoIdSchema,
+      model: ModelNameSchema,
+      method: Type.Literal("create"),
+      hlc: HLCTimestampSchema,
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: Type.Optional(NanoIdSchema),
+      subject_id: NanoIdSchema,
       component: ComponentNameSchema,
       method: Type.Union([Type.Literal("merge"), Type.Literal("replace")]),
       data: FieldValueSchema,
@@ -161,6 +181,17 @@ export const UpdateSchema = Type.Union([
     {
       id: NanoIdSchema,
       subject_id: NanoIdSchema,
+      model: ModelNameSchema,
+      method: Type.Literal("create"),
+      hlc: HLCTimestampSchema,
+      data: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: NanoIdSchema,
+      subject_id: NanoIdSchema,
       component: ComponentNameSchema,
       method: Type.Union([Type.Literal("merge"), Type.Literal("replace")]),
       data: FieldValueSchema,
@@ -189,10 +220,37 @@ export const UpdateSchema = Type.Union([
 ]);
 
 /**
- * One write to one `(entity, component)`. `data` is the component's value,
- * never a row's field record; `delete` names the row and no component.
+ * The row-scoped create: the row's existence and its creation time.
+ *
+ * It names the row's model and no component: no prior record exists for it to
+ * disagree with, so the model it names is the row's. `hlc` is the row's
+ * creation time — the only one the protocol carries, so a replica that
+ * receives the row through backfill can still date it. A create is
+ * idempotent: one for a row a replica already has (or has tombstoned) changes
+ * nothing. A component write never implies a create, and a create never
+ * carries component data.
  */
-export type Update =
+export type RowCreate = {
+  id: string;
+  subject_id: string;
+  model: ModelName;
+  method: "create";
+  hlc: HLCTimestamp;
+  data: null;
+};
+
+/** {@link RowCreate} before its id is stamped. */
+export type RowCreateInput = {
+  id?: string;
+  subject_id: string;
+  model: ModelName;
+  method: "create";
+  hlc: HLCTimestamp;
+  data: null;
+};
+
+/** An Update that names a component: a write to, or a drop of, one field. */
+export type ComponentUpdate =
   | {
       id: string;
       subject_id: string;
@@ -200,15 +258,36 @@ export type Update =
       method: "merge" | "replace";
       data: FieldValue;
     }
-  | { id: string; subject_id: string; component: ComponentName; method: "drop"; data: null }
+  | { id: string; subject_id: string; component: ComponentName; method: "drop"; data: null };
+
+/**
+ * One write. Two of the five methods are row-scoped: `create` carries the
+ * row's model and creation time and no component, and `delete` names the row
+ * and no component either. The other three name a component, and a component
+ * write never implies a create.
+ */
+export type Update =
+  | RowCreate
+  | ComponentUpdate
   | { id: string; subject_id: string; method: "delete"; data: null };
 
-/** The component value an Update carries; `undefined` for `drop` and `delete`. */
+/** Whether the Update names a component. False for `create` and `delete`. */
+export const isComponentUpdate = (update: Update): update is ComponentUpdate =>
+  update.method === "merge" || update.method === "replace" || update.method === "drop";
+
+/** The row-scoped create, narrowed. */
+export const isRowCreate = (update: Update): update is RowCreate => update.method === "create";
+
+/**
+ * The component value an Update carries; `undefined` for `create`, `drop`, and
+ * `delete`, none of which names a component value.
+ */
 export const updateComponentValue = (update: Update): FieldValue | undefined =>
   update.method === "merge" || update.method === "replace" ? update.data : undefined;
 
 /** {@link Update} before its id is stamped. */
 export type UpdateInput =
+  | RowCreateInput
   | {
       id?: string;
       subject_id: string;
