@@ -83,6 +83,8 @@ defmodule EbbServer.Storage.ActionValidator do
         }
 
   @future_drift_limit_ms 120_000
+  # Operator-facing text quotes the window, so it cannot drift from the check.
+  @future_drift_window "#{div(@future_drift_limit_ms, 1000)}s"
   @max_action_bytes 1_048_576
   @max_updates_per_action 1_000
 
@@ -522,7 +524,8 @@ defmodule EbbServer.Storage.ActionValidator do
         {:error, "invalid_hlc", "hlc must be a positive integer"}
 
       future_drift?(hlc, now_ms) ->
-        {:error, "hlc_future_drift", "logical time is more than 120s in the future"}
+        {:error, "hlc_future_drift",
+         "logical time is more than #{@future_drift_window} in the future"}
 
       true ->
         :ok
@@ -578,7 +581,8 @@ defmodule EbbServer.Storage.ActionValidator do
 
       leaf_hlc ->
         if future_drift?(leaf_hlc, now_ms) do
-          {:error, "invalid_field_hlc", "#{dotted(path)}.hlc is more than 120s in the future"}
+          {:error, "invalid_field_hlc",
+           "#{dotted(path)}.hlc is more than #{@future_drift_window} in the future"}
         else
           :ok
         end
