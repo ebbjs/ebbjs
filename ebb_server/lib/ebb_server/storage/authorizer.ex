@@ -311,8 +311,8 @@ defmodule EbbServer.Storage.Authorizer do
           PermissionHelper.build_intra_relationship_sources(action.updates)
         ),
       bootstrap: PermissionHelper.bootstrap_group_permissions(mutations, actor_id, exists?),
-      bootstrap_membership_ids:
-        PermissionHelper.bootstrap_membership_row_ids(mutations, actor_id, member_exists?),
+      bootstrap_grant_ids:
+        PermissionHelper.bootstrap_grant_row_ids(mutations, actor_id, member_exists?),
       created_ids: PermissionHelper.created_subject_ids(mutations, exists?),
       # An id the request already modeled keeps that model: a later Action may
       # only model ids the simulation does not know.
@@ -378,7 +378,7 @@ defmodule EbbServer.Storage.Authorizer do
          actor_id,
          authz.bootstrap,
          authz.created_ids,
-         authz.bootstrap_membership_ids
+         authz.bootstrap_grant_ids
        ) do
       :ok
     else
