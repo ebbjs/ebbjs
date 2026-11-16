@@ -43,10 +43,18 @@ export interface MembershipLink {
  * handled by the DirtyTracker.
  *
  * ## Merge Semantics
+ * - **create** — the row's existence, its model, and its creation time. It
+ *   names no component, and it is the only write that makes a row exist; a
+ *   duplicate create for a row the store already holds (or has tombstoned) is
+ *   a no-op.
  * - **merge** — Last-Writer-Wins (LWW) at the component's field: higher HLC wins; tiebreak by lexicographic `update_id`
- * - **replace** — the component's field is set whole; the first write to an absent row creates it
+ * - **replace** — the component's field is set whole
  * - **drop** — the component's field is removed; the row survives
- * - **delete** — soft delete (sets `deleted_hlc`); the row keeps its type
+ * - **delete** — soft delete (sets `deleted_hlc`); the row retains its model
+ *
+ * A component write whose create the store has not seen materializes a
+ * placeholder with `exists: false`; it never invents the row, so the base
+ * backfill can supply the create.
  *
  * A field value is either a leaf merged by the LWW rule above, or a
  * `{ map }` of nested field values merged key by key under the same

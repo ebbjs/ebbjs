@@ -33,6 +33,7 @@ import {
   type Entity,
   type FieldValue,
   type HLCState,
+  isComponentUpdate,
   localEvent,
   receiveRemoteHLC,
   type Update,
@@ -1056,7 +1057,8 @@ export class SyncClient<
   private async refuseContentRewrites(actions: readonly Action[]): Promise<void> {
     for (const action of actions) {
       for (const update of action.updates) {
-        if (update.method === "drop" || update.method === "delete") continue;
+        if (!isComponentUpdate(update)) continue;
+        if (update.method === "drop") continue;
         if (!isLogPosition(update.component, [])) continue;
 
         // The replica is the read path, but an on-demand body may not be
@@ -2522,7 +2524,7 @@ const errorMessage = (err: unknown): string => {
  */
 const isMembershipPut = (action: Action): boolean =>
   action.updates.some(
-    (update) => update.method !== "delete" && update.component === EBB_COMPONENTS.membership,
+    (update) => isComponentUpdate(update) && update.component === EBB_COMPONENTS.membership,
   );
 
 /** Returned by {@link SyncClient.handshake}. */

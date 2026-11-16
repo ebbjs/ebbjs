@@ -25,8 +25,10 @@ import {
   EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
   ebbComponentField,
+  isComponentUpdate,
   isEbbComponent,
   isFieldMap,
+  isRowCreate,
   makeHlc,
   type Action,
   type EbbComponentKind,
@@ -88,13 +90,23 @@ export const seedReplicaRow = (
   const hlc = makeHlc(seedPosition);
   const updates: Update[] =
     method === "replace"
-      ? Object.entries(row.data.fields).map(([field, value], index) => ({
-          id: `u_seed_${seedPosition}_${index}`,
-          subject_id: row.id,
-          component: componentName(row.model, field),
-          method: isFieldMap(value) ? "merge" : "replace",
-          data: value,
-        }))
+      ? [
+          {
+            id: `u_seed_${seedPosition}_create`,
+            subject_id: row.id,
+            model: row.model,
+            method: "create",
+            hlc: row.created_hlc ?? hlc,
+            data: null,
+          },
+          ...Object.entries(row.data.fields).map(([field, value], index) => ({
+            id: `u_seed_${seedPosition}_${index}`,
+            subject_id: row.id,
+            component: componentName(row.model, field),
+            method: isFieldMap(value) ? ("merge" as const) : ("replace" as const),
+            data: value,
+          })),
+        ]
       : [
           {
             id: `u_seed_${seedPosition}`,
@@ -173,7 +185,9 @@ export const platformUpdate = (
 
 /**
  * Updates grouped by subject, keeping only the rows of `model` — a user model,
- * or a platform kind, which matches the rows carrying its component.
+ * or a platform kind, which matches the rows carrying its component. A
+ * platform row's create names the `ebb` model rather than the kind, so it
+ * belongs to the subject's group but to no particular kind.
  */
 export const rowsByModel = (
   updates: readonly Update[],
@@ -181,7 +195,7 @@ export const rowsByModel = (
 ): readonly (readonly Update[])[] => {
   const matches = (update: Update): boolean =>
     isPlatformModel(model)
-      ? update.method !== "delete" && update.component === ebbComponent(model)
+      ? isComponentUpdate(update) && update.component === ebbComponent(model)
       : updateModel(update) === model;
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
@@ -200,7 +214,7 @@ export const rowsByModel = (
 export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   for (const update of row) {
-    if (update.method === "drop" || update.method === "delete") continue;
+    if (!isComponentUpdate(update) || update.method === "drop") continue;
     const value = (update.data as { value: unknown }).value;
     if (isEbbComponent(update.component)) {
       if (value !== null && typeof value === "object" && !Array.isArray(value)) {
@@ -214,8 +228,11 @@ export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
 };
 
 /** The model an Update commits under; `undefined` for a delete, which names none. */
-export const updateModel = (update: Update): string | undefined =>
-  update.method === "delete" ? undefined : componentModel(update.component);
+export const updateModel = (update: Update): string | undefined => {
+  if (update.method === "delete") return undefined;
+  if (isRowCreate(update)) return update.model;
+  return componentModel(update.component);
+};
 
 /** A JSON `Response` carrying `body` and optional extra headers. */
 export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): Response =>

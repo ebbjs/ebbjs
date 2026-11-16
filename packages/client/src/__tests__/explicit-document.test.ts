@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decodeSync,
+  isComponentUpdate,
   isFieldMap,
   makeHlc,
   type Action,
@@ -161,11 +162,11 @@ const rowsOf = (updates: readonly Update[], model: string): readonly (readonly U
 const componentOf = (row: readonly Update[], field: string): FieldValue => {
   const update = row.find(
     (candidate) =>
+      isComponentUpdate(candidate) &&
       candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
       candidate.component === `text_document/${field}`,
   );
-  if (update === undefined || update.method === "drop" || update.method === "delete") {
+  if (update === undefined || !isComponentUpdate(update) || update.method === "drop") {
     throw new Error(`row carries no "${field}" component`);
   }
   return update.data;
@@ -205,7 +206,7 @@ describe("a document the app declares", () => {
 
     // The link is one atomic value: one Update carries the whole edge.
     const [linkUpdate] = updates.filter(
-      (update) => update.method !== "delete" && update.component === "ebb/link",
+      (update) => isComponentUpdate(update) && update.component === "ebb/link",
     );
     expect(
       (linkUpdate!.data as { value: { source_id: string; target_id: string } }).value,

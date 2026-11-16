@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, makeHlc, type Action, type Entity } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -121,7 +121,7 @@ const membershipValues = (
   updates: readonly Action["updates"][number][],
 ): readonly { entity_id: string; group_id: string }[] =>
   updates.flatMap((update) =>
-    update.method === "delete" || update.component !== "ebb/membership"
+    !isComponentUpdate(update) || update.component !== "ebb/membership"
       ? []
       : [(update.data as { value: { entity_id: string; group_id: string } }).value],
   );
@@ -178,11 +178,11 @@ const rowsOf = (
 const componentOf = (row: readonly Action["updates"][number][], field: string): unknown => {
   const update = row.find(
     (candidate) =>
+      isComponentUpdate(candidate) &&
       candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
       candidate.component === `todo/${field}`,
   );
-  return update === undefined || update.method === "drop" || update.method === "delete"
+  return update === undefined || !isComponentUpdate(update) || update.method === "drop"
     ? undefined
     : update.data.value;
 };
@@ -228,7 +228,7 @@ describe("duplicate — field copy", () => {
 
     const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "doc");
     const content = put!.find(
-      (update) => update.method !== "delete" && update.component === "doc/content",
+      (update) => isComponentUpdate(update) && update.component === "doc/content",
     )!;
     expect(content.data).toEqual({ map: { run_1: runField } });
 

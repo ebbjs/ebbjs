@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, type Action } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import { updateModel } from "../test-utils";
@@ -75,7 +75,7 @@ describe("client.seed", () => {
     // Every platform row is committed under `ebb`; the component is what
     // distinguishes the group, its grant, and the membership.
     const components = actions[0]!.updates.flatMap((u) =>
-      u.method === "delete" ? [] : [u.component],
+      isComponentUpdate(u) ? [u.component] : [],
     );
     expect(components.filter((component) => component.startsWith("ebb/"))).toEqual([
       "ebb/group",

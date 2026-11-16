@@ -45,6 +45,7 @@ import {
   ebbComponent,
   EBB_MODEL_NAME,
   encodeSync,
+  isComponentUpdate,
   localEvent,
   makeHlc,
   systemValue,
@@ -67,8 +68,11 @@ import { testActions } from "../../sync/__tests__/test-actions";
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
 /** The model an Update commits under; `undefined` for a delete. */
-const modelOf = (update: Update): string | undefined =>
-  update.method === "delete" ? undefined : update.component.slice(0, update.component.indexOf("/"));
+const modelOf = (update: Update): string | undefined => {
+  if (update.method === "delete") return undefined;
+  if (update.method === "create") return update.model;
+  return update.component.slice(0, update.component.indexOf("/"));
+};
 
 /** One wire Update per field: a user model's components write one at a time. */
 const componentUpdates = (
@@ -1464,7 +1468,7 @@ describe("integration: client.actions (defineAction)", () => {
       expect(
         new Set(
           updates
-            .filter((u) => u.method !== "delete" && u.component === ebbComponent("membership"))
+            .filter((u) => isComponentUpdate(u) && u.component === ebbComponent("membership"))
             .map((u) => u.subject_id),
         ).size,
       ).toBe(2);

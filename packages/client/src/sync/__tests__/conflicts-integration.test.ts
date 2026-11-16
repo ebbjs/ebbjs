@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -468,7 +468,7 @@ describe("client.conflicts (#781)", () => {
 
     const title = postedActions(stub.calls)
       .flatMap((action) => action.updates)
-      .find((update) => update.method !== "delete" && update.component === "todo/title");
+      .find((update) => isComponentUpdate(update) && update.component === "todo/title");
     expect((title?.data as { value: unknown } | null)?.value).toBe("mine");
     expect(title?.subject_id).toBe(id);
     // The conflict's source row is untouched by the backup.

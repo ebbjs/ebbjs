@@ -42,13 +42,48 @@ const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[
     data: value,
   }));
 
-const put = (spec: WriteSpec): Action => ({
-  id: spec.actionId,
-  actor_id: "user_1",
-  hlc: makeHlc(spec.ms ?? 1),
-  gsn: spec.gsn ?? 1,
-  updates: componentUpdates(spec, "replace"),
-});
+/** A row put: the row's create, then one `replace` (or keyed `merge`) per field. */
+const put = (spec: WriteSpec): Action => {
+  const hlc = makeHlc(spec.ms ?? 1);
+  return {
+    id: spec.actionId,
+    actor_id: "user_1",
+    hlc,
+    gsn: spec.gsn ?? 1,
+    updates: [
+      {
+        id: `${spec.updateId}_create`,
+        subject_id: spec.entityId ?? "e_1",
+        model: spec.model ?? "todo",
+        method: "create",
+        hlc,
+        data: null,
+      },
+      ...componentUpdates(spec, "replace"),
+    ],
+  };
+};
+
+/** The row create: the row's model and creation time, and no component. */
+const create = (spec: Omit<WriteSpec, "fields">): Action => {
+  const hlc = makeHlc(spec.ms ?? 1);
+  return {
+    id: spec.actionId,
+    actor_id: "user_1",
+    hlc,
+    gsn: spec.gsn ?? 1,
+    updates: [
+      {
+        id: spec.updateId,
+        subject_id: spec.entityId ?? "e_1",
+        model: spec.model ?? "todo",
+        method: "create",
+        hlc,
+        data: null,
+      },
+    ],
+  };
+};
 
 const patch = (spec: WriteSpec): Action => ({
   id: spec.actionId,
@@ -898,13 +933,15 @@ describe("replica: materialization policy", () => {
     expect(holdAll.holds("anything/leaf")).toBe(true);
   });
 
-  it("neither retains nor journals a not-held type", () => {
+  it("neither retains nor journals a not-held component", () => {
     const replica = createReplica({
       materialization: { holds: (component) => !component.startsWith("cold/") },
     });
+    // A component write with no base is a placeholder whose value the policy
+    // does not hold, so the replica keeps neither the value nor the row.
     ingest(
       replica,
-      put({
+      patch({
         actionId: "a_1",
         updateId: "u_1",
         entityId: "e_cold",
@@ -918,6 +955,26 @@ describe("replica: materialization policy", () => {
     expect(replica.iterate("cold")).toEqual([]);
     expect(replica.revision).toBe(0);
     expect(replica.changesSince(0)).toEqual([]);
+  });
+
+  it("keeps a create's row even when no component of it is held", () => {
+    const replica = createReplica({
+      materialization: { holds: () => false },
+    });
+    // The row's existence is not a component value, so there is nothing for the
+    // policy to drop: a zero-component row is the whole row.
+    ingest(
+      replica,
+      create({ actionId: "a_create", updateId: "u_create", entityId: "e_cold", model: "cold" }),
+      1,
+    );
+
+    expect(replica.get("e_cold")).toMatchObject({
+      id: "e_cold",
+      model: "cold",
+      data: { fields: {} },
+      exists: true,
+    });
   });
 
   it("journals the held row a put moves into a not-held type exactly once", () => {
@@ -2109,7 +2166,7 @@ describe("replica: residency per component (#802)", () => {
     });
     ingest(
       replica,
-      put({
+      patch({
         actionId: "a_1",
         updateId: "u_1",
         entityId: "doc_1",

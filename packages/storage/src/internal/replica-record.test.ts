@@ -27,6 +27,13 @@ describe("isValidReplicaRecord", () => {
     expect(isValidReplicaRecord({ ...(validRecord() as object), format: 999 })).toBe(false);
   });
 
+  it("reads a record of the create-less format as absent, so the replica resets", () => {
+    // A row persisted before the row create may carry existence the deleted
+    // inference gave it. There is no migration: the replica rebuilds.
+    expect(isValidReplicaRecord({ ...(validRecord() as object), format: 5 })).toBe(false);
+    expect(REPLICA_RECORD_FORMAT).toBe(6);
+  });
+
   it("rejects a negative or fractional watermark", () => {
     expect(isValidReplicaRecord({ ...(validRecord() as object), position: -1 })).toBe(false);
     expect(isValidReplicaRecord({ ...(validRecord() as object), revision: 1.5 })).toBe(false);

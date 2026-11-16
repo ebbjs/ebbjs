@@ -11,15 +11,19 @@
  *
  * The store is log-derived — entities materialize by replaying
  * `storage.actions` — so the fetched base is written as a synthetic
- * snapshot stamped with the entity's own `last_gsn` and `updated_hlc`, one
+ * snapshot stamped with the entity's own `last_gsn` and `updated_hlc`:
+ * the row's create first, carrying the row's `created_hlc`, then one
  * `replace` per leaf component and one `merge` per keyed component. That
  * places the base at its true causal position in the log: an
  * already-delivered write with a lower gsn is subsumed by the base, a later
  * one merges on top by HLC, and an in-flight write the fetch predates wins.
  * Because the fetched field envelopes are the server's canonical ones,
  * replaying later Updates merges over the base by HLC without regressing it.
- * A 404 is left absent rather than resurrected: the membership row can
- * outlive the entity's delete.
+ * Carrying the create means a base with zero components — a row whose
+ * components were all detached, or one that never had any — still
+ * materializes as a live row, and its creation time is the server's, not the
+ * position the snapshot was stamped at. A 404 is left absent rather than
+ * resurrected: the membership row can outlive the entity's delete.
  */
 
 import {
@@ -47,12 +51,14 @@ export const BACKFILL_ACTOR_ID = "a_backfill";
 
 /**
  * Build the synthetic snapshot that carries a fetched entity into the log:
- * one Update per component. The base is stamped with the entity's own
- * `last_gsn` and `updated_hlc` so gsn ordering places it at its true causal
- * position: an earlier write is subsumed, a later one merges on top by HLC.
- * The field envelopes come through verbatim so later merges are by HLC, not
- * by arrival. A `replace` is a leaf-level LWW compare, and a keyed component
- * can only merge, so the snapshot never discards a sibling.
+ * the row's create, then one Update per component. The base is stamped with
+ * the entity's own `last_gsn` and `updated_hlc` so gsn ordering places it at
+ * its true causal position: an earlier write is subsumed, a later one merges
+ * on top by HLC. The create carries the row's own `created_hlc`, which a
+ * snapshot's position cannot restate. The field envelopes come through
+ * verbatim so later merges are by HLC, not by arrival. A `replace` is a
+ * leaf-level LWW compare, and a keyed component can only merge, so the
+ * snapshot never discards a sibling.
  */
 export const snapshotAction = (entity: Entity): Action =>
   snapshotActionWithIds(entity, { actionId: generateId("a"), updateId: generateId("u") });
@@ -76,15 +82,27 @@ export const snapshotActionWithIds = (
     actor_id: ids.actorId ?? BACKFILL_ACTOR_ID,
     hlc: entity.updated_hlc,
     gsn: entity.last_gsn,
-    updates: Object.entries(entity.data.fields).map(
-      ([field, value]): Update => ({
-        id: `${ids.updateId}_${field}`,
+    updates: [
+      {
+        id: `${ids.updateId}$create`,
         subject_id: entity.id,
-        component: componentName(entity.model, field),
-        method: isFieldMap(value) ? "merge" : "replace",
-        data: value,
-      }),
-    ),
+        model: entity.model,
+        method: "create",
+        // A live server row always has a creation time; the fallback keeps a
+        // row from an older server from synthesizing a null one.
+        hlc: entity.created_hlc ?? entity.updated_hlc,
+        data: null,
+      },
+      ...Object.entries(entity.data.fields).map(
+        ([field, value]): Update => ({
+          id: `${ids.updateId}_${field}`,
+          subject_id: entity.id,
+          component: componentName(entity.model, field),
+          method: isFieldMap(value) ? "merge" : "replace",
+          data: value,
+        }),
+      ),
+    ],
   });
 
 const hlcToString = (hlc: number | string | null): string | null =>
@@ -210,11 +228,6 @@ export function createBackfill(opts: BackfillOptions): Backfill {
 
   const pending = createObservable<readonly string[]>([]);
   const waiters: (() => void)[] = [];
-  // Ids whose fetched base carried no component: the log cannot record an
-  // empty row, so the placeholder stays `exists: false` and would be a
-  // candidate on every pass. A later component write makes the row worth
-  // fetching again, so a pass that sees one clears the guard.
-  const fetchedEmpty = new Set<string>();
   let running = false;
   let queued = false;
 
@@ -240,11 +253,6 @@ export function createBackfill(opts: BackfillOptions): Backfill {
     const inFlight = new Set([...pending.get(), ...candidates]);
 
     for (const entityId of candidates) {
-      if (fetchedEmpty.has(entityId)) {
-        const row = await storage.entities.get(entityId);
-        if (row === null || Object.keys(row.data.fields).length === 0) continue;
-        fetchedEmpty.delete(entityId);
-      }
       publish(inFlight);
       const entity = await readOne(entityId);
       // An optimistic local write can land while the read is in flight.
@@ -253,15 +261,7 @@ export function createBackfill(opts: BackfillOptions): Backfill {
       const current = await storage.entities.get(entityId);
       const needsBase = current === null || !current.exists;
       if (entity !== null && needsBase) {
-        const snapshot = snapshotAction(entity);
-        // A zero-component base carries no Update, so the log cannot record
-        // it. Remember the id so this pass does not re-fetch it forever.
-        if (snapshot.updates.length === 0) {
-          fetchedEmpty.add(entityId);
-          inFlight.delete(entityId);
-          continue;
-        }
-        const entry = await storage.actions.append(snapshot);
+        const entry = await storage.actions.append(snapshotAction(entity));
         onAppended?.(entry);
         // Force materialization so subscribers observe the fetched row.
         await storage.entities.get(entityId);

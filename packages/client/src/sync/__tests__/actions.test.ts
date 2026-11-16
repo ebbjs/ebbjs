@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, type Action } from "@ebbjs/core";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
@@ -115,8 +115,12 @@ const canonicalize = (action: Action): unknown => {
     return next;
   };
   const canonicalUpdates = action.updates.map((update) => {
-    if (update.method === "drop" || update.method === "delete") {
-      return { subject_id: idOf(update.subject_id), method: update.method };
+    if (!isComponentUpdate(update) || update.method === "drop") {
+      return {
+        subject_id: idOf(update.subject_id),
+        method: update.method,
+        ...(update.method === "create" ? { model: update.model } : {}),
+      };
     }
     const leaf = update.data;
     // A platform row's ids live inside its atomic value, so canonicalize the
@@ -247,7 +251,7 @@ describe("client.actions composition", () => {
     expect(models).toEqual(["list", "ebb", "todo", "ebb"]);
     // The membership and the link are one atomic value each.
     const components = action!.updates.flatMap((update) =>
-      update.method === "delete" ? [] : [update.component],
+      isComponentUpdate(update) ? [update.component] : [],
     );
     expect(components.filter((component) => component.startsWith("ebb/"))).toEqual([
       "ebb/membership",
@@ -255,7 +259,7 @@ describe("client.actions composition", () => {
       "ebb/link",
     ]);
     const target = action!.updates.find(
-      (update) => update.method !== "delete" && update.component === "ebb/link",
+      (update) => isComponentUpdate(update) && update.component === "ebb/link",
     )!;
     expect(target.data).toMatchObject({ value: { target_id: created.list.id } });
   });

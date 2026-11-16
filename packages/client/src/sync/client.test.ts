@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createClient } from "./client";
-import { decodeSync, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, makeHlc, type Action } from "@ebbjs/core";
 import { e } from "@ebbjs/schema";
 import {
   makeFetchMock,
@@ -1625,7 +1625,7 @@ describe("app scope (#732)", () => {
     const appsField = (action: Action, groupId: string): unknown =>
       action.updates.find(
         (update) =>
-          update.method !== "delete" &&
+          isComponentUpdate(update) &&
           update.component === "ebb/group" &&
           update.subject_id === groupId,
       )?.data;

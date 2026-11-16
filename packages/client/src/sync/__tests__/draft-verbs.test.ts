@@ -9,7 +9,14 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  decodeSync,
+  isComponentUpdate,
+  makeHlc,
+  type Action,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { applyUpdate } from "@ebbjs/storage/replica";
 
@@ -427,7 +434,7 @@ describe("drafts — duplicate", () => {
     // Verbatim stamps: the copy is a snapshot of the source's merge state,
     // not a re-stamped write.
     const title = put!.find(
-      (update) => update.method !== "delete" && update.component === "todo/title",
+      (update) => isComponentUpdate(update) && update.component === "todo/title",
     )!;
     expect(title.method).not.toBe("delete");
     expect((title.data as { update_id: string }).update_id).toBe("u_src");
@@ -600,7 +607,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.shareTodo({ id: "todo_1", groupId: "g_1" });
 
     const puts = updatesOf(seen).filter(
-      (update) => update.method !== "delete" && update.component === "ebb/membership",
+      (update) => isComponentUpdate(update) && update.component === "ebb/membership",
     );
     // Derived, not the deleted row's id, so a second device sharing the same
     // pair converges on this one row.
@@ -712,7 +719,7 @@ describe("drafts — call order is wire order", () => {
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
     const titleWrites = updates.filter(
-      (update) => update.method !== "delete" && update.component === "todo/title",
+      (update) => isComponentUpdate(update) && update.component === "todo/title",
     );
     expect(titleWrites).toHaveLength(2);
     expect(titleWrites[0]!.subject_id).toBe(created.id);
@@ -725,7 +732,7 @@ describe("drafts — call order is wire order", () => {
     expect(
       updates
         .slice(0, patchIndex)
-        .some((update) => update.method !== "delete" && update.component === "ebb/membership"),
+        .some((update) => isComponentUpdate(update) && update.component === "ebb/membership"),
     ).toBe(true);
   });
 

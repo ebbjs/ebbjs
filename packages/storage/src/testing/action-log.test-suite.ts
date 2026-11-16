@@ -68,6 +68,7 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         expect(perGroup.position).toBe(1);
         expect(perGroup.added.map((update) => update.id)).toEqual(["u_delete"]);
         expect(perGroup.action.updates.map((update) => update.id).sort()).toEqual([
+          "u_1_create",
           "u_1_title",
           "u_delete",
         ]);
@@ -84,7 +85,7 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
 
         const actions = await log.getAll();
         expect(actions).toHaveLength(1);
-        expect(actions[0]!.updates).toHaveLength(1);
+        expect(actions[0]!.updates).toHaveLength(2);
       });
 
       it("does not advance lastPosition on a repeated id", async () => {
@@ -164,7 +165,11 @@ export const defineActionLogTests = ({ name, factory }: ActionLogTestSuiteOption
         const tail = await log.readTail(0);
         expect(tail).toHaveLength(1);
         expect(tail[0]!.position).toBe(1);
-        expect(tail[0]!.added.map((update) => update.id).sort()).toEqual(["u_1_title", "u_delete"]);
+        expect(tail[0]!.added.map((update) => update.id).sort()).toEqual([
+          "u_1_create",
+          "u_1_title",
+          "u_delete",
+        ]);
       });
     });
 

@@ -58,12 +58,16 @@ import type { IndexRows } from "../internal/reverse-index";
  * components (issue #805): an adjacency key's middle segment is the component
  * name and a stored system row is one atomic component value. Version 15
  * renames a row's committed model from `type` to `model`, which moves the
- * `entities` index, the `dirty` index, and the `replica` key with it. None of
+ * `entities` index, the `dirty` index, and the `replica` key with it. Version
+ * 16 makes row existence a persisted row fact carried by the row's create
+ * (issue #817): a stored row's `exists` / `created_hlc` may come from the
+ * deleted "`replace` implies create" inference, and a stored Action may carry
+ * only component writes, so the pair cannot be read as the new shape. None of
  * these shapes can be read out of the previous one, so a database below any of
  * them is discarded at open. Bump this when adding or changing object stores,
  * or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 15;
+export const EBB_SCHEMA_VERSION = 16;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -100,6 +104,14 @@ const SYSTEM_COMPONENT_RESET_VERSION = 14;
  * reset at open.
  */
 const MODEL_KEY_RESET_VERSION = 15;
+
+/**
+ * The version at which row existence became the create's persisted fact. A row
+ * written before it may carry existence the old inference gave it, and the
+ * Actions that produced it may carry only component writes, so there is no way
+ * to read the pair as the new shape: the database is reset at open.
+ */
+const ROW_CREATE_RESET_VERSION = 16;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -266,10 +278,11 @@ export const createEbbStores = (
   // Incompatible persisted shapes are discarded instead of migrated: the text
   // cell format (v9), the denormalized component names (v11), the conflict
   // component holds (v12), the replica record's component versions (v13), and
-  // the four system types' `ebb/*` rows and adjacency keys (v14), and the
-  // committed model's `type` → `model` key (v15). Each gate is declared
-  // explicitly, so a later version bump must decide its own migration rather
-  // than inheriting one of these resets.
+  // the four system types' `ebb/*` rows and adjacency keys (v14), the
+  // committed model's `type` → `model` key (v15), and the row create's
+  // existence fact (v16). Each gate is declared explicitly, so a later version
+  // bump must decide its own migration rather than inheriting one of these
+  // resets.
   const resetVersions = [
     TEXT_CELL_FORMAT_RESET_VERSION,
     COMPONENT_INDEX_RESET_VERSION,
@@ -277,6 +290,7 @@ export const createEbbStores = (
     COMPONENT_VERSION_RESET_VERSION,
     SYSTEM_COMPONENT_RESET_VERSION,
     MODEL_KEY_RESET_VERSION,
+    ROW_CREATE_RESET_VERSION,
   ];
   const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {

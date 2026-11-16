@@ -20,6 +20,16 @@ import type { OutboxConflict } from "../types/outbox-store";
 
 export const HLC_BASE = 1_711_036_800_000;
 
+/** The row create every put opens with: the row's model and creation time. */
+const rowCreate = (subjectId: string, model: string, hlc: string, updateId: string): Update => ({
+  id: updateId,
+  subject_id: subjectId,
+  model,
+  method: "create",
+  hlc,
+  data: null,
+});
+
 /** One (`replace` or `merge`) Update per field, ids derived from `idBase`. */
 const componentUpdates = (
   subjectId: string,
@@ -37,9 +47,9 @@ const componentUpdates = (
   }));
 
 /**
- * A `put` equivalent for `todo_1`: one `replace` per component. `counter`
- * offsets the HLC within `HLC_BASE` so tests can order write time
- * independently of GSN.
+ * A `put` equivalent for `todo_1`: the row's create, then one `replace` per
+ * component. `counter` offsets the HLC within `HLC_BASE` so tests can order
+ * write time independently of GSN.
  */
 export const buildPutAction = (counter = 0): Action => {
   const hlc = makeHlc(HLC_BASE, counter);
@@ -49,13 +59,29 @@ export const buildPutAction = (counter = 0): Action => {
     actor_id: "a_user1",
     hlc,
     gsn: 1,
-    updates: componentUpdates(
-      "todo_1",
-      "todo",
-      "replace",
-      { title: { value: "Hello", update_id: "u_1_title", hlc } },
-      "u_1",
-    ),
+    updates: [
+      rowCreate("todo_1", "todo", hlc, "u_1_create"),
+      ...componentUpdates(
+        "todo_1",
+        "todo",
+        "replace",
+        { title: { value: "Hello", update_id: "u_1_title", hlc } },
+        "u_1",
+      ),
+    ],
+  };
+};
+
+/** A `create`-only Action for `todo_1`: a complete row with no components. */
+export const buildCreateAction = (counter = 3): Action => {
+  const hlc = makeHlc(HLC_BASE, counter);
+
+  return {
+    id: "a_3",
+    actor_id: "a_user1",
+    hlc,
+    gsn: 3,
+    updates: [rowCreate("todo_1", "todo", hlc, "u_3_create")],
   };
 };
 
@@ -108,8 +134,9 @@ const systemRowUpdate = (
 });
 
 /**
- * Build a create Action for one `ebb/link` row: one `replace` carrying the
- * whole value, the shape the wire writes when a source points at a target.
+ * Build a create Action for one `ebb/link` row: the row's create, then one
+ * `replace` carrying the whole value, the shape the wire writes when a source
+ * points at a target.
  */
 export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
@@ -121,6 +148,7 @@ export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1)
     hlc,
     gsn,
     updates: [
+      rowCreate(row.id, "ebb", hlc, `${updateId}_create`),
       systemRowUpdate(
         "link",
         row.id,
@@ -163,8 +191,9 @@ export interface MembershipRowFixture {
 }
 
 /**
- * Build a create Action for one `ebb/membership` row: one `replace` carrying
- * the whole value, the shape the wire writes when an entity joins a group.
+ * Build a create Action for one `ebb/membership` row: the row's create, then
+ * one `replace` carrying the whole value, the shape the wire writes when an
+ * entity joins a group.
  */
 export const buildMembershipPutAction = (row: MembershipRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
@@ -176,6 +205,7 @@ export const buildMembershipPutAction = (row: MembershipRowFixture, gsn = 1): Ac
     hlc,
     gsn,
     updates: [
+      rowCreate(row.id, "ebb", hlc, `${updateId}_create`),
       systemRowUpdate(
         "membership",
         row.id,

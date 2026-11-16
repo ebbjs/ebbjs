@@ -18,6 +18,7 @@
 
 import {
   componentModel,
+  isComponentUpdate,
   isFieldMap,
   mergeFieldValue,
   type Action,
@@ -69,9 +70,20 @@ export interface PendingWrite {
 const isDeleteUpdate = (update: Update): update is Extract<Update, { method: "delete" }> =>
   update.method === "delete";
 
+/**
+ * The model an Update commits under: the create's own model, the component's
+ * prefix, or `""` for a delete, which names none.
+ */
+const updateModel = (update: Update): string =>
+  update.method === "create"
+    ? update.model
+    : isComponentUpdate(update)
+      ? componentModel(update.component)
+      : "";
+
 /** Fold one component Update into a per-subject component map. */
 const mergeUpdateComponents = (components: Map<string, FieldValue>, update: Update): void => {
-  if (isDeleteUpdate(update)) return;
+  if (!isComponentUpdate(update)) return;
   if (update.method === "drop") {
     components.delete(update.component);
     return;
@@ -87,7 +99,7 @@ const mergeUpdateComponents = (components: Map<string, FieldValue>, update: Upda
 const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void => {
   for (const update of action.updates) {
     const current = subjects.get(update.subject_id) ?? {
-      model: isDeleteUpdate(update) ? "" : componentModel(update.component),
+      model: updateModel(update),
       deleted: false,
       components: new Map<string, FieldValue>(),
     };
@@ -98,7 +110,7 @@ const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void
     const components = new Map(current.components);
     mergeUpdateComponents(components, update);
     subjects.set(update.subject_id, {
-      model: componentModel(update.component),
+      model: updateModel(update),
       deleted: current.deleted,
       components,
     });
@@ -107,9 +119,10 @@ const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void
 
 /**
  * Collapse one Action's Updates into one effective state per subject,
- * applied in order. A `delete` clears the subject's component set; a `drop`
- * detaches one component; a `merge` / `replace` merges its component value
- * into whatever stands.
+ * applied in order. A create names the row's model and adds no component; a
+ * `delete` clears the subject's component set; a `drop` detaches one
+ * component; a `merge` / `replace` merges its component value into whatever
+ * stands.
  */
 export const inboundSubjects = (action: Action): Map<string, InboundSubject> => {
   const subjects = new Map<string, InboundSubject>();
@@ -136,7 +149,7 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
     const components = new Map(current?.components ?? []);
     mergeUpdateComponents(components, update);
     writes.set(update.subject_id, {
-      model: current?.model ?? (isDeleteUpdate(update) ? "" : componentModel(update.component)),
+      model: current?.model ?? updateModel(update),
       components,
     });
   }
