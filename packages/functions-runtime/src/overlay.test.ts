@@ -23,7 +23,7 @@ describe("ctx.get overlay", () => {
     expect(host.calls).toEqual([{ op: "get", payload: { id: "e_issue1" } }]);
   });
 
-  it("shows a row created in this invocation with last_gsn 0 and the write's HLCs", async () => {
+  it("shows a row created in this invocation with last_gsn 0 and the create's HLC", async () => {
     const host = fakeHost();
     const ctx = testContext(host);
 
@@ -40,13 +40,12 @@ describe("ctx.get overlay", () => {
       done: false,
       labels: [],
     });
-    expect(view?.data.fields["title"]).toEqual({
-      value: "New",
-      update_id: expect.any(String),
-      hlc: view?.created_hlc,
-    });
+    expect(view?.data.fields["title"]).toMatchObject({ value: "New" });
+    // The creation time is the create's; the component writes carry their own,
+    // later stamps and the newest of them is the row's updated time.
     expect(view?.created_hlc).toMatch(/^\d+$/);
-    expect(view?.updated_hlc).toBe(view?.created_hlc);
+    expect(view?.updated_hlc).toMatch(/^\d+$/);
+    expect(BigInt(view!.updated_hlc)).toBeGreaterThan(BigInt(view!.created_hlc));
     // The write is the only source: no host read was needed.
     expect(host.calls).toEqual([]);
   });
@@ -128,12 +127,14 @@ describe("ctx.get overlay", () => {
     await expect(ctx.get("e_issue1")).resolves.toBeNull();
   });
 
-  it("creates the row from a merge the host cannot see, leaving created_hlc unset", async () => {
+  it("shows a buffered component write the host cannot see, leaving created_hlc unset", async () => {
     const ctx = testContext(fakeHost());
 
     ctx.update("issue", "e_hidden", { title: "Invisible" });
 
     const view = await ctx.get("e_hidden");
+    // Existence is the create's fact and the host holds none, so the overlay
+    // reports the buffered value without inventing a creation time.
     expect(view).toMatchObject({ id: "e_hidden", model: "issue", created_hlc: "" });
     expect(projectFields(view?.data.fields ?? {})).toEqual({ title: "Invisible" });
   });

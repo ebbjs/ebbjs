@@ -152,6 +152,14 @@ describe("missing_ownership", () => {
   it("passes a membership row that names its group", () => {
     const owned: Update[] = [
       {
+        id: "u_0",
+        subject_id: "eg_1",
+        model: "ebb",
+        method: "create",
+        hlc: "111690000000000001",
+        data: null,
+      },
+      {
         id: "u_1",
         subject_id: "eg_1",
         component: "ebb/membership",
