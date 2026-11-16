@@ -241,6 +241,42 @@ defmodule EbbServer.Storage.SQLiteTest do
     end
   end
 
+  # `list_grants/4` and `list_memberships/4` read through the same cache
+  # process, so a statement it refuses there has to reply too.
+  describe "listing path failure net" do
+    test "a refused listing statement replies and leaves the cache alive", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      db = open_writable(dir)
+      :ok = Sqlite3.execute(db, "ALTER TABLE entities RENAME TO entities_gone")
+
+      assert {:error, reason} = SQLite.list_grants("g_1", nil, 10, name)
+      assert reason =~ "no such table"
+      assert {:error, reason} = SQLite.list_memberships("g_1", nil, 10, name)
+      assert reason =~ "no such table"
+
+      assert Process.whereis(name) == pid
+      assert :ok = SQLite.health(name)
+
+      :ok = Sqlite3.execute(db, "ALTER TABLE entities_gone RENAME TO entities")
+
+      assert [] = SQLite.list_grants("g_1", nil, 10, name)
+      assert [] = SQLite.list_memberships("g_1", nil, 10, name)
+    end
+
+    test "a limit the NIF cannot bind replies instead of taking the cache down", context do
+      dir = tmp_dir(context)
+      %{name: name, pid: pid} = start_sqlite(dir)
+
+      assert {:error, %ArgumentError{}} =
+               SQLite.list_grants("g_1", nil, 9_223_372_036_854_775_808, name)
+
+      assert Process.whereis(name) == pid
+      assert :ok = SQLite.health(name)
+    end
+  end
+
   describe "upsert and get round-trip" do
     test "upserts an entity and reads it back", context do
       dir = tmp_dir(context)
