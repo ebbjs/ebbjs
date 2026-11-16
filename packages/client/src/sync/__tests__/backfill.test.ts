@@ -3,7 +3,7 @@
  *
  * The module-level tests pin the reconciliation and the log-derived
  * persistence; the client tests pin the automatic triggers — catch-up
- * for a cold member, a live `entityGroup` put for an entity moved into
+ * for a cold member, a live `membership` put for an entity moved into
  * a group.
  */
 
@@ -36,9 +36,9 @@ const asResponse = (entity: Entity): EntityResponse => {
   return { ...rest, created_hlc: rest.created_hlc ?? 0 };
 };
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [
@@ -59,7 +59,7 @@ const putAction = (opts: {
   actionId: string;
   gsn: number;
   entityId: string;
-  entityType: string;
+  model: string;
   fields: Record<string, unknown>;
   hlc?: string;
 }): Action => {
@@ -73,7 +73,7 @@ const putAction = (opts: {
     updates: Object.entries(opts.fields).map(([key, value]) => ({
       id: `${updateId}_${key}`,
       subject_id: opts.entityId,
-      component: componentName(opts.entityType, key),
+      component: componentName(opts.model, key),
       method: "replace" as const,
       data: { value, update_id: `${updateId}_${key}`, hlc },
     })),
@@ -114,7 +114,7 @@ const patchAction = (opts: {
   actionId: string;
   gsn: number;
   entityId: string;
-  entityType: string;
+  model: string;
   fields: Record<string, unknown>;
   hlc?: string;
 }): Action => {
@@ -128,7 +128,7 @@ const patchAction = (opts: {
     updates: Object.entries(opts.fields).map(([key, value]) => ({
       id: `${updateId}_${key}`,
       subject_id: opts.entityId,
-      component: componentName(opts.entityType, key),
+      component: componentName(opts.model, key),
       method: "merge" as const,
       data: { value, update_id: `${updateId}_${key}`, hlc },
     })),
@@ -377,7 +377,7 @@ describe("toRuntimeEntity", () => {
   it("stringifies the numeric HLCs the JSON endpoint emits", () => {
     const entity = toRuntimeEntity({
       id: "post_1",
-      type: "blog_post",
+      model: "blog_post",
       data: {
         fields: { title: { value: "Hi", update_id: "u_1", hlc: 1700000000001 } },
       },
@@ -458,7 +458,7 @@ describe("client backfill (#475)", () => {
         actionId: "act_patch",
         gsn: 2,
         entityId: "post_1",
-        entityType: "blog_post",
+        model: "blog_post",
         fields: { title: "Patched" },
       }),
       "g_2",
@@ -516,7 +516,7 @@ describe("snapshot content merges under later writes", () => {
       actionId: "act_newer",
       gsn: 5,
       entityId: "post_1",
-      entityType: "blog_post",
+      model: "blog_post",
       fields: { title: "Newer" },
       hlc: makeHlc(1711036800001),
     });

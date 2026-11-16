@@ -80,7 +80,7 @@ export const snapshotActionWithIds = (
       ([field, value]): Update => ({
         id: `${ids.updateId}_${field}`,
         subject_id: entity.id,
-        component: componentName(entity.type, field),
+        component: componentName(entity.model, field),
         method: isFieldMap(value) ? "merge" : "replace",
         data: value,
       }),
@@ -127,7 +127,7 @@ const normalizeField = (field: unknown): FieldValue => {
 /** Convert the wire `EntityResponse` to the runtime `Entity` shape. */
 export const toRuntimeEntity = (response: EntityResponse): Entity => ({
   id: response.id,
-  type: response.type,
+  model: response.model,
   data: {
     fields: Object.fromEntries(
       Object.entries(response.data.fields).map(([key, value]) => [key, normalizeField(value)]),

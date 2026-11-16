@@ -87,12 +87,12 @@ export interface ReplicaOptions {
 export interface ReplicaStats {
   /** Number of row objects currently materialized (tombstones included). */
   readonly entities: number;
-  /** Materialized row count per entity type. */
-  readonly byType: Readonly<Record<string, number>>;
+  /** Materialized row count per model. */
+  readonly byModel: Readonly<Record<string, number>>;
   /** Rows retained because at least one of their components is held. */
   readonly held: number;
-  /** Held row count per type; excludes rows resident only through a pin. */
-  readonly heldByType: Readonly<Record<string, number>>;
+  /** Held row count per model; excludes rows resident only through a pin. */
+  readonly heldByModel: Readonly<Record<string, number>>;
   /** Resident on-demand components (open or closed and waiting out their TTL). */
   readonly pinned: number;
   /** Components present on resident rows: held, pinned, or overlaid. */
@@ -254,7 +254,7 @@ export interface Replica {
 
   /**
    * Drop rows from the in-memory base and indices without tombstoning them:
-   * afterwards `get(id)` is undefined and `iterate(type)` omits the row. Each
+   * afterwards `get(id)` is undefined and `iterate(model)` omits the row. Each
    * removed row journals one change, so derived readers see it leave. Absent
    * ids are ignored. Returns the resulting revision.
    */

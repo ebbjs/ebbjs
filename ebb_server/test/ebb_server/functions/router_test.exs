@@ -10,7 +10,7 @@ defmodule EbbServer.Functions.RouterTest do
   alias EbbServer.Functions.Router
   alias EbbServer.Functions.Store
   alias EbbServer.Functions.Worker.Fake
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
   alias EbbServer.Sync.Router, as: SyncRouter
   alias EbbServer.TestHelpers
 
@@ -25,7 +25,7 @@ defmodule EbbServer.Functions.RouterTest do
     dir = Bundles.tmp_bundle_dir()
     cache = start_supervised!({BundleCache, name: nil, loader_opts: [dir: dir]})
 
-    %{dir: dir, cache: cache, tables: tables, table: tables.group_members}
+    %{dir: dir, cache: cache, tables: tables, table: tables.grants}
   end
 
   # The flag, the bundle directory, and the transport are node configuration,
@@ -46,26 +46,26 @@ defmodule EbbServer.Functions.RouterTest do
 
   defp grant(tables, actor_id, permissions) do
     :ok =
-      GroupCache.put_group_member(
+      GrantCache.put_grant(
         %{
           id: "gm_#{System.unique_integer([:positive])}",
           actor_id: actor_id,
           group_id: @grant_group,
           permissions: permissions
         },
-        group_members: tables.group_members,
-        group_members_by_id: tables.group_members_by_id,
-        group_members_by_group: tables.group_members_by_group
+        grants: tables.grants,
+        grants_by_id: tables.grants_by_id,
+        grants_by_group: tables.grants_by_group
       )
   end
 
   # The router is mounted under `/functions`; `Plug.forward/4` strips the
   # prefix in production, so calling it directly means passing the bare name.
-  # The parent router passes no options, so it reads the group_members table
+  # The parent router passes no options, so it reads the grants table
   # the way a booted node does. Publishing the isolated table for this test is
   # the same redirect `start_isolated_cache/0` performs.
-  defp publish_group_members_table(table) do
-    key = {GroupCache, :group_members}
+  defp publish_grants_table(table) do
+    key = {GrantCache, :grants}
     previous = :persistent_term.get(key, :unset)
 
     :persistent_term.put(key, table)
@@ -83,7 +83,7 @@ defmodule EbbServer.Functions.RouterTest do
     |> put_req_header("content-type", "application/json")
     |> put_headers(headers)
     |> put_actor(actor_id)
-    |> Router.call(Router.init(cache: cache, group_members_table: table))
+    |> Router.call(Router.init(cache: cache, grants_table: table))
   end
 
   defp put_headers(conn, headers) do
@@ -131,7 +131,7 @@ defmodule EbbServer.Functions.RouterTest do
 
   describe "the whole /functions subtree" do
     test "GET /functions reaches the child router through the parent when the flag is on", ctx do
-      publish_group_members_table(ctx.table)
+      publish_grants_table(ctx.table)
 
       start_supervised!(
         Supervisor.child_spec(
@@ -189,7 +189,7 @@ defmodule EbbServer.Functions.RouterTest do
     test "is reachable through the parent router when the flag is on", ctx do
       name = "echoBack"
       Bundles.write_bundle!(ctx.dir, Bundles.envelope(name))
-      publish_group_members_table(ctx.table)
+      publish_grants_table(ctx.table)
       grant(ctx.tables, @actor, ["function.*"])
 
       # The parent passes no router options, so it asks the registered cache
@@ -358,7 +358,7 @@ defmodule EbbServer.Functions.RouterTest do
           {"idempotency-key", "two"}
         ])
         |> put_actor(@actor)
-        |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
+        |> Router.call(Router.init(cache: ctx.cache, grants_table: ctx.table))
 
       assert conn.status == 400
       assert Jason.decode!(conn.resp_body)["error"] == "invalid_idempotency_key"
@@ -519,7 +519,7 @@ defmodule EbbServer.Functions.RouterTest do
 
       conn =
         conn(:post, "/#{name}", "{}")
-        |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
+        |> Router.call(Router.init(cache: ctx.cache, grants_table: ctx.table))
 
       assert conn.status == 401
       body = Jason.decode!(conn.resp_body)
@@ -628,7 +628,7 @@ defmodule EbbServer.Functions.RouterTest do
         conn(:post, "/echoBack", "{}")
         |> put_actor(@actor)
         |> Router.call(
-          Router.init(cache: :functions_cache_that_is_not_running, group_members_table: ctx.table)
+          Router.init(cache: :functions_cache_that_is_not_running, grants_table: ctx.table)
         )
 
       assert conn.status == 500
@@ -764,7 +764,7 @@ defmodule EbbServer.Functions.RouterTest do
       conn =
         conn(:get, "/echoBack")
         |> put_actor(@actor)
-        |> Router.call(Router.init(cache: ctx.cache, group_members_table: ctx.table))
+        |> Router.call(Router.init(cache: ctx.cache, grants_table: ctx.table))
 
       assert conn.status == 404
       assert conn.resp_body == ""

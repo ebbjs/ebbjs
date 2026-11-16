@@ -13,7 +13,7 @@ import { decodeSync, EBB_MODEL_NAME, type Action, type Entity } from "@ebbjs/cor
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
-import { ebbSystemEntity, type GroupMemberFields } from "@ebbjs/schema";
+import { ebbModel, type GrantFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { ActionRejectedError } from "@ebbjs/write";
@@ -72,12 +72,12 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch =>
 const profile = defineModel("profile", { name: e.string() });
 const schema = defineSchema({
   models: { profile },
-  // A system entity can own a relationship. Without one the system
+  // A platform model can own a relationship. Without one the system
   // namespaces' link / unlink verbs would have nothing to point at.
   relationships: {
     // A platform row can own a relationship; its model is `ebb` and its kind is
     // the component it carries.
-    group_lead: defineRelationship({ source: ebbSystemEntity, target: profile, as: "lead" }),
+    group_lead: defineRelationship({ source: ebbModel, target: profile, as: "lead" }),
   },
   version: 1,
 });
@@ -88,13 +88,13 @@ const createGroup = defineAction(
   ({ group }, params: { name: string; apps?: readonly string[] }) => group.create(params),
 );
 
-const createMembership = defineAction(schema, ({ membership }, params: GroupMemberFields) =>
+const createMembership = defineAction(schema, ({ membership }, params: GrantFields) =>
   membership.create(params),
 );
 
 const updateMembership = defineAction(
   schema,
-  ({ membership }, params: { id: string; patch: Partial<GroupMemberFields> }): void => {
+  ({ membership }, params: { id: string; patch: Partial<GrantFields> }): void => {
     membership.update(params.id, params.patch);
   },
 );
@@ -264,7 +264,7 @@ const fieldsOf = (row: readonly Action["updates"][number][]): Record<string, unk
   rowFields(row);
 
 describe("draft group.create — bootstrap", () => {
-  it("submits one Action with the group put and the actor's own groupMember put", async () => {
+  it("submits one Action with the group put and the actor's own grant put", async () => {
     const { client, seen } = await mkClient();
 
     const created = await client.actions.createGroup({ name: "Team" });
@@ -282,7 +282,7 @@ describe("draft group.create — bootstrap", () => {
       group_id: created.id,
     });
 
-    // No `entityGroup` row for the group itself — a group is its own group.
+    // No `membership` row for the group itself — a group is its own group.
     expect(rowsOf(updates, "membership")).toHaveLength(0);
 
     // Exactly one Action reached the wire.
@@ -341,7 +341,7 @@ describe("draft group.create — app scope (#732)", () => {
 });
 
 describe("draft membership.create", () => {
-  it("submits one Action with a single groupMember put and no entityGroup row", async () => {
+  it("submits one Action with a single grant put and no membership row", async () => {
     const { client, seen } = await mkClient();
 
     const created = await client.actions.createMembership({
@@ -365,43 +365,39 @@ describe("draft membership.create", () => {
   });
 });
 
-describe("draft membership — last_group_member refusal", () => {
+describe("draft membership — last_grant refusal", () => {
   const mkMember = (id: string, permissions: readonly string[], groupId = "g_1"): Entity =>
     platformEntity(id, "grant", { group_id: groupId, actor_id: "actor_1", permissions });
 
-  it("delete() of the group's last capable member is refused with last_group_member", async () => {
+  it("delete() of the group's last capable member is refused with last_grant", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+    await storage.entities.set(mkMember("gm_1", ["grant.*"]));
 
     const error = await client.actions
       .deleteMembership({ id: "gm_1" })
       .catch((err: unknown) => err);
 
     expect(error).toBeInstanceOf(ActionRejectedError);
-    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual([
-      "last_group_member",
-    ]);
+    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual(["last_grant"]);
     expect(actionCalls(seen)).toHaveLength(0);
   });
 
-  it("update() emptying the group's only permission list is refused with last_group_member", async () => {
+  it("update() emptying the group's only permission list is refused with last_grant", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+    await storage.entities.set(mkMember("gm_1", ["grant.*"]));
 
     const error = await client.actions
       .updateMembership({ id: "gm_1", patch: { permissions: [] } })
       .catch((err: unknown) => err);
 
     expect(error).toBeInstanceOf(ActionRejectedError);
-    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual([
-      "last_group_member",
-    ]);
+    expect((error as ActionRejectedError).rejections.map((r) => r.reason)).toEqual(["last_grant"]);
     expect(actionCalls(seen)).toHaveLength(0);
   });
 
   it("delete() of a non-last member still submits one Action", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkMember("gm_1", ["groupMember.*"]));
+    await storage.entities.set(mkMember("gm_1", ["grant.*"]));
     await storage.entities.set(mkMember("gm_2", ["profile.*"]));
 
     await expect(client.actions.deleteMembership({ id: "gm_1" })).resolves.toBeUndefined();
@@ -605,7 +601,7 @@ describe("system drafts — one Action", () => {
 });
 
 describe("defineAction — addToWorkspace", () => {
-  it("composes a groupMember put and a profile entityGroup put in one Action", async () => {
+  it("composes a grant put and a profile membership put in one Action", async () => {
     const { client, seen } = await mkClientWith({ ...systemActions, addToWorkspace });
 
     await client.actions.addToWorkspace({

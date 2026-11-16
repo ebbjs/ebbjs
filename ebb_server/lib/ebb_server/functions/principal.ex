@@ -6,7 +6,7 @@ defmodule EbbServer.Functions.Principal do
 
     * `:actor` — `AuthPlug` resolved the caller from the request's identity
       headers, exactly as it does for a sync route. Grants come from the
-      actor's `groupMember.permissions` rows.
+      actor's `grant.permissions` rows.
     * `:service` — the request carried `x-ebb-service-token`, and its sha256
       matches one entry in `config :ebb_server, :functions, services`. Grants
       are the credential's own `permissions` list, and the data identity is

@@ -5,7 +5,7 @@ import type { ReplicaRecord } from "../types/replica-store";
  * The record shape this build writes. A record written by another format reads
  * as absent, so a shape change cannot smuggle a stale base into the replica.
  */
-export const REPLICA_RECORD_FORMAT = 4;
+export const REPLICA_RECORD_FORMAT = 5;
 
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
@@ -14,7 +14,7 @@ const isRowShape = (value: unknown): value is Entity =>
   typeof value === "object" &&
   value !== null &&
   typeof (value as { id?: unknown }).id === "string" &&
-  typeof (value as { type?: unknown }).type === "string" &&
+  typeof (value as { model?: unknown }).model === "string" &&
   typeof (value as { exists?: unknown }).exists === "boolean" &&
   ((value as { created_hlc?: unknown }).created_hlc === null ||
     typeof (value as { created_hlc?: unknown }).created_hlc === "string");

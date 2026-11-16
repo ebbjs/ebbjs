@@ -154,8 +154,8 @@ defmodule EbbServer.Functions.Router do
       `EbbServer.Functions.Store`)
     * `:admin_token` — the deploy credential to compare against (default
       `EbbServer.Functions.admin_token/0`)
-    * `:group_members_table` — the ETS table holding grants (default
-      `EbbServer.Storage.CacheTables.group_members/0`)
+    * `:grants_table` — the ETS table holding grants (default
+      `EbbServer.Storage.CacheTables.grants/0`)
 
   Everything else (the worker transport, its options, and the bundle
   directory) comes from `EbbServer.Functions` config, because it describes the
@@ -270,11 +270,11 @@ defmodule EbbServer.Functions.Router do
     Keyword.get(conn.assigns.functions_opts, :admin_token, Functions.admin_token())
   end
 
-  defp group_members_table(conn) do
+  defp grants_table(conn) do
     Keyword.get(
       conn.assigns.functions_opts,
-      :group_members_table,
-      CacheTables.group_members()
+      :grants_table,
+      CacheTables.grants()
     )
   end
 
@@ -1031,7 +1031,7 @@ defmodule EbbServer.Functions.Router do
   # a denied request spawns nothing. Authorization also precedes the body read:
   # a denied caller should not be able to make the server read a megabyte first.
   defp authorize(conn, bundle, principal, invocation_id) do
-    table = group_members_table(conn)
+    table = grants_table(conn)
 
     case Access.authorize(bundle.access, principal, bundle.name, table: table) do
       :ok ->

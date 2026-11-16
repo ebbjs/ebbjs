@@ -43,7 +43,7 @@ const filters = (patch: Partial<IssueFilters> = {}): IssueFilters => ({
 async function seedSharedGroup(seeder: Client): Promise<void> {
   const bootstrap: SeedData = {
     groups: [{ id: SHARED_GROUP_ID, name: `Board ${RUN_ID}` }],
-    groupMembers: [
+    grants: [
       {
         id: `gms_board_seeder_${RUN_ID}`,
         actorId: SEEDER_ACTOR_ID,
@@ -57,7 +57,7 @@ async function seedSharedGroup(seeder: Client): Promise<void> {
 
   const members: SeedData = {
     groups: [],
-    groupMembers: [
+    grants: [
       {
         id: `gms_board_alice_${RUN_ID}`,
         actorId: ALICE,

@@ -269,7 +269,7 @@ claim/abandon ownership semantics.
 
 ### #6 — Startup snapshot — **PARK**
 
-`SystemCache.populate_type/6` (`system_cache.ex:493`) only prefix-scans the
+`SystemCache.populate_component/6` (`system_cache.ex:493`) only prefix-scans the
 three system types (`groupMember`, `entityGroup`, `relationship`), so
 user-entity count does not drive boot; `--entities` preloads through the Writer
 _after_ boot, and the harness has no restart-to-ready metric. Falsify with a

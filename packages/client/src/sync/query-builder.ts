@@ -98,7 +98,7 @@ import type { ComponentMigrations } from "./migrations";
  * over its type. A held source may still join an on-demand target.
  */
 export class OnDemandQueryError extends Error {
-  /** The on-demand entity type the refused query scanned. */
+  /** The on-demand model the refused query scanned. */
   readonly entityName: string;
 
   constructor(entityName: string) {
@@ -166,7 +166,7 @@ const resolveFieldValue = (
   const value =
     migrations === undefined
       ? stored
-      : migrations.project(entity.id, componentName(entity.type, field), stored);
+      : migrations.project(entity.id, componentName(entity.model, field), stored);
   return value ?? readDefault(property);
 };
 
@@ -594,7 +594,7 @@ export function buildReplicaQueryBuilder<
 ): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
   if (!modelIsHeld(context, source)) throw new OnDemandQueryError(source);
   const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
-    projectQueryRow(row, shape, entityGroupIds(row.id, executor), context.migrations);
+    projectQueryRow(row, shape, membershipRowIds(row.id, executor), context.migrations);
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = replicaExecutorFor(context, view);
     return projectResultRows(
@@ -684,7 +684,7 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
         ? executor.relationships({ as: join.as, type: join.type, sourceId: entity.id })
         : executor.relationships({ as: join.as, type: join.type, targetId: entity.id });
     case "membership":
-      return entityGroupIds(entity.id, executor);
+      return membershipRowIds(entity.id, executor);
   }
 };
 
@@ -761,7 +761,7 @@ const runProjectingPlan = async (
  * The group ids a projected query row carries, read from the replica's
  * entity-keyed membership index.
  */
-const entityGroupIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
+const membershipRowIds = (entityId: string, executor: PlanExecutor): readonly string[] =>
   executor.memberships({ entityId });
 
 /**
@@ -786,7 +786,7 @@ const readJoinedRow = (
   context: QueryContext | undefined,
 ): ProjectedRow<Record<string, TSchema>> | null => {
   const row = executor.get(id);
-  if (row === undefined || row.deleted_hlc !== null || row.type !== join.target) return null;
+  if (row === undefined || row.deleted_hlc !== null || row.model !== join.target) return null;
   if (join.kind === "membership") {
     // The `groups` join projects group rows: filter on the component and project
     // its value.

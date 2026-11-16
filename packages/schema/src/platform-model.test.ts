@@ -7,10 +7,10 @@ import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
 import { describe, expect, it } from "vitest";
 
-import { EBB_COMPONENT_KINDS, ebbSystemEntity } from "./index";
+import { EBB_COMPONENT_KINDS, ebbModel } from "./index";
 
 const componentShape = (kind: (typeof EBB_COMPONENT_KINDS)[number]): TSchema =>
-  ebbSystemEntity.components[kind].shape;
+  ebbModel.components[kind].shape;
 
 describe("platform component values are atomic", () => {
   it("closes every value's property set", () => {
@@ -56,7 +56,7 @@ describe("platform component values are atomic", () => {
 describe("platform components declare their own permission", () => {
   it("keeps the four grants distinct as `ebb/<kind>.<verb>`", () => {
     for (const kind of EBB_COMPONENT_KINDS) {
-      expect(ebbSystemEntity.components[kind].permission).toBe("own");
+      expect(ebbModel.components[kind].permission).toBe("own");
     }
   });
 });
@@ -65,7 +65,7 @@ describe("platform components and conflict scope", () => {
   it("leaves a group row detectable, unlike the structural components", () => {
     // `group` is the one platform component a concurrent write should surface;
     // the edge, membership, and grant are the three `structural` exemptions.
-    expect(ebbSystemEntity.components.group.structural).toBe(false);
+    expect(ebbModel.components.group.structural).toBe(false);
   });
 });
 
@@ -73,9 +73,9 @@ describe("platform components declare their scope owner", () => {
   it("names the entity each write's group set resolves against", () => {
     // A group's scope is itself and a grant's is the group it names, so neither
     // carries a membership row; an edge resolves through its source.
-    expect(ebbSystemEntity.components.group.scope).toBe("self");
-    expect(ebbSystemEntity.components.grant.scope).toBe("group_id");
-    expect(ebbSystemEntity.components.membership.scope).toBe("group_id");
-    expect(ebbSystemEntity.components.link.scope).toBe("source_id");
+    expect(ebbModel.components.group.scope).toBe("self");
+    expect(ebbModel.components.grant.scope).toBe("group_id");
+    expect(ebbModel.components.membership.scope).toBe("group_id");
+    expect(ebbModel.components.link.scope).toBe("source_id");
   });
 });

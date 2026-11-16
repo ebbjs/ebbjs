@@ -26,7 +26,7 @@ const map = (entries: Record<string, FieldValue>): FieldValue => ({ map: entries
 /** A materialized row for one subject. */
 const row = (fields: Record<string, FieldValue>): Entity => ({
   id: "todo_1",
-  type: "todo",
+  model: "todo",
   data: { fields },
   exists: true,
   created_hlc: LOCAL_HLC,

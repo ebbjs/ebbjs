@@ -104,9 +104,9 @@ export function deriveActorSeedIds(actorId: string): ActorSeedIds {
 }
 
 /** One user entity with every field carried as a plain seed value. */
-const entity = (id: string, type: string, fields: Record<string, unknown>): EntitySeed => ({
+const entity = (id: string, model: string, fields: Record<string, unknown>): EntitySeed => ({
   id,
-  type,
+  model,
   patches: [{ fields }],
 });
 
@@ -117,7 +117,7 @@ export function buildActorSeed(actorId: string): SeedData {
 
   return {
     groups: [{ id: ids.groupId, name: workspaceName, apps: [APP_ID] }],
-    groupMembers: [
+    grants: [
       {
         id: ids.memberId,
         actorId,
@@ -137,7 +137,7 @@ export function buildActorSeed(actorId: string): SeedData {
         avatar_url: "",
       }),
     ],
-    entityGroups: [
+    memberships: [
       { id: ids.workspaceMembershipId, entityId: ids.workspaceId, groupId: ids.groupId },
       { id: ids.profileMembershipId, entityId: ids.profileId, groupId: ids.groupId },
     ],
@@ -148,7 +148,7 @@ export function buildActorSeed(actorId: string): SeedData {
 export function buildSharedSeed(): SeedData {
   return {
     groups: [{ id: SHARED_GROUP_ID, name: "Shared Workspace", apps: [APP_ID] }],
-    groupMembers: [
+    grants: [
       {
         id: SHARED_MEMBER_ID,
         actorId: SEEDER_ACTOR_ID,
@@ -168,7 +168,7 @@ export function buildSharedSeed(): SeedData {
         priority: "medium",
       }),
     ],
-    entityGroups: [
+    memberships: [
       {
         id: SHARED_WORKSPACE_MEMBERSHIP_ID,
         entityId: SHARED_WORKSPACE_ID,

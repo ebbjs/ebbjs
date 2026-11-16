@@ -38,12 +38,7 @@ import {
   type SourceNameOf,
 } from "./definition-types";
 import type { LiveMembership } from "./entity-group";
-import {
-  entityGroupId,
-  lastGroupMemberRefusal,
-  type GroupMemberView,
-  type LiveGroupMember,
-} from "@ebbjs/write";
+import { membershipRowId, lastGrantRefusal, type GrantView, type LiveGrant } from "@ebbjs/write";
 import type { EntityFields, EntityPatch, WireCreateStatic } from "./namespace";
 import type { GrantFieldMap, GroupFieldMap } from "./system-row";
 import {
@@ -51,12 +46,12 @@ import {
   call,
   changeGroups,
   createEntity,
-  createSystemEntity,
+  createPlatformRow,
   deleteEntity,
   dropEntity,
   duplicateEntity,
   groupBootstrap,
-  lastGroupMemberError,
+  lastGrantError,
   patchEntity,
   writeRelationship,
   type MembershipRemoval,
@@ -234,7 +229,7 @@ async function resolveUnlinkTarget(
 /**
  * Options for a draft namespace's `create`. Mirrors the entity
  * namespace's create signature: `groups` is required and non-empty,
- * and one `entityGroup` row per group lands in the same Action.
+ * and one `membership` row per group lands in the same Action.
  * `validate: false` skips the local field check.
  */
 export interface DraftCreateOptions extends EntityWriteOptions {
@@ -259,10 +254,10 @@ export interface DraftDuplicateOptions extends EntityWriteOptions {
  * separately — a test seeds this one and captures the other.
  */
 export interface ActionReads {
-  /** Live `entityGroup` rows for an entity id. */
+  /** Live `membership` rows for an entity id. */
   memberships(entityId: string): Promise<readonly LiveMembership[]>;
-  /** The live row of `entityType`, or `null` when it is absent or another type. */
-  entity(entityType: string, entityId: string): Promise<Entity | null>;
+  /** The live row of `model`, or `null` when it is absent or another type. */
+  entity(model: string, entityId: string): Promise<Entity | null>;
   /** The `before` row of the entity's earliest unresolved conflict. */
   preSyncRow(entityId: string): Promise<Entity | null>;
   /** The live edge a one-cardinality unlink's delete must name. */
@@ -271,8 +266,8 @@ export interface ActionReads {
     type: string,
     sourceId: string,
   ): Promise<{ readonly relationshipId: string } | undefined>;
-  /** Live `groupMember` rows of a group, for the `last_group_member` guard. */
-  groupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
+  /** Live `grant` rows of a group, for the `last_grant` guard. */
+  grants(groupId: string): Promise<readonly LiveGrant[]>;
 }
 
 /** The committer plus the local reads the planner resolves an intent against. */
@@ -284,7 +279,7 @@ export interface ActionCapability extends CommitCapability {
 interface BatchEntity {
   /** Groups the batch has filed the entity into. */
   groups: Set<string>;
-  /** `entityGroup` row ids the batch knows, keyed by group. */
+  /** `membership` row ids the batch knows, keyed by group. */
   membershipIds: Map<string, string>;
 }
 
@@ -466,7 +461,7 @@ export type GroupDraftNamespace = Omit<SystemDraftNamespace<GroupFieldMap>, "cre
 /**
  * The `client.membership` draft namespace: the system surface over the
  * `ebb/grant` value, with `update` / `delete` behind the local
- * `last_group_member` guard, so leaving a group is one Action alongside the
+ * `last_grant` guard, so leaving a group is one Action alongside the
  * content changes.
  */
 export type MembershipDraftNamespace = SystemDraftNamespace<GrantFieldMap>;
@@ -486,7 +481,7 @@ type DraftPointerInputs<TRels, TName extends string> = [TRels] extends [undefine
       }
     : Record<never, never>;
 
-/** Draft namespaces keyed by schema entity name, plus the system entities. */
+/** Draft namespaces keyed by schema entity name, plus the platform model. */
 export type ActionDrafts<S> =
   S extends Schema<infer TEntities, infer TRels>
     ? {
@@ -613,7 +608,7 @@ const createDraftNamespace = <
 
     collector.batching.set(id, {
       groups: new Set(groups),
-      membershipIds: new Map(groups.map((groupId) => [groupId, entityGroupId(id, groupId)])),
+      membershipIds: new Map(groups.map((groupId) => [groupId, membershipRowId(id, groupId)])),
     });
     record(
       collector,
@@ -775,7 +770,7 @@ const createSystemDrafts = (
         const id = generateId("e");
         record(
           collector,
-          call(createSystemEntity, {
+          call(createPlatformRow, {
             kind: "grant",
             id,
             value: input as unknown as Record<string, unknown>,
@@ -817,15 +812,15 @@ const buildDrafts = (
 };
 
 /**
- * The groupMember guard's reads over the client capability, so the
+ * The grant guard's reads over the client capability, so the
  * draft verbs refuse exactly what the imperative membership verbs do.
  */
-const groupMemberView = (cap: ActionCapability): GroupMemberView => ({
+const grantView = (cap: ActionCapability): GrantView => ({
   row: async (id) => {
     const row = await cap.read.entity(EBB_MODEL_NAME, id);
     return row !== null && systemValue(row, "grant") !== null ? row : null;
   },
-  groupMembers: (groupId) => cap.read.groupMembers(groupId),
+  grants: (groupId) => cap.read.grants(groupId),
 });
 
 /** The entity's group set: the overlay when the batch touched it, else a live read. */
@@ -868,7 +863,7 @@ const applyGroupDelta = async (
       throw new EntityValidationError([
         {
           entityName: intent.entity,
-          message: `removeFromGroup: no entityGroup membership row for "${intent.id}" in group "${groupId}"`,
+          message: `removeFromGroup: no membership membership row for "${intent.id}" in group "${groupId}"`,
         },
       ]);
     }
@@ -877,7 +872,7 @@ const applyGroupDelta = async (
   if (puts.length === 0 && removals.length === 0) return [];
   for (const groupId of puts) {
     state.groups.add(groupId);
-    state.membershipIds.set(groupId, entityGroupId(intent.id, groupId));
+    state.membershipIds.set(groupId, membershipRowId(intent.id, groupId));
   }
   for (const removal of removals) {
     state.groups.delete(removal.groupId);
@@ -924,7 +919,7 @@ const resolveDrop = async (
   ctx: ResolveContext,
 ): Promise<readonly OperationCall[]> => {
   const row = await ctx.cap.read.entity(intent.entity, intent.id);
-  if (row === null || row.type !== intent.entity) {
+  if (row === null || row.model !== intent.entity) {
     throw new ActionResolutionError(
       `drop: no ${intent.entity} row for id "${intent.id}" is visible to this action`,
     );
@@ -948,7 +943,7 @@ const resolveDuplicate = async (
     intent.at === "preSync"
       ? await ctx.cap.read.preSyncRow(intent.sourceId)
       : await ctx.cap.read.entity(intent.entity, intent.sourceId);
-  if (source === null || source.type !== intent.entity) {
+  if (source === null || source.model !== intent.entity) {
     throw new EntityValidationError([
       {
         entityName: intent.entity,
@@ -969,7 +964,7 @@ const resolveDuplicate = async (
   ctx.batching.set(intent.subjectId, {
     groups: new Set(groups),
     membershipIds: new Map(
-      groups.map((groupId) => [groupId, entityGroupId(intent.subjectId, groupId)]),
+      groups.map((groupId) => [groupId, membershipRowId(intent.subjectId, groupId)]),
     ),
   });
   return [
@@ -1083,7 +1078,7 @@ const systemPatchCall = async (
   });
 };
 
-/** `membership.update`: the `last_group_member` guard, then the whole value. */
+/** `membership.update`: the `last_grant` guard, then the whole value. */
 const resolveMemberPatch = async (
   intent: Extract<DraftIntent, { kind: "member-patch" }>,
   ctx: ResolveContext,
@@ -1092,11 +1087,11 @@ const resolveMemberPatch = async (
   // moving the group is a re-point, which `systemPatchCall` refuses.
   const permissions = intent.patch["permissions"];
   if (permissions !== undefined && intent.patch["group_id"] === undefined) {
-    const details = await lastGroupMemberRefusal(groupMemberView(ctx.cap), intent.id, {
+    const details = await lastGrantRefusal(grantView(ctx.cap), intent.id, {
       removedIds: [],
       upserts: [{ id: intent.id, permissions: permissions as readonly string[] }],
     });
-    if (details !== undefined) throw lastGroupMemberError(intent.id, details);
+    if (details !== undefined) throw lastGrantError(intent.id, details);
   }
   return [
     await systemPatchCall(ctx, {
@@ -1113,11 +1108,11 @@ const resolveMemberDelete = async (
   intent: Extract<DraftIntent, { kind: "member-delete" }>,
   ctx: ResolveContext,
 ): Promise<readonly OperationCall[]> => {
-  const details = await lastGroupMemberRefusal(groupMemberView(ctx.cap), intent.id, {
+  const details = await lastGrantRefusal(grantView(ctx.cap), intent.id, {
     removedIds: [intent.id],
     upserts: [],
   });
-  if (details !== undefined) throw lastGroupMemberError(intent.id, details);
+  if (details !== undefined) throw lastGrantError(intent.id, details);
   return [
     call(deleteEntity, {
       entity: EBB_MODEL_NAME,

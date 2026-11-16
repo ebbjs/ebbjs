@@ -13,7 +13,7 @@ const map = (entries: Record<string, FieldValue>): FieldValue => ({ map: entries
 
 const entity = (overrides: Partial<Entity> = {}): Entity => ({
   id: "e_1",
-  type: "todo",
+  model: "todo",
   data: { fields: {} },
   exists: true,
   created_hlc: makeHlc(1),
@@ -39,7 +39,7 @@ describe("contentChanged", () => {
 
   it("detects type, exists, created_hlc, updated_hlc, deleted_hlc and field changes", () => {
     const row = entity();
-    expect(contentChanged(row, { ...row, type: "note" })).toBe(true);
+    expect(contentChanged(row, { ...row, model: "note" })).toBe(true);
     expect(contentChanged(row, { ...row, exists: false })).toBe(true);
     expect(contentChanged(row, { ...row, created_hlc: null })).toBe(true);
     expect(contentChanged(row, { ...row, updated_hlc: makeHlc(9) })).toBe(true);

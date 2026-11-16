@@ -143,7 +143,7 @@ beforeAll(async () => {
   plain = createClient({ serverUrl: SERVER_URL, actorId: ALICE });
   await plain.seed({
     groups: [{ id: G_SHARED, name: "Shared" }],
-    groupMembers: [
+    grants: [
       {
         id: `gm_shared_${RUN_ID}`,
         actorId: ALICE,
@@ -159,7 +159,7 @@ beforeAll(async () => {
   notes = createAppScopeClient("notes");
   await notes.seed({
     groups: [{ id: G_NOTES, name: "Notes" }],
-    groupMembers: [
+    grants: [
       {
         id: `gm_notes_${RUN_ID}`,
         actorId: ALICE,
@@ -167,14 +167,14 @@ beforeAll(async () => {
         permissions: MEMBER_PERMISSIONS,
       },
     ],
-    entities: [{ id: NOTE, type: "note", patches: [{ fields: { title: "Draft" } }] }],
-    entityGroups: [{ id: `eg_${RUN_ID}_${NOTE}`, entityId: NOTE, groupId: G_NOTES }],
+    entities: [{ id: NOTE, model: "note", patches: [{ fields: { title: "Draft" } }] }],
+    memberships: [{ id: `eg_${RUN_ID}_${NOTE}`, entityId: NOTE, groupId: G_NOTES }],
   });
 
   issues = createAppScopeClient("issues");
   await issues.seed({
     groups: [{ id: G_ISSUES, name: "Issues", apps: ["issues"] }],
-    groupMembers: [
+    grants: [
       {
         id: `gm_issues_${RUN_ID}`,
         actorId: ALICE,
@@ -188,7 +188,7 @@ beforeAll(async () => {
   // The bridge names both apps; one Action bootstraps it and its membership.
   await notes.seed({
     groups: [{ id: G_BRIDGE, name: "Bridge", apps: ["notes", "issues"] }],
-    groupMembers: [
+    grants: [
       {
         id: `gm_bridge_${RUN_ID}`,
         actorId: ALICE,

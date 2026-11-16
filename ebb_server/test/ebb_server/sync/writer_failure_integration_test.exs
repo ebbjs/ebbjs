@@ -33,12 +33,12 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
   use ExUnit.Case, async: false
   use EbbServer.Integration.StorageCase
 
-  alias EbbServer.Storage.{CacheTables, GroupCache, RocksDB, WatermarkTracker, Writer}
+  alias EbbServer.Storage.{CacheTables, GrantCache, RocksDB, WatermarkTracker, Writer}
   alias EbbServer.TestHelpers
 
   # A cache table that never exists: the commit lands, then the Writer's
   # post-commit cache apply raises on the insert.
-  def storage_writer_opts, do: [group_members: :ebb_282_missing_table]
+  def storage_writer_opts, do: [grants: :ebb_282_missing_table]
 
   test "post-commit cache update failure escalates and reads stay consistent" do
     system_cache_before = Process.whereis(EbbServer.Storage.SystemCache)
@@ -85,7 +85,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
     # committed Action, and the frontier is at the committed GSN.
     assert eventually(fn ->
              Enum.any?(
-               GroupCache.get_actor_groups(actor_id, CacheTables.group_members()),
+               GrantCache.get_actor_groups(actor_id, CacheTables.grants()),
                fn member -> member.group_id == group_id end
              )
            end)
@@ -130,9 +130,9 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
 
   alias EbbServer.Storage.{
     DirtyTracker,
-    EntityGroupCache,
-    EntityTypeCache,
-    GroupCache,
+    MembershipCache,
+    EntityModelCache,
+    GrantCache,
     RelationshipCache,
     SystemCache
   }
@@ -143,7 +143,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
 
     children_before =
       Enum.map(
-        [DirtyTracker, GroupCache, EntityGroupCache, EntityTypeCache, RelationshipCache],
+        [DirtyTracker, GrantCache, MembershipCache, EntityModelCache, RelationshipCache],
         &Process.whereis/1
       )
 
@@ -291,7 +291,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
   end
 
   # One self-bootstrap Action: the actor joins its own new group and
-  # writes a todo + entityGroup edge, the shape #197 pins.
+  # writes a todo + membership edge, the shape #197 pins.
   defp seed_action(group_id, actor_id) do
     hlc = TestHelpers.generate_hlc()
     todo_id = "todo_282_e2e_#{:erlang.unique_integer([:positive])}"
@@ -305,7 +305,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
           updates("group", group_id, "replace", %{
             "name" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
           }),
-          updates("groupMember", "gm_282_e2e_owner", "replace", %{
+          updates("grant", "gm_282_e2e_owner", "replace", %{
             "actor_id" => %{"type" => "lww", "value" => actor_id, "hlc" => hlc},
             "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc},
             "permissions" => %{"type" => "lww", "value" => ["todo.*"], "hlc" => hlc}
@@ -313,7 +313,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
           updates("todo", todo_id, "replace", %{
             "title" => %{"type" => "lww", "value" => "Seed", "hlc" => hlc}
           }),
-          updates("entityGroup", "eg_282_e2e", "replace", %{
+          updates("membership", "eg_282_e2e", "replace", %{
             "entity_id" => %{"type" => "lww", "value" => todo_id, "hlc" => hlc},
             "group_id" => %{"type" => "lww", "value" => group_id, "hlc" => hlc}
           })
@@ -325,8 +325,8 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
   # `fields` keeps the `field => leaf` shape and is unwrapped.
   @system_components %{
     "group" => "ebb/group",
-    "groupMember" => "ebb/grant",
-    "entityGroup" => "ebb/membership",
+    "grant" => "ebb/grant",
+    "membership" => "ebb/membership",
     "relationship" => "ebb/link"
   }
 
@@ -445,7 +445,7 @@ defmodule EbbServer.Sync.ActionDedupLostAckHttpTest do
             "method" => "replace",
             "data" => %{"type" => "lww", "value" => "Lost ack", "hlc" => hlc}
           }
-        ] ++ ActionHelpers.entity_group_update(entity_id, group_id, hlc)
+        ] ++ ActionHelpers.membership_update(entity_id, group_id, hlc)
     }
   end
 

@@ -51,7 +51,7 @@ describe("IndexedDB ReplicaStore corruption", () => {
     });
     // The composite key accepts a numeric id, but the row shape does not.
     await db.put("replica", {
-      type: "todo",
+      model: "todo",
       id: 123,
     } as unknown as EbbDBSchema["replica"]["value"]);
 

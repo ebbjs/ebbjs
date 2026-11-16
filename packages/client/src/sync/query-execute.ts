@@ -241,7 +241,7 @@ const indexHits = (
 /** The ids one indexed predicate contributes, read from its index. */
 const predicateHits = (
   predicate: IndexPredicate,
-  sourceType: string,
+  sourceModel: string,
   executor: PlanExecutor,
 ): ReadonlySet<string> => {
   switch (predicate.kind) {
@@ -254,7 +254,7 @@ const predicateHits = (
     case "existence":
       // A component outside this scan's model names nothing the scan can
       // carry, so a positive predicate matches nothing.
-      return componentModel(predicate.component) === sourceType
+      return componentModel(predicate.component) === sourceModel
         ? new Set(executor.components(predicate.component))
         : new Set();
   }
@@ -263,11 +263,11 @@ const predicateHits = (
 /** AND the indexed predicates of one group: only ids every index agrees on survive. */
 const intersectHits = (
   predicates: readonly IndexPredicate[],
-  sourceType: string,
+  sourceModel: string,
   executor: PlanExecutor,
 ): Set<string> => {
   const [head, ...rest] = predicates.map((predicate) =>
-    predicateHits(predicate, sourceType, executor),
+    predicateHits(predicate, sourceModel, executor),
   );
   if (head === undefined) return new Set();
   const ids = new Set(head);
@@ -292,7 +292,7 @@ const rowsForIds = (
 ): readonly Entity[] =>
   [...ids].flatMap((id) => {
     const row = executor.get(id);
-    return row !== undefined && row.type === type && row.deleted_hlc === null ? [row] : [];
+    return row !== undefined && row.model === type && row.deleted_hlc === null ? [row] : [];
   });
 
 /**
@@ -305,7 +305,7 @@ const rowsForIds = (
  */
 const selectGroup = (
   predicates: readonly PlanPredicate[],
-  sourceType: string,
+  sourceModel: string,
   scanned: () => readonly Entity[],
   executor: PlanExecutor,
 ): readonly Entity[] => {
@@ -316,12 +316,12 @@ const selectGroup = (
   let rows =
     seeds.length === 0
       ? scanned()
-      : rowsForIds(intersectHits(seeds, sourceType, executor), sourceType, executor);
+      : rowsForIds(intersectHits(seeds, sourceModel, executor), sourceModel, executor);
 
   for (const negative of negatives) {
     // A foreign component is carried by no row of this model, so `hasNot`
     // excludes nothing.
-    if (componentModel(negative.component) !== sourceType) continue;
+    if (componentModel(negative.component) !== sourceModel) continue;
     const excluded = new Set(executor.components(negative.component));
     rows = rows.filter((row) => !excluded.has(row.id));
   }
@@ -348,10 +348,10 @@ export function executePlan(
   executor: PlanExecutor,
   resolveField: FieldResolver = fieldValue,
 ): readonly Entity[] {
-  let sourceType = "";
+  let sourceModel = "";
   let scanRows: readonly Entity[] | null = null;
   const scanned = (): readonly Entity[] =>
-    (scanRows ??= executor.scan(sourceType).filter((row) => row.deleted_hlc === null));
+    (scanRows ??= executor.scan(sourceModel).filter((row) => row.deleted_hlc === null));
 
   let selecting = false;
   let selected = new Map<string, Entity>();
@@ -362,7 +362,7 @@ export function executePlan(
   for (const op of plan.ops) {
     switch (op.kind) {
       case "scan":
-        sourceType = op.type;
+        sourceModel = op.type;
         selecting = false;
         selected = new Map();
         narrowed = null;
@@ -370,7 +370,7 @@ export function executePlan(
       case "select":
         selecting = true;
         narrowed = null;
-        for (const row of selectGroup(op.predicates, sourceType, scanned, executor)) {
+        for (const row of selectGroup(op.predicates, sourceModel, scanned, executor)) {
           if (!selected.has(row.id)) selected.set(row.id, row);
         }
         break;

@@ -21,12 +21,12 @@ const ACTOR_ID = "actor_1";
 /** A materialized user row. Platform rows use `platformEntity`. */
 const mkEntity = (
   id: string,
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
 ): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
@@ -97,7 +97,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "*",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -105,7 +105,7 @@ describe("client.can — global form", () => {
     });
   });
 
-  it("reflects grants from local groupMember rows, not just the handshake", async () => {
+  it("reflects grants from local grant rows, not just the handshake", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
       platformEntity("gm_1", "grant", {
@@ -120,7 +120,7 @@ describe("client.can — global form", () => {
     });
   });
 
-  it("ignores another actor's groupMember rows", async () => {
+  it("ignores another actor's grant rows", async () => {
     const { client } = await mkClient([["g_1", []]]);
     await client.storage.entities.set(
       platformEntity("gm_1", "grant", {
@@ -149,7 +149,7 @@ describe("client.can — global form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "*",
         required: "todo.update",
         groupIds: [],
@@ -195,7 +195,7 @@ describe("client.can — per-entity form", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.delete",
         groupIds: ["g_1"],
@@ -241,7 +241,7 @@ describe("client.can — per-entity form", () => {
   });
 });
 
-describe("client.can — system entities", () => {
+describe("client.can — platform model", () => {
   it("checks a group against itself", async () => {
     const { client } = await mkClient([["g_1", ["ebb/group.*"]]]);
     await client.storage.entities.set(platformEntity("g_1", "group", { name: "G" }));

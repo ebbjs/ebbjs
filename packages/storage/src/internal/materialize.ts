@@ -19,7 +19,7 @@ export type ComponentUpdate =
 
 /** The model an Update commits under: the component prefix, or the row's type for a delete. */
 export const updateModel = (update: Update, entity: Entity | null): string =>
-  update.method === "delete" ? (entity?.type ?? "") : componentModel(update.component);
+  update.method === "delete" ? (entity?.model ?? "") : componentModel(update.component);
 
 /**
  * Project one wire Update to the component write it carries. A `delete` names
@@ -106,7 +106,7 @@ const createRow = (
   const created = write.method === "replace";
   return {
     id: update.subject_id,
-    type: componentModel(update.component),
+    model: componentModel(update.component),
     data: { fields: options?.residentMapFields ? adoptMapFields(fields) : fields },
     // A `replace` is the row's create; a `merge` arrives first only when the
     // replica has not seen that create, so the placeholder waits for the base.
@@ -174,7 +174,7 @@ export const applyUpdate = (
   const created = write.method === "replace" && !entity.exists;
   return {
     ...entity,
-    type: componentModel(update.component),
+    model: componentModel(update.component),
     // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
     // rule: an out-of-order base snapshot must not clobber a newer write.
     data: mergeFields(entity.data, write, options),

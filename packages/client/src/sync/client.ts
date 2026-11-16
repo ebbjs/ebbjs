@@ -112,7 +112,7 @@ import {
 } from "./relationship";
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
-import { groupMembersOf } from "@ebbjs/write";
+import { grantsOf } from "@ebbjs/write";
 import { createBackfill, type Backfill } from "./backfill";
 import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
 import {
@@ -237,7 +237,7 @@ export class SyncClient<
   readonly storage: StorageAdapter;
   /**
    * The engine's materialized read model (#496): a mutable set of rows with
-   * a per-type index, a monotonic revision, and a change journal. Reads are
+   * a per-model index, a monotonic revision, and a change journal. Reads are
    * synchronous and return shared rows. Hydrated by {@link hydrateReplica};
    * the async `storage.entities` shim keeps non-engine callers working until
    * the engine signal re-homes them (#512/#520).
@@ -379,7 +379,7 @@ export class SyncClient<
   private readonly registryViolationListeners = new Set<RegistryViolationListener>();
   /**
    * Content backfill for membership rows naming unknown entities (#475):
-   * reconciles the local `entityGroup` rows against the cache and reads
+   * reconciles the local `membership` rows against the cache and reads
    * the missing entities from the server into the action log.
    */
   private readonly backfillRunner: Backfill;
@@ -1257,21 +1257,21 @@ export class SyncClient<
   }
 
   /**
-   * `POST /entities/query` — query entities by type.
+   * `POST /entities/query` — query entities by model.
    *
    * A filter that compares a defaulted field's value but never its absence
    * produces a non-fatal warning on the `onRegistryViolation` channel (the
    * query still runs; a filter never applies a default on the caller's
    * behalf). Fatal violations keep throwing before any network call.
    */
-  async queryEntities(type: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
+  async queryEntities(model: string, opts: QueryOptions = {}): Promise<EntityQueryResponse> {
     if (opts.filter !== undefined) {
-      const violations = this.registry.validateFilter(type, opts.filter);
+      const violations = this.registry.validateFilter(model, opts.filter);
       if (violations.length > 0) {
         this.emitRegistryViolations(violations, { direction: "outbound" });
         throw new EntityValidationError(violations);
       }
-      const warnings = this.registry.filterWarnings(type, opts.filter);
+      const warnings = this.registry.filterWarnings(model, opts.filter);
       if (warnings.length > 0) {
         this.emitRegistryViolations(warnings, { direction: "outbound" });
       }
@@ -1280,7 +1280,7 @@ export class SyncClient<
       method: "POST",
       headers: this.authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        type,
+        model,
         filter: opts.filter,
         limit: opts.limit,
         offset: opts.offset,
@@ -1376,7 +1376,7 @@ export class SyncClient<
   }
 
   /**
-   * Reconcile the local `entityGroup` rows against the cache and read
+   * Reconcile the local `membership` rows against the cache and read
    * every referenced entity the client lacks from the server (#475).
    * Runs automatically after catch-up and on a live membership put; this
    * surface exposes it for callers that want to await or force a pass.
@@ -1655,17 +1655,17 @@ export class SyncClient<
    * });
    * ```
    *
-   * `docType` is the model the document is committed under. Omit it for a
+   * `docModel` is the model the document is committed under. Omit it for a
    * raw document (`text_document`); pass the declared document model's name
    * when opening a schema-declared document by hand.
    */
-  textDocument(docId: string, docType?: string): TextDocument {
-    return this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
+  textDocument(docId: string, docModel?: string): TextDocument {
+    return this.textDocumentRegistry.open({ docId, actorId: this.actorId, docModel });
   }
 
   /**
    * Return the `TextDocument` for a schema-declared document entity, bound
-   * to the client's write path so local edits self-flush. `docType` is the
+   * to the client's write path so local edits self-flush. `docModel` is the
    * document model; pass the name the schema registers it under. Does not
    * read or pin the row: hydrate it from the
    * document's `content` / `version`.
@@ -1675,8 +1675,8 @@ export class SyncClient<
    * (which also leaves the 250ms pending window the conflict sweep
    * needs), while this opener flushes itself.
    */
-  openDerivedTextDocument(docId: string, docType: string): TextDocument {
-    const doc = this.textDocumentRegistry.open({ docId, actorId: this.actorId, docType });
+  openDerivedTextDocument(docId: string, docModel: string): TextDocument {
+    const doc = this.textDocumentRegistry.open({ docId, actorId: this.actorId, docModel });
     doc.setSubmit((action) => this.write([action]));
     return doc;
   }
@@ -2328,7 +2328,7 @@ const logReplicaSaveError = (thrown: unknown): void => {
  * re-register every entity and relationship on a new registry rather
  * than sharing `schema._registry` so a client can mutate its own
  * registry at runtime without bleeding across clients that share
- * the same `schema` value. The `Relationship` system entity is
+ * the same `schema` value. The `Relationship` platform model is
  * seeded so the public relationship-write path (`link` / `unlink` /
  * `setLinks`) can submit Relationship Updates.
  */
@@ -2658,11 +2658,11 @@ export function createClient<
       // The draft membership verbs resolve against the local cache after
       // the synchronous callback returns.
       memberships: (entityId: string) => readEntityMemberships(client.storage, entityId),
-      // A `duplicate` copy source, and the groupMember the membership
+      // A `duplicate` copy source, and the grant the membership
       // guard reads. A wrong-type row reads as absent, like a missing one.
-      entity: async (entityType: string, entityId: string) => {
+      entity: async (model: string, entityId: string) => {
         const row = await client.storage.entities.get(entityId);
-        return row === null || row.type !== entityType ? null : row;
+        return row === null || row.model !== model ? null : row;
       },
       // A one-cardinality unlink must name the live edge's row id.
       relationshipLink: async (as: string, type: string, sourceId: string) => {
@@ -2673,8 +2673,8 @@ export function createClient<
         });
         return link === undefined ? undefined : { relationshipId: link.relationshipId };
       },
-      // The `last_group_member` guard reads the group's local member view.
-      groupMembers: async (groupId: string) => {
+      // The `last_grant` guard reads the group's local member view.
+      grants: async (groupId: string) => {
         // The guard reads grant rows only, so the ids come from the component
         // index rather than a shared-model scan.
         const grantIds = await client.storage.entities.queryByComponent(EBB_COMPONENTS.grant);
@@ -2683,7 +2683,7 @@ export function createClient<
           const row = await client.storage.entities.get(id);
           if (row !== null) rows.push(row);
         }
-        return groupMembersOf(rows, groupId);
+        return grantsOf(rows, groupId);
       },
     },
   };

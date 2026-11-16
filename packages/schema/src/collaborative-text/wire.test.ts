@@ -28,7 +28,7 @@ import {
   contentKeys,
   docActionToUpdate,
   DocumentVersionError,
-  isDocSubjectUpdate,
+  isDocModelUpdate,
   parseContentField,
   readCellFields,
   versionField,
@@ -48,12 +48,12 @@ const run = (id: string, text: string, anchor = { runId: "ROOT", offset: 0 }): R
   anchor,
 });
 
-/** One Update per field, each naming its own `<docType>/<field>` component. */
-const updatesWith = (fields: Record<string, FieldValue>, docType = "text_document"): Update[] =>
+/** One Update per field, each naming its own `<docModel>/<field>` component. */
+const updatesWith = (fields: Record<string, FieldValue>, docModel = "text_document"): Update[] =>
   Object.entries(fields).map(([field, value]) => ({
     id: `upd_${field}`,
     subject_id: "doc_1",
-    component: componentName(docType, field),
+    component: componentName(docModel, field),
     method: "merge",
     data: value,
   }));
@@ -232,8 +232,8 @@ describe("applyActions", () => {
       method: "drop",
       data: null,
     };
-    expect(isDocSubjectUpdate(doc, "text_document")).toBe(true);
-    expect(isDocSubjectUpdate(other, "text_document")).toBe(false);
+    expect(isDocModelUpdate(doc, "text_document")).toBe(true);
+    expect(isDocModelUpdate(other, "text_document")).toBe(false);
   });
 
   it("reads cells out of an Update", () => {

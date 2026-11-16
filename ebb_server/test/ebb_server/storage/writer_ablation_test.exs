@@ -12,7 +12,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
   alias EbbServer.Storage.{
     ComponentEntityIndex,
-    EntityTypeCache,
+    EntityModelCache,
     RocksDB,
     WatermarkTracker,
     Writer
@@ -95,8 +95,8 @@ defmodule EbbServer.Storage.WriterAblationTest do
       assert length(puts_to(ops, RocksDB.cf_entity_actions(ctx.rocks_name))) == 1
     end
 
-    test ":entity_index drops cf_entity_actions and leaves the index empty", ctx do
-      writer = start_capturing_writer(ctx, [:entity_index])
+    test ":entity_scope drops cf_entity_actions and leaves the index empty", ctx do
+      writer = start_capturing_writer(ctx, [:entity_scope])
 
       action = action_for("todo_ablated_entity_index")
 
@@ -193,17 +193,17 @@ defmodule EbbServer.Storage.WriterAblationTest do
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
-      assert EntityTypeCache.get_type("todo_nocache", ctx.entity_types) == nil
+      assert EntityModelCache.get_model("todo_nocache", ctx.entity_models) == nil
     end
 
-    test "without :cache the entity type is cached", ctx do
+    test "without :cache the model is cached", ctx do
       writer = start_capturing_writer(ctx, [])
 
       action = validated_action(%{updates: [validated_update(%{subject_id: "todo_cache"})]})
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer)
 
-      assert EntityTypeCache.get_type("todo_cache", ctx.entity_types) == "todo"
+      assert EntityModelCache.get_model("todo_cache", ctx.entity_models) == "todo"
     end
 
     test ":watermark never advances the frontier", ctx do
@@ -271,7 +271,7 @@ defmodule EbbServer.Storage.WriterAblationTest do
       :encode,
       :entity_actions,
       :component_entities,
-      :entity_index,
+      :entity_scope,
       :group_index,
       :dirty,
       :cache,

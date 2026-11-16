@@ -50,7 +50,7 @@ export type FieldMarker = {
 export type ConflictScope = "field" | "component" | "entity";
 
 /**
- * Client-side residency of an entity type. `"held"` keeps every row in
+ * Client-side residency of an model. `"held"` keeps every row in
  * the replica; `"on-demand"` materializes a row only while it is open.
  * Purely a read-path concern — the wire payload is identical either way.
  */
@@ -781,7 +781,7 @@ export interface ModelOptions {
 
 /**
  * Define a model by name and component map. The result is frozen.
- * Throws {@link ReservedNameError} when the name is a system entity,
+ * Throws {@link ReservedNameError} when the name is one the platform owns,
  * or the component map declares the injected `groups` accessor.
  */
 export function defineModel<TInputs extends Record<string, ComponentInput>, TName extends string>(
@@ -853,7 +853,7 @@ export const admitsNull = (schema: TSchema): boolean => {
 
 /**
  * Unchecked model factory. `defineModel` validates reserved names first;
- * the SDK's own system models (`group`, `groupMember`, `relationship`)
+ * the SDK's own system models (`group`, `grant`, `relationship`)
  * build through here.
  */
 export function buildModelDef<TInputs extends Record<string, ComponentInput>, TName extends string>(

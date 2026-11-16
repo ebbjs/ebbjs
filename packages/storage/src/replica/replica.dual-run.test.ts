@@ -111,7 +111,7 @@ const openRun = () => {
 const sorted = (rows: readonly Entity[]): readonly Entity[] =>
   [...rows].sort((a, b) => a.id.localeCompare(b.id));
 
-/** `get` first: it triggers the adapter's lazy materialize, and its type index. */
+/** `get` first: it triggers the adapter's lazy materialize, and its model index. */
 const equivalent = async (
   replica: Replica,
   adapter: StorageAdapter,

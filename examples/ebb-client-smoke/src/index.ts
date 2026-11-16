@@ -104,7 +104,7 @@ async function main(): Promise<void> {
     if (!entity) {
       throw new Error(`entity ${SMOKE_ENTITY_ID} not materialized after catch-up`);
     }
-    log(`materialized entity: id=${entity.id}, type=${entity.type}`);
+    log(`materialized entity: id=${entity.id}, model=${entity.model}`);
     const titleField = (entity.data.fields as Record<string, { value?: unknown }>).title;
     if (!titleField || titleField.value !== "Hello, ebb") {
       throw new Error(`expected entity title "Hello, ebb"; got ${JSON.stringify(titleField)}`);

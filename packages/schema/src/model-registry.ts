@@ -319,7 +319,7 @@ export class ModelRegistry {
   }
 
   /**
-   * Validate a filter against the registry for the given entity type.
+   * Validate a filter against the registry for the given model.
    * Never throws. Returns `[]` when no entities are registered. `null` is
    * unfiltered. Every group is checked independently, and a `null` entry
    * where a group is expected is reported as malformed.
@@ -331,7 +331,7 @@ export class ModelRegistry {
       return [
         {
           entityName: UNKNOWN_ENTITY,
-          message: `Unknown entity type for filter: "${type}"`,
+          message: `Unknown model for filter: "${type}"`,
         },
       ];
     }

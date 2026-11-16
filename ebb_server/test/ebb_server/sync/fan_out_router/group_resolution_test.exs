@@ -4,21 +4,21 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
   The original fan-out bug (#197) keyed the group lookup on `subject_id`
   only, treating every entity id as though it were a membership source.
-  For `relationship`, `groupMember`, and `group` updates the `subject_id`
+  For `relationship`, `grant`, and `group` updates the `subject_id`
   is the entity's own id — not a membership source — so the lookup
   silently returned `nil` and the update never reached the per-group
   `GroupServer`.
 
   `GroupResolution` folds an Action's per-component Updates into row
   mutations and resolves each row by `model` through
-  `EntityIndex.resolve_groups/3`, so each kind of row lands in the right
+  `EntityScope.resolve_groups/3`, so each kind of row lands in the right
   group. These tests pin its resolution surface for every model the router
   can encounter.
   """
 
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.{EntityGroupCache, GroupCache, RelationshipCache, SystemComponent}
+  alias EbbServer.Storage.{MembershipCache, GrantCache, RelationshipCache, SystemComponent}
   alias EbbServer.Sync.FanOutRouter.GroupResolution
 
   setup do
@@ -30,8 +30,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     eg = :"for_eg_#{System.unique_integer([:positive])}"
     eg_by_id = :"for_egbi_#{System.unique_integer([:positive])}"
     eg_by_group = :"for_egbg_#{System.unique_integer([:positive])}"
-    entity_types = :"for_et_#{System.unique_integer([:positive])}"
-    :ets.new(entity_types, [:set, :public, :named_table])
+    entity_models = :"for_et_#{System.unique_integer([:positive])}"
+    :ets.new(entity_models, [:set, :public, :named_table])
 
     {:ok, _} =
       RelationshipCache.start_link(
@@ -41,19 +41,19 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       )
 
     {:ok, _} =
-      GroupCache.start_link(
+      GrantCache.start_link(
         name: :"for_gc_#{System.unique_integer([:positive])}",
         table: gm,
-        group_members_by_id: gm_by_id,
-        group_members_by_group: gm_by_group
+        grants_by_id: gm_by_id,
+        grants_by_group: gm_by_group
       )
 
     {:ok, _} =
-      EntityGroupCache.start_link(
+      MembershipCache.start_link(
         name: :"for_egc_#{System.unique_integer([:positive])}",
-        entity_groups: eg,
-        entity_groups_by_id: eg_by_id,
-        entity_groups_by_group: eg_by_group
+        memberships: eg,
+        memberships_by_id: eg_by_id,
+        memberships_by_group: eg_by_group
       )
 
     on_exit(fn ->
@@ -62,19 +62,19 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
         relationships_by_id: rbi
       )
 
-      GroupCache.reset(
-        group_members: gm,
-        group_members_by_id: gm_by_id,
-        group_members_by_group: gm_by_group
+      GrantCache.reset(
+        grants: gm,
+        grants_by_id: gm_by_id,
+        grants_by_group: gm_by_group
       )
 
-      EntityGroupCache.reset(
-        entity_groups: eg,
-        entity_groups_by_id: eg_by_id,
-        entity_groups_by_group: eg_by_group
+      MembershipCache.reset(
+        memberships: eg,
+        memberships_by_id: eg_by_id,
+        memberships_by_group: eg_by_group
       )
 
-      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_types] do
+      for t <- [rel, rbi, gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_models] do
         try do
           :ets.delete(t)
         rescue
@@ -86,13 +86,13 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     t = %{
       relationships: rel,
       relationships_by_id: rbi,
-      group_members: gm,
-      group_members_by_id: gm_by_id,
-      group_members_by_group: gm_by_group,
-      entity_groups: eg,
-      entity_groups_by_id: eg_by_id,
-      entity_groups_by_group: eg_by_group,
-      entity_types: entity_types
+      grants: gm,
+      grants_by_id: gm_by_id,
+      grants_by_group: gm_by_group,
+      memberships: eg,
+      memberships_by_id: eg_by_id,
+      memberships_by_group: eg_by_group,
+      entity_models: entity_models
     }
 
     {:ok, tables: t, resolve_opts: opts(t)}
@@ -100,11 +100,11 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
 
   defp opts(t),
     do: [
-      entity_groups: t.entity_groups,
-      entity_groups_by_id: t.entity_groups_by_id,
+      memberships: t.memberships,
+      memberships_by_id: t.memberships_by_id,
       relationships_by_id: t.relationships_by_id,
-      group_members_by_id: t.group_members_by_id,
-      entity_types: t.entity_types
+      grants_by_id: t.grants_by_id,
+      entity_models: t.entity_models
     ]
 
   defp row_update(subject_id, component, value \\ nil) do
@@ -138,11 +138,11 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
   end
 
   defp put_membership(t, entity_id, group_id, id) do
-    EntityGroupCache.put_entity_group(
+    MembershipCache.put_membership(
       %{id: id, entity_id: entity_id, group_id: group_id},
-      entity_groups: t.entity_groups,
-      entity_groups_by_id: t.entity_groups_by_id,
-      entity_groups_by_group: t.entity_groups_by_group
+      memberships: t.memberships,
+      memberships_by_id: t.memberships_by_id,
+      memberships_by_group: t.memberships_by_group
     )
   end
 
@@ -241,20 +241,20 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
       :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
       :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
       :ok = put_relationship(t, "rel_1", "todo_victim", "col_1")
-      :ets.insert(t.entity_types, {"rel_1", SystemComponent.model()})
+      :ets.insert(t.entity_models, {"rel_1", SystemComponent.model()})
 
       action = %{"updates" => [delete_update("rel_1")]}
 
       assert GroupResolution.resolve_group_ids(action, opts(t)) == ["g_victim"]
     end
 
-    test "routes a groupMember update to the member's group", %{tables: t} do
+    test "routes a grant update to the member's group", %{tables: t} do
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
-          group_members: t.group_members,
-          group_members_by_id: t.group_members_by_id,
-          group_members_by_group: t.group_members_by_group
+          grants: t.grants,
+          grants_by_id: t.grants_by_id,
+          grants_by_group: t.grants_by_group
         )
 
       action = %{

@@ -46,7 +46,7 @@ defmodule EbbServer.Storage.EntityStorePatchMaterializationTest do
       SQLite.upsert_entity(
         %{
           id: entity_id,
-          type: "todo",
+          model: "todo",
           data: data,
           created_hlc: hlc,
           updated_hlc: hlc,

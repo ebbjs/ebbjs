@@ -64,7 +64,7 @@ const action = (id: string, gsn: number, ms: number, updates: Update[]): Action 
 
 const put = (
   id: string,
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
@@ -72,7 +72,7 @@ const put = (
     opts.actionId,
     opts.gsn,
     opts.ms,
-    rowComponents(type, fields).map(
+    rowComponents(model, fields).map(
       ([component, value]): Update => ({
         id: `u_${opts.actionId}_${component}`,
         subject_id: id,
@@ -85,7 +85,7 @@ const put = (
 
 const remove = (
   id: string,
-  type: string,
+  model: string,
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
   action(opts.actionId, opts.gsn, opts.ms, [
@@ -121,9 +121,9 @@ const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
   });
 
 /** A shim-only user row (no action-log entry, no replica adjacency). */
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),

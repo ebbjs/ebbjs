@@ -101,7 +101,7 @@ const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
  * The platform model. Every component is optional because a row carries the one
  * that names its kind, not all four.
  */
-export const ebbSystemEntity: ModelDef<Record<string, TSchema>> = buildModelDef(EBB_MODEL_NAME, {
+export const ebbModel: ModelDef<Record<string, TSchema>> = buildModelDef(EBB_MODEL_NAME, {
   group: groupComponent,
   grant: grantComponent,
   membership: membershipComponent,
@@ -112,7 +112,7 @@ export const ebbSystemEntity: ModelDef<Record<string, TSchema>> = buildModelDef(
 export type GroupFields = Static<typeof groupShape>;
 
 /** The value map of a grant row. */
-export type GroupMemberFields = Static<typeof grantShape>;
+export type GrantFields = Static<typeof grantShape>;
 
 /** Accessor name the built-in membership surface carries on every row. */
 export const GROUPS_ACCESSOR = "groups";

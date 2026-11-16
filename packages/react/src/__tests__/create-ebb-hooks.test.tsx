@@ -86,7 +86,7 @@ async function seedTodo(client: Client, id: string, title: string): Promise<void
   );
   await client.storage.entities.set({
     id,
-    type: "todo",
+    model: "todo",
     data: { fields },
     exists: true,
     created_hlc: "1",

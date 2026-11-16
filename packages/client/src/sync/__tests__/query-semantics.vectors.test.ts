@@ -39,7 +39,7 @@ const fixture = JSON.parse(readFileSync(fileURLToPath(fixtureUrl), "utf8")) as {
 
 const toEntity = (row: VectorRow): Entity => ({
   id: row.id,
-  type: "todo",
+  model: "todo",
   data: {
     fields: {
       ...Object.fromEntries(

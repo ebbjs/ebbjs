@@ -560,7 +560,7 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
             "replace",
             %{"type" => "lww", "value" => title, "hlc" => hlc}
           )
-        ] ++ entity_group_update(entity_id, group_id, hlc)
+        ] ++ membership_update(entity_id, group_id, hlc)
     }
   end
 

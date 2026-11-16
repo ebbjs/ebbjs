@@ -140,7 +140,7 @@ defmodule EbbServer.Sync.Router.OpenApiTest do
                "data",
                "id",
                "last_gsn",
-               "type",
+               "model",
                "updated_hlc"
              ]
 

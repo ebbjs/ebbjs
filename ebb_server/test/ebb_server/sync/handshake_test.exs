@@ -71,7 +71,7 @@ defmodule EbbServer.Sync.HandshakeTest do
       "hlc" => hlc,
       "updates" =>
         [group_update(group_update_id, group_id, apps, hlc)] ++
-          group_member_updates(gm_id, actor_id, group_id, permissions, hlc)
+          grant_updates(gm_id, actor_id, group_id, permissions, hlc)
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -92,7 +92,7 @@ defmodule EbbServer.Sync.HandshakeTest do
     }
   end
 
-  defp group_member_updates(gm_id, actor_id, group_id, permissions, hlc) do
+  defp grant_updates(gm_id, actor_id, group_id, permissions, hlc) do
     [
       %{
         "id" => "#{gm_id}_grant",

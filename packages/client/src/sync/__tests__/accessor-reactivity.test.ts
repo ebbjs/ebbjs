@@ -24,9 +24,9 @@ const schema = defineSchema({
   version: 1,
 });
 
-const mkEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),

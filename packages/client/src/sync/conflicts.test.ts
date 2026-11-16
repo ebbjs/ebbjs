@@ -48,9 +48,9 @@ const leaf = (value: unknown, updateId = "u_local", hlc = LOCAL_HLC): FieldValue
 });
 
 /** A materialized entity row for one subject. */
-const mkEntity = (id: string, fields: Record<string, FieldValue>, type = "todo"): Entity => ({
+const mkEntity = (id: string, fields: Record<string, FieldValue>, model = "todo"): Entity => ({
   id,
-  type,
+  model,
   data: { fields },
   exists: true,
   created_hlc: LOCAL_HLC,

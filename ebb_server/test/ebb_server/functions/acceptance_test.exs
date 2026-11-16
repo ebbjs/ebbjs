@@ -116,7 +116,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       assert read.status == 200
       entity = Jason.decode!(read.resp_body)
       assert entity["id"] == created_id
-      assert entity["type"] == "todo"
+      assert entity["model"] == "todo"
       assert entity["data"]["fields"]["title"]["value"] == created_title
 
       # And it was observable live, through the same route a client uses.
@@ -140,7 +140,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       intruder_id = unique("a")
 
       seed_member(owner_id, group_id, ["ebb/grant.create", "function." <> name])
-      assert add_group_member(owner_id, group_id, intruder_id, ["todo.read"]).status == 200
+      assert add_grant(owner_id, group_id, intruder_id, ["todo.read"]).status == 200
 
       deploy!(dir, name)
 
@@ -214,12 +214,12 @@ defmodule EbbServer.Functions.AcceptanceTest do
 
       seed_member(owner_id, group_id, ["ebb/grant.create"])
 
-      assert add_group_member(owner_id, group_id, literal_id, [
+      assert add_grant(owner_id, group_id, literal_id, [
                "function." <> name
              ]).status == 200
 
-      assert add_group_member(owner_id, group_id, wildcard_id, ["function.*"]).status == 200
-      assert add_group_member(owner_id, group_id, stranger_id, ["todo.read"]).status == 200
+      assert add_grant(owner_id, group_id, wildcard_id, ["function.*"]).status == 200
+      assert add_grant(owner_id, group_id, stranger_id, ["todo.read"]).status == 200
 
       deploy!(dir, name)
       configure_boot(bundle_dir: dir, transport: InputScriptedWorker)
@@ -486,7 +486,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
             "replace",
             %{"type" => "lww", "value" => title, "hlc" => hlc}
           )
-        ] ++ entity_group_update(entity_id, group_id, hlc)
+        ] ++ membership_update(entity_id, group_id, hlc)
     }
   end
 

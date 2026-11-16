@@ -208,7 +208,7 @@ describe("replica save policy (#499)", () => {
     expect(reader.replicaStats).toMatchObject({
       entities: 33,
       position: 33,
-      byType: { todo: 33 },
+      byModel: { todo: 33 },
     });
   });
 });

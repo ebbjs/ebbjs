@@ -136,7 +136,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
                )
 
       assert entity.id == entity_id
-      assert entity.type == "todo"
+      assert entity.model == "todo"
       assert entity.last_gsn == 1
       assert entity.data["fields"]["title"]["value"] == "Buy milk"
       assert entity.data["fields"]["completed"]["value"] == false
@@ -162,7 +162,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       assert {:ok, cached} = SQLite.get_entity(entity_id, sqlite_name)
       assert cached.id == entity_id
-      assert cached.type == "todo"
+      assert cached.model == "todo"
     end
 
     test "materializes an Action stored in a frame", %{
@@ -354,7 +354,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
         SQLite.upsert_entity(
           %{
             id: entity_id,
-            type: "todo",
+            model: "todo",
             data: Jason.encode!(%{"fields" => %{"title" => leaf("First", hlc_put)}}),
             created_hlc: hlc_put,
             updated_hlc: hlc_put,
@@ -1795,7 +1795,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
             SQLite.upsert_entity(
               %{
                 id: entity_id,
-                type: "todo",
+                model: "todo",
                 data: Jason.encode!(%{"fields" => %{"title" => newer_title}}),
                 created_hlc: first_hlc,
                 updated_hlc: newer_hlc,
@@ -2019,7 +2019,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       # Dirty read: the drop replays over the row SQLite already holds.
       assert {:ok, dropped} = EntityStore.get(entity_id, "a_test", opts)
-      assert dropped.type == "todo"
+      assert dropped.model == "todo"
       assert dropped.created_hlc == create_hlc
       assert dropped.updated_hlc == drop_hlc
       assert dropped.deleted_hlc == nil
@@ -2102,7 +2102,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       )
 
       assert {:ok, after_drop} = EntityStore.get(entity_id, "a_test", opts)
-      assert after_drop.type == "todo"
+      assert after_drop.model == "todo"
       assert after_drop.created_hlc == create_hlc
       assert after_drop.deleted_hlc == nil
       assert after_drop.data["fields"]["title"]["value"] == "kept"
@@ -2321,7 +2321,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, _range, []} = Writer.write_actions([action], ctx.writer_name)
       assert {:ok, entity} = EntityStore.get(entity_id, "a_1", store_opts(ctx))
 
-      assert entity.type == SystemComponent.model()
+      assert entity.model == SystemComponent.model()
       assert entity.data["fields"]["grant"]["value"]["group_id"] == "g_1"
 
       assert {:ok, [^entity_id]} =
@@ -2393,7 +2393,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
                Writer.write_actions([create_note, add_link, grant], ctx.writer_name)
 
       assert {:ok, note} = EntityStore.get(note_id, "a_1", store_opts(ctx))
-      assert note.type == "note"
+      assert note.model == "note"
 
       assert {:ok, [queried]} =
                EntityStore.query("ebb/link", nil, "a_1", store_opts(ctx))
@@ -2456,7 +2456,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert {:ok, {1, 1}, []} =
                Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
 
-      assert {:ok, %{type: "todo"}} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
+      assert {:ok, %{model: "todo"}} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
 
       events = telemetry_events(ref)
 
@@ -2551,7 +2551,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert length(events_named(events, [:ebb, :entity_store, :materialize_latency_ms])) == 3
     end
 
-    test "query materializing a dirty system entity emits a cache miss", ctx do
+    test "query materializing a dirty system component emits a cache miss", ctx do
       update = validated_update(%{subject_id: "gm_telemetry"})
 
       assert {:ok, {1, 1}, []} =

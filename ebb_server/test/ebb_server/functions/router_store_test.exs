@@ -29,7 +29,7 @@ defmodule EbbServer.Functions.RouterStoreTest do
     store = start_store(TestHelpers.tmp_dir(context))
     cache = start_store_cache(store)
 
-    %{tables: tables, table: tables.group_members, store: store, cache: cache}
+    %{tables: tables, table: tables.grants, store: store, cache: cache}
   end
 
   defp router_opts(ctx, extra \\ []) do
@@ -37,7 +37,7 @@ defmodule EbbServer.Functions.RouterStoreTest do
       [
         store: ctx.store,
         cache: ctx.cache,
-        group_members_table: ctx.table,
+        grants_table: ctx.table,
         admin_token: @admin_token,
         actor_id: @actor
       ],

@@ -17,7 +17,7 @@ export const SMOKE_ACTOR_ID = "actor_smoke";
 export function buildSmokeSeed(): SeedData {
   return {
     groups: [{ id: SMOKE_GROUP_ID, name: "Smoke Group" }],
-    groupMembers: [
+    grants: [
       {
         id: SMOKE_MEMBER_ID,
         actorId: SMOKE_ACTOR_ID,
@@ -32,7 +32,7 @@ export function buildSmokeSeed(): SeedData {
         permissions: ["todo.*"],
       },
     ],
-    entityGroups: [
+    memberships: [
       {
         id: SMOKE_MEMBERSHIP_ID,
         entityId: SMOKE_ENTITY_ID,
@@ -42,7 +42,7 @@ export function buildSmokeSeed(): SeedData {
     entities: [
       {
         id: SMOKE_ENTITY_ID,
-        type: "todo",
+        model: "todo",
         patches: [
           {
             fields: {

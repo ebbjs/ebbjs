@@ -25,7 +25,9 @@ export const heldMetadata: MaterializationPolicy = {
 
 /** Whether every component the row carries is held, so the replica retains it whole. */
 export const holdsRow = (row: Entity): boolean =>
-  Object.keys(row.data.fields).every((field) => heldMetadata.holds(componentName(row.type, field)));
+  Object.keys(row.data.fields).every((field) =>
+    heldMetadata.holds(componentName(row.model, field)),
+  );
 
 // ---------------------------------------------------------------------------
 // Counted store

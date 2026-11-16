@@ -224,5 +224,5 @@ defmodule EbbServer.Storage.Committer do
   defp ablate?(phase, state), do: phase in state.ablate
 
   defp entity_actions_ablated?(state),
-    do: ablate?(:entity_actions, state) or ablate?(:entity_index, state)
+    do: ablate?(:entity_actions, state) or ablate?(:entity_scope, state)
 end

@@ -34,7 +34,7 @@ defmodule EbbServer.Storage.PreparedAction do
     Update, then one put per folded subject's model. The Writer applies them
     after the range is durable, reduced last-wins across the flush. Empty
     when the bench-only `:component_entities` (or its combined
-    `:entity_index` alias) phase is ablated.
+    `:entity_scope` alias) phase is ablated.
   - `affected_entities` — `{subject_id, model}` pairs to mark dirty, one per
     row. The sequencer unions them across a batch for the provisional and
     settled marks.

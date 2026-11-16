@@ -31,7 +31,7 @@ defmodule EbbServer.Storage.SQLiteTest do
     Map.merge(
       %{
         id: id,
-        type: type,
+        model: type,
         data: Jason.encode!(%{"fields" => fields}),
         created_hlc: 1000,
         updated_hlc: 1000,
@@ -112,10 +112,10 @@ defmodule EbbServer.Storage.SQLiteTest do
       %{name: name, pid: pid} = start_sqlite(dir)
 
       for query <- [
-            %{type: "todo", filter: nil, actor_id: "a_1"},
-            %{type: "todo", filter: nil, actor_id: "a_1", limit: nil},
-            %{type: "todo", filter: nil, actor_id: "a_1", limit: -1},
-            %{type: "todo", filter: nil, actor_id: "a_1", limit: "10"}
+            %{model: "todo", filter: nil, actor_id: "a_1"},
+            %{model: "todo", filter: nil, actor_id: "a_1", limit: nil},
+            %{model: "todo", filter: nil, actor_id: "a_1", limit: -1},
+            %{model: "todo", filter: nil, actor_id: "a_1", limit: "10"}
           ] do
         assert {:error, :invalid_limit} = SQLite.query_entities(query, name)
       end
@@ -123,7 +123,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       for offset <- [-1, 9_223_372_036_854_775_808] do
         assert {:error, :invalid_offset} =
                  SQLite.query_entities(
-                   %{type: "todo", filter: nil, actor_id: "a_1", limit: 10, offset: offset},
+                   %{model: "todo", filter: nil, actor_id: "a_1", limit: 10, offset: offset},
                    name
                  )
       end
@@ -138,7 +138,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       %{name: name, pid: pid} = start_sqlite(dir)
 
       for filter <- malformed_query_filters() do
-        query = %{type: "todo", filter: filter, actor_id: "a_1", limit: 10}
+        query = %{model: "todo", filter: filter, actor_id: "a_1", limit: 10}
 
         assert {:error, :invalid_filter} = SQLite.query_entities(query, name)
         assert Process.whereis(name) == pid
@@ -152,7 +152,7 @@ defmodule EbbServer.Storage.SQLiteTest do
   # schema that no longer answers — instead of stubbing the driver (#626).
   describe "query path failure net (#626)" do
     defp doc_query do
-      %{type: "doc", filter: nil, actor_id: "a_1", limit: 10}
+      %{model: "doc", filter: nil, actor_id: "a_1", limit: 10}
     end
 
     # A document reachable through one shared group. The membership's
@@ -248,7 +248,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       entity = %{
         id: "todo_abc",
-        type: "todo",
+        model: "todo",
         data: ~s({"fields":{}}),
         created_hlc: 1000,
         updated_hlc: 1000,
@@ -261,7 +261,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       assert {:ok, result} = SQLite.get_entity("todo_abc", name)
       assert result.id == "todo_abc"
-      assert result.type == "todo"
+      assert result.model == "todo"
       assert result.data == ~s({"fields":{}})
       assert result.created_hlc == 1000
       assert result.updated_hlc == 1000
@@ -279,7 +279,7 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert {:error, message} =
                Sqlite3.execute(
                  db,
-                 "INSERT INTO entities (id, type, data, created_hlc, updated_hlc, last_gsn) " <>
+                 "INSERT INTO entities (id, model, data, created_hlc, updated_hlc, last_gsn) " <>
                    "VALUES ('todo_no_create', 'todo', '{\"fields\":{}}', NULL, 1, 1)"
                )
 
@@ -301,7 +301,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       entity = %{
         id: "todo_abc",
-        type: "todo",
+        model: "todo",
         data: ~s({"fields":{}}),
         created_hlc: 1000,
         updated_hlc: 1000,
@@ -330,7 +330,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       entity_v1 = %{
         id: "todo_abc",
-        type: "todo",
+        model: "todo",
         data: ~s({"fields":{}}),
         created_hlc: 1000,
         updated_hlc: 1000,
@@ -355,7 +355,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       newer = %{
         id: "todo_abc",
-        type: "todo",
+        model: "todo",
         data: ~s({"fields":{"title":{"value":"newer"}}}),
         created_hlc: 1000,
         updated_hlc: 3000,
@@ -386,7 +386,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       first = %{
         id: "todo_abc",
-        type: "todo",
+        model: "todo",
         data: ~s({"fields":{"title":{"value":"first"}}}),
         created_hlc: 1000,
         updated_hlc: 3000,
@@ -417,7 +417,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         SQLite.upsert_entity(
           %{
             id: id,
-            type: "doc",
+            model: "doc",
             data: data,
             created_hlc: 1000,
             updated_hlc: 1000,
@@ -445,7 +445,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"title" => ~s({"value":"new","hlc":2})},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 2000,
             deleted_hlc: nil,
@@ -475,7 +475,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"title" => ~s({"value":"new","hlc":2})},
           [],
           %{
-            type: "todo",
+            model: "todo",
             created_hlc: 7000,
             updated_hlc: 3000,
             deleted_hlc: 4000,
@@ -486,7 +486,7 @@ defmodule EbbServer.Storage.SQLiteTest do
         )
 
       assert {:ok, row} = SQLite.get_entity("doc_1", name)
-      assert row.type == "todo"
+      assert row.model == "todo"
       assert row.created_hlc == 7000
       assert row.updated_hlc == 3000
       assert row.deleted_hlc == 4000
@@ -506,7 +506,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"title" => ~s({"value":"stale","hlc":9})},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 1000,
             deleted_hlc: nil,
@@ -534,7 +534,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"title" => ~s({"value":"second","hlc":6})},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 6000,
             deleted_hlc: nil,
@@ -562,7 +562,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 7000,
             deleted_hlc: 7000,
@@ -592,7 +592,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 7000,
             deleted_hlc: nil,
@@ -626,7 +626,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"content.map.\"b\"" => ~s({"value":9,"hlc":2})},
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 2000,
             deleted_hlc: nil,
@@ -661,7 +661,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           },
           [],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 2000,
             deleted_hlc: nil,
@@ -706,7 +706,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           },
           ["ebb/link"],
           %{
-            type: "ebb",
+            model: "ebb",
             created_hlc: 1000,
             updated_hlc: 2000,
             deleted_hlc: nil,
@@ -765,7 +765,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           %{"body" => Jason.encode!(lww("b"))},
           ["doc/body", "doc/title"],
           %{
-            type: "doc",
+            model: "doc",
             created_hlc: 1000,
             updated_hlc: 2000,
             deleted_hlc: nil,
@@ -991,8 +991,8 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       assert :ok = SQLite.upsert_entity(grant, name)
 
-      assert [{"gm_1", "a_1"}] = SQLite.list_group_members("g_1", nil, 10, name)
-      assert [] = SQLite.list_entity_group_memberships("g_1", nil, 10, name)
+      assert [{"gm_1", "a_1"}] = SQLite.list_grants("g_1", nil, 10, name)
+      assert [] = SQLite.list_memberships("g_1", nil, 10, name)
       assert [] = SQLite.get_entities(["todo_1"], name)
     end
 
@@ -1013,27 +1013,27 @@ defmodule EbbServer.Storage.SQLiteTest do
   end
 
   describe "listing query plans" do
-    test "the grant keyset seeks idx_entities_group_member", context do
+    test "the grant keyset seeks idx_entities_grant", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
 
       for after_key <- [nil, {"a_1", "gm_a"}] do
-        assert {:ok, plan} = SQLite.explain_list_group_members(after_key, name)
+        assert {:ok, plan} = SQLite.explain_list_grants(after_key, name)
 
-        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_group_member")),
-               "expected idx_entities_group_member for #{inspect(after_key)}, got: #{inspect(plan)}"
+        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_grant")),
+               "expected idx_entities_grant for #{inspect(after_key)}, got: #{inspect(plan)}"
       end
     end
 
-    test "the membership keyset seeks idx_entities_entity_group_page", context do
+    test "the membership keyset seeks idx_entities_membership_page", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
 
       for after_key <- [nil, "eg_1"] do
-        assert {:ok, plan} = SQLite.explain_list_entity_group_memberships(after_key, name)
+        assert {:ok, plan} = SQLite.explain_list_memberships(after_key, name)
 
-        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_entity_group_page")),
-               "expected idx_entities_entity_group_page for #{inspect(after_key)}, " <>
+        assert Enum.any?(plan, &(&1 =~ "USING INDEX idx_entities_membership_page")),
+               "expected idx_entities_membership_page for #{inspect(after_key)}, " <>
                  "got: #{inspect(plan)}"
       end
     end
@@ -1072,7 +1072,7 @@ defmodule EbbServer.Storage.SQLiteTest do
           name
         )
 
-      assert SQLite.list_group_members("g_1", nil, 10, name) == [
+      assert SQLite.list_grants("g_1", nil, 10, name) == [
                {"gm_a", "a_1"},
                {"gm_b", "a_1"},
                {"gm_c", "a_2"}
@@ -1080,15 +1080,15 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       # The pair, not the actor id alone, is the keyset: resuming after the
       # first of two rows that share an actor still returns the second.
-      assert SQLite.list_group_members("g_1", {"a_1", "gm_a"}, 10, name) == [
+      assert SQLite.list_grants("g_1", {"a_1", "gm_a"}, 10, name) == [
                {"gm_b", "a_1"},
                {"gm_c", "a_2"}
              ]
 
-      assert SQLite.list_group_members("g_1", nil, 1, name) == [{"gm_a", "a_1"}]
+      assert SQLite.list_grants("g_1", nil, 1, name) == [{"gm_a", "a_1"}]
     end
 
-    test "lists entityGroup memberships by row id, excluding tombstones", context do
+    test "lists membership memberships by row id, excluding tombstones", context do
       dir = tmp_dir(context)
       %{name: name} = start_sqlite(dir)
 
@@ -1123,13 +1123,13 @@ defmodule EbbServer.Storage.SQLiteTest do
           name
         )
 
-      assert SQLite.list_entity_group_memberships("g_1", nil, 10, name) == [
+      assert SQLite.list_memberships("g_1", nil, 10, name) == [
                {"eg_1", "todo_1"},
                {"eg_2", "todo_2"},
                {"eg_9", "todo_9"}
              ]
 
-      assert SQLite.list_entity_group_memberships("g_1", "eg_1", 10, name) == [
+      assert SQLite.list_memberships("g_1", "eg_1", 10, name) == [
                {"eg_2", "todo_2"},
                {"eg_9", "todo_9"}
              ]
@@ -1152,7 +1152,7 @@ defmodule EbbServer.Storage.SQLiteTest do
 
       assert [row] = SQLite.get_entities(["todo_1", "todo_2", "todo_missing"], name)
       assert row.id == "todo_1"
-      assert row.type == "todo"
+      assert row.model == "todo"
       assert Jason.decode!(row.data) == %{"fields" => %{"title" => lww("a")}}
 
       assert SQLite.get_entities([], name) == []

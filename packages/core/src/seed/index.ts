@@ -32,7 +32,7 @@ export interface GroupSeed {
   apps?: readonly string[];
 }
 
-export interface GroupMemberSeed {
+export interface GrantSeed {
   id: string;
   actorId: string;
   groupId: string;
@@ -41,7 +41,7 @@ export interface GroupMemberSeed {
 
 export interface EntitySeed {
   id: string;
-  type: string;
+  model: string;
   /** Ordered field patches; values are plain, stamped by the builder. */
   patches: Array<{ fields: Record<string, unknown> }>;
 }
@@ -55,7 +55,7 @@ export interface RelationshipSeed {
 }
 
 /** One entity↔Group membership row, submitted as an `ebb/membership` put. */
-export interface EntityGroupSeed {
+export interface MembershipSeed {
   id: string;
   entityId: string;
   groupId: string;
@@ -63,10 +63,10 @@ export interface EntityGroupSeed {
 
 export interface SeedData {
   groups: GroupSeed[];
-  groupMembers: GroupMemberSeed[];
+  grants: GrantSeed[];
   entities: EntitySeed[];
   relationships?: RelationshipSeed[];
-  entityGroups?: EntityGroupSeed[];
+  memberships?: MembershipSeed[];
   /** Reserved; the builder stamps HLCs per field and does not read this. */
   baseHlc?: number;
 }
@@ -134,7 +134,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     );
   }
 
-  for (const member of data.groupMembers) {
+  for (const member of data.grants) {
     updates.push(
       systemUpdate(
         "grant",
@@ -152,7 +152,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
   for (const entity of data.entities ?? []) {
     for (const patch of entity.patches) {
       for (const [key, value] of Object.entries(patch.fields)) {
-        updates.push(componentUpdate(entity.id, entity.type, key, stamp(value, clock)));
+        updates.push(componentUpdate(entity.id, entity.model, key, stamp(value, clock)));
       }
     }
   }
@@ -173,7 +173,7 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     );
   }
 
-  for (const membership of data.entityGroups ?? []) {
+  for (const membership of data.memberships ?? []) {
     updates.push(
       systemUpdate(
         "membership",

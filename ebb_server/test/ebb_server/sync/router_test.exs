@@ -9,8 +9,8 @@ defmodule EbbServer.Sync.RouterTest do
   alias EbbServer.Storage.{
     CacheTables,
     DirtyTracker,
-    EntityGroupCache,
-    GroupCache,
+    MembershipCache,
+    GrantCache,
     RocksDB,
     WatermarkTracker
   }
@@ -50,23 +50,23 @@ defmodule EbbServer.Sync.RouterTest do
     })
   end
 
-  defp setup_entity_group(entity_id, group_id) do
+  defp setup_membership(entity_id, group_id) do
     eg_id = "eg_" <> Nanoid.generate()
 
     :ok =
-      EntityGroupCache.put_entity_group(
+      MembershipCache.put_membership(
         %{id: eg_id, entity_id: entity_id, group_id: group_id},
-        entity_groups: CacheTables.entity_groups(),
-        entity_groups_by_id: CacheTables.entity_groups_by_id(),
-        entity_groups_by_group: CacheTables.entity_groups_by_group()
+        memberships: CacheTables.memberships(),
+        memberships_by_id: CacheTables.memberships_by_id(),
+        memberships_by_group: CacheTables.memberships_by_group()
       )
   end
 
-  defp setup_group_membership(actor_id, group_id, permissions \\ ["read", "write"]) do
+  defp setup_grant(actor_id, group_id, permissions \\ ["read", "write"]) do
     gm_id = "gm_" <> Nanoid.generate()
 
     :ok =
-      GroupCache.put_group_member(%{
+      GrantCache.put_grant(%{
         id: gm_id,
         actor_id: actor_id,
         group_id: group_id,
@@ -112,8 +112,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = "g_test"
       actor_id = "a_member"
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       conn =
         post_presence(
@@ -147,8 +147,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = "g_private"
       actor_id = "a_outsider"
 
-      setup_group_membership("a_member", group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant("a_member", group_id)
+      setup_membership(entity_id, group_id)
 
       conn =
         post_presence(
@@ -170,8 +170,8 @@ defmodule EbbServer.Sync.RouterTest do
       actor_id = "a_outsider"
       data = %{"data" => %{"cursor" => %{"line" => 5, "col" => 12}}}
 
-      setup_group_membership("a_member", group_id)
-      setup_entity_group(foreign_id, group_id)
+      setup_grant("a_member", group_id)
+      setup_membership(foreign_id, group_id)
 
       foreign = post_presence(Map.put(data, "entity_id", foreign_id), actor_id)
       missing = post_presence(Map.put(data, "entity_id", "todo_missing"), actor_id)
@@ -249,8 +249,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = unique("g")
       actor_id = unique("a")
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       body = presence_body_of_size(8 * 1024, entity_id)
       assert byte_size(body) == 8_192
@@ -265,8 +265,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = unique("g")
       actor_id = unique("a")
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       assert post_presence_raw(presence_body_of_size(1_024, entity_id), actor_id).status == 204
 
@@ -300,9 +300,9 @@ defmodule EbbServer.Sync.RouterTest do
       actor_id = unique("a")
       other_actor_id = unique("a")
 
-      setup_group_membership(actor_id, group_id)
-      setup_group_membership(other_actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_grant(other_actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       body = %{"entity_id" => entity_id, "data" => %{"cursor" => %{"line" => 1, "col" => 1}}}
 
@@ -323,8 +323,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = unique("g")
       actor_id = unique("a")
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       body = %{"entity_id" => entity_id, "data" => %{"cursor" => %{"line" => 1, "col" => 1}}}
 
@@ -385,8 +385,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = unique("g_unreadable")
       actor_id = unique("a_unreadable")
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
       corrupt_entity_action_log(entity_id, 1)
 
       conn = get_entity(entity_id, actor_id)
@@ -401,8 +401,8 @@ defmodule EbbServer.Sync.RouterTest do
       group_id = unique("g_absent")
       actor_id = unique("a_absent")
 
-      setup_group_membership(actor_id, group_id)
-      setup_entity_group(entity_id, group_id)
+      setup_grant(actor_id, group_id)
+      setup_membership(entity_id, group_id)
 
       conn = get_entity(entity_id, actor_id)
 
@@ -416,7 +416,7 @@ defmodule EbbServer.Sync.RouterTest do
       break_entities_table(tmp_dir)
 
       conn =
-        conn(:post, "/entities/query", Jason.encode!(%{"type" => "todo"}))
+        conn(:post, "/entities/query", Jason.encode!(%{"model" => "todo"}))
         |> put_req_header("content-type", "application/json")
         |> put_req_header("x-ebb-actor-id", "a_member")
         |> Router.call([])

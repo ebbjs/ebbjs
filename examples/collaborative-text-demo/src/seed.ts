@@ -41,7 +41,7 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
 
   return {
     groups: [{ id: groupId, name: "Demo Group" }],
-    groupMembers: [
+    grants: [
       {
         id: memberId,
         actorId: "demo-seeder", // Seed runs as a dedicated actor
@@ -53,11 +53,11 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
     entities: [
       {
         id: docId,
-        type: "text_document",
+        model: "text_document",
         patches: [{ fields: { [DOC_VERSION_FIELD]: CURRENT_TEXT_VERSION } }], // empty document, current cell format
       },
     ],
-    entityGroups: [
+    memberships: [
       {
         id: membershipId,
         entityId: docId,
@@ -84,7 +84,7 @@ export function buildDemoSeed(groupId: string = DEMO_GROUP_ID): SeedData {
 export function buildAddMemberSeed(actorId: string, groupId: string = DEMO_GROUP_ID): SeedData {
   return {
     groups: [],
-    groupMembers: [
+    grants: [
       {
         id: `gm_${groupId}_${actorId}`,
         actorId,

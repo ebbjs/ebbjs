@@ -19,7 +19,7 @@ defmodule EbbServer.Bench.OptionsTest do
     :entity_actions,
     :component_entries,
     :component_entities,
-    :entity_index,
+    :entity_scope,
     :group_index,
     :dirty,
     :cache,
@@ -447,9 +447,9 @@ defmodule EbbServer.Bench.OptionsTest do
 
     test "accepts the op-group ablations" do
       assert {:ok, config} =
-               Options.parse(["--tier", "t5", "--ablate", "dedup,entity_index,group_index"])
+               Options.parse(["--tier", "t5", "--ablate", "dedup,entity_scope,group_index"])
 
-      assert config.ablate == [:dedup, :entity_index, :group_index]
+      assert config.ablate == [:dedup, :entity_scope, :group_index]
     end
 
     test "accepts the entity index separately and keeps the combined alias" do
@@ -464,9 +464,9 @@ defmodule EbbServer.Bench.OptionsTest do
       assert split.ablate == [:dedup, :entity_actions, :group_index]
 
       assert {:ok, combined} =
-               Options.parse(["--tier", "t5", "--ablate", "entity_index"])
+               Options.parse(["--tier", "t5", "--ablate", "entity_scope"])
 
-      assert combined.ablate == [:entity_index]
+      assert combined.ablate == [:entity_scope]
     end
 
     test "rejects the derived component-index phases, which t5 no longer writes" do

@@ -29,12 +29,12 @@ const ACTOR_ID = "actor_1";
 /** A materialized user row on the local store. Platform rows use `platformEntity`. */
 const mkEntity = (
   id: string,
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
 ): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
@@ -63,19 +63,19 @@ const fields = (
  * `replace` instead.
  */
 const update = (
-  subjectType: string,
+  model: string,
   subjectId: string,
   method: "put" | "patch" | "delete",
   values: Record<string, unknown> = {},
 ): Update[] =>
-  isPlatformModel(subjectType)
-    ? platformUpdate(subjectId, subjectType, method, values)
+  isPlatformModel(model)
+    ? platformUpdate(subjectId, model, method, values)
     : method === "delete"
       ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
       : Object.entries(fields(values)).map(([name, value]) => ({
           id: `u_${subjectId}_${method}_${name}`,
           subject_id: subjectId,
-          component: componentName(subjectType, name),
+          component: componentName(model, name),
           method: method === "put" ? "replace" : "merge",
           data: value,
         }));
@@ -148,7 +148,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -304,7 +304,7 @@ describe("collectPermissionViolations — user entities", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -326,7 +326,7 @@ describe("collectPermissionViolations — user entities", () => {
       kind: "denied",
       violation: {
         kind: "missing-permission",
-        model: "invoice",
+        permissionSubject: "invoice",
         subjectId: "invoice_1",
         required: "invoice.create",
         groupIds: ["g_1"],
@@ -508,7 +508,7 @@ describe("collectPermissionViolations — link edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "ebb/link",
+        component: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -616,7 +616,7 @@ describe("collectPermissionViolations — link edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "ebb/link",
+        component: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -643,7 +643,7 @@ describe("collectPermissionViolations — link edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "source-mismatch",
-        model: "ebb/link",
+        component: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -676,14 +676,14 @@ describe("collectPermissionViolations — link edges", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_old"],
       },
       {
         kind: "source-mismatch",
-        model: "ebb/link",
+        component: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",
@@ -741,7 +741,7 @@ describe("collectPermissionViolations — immutable platform keys", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "key-mismatch",
-        model: "ebb/grant",
+        component: "ebb/grant",
         subjectId: "gm_1",
         field: "group_id",
         declaredValue: "g_2",
@@ -772,7 +772,7 @@ describe("collectPermissionViolations — immutable platform keys", () => {
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "key-mismatch",
-        model: "ebb/membership",
+        component: "ebb/membership",
         subjectId: "eg_1",
         field: "group_id",
         declaredValue: "g_2",
@@ -869,7 +869,7 @@ describe("collectPermissionViolations — membership writes", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("skips a put whose entity type cannot be resolved", async () => {
+  it("skips a put whose model cannot be resolved", async () => {
     // `unknown` is not a denial on the write path: the server is the
     // authority, so the write proceeds.
     const { client } = await mkClient([["g_1", []]]);
@@ -1059,7 +1059,7 @@ describe("collectPermissionViolations — best-effort", () => {
   });
 });
 
-describe("collectPermissionViolations — system entities", () => {
+describe("collectPermissionViolations — platform model", () => {
   it("requires group.create in the group for a put", async () => {
     const { client } = await mkClient([["g_1", ["ebb/group.update"]]]);
 
@@ -1128,7 +1128,7 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "missing-permission",
-        model: "todo",
+        permissionSubject: "todo",
         subjectId: "todo_1",
         required: "todo.create",
         groupIds: ["g_1"],
@@ -1147,7 +1147,7 @@ describe("PermissionError", () => {
     const error = new PermissionError([
       {
         kind: "source-mismatch",
-        model: "ebb/link",
+        component: "ebb/link",
         subjectId: "rel_1",
         declaredSourceId: "todo_new",
         committedSourceId: "todo_old",

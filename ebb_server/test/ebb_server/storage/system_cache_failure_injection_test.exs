@@ -46,8 +46,8 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   alias EbbServer.Storage.{
     ActionFormat,
     ComponentEntityIndex,
-    EntityTypeCache,
-    GroupCache,
+    EntityModelCache,
+    GrantCache,
     RocksDB,
     SQLite,
     SystemCache
@@ -88,12 +88,12 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
       assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
                TestHelpers.telemetry_events(ref)
 
-      assert measurements.group_members == 1
+      assert measurements.grants == 1
 
       assert %{id: "gm_present"} =
-               GroupCache.get_group_member("gm_present", ctx.tables.group_members_by_id)
+               GrantCache.get_grant("gm_present", ctx.tables.grants_by_id)
 
-      assert GroupCache.get_group_member("gm_absent", ctx.tables.group_members_by_id) == nil
+      assert GrantCache.get_grant("gm_absent", ctx.tables.grants_by_id) == nil
     end
   end
 
@@ -115,13 +115,13 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
 
       assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
-      assert EntityTypeCache.get_type(entity_id, ctx.tables.entity_types) == "todo"
-      assert EntityTypeCache.get_type("todo/title", ctx.tables.entity_types) == nil
+      assert EntityModelCache.get_model(entity_id, ctx.tables.entity_models) == "todo"
+      assert EntityModelCache.get_model("todo/title", ctx.tables.entity_models) == nil
 
       assert [{[:ebb, :system_cache, :populated], measurements, %{outcome: :ok}}] =
                TestHelpers.telemetry_events(ref)
 
-      assert measurements.entity_types == 1
+      assert measurements.entity_models == 1
     end
   end
 
@@ -152,7 +152,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
              ] =
                TestHelpers.telemetry_events(ref)
 
-      assert measurements.group_members == 0
+      assert measurements.grants == 0
     end
 
     test "an atom carried by an exit is reported as that atom", ctx do
@@ -181,11 +181,11 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
         rocks_name: ctx.rocks.name,
         sqlite_name: ctx.sqlite.name,
         dirty_set: tables.dirty_set,
-        table: tables.group_members,
-        entity_groups: tables.entity_groups,
-        entity_groups_by_id: tables.entity_groups_by_id,
-        entity_groups_by_group: tables.entity_groups_by_group,
-        entity_types: tables.entity_types,
+        table: tables.grants,
+        memberships: tables.memberships,
+        memberships_by_id: tables.memberships_by_id,
+        memberships_by_group: tables.memberships_by_group,
+        entity_models: tables.entity_models,
         component_index: tables.component_index,
         component_entity_labels: tables.component_entity_labels,
         relationships: tables.relationships,
@@ -203,7 +203,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   end
 
   # `label` is the component name for a projection phase's walk; a model
-  # entry (`ebb`) is what `entity_types` is rebuilt from.
+  # entry (`ebb`) is what `entity_models` is rebuilt from.
   defp seed_model_entry(ctx, label, entity_id) do
     ComponentEntityIndex.apply_ops([{:put, {label, entity_id}}], index_opts(ctx))
   end
@@ -233,7 +233,7 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
   defp entity_row(id, data) do
     %{
       id: id,
-      type: "groupMember",
+      model: "grant",
       data: data,
       created_hlc: 0,
       updated_hlc: 0,

@@ -187,14 +187,14 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
 
   defp put_membership(cache, entity_id, group_id, actor_id) do
     :ets.insert(
-      cache.entity_groups,
+      cache.memberships,
       {entity_id, %{id: "eg_1", entity_id: entity_id, group_id: group_id}}
     )
 
-    :ets.insert(cache.entity_types, {entity_id, "todo"})
+    :ets.insert(cache.entity_models, {entity_id, "todo"})
 
     :ets.insert(
-      cache.group_members,
+      cache.grants,
       {actor_id, %{id: "gm_1", group_id: group_id, permissions: ["todo.*"]}}
     )
   end
@@ -202,12 +202,12 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
   defp opts(ctx) do
     [
       writer_name: ctx.writer_name,
-      group_members: ctx.cache.group_members,
-      group_members_by_id: ctx.cache.group_members_by_id,
-      group_members_by_group: ctx.cache.group_members_by_group,
-      entity_groups: ctx.cache.entity_groups,
-      entity_groups_by_id: ctx.cache.entity_groups_by_id,
-      entity_types: ctx.cache.entity_types,
+      grants: ctx.cache.grants,
+      grants_by_id: ctx.cache.grants_by_id,
+      grants_by_group: ctx.cache.grants_by_group,
+      memberships: ctx.cache.memberships,
+      memberships_by_id: ctx.cache.memberships_by_id,
+      entity_models: ctx.cache.entity_models,
       relationships_by_id: ctx.cache.relationships_by_id
     ]
   end

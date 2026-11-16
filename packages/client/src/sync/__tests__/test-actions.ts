@@ -47,7 +47,7 @@ interface LooseDraft {
   setGroups(id: string, groupIds: readonly GroupRef[]): void;
 }
 
-/** The `groupMember` draft namespace: `create` plus the guarded patch/delete pair. */
+/** The `grant` draft namespace: `create` plus the guarded patch/delete pair. */
 interface LooseMembershipDraft extends LooseSystemDraft {
   update(id: string, patch: Record<string, unknown>, opts?: { validate?: boolean }): void;
   delete(id: string): void;

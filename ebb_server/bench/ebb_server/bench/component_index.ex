@@ -11,7 +11,7 @@ defmodule EbbServer.Bench.ComponentIndex do
   the todo row inherits it through the Action's intra-action membership.
 
   A row with k components costs k component entries plus the one model entry
-  `EntityTypeCache` resolves, so this module reports both the index op count
+  `EntityModelCache` resolves, so this module reports both the index op count
   and the bytes those keys add. Throughput is measured through the real
   `Writer` (sync durability, no HTTP) with the index enabled and with
   `--ablate component_entities`, so the difference is the index's share of
@@ -231,7 +231,7 @@ defmodule EbbServer.Bench.ComponentIndex do
 
   @doc """
   One validated Action creating a k-component `todo` row and its
-  `entityGroup` row.
+  `ebb/membership` row.
   """
   @spec build_action(pos_integer(), integer()) :: map()
   def build_action(k, seq) do
@@ -247,11 +247,8 @@ defmodule EbbServer.Bench.ComponentIndex do
       end
 
     membership = [
-      component("u_eg_ci_e_#{seq}", membership_id, "entityGroup/entity_id", :replace, %{
-        "value" => entity_id
-      }),
-      component("u_eg_ci_g_#{seq}", membership_id, "entityGroup/group_id", :replace, %{
-        "value" => "g_bench"
+      component("u_eg_ci_#{seq}", membership_id, "ebb/membership", :replace, %{
+        "value" => %{"entity_id" => entity_id, "group_id" => "g_bench"}
       })
     ]
 

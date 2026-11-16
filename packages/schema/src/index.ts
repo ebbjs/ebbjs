@@ -12,7 +12,7 @@ export * from "./migrations";
 export * from "./relationship";
 export * from "./reserved";
 export * from "./schema";
-export * from "./system-entities";
+export * from "./platform-model";
 export * from "./collaborative-text/schema";
 export * from "./collaborative-text/wire";
 export * from "./collaborative-text/tree";

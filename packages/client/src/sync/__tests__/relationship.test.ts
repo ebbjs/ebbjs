@@ -28,12 +28,12 @@ import { platformEntity } from "../test-utils";
 
 const mkEntity = (
   id: string,
-  type: string,
+  model: string,
   fields: Record<string, unknown>,
   deletedHlc: string | null = null,
 ): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
@@ -68,7 +68,7 @@ const readLocalEntity =
 /**
  * An in-memory `AdjacencyReader` over the same Map the store holds.
  * Live `relationship` rows are indexed by `(field, type, source_id)`
- * forward and `(field, type, target_id)` reverse; live `entityGroup`
+ * forward and `(field, type, target_id)` reverse; live `membership`
  * rows by `entity_id`.
  */
 const mkAdjacency = (store: Map<string, Entity>): AdjacencyReader => {
@@ -145,7 +145,7 @@ describe("forwardOne", () => {
       "todo",
     );
     expect(got?.id).toBe("l1");
-    expect(got?.type).toBe("list");
+    expect(got?.model).toBe("list");
   });
 
   it("returns undefined when the source row is missing", async () => {

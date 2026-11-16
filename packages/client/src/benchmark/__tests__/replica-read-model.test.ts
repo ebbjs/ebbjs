@@ -146,7 +146,7 @@ describe("replica read-model workspace", () => {
     expect(held.length).toBe(recordHeld.length);
     expect(idsOf(held)).toEqual(idsOf(recordHeld));
     expect(new Set(held.map((entity) => entity.id)).size).toBe(held.length);
-    expect(held.filter((entity) => entity.type === ON_DEMAND_TYPE)).toEqual([]);
+    expect(held.filter((entity) => entity.model === ON_DEMAND_TYPE)).toEqual([]);
   });
 
   it("holds only the metadata rows", () => {
@@ -155,11 +155,11 @@ describe("replica read-model workspace", () => {
 
     // The link, membership, and group rows are all platform rows, so they share
     // the `ebb` model; the component is what distinguishes them.
-    expect(stats.byType).toEqual({
+    expect(stats.byModel).toEqual({
       page: N,
       ebb: N - 1 + N * REFS_PER_PAGE + N + 1,
     });
-    expect(stats.heldByType).toEqual(stats.byType);
+    expect(stats.heldByModel).toEqual(stats.byModel);
     expect(stats.held).toBe(workspace.counts.heldRows);
     expect(stats.entities).toBe(workspace.counts.heldRows);
 
@@ -232,8 +232,8 @@ describe("replica read-model workspace", () => {
   it("keeps bodies windowed: not resident, one store read per open", async () => {
     const { workspace, store, replica } = setup(N);
     const stats = replica.stats();
-    expect(stats.heldByType.page_content).toBeUndefined();
-    expect(stats.byType.page_content).toBeUndefined();
+    expect(stats.heldByModel.page_content).toBeUndefined();
+    expect(stats.byModel.page_content).toBeUndefined();
     expect(workspace.counts.recordBodyRows).toBeGreaterThan(0);
 
     const body = workspace.bodyIds[0];
@@ -260,7 +260,7 @@ describe("replica read-model workspace", () => {
 
     replica.close(body, `${ON_DEMAND_TYPE}/content`);
     expect(replica.stats().pinned).toBe(0);
-    expect(replica.stats().byType.page_content).toBeUndefined();
+    expect(replica.stats().byModel.page_content).toBeUndefined();
   });
 
   it("reads traversals off the replica index, never the store", async () => {

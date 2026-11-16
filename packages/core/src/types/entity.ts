@@ -11,7 +11,8 @@ export type EntityData = Static<typeof EntityDataSchema>;
 
 export const EntitySchema = Type.Object({
   id: NanoIdSchema,
-  type: Type.String(),
+  /** The committed model: the model the id's first write filed it under. */
+  model: Type.String(),
   data: EntityDataSchema,
   /**
    * Whether this replica has seen the row's create (or a base that carries

@@ -26,9 +26,9 @@ import { componentRowView } from "./system-row";
 import { recordTraversalRows } from "./traversal-counter";
 
 export {
-  buildEntityGroupDelete,
-  buildEntityGroupUpdate,
-  buildEntityGroupUpdates,
+  buildMembershipDelete,
+  buildMembershipUpdate,
+  buildMembershipUpdates,
   buildManyEntityUpdate,
   buildRelationshipUpdate,
   buildRelationshipWrite,
@@ -73,7 +73,7 @@ export interface AdjacencyReader {
  *   dangling (target missing from the cache)
  * - `Entity` when both the edge and target resolve
  *
- * Source-mismatch (`source.type !== sourceName`) and missing-source
+ * Source-mismatch (`source.model !== sourceName`) and missing-source
  * also return `undefined` to keep the surface uniform with the other
  * accessors.
  */
@@ -87,7 +87,7 @@ export async function forwardOne(
 ): Promise<Entity | null | undefined> {
   const source = await loadEntity(readLocalEntity, sourceId);
   if (source === null) return undefined;
-  if (source.type !== sourceName) return undefined;
+  if (source.model !== sourceName) return undefined;
   const links = await adjacency.forwardLinks({ as: field, type, sourceId });
   recordTraversalRows(links.length);
   const first = links[0];
@@ -122,7 +122,7 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
   const loader: LoadEntities = async () => {
     const source = await loadEntity(readLocalEntity, sourceId);
     if (source === null) return [];
-    if (source.type !== sourceName) return [];
+    if (source.model !== sourceName) return [];
     const links = await adjacency.forwardLinks({ as: field, type, sourceId });
     recordTraversalRows(links.length);
     const targetIds = [...new Set(links.map((link) => link.targetId))];
@@ -135,7 +135,7 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
  * Build the built-in membership accessor result: the group rows the member
  * entity is filed into, read through the entity-keyed membership index. Same
  * lazy shape as {@link forwardMany}. Rows are filtered on the `ebb/group`
- * component, since `row.type` is `ebb` for a grant too.
+ * component, since `row.model` is `ebb` for a grant too.
  */
 export function membershipGroups<TFields extends Record<string, TSchema>>(
   readLocalEntity: (id: string) => Promise<Entity | null>,
@@ -213,7 +213,7 @@ async function loadRows(
   return rows.filter(
     (row): row is Entity =>
       row !== null &&
-      row.type === type &&
+      row.model === type &&
       (component === undefined || carriesComponent(row, component)),
   );
 }

@@ -17,7 +17,7 @@ defmodule EbbServer.Sync.GroupListingTest do
   alias EbbServer.Storage.{DirtyTracker, RocksDB, SQLite, SystemComponent, WatermarkTracker}
   alias EbbServer.Sync.{CatchUp, GroupListing, Router}
 
-  @entity_keys ["created_hlc", "data", "deleted_hlc", "id", "last_gsn", "type", "updated_hlc"]
+  @entity_keys ["created_hlc", "data", "deleted_hlc", "id", "last_gsn", "model", "updated_hlc"]
 
   describe "GET /sync/groups/:group_id/entities" do
     test "returns the envelope and rows shape-identical to GET /entities/:id", %{tmp_dir: _} do
@@ -53,7 +53,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       assert Enum.count(entities, &carries?(&1, :membership)) == 2
 
       assert Enum.sort(ids) ==
-               Enum.sort([group_id, group_member_id(entities), todo_a, todo_b, eg_a, eg_b])
+               Enum.sort([group_id, grant_id(entities), todo_a, todo_b, eg_a, eg_b])
 
       for entity <- entities do
         assert entity |> Map.keys() |> Enum.sort() == @entity_keys
@@ -412,11 +412,11 @@ defmodule EbbServer.Sync.GroupListingTest do
         actor_id,
         [
           todo_update(heavy_todo, "heavy"),
-          membership_update(heavy_todo, group_id, hlc, heavy_eg),
+          membership_component_update(heavy_todo, group_id, hlc, heavy_eg),
           todo_update(light_todo, "light"),
-          membership_update(light_todo, group_id, hlc, light_eg),
+          membership_component_update(light_todo, group_id, hlc, light_eg),
           todo_update(outside_todo, "outside"),
-          membership_update(outside_todo, group_id, hlc, outside_eg)
+          membership_component_update(outside_todo, group_id, hlc, outside_eg)
         ]
       )
 
@@ -531,7 +531,7 @@ defmodule EbbServer.Sync.GroupListingTest do
           fn {entity_id, eg_id} ->
             [
               todo_update(entity_id, "title"),
-              membership_update(entity_id, group_id, hlc, eg_id)
+              membership_component_update(entity_id, group_id, hlc, eg_id)
             ]
           end
         )
@@ -577,7 +577,10 @@ defmodule EbbServer.Sync.GroupListingTest do
       write_action(
         actor_id,
         Enum.flat_map([{first, first_eg}, {second, second_eg}], fn {entity_id, eg_id} ->
-          [todo_update(entity_id, "title"), membership_update(entity_id, group_id, hlc, eg_id)]
+          [
+            todo_update(entity_id, "title"),
+            membership_component_update(entity_id, group_id, hlc, eg_id)
+          ]
         end)
       )
 
@@ -639,7 +642,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       refute Enum.any?(page["entities"], &carries?(&1, :group))
 
       assert Enum.sort(Enum.map(page["entities"], & &1["id"])) ==
-               Enum.sort([group_member_id(page["entities"]), eg_id, todo_id])
+               Enum.sort([grant_id(page["entities"]), eg_id, todo_id])
     end
 
     test "keeps the page when the group id is not a group row", %{tmp_dir: _} do
@@ -667,7 +670,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       refute Enum.any?(page["entities"], &(&1["id"] == group_id))
 
       assert Enum.sort(Enum.map(page["entities"], & &1["id"])) ==
-               Enum.sort([group_member_id(page["entities"]), eg_id, todo_id])
+               Enum.sort([grant_id(page["entities"]), eg_id, todo_id])
     end
 
     test "answers 503 when the group row cannot be materialized", %{tmp_dir: _} do
@@ -898,7 +901,7 @@ defmodule EbbServer.Sync.GroupListingTest do
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  defp write_entity_with_membership(actor_id, entity_id, entity_type, group_id, fields) do
+  defp write_entity_with_membership(actor_id, entity_id, entity_model, group_id, fields) do
     hlc = generate_hlc()
 
     field_updates =
@@ -906,7 +909,7 @@ defmodule EbbServer.Sync.GroupListingTest do
         %{
           "id" => unique("upd"),
           "subject_id" => entity_id,
-          "component" => "#{entity_type}/#{field}",
+          "component" => "#{entity_model}/#{field}",
           "method" => "replace",
           "data" => value
         }
@@ -916,13 +919,13 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => field_updates ++ [membership_update(entity_id, group_id, hlc, nil)]
+      "updates" => field_updates ++ [membership_component_update(entity_id, group_id, hlc, nil)]
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
-  defp membership_update(entity_id, group_id, hlc, eg_id) do
+  defp membership_component_update(entity_id, group_id, hlc, eg_id) do
     eg_id = eg_id || derived_membership_id(entity_id, group_id)
 
     component_update(
@@ -943,7 +946,7 @@ defmodule EbbServer.Sync.GroupListingTest do
     {:ok, row} = SQLite.get_entity(id, SQLite)
 
     meta = %{
-      type: row.type,
+      model: row.model,
       created_hlc: row.created_hlc,
       updated_hlc: row.updated_hlc,
       deleted_hlc: row.deleted_hlc,
@@ -965,7 +968,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       SQLite.upsert_entity(
         %{
           id: id,
-          type: "todo",
+          model: "todo",
           data:
             Jason.encode!(%{"fields" => %{"title" => title_field}, "components" => components}),
           created_hlc: row.created_hlc,
@@ -1023,7 +1026,7 @@ defmodule EbbServer.Sync.GroupListingTest do
             "method" => "replace",
             "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
           }
-        ] ++ [membership_update(entity_id, group_id, hlc, eg_id)]
+        ] ++ [membership_component_update(entity_id, group_id, hlc, eg_id)]
       end)
 
     action = %{"id" => unique("act"), "actor_id" => actor_id, "hlc" => hlc, "updates" => updates}
@@ -1055,7 +1058,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       SQLite.upsert_entity(
         %{
           id: eg_id,
-          type: SystemComponent.model(),
+          model: SystemComponent.model(),
           data:
             Jason.encode!(%{
               "fields" => %{
@@ -1184,7 +1187,7 @@ defmodule EbbServer.Sync.GroupListingTest do
 
   defp title_of(%{data: %{"fields" => %{"title" => %{"value" => title}}}}), do: title
 
-  defp group_member_id(entities) do
+  defp grant_id(entities) do
     [member] = Enum.filter(entities, &carries?(&1, :grant))
     member["id"]
   end

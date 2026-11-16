@@ -42,7 +42,7 @@ defmodule EbbServer.EntityComponentsParamIntegrationTest do
             "method" => "replace",
             "data" => %{"value" => false, "hlc" => hlc}
           }
-        ] ++ entity_group_update(entity_id, "g_test", hlc)
+        ] ++ membership_update(entity_id, "g_test", hlc)
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}))

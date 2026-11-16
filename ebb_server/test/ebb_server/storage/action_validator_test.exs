@@ -661,7 +661,7 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "gm_1",
               "subject_id" => "gm_1",
-              "component" => "groupMember/actor_id",
+              "component" => "grant/actor_id",
               "method" => "merge",
               "data" => %{"value" => "a_test", "hlc" => hlc_from(now + 1_000_000_000, 0)}
             }

@@ -8,14 +8,14 @@ date: 2026-03-22
 
 ### The question
 
-- Started questioning whether Groups, GroupMembers, and Permissions need to be first-class primitives
+- Started questioning whether Groups, Grants, and Permissions need to be first-class primitives
 - Alternative: let developers model their own authorization using regular Entities
 - Entity-Actor-Action is the core — do we need more than that?
 
 ### What Groups currently do
 
 - **Sync boundaries**: Groups determine what data syncs to which clients
-- **Permission scope**: GroupMembers carry permissions arrays that gate writes
+- **Permission scope**: Grants carry permissions arrays that gate writes
 - **Server-side enforcement**: Elixir checks permissions in-memory (ETS cache) before routing to Writer — zero network hops, zero SQLite reads
 
 ### The alternative I considered

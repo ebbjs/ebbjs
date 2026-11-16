@@ -110,7 +110,8 @@ export { RejectionSchema, type Rejection, type WriteResponse } from "@ebbjs/writ
 /** Response shape for `GET /entities/:id`. */
 export const EntityResponseSchema = Type.Object({
   id: Type.String(),
-  type: Type.String(),
+  /** The committed model. */
+  model: Type.String(),
   data: Type.Object({ fields: Type.Record(Type.String(), Type.Unknown()) }),
   created_hlc: Type.Union([Type.Number(), Type.String()]),
   updated_hlc: Type.Union([Type.Number(), Type.String()]),
@@ -122,8 +123,8 @@ export type EntityResponse = Static<typeof EntityResponseSchema>;
 /**
  * Response shape for `GET /sync/groups/:group_id/entities`.
  *
- * A page of the group's current row set — the `group` row, its `groupMember`
- * rows, its live `entityGroup` rows, and the entities those name — taken at
+ * A page of the group's current row set — the `group` row, its `grant`
+ * rows, its live `membership` rows, and the entities those name — taken at
  * `watermark`, plus the opaque token for the next page. `cursor` is `null`
  * on the last page. Partial-index keyset pagination on the membership row id,
  * so a page is not an offset into a shifting list. See

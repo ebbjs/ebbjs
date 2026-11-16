@@ -1,4 +1,4 @@
-defmodule EbbServer.Storage.EntityIndex do
+defmodule EbbServer.Storage.EntityScope do
   @moduledoc """
   Single resolution surface for "which groups own this entity?".
 
@@ -50,12 +50,12 @@ defmodule EbbServer.Storage.EntityIndex do
   caller's resolution path.
 
   Auxiliary lookups live here as well: `model/2` resolves an existing
-  entity's committed model from the entity-type index (the authorizer uses
+  entity's committed model from the entity-model cache (the authorizer uses
   it to gate membership mutations, #264, and every entity write, whose
   component prefix must match the committed model, #624),
   `committed_model/2` is the same answer widened with the by-id caches so a
-  lagging index still models a platform row, `exists?/2`
-  exposes the same index as an existence signal (used by the authorizer to
+  lagging cache still resolves a platform row, `exists?/2`
+  exposes the same cache as an existence signal (used by the authorizer to
   gate the bootstrap self-grant, #289), `kind/2` answers which of the four
   platform components a stored id carries, `membership/2` resolves an
   `ebb/membership` row id to its `{entity_id, group_id}` (the delete wire
@@ -65,8 +65,8 @@ defmodule EbbServer.Storage.EntityIndex do
   """
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
-  alias EbbServer.Storage.EntityGroupCache
-  alias EbbServer.Storage.EntityTypeCache
+  alias EbbServer.Storage.EntityModelCache
+  alias EbbServer.Storage.MembershipCache
   alias EbbServer.Storage.SystemComponent
 
   @model SystemComponent.model()
@@ -84,11 +84,11 @@ defmodule EbbServer.Storage.EntityIndex do
 
   Required options:
 
-    - `:entity_groups`           — entity membership rows, for user models
+    - `:memberships`           — entity membership rows, for user models
       and for a link's source
-    - `:entity_groups_by_id`     — the `ebb/membership` by-id cache
+    - `:memberships_by_id`     — the `ebb/membership` by-id cache
     - `:relationships_by_id`     — the `ebb/link` by-id cache
-    - `:group_members_by_id`     — the `ebb/grant` by-id cache
+    - `:grants_by_id`     — the `ebb/grant` by-id cache
     - `:group_apps`              — optional, the `ebb/group` by-id cache;
       only `kind/2` counts it
     - `:intra_action`            — optional membership from the
@@ -180,7 +180,7 @@ defmodule EbbServer.Storage.EntityIndex do
   Unions a cached group set with the Action's intra-action membership for
   `source_id`.
 
-  `EntityGroupCache.entity_groups/2` already dedupes, so the union is the
+  `MembershipCache.memberships/2` already dedupes, so the union is the
   only place a duplicate can appear. A `nil` source id means the subject
   type carries no intra-action membership and the set is returned as is.
   """
@@ -211,14 +211,14 @@ defmodule EbbServer.Storage.EntityIndex do
   """
   @spec source_groups_cached(subject_id(), keyword()) :: [String.t()]
   def source_groups_cached(source_id, opts) do
-    table = Keyword.fetch!(opts, :entity_groups)
-    entries = EntityGroupCache.entity_group_entries(source_id, table)
+    table = Keyword.fetch!(opts, :memberships)
+    entries = MembershipCache.membership_entries(source_id, table)
 
     with %Overlay{} = overlay <- Keyword.get(opts, :overlay),
-         {:ok, groups} <- Overlay.entity_groups(overlay, source_id, entries) do
+         {:ok, groups} <- Overlay.memberships(overlay, source_id, entries) do
       groups
     else
-      _ -> EntityGroupCache.entity_groups_from_entries(entries)
+      _ -> MembershipCache.memberships_from_entries(entries)
     end
   end
 
@@ -238,7 +238,7 @@ defmodule EbbServer.Storage.EntityIndex do
   @spec kind(subject_id(), keyword()) :: SystemComponent.kind() | nil
   def kind(entity_id, opts) do
     Enum.find(SystemComponent.kinds(), fn kind ->
-      by_id_present?(SystemComponent.by_id(kind), entity_id, opts)
+      by_id_carries?(SystemComponent.by_id(kind), entity_id, opts)
     end)
   end
 
@@ -262,7 +262,7 @@ defmodule EbbServer.Storage.EntityIndex do
 
   @doc """
   Resolves the committed model of an existing entity id from the
-  entity-type index.
+  entity-model cache.
 
   Returns `nil` when the index has no entry for the id. That is not proof
   of a new id: the index is rebuilt from the caches and can lag them, so a
@@ -272,19 +272,19 @@ defmodule EbbServer.Storage.EntityIndex do
   """
   @spec model(subject_id(), keyword()) :: model() | nil
   def model(entity_id, opts) do
-    table = Keyword.fetch!(opts, :entity_types)
+    table = Keyword.fetch!(opts, :entity_models)
 
-    cached_row(opts, :entity_types, entity_id, fn ->
-      EntityTypeCache.get_type(entity_id, table)
+    cached_row(opts, :entity_models, entity_id, fn ->
+      EntityModelCache.get_model(entity_id, table)
     end)
   end
 
   @doc """
   Resolves the model an entity id was **committed** under.
 
-  The entity-type index wins whenever it has an entry; failing that, a
+  The entity-model cache wins whenever it has an entry; failing that, a
   by-id cache row is a platform row by construction (`ebb`). Both signals
-  matter because the entity-type index is rebuilt asynchronously and can
+  matter because the entity-model cache is rebuilt asynchronously and can
   lag the caches: a caller that gates a write on this must not read a
   committed platform row as new.
 
@@ -303,7 +303,7 @@ defmodule EbbServer.Storage.EntityIndex do
   end
 
   @doc """
-  Returns true when the entity-type index knows `entity_id`.
+  Returns true when the entity-model cache knows `entity_id`.
 
   Existence only: the recorded model may be stale — a tombstoned entity
   keeps its entry — so callers treat this as a fail-closed existence
@@ -321,7 +321,7 @@ defmodule EbbServer.Storage.EntityIndex do
   """
   @spec membership(subject_id(), keyword()) :: {String.t(), String.t()} | nil
   def membership(membership_id, opts) do
-    case by_id_row!(:entity_groups_by_id, membership_id, opts) do
+    case by_id_row!(:memberships_by_id, membership_id, opts) do
       nil -> nil
       row -> {Map.get(row, :entity_id), Map.get(row, :group_id)}
     end
@@ -460,15 +460,15 @@ defmodule EbbServer.Storage.EntityIndex do
   # Presence, not a row. A group's planned `apps` value may be `nil` while the
   # row still exists, so a planned entry answers present unless it is a
   # tombstone.
-  defp by_id_present?(cache, id, opts) do
+  defp by_id_carries?(cache, id, opts) do
     case {Keyword.fetch(opts, cache), Keyword.get(opts, :overlay)} do
-      {{:ok, table}, %Overlay{} = overlay} -> planned_present?(overlay, table, cache, id)
+      {{:ok, table}, %Overlay{} = overlay} -> planned_carries?(overlay, table, cache, id)
       {{:ok, table}, _} -> ets_row(table, id) != nil
       {:error, _} -> false
     end
   end
 
-  defp planned_present?(overlay, table, cache, id) do
+  defp planned_carries?(overlay, table, cache, id) do
     case Overlay.fetch(overlay, cache, id) do
       {:ok, :deleted} -> false
       {:ok, _row} -> true

@@ -34,7 +34,7 @@ import {
  *
  * ## State
  * - `entities` — Record<entityId, Entity> — O(1) entity lookup
- * - `typeIndex` — Record<type, Set<entityId>> — O(1) query by type
+ * - `modelIndex` — Record<model, Set<entityId>> — O(1) query by model
  * - `components` — component → member ids — O(1) component existence reads,
  *   derived from the rows like the adjacency index
  * - `index` — Record<indexKey, rowId → yieldedId> — O(1) adjacency lookup
@@ -59,7 +59,7 @@ import {
  */
 interface EntityStoreState {
   entities: Record<string, Entity>;
-  typeIndex: Record<string, Set<string>>;
+  modelIndex: Record<string, Set<string>>;
   components: ComponentIndex;
   index: ReverseIndex;
 }
@@ -67,28 +67,28 @@ interface EntityStoreState {
 const copyEntity = (entity: Entity): Entity => JSON.parse(JSON.stringify(entity));
 
 /**
- * Updates typeIndex when an entity is set or materialized.
+ * Updates modelIndex when an entity is set or materialized.
  * Removes entity from old type's Set if type changed.
  */
-const updateTypeIndexOnSet = (
-  typeIndex: Record<string, Set<string>>,
+const updateModelIndexOnSet = (
+  modelIndex: Record<string, Set<string>>,
   entity: Entity,
-  oldType?: string,
+  oldModel?: string,
 ): Record<string, Set<string>> => {
-  const newTypeIndex = { ...typeIndex };
+  const newModelIndex = { ...modelIndex };
 
-  if (oldType && oldType !== entity.type) {
-    const oldSet = new Set(newTypeIndex[oldType] ?? []);
+  if (oldModel && oldModel !== entity.model) {
+    const oldSet = new Set(newModelIndex[oldModel] ?? []);
     oldSet.delete(entity.id);
-    newTypeIndex[oldType] = oldSet;
+    newModelIndex[oldModel] = oldSet;
   }
 
-  if (!newTypeIndex[entity.type]) {
-    newTypeIndex[entity.type] = new Set();
+  if (!newModelIndex[entity.model]) {
+    newModelIndex[entity.model] = new Set();
   }
-  newTypeIndex[entity.type] = new Set(newTypeIndex[entity.type]).add(entity.id);
+  newModelIndex[entity.model] = new Set(newModelIndex[entity.model]).add(entity.id);
 
-  return newTypeIndex;
+  return newModelIndex;
 };
 
 /**
@@ -125,7 +125,7 @@ export const createMemoryEntityStore = (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
 ): EntityStore => {
-  let state: EntityStoreState = { entities: {}, typeIndex: {}, components: new Map(), index: {} };
+  let state: EntityStoreState = { entities: {}, modelIndex: {}, components: new Map(), index: {} };
 
   /**
    * Replay the action log for `entityId` into the cache when the dirty
@@ -146,7 +146,7 @@ export const createMemoryEntityStore = (
     const oldEntity = state.entities[entityId];
     state = {
       entities: { ...state.entities, [entityId]: copyEntity(entity) },
-      typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+      modelIndex: updateModelIndexOnSet(state.modelIndex, entity, oldEntity?.model),
       components: updateComponentIndex(state.components, oldEntity, entity),
       index: updateIndex(state.index, oldEntity, entity),
     };
@@ -155,8 +155,8 @@ export const createMemoryEntityStore = (
   };
 
   /** Materialize every dirty row of a type before an index read. */
-  const materializeDirtyType = async (entityType: string): Promise<void> => {
-    for (const id of await dirtyTracker.getDirtyForType(entityType)) {
+  const materializeDirtyModel = async (model: string): Promise<void> => {
+    for (const id of await dirtyTracker.getDirtyForModel(model)) {
       await replay(id);
     }
   };
@@ -174,22 +174,22 @@ export const createMemoryEntityStore = (
       const oldEntity = state.entities[entity.id];
       state = {
         entities: { ...state.entities, [entity.id]: copyEntity(entity) },
-        typeIndex: updateTypeIndexOnSet(state.typeIndex, entity, oldEntity?.type),
+        modelIndex: updateModelIndexOnSet(state.modelIndex, entity, oldEntity?.model),
         components: updateComponentIndex(state.components, oldEntity, entity),
         index: updateIndex(state.index, oldEntity, entity),
       };
     },
 
     async query(type: string): Promise<readonly Entity[]> {
-      await materializeDirtyType(type);
+      await materializeDirtyModel(type);
 
-      const entityIds = state.typeIndex[type] ?? new Set();
+      const entityIds = state.modelIndex[type] ?? new Set();
 
       return [...entityIds].map((id) => copyEntity(state.entities[id]));
     },
 
     async queryByComponent(component: string): Promise<readonly string[]> {
-      await materializeDirtyType(componentModel(component));
+      await materializeDirtyModel(componentModel(component));
 
       // A tombstoned row keeps its fields, so it stays in the index; existence
       // is only ever a question about live rows.
@@ -203,7 +203,7 @@ export const createMemoryEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return readIndex(reverseIndexKey(as, type, targetId));
     },
 
@@ -212,22 +212,22 @@ export const createMemoryEntityStore = (
       type,
       sourceId,
     }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return liveRelationshipLinks(state.index[forwardIndexKey(as, type, sourceId)]);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return readIndex(membershipIndexKey(groupId));
     },
 
     async queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return liveMembershipLinks(state.index[forwardMembershipIndexKey(entityId)]);
     },
 
     async reset(): Promise<void> {
-      state = { entities: {}, typeIndex: {}, components: new Map(), index: {} };
+      state = { entities: {}, modelIndex: {}, components: new Map(), index: {} };
     },
   };
 

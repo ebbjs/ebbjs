@@ -7,7 +7,7 @@ defmodule EbbServer.Storage.RelationshipCache do
   - `:ebb_relationships` - `:bag` of `{source_id, entry}`, one row per edge
   - `:ebb_relationships_by_id` - maps relationship id to entry
 
-  Entity↔Group membership lives in `EntityGroupCache`, not here: a
+  Entity↔Group membership lives in `MembershipCache`, not here: a
   `Relationship` is a pure domain edge with no membership marker.
 
   The GenServer exists solely to own the ETS table lifetime and

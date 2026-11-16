@@ -91,7 +91,7 @@ export const seedReplicaRow = (
       ? Object.entries(row.data.fields).map(([field, value], index) => ({
           id: `u_seed_${seedPosition}_${index}`,
           subject_id: row.id,
-          component: componentName(row.type, field),
+          component: componentName(row.model, field),
           method: isFieldMap(value) ? "merge" : "replace",
           data: value,
         }))
@@ -137,7 +137,7 @@ export const platformEntity = (
   deletedHlc: string | null = null,
 ): Entity => ({
   id,
-  type: EBB_MODEL_NAME,
+  model: EBB_MODEL_NAME,
   data: {
     fields: {
       [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: "1-0" },

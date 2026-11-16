@@ -264,7 +264,7 @@ defmodule EbbServer.Storage.CommitterTest do
             send(test_pid, {:ops, ops})
             :ok
           end,
-          ablate: [:dedup, :group_index, :entity_index]
+          ablate: [:dedup, :group_index, :entity_scope]
         )
 
       action =

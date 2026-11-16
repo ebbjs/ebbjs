@@ -156,7 +156,7 @@ export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number)
   };
 };
 
-export interface EntityGroupRowFixture {
+export interface MembershipRowFixture {
   id: string;
   entityId: string;
   groupId: string;
@@ -166,7 +166,7 @@ export interface EntityGroupRowFixture {
  * Build a create Action for one `ebb/membership` row: one `replace` carrying
  * the whole value, the shape the wire writes when an entity joins a group.
  */
-export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): Action => {
+export const buildMembershipPutAction = (row: MembershipRowFixture, gsn = 1): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
   const updateId = `u_${row.id}`;
 
@@ -188,7 +188,7 @@ export const buildEntityGroupPutAction = (row: EntityGroupRowFixture, gsn = 1): 
 };
 
 /** Build a delete Action for an `ebb/membership` row. */
-export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number): Action => {
+export const buildMembershipDeleteAction = (args: { id: string }, gsn: number): Action => {
   const hlc = makeHlc(HLC_BASE, gsn);
 
   return {
@@ -210,7 +210,7 @@ export const buildEntityGroupDeleteAction = (args: { id: string }, gsn: number):
 /** A `todo_<id>` row for the before/after payload fixtures: one `title` leaf at `hlc`. */
 export const buildTodoEntity = (id: string, title: string, hlc: string): Entity => ({
   id,
-  type: "todo",
+  model: "todo",
   data: { fields: { title: { value: title, update_id: `u_${id}`, hlc } } },
   exists: true,
   created_hlc: hlc,

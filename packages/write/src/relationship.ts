@@ -10,7 +10,7 @@ import { componentName, generateId, type Update } from "@ebbjs/core";
 
 import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
-import { entityGroupId } from "./membership";
+import { membershipRowId } from "./membership";
 import { normalizePointer, type PointerValue } from "./pointer";
 import {
   fixedRowIds,
@@ -163,7 +163,7 @@ export function buildRelationshipUpdate(args: {
 }
 
 /** Build the Update for an `ebb/membership` row filing `entityId` into `groupId`. */
-export function buildEntityGroupUpdate(args: {
+export function buildMembershipUpdate(args: {
   membershipId: string;
   entityId: string;
   groupId: string;
@@ -188,7 +188,7 @@ export function buildEntityGroupUpdate(args: {
  * carries only the membership id; the server recovers the entity/group from
  * its by-id cache, so no `data` is sent.
  */
-export function buildEntityGroupDelete(args: { membershipId: string; updateId: string }): Update {
+export function buildMembershipDelete(args: { membershipId: string; updateId: string }): Update {
   return systemRowDelete(args.membershipId, { updateId: () => args.updateId });
 }
 
@@ -196,13 +196,16 @@ export function buildEntityGroupDelete(args: { membershipId: string; updateId: s
  * Build one membership `put` Update per group. Shared by the `createEntity`
  * and `duplicateEntity` operations so membership emission has one definition.
  */
-export function buildEntityGroupUpdates(
+export function buildMembershipUpdates(
   entityId: string,
   groupIds: readonly string[],
   ids: SystemRowIds,
 ): Update[] {
   return groupIds.map((groupId) =>
-    membershipRowUpdate({ membershipId: entityGroupId(entityId, groupId), entityId, groupId }, ids),
+    membershipRowUpdate(
+      { membershipId: membershipRowId(entityId, groupId), entityId, groupId },
+      ids,
+    ),
   );
 }
 

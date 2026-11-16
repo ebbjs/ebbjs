@@ -152,7 +152,7 @@ than emit an Update that would fail or lose links:
 - **A many-cardinality unlink of one target** reads the source row's current
   FK list through `ctx.get` and refuses when the row is absent or not readable.
   Clearing the set (`unrelate` with no target) needs no read.
-- **`last_group_member`** is only provable for a group this invocation created:
+- **`last_grant`** is only provable for a group this invocation created:
   that group's roster is exactly the members written here. An existing group's
   member rows are not readable, so the check defers to the server, exactly as
   the client does with a cold cache. `last_membership` is likewise checked only

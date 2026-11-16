@@ -47,7 +47,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
       component("u3", "note_1", "note/body", :merge, leaf("b", 1))
     ]
 
-    assert [first, second] = RowMutations.fold(updates, entity_types: table)
+    assert [first, second] = RowMutations.fold(updates, entity_models: table)
     assert first.subject_id == "note_1"
     assert first.method == :put
     assert first.model == "note"
@@ -61,7 +61,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
 
     [known] =
       RowMutations.fold([component("u1", "note_1", "note/title", :merge, leaf("t", 1))],
-        entity_types: table
+        entity_models: table
       )
 
     assert known.method == :patch
@@ -69,7 +69,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
     [created] =
       RowMutations.fold(
         [component("u1", "note_9", "note/title", :replace, leaf("t", 1))],
-        entity_types: table,
+        entity_models: table,
         created: MapSet.new(["note_9"])
       )
 
@@ -85,7 +85,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
           component("u_low", "note_1", "note/title", :merge, leaf("low", 10)),
           component("u_high", "note_1", "note/title", :merge, leaf("high", 20))
         ],
-        entity_types: table
+        entity_models: table
       )
 
     assert mutation.data["fields"]["title"] == leaf("high", 20)
@@ -100,7 +100,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
           component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
           component("u2", "note_1", "note/body", :drop, nil)
         ],
-        entity_types: table
+        entity_models: table
       )
 
     assert mutation.method == :put
@@ -116,7 +116,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
           component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
           delete("u2", "note_1")
         ],
-        entity_types: table,
+        entity_models: table,
         model_resolver: fn _id -> "note" end
       )
 
@@ -129,7 +129,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
 
     [resolved] =
       RowMutations.fold([delete("u1", "rel_1")],
-        entity_types: table,
+        entity_models: table,
         model_resolver: fn _id -> "relationship" end
       )
 
@@ -141,7 +141,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
           delete("u1", "rel_2"),
           component("u2", "rel_2", "relationship/source_id", :merge, leaf("note_1", 1))
         ],
-        entity_types: table
+        entity_models: table
       )
 
     assert from_sibling.model == "relationship"
@@ -184,12 +184,12 @@ defmodule EbbServer.Storage.RowMutationsTest do
       {"eg_1", %{id: "eg_1", entity_id: "note_1", group_id: "g_1"}}
     )
 
-    # The type index knows nothing about the row — the lagging shape the
+    # The model index knows nothing about the row — the lagging shape the
     # by-id caches exist for.
     [mutation] =
       RowMutations.fold([delete("u1", "eg_1")],
-        entity_types: table,
-        entity_groups_by_id: by_id
+        entity_models: table,
+        memberships_by_id: by_id
       )
 
     # A by-id cache row is a platform row, and every platform row is
@@ -198,19 +198,19 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert mutation.method == :delete
   end
 
-  test "the entity-type index is the default existence signal" do
+  test "the entity-model cache is the default existence signal" do
     table = unknown_type_index()
 
     [unknown] =
       RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        entity_types: table
+        entity_models: table
       )
 
     :ets.insert(table, {"note_1", "note"})
 
     [known] =
       RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        entity_types: table
+        entity_models: table
       )
 
     assert unknown.method == :put

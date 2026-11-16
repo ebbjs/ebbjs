@@ -97,7 +97,7 @@ import type { SeedData } from "@ebbjs/testing";
 
 export const buildSingleEntitySeed = (): SeedData => ({
   groups: [{ id: "grp_001", name: "Test Group" }],
-  groupMembers: [
+  grants: [
     {
       id: "gm_001",
       actorId: "actor_test",

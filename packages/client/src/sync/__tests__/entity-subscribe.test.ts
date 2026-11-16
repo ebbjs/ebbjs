@@ -74,13 +74,13 @@ type TodoSnapshot = {
   title?: string;
   completed?: boolean;
   id: string;
-  entity: { id: string; type: string; deleted_hlc: unknown };
+  entity: { id: string; model: string; deleted_hlc: unknown };
 };
 
 /** Build a raw materialized entity for direct `entities.set` writes. */
-const mkRawEntity = (id: string, type: string, fields: Record<string, unknown>): Entity => ({
+const mkRawEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
@@ -246,7 +246,7 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     globalExpect(snap.completed).toBe(true);
     globalExpect(snap.id).toBe("todo_1");
     globalExpect(snap.entity.id).toBe("todo_1");
-    globalExpect(snap.entity.type).toBe("todo");
+    globalExpect(snap.entity.model).toBe("todo");
     globalExpect(snap.entity.deleted_hlc).toBeNull();
 
     // Compile-time check: `bogus` isn't a field on the snapshot.

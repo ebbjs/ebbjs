@@ -72,7 +72,7 @@ awaiting it resolves to the projected rows (the schema's fields plus the
 entity `id`; a replica-backed query row also carries its live `groupIds`).
 
 `groupIds` is read from the replica's membership index — one lookup per row,
-no `entityGroup` scan. Use it when a row only needs the ids it belongs to;
+no `membership` scan. Use it when a row only needs the ids it belongs to;
 `.with({ groups: true })` projects the group rows themselves, which matters
 because a group id can name a row that is not materialized. Joined target
 rows are plain projections (fields plus `id`), and a chain over
@@ -260,11 +260,11 @@ Draft verbs, per entity:
 
 The system entities get their own draft namespaces. `group.create` bootstraps a
 group — the group row plus the acting actor's membership, one Action.
-`membership.create` adds one `groupMember` row, and `membership.update` /
-`membership.delete` patch or remove one behind the local `last_group_member`
+`membership.create` adds one `grant` row, and `membership.update` /
+`membership.delete` patch or remove one behind the local `last_grant`
 guard, so leaving a workspace is one Action. Both namespaces also carry the
 plain entity verbs — `update`, `delete`, `duplicate`, `link`, `unlink`,
-`setLinks` — and omit only the membership verbs, since an `entityGroup` row for
+`setLinks` — and omit only the membership verbs, since an `membership` row for
 a group or a member has no meaning:
 
 ```typescript
@@ -328,7 +328,7 @@ import { createClient } from "@ebbjs/client";
 const client = createClient({ serverUrl, actorId: "demo-seeder" });
 await client.seed({
   groups: [{ id: "grp_demo", name: "Demo Group" }],
-  groupMembers: [
+  grants: [
     {
       id: "gm_demo",
       actorId: "demo-seeder",

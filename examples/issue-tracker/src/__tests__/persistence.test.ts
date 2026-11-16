@@ -15,11 +15,11 @@ import { createAppStorage } from "../bootstrap";
 const pendingEntry = (actorId: string): OutboxEntry => ({
   action: buildSeedAction(actorId, {
     groups: [],
-    groupMembers: [],
+    grants: [],
     entities: [
       {
         id: `ent_${actorId}`,
-        type: "issue",
+        model: "issue",
         patches: [{ fields: { title: "pending write" } }],
       },
     ],

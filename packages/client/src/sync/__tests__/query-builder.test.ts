@@ -33,7 +33,7 @@ type Todo = Static<typeof todo.shape>;
 
 const mkEntity = (id: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type: "todo",
+  model: "todo",
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
@@ -65,7 +65,7 @@ describe("projectEntity — map fields", () => {
 
   const mkDoc = (content: FieldValue): Entity => ({
     id: "d1",
-    type: "doc",
+    model: "doc",
     data: { fields: { content } },
     exists: true,
     created_hlc: "1",

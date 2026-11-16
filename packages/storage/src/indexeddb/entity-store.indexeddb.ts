@@ -139,8 +139,8 @@ export const createIndexedDBEntityStore = (
   };
 
   /** Materialize every dirty row of a type before an index read. */
-  const materializeDirtyType = async (entityType: string): Promise<void> => {
-    for (const id of await dirtyTracker.getDirtyForType(entityType)) {
+  const materializeDirtyModel = async (model: string): Promise<void> => {
+    for (const id of await dirtyTracker.getDirtyForModel(model)) {
       await replay(id);
     }
   };
@@ -164,16 +164,16 @@ export const createIndexedDBEntityStore = (
       await updateIndex(previous, entity);
     },
 
-    async query(type: string): Promise<readonly Entity[]> {
-      await materializeDirtyType(type);
+    async query(model: string): Promise<readonly Entity[]> {
+      await materializeDirtyModel(model);
 
-      const entities = await db.getAllFromIndex("entities", "type", type);
+      const entities = await db.getAllFromIndex("entities", "model", model);
 
       return entities.map(readEntity);
     },
 
     async queryByComponent(component: string): Promise<readonly string[]> {
-      await materializeDirtyType(componentModel(component));
+      await materializeDirtyModel(componentModel(component));
 
       const rows = await db.getAllFromIndex("entities", "components", component);
 
@@ -190,7 +190,7 @@ export const createIndexedDBEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return readIndex(reverseIndexKey(as, type, targetId));
     },
 
@@ -199,18 +199,18 @@ export const createIndexedDBEntityStore = (
       type,
       sourceId,
     }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       const record = await db.get("relationships", forwardIndexKey(as, type, sourceId));
       return liveRelationshipLinks(record?.rows);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       return readIndex(membershipIndexKey(groupId));
     },
 
     async queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]> {
-      await materializeDirtyType(EBB_MODEL_NAME);
+      await materializeDirtyModel(EBB_MODEL_NAME);
       const record = await db.get("relationships", forwardMembershipIndexKey(entityId));
       return liveMembershipLinks(record?.rows);
     },

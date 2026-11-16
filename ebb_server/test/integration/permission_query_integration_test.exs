@@ -30,7 +30,7 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Todo 1", "hlc" => hlc_1}
             }
-          ] ++ entity_group_update("todo_1", "group_1", hlc_1)
+          ] ++ membership_update("todo_1", "group_1", hlc_1)
       }
 
       action_2 = %{
@@ -46,13 +46,13 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Todo 2", "hlc" => hlc_2}
             }
-          ] ++ entity_group_update("todo_2", "group_2", hlc_2)
+          ] ++ membership_update("todo_2", "group_2", hlc_2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_1]}), "actor_1")
       post_actions(msgpack_encode!(%{"actions" => [action_2]}), "actor_2")
 
-      conn = post_query(%{"type" => "todo"}, "actor_1")
+      conn = post_query(%{"model" => "todo"}, "actor_1")
       assert conn.status == 200
 
       {:ok, response} = Jason.decode(conn.resp_body)
@@ -60,7 +60,7 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
       assert "todo_1" in entity_ids
       refute "todo_2" in entity_ids
 
-      conn = post_query(%{"type" => "todo"}, "actor_2")
+      conn = post_query(%{"model" => "todo"}, "actor_2")
       assert conn.status == 200
 
       {:ok, response} = Jason.decode(conn.resp_body)

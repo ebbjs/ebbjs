@@ -62,10 +62,10 @@ export {
 export type {
   Action,
   GroupSeed,
-  GroupMemberSeed,
+  GrantSeed,
   EntitySeed,
   RelationshipSeed,
-  EntityGroupSeed,
+  MembershipSeed,
   SeedData,
   SeedRejection,
 } from "@ebbjs/core/seed";

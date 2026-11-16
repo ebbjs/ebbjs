@@ -5,7 +5,7 @@ defmodule EbbServer.Storage.EntityViewTest do
 
   alias EbbServer.Storage.{EntityStore, EntityView, Writer}
 
-  @view_keys ["created_hlc", "data", "deleted_hlc", "id", "last_gsn", "type", "updated_hlc"]
+  @view_keys ["created_hlc", "data", "deleted_hlc", "id", "last_gsn", "model", "updated_hlc"]
 
   setup do
     cache = start_isolated_cache()
@@ -33,7 +33,7 @@ defmodule EbbServer.Storage.EntityViewTest do
 
       assert {:ok, entity} = EntityStore.get(entity_id, "a_member", store_opts(ctx))
       assert view["id"] == entity.id
-      assert view["type"] == entity.type
+      assert view["model"] == entity.model
       assert view["data"] == %{"fields" => entity.data["fields"]}
       refute Map.has_key?(view["data"], "components")
       assert view["created_hlc"] == entity.created_hlc
@@ -91,12 +91,12 @@ defmodule EbbServer.Storage.EntityViewTest do
 
   defp put_membership(cache, entity_id, group_id, actor_id) do
     :ets.insert(
-      cache.entity_groups,
+      cache.memberships,
       {entity_id, %{id: "eg_1", entity_id: entity_id, group_id: group_id}}
     )
 
     :ets.insert(
-      cache.group_members,
+      cache.grants,
       {actor_id, %{id: "gm_1", group_id: group_id, permissions: ["todo.read"]}}
     )
   end

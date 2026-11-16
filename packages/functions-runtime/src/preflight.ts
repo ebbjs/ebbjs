@@ -4,7 +4,7 @@
  * of a materialized cache.
  *
  * The point is the same as on the client — a `missing_ownership`,
- * `last_membership`, or `last_group_member` refusal surfaces at the offending
+ * `last_membership`, or `last_grant` refusal surfaces at the offending
  * `ctx.*` call with the same reason and details, rather than at return as a
  * 422. The check only refuses what the invocation can prove: where the local
  * view cannot see the state (a pre-existing row's memberships, a group's full
@@ -15,11 +15,11 @@
 import type { Update } from "@ebbjs/core";
 import {
   ActionRejectedError,
-  lastGroupMemberError,
-  lastGroupMemberViolation,
+  lastGrantError,
+  lastGrantViolation,
   lastMembershipViolation,
   membershipScope,
-  type LiveGroupMember,
+  type LiveGrant,
   type MembershipView,
 } from "@ebbjs/write";
 
@@ -31,7 +31,7 @@ export interface PreflightView extends MembershipView {
    * created has no other members, so its roster is knowable; an existing
    * group's members are not readable through `ctx.get`.
    */
-  groupMembersOf(groupId: string): readonly LiveGroupMember[] | undefined;
+  grantsOf(groupId: string): readonly LiveGrant[] | undefined;
 }
 
 /**
@@ -80,7 +80,7 @@ export const assertLastMembership = (
 };
 
 /** A grant delta: the rows to remove and the permission lists to overwrite. */
-export interface GroupMemberDeltaInput {
+export interface GrantDeltaInput {
   readonly removedIds: readonly string[];
   readonly upserts: readonly { readonly id: string; readonly permissions: readonly string[] }[];
 }
@@ -90,15 +90,15 @@ export interface GroupMemberDeltaInput {
  * permission list. Only a provable roster is checked — deferring is
  * deliberate, matching the client's cold-cache behaviour.
  */
-export const assertLastGroupMember = (
+export const assertLastGrant = (
   view: PreflightView,
   memberId: string,
   groupId: string,
-  delta: GroupMemberDeltaInput,
+  delta: GrantDeltaInput,
 ): void => {
-  const roster = view.groupMembersOf(groupId);
+  const roster = view.grantsOf(groupId);
   if (roster === undefined) return;
-  const details = lastGroupMemberViolation(roster, delta);
+  const details = lastGrantViolation(roster, delta);
   if (details === undefined) return;
-  throw lastGroupMemberError(memberId, details);
+  throw lastGrantError(memberId, details);
 };

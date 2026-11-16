@@ -21,7 +21,7 @@ const todoQuery = (): Query => emptyQuery("todo");
 
 const row = (id: string, title = id): Entity => ({
   id,
-  type: "todo",
+  model: "todo",
   data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: makeHlc(1) } } },
   exists: true,
   created_hlc: "1",

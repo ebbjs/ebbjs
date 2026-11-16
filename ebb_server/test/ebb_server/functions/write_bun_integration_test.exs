@@ -83,7 +83,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     created_id = body["result"]["id"]
     overlay = body["result"]["overlay"]
     assert overlay["id"] == created_id
-    assert overlay["type"] == "todo"
+    assert overlay["model"] == "todo"
     assert overlay["deleted_hlc"] == nil
     # A row this invocation created has no GSN yet, and the overlay carries
     # the write's own HLCs rather than the stored row's.
@@ -100,7 +100,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert read.status == 200
     entity = Jason.decode!(read.resp_body)
     assert entity["id"] == created_id
-    assert entity["type"] == "todo"
+    assert entity["model"] == "todo"
     assert entity["data"]["fields"]["title"]["value"] == title
 
     assert WatermarkTracker.committed_watermark() == before + 1

@@ -19,11 +19,11 @@ defmodule EbbServer.Storage.SystemCache do
   ## Children
 
     - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
-    - `GroupCache`        — per-group member sets; permission checks read this on every write.
-    - `EntityGroupCache`  — entity → group membership; reaches in for fan-out and entity reads.
+    - `GrantCache`        — per-group grant rows; permission checks read this on every write.
+    - `MembershipCache`   — entity → group membership; reaches in for fan-out and entity reads.
     - `GroupAppsCache`    — each group's app scope, projected for the handshake.
-    - `EntityTypeCache`   — entity id → committed model; the authorizer resolves an existing
-                            entity's type from here for membership permissions (#264).
+    - `EntityModelCache`  — entity id → committed model; the authorizer resolves an existing
+                            entity's model from here for membership permissions (#264).
     - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
 
   `SystemCache` itself is a `GenServer` that owns these children under an
@@ -38,7 +38,7 @@ defmodule EbbServer.Storage.SystemCache do
   ## Lifecycle
 
   On init, the supervisor rebuilds the derived component existence index
-  from `cf_actions`, then populates `GroupCache`, `EntityGroupCache`,
+  from `cf_actions`, then populates `GrantCache`, `MembershipCache`,
   `GroupAppsCache` and `RelationshipCache` from the system entities before
   returning. The same pass re-marks every modeled row dirty; dirty marks are
   in-memory and would otherwise be lost on a restart, leaving patch-only rows
@@ -92,13 +92,13 @@ defmodule EbbServer.Storage.SystemCache do
 
   All child modules accept optional keyword arguments to override default ETS table names:
   - `:dirty_set` - defaults to `:ebb_dirty_set`
-  - `:table` (GroupCache) - defaults to `:ebb_group_members`
-  - `:group_members_by_group` (GroupCache) - defaults to `:ebb_group_members_by_group`
-  - `:entity_groups` - defaults to `:ebb_entity_groups`
-  - `:entity_groups_by_id` - defaults to `:ebb_entity_groups_by_id`
-  - `:entity_groups_by_group` - defaults to `:ebb_entity_groups_by_group`
+  - `:table` (GrantCache) - defaults to `:ebb_grants`
+  - `:grants_by_group` (GrantCache) - defaults to `:ebb_grants_by_group`
+  - `:memberships` - defaults to `:ebb_memberships`
+  - `:memberships_by_id` - defaults to `:ebb_memberships_by_id`
+  - `:memberships_by_group` - defaults to `:ebb_memberships_by_group`
   - `:group_apps` - defaults to `:ebb_group_apps`
-  - `:entity_types` - defaults to `:ebb_entity_types`
+  - `:entity_models` - defaults to `:ebb_entity_models`
   - `:relationships` - defaults to `:ebb_relationships`
   - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
 
@@ -116,11 +116,11 @@ defmodule EbbServer.Storage.SystemCache do
     CacheTables,
     ComponentEntityIndex,
     DirtyTracker,
-    EntityGroupCache,
+    EntityModelCache,
     EntityStore,
-    EntityTypeCache,
+    GrantCache,
     GroupAppsCache,
-    GroupCache,
+    MembershipCache,
     RelationshipCache,
     RocksDB,
     RowMutations,
@@ -136,9 +136,9 @@ defmodule EbbServer.Storage.SystemCache do
   @dirty_mark_chunk_size 1_000
 
   @empty_measurements %{
-    entity_types: 0,
-    group_members: 0,
-    entity_groups: 0,
+    entity_models: 0,
+    grants: 0,
+    memberships: 0,
     group_apps: 0,
     relationships: 0
   }
@@ -146,15 +146,15 @@ defmodule EbbServer.Storage.SystemCache do
   @populate_opt_keys [
     :rocks_name,
     :table,
-    :group_members_by_id,
-    :group_members_by_group,
+    :grants_by_id,
+    :grants_by_group,
     :relationships,
     :relationships_by_id,
-    :entity_groups,
-    :entity_groups_by_id,
-    :entity_groups_by_group,
+    :memberships,
+    :memberships_by_id,
+    :memberships_by_group,
     :group_apps,
-    :entity_types,
+    :entity_models,
     :component_index,
     :component_entity_labels
   ]
@@ -166,9 +166,9 @@ defmodule EbbServer.Storage.SystemCache do
 
   @doc """
   Public entry point for the startup cache-rebuild flow, and what
-  `init/1` runs. It rebuilds the derived component index and `EntityTypeCache`
-  from `cf_actions`, then materializes every system entity into `GroupCache`,
-  `EntityGroupCache`, `GroupAppsCache` and `RelationshipCache`.
+  `init/1` runs. It rebuilds the derived component index and `EntityModelCache`
+  from `cf_actions`, then materializes every system component into `GrantCache`,
+  `MembershipCache`, `GroupAppsCache` and `RelationshipCache`.
 
   Emits `[:ebb, :system_cache, :populated]` with per-cache counts and a
   native `duration`, and metadata `outcome` (`:ok` or `:error`). On a
@@ -221,21 +221,18 @@ defmodule EbbServer.Storage.SystemCache do
     {default_component_index, default_component_entity_labels} = ComponentEntityIndex.tables()
 
     %{
-      group_members: table_opt(opts, :table, CacheTables.group_members()),
-      group_members_by_id:
-        table_opt(opts, :group_members_by_id, CacheTables.group_members_by_id()),
-      group_members_by_group:
-        table_opt(opts, :group_members_by_group, CacheTables.group_members_by_group()),
+      grants: table_opt(opts, :table, CacheTables.grants()),
+      grants_by_id: table_opt(opts, :grants_by_id, CacheTables.grants_by_id()),
+      grants_by_group: table_opt(opts, :grants_by_group, CacheTables.grants_by_group()),
       relationships: table_opt(opts, :relationships, CacheTables.relationships()),
       relationships_by_id:
         table_opt(opts, :relationships_by_id, CacheTables.relationships_by_id()),
-      entity_groups: table_opt(opts, :entity_groups, CacheTables.entity_groups()),
-      entity_groups_by_id:
-        table_opt(opts, :entity_groups_by_id, CacheTables.entity_groups_by_id()),
-      entity_groups_by_group:
-        table_opt(opts, :entity_groups_by_group, CacheTables.entity_groups_by_group()),
+      memberships: table_opt(opts, :memberships, CacheTables.memberships()),
+      memberships_by_id: table_opt(opts, :memberships_by_id, CacheTables.memberships_by_id()),
+      memberships_by_group:
+        table_opt(opts, :memberships_by_group, CacheTables.memberships_by_group()),
       group_apps: table_opt(opts, :group_apps, CacheTables.group_apps()),
-      entity_types: table_opt(opts, :entity_types, CacheTables.entity_types()),
+      entity_models: table_opt(opts, :entity_models, CacheTables.entity_models()),
       component_index: table_opt(opts, :component_index, default_component_index),
       component_entity_labels:
         table_opt(opts, :component_entity_labels, default_component_entity_labels)
@@ -257,24 +254,24 @@ defmodule EbbServer.Storage.SystemCache do
     gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
 
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
-    group_cache_opts = Keyword.take(opts, [:table, :group_members_by_id, :group_members_by_group])
+    group_cache_opts = Keyword.take(opts, [:table, :grants_by_id, :grants_by_group])
 
     rel_cache_opts = Keyword.take(opts, [:relationships, :relationships_by_id])
 
-    entity_group_cache_opts =
-      Keyword.take(opts, [:entity_groups, :entity_groups_by_id, :entity_groups_by_group])
+    membership_cache_opts =
+      Keyword.take(opts, [:memberships, :memberships_by_id, :memberships_by_group])
 
     group_apps_cache_opts = Keyword.take(opts, [:group_apps])
-    entity_type_cache_opts = Keyword.take(opts, [:entity_types])
+    entity_model_cache_opts = Keyword.take(opts, [:entity_models])
     component_index_opts = Keyword.take(opts, [:component_index, :component_entity_labels])
 
     children = [
       {DirtyTracker, dirty_set_opts},
       {ComponentEntityIndex, component_index_opts},
-      {GroupCache, group_cache_opts},
-      {EntityGroupCache, entity_group_cache_opts},
+      {GrantCache, group_cache_opts},
+      {MembershipCache, membership_cache_opts},
       {GroupAppsCache, group_apps_cache_opts},
-      {EntityTypeCache, entity_type_cache_opts},
+      {EntityModelCache, entity_model_cache_opts},
       {RelationshipCache, rel_cache_opts}
     ]
 
@@ -364,28 +361,28 @@ defmodule EbbServer.Storage.SystemCache do
   # Each phase counts its progress through a shared `:atomics` counter that
   # is read even when the phase raises, so a partial rebuild reports how far
   # it got before failing. Phases are ordered because the component index and
-  # `entity_types` must be reconstructed from the log before the prefix walks
+  # `entity_models` must be reconstructed from the log before the prefix walks
   # read them.
   defp populate_caches_from_indexes(rocks_name, tables, dirty_set, opts) do
     sqlite_opts = Keyword.take(opts, [:sqlite_name])
 
     with {:ok, _models, m1} <-
-           phase(@empty_measurements, :entity_types, fn counter ->
+           phase(@empty_measurements, :entity_models, fn counter ->
              seed_component_entities(
                rocks_name,
-               tables.entity_types,
+               tables.entity_models,
                component_index_opts(tables),
                dirty_set,
                counter
              )
            end),
-         {:ok, _group_members, m2} <-
-           phase(m1, :group_members, fn counter ->
-             populate_group_members(rocks_name, tables, dirty_set, sqlite_opts, counter)
+         {:ok, _grants, m2} <-
+           phase(m1, :grants, fn counter ->
+             populate_grants(rocks_name, tables, dirty_set, sqlite_opts, counter)
            end),
-         {:ok, _entity_groups, m3} <-
-           phase(m2, :entity_groups, fn counter ->
-             populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter)
+         {:ok, _memberships, m3} <-
+           phase(m2, :memberships, fn counter ->
+             populate_memberships(rocks_name, tables, dirty_set, sqlite_opts, counter)
            end),
          {:ok, _group_apps, m4} <-
            phase(m3, :group_apps, fn counter ->
@@ -424,18 +421,18 @@ defmodule EbbServer.Storage.SystemCache do
     end
   end
 
-  defp populate_group_members(rocks_name, tables, dirty_set, sqlite_opts, counter) do
-    populate_type(
+  defp populate_grants(rocks_name, tables, dirty_set, sqlite_opts, counter) do
+    populate_component(
       SystemComponent.component(:grant),
       rocks_name,
       dirty_set,
-      &put_group_member(&1, tables),
+      &put_grant(&1, tables),
       component_index_opts(tables) ++ sqlite_opts,
       counter
     )
   end
 
-  defp put_group_member(entity_data, tables) do
+  defp put_grant(entity_data, tables) do
     data = entity_data.data || %{}
 
     member = %{
@@ -445,36 +442,36 @@ defmodule EbbServer.Storage.SystemCache do
       permissions: SystemComponent.path(data, :grant, "permissions")
     }
 
-    GroupCache.put_group_member(member,
-      group_members: tables.group_members,
-      group_members_by_id: tables.group_members_by_id,
-      group_members_by_group: tables.group_members_by_group
+    GrantCache.put_grant(member,
+      grants: tables.grants,
+      grants_by_id: tables.grants_by_id,
+      grants_by_group: tables.grants_by_group
     )
   end
 
-  defp populate_entity_groups(rocks_name, tables, dirty_set, sqlite_opts, counter) do
-    populate_type(
+  defp populate_memberships(rocks_name, tables, dirty_set, sqlite_opts, counter) do
+    populate_component(
       SystemComponent.component(:membership),
       rocks_name,
       dirty_set,
-      &put_entity_group(&1, tables),
+      &put_membership(&1, tables),
       component_index_opts(tables) ++ sqlite_opts,
       counter
     )
   end
 
-  defp put_entity_group(entity_data, tables) do
+  defp put_membership(entity_data, tables) do
     data = entity_data.data || %{}
 
-    EntityGroupCache.put_entity_group(
+    MembershipCache.put_membership(
       %{
         id: entity_data.id,
         entity_id: SystemComponent.path(data, :membership, "entity_id"),
         group_id: SystemComponent.path(data, :membership, "group_id")
       },
-      entity_groups: tables.entity_groups,
-      entity_groups_by_id: tables.entity_groups_by_id,
-      entity_groups_by_group: tables.entity_groups_by_group
+      memberships: tables.memberships,
+      memberships_by_id: tables.memberships_by_id,
+      memberships_by_group: tables.memberships_by_group
     )
   end
 
@@ -482,7 +479,7 @@ defmodule EbbServer.Storage.SystemCache do
   # needs every group's app scope at boot, so the same type walk fills the
   # cache here instead of materializing a row per handshake.
   defp populate_group_apps(rocks_name, tables, dirty_set, sqlite_opts, counter) do
-    populate_type(
+    populate_component(
       SystemComponent.component(:group),
       rocks_name,
       dirty_set,
@@ -503,7 +500,7 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   defp populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter) do
-    populate_type(
+    populate_component(
       SystemComponent.component(:link),
       rocks_name,
       dirty_set,
@@ -530,7 +527,7 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   # The model `ebb` would project all four kinds into every cache.
-  defp populate_type(component, rocks_name, dirty_set, insert_fn, opts, counter) do
+  defp populate_component(component, rocks_name, dirty_set, insert_fn, opts, counter) do
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
     ComponentEntityIndex.each_component_entry_id(
@@ -560,7 +557,7 @@ defmodule EbbServer.Storage.SystemCache do
   # second full copy of the index; the log is the source of truth, so this is
   # construction, not a migration.
   #
-  # The same pass fills `EntityTypeCache` from the model entries the authorizer
+  # The same pass fills `EntityModelCache` from the model entries the authorizer
   # resolves, and collects every modeled id so the boot re-mark can dirty it.
   # Marks are ETS-only, so without this a restart leaves a row clean-but-stale
   # or missing (#564). Eager models are marked too; their populators run next
@@ -568,7 +565,7 @@ defmodule EbbServer.Storage.SystemCache do
   # repair candidate.
   defp seed_component_entities(
          rocks_name,
-         entity_types_table,
+         entity_models_table,
          index_opts,
          dirty_set,
          counter
@@ -579,13 +576,13 @@ defmodule EbbServer.Storage.SystemCache do
       |> Stream.chunk_every(@dirty_mark_chunk_size)
       |> Enum.reduce(%{}, fn chunk, models ->
         before = map_size(models)
-        models = replay_actions(chunk, models, entity_types_table, index_opts)
+        models = replay_actions(chunk, models, entity_models_table, index_opts)
         :atomics.add(counter, 1, map_size(models) - before)
         models
       end)
 
     Enum.each(models, fn {entity_id, model} ->
-      EntityTypeCache.put_type(entity_id, model, entity_types: entity_types_table)
+      EntityModelCache.put_model(entity_id, model, entity_models: entity_models_table)
     end)
 
     mark_dirty_in_chunks(
@@ -604,10 +601,10 @@ defmodule EbbServer.Storage.SystemCache do
     |> Enum.each(&DirtyTracker.mark_dirty_batch(&1, dirty_set))
   end
 
-  defp replay_actions(actions, models, entity_types_table, index_opts) do
+  defp replay_actions(actions, models, entity_models_table, index_opts) do
     {models, ops} =
       Enum.reduce(actions, {models, []}, fn action, {models, acc} ->
-        {models, action_ops} = replay_action(action["updates"] || [], models, entity_types_table)
+        {models, action_ops} = replay_action(action["updates"] || [], models, entity_models_table)
         {models, [action_ops | acc]}
       end)
 
@@ -617,19 +614,19 @@ defmodule EbbServer.Storage.SystemCache do
 
   # The replay carries the last model each id was committed under, so a delete
   # that names no component still writes the model entry. An id the log never
-  # modeled falls back to a record already in `EntityTypeCache`; an id nothing
+  # modeled falls back to a record already in `EntityModelCache`; an id nothing
   # knows has no entry to rebuild.
   #
   # A user row cannot carry `ebb` (`ActionValidator` refuses two component
   # prefixes on one subject), so a platform prefix is never a relabel here.
-  defp replay_action(raw_updates, models, entity_types_table) do
+  defp replay_action(raw_updates, models, entity_models_table) do
     updates = Enum.map(raw_updates, &RowMutations.from_stored/1)
 
     models =
       Enum.reduce(updates, models, fn update, models ->
         model =
           update.model || Map.get(models, update.subject_id) ||
-            EntityTypeCache.get_type(update.subject_id, entity_types_table)
+            EntityModelCache.get_model(update.subject_id, entity_models_table)
 
         if model, do: Map.put(models, update.subject_id, model), else: models
       end)

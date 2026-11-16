@@ -109,7 +109,7 @@ defmodule EbbServer.HLCDriftValidationIntegrationTest do
             "method" => "replace",
             "data" => %{"type" => "lww", "value" => value, "hlc" => leaf_hlc}
           }
-        ] ++ entity_group_update(entity_id, "g_leaf_hlc", action_hlc)
+        ] ++ membership_update(entity_id, "g_leaf_hlc", action_hlc)
     }
   end
 

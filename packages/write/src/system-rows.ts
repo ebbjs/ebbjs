@@ -102,7 +102,7 @@ export const grantRowUpdate = (
 
 /**
  * `ebb/membership`: one entity filed in one group. The pair is immutable after
- * create and the row id is derived from it (`entityGroupId`), so a re-share is
+ * create and the row id is derived from it (`membershipRowId`), so a re-share is
  * idempotent.
  */
 export const membershipRowUpdate = (

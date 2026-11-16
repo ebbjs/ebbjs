@@ -60,7 +60,7 @@ const makeClient = (): Client =>
 /** A replica row: what the client's own writes fold into the replica. */
 type ReplicaRow = {
   readonly id: string;
-  readonly type: string;
+  readonly model: string;
   readonly data: {
     readonly fields: Record<
       string,
@@ -74,9 +74,9 @@ type ReplicaRow = {
   readonly last_gsn: number;
 };
 
-const mkRow = (id: string, type: string, fields: Record<string, unknown>): ReplicaRow => ({
+const mkRow = (id: string, model: string, fields: Record<string, unknown>): ReplicaRow => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [
@@ -132,7 +132,7 @@ const seedRow = async (
       ? Object.entries(row.data.fields).map(([field, value]) => ({
           id: `u_seed_${seedPosition}_${field}`,
           subject_id: row.id,
-          component: componentName(row.type, field),
+          component: componentName(row.model, field),
           method: "replace" as const,
           data: value,
         }))

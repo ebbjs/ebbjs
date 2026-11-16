@@ -1,7 +1,7 @@
-defmodule EbbServer.Storage.GroupCacheTest do
+defmodule EbbServer.Storage.GrantCacheTest do
   use ExUnit.Case, async: false
 
-  alias EbbServer.Storage.GroupCache
+  alias EbbServer.Storage.GrantCache
 
   defp with_isolated_cache do
     table_name = :"test_gm_#{System.unique_integer([:positive])}"
@@ -10,18 +10,18 @@ defmodule EbbServer.Storage.GroupCacheTest do
     cache_name = :"test_gc_#{System.unique_integer([:positive])}"
 
     {:ok, _pid} =
-      GroupCache.start_link(
+      GrantCache.start_link(
         name: cache_name,
         table: table_name,
-        group_members_by_id: by_id_name,
-        group_members_by_group: by_group_name
+        grants_by_id: by_id_name,
+        grants_by_group: by_group_name
       )
 
     on_exit(fn ->
-      GroupCache.reset(
-        group_members: table_name,
-        group_members_by_id: by_id_name,
-        group_members_by_group: by_group_name
+      GrantCache.reset(
+        grants: table_name,
+        grants_by_id: by_id_name,
+        grants_by_group: by_group_name
       )
     end)
 
@@ -35,23 +35,23 @@ defmodule EbbServer.Storage.GroupCacheTest do
 
   defp cache_opts(%{table: table, by_id: by_id, by_group: by_group}) do
     [
-      group_members: table,
-      group_members_by_id: by_id,
-      group_members_by_group: by_group
+      grants: table,
+      grants_by_id: by_id,
+      grants_by_group: by_group
     ]
   end
 
-  describe "put_group_member/2" do
+  describe "put_grant/2" do
     test "stores group membership entry" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
-      assert GroupCache.get_actor_groups("a_1", ctx.table) == [
+      assert GrantCache.get_actor_groups("a_1", ctx.table) == [
                %{group_id: "g_1", permissions: ["todo.create"]}
              ]
     end
@@ -60,13 +60,13 @@ defmodule EbbServer.Storage.GroupCacheTest do
       ctx = with_isolated_cache()
 
       assert {:error, :nil_values_not_allowed} =
-               GroupCache.put_group_member(
+               GrantCache.put_grant(
                  %{id: nil, actor_id: "a_1", group_id: "g_1"},
                  cache_opts(ctx)
                )
 
       assert {:error, :nil_values_not_allowed} =
-               GroupCache.put_group_member(
+               GrantCache.put_grant(
                  %{id: "gm_1", actor_id: nil, group_id: "g_1"},
                  cache_opts(ctx)
                )
@@ -76,45 +76,45 @@ defmodule EbbServer.Storage.GroupCacheTest do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_move", actor_id: "a_1", group_id: "g_1", permissions: ["todo.read"]},
           cache_opts(ctx)
         )
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_move", actor_id: "a_1", group_id: "g_2", permissions: ["todo.read"]},
           cache_opts(ctx)
         )
 
-      assert GroupCache.get_group_member("gm_move", ctx.by_id).group_id == "g_2"
+      assert GrantCache.get_grant("gm_move", ctx.by_id).group_id == "g_2"
 
-      assert GroupCache.get_actor_groups("a_1", ctx.table) == [
+      assert GrantCache.get_actor_groups("a_1", ctx.table) == [
                %{group_id: "g_2", permissions: ["todo.read"]}
              ]
 
-      assert GroupCache.group_member_ids("g_1", ctx.by_group) == []
-      assert GroupCache.group_member_ids("g_2", ctx.by_group) == ["gm_move"]
+      assert GrantCache.grant_ids("g_1", ctx.by_group) == []
+      assert GrantCache.grant_ids("g_2", ctx.by_group) == ["gm_move"]
     end
 
     test "a re-put that changes the actor drops the old primary entry" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_2", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
-      assert GroupCache.get_actor_groups("a_1", ctx.table) == []
-      assert GroupCache.get_permissions("a_1", "g_1", ctx.table) == nil
-      assert GroupCache.get_permissions("a_2", "g_1", ctx.table) == ["todo.create"]
+      assert GrantCache.get_actor_groups("a_1", ctx.table) == []
+      assert GrantCache.get_permissions("a_1", "g_1", ctx.table) == nil
+      assert GrantCache.get_permissions("a_2", "g_1", ctx.table) == ["todo.create"]
     end
   end
 
@@ -122,46 +122,46 @@ defmodule EbbServer.Storage.GroupCacheTest do
     test "returns empty list when actor has no groups" do
       ctx = with_isolated_cache()
 
-      assert GroupCache.get_actor_groups("unknown", ctx.table) == []
+      assert GrantCache.get_actor_groups("unknown", ctx.table) == []
     end
 
     test "returns empty list when table not found" do
       with_isolated_cache()
 
-      assert GroupCache.get_actor_groups("a_1", []) == []
+      assert GrantCache.get_actor_groups("a_1", []) == []
     end
 
     test "returns multiple groups for actor" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_2", actor_id: "a_1", group_id: "g_2", permissions: ["post.create"]},
           cache_opts(ctx)
         )
 
-      groups = GroupCache.get_actor_groups("a_1", ctx.table)
+      groups = GrantCache.get_actor_groups("a_1", ctx.table)
       assert length(groups) == 2
     end
   end
 
-  describe "get_group_member/2" do
+  describe "get_grant/2" do
     test "returns membership entry by member id" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
-      entry = GroupCache.get_group_member("gm_1", ctx.by_id)
+      entry = GrantCache.get_grant("gm_1", ctx.by_id)
       assert entry.id == "gm_1"
       assert entry.actor_id == "a_1"
       assert entry.group_id == "g_1"
@@ -171,7 +171,7 @@ defmodule EbbServer.Storage.GroupCacheTest do
     test "returns nil for unknown member id" do
       ctx = with_isolated_cache()
 
-      assert GroupCache.get_group_member("unknown", ctx.by_id) == nil
+      assert GrantCache.get_grant("unknown", ctx.by_id) == nil
     end
   end
 
@@ -180,7 +180,7 @@ defmodule EbbServer.Storage.GroupCacheTest do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{
             id: "gm_1",
             actor_id: "a_1",
@@ -190,7 +190,7 @@ defmodule EbbServer.Storage.GroupCacheTest do
           cache_opts(ctx)
         )
 
-      assert GroupCache.get_permissions("a_1", "g_1", ctx.table) == [
+      assert GrantCache.get_permissions("a_1", "g_1", ctx.table) == [
                "todo.create",
                "todo.update"
              ]
@@ -199,72 +199,72 @@ defmodule EbbServer.Storage.GroupCacheTest do
     test "returns nil for non-member" do
       ctx = with_isolated_cache()
 
-      assert GroupCache.get_permissions("a_1", "g_nonexistent", ctx.table) == nil
+      assert GrantCache.get_permissions("a_1", "g_nonexistent", ctx.table) == nil
     end
 
     test "returns nil gracefully when table not found" do
       with_isolated_cache()
 
-      assert GroupCache.get_permissions("a_1", "g_1", []) == nil
+      assert GrantCache.get_permissions("a_1", "g_1", []) == nil
     end
   end
 
-  describe "delete_group_member/2" do
+  describe "delete_grant/2" do
     test "removes group membership entry from every table" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
-      assert GroupCache.get_actor_groups("a_1", ctx.table) != []
-      assert GroupCache.get_group_member("gm_1", ctx.by_id) != nil
-      assert GroupCache.group_member_ids("g_1", ctx.by_group) == ["gm_1"]
+      assert GrantCache.get_actor_groups("a_1", ctx.table) != []
+      assert GrantCache.get_grant("gm_1", ctx.by_id) != nil
+      assert GrantCache.grant_ids("g_1", ctx.by_group) == ["gm_1"]
 
-      :ok = GroupCache.delete_group_member("gm_1", cache_opts(ctx))
+      :ok = GrantCache.delete_grant("gm_1", cache_opts(ctx))
 
-      assert GroupCache.get_actor_groups("a_1", ctx.table) == []
-      assert GroupCache.get_group_member("gm_1", ctx.by_id) == nil
-      assert GroupCache.group_member_ids("g_1", ctx.by_group) == []
+      assert GrantCache.get_actor_groups("a_1", ctx.table) == []
+      assert GrantCache.get_grant("gm_1", ctx.by_id) == nil
+      assert GrantCache.grant_ids("g_1", ctx.by_group) == []
     end
   end
 
-  describe "group_member_ids/2" do
+  describe "grant_ids/2" do
     test "enumerates every member row scoping to a group" do
       ctx = with_isolated_cache()
 
       for {id, group_id} <- [{"gm_1", "g_1"}, {"gm_2", "g_1"}, {"gm_3", "g_2"}] do
         :ok =
-          GroupCache.put_group_member(
+          GrantCache.put_grant(
             %{id: id, actor_id: "a_1", group_id: group_id, permissions: ["todo.create"]},
             cache_opts(ctx)
           )
       end
 
-      assert Enum.sort(GroupCache.group_member_ids("g_1", ctx.by_group)) == ["gm_1", "gm_2"]
-      assert GroupCache.group_member_ids("g_2", ctx.by_group) == ["gm_3"]
-      assert GroupCache.group_member_ids("unknown", ctx.by_group) == []
+      assert Enum.sort(GrantCache.grant_ids("g_1", ctx.by_group)) == ["gm_1", "gm_2"]
+      assert GrantCache.grant_ids("g_2", ctx.by_group) == ["gm_3"]
+      assert GrantCache.grant_ids("unknown", ctx.by_group) == []
     end
 
     test "a re-put that moves a row drops the stale by-group entry" do
       ctx = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_1", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_1", actor_id: "a_1", group_id: "g_2", permissions: ["todo.create"]},
           cache_opts(ctx)
         )
 
-      assert GroupCache.group_member_ids("g_1", ctx.by_group) == []
-      assert GroupCache.group_member_ids("g_2", ctx.by_group) == ["gm_1"]
+      assert GrantCache.grant_ids("g_1", ctx.by_group) == []
+      assert GrantCache.grant_ids("g_2", ctx.by_group) == ["gm_1"]
     end
   end
 
@@ -276,18 +276,18 @@ defmodule EbbServer.Storage.GroupCacheTest do
       cache_b = with_isolated_cache()
 
       :ok =
-        GroupCache.put_group_member(
+        GrantCache.put_grant(
           %{id: "gm_iso", actor_id: "a_1", group_id: "g_1", permissions: ["todo.read"]},
           cache_opts(cache_a)
         )
 
-      assert GroupCache.get_actor_groups("a_1", cache_a.table) != []
-      assert GroupCache.get_group_member("gm_iso", cache_a.by_id) != nil
-      assert GroupCache.group_member_ids("g_1", cache_a.by_group) == ["gm_iso"]
+      assert GrantCache.get_actor_groups("a_1", cache_a.table) != []
+      assert GrantCache.get_grant("gm_iso", cache_a.by_id) != nil
+      assert GrantCache.grant_ids("g_1", cache_a.by_group) == ["gm_iso"]
 
-      assert GroupCache.get_actor_groups("a_1", cache_b.table) == []
-      assert GroupCache.get_group_member("gm_iso", cache_b.by_id) == nil
-      assert GroupCache.group_member_ids("g_1", cache_b.by_group) == []
+      assert GrantCache.get_actor_groups("a_1", cache_b.table) == []
+      assert GrantCache.get_grant("gm_iso", cache_b.by_id) == nil
+      assert GrantCache.grant_ids("g_1", cache_b.by_group) == []
     end
   end
 end

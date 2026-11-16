@@ -1,23 +1,23 @@
 defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @moduledoc """
   The planned future state of the system caches, plus the projections
-  `EntityIndex` needs to resolve a successor batch against it.
+  `EntityScope` needs to resolve a successor batch against it.
 
-  `rows` stores one entry per touched `{cache, id}`. `entity_group_ids`
-  inverts the `entityGroup` rows so an entity's groups can be resolved
-  without scanning the whole overlay, and `entity_group_entities` keeps
+  `rows` stores one entry per touched `{cache, id}`. `membership_ids`
+  inverts the `membership` rows so an entity's groups can be resolved
+  without scanning the whole overlay, and `group_entity_ids` keeps
   the entity a deleted membership belonged to. Treat the struct as
-  opaque: read it through `fetch/3`, `entity_groups/3`, and
+  opaque: read it through `fetch/3`, `memberships/3`, and
   `entity_for_membership/2`.
   """
 
   alias __MODULE__, as: Overlay
 
   @type cache ::
-          :group_members_by_id
-          | :entity_groups_by_id
+          :grants_by_id
+          | :memberships_by_id
           | :relationships_by_id
-          | :entity_types
+          | :entity_models
           | :group_apps
 
   @type cache_key :: {cache(), String.t()}
@@ -25,11 +25,11 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
 
   @type t :: %__MODULE__{
           rows: %{optional(cache_key()) => row()},
-          entity_group_ids: %{optional(String.t()) => MapSet.t(String.t())},
-          entity_group_entities: %{optional(String.t()) => String.t()}
+          membership_ids: %{optional(String.t()) => MapSet.t(String.t())},
+          group_entity_ids: %{optional(String.t()) => String.t()}
         }
 
-  defstruct rows: %{}, entity_group_ids: %{}, entity_group_entities: %{}
+  defstruct rows: %{}, membership_ids: %{}, group_entity_ids: %{}
 
   @doc "An empty overlay."
   @spec empty() :: t()
@@ -51,14 +51,14 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @doc """
   Returns the groups an entity would have after the overlay is applied.
 
-  The cached entries are the ones `EntityGroupCache` holds for the same
+  The cached entries are the ones `MembershipCache` holds for the same
   entity. Any membership id the overlay touches replaces its cached row;
   an untouched entity returns `:error` so the caller reads the cache
   directly.
   """
-  @spec entity_groups(t(), String.t(), [map()]) :: {:ok, [String.t()]} | :error
-  def entity_groups(%Overlay{} = overlay, entity_id, cached_entries) do
-    case Map.fetch(overlay.entity_group_ids, entity_id) do
+  @spec memberships(t(), String.t(), [map()]) :: {:ok, [String.t()]} | :error
+  def memberships(%Overlay{} = overlay, entity_id, cached_entries) do
+    case Map.fetch(overlay.membership_ids, entity_id) do
       :error -> :error
       {:ok, membership_ids} -> {:ok, merged_groups(overlay, membership_ids, cached_entries)}
     end
@@ -77,7 +77,7 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   end
 
   defp planned_row(overlay, membership_id) do
-    case Map.fetch(overlay.rows, {:entity_groups_by_id, membership_id}) do
+    case Map.fetch(overlay.rows, {:memberships_by_id, membership_id}) do
       {:ok, %{} = row} -> [row]
       _ -> []
     end
@@ -93,25 +93,25 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @spec group_resolution_affected?(t()) :: boolean()
   def group_resolution_affected?(%Overlay{rows: rows}) do
     Enum.any?(Map.keys(rows), fn
-      {:group_members_by_id, _id} -> true
-      {:entity_groups_by_id, _id} -> true
+      {:grants_by_id, _id} -> true
+      {:memberships_by_id, _id} -> true
       {:relationships_by_id, _id} -> true
       _ -> false
     end)
   end
 
-  @doc "The entity a touched `entityGroup` row belongs to, alive or deleted."
+  @doc "The entity a touched `membership` row belongs to, alive or deleted."
   @spec entity_for_membership(t(), String.t()) :: String.t() | nil
   def entity_for_membership(%Overlay{} = overlay, membership_id) do
-    case Map.fetch(overlay.rows, {:entity_groups_by_id, membership_id}) do
+    case Map.fetch(overlay.rows, {:memberships_by_id, membership_id}) do
       {:ok, %{} = row} -> field(row, :entity_id)
-      _ -> Map.get(overlay.entity_group_entities, membership_id)
+      _ -> Map.get(overlay.group_entity_ids, membership_id)
     end
   end
 
   @doc "Puts a row or tombstone and maintains the entity-membership projection."
   @spec put(t(), cache_key(), row()) :: t()
-  def put(%Overlay{} = overlay, {:entity_groups_by_id, id} = key, %{} = row) do
+  def put(%Overlay{} = overlay, {:memberships_by_id, id} = key, %{} = row) do
     overlay = drop_entity_membership(overlay, id)
     overlay = %{overlay | rows: Map.put(overlay.rows, key, row)}
     add_entity_membership(overlay, id, field(row, :entity_id))
@@ -121,12 +121,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     %{overlay | rows: Map.put(overlay.rows, key, value)}
   end
 
-  @doc "Tombstones an `entityGroup` row and records the entity it belonged to."
-  @spec delete_entity_group(t(), String.t(), String.t() | nil) :: t()
-  def delete_entity_group(%Overlay{} = overlay, id, entity_id \\ nil) do
+  @doc "Tombstones an `membership` row and records the entity it belonged to."
+  @spec delete_membership(t(), String.t(), String.t() | nil) :: t()
+  def delete_membership(%Overlay{} = overlay, id, entity_id \\ nil) do
     entity_id = entity_id || entity_for_membership(overlay, id)
     overlay = drop_entity_membership(overlay, id)
-    overlay = %{overlay | rows: Map.put(overlay.rows, {:entity_groups_by_id, id}, :deleted)}
+    overlay = %{overlay | rows: Map.put(overlay.rows, {:memberships_by_id, id}, :deleted)}
     add_entity_membership(overlay, id, entity_id)
   end
 
@@ -134,12 +134,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @spec merge(t(), t()) :: t()
   def merge(%Overlay{} = base, %Overlay{} = overlay) do
     rows = Map.merge(base.rows, overlay.rows)
-    entities = Map.merge(base.entity_group_entities, overlay.entity_group_entities)
+    entities = Map.merge(base.group_entity_ids, overlay.group_entity_ids)
 
     Enum.reduce(entities, %Overlay{rows: rows}, fn {id, entity_id}, merged ->
       merged = %{
         merged
-        | entity_group_entities: Map.put(merged.entity_group_entities, id, entity_id)
+        | group_entity_ids: Map.put(merged.group_entity_ids, id, entity_id)
       }
 
       add_entity_membership(merged, id, entity_id)
@@ -152,17 +152,17 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
         overlay
 
       entity_id ->
-        ids = Map.get(overlay.entity_group_ids, entity_id, MapSet.new()) |> MapSet.delete(id)
+        ids = Map.get(overlay.membership_ids, entity_id, MapSet.new()) |> MapSet.delete(id)
 
-        entity_group_ids =
+        membership_ids =
           if MapSet.size(ids) == 0,
-            do: Map.delete(overlay.entity_group_ids, entity_id),
-            else: Map.put(overlay.entity_group_ids, entity_id, ids)
+            do: Map.delete(overlay.membership_ids, entity_id),
+            else: Map.put(overlay.membership_ids, entity_id, ids)
 
         %{
           overlay
-          | entity_group_ids: entity_group_ids,
-            entity_group_entities: Map.delete(overlay.entity_group_entities, id)
+          | membership_ids: membership_ids,
+            group_entity_ids: Map.delete(overlay.group_entity_ids, id)
         }
     end
   end
@@ -170,12 +170,12 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   defp add_entity_membership(overlay, _id, nil), do: overlay
 
   defp add_entity_membership(%Overlay{} = overlay, id, entity_id) do
-    ids = Map.get(overlay.entity_group_ids, entity_id, MapSet.new()) |> MapSet.put(id)
+    ids = Map.get(overlay.membership_ids, entity_id, MapSet.new()) |> MapSet.put(id)
 
     %{
       overlay
-      | entity_group_ids: Map.put(overlay.entity_group_ids, entity_id, ids),
-        entity_group_entities: Map.put(overlay.entity_group_entities, id, entity_id)
+      | membership_ids: Map.put(overlay.membership_ids, entity_id, ids),
+        group_entity_ids: Map.put(overlay.group_entity_ids, id, entity_id)
     }
   end
 

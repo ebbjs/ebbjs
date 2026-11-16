@@ -25,7 +25,7 @@ defmodule EbbServer.Sync.Router do
     - `POST /sync/presence` — broadcast ephemeral presence data on an entity.
     - `GET /entities/:id` — fetch a materialized entity (permission-checked;
       a non-member gets `404`, same as a missing entity).
-    - `POST /entities/query` — query entities by type with `json_extract`
+    - `POST /entities/query` — query entities by model with `json_extract`
       filter and permission JOINs (used by `ctx.query()`).
     - `POST /functions/:name` — invoke a deployed function. The `/functions`
       paths exist only while the boot-time functions flag is on, in which case
@@ -104,11 +104,11 @@ defmodule EbbServer.Sync.Router do
   alias EbbServer.Storage.{
     ActionSubmission,
     CacheTables,
-    EntityIndex,
+    EntityScope,
     EntityStore,
     EntityView,
+    GrantCache,
     GroupAppsCache,
-    GroupCache,
     PermissionChecker,
     QueryFilter,
     WatermarkTracker
@@ -296,13 +296,13 @@ defmodule EbbServer.Sync.Router do
     actor_id = conn.assigns.actor.id
 
     case Jason.decode(body) do
-      {:ok, %{"type" => type} = payload} when is_binary(type) and type != "" ->
-        run_query(conn, actor_id, type, payload)
+      {:ok, %{"model" => model} = payload} when is_binary(model) and model != "" ->
+        run_query(conn, actor_id, model, payload)
 
       {:ok, _} ->
         send_json(conn, 422, %{
           "error" => "validation_failed",
-          "details" => "type is required and must be a non-empty string"
+          "details" => "model is required and must be a non-empty string"
         })
 
       {:error, _} ->
@@ -310,8 +310,8 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
-  defp run_query(conn, actor_id, type, payload) do
-    case EntityStore.query(type, payload["filter"], actor_id, query_opts(payload)) do
+  defp run_query(conn, actor_id, model, payload) do
+    case EntityStore.query(model, payload["filter"], actor_id, query_opts(payload)) do
       {:ok, entities} ->
         send_json(conn, 200, Enum.map(entities, &EntityView.json/1))
 
@@ -359,7 +359,7 @@ defmodule EbbServer.Sync.Router do
         cursors = if is_map(payload["cursors"]), do: payload["cursors"], else: %{}
         _schema_version = payload["schema_version"]
 
-        groups = GroupCache.get_actor_groups(actor_id)
+        groups = GrantCache.get_actor_groups(actor_id)
         watermark = WatermarkTracker.committed_watermark()
 
         response = %{
@@ -527,7 +527,7 @@ defmodule EbbServer.Sync.Router do
       {:ok, %{"entity_id" => entity_id, "data" => data}}
       when is_binary(entity_id) and entity_id != "" ->
         group_ids =
-          EntityIndex.source_groups(entity_id, entity_groups: CacheTables.entity_groups())
+          EntityScope.source_groups(entity_id, memberships: CacheTables.memberships())
 
         member_group_ids = PermissionChecker.member_group_ids(group_ids, actor_id)
 
@@ -634,9 +634,9 @@ defmodule EbbServer.Sync.Router do
   def openapi_operation(:query_entities) do
     %{
       operationId: "queryEntities",
-      summary: "Query entities by type",
+      summary: "Query entities by model",
       description:
-        "Returns a list of entities matching the given type, with optional field filtering and " <>
+        "Returns a list of entities matching the given model, with optional field filtering and " <>
           "pagination. Results are ordered by creation HLC, then by entity ID, and each entity " <>
           "appears once.",
       tags: ["Entities"],
@@ -646,9 +646,9 @@ defmodule EbbServer.Sync.Router do
           "application/json" => %{
             schema: %OpenApiSpex.Schema{
               type: :object,
-              required: ["type"],
+              required: ["model"],
               properties: %{
-                type: %OpenApiSpex.Schema{type: :string, description: "Entity type to query"},
+                model: %OpenApiSpex.Schema{type: :string, description: "Committed model to query"},
                 filter: %OpenApiSpex.Schema{
                   type: :array,
                   nullable: true,
@@ -807,7 +807,7 @@ defmodule EbbServer.Sync.Router do
       summary: "List a group's entities as of a watermark",
       description:
         "Returns one page of the group's state at a resolution frontier: the group row, its " <>
-          "live groupMember rows, every live entityGroup row in the group, and the live " <>
+          "live grant rows, every live membership row in the group, and the live " <>
           "entities those rows name. Page with `cursor` until `has_more` is false, then tail " <>
           "the group from `watermark`. Entity objects are identical in shape to " <>
           "`GET /entities/{id}`.",
@@ -1113,10 +1113,10 @@ defmodule EbbServer.Sync.Router.OperationSchema do
   def entity do
     %OpenApiSpex.Schema{
       type: :object,
-      required: ["id", "type", "data", "created_hlc", "updated_hlc", "last_gsn"],
+      required: ["id", "model", "data", "created_hlc", "updated_hlc", "last_gsn"],
       properties: %{
         id: %OpenApiSpex.Schema{type: :string},
-        type: %OpenApiSpex.Schema{type: :string},
+        model: %OpenApiSpex.Schema{type: :string},
         data: %OpenApiSpex.Schema{
           type: :object,
           description: "Contains `fields` map of FieldValue entries"

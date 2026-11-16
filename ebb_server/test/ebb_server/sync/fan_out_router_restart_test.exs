@@ -229,7 +229,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "actor_id" => actor_id,
         "hlc" => hlc,
         "updates" =>
-          [todo_update(other_id, hlc)] ++ ActionHelpers.entity_group_update(other_id, g2, hlc)
+          [todo_update(other_id, hlc)] ++ ActionHelpers.membership_update(other_id, g2, hlc)
       }
 
       assert ActionHelpers.post_actions(
@@ -258,8 +258,8 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "hlc" => hlc,
         "updates" =>
           [todo_update(leaked_id, hlc)] ++
-            entity_group_put(eg_leak, leaked_id, g1, hlc) ++
-            entity_group_put(eg_other, other_id, g2, hlc)
+            membership_put(eg_leak, leaked_id, g1, hlc) ++
+            membership_put(eg_other, other_id, g2, hlc)
       }
 
       assert ActionHelpers.post_actions(
@@ -299,7 +299,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
   end
 
   # A membership is one atomic component, so the row is one Update.
-  defp entity_group_put(eg_id, entity_id, group_id, hlc) do
+  defp membership_put(eg_id, entity_id, group_id, hlc) do
     [
       %{
         "id" => "#{eg_id}_0",

@@ -9,7 +9,7 @@ import type { ActionLog, LoggedAction } from "../types/action-log";
  * - `actions` — Actions in append order; the entry at index `i` sits at
  *   log position `i + 1`, so positions are 1-based, contiguous, and stable
  *   across re-delivery of the same Action id
- * - `typeIndex` — maps model to set of entity IDs affected (for query optimization)
+ * - `modelIndex` — maps model to set of entity IDs affected (for query optimization)
  *
  * ## Materialization Flow
  * 1. Action received via `append()`
@@ -17,11 +17,11 @@ import type { ActionLog, LoggedAction } from "../types/action-log";
  * 3. EntityStore.materialize() replays actions for dirty entities
  *
  * ## Internal Helpers
- * - `updateTypeIndex()` — merges action's entity IDs into the type index, deduplicating
+ * - `updateTypeIndex()` — merges action's entity IDs into the model index, deduplicating
  */
 interface ActionLogState {
   actions: readonly Action[];
-  typeIndex: readonly (readonly [type: string, entityIds: readonly string[]])[];
+  modelIndex: readonly (readonly [type: string, entityIds: readonly string[]])[];
 }
 
 /** The model an id is already indexed under, or `undefined` when it is not. */
@@ -33,11 +33,11 @@ const modelOf = (index: Map<string, Set<string>>, entityId: string): string | un
 };
 
 const updateTypeIndex = (
-  typeIndex: readonly (readonly [string, readonly string[]])[],
+  modelIndex: readonly (readonly [string, readonly string[]])[],
   action: Action,
 ): (readonly [string, readonly string[]])[] => {
   const map = new Map<string, Set<string>>();
-  for (const [model, entityIds] of typeIndex) {
+  for (const [model, entityIds] of modelIndex) {
     map.set(model, new Set(entityIds));
   }
   for (const update of action.updates) {
@@ -61,7 +61,7 @@ const updateTypeIndex = (
 export const createMemoryActionLog = (): ActionLog => {
   let state: ActionLogState = {
     actions: [],
-    typeIndex: [],
+    modelIndex: [],
   };
 
   const append = async (action: Action): Promise<LoggedAction> => {
@@ -83,7 +83,7 @@ export const createMemoryActionLog = (): ActionLog => {
       actions: created
         ? [...state.actions, stored]
         : state.actions.map((candidate) => (candidate.id === action.id ? stored : candidate)),
-      typeIndex: updateTypeIndex(state.typeIndex, stored),
+      modelIndex: updateTypeIndex(state.modelIndex, stored),
     };
 
     return { action: stored, position, added };
@@ -122,7 +122,7 @@ export const createMemoryActionLog = (): ActionLog => {
     },
 
     async clear(): Promise<void> {
-      state = { actions: [], typeIndex: [] };
+      state = { actions: [], modelIndex: [] };
     },
   };
 };

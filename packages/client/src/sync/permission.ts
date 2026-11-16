@@ -14,7 +14,7 @@
  * rule through {@link resolveRule} and decide it through
  * {@link decideRule}, so they cannot disagree on the rule table. The
  * write path additionally unions the Action's in-flight bootstrap grant
- * and in-flight `entityGroup` puts, which a query over committed state
+ * and in-flight `membership` puts, which a query over committed state
  * cannot see; `can()` is correspondingly conservative and reports
  * `unknown` where it cannot resolve a subject.
  *
@@ -67,8 +67,11 @@ export type PermissionViolation =
  */
 export interface MissingPermissionViolation {
   readonly kind: "missing-permission";
-  /** The model the row is committed under. */
-  readonly model: string;
+  /**
+   * The permission's subject: the row's committed model for a user row, or
+   * the `ebb/*` component for a platform row.
+   */
+  readonly permissionSubject: string;
   readonly subjectId: string;
   /** The permission the actor lacked, e.g. `"todo.create"`. */
   readonly required: string;
@@ -101,7 +104,7 @@ export interface TypeMismatchViolation {
 export interface KeyMismatchViolation {
   readonly kind: "key-mismatch";
   /** The component whose key is immutable, e.g. `ebb/membership`. */
-  readonly model: string;
+  readonly component: string;
   readonly subjectId: string;
   /** The key field the write declared, e.g. `group_id`. */
   readonly field: string;
@@ -122,7 +125,7 @@ export interface KeyMismatchViolation {
 export interface SourceMismatchViolation {
   readonly kind: "source-mismatch";
   /** The component the write named, always `ebb/link`. */
-  readonly model: string;
+  readonly component: string;
   readonly subjectId: string;
   /** The source the write declared, i.e. the `source_id` component value. */
   readonly declaredSourceId: string;
@@ -163,7 +166,7 @@ const describeViolation = (violation: PermissionViolation): string => {
   const groups = violation.groupIds.length === 0 ? "no group" : violation.groupIds.join(", ");
   switch (violation.kind) {
     case "missing-permission":
-      return `${violation.model} ${violation.subjectId}: missing "${violation.required}" (checked: ${groups})`;
+      return `${violation.permissionSubject} ${violation.subjectId}: missing "${violation.required}" (checked: ${groups})`;
     case "type-mismatch":
       return (
         `${violation.model} ${violation.subjectId}: declared model "${violation.model}"` +
@@ -172,16 +175,16 @@ const describeViolation = (violation: PermissionViolation): string => {
       );
     case "source-mismatch":
       return (
-        `${violation.model} ${violation.subjectId}: declared source` +
+        `${violation.component} ${violation.subjectId}: declared source` +
         ` "${violation.declaredSourceId}" but the row is committed with source` +
         ` "${violation.committedSourceId}"; an ebb/link row cannot be re-pointed at another` +
         ` source (checked: ${groups})`
       );
     case "key-mismatch":
       return (
-        `${violation.model} ${violation.subjectId}: declared ${violation.field}` +
+        `${violation.component} ${violation.subjectId}: declared ${violation.field}` +
         ` "${violation.declaredValue}" but the row is committed with` +
-        ` "${violation.committedValue}"; ${violation.model} cannot be re-pointed (checked: ${groups})`
+        ` "${violation.committedValue}"; ${violation.component} cannot be re-pointed (checked: ${groups})`
       );
     default:
       return assertNever(violation);
@@ -215,7 +218,10 @@ const grantsPermission = (
  * must hold and the group set it is union-matched over.
  */
 interface ResolvedRule {
-  /** Permission namespace, e.g. `todo` for `todo.update`. */
+  /**
+   * The permission's subject: the row's committed model (`todo` for
+   * `todo.update`), or the `ebb/*` component for a platform row.
+   */
   readonly model: string;
   readonly verb: PermissionVerb;
   /** The permission string the actor must hold, `${model}.${verb}`. */
@@ -288,11 +294,11 @@ interface RuleInputs {
   readonly fieldValue: (name: string) => unknown;
   readonly exists: (id: string) => Promise<Entity | null>;
   /** The true model of an entity id, or `null` when it is not local. */
-  readonly resolveType: (id: string) => Promise<string | null>;
-  /** The entity's group set (its `entityGroup` memberships). */
+  readonly resolveModel: (id: string) => Promise<string | null>;
+  /** The entity's group set (its `membership` memberships). */
   readonly groupSetFor: (id: string) => Promise<readonly string[]>;
   /**
-   * The entity's **committed** group set: its local `entityGroup` rows,
+   * The entity's **committed** group set: its local `membership` rows,
    * never the puts riding in the same Action. The share rule reads this,
    * because an entity the store has not filed yet is new to it and the
    * target gate stands alone (#623) — the server reads its caches the same
@@ -306,13 +312,13 @@ interface RuleInputs {
  * The storage-backed half of {@link RuleInputs}, shared by the write path
  * and the query path so a subject's `exists` / `readMembership` lookups
  * have one implementation. Callers supply `fieldValue` and override
- * `resolveType` / `groupSetFor` / `committedGroupSetFor` with their own
+ * `resolveModel` / `groupSetFor` / `committedGroupSetFor` with their own
  * source (the Action's in-flight context, or committed storage).
  */
 const storageInputs = (
   storage: StorageAdapter,
   fieldValue: (name: string) => unknown,
-): Omit<RuleInputs, "resolveType" | "groupSetFor" | "committedGroupSetFor"> => ({
+): Omit<RuleInputs, "resolveModel" | "groupSetFor" | "committedGroupSetFor"> => ({
   fieldValue,
   exists: (id) => storage.entities.get(id),
   readMembership: (membershipId) => readMembership(storage, membershipId),
@@ -336,7 +342,7 @@ const systemField = (writes: SubjectWrites, kind: EbbComponentKind, field: strin
 
 /**
  * The platform kind a stored row carries, or `null` for a user row. Every
- * platform row is an `ebb` row, so `row.type` cannot answer it.
+ * platform row is an `ebb` row, so `row.model` cannot answer it.
  */
 const platformKindOf = (row: Entity | null | undefined): EbbComponentKind | null => {
   if (row === null || row === undefined) return null;
@@ -448,20 +454,20 @@ async function resolveUserRule(
   const groupIds = await inputs.groupSetFor(subjectId);
   // No owners is the server's `missing_ownership`, not ours.
   if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
-  const committedModel = await inputs.resolveType(subjectId);
+  const committedModel = await inputs.resolveModel(subjectId);
   // A model is identity: the server refuses components naming a model
   // other than the one the id is committed under rather than falling back
   // to it, so neither may this pass allow it (#624).
   if (committedModel !== null && committedModel !== model) {
     return { kind: "refused", reason: "type-mismatch", committedModel, groupIds };
   }
-  const type = committedModel ?? model;
+  const resolved = committedModel ?? model;
   return {
     kind: "rule",
     rule: {
-      model: type,
+      model: resolved,
       verb,
-      required: `${type}.${verb}`,
+      required: `${resolved}.${verb}`,
       groupIds,
       cachedOnly: false,
     },
@@ -540,14 +546,14 @@ async function resolveMembershipRule(
   if (verb === "delete") {
     const membership = await inputs.readMembership(subjectId);
     if (membership === null) return { kind: "unresolved", reason: "entity-unknown" };
-    const type = await inputs.resolveType(membership.entityId);
-    if (type === null) return { kind: "unresolved", reason: "entity-unknown" };
+    const model = await inputs.resolveModel(membership.entityId);
+    if (model === null) return { kind: "unresolved", reason: "entity-unknown" };
     return {
       kind: "rule",
       rule: {
-        model: type,
+        model,
         verb: "update",
-        required: `${type}.update`,
+        required: `${model}.update`,
         groupIds: await inputs.groupSetFor(membership.entityId),
         cachedOnly: true,
       },
@@ -571,14 +577,14 @@ async function resolveMembershipRule(
   if (declaredGroupId === null || declaredEntityId === null) {
     return { kind: "unresolved", reason: "entity-unknown" };
   }
-  const type = await inputs.resolveType(declaredEntityId);
-  if (type === null) return { kind: "unresolved", reason: "entity-unknown" };
+  const model = await inputs.resolveModel(declaredEntityId);
+  if (model === null) return { kind: "unresolved", reason: "entity-unknown" };
 
   const rules: ResolvedRule[] = [
     {
-      model: type,
+      model,
       verb: "create",
-      required: `${type}.create`,
+      required: `${model}.create`,
       groupIds: [declaredGroupId],
       cachedOnly: true,
     },
@@ -586,9 +592,9 @@ async function resolveMembershipRule(
   const sourceGroups = await inputs.committedGroupSetFor(declaredEntityId);
   if (sourceGroups.length > 0) {
     rules.push({
-      model: type,
+      model,
       verb: "update",
-      required: `${type}.update`,
+      required: `${model}.update`,
       groupIds: sourceGroups,
       cachedOnly: true,
     });
@@ -633,16 +639,16 @@ async function resolveLinkRule(
     if (declaredSourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
     // The permission model follows the source entity's true model,
     // never the wire `type` label, which is forgeable (#323).
-    const type = await inputs.resolveType(declaredSourceId);
-    if (type === null) return { kind: "unresolved", reason: "entity-unknown" };
+    const model = await inputs.resolveModel(declaredSourceId);
+    if (model === null) return { kind: "unresolved", reason: "entity-unknown" };
     const groupIds = await inputs.groupSetFor(declaredSourceId);
     if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
     return {
       kind: "rule",
       rule: {
-        model: type,
+        model,
         verb: "update",
-        required: `${type}.update`,
+        required: `${model}.update`,
         groupIds,
         cachedOnly: false,
       },
@@ -703,7 +709,7 @@ const ruleHolds = (
 
 /** The subject a decision is about, in the violation's vocabulary. */
 interface DecisionSubject {
-  readonly model: string;
+  readonly permissionSubject: string;
   readonly subjectId: string;
 }
 
@@ -712,7 +718,7 @@ const missingPermission = (
   rule: ResolvedRule,
 ): MissingPermissionViolation => ({
   kind: "missing-permission",
-  model: subject.model,
+  permissionSubject: subject.permissionSubject,
   subjectId: subject.subjectId,
   required: rule.required,
   groupIds: rule.groupIds,
@@ -727,7 +733,7 @@ const refusedViolation = (
     case "type-mismatch":
       return {
         kind: "type-mismatch",
-        model: subject.model,
+        model: subject.permissionSubject,
         subjectId: subject.subjectId,
         committedModel: resolution.committedModel,
         groupIds: resolution.groupIds,
@@ -735,7 +741,7 @@ const refusedViolation = (
     case "source-mismatch":
       return {
         kind: "source-mismatch",
-        model: subject.model,
+        component: subject.permissionSubject,
         subjectId: subject.subjectId,
         declaredSourceId: resolution.declaredSourceId,
         committedSourceId: resolution.committedSourceId,
@@ -744,7 +750,7 @@ const refusedViolation = (
     case "key-mismatch":
       return {
         kind: "key-mismatch",
-        model: resolution.component,
+        component: resolution.component,
         subjectId: subject.subjectId,
         field: resolution.field,
         declaredValue: resolution.declaredValue,
@@ -912,9 +918,9 @@ const collectActionViolations = async (
     bootstrap.set(groupId, asStringArray(systemField(writes, "grant", "permissions")));
   }
 
-  const resolveType = async (entityId: string): Promise<string | null> => {
+  const resolveModel = async (entityId: string): Promise<string | null> => {
     const existing = await exists(entityId);
-    if (existing !== null) return existing.type;
+    if (existing !== null) return existing.model;
     return createdModels.get(entityId) ?? null;
   };
 
@@ -966,7 +972,7 @@ const collectActionViolations = async (
     // A platform write is atomic, so its `replace` cannot state the verb —
     // existence answers it, and a delete's kind is its stored row's.
     const row = writes.model === undefined || writtenKind !== null ? await exists(subjectId) : null;
-    const model = writes.model ?? row?.type;
+    const model = writes.model ?? row?.model;
     // A delete of a row the store does not know names no model: the server
     // resolves it from its own index, and this pass has nothing to say.
     if (model === undefined) return null;
@@ -987,7 +993,7 @@ const collectActionViolations = async (
       verb,
       {
         ...storageInputs(ctx.storage, (name) => subjectField(writes, name)),
-        resolveType,
+        resolveModel,
         groupSetFor,
         committedGroupSetFor: async (entityId) =>
           (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
@@ -997,7 +1003,7 @@ const collectActionViolations = async (
     const decision = decideRule(
       resolution,
       // A platform row's permission subject is its component, not `ebb`.
-      { model: kind === null ? model : EBB_COMPONENTS[kind], subjectId },
+      { permissionSubject: kind === null ? model : EBB_COMPONENTS[kind], subjectId },
       permissionsFor,
     );
     switch (decision.kind) {
@@ -1099,7 +1105,7 @@ export async function queryActorPermission(
     // The global form has no single subject; `"*"` marks "the actor".
     violation: {
       kind: "missing-permission",
-      model,
+      permissionSubject: model,
       subjectId: "*",
       required: `${model}.${verb}`,
       groupIds,
@@ -1139,12 +1145,12 @@ export async function queryEntityPermission(
   );
   const resolution = await resolveRule(
     kind,
-    row.type,
+    row.model,
     id,
     verb,
     {
       ...inputs,
-      resolveType: async (entityId) => (await inputs.exists(entityId))?.type ?? null,
+      resolveModel: async (entityId) => (await inputs.exists(entityId))?.model ?? null,
       // The query path sees committed state only, so both reads agree.
       groupSetFor: async (entityId) =>
         (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
@@ -1155,7 +1161,7 @@ export async function queryEntityPermission(
   );
   const decision = decideRule(
     resolution,
-    { model: kind === null ? row.type : EBB_COMPONENTS[kind], subjectId: id },
+    { permissionSubject: kind === null ? row.model : EBB_COMPONENTS[kind], subjectId: id },
     permissionsFor,
   );
   switch (decision.kind) {

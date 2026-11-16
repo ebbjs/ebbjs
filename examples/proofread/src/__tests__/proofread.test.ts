@@ -44,9 +44,9 @@ const fakeHost = (view: EntityResponse | null): FakeHost => {
 };
 
 /** A stored row as the entity endpoint returns it: `data.fields` are wire leaves. */
-const hostRow = (id: string, type: string, fields: Record<string, unknown>): EntityResponse => ({
+const hostRow = (id: string, model: string, fields: Record<string, unknown>): EntityResponse => ({
   id,
-  type,
+  model,
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [

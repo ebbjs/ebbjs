@@ -56,12 +56,14 @@ import type { IndexRows } from "../internal/reverse-index";
  * #804): the persisted record gained the version each component was
  * materialized at. Version 14 moves the four system types onto `ebb/*`
  * components (issue #805): an adjacency key's middle segment is the component
- * name and a stored system row is one atomic component value. Neither shape can
- * be read out of the previous one, so a database below either version is
- * discarded at open. Bump this when adding or changing object stores, or when
- * a persisted row shape changes.
+ * name and a stored system row is one atomic component value. Version 15
+ * renames a row's committed model from `type` to `model`, which moves the
+ * `entities` index, the `dirty` index, and the `replica` key with it. None of
+ * these shapes can be read out of the previous one, so a database below any of
+ * them is discarded at open. Bump this when adding or changing object stores,
+ * or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 14;
+export const EBB_SCHEMA_VERSION = 15;
 
 /**
  * The version at which the collaborative-text cell format changed
@@ -90,6 +92,14 @@ const COMPONENT_VERSION_RESET_VERSION = 13;
  * entries from the old ones, so a database below it is reset at open.
  */
 const SYSTEM_COMPONENT_RESET_VERSION = 14;
+
+/**
+ * The version at which a row's committed model moved from `type` to `model`,
+ * taking the `entities` index, the `dirty` index, and the `replica` key with
+ * it. The old keys cannot be read as the new ones, so a database below it is
+ * reset at open.
+ */
+const MODEL_KEY_RESET_VERSION = 15;
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -145,7 +155,7 @@ export interface EbbDBSchema extends DBSchema {
     value: StoredEntity;
     indexes: {
       /** The row's model; the query and listing source. */
-      type: string;
+      model: string;
       /** Every `<model>/<field>` the row carries, as a multiEntry index. */
       components: string;
     };
@@ -170,8 +180,8 @@ export interface EbbDBSchema extends DBSchema {
   };
   dirty: {
     key: string;
-    value: { entityId: string; entityType: string };
-    indexes: { entityType: string };
+    value: { entityId: string; model: string };
+    indexes: { model: string };
   };
   cursors: {
     key: string;
@@ -201,7 +211,7 @@ export interface EbbDBSchema extends DBSchema {
   };
   /**
    * The persisted materialized replica: one row per entity, keyed by
-   * `[type, id]` so entity rows keep their natural shape and a full
+   * `[model, id]` so entity rows keep their natural shape and a full
    * `getAll` read is append-order independent.
    */
   replica: {
@@ -256,15 +266,17 @@ export const createEbbStores = (
   // Incompatible persisted shapes are discarded instead of migrated: the text
   // cell format (v9), the denormalized component names (v11), the conflict
   // component holds (v12), the replica record's component versions (v13), and
-  // the four system types' `ebb/*` rows and adjacency keys (v14). Each gate is
-  // declared explicitly, so a later version bump must decide its own migration
-  // rather than inheriting one of these resets.
+  // the four system types' `ebb/*` rows and adjacency keys (v14), and the
+  // committed model's `type` → `model` key (v15). Each gate is declared
+  // explicitly, so a later version bump must decide its own migration rather
+  // than inheriting one of these resets.
   const resetVersions = [
     TEXT_CELL_FORMAT_RESET_VERSION,
     COMPONENT_INDEX_RESET_VERSION,
     COMPONENT_HOLD_RESET_VERSION,
     COMPONENT_VERSION_RESET_VERSION,
     SYSTEM_COMPONENT_RESET_VERSION,
+    MODEL_KEY_RESET_VERSION,
   ];
   const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
   if (reset) {
@@ -291,7 +303,7 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("entities")) {
     const store = database.createObjectStore("entities", { keyPath: "id" });
-    if (!store.indexNames.contains("type")) store.createIndex("type", "type");
+    if (!store.indexNames.contains("model")) store.createIndex("model", "model");
     // multiEntry on `components`: each element of the denormalized
     // component-name array becomes its own index entry, so a row carrying
     // `todo/title` and `todo/status` is returned by a lookup for either.
@@ -302,7 +314,7 @@ export const createEbbStores = (
   }
   if (!database.objectStoreNames.contains("dirty")) {
     const store = database.createObjectStore("dirty", { keyPath: "entityId" });
-    if (!store.indexNames.contains("entityType")) store.createIndex("entityType", "entityType");
+    if (!store.indexNames.contains("model")) store.createIndex("model", "model");
   }
   if (!database.objectStoreNames.contains("cursors")) {
     database.createObjectStore("cursors", { keyPath: "groupId" });
@@ -317,7 +329,7 @@ export const createEbbStores = (
     database.createObjectStore("sequence", { keyPath: "id" });
   }
   if (!database.objectStoreNames.contains("replica")) {
-    database.createObjectStore("replica", { keyPath: ["type", "id"] });
+    database.createObjectStore("replica", { keyPath: ["model", "id"] });
   }
   if (!database.objectStoreNames.contains("replicaCursor")) {
     database.createObjectStore("replicaCursor", { keyPath: "id" });

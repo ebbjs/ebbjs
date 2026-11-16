@@ -113,7 +113,7 @@ log(
     config.n -
     1 +
     config.n * config.refsPerPage
-  ).toLocaleString()} relationship rows, ${config.n.toLocaleString()} entityGroup rows, ` +
+  ).toLocaleString()} relationship rows, ${config.n.toLocaleString()} membership rows, ` +
     `${config.bodyBlocks}x${config.bodyChars}-char bodies`,
 );
 const generateStart = performance.now();
@@ -128,12 +128,12 @@ const store = createCountingStore(workspace.rows);
 // 1a. Footprint — JSON bytes of the held rows (independent of V8)
 // ---------------------------------------------------------------------------
 
-const rowsOfType = (type: string): readonly Entity[] =>
-  heldRows.filter((entity) => entity.type === type);
+const rowsOfModel = (type: string): readonly Entity[] =>
+  heldRows.filter((entity) => entity.model === type);
 
-const pageJson = jsonBytes(rowsOfType("page"));
+const pageJson = jsonBytes(rowsOfModel("page"));
 // Every platform row is an `ebb` row, so the component is what splits them out.
-const platformRows = heldRows.filter((entity) => entity.type === EBB_MODEL_NAME);
+const platformRows = heldRows.filter((entity) => entity.model === EBB_MODEL_NAME);
 const relationshipJson = jsonBytes(
   platformRows.filter((entity) => carriesComponent(entity, "link")),
 );
@@ -146,7 +146,7 @@ const metadataJson = pageJson + relationshipJson + groupJson;
 const bodyJson = workspace.bodyBytes * config.n;
 const workspaceJson = metadataJson + bodyJson;
 const recordBodyJson = jsonBytes(
-  workspace.record.entities.filter((entity) => entity.type === ON_DEMAND_TYPE),
+  workspace.record.entities.filter((entity) => entity.model === ON_DEMAND_TYPE),
 );
 
 // ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ if (stats.held !== workspace.counts.heldRows) {
   );
 }
 if (
-  stats.heldByType[ON_DEMAND_TYPE] !== undefined ||
+  stats.heldByModel[ON_DEMAND_TYPE] !== undefined ||
   replica.get(workspace.bodyIds[0]) !== undefined
 ) {
   throw new Error("self-check: an on-demand body is resident after load");
@@ -515,7 +515,7 @@ const equalityQuery: Query = {
 };
 const executor = createReplicaExecutor(replica);
 const titleOf = (entity: Entity): string => stringField(entity, "title") ?? "";
-const pageRowsHeld = stats.byType["page"] ?? 0;
+const pageRowsHeld = stats.byModel["page"] ?? 0;
 
 const searchCases: readonly ReadCase[] = [
   {
@@ -584,7 +584,7 @@ const pinnedFirstReads = store.snapshot().calls;
 await replica.open(primaryBody, bodyComponent);
 const pinnedReReads = store.snapshot().calls - pinnedFirstReads;
 replica.close(primaryBody, bodyComponent);
-const bodiesResidentAfterRelease = replica.stats().byType[ON_DEMAND_TYPE] ?? 0;
+const bodiesResidentAfterRelease = replica.stats().byModel[ON_DEMAND_TYPE] ?? 0;
 if (openReads !== 1) throw new Error(`windowed body self-check: cold open read ${openReads} rows`);
 if (pinnedReReads !== 0) {
   throw new Error(`windowed body self-check: a pinned re-open read ${pinnedReReads} rows`);
@@ -629,7 +629,7 @@ push(
 const footprintRows: readonly (readonly [string, number, number])[] = [
   ["`page` (title, icon, updated_at)", workspace.counts.pages, pageJson],
   ["`relationship` (parent + references)", workspace.counts.relationships, relationshipJson],
-  ["`entityGroup` + `group`", workspace.counts.entityGroups + workspace.counts.groups, groupJson],
+  ["`membership` + `group`", workspace.counts.memberships + workspace.counts.groups, groupJson],
   ["**held metadata subtotal**", workspace.counts.heldRows, metadataJson],
   [
     `\`${ON_DEMAND_TYPE}\` bodies (representative row × ${grouped(config.n)}, windowed)`,
@@ -670,7 +670,7 @@ push(
 const componentBytes = new Map<string, { rows: number; bytes: number }>();
 for (const row of heldRows) {
   for (const [field, value] of Object.entries(row.data.fields)) {
-    const component = componentName(row.type, field);
+    const component = componentName(row.model, field);
     if (!heldMetadata.holds(component)) continue;
     const bucket = componentBytes.get(component) ?? { rows: 0, bytes: 0 };
     bucket.rows += 1;
@@ -705,7 +705,7 @@ push(
   "Each rep runs in one measurement window, sampling `heapUsed` after two forced GCs at every",
   "step: the held rows allocated fresh (their own row objects, not the workspace's), then one",
   "`Map<id, row>` over exactly those rows, then a replica `load`ed over the same rows — so",
-  "**adjacency indices + type index = replica structures − base map** and **resident metadata",
+  "**adjacency indices + model index = replica structures − base map** and **resident metadata",
   "total = held rows + replica structures**, with the base map kept as the subtraction baseline",
   "and not added to the total. Every rep's rows, record, map, and replica stay pinned, so a",
   "later forced GC cannot reclaim an earlier rep's account.",
@@ -730,8 +730,8 @@ if (heapAccounts === null) {
     "| --- | ---: | ---: | ---: | ---: | ---: |",
     `| held rows (fresh row objects + the record's reference array) | ${mb(median(rowsAccount))} | ${mb(minOf(rowsAccount))} | ${mb(maxOf(rowsAccount))} | ${HEAP_REPS} | — |`,
     `| base map (\`Map<id, row>\` over the same rows — reference cost, not in the total) | ${mb(median(baseMapAccount))} | ${mb(minOf(baseMapAccount))} | ${mb(maxOf(baseMapAccount))} | ${HEAP_REPS} | — |`,
-    `| replica structures (its own base map + type index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
-    `| **adjacency indices + type index (replica structures − base map)** | **${mb(median(indicesAccount))}** | ${mb(minOf(indicesAccount))} | ${mb(maxOf(indicesAccount))} | ${HEAP_REPS} | — |`,
+    `| replica structures (its own base map + model index + both adjacency indices) | ${mb(median(replicaAccount))} | ${mb(minOf(replicaAccount))} | ${mb(maxOf(replicaAccount))} | ${HEAP_REPS} | — |`,
+    `| **adjacency indices + model index (replica structures − base map)** | **${mb(median(indicesAccount))}** | ${mb(minOf(indicesAccount))} | ${mb(maxOf(indicesAccount))} | ${HEAP_REPS} | — |`,
     `| **resident metadata total (held rows + replica structures)** | **${mb(median(totals))}** | ${mb(minOf(totals))} | ${mb(maxOf(totals))} | ${HEAP_REPS} | **${fullWorkspaceShare}** |`,
     "",
     `The indices are ${indicesShare} of that total; the replica's own base map is about ${baseMapShare} (the reference map above), and the freshly allocated rows are the rest.`,
@@ -849,7 +849,7 @@ push(
   `| \`replica.load(record)\` — first load in this process | **${ms(firstLoadMs)}** | — | — | 1 |`,
   `| \`replica.load(record)\` — repeat loads (each also drops the previous base) | ${ms(loadMedian)} | ${ms(minOf(loadSamples))} | ${ms(maxOf(loadSamples))} | ${LOAD_REPS} |`,
   "",
-  `Rows resident after load: ${grouped(stats.entities)} (${Object.entries(stats.byType)
+  `Rows resident after load: ${grouped(stats.entities)} (${Object.entries(stats.byModel)
     .map(([type, count]) => `\`${type}\` ${grouped(count)}`)
     .join(", ")}).`,
   `Adjacency keys built (derived from the same rows): ${grouped(indexShape.reverseKeys)} reverse, ${grouped(
@@ -861,7 +861,7 @@ push(
     1,
   )}× that`,
   "narrower projection because it derives both adjacency directions for `relationship`",
-  "and `entityGroup` rows into plain objects, plus the type index. Measured:",
+  "and `membership` rows into plain objects, plus the model index. Measured:",
   `${usPerCall(loadMedian / Math.max(1, stats.held))} per held row and ${fixed(
     (loadMedian / Math.max(1, indexShape.reverseRows + indexShape.forwardRows)) * 1000,
     3,
@@ -891,7 +891,7 @@ push(
   `| store rows read per cold open | ${grouped(openReads)} |`,
   `| store reads added by re-opening while pinned | ${grouped(pinnedReReads)} |`,
   `| resident bodies while every sampled body is closed | ${grouped(bodiesResidentAfterRelease)} |`,
-  `| held bodies (\`heldByType\`) | ${grouped(stats.heldByType[ON_DEMAND_TYPE] ?? 0)} |`,
+  `| held bodies (\`heldByModel\`) | ${grouped(stats.heldByModel[ON_DEMAND_TYPE] ?? 0)} |`,
   "",
   "---",
   "",

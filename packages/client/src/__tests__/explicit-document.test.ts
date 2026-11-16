@@ -76,7 +76,7 @@ const HANDSHAKE = {
   actor_id: "actor_1",
   groups: ["g_1"].map((id) => ({
     id,
-    permissions: ["note.*", "text_document.*", "relationship.*", "entityGroup.*"],
+    permissions: ["note.*", "text_document.*", "relationship.*", "membership.*"],
     cursor_valid: true,
     reason: null,
     cursor: 0,
@@ -223,7 +223,7 @@ describe("a document the app declares", () => {
     const created = await client.actions.createNote();
 
     const row = await client.readLocalEntity(created.documentId);
-    expect(row!.type).toBe("text_document");
+    expect(row!.model).toBe("text_document");
 
     const document = client.textDocument(created.documentId, "text_document");
     document.hydrate(row!.data.fields["content"], row!.data.fields["version"]);

@@ -3,10 +3,10 @@
  * fan-out group set, and the structural refusals the server enforces
  * for membership — `missing_ownership` (a write that resolves to no
  * group), `last_membership` (a delta that would leave an entity with
- * no owning group), and `last_group_member` (a delta that would leave
+ * no owning group), and `last_grant` (a delta that would leave
  * a group with no member holding a non-empty permission list).
  *
- * The rules mirror the server's `EntityIndex.fan_out_groups/2` and
+ * The rules mirror the server's `EntityScope.fan_out_groups/2` and
  * `Authorizer` (#461/#264) so the client refuses, before an Action
  * reaches the outbox, what the server would reject anyway. The scope
  * resolution also feeds the `groups` union the committer returns.
@@ -105,7 +105,7 @@ const sortedUnique = (groups: readonly string[]): readonly string[] => [...new S
  * a capability — deletes are authorized over the entity's groups and row
  * identity is pinned — so a predictable id changes no authorization.
  */
-export const entityGroupId = (entityId: string, groupId: string): string =>
+export const membershipRowId = (entityId: string, groupId: string): string =>
   `eg_${entityId.length}_${entityId}${groupId}`;
 
 /**
@@ -208,26 +208,26 @@ export const lastMembershipViolation = (
  * empty list grants nothing, so such a member cannot administer the
  * group.
  */
-export interface LiveGroupMember {
+export interface LiveGrant {
   readonly id: string;
   readonly groupId: string;
   readonly permissions: readonly string[];
 }
 
 /** One membership row's permission list after the delta, keyed by row id. */
-export interface GroupMemberUpsert {
+export interface GrantUpsert {
   readonly id: string;
   readonly permissions: readonly string[];
 }
 
 /** A grant delta: the rows to remove and the permission lists to overwrite. */
-export interface GroupMemberDelta {
+export interface GrantDelta {
   readonly removedIds: readonly string[];
-  readonly upserts: readonly GroupMemberUpsert[];
+  readonly upserts: readonly GrantUpsert[];
 }
 
 /**
- * The `last_group_member` refusal for a delta that would leave a group
+ * The `last_grant` refusal for a delta that would leave a group
  * with no membership holding a non-empty permission list, or
  * `undefined` when at least one capable member survives.
  *
@@ -238,9 +238,9 @@ export interface GroupMemberDelta {
  * permission list is non-empty — the caller can only add a capable
  * member, never prove a lockout.
  */
-export const lastGroupMemberViolation = (
-  currentMembers: readonly LiveGroupMember[] | undefined,
-  delta: GroupMemberDelta,
+export const lastGrantViolation = (
+  currentMembers: readonly LiveGrant[] | undefined,
+  delta: GrantDelta,
 ): string | undefined => {
   if (currentMembers === undefined || currentMembers.length === 0) return undefined;
   const permissions = new Map(currentMembers.map((member) => [member.id, member.permissions]));
@@ -256,7 +256,7 @@ export const lastGroupMemberViolation = (
  * row (missing / non-array permission list) is `null`, so the caller defers
  * rather than reading it as "no permissions".
  */
-export const liveGroupMember = (row: Entity): LiveGroupMember | null => {
+export const liveGrant = (row: Entity): LiveGrant | null => {
   if (row.deleted_hlc !== null) return null;
   const groupId = systemValueString(row, "grant", "group_id");
   const permissions = systemValue(row, "grant")?.["permissions"];
@@ -268,39 +268,36 @@ const isStringArray = (value: unknown): value is readonly string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === "string");
 
 /** The live grant rows of one group, ready for the guard. */
-export const groupMembersOf = (
-  rows: readonly Entity[],
-  groupId: string,
-): readonly LiveGroupMember[] =>
+export const grantsOf = (rows: readonly Entity[], groupId: string): readonly LiveGrant[] =>
   rows.flatMap((row) => {
-    const member = liveGroupMember(row);
+    const member = liveGrant(row);
     return member === null || member.groupId !== groupId ? [] : [member];
   });
 
 /**
- * The local reads the `last_group_member` guard consults. The committer
+ * The local reads the `last_grant` guard consults. The committer
  * passes the storage-backed view; the draft planner passes the client's
  * capability, so both write surfaces refuse identically.
  */
-export interface GroupMemberView {
+export interface GrantView {
   row(id: string): Promise<Entity | null>;
-  groupMembers(groupId: string): Promise<readonly LiveGroupMember[]>;
+  grants(groupId: string): Promise<readonly LiveGrant[]>;
 }
 
 /**
- * The `last_group_member` refusal for a grant delta, read from the local view.
+ * The `last_grant` refusal for a grant delta, read from the local view.
  * `undefined` when the target row is absent, not a grant, tombstoned, or
  * malformed, or when the group's local member view is empty — the caller then
  * defers to the server's authoritative check.
  */
-export const lastGroupMemberRefusal = async (
-  view: GroupMemberView,
+export const lastGrantRefusal = async (
+  view: GrantView,
   id: string,
-  delta: GroupMemberDelta,
+  delta: GrantDelta,
 ): Promise<string | undefined> => {
   const row = await view.row(id);
   if (row === null || !carriesComponent(row, "grant") || row.deleted_hlc !== null) return undefined;
   const groupId = systemValueString(row, "grant", "group_id");
   if (groupId === null) return undefined;
-  return lastGroupMemberViolation(await view.groupMembers(groupId), delta);
+  return lastGrantViolation(await view.grants(groupId), delta);
 };

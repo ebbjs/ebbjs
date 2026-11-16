@@ -99,7 +99,7 @@ export type FieldValue =
  *
  * Mirrors ebb's Update structure:
  * - `subject_id`: the entity being mutated (RunNode ID)
- * - `subject_type`: entity type discriminant
+ * - `subject_type`: model discriminant
  * - `method`: "put" (new run), "patch" (extend existing run), "delete" (tombstone)
  * - `data.fields`: self-describing typed field values
  */

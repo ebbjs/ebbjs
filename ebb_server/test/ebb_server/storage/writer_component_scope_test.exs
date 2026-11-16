@@ -3,7 +3,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   Pins that fan-out scope is a per-subject decision, not a per-component one.
 
   A system row's scope is named by one of its component Updates — an
-  `entityGroup` row's `group_id`, a relationship row's `source_id` — while its
+  `membership` row's `group_id`, a relationship row's `source_id` — while its
   siblings carry none. Resolving scope per component Update would leave the
   sibling with an empty scope and silently drop its delivery.
   """
@@ -14,7 +14,7 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
     ActionFormat,
     ActionScope,
     DirtyTracker,
-    EntityGroupCache,
+    MembershipCache,
     RocksDB,
     Writer
   }
@@ -65,22 +65,22 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   end
 
   # A delete names no component, so its model is the committed one — the
-  # entity-type index first, then the by-id caches that a lagging index can
+  # entity-model cache first, then the by-id caches that a lagging index can
   # disagree with. Reading the index alone folds a `model: nil` row: it fans
   # out to nothing, skips the system-cache projection, and records a dirty
   # mark with no model, which hides the row from
   # `dirty_entity_ids_for_model/2`.
   test "a membership delete with no type-index entry still fans out and keeps its model", ctx do
-    EntityGroupCache.put_entity_group(
+    MembershipCache.put_membership(
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
-      entity_groups: ctx.entity_groups,
-      entity_groups_by_id: ctx.entity_groups_by_id,
-      entity_groups_by_group: ctx.entity_groups_by_group
+      memberships: ctx.memberships,
+      memberships_by_id: ctx.memberships_by_id,
+      memberships_by_group: ctx.memberships_by_group
     )
 
     # The row's own type-index entry is missing — the lagging-index shape the
     # by-id caches exist for. Only the entity it names is indexed.
-    :ets.insert(ctx.entity_types, {"todo_1", "todo"})
+    :ets.insert(ctx.entity_models, {"todo_1", "todo"})
 
     action =
       validated_action(%{updates: [validated_update(%{subject_id: "eg_1", method: :delete})]})
@@ -96,14 +96,14 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   test "a link create is scoped to its source's groups", ctx do
     # The source entity's groups are the edge's scope; the source_id component
     # is what names it, and its siblings must inherit the same list.
-    EntityGroupCache.put_entity_group(
+    MembershipCache.put_membership(
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
-      entity_groups: ctx.entity_groups,
-      entity_groups_by_id: ctx.entity_groups_by_id,
-      entity_groups_by_group: ctx.entity_groups_by_group
+      memberships: ctx.memberships,
+      memberships_by_id: ctx.memberships_by_id,
+      memberships_by_group: ctx.memberships_by_group
     )
 
-    :ets.insert(ctx.entity_types, {"todo_1", "todo"})
+    :ets.insert(ctx.entity_models, {"todo_1", "todo"})
 
     updates = [
       validated_component("rel_1", "ebb/link", %{
@@ -128,14 +128,14 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   end
 
   test "a delete uses its own subject's scope", ctx do
-    EntityGroupCache.put_entity_group(
+    MembershipCache.put_membership(
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
-      entity_groups: ctx.entity_groups,
-      entity_groups_by_id: ctx.entity_groups_by_id,
-      entity_groups_by_group: ctx.entity_groups_by_group
+      memberships: ctx.memberships,
+      memberships_by_id: ctx.memberships_by_id,
+      memberships_by_group: ctx.memberships_by_group
     )
 
-    :ets.insert(ctx.entity_types, {"todo_1", "todo"})
+    :ets.insert(ctx.entity_models, {"todo_1", "todo"})
 
     action =
       validated_action(%{updates: [validated_update(%{subject_id: "todo_1", method: :delete})]})

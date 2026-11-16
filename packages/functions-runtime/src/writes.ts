@@ -33,7 +33,7 @@ import {
   operationCallFor,
   requireRelationship,
   type CreateHandle,
-  type LiveGroupMember,
+  type LiveGrant,
   type OperationCall,
   type OperationIds,
   type OpContext,
@@ -48,7 +48,7 @@ import { callFailure, commitAction, readCommitOutcome, type CommitOutcome } from
 import { MissingSchemaError, WritesCommittedError } from "./errors.ts";
 import { createOverlay } from "./overlay.ts";
 import {
-  assertLastGroupMember,
+  assertLastGrant,
   assertLastMembership,
   assertMembershipScope,
   type PreflightView,
@@ -170,7 +170,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   /** Buffered Updates, in wire order — the Action's `updates[]`. */
   const updates: Update[] = [];
   const updatesById = new Map<string, Update[]>();
-  const types = new Map<string, string>();
+  const models = new Map<string, string>();
   /** Membership row id → the group it scopes to. */
   const membershipGroup = new Map<string, string>();
   /** Membership row id → the entity it files. */
@@ -333,7 +333,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       if (held === undefined) updatesById.set(update.subject_id, [update]);
       else held.push(update);
       if (update.method !== "delete") {
-        types.set(update.subject_id, committedModelOf(update.component));
+        models.set(update.subject_id, committedModelOf(update.component));
       }
       indexWrite(update);
     }
@@ -359,7 +359,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const groupOfMembership = (membershipId: string): string | undefined =>
     membershipGroup.get(membershipId);
 
-  const groupMembersOf = (groupId: string): readonly LiveGroupMember[] | undefined => {
+  const grantsOf = (groupId: string): readonly LiveGrant[] | undefined => {
     if (!createdGroups.has(groupId)) return undefined;
     const roster = membersByGroup.get(groupId) ?? new Map<string, readonly string[]>();
     return [...roster].map(([id, permissions]) => ({ id, groupId, permissions }));
@@ -375,7 +375,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     return edge === "gone" ? null : edge.relationshipId;
   };
 
-  const preflightView: PreflightView = { groupsOf, groupOfMembership, groupMembersOf };
+  const preflightView: PreflightView = { groupsOf, groupOfMembership, grantsOf };
 
   const readHost = async (id: string): Promise<EntityResponse | null> => {
     try {
@@ -388,7 +388,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
 
   const overlay = createOverlay({
     updatesFor: (id) => updatesById.get(id) ?? [],
-    typeOf: (id) => types.get(id),
+    modelOf: (id) => models.get(id),
     readHost,
   });
 
@@ -411,7 +411,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     if (groupId === undefined || nextGroupId !== groupId) return;
     if (!Array.isArray(permissions)) return;
     if (!permissions.every((entry) => typeof entry === "string")) return;
-    assertLastGroupMember({ groupsOf, groupOfMembership, groupMembersOf }, id, groupId, {
+    assertLastGrant({ groupsOf, groupOfMembership, grantsOf }, id, groupId, {
       removedIds: [],
       upserts: [{ id, permissions }],
     });
@@ -420,14 +420,14 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const guardMemberDelete = (id: string): void => {
     const groupId = memberGroup.get(id);
     if (groupId === undefined) return;
-    assertLastGroupMember(preflightView, id, groupId, { removedIds: [id], upserts: [] });
+    assertLastGrant(preflightView, id, groupId, { removedIds: [id], upserts: [] });
   };
 
   const guardMembershipDelete = (membershipId: string): void => {
     const groupId = membershipGroup.get(membershipId);
     const entityId = membershipEntity.get(membershipId);
     if (groupId === undefined || entityId === undefined) return;
-    assertLastMembership(preflightView, types.get(entityId) ?? "", entityId, [groupId]);
+    assertLastMembership(preflightView, models.get(entityId) ?? "", entityId, [groupId]);
   };
 
   const create = (
@@ -603,7 +603,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     commit,
     groupsOf,
     groupOfMembership,
-    groupMembersOf,
+    grantsOf,
   };
 };
 

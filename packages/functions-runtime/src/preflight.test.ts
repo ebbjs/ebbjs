@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Update } from "@ebbjs/core";
-import { ActionRejectedError, entityGroupId } from "@ebbjs/write";
+import { ActionRejectedError, membershipRowId } from "@ebbjs/write";
 
 import { assertLastMembership, assertMembershipScope } from "./preflight.ts";
 import { fakeHost, testContext } from "./test-support/host.ts";
@@ -22,7 +22,7 @@ describe("last_membership", () => {
 
     const error = (() => {
       try {
-        ctx.delete("ebb", entityGroupId(created.id, "g_1"));
+        ctx.delete("ebb", membershipRowId(created.id, "g_1"));
       } catch (caught) {
         return caught;
       }
@@ -39,22 +39,24 @@ describe("last_membership", () => {
     const ctx = testContext(fakeHost());
     const created = ctx.create("issue", issue(), { id: "e_shared", groups: ["g_1", "g_2"] });
 
-    expect(() => ctx.delete("ebb", entityGroupId(created.id, "g_1"))).not.toThrow();
-    expect(() => ctx.delete("ebb", entityGroupId(created.id, "g_2"))).toThrow(ActionRejectedError);
+    expect(() => ctx.delete("ebb", membershipRowId(created.id, "g_1"))).not.toThrow();
+    expect(() => ctx.delete("ebb", membershipRowId(created.id, "g_2"))).toThrow(
+      ActionRejectedError,
+    );
   });
 
   it("defers when the entity's groups are not visible to the invocation", () => {
     const view = {
       groupsOf: () => [],
       groupOfMembership: () => undefined,
-      groupMembersOf: () => undefined,
+      grantsOf: () => undefined,
     };
 
     expect(() => assertLastMembership(view, "issue", "e_stored", ["g_1"])).not.toThrow();
   });
 });
 
-describe("last_group_member", () => {
+describe("last_grant", () => {
   it("refuses a member delete that would leave a new group with no capable member", () => {
     const ctx = testContext(fakeHost());
     ctx.create("ebb", { group: { name: "Team" } }, { id: "g_team", groups: ["g_team"] });
@@ -121,7 +123,7 @@ describe("missing_ownership", () => {
   const view = {
     groupsOf: () => [],
     groupOfMembership: () => undefined,
-    groupMembersOf: () => undefined,
+    grantsOf: () => undefined,
   };
 
   const unowned: Update = {

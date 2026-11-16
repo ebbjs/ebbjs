@@ -22,10 +22,10 @@ defmodule EbbServer.Bench.ComponentIndexTest do
     assert action.updates |> Enum.map(& &1.method) |> Enum.uniq() == [:replace]
 
     todo = Enum.filter(action.updates, &String.starts_with?(&1.component, "todo/"))
-    membership = Enum.filter(action.updates, &String.starts_with?(&1.component, "entityGroup/"))
+    membership = Enum.filter(action.updates, &(&1.component == "ebb/membership"))
 
     assert length(todo) == 3
-    assert length(membership) == 2
+    assert length(membership) == 1
 
     for update <- todo ++ membership do
       assert update.model <> "/" <> update.field == update.component

@@ -27,13 +27,13 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     cache =
       %{
         dirty_set: dirty_set,
-        group_members: gm_table,
-        group_members_by_id: gm_by_id_table,
-        group_members_by_group: _gm_by_group_table,
-        entity_groups: eg_table,
-        entity_groups_by_id: eg_by_id_table,
-        entity_groups_by_group: eg_by_group_table,
-        entity_types: entity_types_table,
+        grants: gm_table,
+        grants_by_id: gm_by_id_table,
+        grants_by_group: _gm_by_group_table,
+        memberships: eg_table,
+        memberships_by_id: eg_by_id_table,
+        memberships_by_group: eg_by_group_table,
+        entity_models: entity_models_table,
         relationships: rel_table,
         relationships_by_id: rbi_table
       } = TestHelpers.start_isolated_cache()
@@ -46,12 +46,12 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
         rocks_name: rocks_name,
         dirty_set: dirty_set,
         gsn_counter: cache.gsn_counter,
-        group_members: gm_table,
-        group_members_by_id: gm_by_id_table,
-        entity_groups: eg_table,
-        entity_groups_by_id: eg_by_id_table,
-        entity_groups_by_group: eg_by_group_table,
-        entity_types: entity_types_table,
+        grants: gm_table,
+        grants_by_id: gm_by_id_table,
+        memberships: eg_table,
+        memberships_by_id: eg_by_id_table,
+        memberships_by_group: eg_by_group_table,
+        entity_models: entity_models_table,
         relationships: rel_table,
         relationships_by_id: rbi_table
       })
@@ -249,7 +249,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
     create_hlc = TestHelpers.hlc_from(base_hlc, 0)
 
     assert {:ok, row} = EntityStore.materialize(todo_id, store_opts(ctx, restarted))
-    assert row.type == "todo"
+    assert row.model == "todo"
     assert row.created_hlc == create_hlc
     assert row.deleted_hlc == nil
     assert row.data == %{"fields" => %{}, "components" => []}
@@ -328,11 +328,11 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
       rocks_name: rocks_name,
       sqlite_name: sqlite_name,
       dirty_set: ctx.cache.dirty_set,
-      table: ctx.cache.group_members,
-      entity_groups: ctx.cache.entity_groups,
-      entity_groups_by_id: ctx.cache.entity_groups_by_id,
-      entity_groups_by_group: ctx.cache.entity_groups_by_group,
-      entity_types: ctx.cache.entity_types,
+      table: ctx.cache.grants,
+      memberships: ctx.cache.memberships,
+      memberships_by_id: ctx.cache.memberships_by_id,
+      memberships_by_group: ctx.cache.memberships_by_group,
+      entity_models: ctx.cache.entity_models,
       relationships: ctx.cache.relationships,
       relationships_by_id: ctx.cache.relationships_by_id
     ]

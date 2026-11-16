@@ -26,28 +26,28 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   import EbbServer.TestHelpers
 
   setup do
-    group_members_by_id = :ets.new(:planner_group_members_by_id, [:set, :public])
-    entity_groups_by_id = :ets.new(:planner_entity_groups_by_id, [:set, :public])
+    grants_by_id = :ets.new(:planner_grants_by_id, [:set, :public])
+    memberships_by_id = :ets.new(:planner_memberships_by_id, [:set, :public])
     relationships_by_id = :ets.new(:planner_relationships_by_id, [:set, :public])
     group_apps = :ets.new(:planner_group_apps, [:set, :public])
 
     %{
       tables: %{
-        group_members_by_id: group_members_by_id,
-        entity_groups_by_id: entity_groups_by_id,
+        grants_by_id: grants_by_id,
+        memberships_by_id: memberships_by_id,
         relationships_by_id: relationships_by_id,
         group_apps: group_apps
       },
-      group_members_by_id: group_members_by_id,
-      entity_groups_by_id: entity_groups_by_id,
+      grants_by_id: grants_by_id,
+      memberships_by_id: memberships_by_id,
       group_apps: group_apps
     }
   end
 
   describe "coalescing" do
     test "keeps one mutation per unique cache key per plan", %{tables: tables} do
-      group_member =
-        update("groupMember", "gm_1", :put, %{
+      grant =
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_1",
           "group_id" => "group_1",
           "permissions" => ["todo.create"]
@@ -56,27 +56,27 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       todo = update("todo", "todo_1", :put)
 
       {mutations, _overlay} =
-        CacheMutationPlanner.plan([group_member, todo, group_member, todo], tables)
+        CacheMutationPlanner.plan([grant, todo, grant, todo], tables)
 
-      assert Enum.count(mutations, &match?({:group_member_put, %{id: "gm_1"}}, &1)) == 1
-      assert Enum.count(mutations, &match?({:entity_type, "todo_1", "todo"}, &1)) == 1
+      assert Enum.count(mutations, &match?({:grant_put, %{id: "gm_1"}}, &1)) == 1
+      assert Enum.count(mutations, &match?({:entity_model, "todo_1", "todo"}, &1)) == 1
     end
 
     test "drops an identical repeated delete", %{tables: tables} do
-      delete = update("groupMember", "gm_1", :delete)
+      delete = update("grant", "gm_1", :delete)
 
       {mutations, overlay} = CacheMutationPlanner.plan([delete, delete], tables)
 
       assert mutations == [
-               {:entity_type, "gm_1", "ebb"},
-               {:group_member_delete, "gm_1"}
+               {:entity_model, "gm_1", "ebb"},
+               {:grant_delete, "gm_1"}
              ]
 
-      assert Overlay.fetch(overlay, :group_members_by_id, "gm_1") == {:ok, :deleted}
-      assert Overlay.fetch(overlay, :entity_types, "gm_1") == {:ok, "ebb"}
+      assert Overlay.fetch(overlay, :grants_by_id, "gm_1") == {:ok, :deleted}
+      assert Overlay.fetch(overlay, :entity_models, "gm_1") == {:ok, "ebb"}
     end
 
-    # `GroupCache.put_group_member/2` deletes the primary row by the
+    # `GrantCache.put_grant/2` deletes the primary row by the
     # *incoming* actor, so two different rows for one membership id in a
     # single plan must both be applied: collapsing them would strand the
     # first actor's row.
@@ -84,14 +84,14 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       tables: tables
     } do
       put_a =
-        update("groupMember", "gm_1", :put, %{
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_a",
           "group_id" => "group_1",
           "permissions" => ["todo.create"]
         })
 
       put_b =
-        update("groupMember", "gm_1", :put, %{
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_b",
           "group_id" => "group_1",
           "permissions" => ["todo.read"]
@@ -100,38 +100,38 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {mutations, overlay} = CacheMutationPlanner.plan([put_a, put_b], tables)
 
       assert [
-               {:group_member_put, %{actor_id: "actor_a"}},
-               {:group_member_put, %{actor_id: "actor_b"}}
+               {:grant_put, %{actor_id: "actor_a"}},
+               {:grant_put, %{actor_id: "actor_b"}}
              ] =
-               Enum.filter(mutations, &match?({:group_member_put, _}, &1))
+               Enum.filter(mutations, &match?({:grant_put, _}, &1))
 
       assert {:ok, %{actor_id: "actor_b"}} =
-               Overlay.fetch(overlay, :group_members_by_id, "gm_1")
+               Overlay.fetch(overlay, :grants_by_id, "gm_1")
     end
   end
 
   describe "overlay chaining" do
     test "a successor's value supersedes the predecessor's projection", %{tables: tables} do
       put =
-        update("entityGroup", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
+        update("membership", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
 
       {plan_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
-      assert [{:entity_type, "eg_1", "ebb"}, {:entity_group_put, row}] = plan_1
+      assert [{:entity_model, "eg_1", "ebb"}, {:membership_put, row}] = plan_1
       assert row == %{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}
 
       patch =
-        update("entityGroup", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
+        update("membership", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
 
       {plan_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
 
-      assert [{:entity_type, "eg_1", "ebb"}, {:entity_group_put, row}] = plan_2
+      assert [{:entity_model, "eg_1", "ebb"}, {:membership_put, row}] = plan_2
       assert row == %{id: "eg_1", entity_id: "todo_1", group_id: "group_2"}
-      assert Overlay.fetch(overlay_2, :entity_groups_by_id, "eg_1") == {:ok, row}
+      assert Overlay.fetch(overlay_2, :memberships_by_id, "eg_1") == {:ok, row}
     end
 
     test "a successor's delete removes the predecessor's planned row", %{tables: tables} do
       put =
-        update("groupMember", "gm_1", :put, %{
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_1",
           "group_id" => "group_1",
           "permissions" => ["todo.create"]
@@ -139,25 +139,25 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       {_plan_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
 
-      delete = update("groupMember", "gm_1", :delete)
+      delete = update("grant", "gm_1", :delete)
 
       {plan_2, overlay_2} = CacheMutationPlanner.plan([delete], tables, overlay_1)
-      assert [{:entity_type, "gm_1", "ebb"}, {:group_member_delete, "gm_1"}] = plan_2
-      assert Overlay.fetch(overlay_2, :group_members_by_id, "gm_1") == {:ok, :deleted}
+      assert [{:entity_model, "gm_1", "ebb"}, {:grant_delete, "gm_1"}] = plan_2
+      assert Overlay.fetch(overlay_2, :grants_by_id, "gm_1") == {:ok, :deleted}
     end
 
     test "a patch writes the whole value without consulting the cached row",
-         %{tables: tables, group_members_by_id: group_members_by_id} do
+         %{tables: tables, grants_by_id: grants_by_id} do
       # A stale cached row is not a merge base any more: the atomic value is
       # the row, so the plan carries the wire's actor and permissions only.
       :ets.insert(
-        group_members_by_id,
+        grants_by_id,
         {"gm_1",
          %{id: "gm_1", actor_id: "actor_old", group_id: "group_old", permissions: ["todo.read"]}}
       )
 
       patch =
-        update("groupMember", "gm_1", :patch, %{
+        update("grant", "gm_1", :patch, %{
           "actor_id" => "actor_1",
           "group_id" => "group_2",
           "permissions" => ["todo.create"]
@@ -165,7 +165,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       {plan, _overlay} = CacheMutationPlanner.plan([patch], tables)
 
-      assert [_entity_type, {:group_member_put, row}] = plan
+      assert [_entity_model, {:grant_put, row}] = plan
 
       assert row == %{
                id: "gm_1",
@@ -181,7 +181,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       tables: tables
     } do
       put =
-        update("groupMember", "gm_1", :put, %{
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_1",
           "group_id" => "group_1",
           "permissions" => ["todo.create"]
@@ -190,7 +190,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {_predecessor_mutations, predecessor_overlay} = CacheMutationPlanner.plan([put], tables)
 
       patch =
-        update("groupMember", "gm_1", :patch, %{
+        update("grant", "gm_1", :patch, %{
           "actor_id" => "actor_1",
           "group_id" => "group_2",
           "permissions" => ["todo.create"]
@@ -201,8 +201,8 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       # The patch's atomic value is the whole row, so releasing the
       # predecessor changes nothing about what the successor projects.
-      assert [{:entity_type, _, _}, {:group_member_put, with_puts}] = plan_with
-      assert [{:entity_type, _, _}, {:group_member_put, without_puts}] = plan_without
+      assert [{:entity_model, _, _}, {:grant_put, with_puts}] = plan_with
+      assert [{:entity_model, _, _}, {:grant_put, without_puts}] = plan_without
       assert with_puts == without_puts
 
       assert with_puts == %{
@@ -220,55 +220,55 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       {_mutations, overlay} = CacheMutationPlanner.plan([todo], tables)
 
-      assert Overlay.fetch(overlay, :entity_types, "todo_1") == {:ok, "todo"}
+      assert Overlay.fetch(overlay, :entity_models, "todo_1") == {:ok, "todo"}
     end
 
-    test "an entityGroup put projects the entity to its planned groups", %{tables: tables} do
+    test "an membership put projects the entity to its planned groups", %{tables: tables} do
       put =
-        update("entityGroup", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
+        update("membership", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
 
       {_mutations, overlay} = CacheMutationPlanner.plan([put], tables)
 
-      assert Overlay.entity_groups(overlay, "todo_1", []) == {:ok, ["group_1"]}
+      assert Overlay.memberships(overlay, "todo_1", []) == {:ok, ["group_1"]}
     end
 
     test "a membership move replaces the cached group in the projection", %{tables: tables} do
       put =
-        update("entityGroup", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
+        update("membership", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
 
       {_mutations, overlay_1} = CacheMutationPlanner.plan([put], tables)
 
       patch =
-        update("entityGroup", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
+        update("membership", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
 
       {_mutations, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
 
       cached = [%{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}]
 
-      assert Overlay.entity_groups(overlay_2, "todo_1", cached) == {:ok, ["group_2"]}
+      assert Overlay.memberships(overlay_2, "todo_1", cached) == {:ok, ["group_2"]}
     end
 
     test "a delete removes the cached group from the projection", %{
       tables: tables,
-      entity_groups_by_id: entity_groups_by_id
+      memberships_by_id: memberships_by_id
     } do
       :ets.insert(
-        entity_groups_by_id,
+        memberships_by_id,
         {"eg_1", %{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}}
       )
 
-      delete = update("entityGroup", "eg_1", :delete)
+      delete = update("membership", "eg_1", :delete)
 
       {_mutations, overlay} = CacheMutationPlanner.plan([delete], tables)
 
       cached = [%{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}]
 
-      assert Overlay.entity_groups(overlay, "todo_1", cached) == {:ok, []}
+      assert Overlay.memberships(overlay, "todo_1", cached) == {:ok, []}
     end
 
-    test "put -> patch -> delete chains across plans for one groupMember", %{tables: tables} do
+    test "put -> patch -> delete chains across plans for one grant", %{tables: tables} do
       put =
-        update("groupMember", "gm_1", :put, %{
+        update("grant", "gm_1", :put, %{
           "actor_id" => "actor_1",
           "group_id" => "group_1",
           "permissions" => ["todo.create"]
@@ -277,18 +277,18 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {_mutations_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
 
       patch =
-        update("groupMember", "gm_1", :patch, %{
+        update("grant", "gm_1", :patch, %{
           "actor_id" => "actor_1",
           "group_id" => "group_1",
           "permissions" => ["todo.read"]
         })
 
       {_mutations_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
-      delete = update("groupMember", "gm_1", :delete)
+      delete = update("grant", "gm_1", :delete)
 
       {_mutations_3, overlay_3} = CacheMutationPlanner.plan([delete], tables, overlay_2)
 
-      assert Overlay.fetch(overlay_3, :group_members_by_id, "gm_1") == {:ok, :deleted}
+      assert Overlay.fetch(overlay_3, :grants_by_id, "gm_1") == {:ok, :deleted}
     end
 
     test "put -> patch -> delete chains across plans for one relationship", %{tables: tables} do
@@ -320,27 +320,27 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
     test "a delete in the predecessor stays deleted after the successor's own plan", %{
       tables: tables,
-      entity_groups_by_id: entity_groups_by_id
+      memberships_by_id: memberships_by_id
     } do
       :ets.insert(
-        entity_groups_by_id,
+        memberships_by_id,
         {"eg_1", %{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}}
       )
 
       {_mutations_1, overlay_1} =
-        CacheMutationPlanner.plan([update("entityGroup", "eg_1", :delete)], tables)
+        CacheMutationPlanner.plan([update("membership", "eg_1", :delete)], tables)
 
       todo = update("todo", "todo_1", :put)
       {_mutations_2, overlay_2} = CacheMutationPlanner.plan([todo], tables, overlay_1)
 
       cached = [%{id: "eg_1", entity_id: "todo_1", group_id: "group_1"}]
 
-      assert Overlay.entity_groups(overlay_2, "todo_1", cached) == {:ok, []}
+      assert Overlay.memberships(overlay_2, "todo_1", cached) == {:ok, []}
     end
 
     test "two batches put the same entity into different groups", %{tables: tables} do
       first =
-        update("entityGroup", "eg_1", :put, %{
+        update("membership", "eg_1", :put, %{
           "entity_id" => "todo_1",
           "group_id" => "group_1"
         })
@@ -348,19 +348,19 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {_mutations_1, overlay_1} = CacheMutationPlanner.plan([first], tables)
 
       second =
-        update("entityGroup", "eg_2", :put, %{
+        update("membership", "eg_2", :put, %{
           "entity_id" => "todo_1",
           "group_id" => "group_2"
         })
 
       {_mutations_2, overlay_2} = CacheMutationPlanner.plan([second], tables, overlay_1)
 
-      assert Overlay.entity_groups(overlay_2, "todo_1", []) == {:ok, ["group_1", "group_2"]}
+      assert Overlay.memberships(overlay_2, "todo_1", []) == {:ok, ["group_1", "group_2"]}
     end
 
     test "three plans accumulate and releasing the oldest keeps the rest", %{tables: tables} do
       put = fn id, group ->
-        update("entityGroup", id, :put, %{"entity_id" => "todo_1", "group_id" => group})
+        update("membership", id, :put, %{"entity_id" => "todo_1", "group_id" => group})
       end
 
       {mutations_1, overlay_1} = CacheMutationPlanner.plan([put.("eg_1", "group_1")], tables)
@@ -377,10 +377,10 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
         CacheMutationPlanner.slice(overlay_3, mutations_3)
       ]
 
-      assert Overlay.entity_groups(CacheMutationPlanner.merge_overlays(slices), "todo_1", []) ==
+      assert Overlay.memberships(CacheMutationPlanner.merge_overlays(slices), "todo_1", []) ==
                {:ok, ["group_1", "group_2", "group_3"]}
 
-      assert Overlay.entity_groups(
+      assert Overlay.memberships(
                CacheMutationPlanner.merge_overlays(Enum.drop(slices, 1)),
                "todo_1",
                []
@@ -390,25 +390,25 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
     test "a released slice leaves the successor's own writes intact", %{tables: tables} do
       put =
-        update("entityGroup", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
+        update("membership", "eg_1", :put, %{"entity_id" => "todo_1", "group_id" => "group_1"})
 
       {mutations_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
       slice_1 = CacheMutationPlanner.slice(overlay_1, mutations_1)
 
       patch =
-        update("entityGroup", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
+        update("membership", "eg_1", :patch, %{"entity_id" => "todo_1", "group_id" => "group_2"})
 
       {mutations_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
       slice_2 = CacheMutationPlanner.slice(overlay_2, mutations_2)
 
-      assert Overlay.entity_groups(
+      assert Overlay.memberships(
                CacheMutationPlanner.merge_overlays([slice_1, slice_2]),
                "todo_1",
                []
              ) ==
                {:ok, ["group_2"]}
 
-      assert Overlay.entity_groups(CacheMutationPlanner.merge_overlays([slice_2]), "todo_1", []) ==
+      assert Overlay.memberships(CacheMutationPlanner.merge_overlays([slice_2]), "todo_1", []) ==
                {:ok, ["group_2"]}
     end
   end
@@ -420,7 +420,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {plan, overlay} = CacheMutationPlanner.plan([put], tables)
 
       assert plan == [
-               {:entity_type, "g_1", "ebb"},
+               {:entity_model, "g_1", "ebb"},
                {:group_apps_put, "g_1", ["notes"]}
              ]
 
@@ -433,7 +433,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {plan, overlay} = CacheMutationPlanner.plan([put], tables)
 
       assert plan == [
-               {:entity_type, "g_1", "ebb"},
+               {:entity_model, "g_1", "ebb"},
                {:group_apps_put, "g_1", nil}
              ]
 
@@ -453,7 +453,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       # The group value is atomic, so the wire value *is* the scope; a cached
       # per-app entry cannot survive beside it.
       assert plan == [
-               {:entity_type, "g_1", "ebb"},
+               {:entity_model, "g_1", "ebb"},
                {:group_apps_put, "g_1", ["docs"]}
              ]
 
@@ -476,7 +476,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {plan, overlay} = CacheMutationPlanner.plan([patch], tables)
 
       assert plan == [
-               {:entity_type, "g_1", "ebb"},
+               {:entity_model, "g_1", "ebb"},
                {:group_apps_put, "g_1", nil}
              ]
 
@@ -489,7 +489,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {plan, overlay} = CacheMutationPlanner.plan([delete], tables)
 
       assert plan == [
-               {:entity_type, "g_1", "ebb"},
+               {:entity_model, "g_1", "ebb"},
                {:group_apps_delete, "g_1"}
              ]
 
@@ -539,7 +539,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       {plan_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
 
       assert [
-               {:entity_type, "rel_1", "ebb"},
+               {:entity_model, "rel_1", "ebb"},
                {:relationship_put,
                 %{source_id: "todo_1", target_id: "todo_9", type: "parent", field: "parent"}}
              ] = Enum.sort_by(plan_2, &elem(&1, 0))
@@ -559,7 +559,7 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
 
       {plan, overlay} = CacheMutationPlanner.plan([put], tables)
 
-      assert plan == [{:entity_type, "rel_1", "ebb"}]
+      assert plan == [{:entity_model, "rel_1", "ebb"}]
       assert Overlay.fetch(overlay, :relationships_by_id, "rel_1") == :error
     end
   end
@@ -581,8 +581,8 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   # row's fields are the one leaf that carries the whole object.
   @components %{
     "group" => {:group, "group"},
-    "groupMember" => {:grant, "grant"},
-    "entityGroup" => {:membership, "membership"},
+    "grant" => {:grant, "grant"},
+    "membership" => {:membership, "membership"},
     "relationship" => {:link, "link"}
   }
 

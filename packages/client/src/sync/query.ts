@@ -56,7 +56,7 @@ export type JoinCardinality = "one" | "many";
  * A relationship join reads the replica's adjacency index under
  * `(as, type)`: forward from the host row's id for a source-side
  * relationship, reverse to it for a target-side one. A membership join
- * reads the `entityGroup` index under the host row's id. Either way the
+ * reads the `membership` index under the host row's id. Either way the
  * target rows are read by id — a join never scans a target type.
  */
 export type Join =
@@ -79,7 +79,7 @@ export type Join =
 
 export interface Query {
   /**
-   * The entity type the query reads. A chain over already-materialized
+   * The model the query reads. A chain over already-materialized
    * candidate rows has no source type, so it carries `""` — the one
    * sentinel in the value.
    */

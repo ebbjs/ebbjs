@@ -20,15 +20,15 @@ interface RecordedRequest {
 /** A small seed that reaches every system subject type the seed emits. */
 const seedData: SeedData = {
   groups: [{ id: "grp_1", name: "Group One" }],
-  groupMembers: [{ id: "gm_1", actorId: "actor_1", groupId: "grp_1", permissions: ["todo.*"] }],
+  grants: [{ id: "gm_1", actorId: "actor_1", groupId: "grp_1", permissions: ["todo.*"] }],
   entities: [
     {
       id: "todo_1",
-      type: "todo",
+      model: "todo",
       patches: [{ fields: { title: "Ship it" } }],
     },
   ],
-  entityGroups: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
+  memberships: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
 };
 
 const mkClient = (

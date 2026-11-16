@@ -7,34 +7,34 @@ defmodule EbbServer.Storage.AuthorizationContext do
   """
 
   @enforce_keys []
-  defstruct group_members_table: :ebb_group_members,
-            group_members_by_id_table: :ebb_group_members_by_id,
-            group_members_by_group_table: :ebb_group_members_by_group,
-            entity_groups_table: :ebb_entity_groups,
-            entity_groups_by_id_table: :ebb_entity_groups_by_id,
-            entity_types_table: :ebb_entity_types,
+  defstruct grants_table: :ebb_grants,
+            grants_by_id_table: :ebb_grants_by_id,
+            grants_by_group_table: :ebb_grants_by_group,
+            memberships_table: :ebb_memberships,
+            memberships_by_id_table: :ebb_memberships_by_id,
+            entity_models_table: :ebb_entity_models,
             relationships_by_id_table: :ebb_relationships_by_id,
             group_apps_table: :ebb_group_apps,
             now_ms: nil
 
   @type t :: %__MODULE__{
-          group_members_table: atom(),
-          group_members_by_id_table: atom(),
-          group_members_by_group_table: atom(),
-          entity_groups_table: atom(),
-          entity_groups_by_id_table: atom(),
-          entity_types_table: atom(),
+          grants_table: atom(),
+          grants_by_id_table: atom(),
+          grants_by_group_table: atom(),
+          memberships_table: atom(),
+          memberships_by_id_table: atom(),
+          entity_models_table: atom(),
           relationships_by_id_table: atom(),
           group_apps_table: atom(),
           now_ms: non_neg_integer() | nil
         }
 
-  @default_group_members :ebb_group_members
-  @default_group_members_by_id :ebb_group_members_by_id
-  @default_group_members_by_group :ebb_group_members_by_group
-  @default_entity_groups :ebb_entity_groups
-  @default_entity_groups_by_id :ebb_entity_groups_by_id
-  @default_entity_types :ebb_entity_types
+  @default_grants :ebb_grants
+  @default_grants_by_id :ebb_grants_by_id
+  @default_grants_by_group :ebb_grants_by_group
+  @default_memberships :ebb_memberships
+  @default_memberships_by_id :ebb_memberships_by_id
+  @default_entity_models :ebb_entity_models
   @default_relationships_by_id :ebb_relationships_by_id
   @default_group_apps :ebb_group_apps
 
@@ -47,15 +47,13 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @spec build(keyword()) :: t()
   def build(opts \\ []) do
     %__MODULE__{
-      group_members_table: resolve_table(opts, :group_members, @default_group_members),
-      group_members_by_id_table:
-        resolve_table(opts, :group_members_by_id, @default_group_members_by_id),
-      group_members_by_group_table:
-        resolve_table(opts, :group_members_by_group, @default_group_members_by_group),
-      entity_groups_table: resolve_table(opts, :entity_groups, @default_entity_groups),
-      entity_groups_by_id_table:
-        resolve_table(opts, :entity_groups_by_id, @default_entity_groups_by_id),
-      entity_types_table: resolve_table(opts, :entity_types, @default_entity_types),
+      grants_table: resolve_table(opts, :grants, @default_grants),
+      grants_by_id_table: resolve_table(opts, :grants_by_id, @default_grants_by_id),
+      grants_by_group_table: resolve_table(opts, :grants_by_group, @default_grants_by_group),
+      memberships_table: resolve_table(opts, :memberships, @default_memberships),
+      memberships_by_id_table:
+        resolve_table(opts, :memberships_by_id, @default_memberships_by_id),
+      entity_models_table: resolve_table(opts, :entity_models, @default_entity_models),
       relationships_by_id_table:
         resolve_table(opts, :relationships_by_id, @default_relationships_by_id),
       group_apps_table: resolve_table(opts, :group_apps, @default_group_apps),
@@ -73,18 +71,18 @@ defmodule EbbServer.Storage.AuthorizationContext do
   Returns the cache-backed lookup options for this context.
 
   The single source for the entity/group resolution keyword list shared by
-  `Authorizer`, `EntityIndex`, and `PermissionChecker`, so a new table
+  `Authorizer`, `EntityScope`, and `PermissionChecker`, so a new table
   cannot be added to one call site and forgotten at another.
   """
   @spec to_opts(t()) :: keyword()
   def to_opts(%__MODULE__{} = ctx) do
     [
-      entity_groups: ctx.entity_groups_table,
-      entity_groups_by_id: ctx.entity_groups_by_id_table,
-      entity_types: ctx.entity_types_table,
+      memberships: ctx.memberships_table,
+      memberships_by_id: ctx.memberships_by_id_table,
+      entity_models: ctx.entity_models_table,
       relationships_by_id: ctx.relationships_by_id_table,
-      group_members_by_id: ctx.group_members_by_id_table,
-      group_members_by_group: ctx.group_members_by_group_table,
+      grants_by_id: ctx.grants_by_id_table,
+      grants_by_group: ctx.grants_by_group_table,
       group_apps: ctx.group_apps_table
     ]
   end

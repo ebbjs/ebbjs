@@ -38,7 +38,7 @@ const factories: readonly AdapterFactory[] = [
 ];
 
 const ACTIONS = 1000;
-const ENTITIES_PER_TYPE = 100;
+const ENTITIES_PER_MODEL = 100;
 
 const buildAction = (id: number, entityId: string, gsn: number): Action => ({
   id: `a_${id}`,
@@ -83,10 +83,10 @@ interface BenchResult {
 const benchAdapter = async (factory: AdapterFactory): Promise<BenchResult> => {
   const adapter = await factory.create();
 
-  // append: write ACTIONS actions across ENTITIES_PER_TYPE entities
+  // append: write ACTIONS actions across ENTITIES_PER_MODEL entities
   const appendResult = await time("append", async () => {
     for (let i = 0; i < ACTIONS; i++) {
-      const entityId = `todo_${i % ENTITIES_PER_TYPE}`;
+      const entityId = `todo_${i % ENTITIES_PER_MODEL}`;
       const action = buildAction(i, entityId, i + 1);
       await adapter.actions.append(action);
     }
@@ -94,7 +94,7 @@ const benchAdapter = async (factory: AdapterFactory): Promise<BenchResult> => {
 
   // get: materialize one entity
   const getResult = await time("get", async () => {
-    for (let i = 0; i < ENTITIES_PER_TYPE; i++) {
+    for (let i = 0; i < ENTITIES_PER_MODEL; i++) {
       await adapter.entities.get(`todo_${i}`);
     }
   });
@@ -102,7 +102,7 @@ const benchAdapter = async (factory: AdapterFactory): Promise<BenchResult> => {
   // query: materialize all of one type
   const queryResult = await time("query", async () => {
     // re-mark all dirty so query has work to do
-    for (let i = 0; i < ENTITIES_PER_TYPE; i++) {
+    for (let i = 0; i < ENTITIES_PER_MODEL; i++) {
       await adapter.dirtyTracker.mark(`todo_${i}`, "todo");
     }
     await adapter.entities.query("todo");
@@ -124,11 +124,11 @@ const benchAdapter = async (factory: AdapterFactory): Promise<BenchResult> => {
 
 const formatRow = (r: BenchResult): string =>
   `| ${r.name} | ${(ACTIONS / (r.appendMs / 1000)).toFixed(0)} | ${(
-    ENTITIES_PER_TYPE /
+    ENTITIES_PER_MODEL /
     (r.getMs / 1000)
   ).toFixed(
     0,
-  )} | ${(ENTITIES_PER_TYPE / (r.queryMs / 1000)).toFixed(0)} | ${r.resetMs.toFixed(2)} |`;
+  )} | ${(ENTITIES_PER_MODEL / (r.queryMs / 1000)).toFixed(0)} | ${r.resetMs.toFixed(2)} |`;
 
 const formatHeader = (): string =>
   "| Adapter | append (ops/sec) | get (ops/sec) | query (ops/sec) | reset (ms) |\n| --- | ---: | ---: | ---: | ---: |";
@@ -145,7 +145,7 @@ export const runBenchmarks = async (): Promise<string> => {
   const lines = [
     "# Storage adapter benchmark",
     "",
-    `Workload: ${ACTIONS} actions × ${ENTITIES_PER_TYPE} entities of type "todo".`,
+    `Workload: ${ACTIONS} actions × ${ENTITIES_PER_MODEL} entities of model "todo".`,
     "Each `get` materializes one entity; each `query` materializes the full type.",
     "",
     formatHeader(),

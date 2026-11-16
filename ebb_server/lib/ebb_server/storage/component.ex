@@ -6,8 +6,8 @@ defmodule EbbServer.Storage.Component do
   `<model>/<field>`:
 
     - the segment before the first `/` is the **model** the row is committed
-      under — the permission subject, the query source, and the entity-type
-      index key;
+      under — the permission subject, the query source, and the committed-model
+      key;
     - the segment after it is the row **field** the component's value is
       stored at.
 

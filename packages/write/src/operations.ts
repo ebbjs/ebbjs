@@ -40,8 +40,8 @@ import { lastMembershipViolation, membershipScope, type MembershipView } from ".
 import type { PointerValue } from "./pointer";
 import type { Rejection } from "./rejection";
 import {
-  buildEntityGroupDelete,
-  buildEntityGroupUpdates,
+  buildMembershipDelete,
+  buildMembershipUpdates,
   buildManyEntityUpdate,
   collectManyTargetIds,
   buildRelationshipUpdate,
@@ -52,7 +52,7 @@ import { systemRowUpdate } from "./system-rows";
 
 /**
  * Refusal of an Action: a client-side membership failure
- * (`last_membership` / `missing_ownership` / `last_group_member`), or the
+ * (`last_membership` / `missing_ownership` / `last_grant`), or the
  * server's `rejected[]` for the submitted Action. Extends the wire
  * `Rejection` with the per-Update model the client-side checks can attribute,
  * which the server's per-Action report does not carry today.
@@ -79,13 +79,11 @@ export class ActionRejectedError extends Error {
 }
 
 /**
- * The client-provable `last_group_member` refusal: a grant delta that would leave
+ * The client-provable `last_grant` refusal: a grant delta that would leave
  * its group with no member holding a non-empty permission list.
  */
-export const lastGroupMemberError = (id: string, details: string): ActionRejectedError =>
-  new ActionRejectedError([
-    { id, model: ebbComponent("grant"), reason: "last_group_member", details },
-  ]);
+export const lastGrantError = (id: string, details: string): ActionRejectedError =>
+  new ActionRejectedError([{ id, model: ebbComponent("grant"), reason: "last_grant", details }]);
 
 const formatRejections = (rejections: readonly ActionRejection[]): string => {
   if (rejections.length === 0) return "ActionRejectedError";
@@ -266,7 +264,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
       ),
     );
   }
-  updates.push(...buildEntityGroupUpdates(input.id, groups, ctx.ids));
+  updates.push(...buildMembershipUpdates(input.id, groups, ctx.ids));
 
   for (const pointer of input.pointers ?? []) {
     updates.push(
@@ -295,8 +293,8 @@ const EMPTY_MEMBERSHIP_VIEW: MembershipView = {
   groupOfMembership: () => undefined,
 };
 
-/** Input for {@link createSystemEntity}. */
-export interface CreateSystemEntityInput {
+/** Input for {@link createPlatformRow}. */
+export interface CreatePlatformRowInput {
   /** Which of the four platform components the row carries. */
   readonly kind: EbbComponentKind;
   readonly id: string;
@@ -311,7 +309,7 @@ export interface CreateSystemEntityInput {
  * is consulted. Validation checks the whole value against the component's
  * shape, so a value missing a required field is refused.
  */
-export const createSystemEntity: Operation<CreateSystemEntityInput> = (ctx, input) => {
+export const createPlatformRow: Operation<CreatePlatformRowInput> = (ctx, input) => {
   const def = ctx.registry.get(EBB_MODEL_NAME);
   const shape = def?.components?.[input.kind]?.shape;
   if (input.validate !== false && shape !== undefined) {
@@ -349,13 +347,13 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
   // Absent scope is every app; the creating app's scope is the one it names.
   if (input.appId !== undefined) groupValue.apps = [input.appId];
 
-  const group = createSystemEntity(ctx, {
+  const group = createPlatformRow(ctx, {
     kind: "group",
     id: input.groupId,
     value: groupValue,
     validate: input.validate,
   });
-  const member = createSystemEntity(ctx, {
+  const member = createPlatformRow(ctx, {
     kind: "grant",
     id: input.memberId,
     value: {
@@ -600,7 +598,7 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
           data: cloneFieldValue(value),
         };
       }),
-      ...buildEntityGroupUpdates(input.subjectId, input.groups, ctx.ids),
+      ...buildMembershipUpdates(input.subjectId, input.groups, ctx.ids),
     ],
     groups: [...input.groups],
     subject: { id: input.subjectId, type: input.entity },
@@ -669,11 +667,11 @@ export interface ChangeGroupsInput {
 export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   const puts = input.puts ?? [];
   const removes = input.removes ?? [];
-  const updates: Update[] = [...buildEntityGroupUpdates(input.entityId, puts, ctx.ids)];
+  const updates: Update[] = [...buildMembershipUpdates(input.entityId, puts, ctx.ids)];
 
   updates.push(
     ...removes.map((removal) =>
-      buildEntityGroupDelete({
+      buildMembershipDelete({
         membershipId: removal.membershipId,
         updateId: ctx.ids.updateId(),
       }),

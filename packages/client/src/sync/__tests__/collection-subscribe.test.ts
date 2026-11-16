@@ -290,7 +290,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
         title: string;
         completed: boolean;
         id: string;
-        entity: { id: string; type: string };
+        entity: { id: string; model: string };
       }[];
       filter: unknown;
       count: number;
@@ -299,7 +299,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     globalExpect(snap.entities[0]?.completed).toBe(false);
     globalExpect(snap.entities[0]?.id).toBe("todo_1");
     globalExpect(snap.entities[0]?.entity.id).toBe("todo_1");
-    globalExpect(snap.entities[0]?.entity.type).toBe("todo");
+    globalExpect(snap.entities[0]?.entity.model).toBe("todo");
     globalExpect(snap.count).toBe(1);
 
     // Compile-time check: bogus isn't a column on the snapshot.

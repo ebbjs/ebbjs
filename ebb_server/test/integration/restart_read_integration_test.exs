@@ -95,7 +95,7 @@ defmodule EbbServer.RestartReadIntegrationTest do
     assert field(missing, "title") == "Never read"
     assert missing["last_gsn"] > before_restart["last_gsn"]
 
-    conn = post_query(%{"type" => "todo"}, actor_id)
+    conn = post_query(%{"model" => "todo"}, actor_id)
     assert conn.status == 200
     queried_ids = conn.resp_body |> Jason.decode!() |> Enum.map(& &1["id"])
     assert todo_stale in queried_ids
@@ -104,7 +104,7 @@ defmodule EbbServer.RestartReadIntegrationTest do
     # `GET /entities/:id` cannot authorize a group (it has no `ebb/membership`
     # row), so the group's durability is checked through the read API directly.
     assert {:ok, group} = EntityStore.get(group_id, actor_id)
-    assert group.type == "ebb"
+    assert group.model == "ebb"
     assert get_in(group.data, ["fields", "group", "value", "name"]) == "Test Group"
   end
 
@@ -122,7 +122,7 @@ defmodule EbbServer.RestartReadIntegrationTest do
             "method" => "replace",
             "data" => %{"type" => "lww", "value" => title, "hlc" => hlc}
           }
-        ] ++ entity_group_update(entity_id, group_id, hlc)
+        ] ++ membership_update(entity_id, group_id, hlc)
     }
 
     assert_rejected_empty!(post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id))

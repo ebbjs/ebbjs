@@ -39,7 +39,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => false, "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -53,7 +53,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
 
       {:ok, entity} = Jason.decode(conn.resp_body)
       assert entity["id"] == entity_id
-      assert entity["type"] == "todo"
+      assert entity["model"] == "todo"
       assert entity["data"]["fields"]["title"]["value"] == "Buy milk"
       assert entity["data"]["fields"]["completed"]["value"] == false
     end
@@ -75,7 +75,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Cached item", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -115,7 +115,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "GSN test", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -148,7 +148,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Dirty test", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -183,7 +183,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "First entity", "hlc" => hlc1}
             }
-          ] ++ entity_group_update(entity1, "g_test", hlc1)
+          ] ++ membership_update(entity1, "g_test", hlc1)
       }
 
       action2 = %{
@@ -199,7 +199,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Second entity", "hlc" => hlc2}
             }
-          ] ++ entity_group_update(entity2, "g_test", hlc2)
+          ] ++ membership_update(entity2, "g_test", hlc2)
       }
 
       post_actions(msgpack_encode!(%{"actions" => [action1]}))
@@ -252,7 +252,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))
@@ -278,7 +278,7 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "String HLC", "hlc" => hlc}
             }
-          ] ++ entity_group_update(entity_id, "g_test", hlc)
+          ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
       conn = post_actions(msgpack_encode!(%{"actions" => [action_body]}))

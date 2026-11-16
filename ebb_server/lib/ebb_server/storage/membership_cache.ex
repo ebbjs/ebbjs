@@ -1,22 +1,22 @@
-defmodule EbbServer.Storage.EntityGroupCache do
+defmodule EbbServer.Storage.MembershipCache do
   @moduledoc """
   GenServer that owns the entity↔Group membership ETS tables.
 
-  Manages entity-to-group mappings for the `entityGroup` system
-  entity, with secondary indexes keyed by membership id and by group.
+  Manages entity-to-group mappings carried by the `ebb/membership`
+  component, with secondary indexes keyed by row id and by group.
   Uses three ETS tables:
-  - `:ebb_entity_groups` - `:bag` of `{entity_id, entry}`, one row per
+  - `:ebb_memberships` - `:bag` of `{entity_id, entry}`, one row per
     membership
-  - `:ebb_entity_groups_by_id` - maps membership id to entry
-  - `:ebb_entity_groups_by_group` - `:ordered_set` of `{{group_id,
+  - `:ebb_memberships_by_id` - maps membership id to entry
+  - `:ebb_memberships_by_group` - `:ordered_set` of `{{group_id,
     entity_id}}`, one row per membership, so a membership write is
     O(log N) rather than the O(group size) a `:bag` lookup costs
 
   This mirrors `RelationshipCache`'s table shape and API — keyword-list
-  options and `reset/1` — rather than `GroupCache`'s single-table
-  signatures. The split from actor↔Group membership is deliberate:
-  `groupMember` carries permissions and is the authorization
-  primitive; `entityGroup` carries sync scope only.
+  options and `reset/1` — rather than `GrantCache`'s single-table
+  signatures. The split from `GrantCache` is deliberate: a grant carries
+  permissions and is the authorization primitive; a membership carries
+  sync scope only.
 
   The GenServer exists solely to own the ETS table lifetime and
   manage startup/shutdown. All public functions are lock-free.
@@ -24,16 +24,16 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   use GenServer
 
-  @default_entity_groups :ebb_entity_groups
-  @default_entity_groups_by_id :ebb_entity_groups_by_id
-  @default_entity_groups_by_group :ebb_entity_groups_by_group
+  @default_memberships :ebb_memberships
+  @default_memberships_by_id :ebb_memberships_by_id
+  @default_memberships_by_group :ebb_memberships_by_group
 
   @type t :: %__MODULE__{
-          entity_groups: atom(),
-          entity_groups_by_id: atom(),
-          entity_groups_by_group: atom()
+          memberships: atom(),
+          memberships_by_id: atom(),
+          memberships_by_group: atom()
         }
-  defstruct [:entity_groups, :entity_groups_by_id, :entity_groups_by_group]
+  defstruct [:memberships, :memberships_by_id, :memberships_by_group]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -47,16 +47,16 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.put_entity_group(%{id: "eg_1", entity_id: "todo_1", group_id: "g_1"})
+      iex> MembershipCache.put_membership(%{id: "eg_1", entity_id: "todo_1", group_id: "g_1"})
       :ok
   """
-  @spec put_entity_group(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
-  def put_entity_group(membership, opts \\ []) do
-    table = Keyword.get(opts, :entity_groups, @default_entity_groups)
-    by_id_table = Keyword.get(opts, :entity_groups_by_id, @default_entity_groups_by_id)
+  @spec put_membership(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
+  def put_membership(membership, opts \\ []) do
+    table = Keyword.get(opts, :memberships, @default_memberships)
+    by_id_table = Keyword.get(opts, :memberships_by_id, @default_memberships_by_id)
 
     by_group_table =
-      Keyword.get(opts, :entity_groups_by_group, @default_entity_groups_by_group)
+      Keyword.get(opts, :memberships_by_group, @default_memberships_by_group)
 
     entity_id = membership[:entity_id] || membership["entity_id"]
     group_id = membership[:group_id] || membership["group_id"]
@@ -66,7 +66,7 @@ defmodule EbbServer.Storage.EntityGroupCache do
       {:error, :nil_values_not_allowed}
     else
       entry = %{id: entry_id, entity_id: entity_id, group_id: group_id}
-      previous = get_entity_group(entry_id, by_id_table)
+      previous = get_membership(entry_id, by_id_table)
 
       # A delete-first re-put opens a window in which a concurrent reader
       # sees the entity with no membership at all. Insert the replacement
@@ -102,16 +102,16 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.delete_entity_group("eg_1")
+      iex> MembershipCache.delete_membership("eg_1")
       :ok
   """
-  @spec delete_entity_group(String.t(), keyword()) :: :ok
-  def delete_entity_group(entry_id, opts \\ []) do
-    table = Keyword.get(opts, :entity_groups, @default_entity_groups)
-    by_id_table = Keyword.get(opts, :entity_groups_by_id, @default_entity_groups_by_id)
+  @spec delete_membership(String.t(), keyword()) :: :ok
+  def delete_membership(entry_id, opts \\ []) do
+    table = Keyword.get(opts, :memberships, @default_memberships)
+    by_id_table = Keyword.get(opts, :memberships_by_id, @default_memberships_by_id)
 
     by_group_table =
-      Keyword.get(opts, :entity_groups_by_group, @default_entity_groups_by_group)
+      Keyword.get(opts, :memberships_by_group, @default_memberships_by_group)
 
     case :ets.lookup(by_id_table, entry_id) do
       [{_, entry}] ->
@@ -129,14 +129,14 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.get_entity_group("eg_1")
+      iex> MembershipCache.get_membership("eg_1")
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"}
 
-      iex> EntityGroupCache.get_entity_group("unknown")
+      iex> MembershipCache.get_membership("unknown")
       nil
   """
-  @spec get_entity_group(String.t(), atom()) :: map() | nil
-  def get_entity_group(entry_id, table \\ @default_entity_groups_by_id) do
+  @spec get_membership(String.t(), atom()) :: map() | nil
+  def get_membership(entry_id, table \\ @default_memberships_by_id) do
     case :ets.lookup(table, entry_id) do
       [{_, entry}] -> entry
       [] -> nil
@@ -148,17 +148,17 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.entity_groups("todo_1")
+      iex> MembershipCache.memberships("todo_1")
       ["g_1", "g_2"]
 
-      iex> EntityGroupCache.entity_groups("unknown")
+      iex> MembershipCache.memberships("unknown")
       []
   """
-  @spec entity_groups(String.t(), atom()) :: [String.t()]
-  def entity_groups(entity_id, table \\ @default_entity_groups) do
+  @spec memberships(String.t(), atom()) :: [String.t()]
+  def memberships(entity_id, table \\ @default_memberships) do
     entity_id
-    |> entity_group_entries(table)
-    |> entity_groups_from_entries()
+    |> membership_entries(table)
+    |> memberships_from_entries()
   end
 
   @doc """
@@ -167,8 +167,8 @@ defmodule EbbServer.Storage.EntityGroupCache do
   An overlay caller replaces the membership rows it touches before this
   projection, so a tombstone removes the cached group.
   """
-  @spec entity_groups_from_entries([map()]) :: [String.t()]
-  def entity_groups_from_entries(entries) do
+  @spec memberships_from_entries([map()]) :: [String.t()]
+  def memberships_from_entries(entries) do
     entries
     |> Enum.map(fn entry -> entry[:group_id] || entry["group_id"] end)
     |> Enum.uniq()
@@ -177,12 +177,12 @@ defmodule EbbServer.Storage.EntityGroupCache do
   @doc """
   Returns the raw membership entries for an entity.
 
-  `entity_groups/2` is the plain cached answer; this form lets an overlay
+  `memberships/2` is the plain cached answer; this form lets an overlay
   replace individual membership rows by id before the group set is
   projected.
   """
-  @spec entity_group_entries(String.t(), atom()) :: [map()]
-  def entity_group_entries(entity_id, table \\ @default_entity_groups) do
+  @spec membership_entries(String.t(), atom()) :: [map()]
+  def membership_entries(entity_id, table \\ @default_memberships) do
     table
     |> :ets.lookup(entity_id)
     |> Enum.map(fn {_entity_id, entry} -> entry end)
@@ -199,11 +199,11 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.group_entities("g_1")
+      iex> MembershipCache.group_entities("g_1")
       ["todo_1", "todo_2"]
   """
   @spec group_entities(String.t(), atom()) :: [String.t()]
-  def group_entities(group_id, table \\ @default_entity_groups_by_group) do
+  def group_entities(group_id, table \\ @default_memberships_by_group) do
     :ets.select(table, [{{{group_id, :"$1"}}, [], [:"$1"]}])
   end
 
@@ -212,16 +212,16 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   ## Examples
 
-      iex> EntityGroupCache.reset()
+      iex> MembershipCache.reset()
       :ok
   """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
-    table = Keyword.get(opts, :entity_groups, @default_entity_groups)
-    by_id_table = Keyword.get(opts, :entity_groups_by_id, @default_entity_groups_by_id)
+    table = Keyword.get(opts, :memberships, @default_memberships)
+    by_id_table = Keyword.get(opts, :memberships_by_id, @default_memberships_by_id)
 
     by_group_table =
-      Keyword.get(opts, :entity_groups_by_group, @default_entity_groups_by_group)
+      Keyword.get(opts, :memberships_by_group, @default_memberships_by_group)
 
     reset_table(table, :bag)
     reset_table(by_id_table, :set)
@@ -245,30 +245,30 @@ defmodule EbbServer.Storage.EntityGroupCache do
 
   @impl true
   def init(opts) do
-    table = Keyword.get(opts, :entity_groups, @default_entity_groups)
-    by_id_table = Keyword.get(opts, :entity_groups_by_id, @default_entity_groups_by_id)
+    table = Keyword.get(opts, :memberships, @default_memberships)
+    by_id_table = Keyword.get(opts, :memberships_by_id, @default_memberships_by_id)
 
     by_group_table =
-      Keyword.get(opts, :entity_groups_by_group, @default_entity_groups_by_group)
+      Keyword.get(opts, :memberships_by_group, @default_memberships_by_group)
 
-    :persistent_term.put({__MODULE__, :entity_groups}, table)
-    :persistent_term.put({__MODULE__, :entity_groups_by_id}, by_id_table)
-    :persistent_term.put({__MODULE__, :entity_groups_by_group}, by_group_table)
+    :persistent_term.put({__MODULE__, :memberships}, table)
+    :persistent_term.put({__MODULE__, :memberships_by_id}, by_id_table)
+    :persistent_term.put({__MODULE__, :memberships_by_group}, by_group_table)
     :ets.new(table, [:bag, :public, :named_table])
     :ets.new(by_id_table, [:set, :public, :named_table])
     :ets.new(by_group_table, [:ordered_set, :public, :named_table])
 
     {:ok,
      %__MODULE__{
-       entity_groups: table,
-       entity_groups_by_id: by_id_table,
-       entity_groups_by_group: by_group_table
+       memberships: table,
+       memberships_by_id: by_id_table,
+       memberships_by_group: by_group_table
      }}
   end
 
   @impl true
   def terminate(_reason, state) do
-    for table <- [state.entity_groups, state.entity_groups_by_id, state.entity_groups_by_group] do
+    for table <- [state.memberships, state.memberships_by_id, state.memberships_by_group] do
       try do
         :ets.delete(table)
       rescue

@@ -51,7 +51,7 @@ const remove = (gsn: number, id: string, _type: string): Action => ({
 /** A materialized row, as a relationship accessor chain would hold it. */
 const row = (id: string, fields: Record<string, unknown>): Entity => ({
   id,
-  type: "todo",
+  model: "todo",
   data: {
     fields: Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [key, field(value, `u_${id}`)]),
