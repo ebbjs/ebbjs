@@ -59,9 +59,11 @@ describe("defineComponent", () => {
   });
 
   it("rejects an option it does not know, naming the component and the option", () => {
+    // The removed key, written the way a stale schema would carry it.
+    const removedOption = "permission";
     let caught: unknown;
     try {
-      defineComponent("note/body", e.string(), { permission: "own" } as never);
+      defineComponent("note/body", e.string(), { [removedOption]: "own" } as never);
     } catch (error) {
       caught = error;
     }

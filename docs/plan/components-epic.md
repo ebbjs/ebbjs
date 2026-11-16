@@ -879,7 +879,7 @@ re-derived. No server-side schema, registry, or declared-set validation.
       equal or `*`. `note.*` covers `note/body`; `note/title.*` covers only `note/title`;
       `note.update` covers `note/body.update`; `ebb.*` covers `ebb/grant`. `Component.split/1`
       guarantees exactly one `/` in a component name, so the subject test is unambiguous.
-- [ ] Delete the per-component permission flag from `ComponentDef` and the registry lookup that
+- [x] Delete the per-component permission flag from `ComponentDef` and the registry lookup that
       read it; reduce `fullGroupPermissions` to one `<model>.*` per model; delete the client's
       `EBB_COMPONENTS[kind]` subject branches. A schema that still declares the flag fails at load
       with an unknown-option error, so no compatibility path survives.
