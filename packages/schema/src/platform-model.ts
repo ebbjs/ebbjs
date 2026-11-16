@@ -1,10 +1,10 @@
 /**
  * The platform's own components: the `ebb` model's four atomic values.
  *
- * Its components may sit on any row, are authorized by their own permission, and
- * never change the row's committed model. Each is atomic — one Update replaces
- * the whole value — and the membership and link keys are immutable after create,
- * so a move is a delete plus a create.
+ * Its components may sit on any row, are authorized under their own component
+ * name, and never change the row's committed model. Each is atomic — one Update
+ * replaces the whole value — and the membership and link keys are immutable
+ * after create, so a move is a delete plus a create.
  *
  * Each also declares its *scope owner*, the entity its write's group set
  * resolves against: `ebb/group` is `self`, `ebb/grant` and `ebb/membership`
@@ -72,28 +72,24 @@ const linkShape = e.object({
 
 const groupComponent = defineComponent(EBB_COMPONENTS.group, groupShape, {
   optional: true,
-  permission: "own",
   scope: "self",
 });
 
 const grantComponent = defineComponent(EBB_COMPONENTS.grant, grantShape, {
   optional: true,
   structural: true,
-  permission: "own",
   scope: "group_id",
 });
 
 const membershipComponent = defineComponent(EBB_COMPONENTS.membership, membershipShape, {
   optional: true,
   structural: true,
-  permission: "own",
   scope: "group_id",
 });
 
 const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
   optional: true,
   structural: true,
-  permission: "own",
   scope: "source_id",
 });
 

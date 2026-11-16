@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { EBB_COMPONENTS, EBB_COMPONENT_KINDS, type Update } from "@ebbjs/core";
+import { EBB_COMPONENTS, EBB_COMPONENT_KINDS, ebbComponent, type Update } from "@ebbjs/core";
 
 import {
   grantRowUpdate,
@@ -41,7 +41,7 @@ describe("system row emitters", () => {
   it.each(EBB_COMPONENT_KINDS)("names the %s component from the platform vocabulary", (kind) => {
     const update = systemRowUpdate(kind, "e_1", {}, ids());
 
-    expect(valueUpdate(update).component).toBe(EBB_COMPONENTS[kind]);
+    expect(valueUpdate(update).component).toBe(ebbComponent(kind));
   });
 
   it("writes ebb/link as one Update carrying all four fields", () => {

@@ -6,6 +6,7 @@ import {
   InvalidComponentNameError,
   ModelRegistry,
   OptionalDefaultConflictError,
+  UnknownComponentOptionError,
   defineComponent,
   defineModel,
   defineSchema,
@@ -27,7 +28,6 @@ describe("defineComponent", () => {
         conflictScope: undefined,
         indexed: false,
         structural: false,
-        permission: undefined,
         scope: undefined,
         version: 1,
       }),
@@ -45,7 +45,6 @@ describe("defineComponent", () => {
         conflictScope: "component",
         indexed: true,
         structural: true,
-        permission: "own",
         version: 2,
       },
     );
@@ -55,9 +54,23 @@ describe("defineComponent", () => {
     expect(body.conflictScope).toBe("component");
     expect(body.indexed).toBe(true);
     expect(body.structural).toBe(true);
-    expect(body.permission).toBe("own");
     expect(body.version).toBe(2);
     expect(body.shape.properties).toHaveProperty("engine");
+  });
+
+  it("rejects an option it does not know, naming the component and the option", () => {
+    let caught: unknown;
+    try {
+      defineComponent("note/body", e.string(), { permission: "own" } as never);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(UnknownComponentOptionError);
+    expect((caught as UnknownComponentOptionError).componentName).toBe("note/body");
+    expect((caught as UnknownComponentOptionError).option).toBe("permission");
+    expect((caught as Error).message).toContain("note/body");
+    expect((caught as Error).message).toContain("permission");
   });
 
   it("rejects a name that is not <model>/<leaf>-shaped with the offending name", () => {
@@ -176,7 +189,7 @@ describe("ModelRegistry", () => {
   const body = defineComponent(
     "note/body",
     { text: e.string() },
-    { optional: true, loading: "lazy", conflictScope: "component", permission: "own" },
+    { optional: true, loading: "lazy", conflictScope: "component" },
   );
   const note = defineModel("note", { title: e.string().default("untitled"), body });
 
@@ -200,14 +213,12 @@ describe("ModelRegistry", () => {
     expect(registry().componentOf("note", "missing")).toBeUndefined();
   });
 
-  it("reports existence, loading, conflict scope, and permission", () => {
+  it("reports existence, loading, and conflict scope", () => {
     expect(registry().isOptional("note", "title")).toBe(false);
     expect(registry().isOptional("note", "note/body")).toBe(true);
     expect(registry().loadingOf("note", "body")).toBe("lazy");
     expect(registry().conflictScopeOf("note", "body")).toBe("component");
     expect(registry().conflictScopeOf("note", "title")).toBe("field");
-    expect(registry().permissionOf("note", "body")).toBe("note/body");
-    expect(registry().permissionOf("note", "title")).toBe("note");
   });
 });
 

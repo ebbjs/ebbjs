@@ -197,16 +197,6 @@ export class ModelRegistry {
   }
 
   /**
-   * Permission subject for a component: its own `<model>/<leaf>` when it
-   * opts in, otherwise the model's `<model>` subject.
-   */
-  permissionOf(model: string | ModelDef<Record<string, TSchema>>, name?: string): string {
-    const modelName = modelNameOf(model);
-    const component = name === undefined ? undefined : this.componentOf(modelName, name);
-    return component?.permission === "own" ? component.name : modelName;
-  }
-
-  /**
    * Component-kind query for conflict policy: `true` when the component
    * `name` merges last-writer-wins, so a concurrent inbound write can
    * silently overwrite a local one. `name` is a field key or a full

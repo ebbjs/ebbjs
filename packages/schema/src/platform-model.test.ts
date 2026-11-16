@@ -53,14 +53,6 @@ describe("platform component values are atomic", () => {
   });
 });
 
-describe("platform components declare their own permission", () => {
-  it("keeps the four grants distinct as `ebb/<kind>.<verb>`", () => {
-    for (const kind of EBB_COMPONENT_KINDS) {
-      expect(ebbModel.components[kind].permission).toBe("own");
-    }
-  });
-});
-
 describe("platform components and conflict scope", () => {
   it("leaves a group row detectable, unlike the structural components", () => {
     // `group` is the one platform component a concurrent write should surface;
