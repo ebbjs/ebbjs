@@ -24,7 +24,7 @@ ebbSystemEntity.components.group = defineComponent(
     name: e.string(),
     apps: Type.Optional(e.array(e.string())),
   }),
-  { optional: true, permission: "own" },
+  { optional: true },
 );
 ```
 
@@ -119,8 +119,10 @@ Alice uses `notes` (https://notes.example.com) and `issues`
 
 - **Authorization.** `Authorizer`, `PermissionChecker` and the query SQL keep
   their rules. `packages/client/src/sync/permission.ts` needs no new rule: a
-  scope write is an `ebb/group` write, resolved as `ebb/group.update` in the
-  group because the component declares `permission: "own"`.
+  scope write is an `ebb/group` write, so its permission subject is
+  `ebb/group` (`ebb/group.update` for an edit). `ebb/group` is a subject under
+  `ebb`, and grants match by ancestry, so `ebb.*` covers it without the
+  component being declared anywhere.
 - **Presence and functions.** Presence scope is already the subscribed group
   set, which is now the app's subset. Functions run as the subject actor with
   its own grants; there is no app dimension.

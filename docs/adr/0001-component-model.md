@@ -1,6 +1,6 @@
 # 0001 — Components are the unit of identity
 
-**Status:** accepted, 2026-11-09; amended 2026-11-11 for the system-component contract ([#805](https://github.com/ebbjs/ebbjs/issues/805))
+**Status:** accepted, 2026-11-09; amended 2026-11-11 for the system-component contract ([#805](https://github.com/ebbjs/ebbjs/issues/805)); amended 2026-11-16 for the component-subject permission rule ([#803](https://github.com/ebbjs/ebbjs/issues/803))
 **Epic:** [#793](https://github.com/ebbjs/ebbjs/issues/793) · **Rationale:** [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md) · **Plan:** [`docs/plan/components-epic.md`](../plan/components-epic.md)
 **Amends:** `CONTEXT.md` — adds a Components section; revises Entity, Field, Committed model, and Materialization.
 
@@ -51,7 +51,7 @@ becomes the name of a declared component set.**
    the namespace is its model, so an entity carries components of exactly one _user_ model and the
    server derives the permission subject from the name without a schema. `ebb/` is the platform's
    namespace: an `ebb/*` component may sit on any row (that is how a link lives on its source), is
-   authorized by its own permission (decision 12), and never determines or changes the row's
+   its own permission subject under `ebb` (decision 12), and never determines or changes the row's
    committed model. A row's committed model is the model of its user components, or `ebb` when it
    carries only platform components; `ebb` is not a model an app declares. Multi-brand _user_
    entities remain a non-goal.
@@ -91,13 +91,32 @@ becomes the name of a declared component set.**
     one table read instead of `EntityIndex.resolve_groups_cached/3`'s five clauses. The declaration
     is restricted to the `ebb/` namespace: a user component that could name a group could mint its
     own delivery scope.
-12. **Every `ebb/*` component carries its own permission.** `<model>.<verb>` survives for user
-    components and cannot serve system components: all four live under the `ebb` prefix, so the
-    model-level string collapses them to `ebb.create`. Each declares `permission: "own"`, giving
-    `ebb/group.create`, `ebb/grant.create`, `ebb/membership.create`, `ebb/link.create` — today's
-    distinct grants, preserved. On a user row, an overlay component is checked **in addition to**
-    the host model's `update`: writing `ebb/link` onto a note mutates the note, so the own
-    permission never substitutes for the host's.
+12. **The permission subject is the component the write names.** A grant
+    `<grantSubject>.<verb|*>` covers a write subject `<subject>` when the two subjects are equal or
+    `<subject>` descends from the grant's — `String.starts_with?(subject, grantSubject <> "/")` —
+    and the verb is equal or `*`. `Component.split/1` guarantees exactly one `/` in a component
+    name, so the test is unambiguous. A row create or delete names no component and checks the
+    model (`note.create`, `note.delete`); a write that names a component checks that component
+    (`note/body.update`). Ancestry is what keeps existing grants working: `note.*` covers
+    `note/body` and every field declared later, while `note/title.*` covers `note/title` and
+    nothing else. It is also what the four system components need, with no special case —
+    `ebb/grant` is a subject under `ebb`, so `ebb.*` covers it, and `ebb/link.create` stays
+    distinct from `ebb/group.create` without a second rule for platform components. There is no
+    deny, so narrowing an actor who holds `note.*` means rewriting that grant to enumerate what
+    they keep: restriction is a property of grants, not of declarations. Writes can be
+    field-granular; reads cannot, because read filtering is a fan-out property of the delivery
+    boundary rather than a permission string. The server reads no schema for any of it: the subject
+    and the verb are both wire facts.
+
+    **The opt-in is dropped, not deprecated.** An earlier form of this decision had a component
+    declare a permission flag of its own in the client's schema, with
+    `<model>/<component>.<verb>` checked only for components that did. A server branching on "this
+    component opted in" is performing a declared-set lookup — the one thing the schema-free
+    acceptance forbids — so the flag could not be honoured where it mattered. Naming the subject on
+    the wire answers the same question without a schema, and gives user-defined and platform
+    components one rule instead of two. The flag and the registry lookup that read it are deleted,
+    not deprecated.
+
 13. **System components are atomic and their key is immutable.** One Update replaces the whole
     value, so a torn edge, membership, or grant is unrepresentable; the key is fixed after create,
     so moving a membership or an edge is a delete plus a create.
@@ -177,7 +196,7 @@ That rule decides more than it looks like:
 - A field whose meaning is "absent" — existence is a bit, so absence has no value to misread.
 - Once [#805](https://github.com/ebbjs/ebbjs/issues/805) lands, an edge, membership, or grant whose
   values disagree with each other, or whose key disagrees with the row's identity.
-- An `ebb/*` component with no declared scope owner and no permission of its own.
+- An `ebb/*` component with no declared scope owner.
 
 ### What gets harder
 
@@ -219,12 +238,12 @@ model**.
   `(entity_id, group_id)`, `ebb/link`'s `source_id` and `ebb/grant`'s `group_id` are refused a
   re-point, so moving an actor or a membership between groups is a delete plus a create — which
   replaces the earlier "needs the permission in both groups" rule rather than keeping it as well.
-- **`ebb/membership`'s permission is declared but never consulted.** Decision 12 lists
-  `ebb/membership.create` among the four distinct grants, and it is registered and seeded like the
-  others, but a membership write authorizes as the _entity's_ `<model>.create` / `.update` — which
-  is what `entityGroup.*` did before #805 too. The string exists for a rule slice 12 is where the
-  server-side membership permission would land; until then it is inert, and saying so here is
-  cheaper than a reader assuming it gates something.
+- **`ebb/membership` is a subject under `ebb`, but not the subject a membership write is checked
+  against.** A membership write authorizes as the _entity's_ `<model>.create` / `.update`, which is
+  what `entityGroup.*` did before #805 and what #121's "Add Entity to Group" row settles. Under
+  decision 12's ancestry rule the component name is an ordinary subject — a grant may name it and
+  `ebb.*` covers it — but no code path checks a membership write against `ebb/membership.*`. Said
+  explicitly so a reader does not assume the string gates something.
 
 ### Amendments from slice 5 ([#798](https://github.com/ebbjs/ebbjs/issues/798))
 

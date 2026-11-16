@@ -37,7 +37,8 @@ places — the permission string and the query source — and both read from the
 ```
 leaf        the mergeable position: { value, update_id, hlc } or { map: { <key>: leaf } }
 component   a named value. One leaf (e.string, e.object) or one key space (e.map, e.log).
-            Carries: existence, loading, conflict scope, version, optional own permission.
+            Carries: existence, loading, conflict scope, version, and — as its name — a permission
+            subject.
 model     a named component set and the component namespace. What defineModel declares. What
             client.<name> namespaces. Carries: the permission subject, the query source, the typed
             projection. An entity carries one model's components.
@@ -91,8 +92,8 @@ lands.
   That closes #624's identity story without giving the server a schema.
 - **The prefix is the brand.** User components are namespaced by their model, so an entity carries
   exactly one _user_ model. `ebb/*` components are the platform's overlay: they may sit on any row,
-  are authorized by their own permission, and never change the row's committed model or its model
-  entry. Multi-brand _user_ entities are a non-goal.
+  are their own permission subjects (decision 12), and never change the row's committed model or
+  its model entry. Multi-brand _user_ entities are a non-goal.
 - A component declared `optional: true` may be absent. A row with zero components is possible and
   means "an id that exists and has nothing attached"; only `delete` removes the id.
 
@@ -100,17 +101,20 @@ lands.
 
 - Verbs are unchanged: `create` (first write to a row), `update` (`merge`/`replace`/`drop` on an
   existing row), `delete`, `read`.
-- Scale is the model: `<model>.<verb>` and `<model>.*`, checked exactly as
-  `PermissionHelper.check_permission/3` does today.
-- A component may opt in to its own permission with `permission: "own"`, yielding
-  `<model>/<component>.<verb>`. **Off by default for user components**, because permissions are
-  about domain objects, not data layout, and a permission per component across a large schema is a
-  table nobody can administer. **Required for every `ebb/*` component**, because all four share the
-  `ebb` prefix and the model-level string would collapse them to `ebb.create`.
-- **Field-level permissions are not in this epic.** Read granularity is a fan-out property — a
-  replica is a local copy of everything the client was sent — so field-level _read_ permissions
-  would require filtering at the delivery boundary, not a new permission string. That is a
-  separate design.
+- The subject is the component the write names. A row create or delete names no component and
+  checks the model (`note.create`, `note.delete`); a write that names a component checks that
+  component (`note/body.update`). There is no opt-in flag and no user-vs-platform fork.
+- Grants match by ancestry: `<grantSubject>.<verb|*>` covers write subject `<subject>` when the
+  subjects are equal or `<subject>` starts with `<grantSubject <> "/">`, and the verb is equal or
+  `*`. `note.*` covers `note/body` and every field declared later; `note/title.*` covers only
+  `note/title`; `note.update` covers `note/body.update`. `ebb/*` needs no case of its own —
+  `ebb/grant` is a subject under `ebb`, so `ebb.*` covers it.
+- There is no deny, so narrowing a member who holds `note.*` means rewriting that grant to
+  enumerate what they keep. Restriction is a property of grants, not of declarations.
+- **Field-granular writes, not reads.** A write can be field-granular because it names its
+  component. Reads cannot: read granularity is a fan-out property — a replica is a local copy of
+  everything the client was sent — so field-level _read_ permissions would require filtering at the
+  delivery boundary, not a new permission string. That is a separate design.
 
 ### Invalidation
 
@@ -163,7 +167,7 @@ client      query(model) reads declared components    → set intersection, not 
             plan.readComponents                        → replaces readTypes
             structural component declaration           → replaces STRUCTURAL_MODELS
 auth        component prefix = committed model         → #624 cannot borrow a model's permission
-            ebb/* component names its permission       → ebb/group.create, not ebb.create
+            component name is the subject              → ebb/group.create, not ebb.create
 ```
 
 ## What this supersedes, folds, or leaves alone
@@ -282,9 +286,9 @@ set, it may name the entity whose scope it borrows, and anything you paginate mu
       Conflict.
 - [ ] ADR recording Decisions 1–13, with the `type`-survives-as-model limit stated explicitly and
       the `ebb/*` alphabet in Decision 13.
-- [ ] Record the three reversal-expensive questions: atomic-vs-keyspace per builder, whether
-      opt-in component permissions are worth the table growth, and whether an `ebb/*` component
-      may declare its own scope (Decision 11).
+- [ ] Record the three reversal-expensive questions: atomic-vs-keyspace per builder, how far a
+      grant should be narrowed before the grant table stops being administrable, and whether an
+      `ebb/*` component may declare its own scope (Decision 11).
 - [ ] Amend #787 to point here.
 
 **Acceptance.** `CONTEXT.md` defines every term the later slices use, and no later slice's
@@ -321,7 +325,8 @@ const note  = defineModel("note", { title, status: e.enum([…]), body });
 - [ ] `defineModel` accepts builders and components in one map; normalisation is total and
       reversible.
 - [ ] `ModelRegistry`: `componentsOf(model)`, `componentOf(model, name)`,
-      `isOptional`, `loadingOf`, `isStructural`, `conflictScopeOf`, `permissionOf`.
+      `isOptional`, `loadingOf`, `isStructural`, `conflictScopeOf`. The subject is the component's
+      own name, so no subject lookup is needed.
 - [ ] `ModelDef.shape` is derived from the attached components, so `Static<shape>` and every
       projection keep working unchanged.
 - [ ] Schema hash includes the model→component mapping (permission integrity; see sub-issue 10).
@@ -686,8 +691,8 @@ whose `group_id` disagrees with its row id.
 
 **Scope.** `ebb/group`, `ebb/grant` (today's `groupMember`), `ebb/membership` (today's
 `entityGroup`), and `ebb/link` (today's `relationship`) as atomic components on ordinary rows; each
-declares `permission: "own"` (Decision 12) and its own conflict scope; dispatch on the component;
-`SYSTEM_ENTITY_NAMES`, `RESERVED_ENTITY_NAMES`, `PermissionHelper.system_models/0`, and
+is its own permission subject under `ebb` (Decision 12) and declares its own conflict scope; dispatch
+on the component; `SYSTEM_ENTITY_NAMES`, `RESERVED_ENTITY_NAMES`, `PermissionHelper.system_models/0`, and
 `GroupListing`'s copy disappear. **Membership and its pair are immutable after create** (Decision
 13): re-pointing an existing `ebb/membership` is refused, and moving an entity between groups is a
 delete plus a create.
@@ -706,7 +711,7 @@ listing are keyset pagination over `idx_entities_entity_group_page`, `idx_entiti
       torn edge is unrepresentable.
 - [ ] `ebb/membership` carries `entity_id`, `group_id` as one atomic value and refuses a re-point;
       `ebb/grant` carries `actor_id`, `group_id`, `permissions` atomically for the same reason.
-- [ ] `ebb/*` components declare `permission: "own"` and their own conflict scope.
+- [ ] `ebb/*` components are their own permission subjects and declare their own conflict scope.
 - [ ] An `ebb/*` write never re-models its host: the existence index's model entry is the row's
       committed model, so an overlay component adds only its component entry. `RowMutations`'
       folded model must resolve the committed model for an `ebb/*`-only write instead of reporting
@@ -748,8 +753,8 @@ is rebuilt from the Action log instead of answering empty pages. Four things are
 than resolved: a group's `apps` is a **list of app ids** rather than a map, because `e.object`
 refuses a nested map (absent is unscoped, `[]` is nobody, and a scope edit writes the whole value);
 `drop` of a platform component is still refused by the client's write path, as #798 left it;
-decision 12's `ebb/*` overlay on a user row is #820's, so the validator refuses two component
-prefixes on one subject and the overlay has no write path; and a delete whose id nothing models keeps
+the `ebb/*` overlay on a user row is #820's, so the validator refuses two component prefixes on one
+subject and the overlay has no write path; and a delete whose id nothing models keeps
 its kind `nil`, which is the pre-existing unresolvable-delete behaviour. `EntityIndex`'s scope
 resolution still dispatches on the kind — that table is slice 11.
 
@@ -833,40 +838,66 @@ create. Open question 7 (below) is **not** answered here: the scope table reads
 
 ### 12. `feat(auth)`: per-component permissions, with the server schema-free
 
-**Why.** The declaration half of the identity story, with one hard constraint: **the server stays
-schema-free.** The wire no longer carries `subject_type` (#797), so the forgeable identity claim is
-gone, and #624's committed-model check landed separately in #639. The client refuses a component its
-model does not declare (`ModelRegistry.validateAction`); the server cannot, because it has no schema
-and must not grow one. What the server can enforce is that a component's prefix is the id's
-committed model, so a component cannot borrow another model's permission.
+**Why.** People want to grant "may edit a note's title, may not edit its body", so a permission has
+to be able to name a component. The first design let a component carry a permission flag of its own
+in the client's schema, which cannot work: the server has no schema, so "this component opted in"
+is a fact only the client knows, and a server that branched on it would be doing a declared-set
+lookup — exactly what this slice's acceptance forbids. So there is no opt-in. The subject is the
+component the write names, and grants match by ancestry: `note.*` still covers everything under
+`note`, so this is not the "every grant becomes field-granular" change it first looked like, and an
+app that wants field separation grants `note/title.*` and never `note.*`.
 
-**Scope.** Committed-model enforcement (already in the Authorizer; keep and test it); per-component
-permissions from Decision 12; the model→component mapping in the schema hash (already covered by
-`computeSchemaHash`); the scope table from slice 11 consumed here, not re-derived. No server-side
-schema, registry, or declared-set validation.
+The same rule removes the user-vs-platform fork. `<model>.<verb>` was not enough for the `ebb/*`
+components — all four live under the `ebb` prefix, so the model-level string collapsed them to
+`ebb.create` — and the fork existed only to give them a subject of their own. Under a
+component-name subject, `ebb/grant` is simply a subject under `ebb`.
+
+Two things were already true and stay. The client refuses a component its model does not declare
+(`ModelRegistry.validateAction`); the server cannot, because it has no schema and must not grow one.
+What the server does enforce is that a component's prefix is the id's committed model, so a
+component cannot borrow another model's permission. #624's committed-model check landed separately
+in #639.
+
+**Scope.** The ancestry rule on both sides — the server's subject and verb read off the wire, the
+client matching grants the same way; deletion of the per-component permission flag and the
+registry lookup that read it, and of the client's per-kind subject branches; committed-model
+enforcement (already in the Authorizer; keep and test it); the model→component mapping in the schema
+hash (already covered by `computeSchemaHash`); the scope table from slice 11 consumed here, not
+re-derived. No server-side schema, registry, or declared-set validation.
 
 **Work.**
 
 - [x] The client rejects a component the model does not declare (`ModelRegistry.validateAction`).
-- [ ] The server rejects a component whose prefix is not the id's committed model, and never
-      consults a schema. A component `note/<anything>` under committed model `note` is accepted;
-      record that as the accepted residual (no privilege escalation — the actor already holds
-      `<model>.<verb>`).
-- [ ] `ebb/<component>.<verb>` checked when the component declares `permission: "own"`;
-      `<model>.<verb>` otherwise; `<model>.*` unchanged.
+- [x] The server rejects a component whose prefix is not the id's committed model, and never
+      consults a schema. #624's committed-model regression tests stay green (#639), including a
+      component whose prefix matches the committed model but whose leaf is undeclared.
+- [x] The subject is what the write names: a row create or delete names the model (`note.create`,
+      `note.delete`); a value write names its component (`note/body.update`). Subject and verb both
+      come off the wire, so user and `ebb/*` components take one rule and no per-kind branch.
+- [x] Grants match by ancestry: a grant `<grantSubject>.<verb|*>` covers write subject `<subject>`
+      when the two are equal or `<subject>` starts with `<grantSubject <> "/">`, and the verb is
+      equal or `*`. `note.*` covers `note/body`; `note/title.*` covers only `note/title`;
+      `note.update` covers `note/body.update`; `ebb.*` covers `ebb/grant`. `Component.split/1`
+      guarantees exactly one `/` in a component name, so the subject test is unambiguous.
+- [ ] Delete the per-component permission flag from `ComponentDef` and the registry lookup that
+      read it; reduce `fullGroupPermissions` to one `<model>.*` per model; delete the client's
+      `EBB_COMPONENTS[kind]` subject branches. A schema that still declares the flag fails at load
+      with an unknown-option error, so no compatibility path survives.
 - [x] Schema hash covers the model→component mapping, so a permission cannot be borrowed across
       models.
-- [ ] Keep #624's committed-model regression tests green (#639), and add a vector for a component
-      whose prefix matches the committed model but whose leaf is undeclared.
-- [ ] Document the read/write asymmetry: field-granular _write_ permissions are available,
-      field-granular _read_ permissions are out of scope because read filtering is a fan-out
-      property.
+- [x] Document the read/write asymmetry: writes can be field-granular because they name their
+      component; reads cannot, because read filtering is a fan-out property.
+- [x] Amend ADR decision 12 and this slice to the ancestry rule, and record why the opt-in was
+      dropped rather than implemented.
 
 **Acceptance.** The server reads no schema: no component registry, schema file, or declared-set
 lookup exists in `ebb_server/lib`. Every vector in `624-committed-type-authz.md` stays a rejected
-write. A component whose prefix is not the id's committed model is refused. An undeclared leaf under
-the committed model is refused by the client and accepted by the server; the slice records that as
-an accepted residual, because it grants no authority the actor did not already have.
+write. A component whose prefix is not the id's committed model is refused. `note.*` authorizes
+`note/body`; `note/title.*` authorizes `note/title` and does not authorize `note/body`. A row create
+or delete is checked as the model, an update as the component on the wire, and `ebb/*` components
+need no special case. An undeclared leaf under the committed model is refused by the client and
+accepted by the server — an accepted residual, recorded rather than fixed, because it grants no
+authority the actor did not already hold.
 
 **Depends on.** 4, 6, 11.
 
