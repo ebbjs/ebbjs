@@ -42,7 +42,7 @@ import {
   createAction,
   createClock,
   decodeSync,
-  EBB_COMPONENTS,
+  ebbComponent,
   EBB_MODEL_NAME,
   encodeSync,
   localEvent,
@@ -96,7 +96,7 @@ const platformUpdate = (
 ): UpdateInput => ({
   id: `${updateId}_${kind}`,
   subject_id: subjectId,
-  component: EBB_COMPONENTS[kind],
+  component: ebbComponent(kind),
   method: "replace" as const,
   data: { value, update_id: `${updateId}_${kind}`, hlc },
 });
@@ -1464,7 +1464,7 @@ describe("integration: client.actions (defineAction)", () => {
       expect(
         new Set(
           updates
-            .filter((u) => u.method !== "delete" && u.component === EBB_COMPONENTS.membership)
+            .filter((u) => u.method !== "delete" && u.component === ebbComponent("membership"))
             .map((u) => u.subject_id),
         ).size,
       ).toBe(2);

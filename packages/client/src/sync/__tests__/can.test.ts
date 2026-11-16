@@ -91,6 +91,28 @@ describe("client.can — global form", () => {
     });
   });
 
+  it("allows a component permission covered by a grant on the model", async () => {
+    const { client } = await mkClient([["g_1", ["note.*"]]]);
+    await expect(client.can("note/body.update")).resolves.toEqual({
+      kind: "allowed",
+      groupIds: ["g_1"],
+    });
+  });
+
+  it("denies a component outside the grant's subject", async () => {
+    const { client } = await mkClient([["g_1", ["note/title.*"]]]);
+    await expect(client.can("note/body.update")).resolves.toEqual({
+      kind: "denied",
+      violation: {
+        kind: "missing-permission",
+        permissionSubject: "note/body",
+        subjectId: "*",
+        required: "note/body.update",
+        groupIds: ["g_1"],
+      },
+    });
+  });
+
   it("denies when no actor group grants the permission", async () => {
     const { client } = await mkClient([["g_1", ["todo.update"]]]);
     await expect(client.can("todo.create")).resolves.toEqual({

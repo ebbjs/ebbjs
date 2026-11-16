@@ -349,6 +349,157 @@ describe("collectPermissionViolations — user entities", () => {
   });
 });
 
+describe("collectPermissionViolations — component subjects", () => {
+  /** A committed note row owned by `g_1`, where the actor holds `permissions`. */
+  const mkNoteClient = async (permissions: string[]) => {
+    const { client } = await mkClient([["g_1", permissions]]);
+    await client.storage.entities.set(mkEntity("note_1", "note", { title: "T", body: "B" }));
+    await client.storage.entities.set(
+      platformEntity("eg_1", "membership", { entity_id: "note_1", group_id: "g_1" }),
+    );
+    return client;
+  };
+
+  it("authorizes a write to a component by a grant on that component", async () => {
+    const client = await mkNoteClient(["note/title.*"]);
+
+    await expect(
+      client.write([action(update("note", "note_1", "patch", { title: "Renamed" }))]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("denies a write to a component the grant does not cover", async () => {
+    const client = await mkNoteClient(["note/title.*"]);
+
+    const error = await client
+      .write([action(update("note", "note_1", "patch", { body: "Rewritten" }))])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        permissionSubject: "note/body",
+        subjectId: "note_1",
+        required: "note/body.update",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("authorizes a component write by a grant on the model", async () => {
+    const client = await mkNoteClient(["note.*"]);
+
+    await expect(
+      client.write([action(update("note", "note_1", "patch", { body: "Rewritten" }))]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("denies a multi-component update when the grant covers only one of them", async () => {
+    const client = await mkNoteClient(["note/title.*"]);
+
+    const error = await client
+      .write([action(update("note", "note_1", "patch", { title: "Renamed", body: "Rewritten" }))])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        permissionSubject: "note/body",
+        subjectId: "note_1",
+        required: "note/body.update",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("authorizes a multi-component update when the grant covers all of them", async () => {
+    const client = await mkNoteClient(["note/title.*", "note/body.*"]);
+
+    await expect(
+      client.write([
+        action(update("note", "note_1", "patch", { title: "Renamed", body: "Rewritten" })),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+  });
+
+  it("authorizes a drop as a write to the component it detaches", async () => {
+    const client = await mkNoteClient(["note/title.*"]);
+
+    const error = await client
+      .write([
+        action([
+          { id: "u_1", subject_id: "note_1", component: "note/body", method: "drop", data: null },
+        ]),
+      ])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        permissionSubject: "note/body",
+        subjectId: "note_1",
+        required: "note/body.update",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("authorizes a row create by a grant on the model, not on a field", async () => {
+    const created = await mkClient([["g_1", ["note.create"]]]);
+    await created.client.storage.entities.set(
+      platformEntity("eg_1", "membership", { entity_id: "note_2", group_id: "g_1" }),
+    );
+    await expect(
+      created.client.write([action(update("note", "note_2", "put", { title: "T" }))]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const denied = await mkClient([["g_1", ["note/title.create"]]]);
+    await denied.client.storage.entities.set(
+      platformEntity("eg_1", "membership", { entity_id: "note_2", group_id: "g_1" }),
+    );
+    const error = await denied.client
+      .write([action(update("note", "note_2", "put", { title: "T" }))])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        permissionSubject: "note",
+        subjectId: "note_2",
+        required: "note.create",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+
+  it("authorizes a delete by a grant on the model, not on a field", async () => {
+    const allowed = await mkNoteClient(["note.delete"]);
+    await expect(allowed.write([action(update("note", "note_1", "delete"))])).resolves.toEqual({
+      rejected: [],
+    });
+
+    const denied = await mkNoteClient(["note/title.delete"]);
+    const error = await denied
+      .write([action(update("note", "note_1", "delete"))])
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect((error as PermissionError).violations).toEqual([
+      {
+        kind: "missing-permission",
+        permissionSubject: "note",
+        subjectId: "note_1",
+        required: "note.delete",
+        groupIds: ["g_1"],
+      },
+    ]);
+  });
+});
+
 describe("collectPermissionViolations — link edges", () => {
   const relUpdate = (sourceId: string, targetId: string, type: string): Update[] =>
     update("link", "rel_1", "put", {

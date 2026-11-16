@@ -54,7 +54,14 @@ export interface SubjectWrites {
   kind: EbbComponentKind | null;
   /** The prefix its components name; `undefined` for a delete-only row. */
   model?: string;
+  /** The components the batch carries a value for, keyed by component name. */
   readonly components: Map<string, FieldValue>;
+  /**
+   * Every component the batch writes, including a `drop`, which names the
+   * component it detaches without carrying a value. A permission is checked
+   * against what a write names, so a drop is a write to its component.
+   */
+  readonly written: Set<string>;
   deleted: boolean;
   /**
    * Whether the batch carries a `replace`, which is how a create states itself on
@@ -73,6 +80,7 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
     const entry: SubjectWrites = subjects.get(update.subject_id) ?? {
       kind: null,
       components: new Map(),
+      written: new Set(),
       deleted: false,
       replaced: false,
     };
@@ -82,6 +90,7 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
       entry.kind = ebbComponentKind(update.component) ?? entry.kind;
       entry.model = componentModel(update.component);
       entry.replaced = entry.replaced || update.method === "replace";
+      entry.written.add(update.component);
       if (update.method !== "drop") entry.components.set(update.component, update.data);
     }
     subjects.set(update.subject_id, entry);
