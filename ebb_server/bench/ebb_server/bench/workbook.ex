@@ -7,9 +7,12 @@ defmodule EbbServer.Bench.Workbook do
   ids) so it never hits the idempotency dedup path, which would consume
   zero GSNs and silently inflate the accepted rate.
 
-  One Update names one `(entity, component)`, so the canonical unit is a
-  row's components: a user entity's `todo/title` plus the two components of
-  the `entityGroup` row filing it into the bench group.
+  One Update names one component, so the canonical unit is a row's
+  components: a user entity's `todo/title` plus the two components of the
+  `entityGroup` row filing it into the bench group. A row a measured Action
+  brings into existence also pays its create, so a workload that creates two
+  rows carries two Updates more than the configured component count — that
+  extra Update per created row is what #817 prices.
   """
 
   alias EbbServer.Bench.Options
@@ -85,6 +88,7 @@ defmodule EbbServer.Bench.Workbook do
       "actor_id" => @actor_id,
       "hlc" => hlc,
       "updates" => [
+        row_create("u_bench_group_create", @group_id, "group", hlc),
         component_update(
           "u_bench_group",
           @group_id,
@@ -92,6 +96,7 @@ defmodule EbbServer.Bench.Workbook do
           "replace",
           leaf("Bench Group", hlc)
         ),
+        row_create("u_bench_member_create", "gm_bench", "groupMember", hlc),
         component_update(
           "u_bench_member_actor",
           "gm_bench",
@@ -129,6 +134,8 @@ defmodule EbbServer.Bench.Workbook do
       "actor_id" => @actor_id,
       "hlc" => hlc,
       "updates" => [
+        row_create("u_seed_create_#{seq}", entity_id, "todo", hlc),
+        row_create("u_seed_eg_create_#{seq}", membership_id, "entityGroup", hlc),
         todo_component(entity_id, "title", "seed-#{seq}", seq, hlc, nil)
         | entity_group_updates(entity_id, membership_id, hlc)
       ]
@@ -174,6 +181,18 @@ defmodule EbbServer.Bench.Workbook do
   defp updates(config, entity_id, membership_id, worker_id, seq, hlc, sent_us) do
     ownership = entity_group_updates(entity_id, membership_id, hlc)
 
+    creates =
+      if config.distribution == :hot do
+        # The hot row and its membership were seeded before the window, so the
+        # measured Action only updates them.
+        []
+      else
+        [
+          row_create("u_#{unique()}", entity_id, "todo", hlc),
+          row_create("u_#{unique()}", membership_id, "entityGroup", hlc)
+        ]
+      end
+
     content =
       [
         todo_component(entity_id, "bench_sent_us", sent_us, seq, hlc, sent_us),
@@ -190,9 +209,22 @@ defmodule EbbServer.Bench.Workbook do
           end
       ]
 
-    # Exactly `updates_per_action` Updates: the row's ownership components,
-    # then its content components, truncated to the configured count.
-    Enum.take(ownership ++ content, config.updates_per_action)
+    # The configured component count, plus the create of each of the two rows
+    # this Action brings into existence.
+    creates ++ Enum.take(ownership ++ content, config.updates_per_action)
+  end
+
+  # The row-scoped create: the row's existence and its creation time, and no
+  # component. Its model is the prefix of the components that follow it.
+  defp row_create(id, subject_id, model, hlc) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
   end
 
   defp entity_group_updates(entity_id, membership_id, hlc) do
