@@ -40,9 +40,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
 
-  @typedoc """
-  The caches a patch merge reads. Each is an ETS table keyed by entry id.
-  """
   @type tables :: %{
           grants_by_id: :ets.tab(),
           memberships_by_id: :ets.tab(),
@@ -50,10 +47,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           group_apps: :ets.tab()
         }
 
-  @typedoc """
-  One planned cache write: a row put, an id delete, or the committed-model
-  entry every Update carries.
-  """
   @type mutation ::
           {:entity_model, String.t(), String.t()}
           | {:grant_put, map()}
@@ -219,7 +212,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  # A value missing a source or target cannot be projected.
   defp plan_system_mutation(%{kind: :link} = update, _tables, mutations, overlay) do
     key = {:relationships_by_id, update.subject_id}
 

@@ -2,16 +2,6 @@ defmodule EbbServer.Sync.AuthPlug do
   @moduledoc """
   Plug-based authentication for EbbServer.
 
-  Supports three modes:
-  - `:bypass` - reads actor_id from `x-ebb-actor-id` request header
-  - `:external` - forwards auth headers to a configured auth URL
-  - `:tailscale` - trusts `tailscale-user-login` from a loopback peer
-
-  The mode is resolved once at boot by `EbbServer.Application.runtime_auth/0`
-  from `EBB_AUTH_MODE` and `EBB_AUTH_URL`, which win over
-  `Application.get_env/2`, and written back to the application env. This
-  plug reads `:auth_mode` and `:auth_url` from that env unchanged.
-
   ## Tailscale mode
 
   A Tailscale gateway (the embedded node, a `tailscale serve`, or a sidecar)
@@ -24,22 +14,13 @@ defmodule EbbServer.Sync.AuthPlug do
     - when `:tailscale_proxy_secret` is configured, exactly one
       `x-ebb-tailscale-secret` header matches it.
 
-  The login becomes the actor's `id` unchanged (design D3). `tailscale-user-name` is
-  kept as a display name only, and `x-ebb-tailscale-user-id` as an optional
-  gateway-supplied provider id (published as a JSON number); neither affects
-  authorization. `x-ebb-actor-id` is ignored in this mode: there is no
+  `x-ebb-actor-id` is ignored in this mode: there is no
   fallback, because a fallback would let the browser choose its own identity.
 
   `tailscale serve` cannot inject a secret, so a deployment without the embedded
   gateway leaves `:tailscale_proxy_secret` unset and relies on loopback alone.
   Any local process could then claim an identity, which is why the embedded
-  gateway always configures one. A configured secret must be a non-empty
-  string; the application rejects anything else at boot.
-
-  There is no default mode. A node booted without `EBB_AUTH_MODE` (or a
-  compiled `:auth_mode`) refuses to start, and `:external` without a URL
-  fails at boot as well. The request-time `500` for a missing
-  `:auth_url` only covers configuration mutated after boot.
+  gateway always configures one.
 
   ## Security warning
 

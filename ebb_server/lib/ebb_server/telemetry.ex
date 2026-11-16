@@ -75,21 +75,6 @@ defmodule EbbServer.Telemetry do
   outcome (`:ok`, `{:error, reason}`, or a raise), so a failing commit stays
   visible in the same series as a successful one.
 
-  `ebb.writer.in_flight_batches` and `ebb.writer.oldest_unreleased_gsn`
-  are emitted whenever a claim enters or leaves the Writer's reorder
-  buffer. `in_flight_batches` counts every open claim, including one
-  applying; `oldest_unreleased_gsn` is the head of `claim_order`, or `0`
-  when the buffer is empty. They are emitted from the Writer rather than
-  sampled because the buffer only exists in its state. A reporter can
-  graph the pair to see the pipeline depth and the GSN holding release
-  back.
-
-  The `cf_actions` value those op lists carry is a frame (#552,
-  `EbbServer.Storage.ActionFormat`), chosen on a 5–10% cheaper export read for
-  0.05–0.10 µs/Action more encode — a share of a flush that sits below this
-  event's noise band. The shapes are priced per Action by `mix bench.envelope`
-  and in `docs/research/552-action-envelope.md`.
-
   `ebb.writer.commit_timeout` is the subset of `commit_failed` caused by
   the Committer pool's watchdog: the commit outlived
   `:writer_commit_timeout_ms`, so the range is abandoned and its callers
@@ -161,10 +146,7 @@ defmodule EbbServer.Telemetry do
 
   The Writer-side `notify` phase is not a `hop_ms` sample: it is already the
   `notify` measurement of `ebb.writer.flush_phase_ms` (#537), and
-  `router_queue` starts where that send leaves the Writer. Likewise the
-  re-based `push_latency_ms` starts at the end of the post-commit apply (the
-  fan-out notify send), not at the top of `apply_one/2`, so the write-side
-  `apply` phase is not inside the fan-out sample.
+  `router_queue` starts where that send leaves the Writer.
 
   - `router_queue` — the Writer's fan-out send to the Router's
     `handle_info/2` entry. One sample per notified GSN range; metadata
@@ -265,8 +247,7 @@ defmodule EbbServer.Telemetry do
 
   `ebb.sync.catch_up` is emitted once per successful catch-up. A `from_offset`
   of 0 marks a full resync; a non-zero offset is an incremental catch-up, so a
-  reporter can compute the resync ratio from the metadata alone. Peer
-  replication does not exist yet, so peer cursor/lag metrics are out of scope.
+  reporter can compute the resync ratio from the metadata alone.
 
   `ebb.sync.catch_up_read` is emitted once per successful page and describes
   what that page had to read: `index_rows` is how many `cf_group_actions` rows
@@ -312,29 +293,16 @@ defmodule EbbServer.Telemetry do
   @doc """
   The phase measurements `ebb.writer.flush_phase_ms` carries, in pipeline
   order.
-
-  Reports and follow-up issues reference this list instead of repeating the
-  phase names, so the published tables stay comparable between issues.
   """
   @spec writer_flush_phases() :: [atom()]
   def writer_flush_phases, do: @writer_flush_phases
 
   @doc """
   The `hop` values `ebb.fanout.hop_ms` carries, in pipeline order.
-
-  Reports and follow-up issues reference this list instead of repeating the
-  hop names, so the published tables stay comparable between issues.
   """
   @spec fanout_hops() :: [atom()]
   def fanout_hops, do: @fanout_hops
 
-  @doc """
-  Emits one `ebb.fanout.hop_ms` sample, or does nothing when `duration` is
-  `nil` (a recovered range with no timestamp to measure from).
-
-  Callers pass an already-computed native duration and the hop from
-  `fanout_hops/0`; `group_id` is `nil` for range-scoped hops.
-  """
   @spec fanout_hop(atom(), integer() | nil, String.t() | nil) :: :ok
   def fanout_hop(_hop, nil, _group_id), do: :ok
 
@@ -344,10 +312,6 @@ defmodule EbbServer.Telemetry do
 
   @doc """
   Emits `[:ebb | event]` with `measurements` and `metadata`.
-
-  `event` is the subsystem-qualified suffix, for example
-  `execute([:writer, :batch_size], %{count: 10}, %{gsn_start: 1, gsn_end: 10})`
-  emits `[:ebb, :writer, :batch_size]`. It must not repeat the `:ebb` root.
 
   Safe to call with no handlers attached: it returns `:ok` and does nothing.
   """
@@ -363,13 +327,6 @@ defmodule EbbServer.Telemetry do
   `{result, extra_measurements, stop_metadata}`); the result is passed through.
   `start_metadata` is attached to the `.start` event (and to `.exception`
   metadata on failure); `stop_metadata` is attached to the `.stop` event.
-
-  ## Example
-
-      EbbServer.Telemetry.span([:entity_store, :materialize], %{subject_id: id}, fn ->
-        result = do_materialize(id)
-        {result, %{model: "todo"}}
-      end)
   """
   @spec span([atom()], map(), (-> {term(), map()} | {term(), map(), map()})) :: term()
   def span([head | _] = event, start_metadata, fun)

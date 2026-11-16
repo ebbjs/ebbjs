@@ -168,12 +168,6 @@ defmodule EbbServer.Functions.Worker.Bun do
   @spec monitor(handle()) :: reference()
   def monitor(%{pid: pid}), do: Process.monitor(pid)
 
-  @doc """
-  Points a worker's frame delivery at `owner`.
-
-  Used by the pool: checkout hands the worker to the invoking process and
-  checkin hands it back, without tearing down the Bun process between them.
-  """
   @impl true
   @spec set_owner(handle(), pid()) :: :ok
   def set_owner(%{pid: pid}, owner) do
@@ -196,10 +190,6 @@ defmodule EbbServer.Functions.Worker.Bun do
     :ok
   end
 
-  @doc """
-  The Unix socket the runner connects to. Exposed so a transport test can
-  inspect the socket it created.
-  """
   @spec socket_path(handle()) :: String.t()
   def socket_path(%{socket_path: socket_path}), do: socket_path
 

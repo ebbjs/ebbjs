@@ -17,14 +17,6 @@ defmodule EbbServer.Storage.ActionLog do
   that do exist — never an error, never a placeholder. Callers must not
   assume contiguity; they advance their cursor to the end of the range
   they asked for, not to the last Action they saw.
-
-  ## Values
-
-  Each value is decoded with `EbbServer.Storage.ActionFormat.decode/2`,
-  which reads the stored frame and raises on anything else. The GSN comes
-  from the `cf_actions` key. Decoding uses `:erlang.binary_to_term/2` with
-  `[:safe]`, so a corrupt or hostile record raises rather than constructing
-  arbitrary terms.
   """
 
   alias EbbServer.Storage.{ActionFormat, RocksDB}
@@ -32,13 +24,6 @@ defmodule EbbServer.Storage.ActionLog do
   @type action :: map()
   @type opts :: [rocks_name: GenServer.name()]
 
-  @doc """
-  Returns the stored Actions whose GSNs fall in the inclusive range
-  `from_gsn..to_gsn`, in ascending GSN order.
-
-  `from_gsn > to_gsn` returns `[]`. Missing GSNs (abandoned holes) are
-  simply absent from the result.
-  """
   @spec read(non_neg_integer(), non_neg_integer(), opts()) :: [action()]
   def read(from_gsn, to_gsn, opts \\ [])
 

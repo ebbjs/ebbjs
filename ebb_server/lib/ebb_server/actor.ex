@@ -26,12 +26,6 @@ defmodule EbbServer.Actor do
           provider_id: integer() | nil
         }
 
-  @doc """
-  Builds the actor a mode resolved.
-
-  `:display_name` and `:provider_id` are only meaningful for providers that
-  supply them (today Tailscale); the other modes leave them unset.
-  """
   @spec new(provider(), String.t(), keyword()) :: t()
   def new(provider, id, opts \\ []) do
     %__MODULE__{

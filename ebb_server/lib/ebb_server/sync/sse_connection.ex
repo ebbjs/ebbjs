@@ -10,33 +10,6 @@ defmodule EbbServer.Sync.SSEConnection do
   the plug handler returns, Bandit commits the response (sends an empty
   chunk terminator) and the connection closes.
 
-  We solve this by:
-
-  1. `SSEHandler.open_sse/4` runs in the request process. It calls
-     `send_chunked/2` and then blocks in a receive loop, keeping Bandit's
-     pipeline blocked.
-  2. This module is a separate GenServer (started under
-     `SSEConnectionSupervisor`). It receives `push_data` /
-     `push_control` / `push_presence` messages from the `FanOutRouter`,
-     formats control/presence as SSE, and forwards each chunk to the request
-     process via a plain `send/2`. `push_data` carries a frame the
-     `GroupServer` already encoded once for the whole group; a sampled
-     delivery also carries the hop meta.
-  3. The request process writes the chunks (it's the conn owner).
-  4. When the request process exits (e.g., on client disconnect), this
-     GenServer monitors it and shuts down too, triggering FanOutRouter
-     unsubscribe and DynamicSupervisor cleanup.
-
-  ## Control events
-
-  `push_control/2` carries server-to-client instructions. Its caller is
-  the `FanOutRouter`, which wakes every live connection of an actor whose
-  group view a committed Action changed with
-  `{"groups_changed": true, "reason": "membership"}`; the client answers
-  by re-running its handshake. The stale-cursor `reconnect` event is not
-  pushed through here: `SSEHandler` writes it directly on a connection it
-  never opens.
-
   ## Restart strategy
 
   `restart: :temporary` so the DynamicSupervisor never auto-restarts a
@@ -63,9 +36,6 @@ defmodule EbbServer.Sync.SSEConnection do
     # Registering the module name caused every SSE attempt after the first
     # to fail with :already_started, which silently turned the stream into
     # a no-op (HTTP 200 + headers went out, then no chunks ever followed).
-    # Locked by the two-tab Playwright test, which opens two simultaneous
-    # SSE subscribers and asserts the second one both reaches "live" and
-    # receives the first tab's edits (see ebbjs/ebbjs#86).
     _ = opts
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end
@@ -152,9 +122,6 @@ defmodule EbbServer.Sync.SSEConnection do
     {:stop, :normal, state}
   end
 
-  @doc """
-  Formats a single SSE event block as a binary: `event: <type>\ndata: <payload>\n\n`.
-  """
   @spec format_sse_event(String.t(), String.t()) :: String.t()
   def format_sse_event(event_type, data) do
     IO.iodata_to_binary([
@@ -167,16 +134,6 @@ defmodule EbbServer.Sync.SSEConnection do
     ])
   end
 
-  @doc """
-  Formats an Action as its wire `data` event frame.
-
-  Projects the Action to the five keys a subscriber consumes (`id`, `gsn`,
-  `actor_id`, `hlc`, `updates`) and encodes them with `Jason.encode!/1`.
-  `FanOutRouter.Frames` calls this once per (Action, distinct Update
-  subset) for a released range; `GroupServer` only concatenates the
-  resulting frames, so the stream is the concatenation of per-Action `data`
-  frames.
-  """
   @spec data_frame(map()) :: binary()
   def data_frame(action), do: format_sse_event("data", encode_action(action))
 

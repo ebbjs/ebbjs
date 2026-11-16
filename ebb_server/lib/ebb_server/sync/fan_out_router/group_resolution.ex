@@ -19,20 +19,8 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
   alias EbbServer.Storage.{EntityScope, PermissionHelper, RowMutations}
 
   @doc """
-  Resolves the set of group ids an Action should fan out to.
-
-  Dispatches each folded row through `EntityScope`, folding in the
-  membership rows carried by the Action itself so that a create and its
-  `ebb/membership` rows land in the same groups. See `EntityScope` for the
-  per-kind resolution rules. Rows whose entity is missing from the index
-  are silently dropped; the client catches them up via
-  `/sync/groups/:id?offset=` instead.
-
-  This is the **fallback** path: the Writer normally hands the Router
-  the group set it used to build `cf_group_actions`, from the commit
-  snapshot. Resolution here re-reads the caches, which have already
-  moved for deletes, so it is only used for GSNs a notifier did not
-  annotate.
+  Rows whose entity is missing from the index are silently dropped; the
+  client catches them up via `/sync/groups/:id?offset=` instead.
   """
   @spec resolve_group_ids(map(), keyword()) :: [String.t()]
   def resolve_group_ids(action, opts) do

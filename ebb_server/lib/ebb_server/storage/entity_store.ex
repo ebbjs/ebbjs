@@ -9,13 +9,7 @@ defmodule EbbServer.Storage.EntityStore do
   The split between RocksDB (write path) and SQLite (read path) creates
   a window where the materialized entity in SQLite does not reflect the
   most recent committed Action. Closing that window is the job of this
-  module: a request checks `DirtyTracker`, and if the entity is dirty,
-  replays only the delta since the entity's `last_gsn` from RocksDB,
-  applies per-field typed merges, writes the changed keys back to SQLite
-  (a per-key `json_set` patch when possible, a full UPSERT otherwise), and
-  clears only
-  the dirty mark it observed — all before returning. We never replay
-  full history.
+  module. We never replay full history.
 
   Clearing only the observed mark is what keeps this correct under
   concurrency. A writer can commit an Action and mark the entity dirty
@@ -114,13 +108,6 @@ defmodule EbbServer.Storage.EntityStore do
   The row's `model` is the component's prefix. A `delete` names no component
   and keeps the committed model.
 
-  ## Hot path
-
-  Clean entities: one ETS check + one SQLite SELECT. Dirty entities:
-  + one RocksDB range iterator + one `multi_get` + merge + one SQLite
-  write (a per-key `json_set` patch, or a full UPSERT for a put) + one
-  ETS delete. The common case (most reads hit the cache) stays close to
-  an SQLite SELECT.
   """
 
   alias EbbServer.Storage.{
@@ -151,14 +138,10 @@ defmodule EbbServer.Storage.EntityStore do
   @max_offset 0x7FFFFFFFFFFFFFFF
 
   @doc """
-  Fetches an entity by ID, reading from SQLite cache or materializing on demand.
-
   This read is **not** permission-filtered. `actor_id` is part of the
   interface so read call sites stay uniform, but callers must authorize
   first with `PermissionChecker.can_read?/3` and report a denial the
   same as a missing entity (`:not_found`).
-
-  Returns `{:ok, entity}`, `:not_found`, or `{:error, :materialization_failed}`.
   """
   @spec get(String.t(), String.t(), keyword()) ::
           {:ok, map()} | :not_found | {:error, :materialization_failed}
@@ -247,28 +230,13 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   @doc """
-  Materializes an entity by replaying actions from RocksDB into SQLite.
-
   This function is public for testability. It should not be called directly
   in normal operation — use `get/2` instead.
 
-  Process:
-  1. Read the dirty mark's generation
-  2. Read current state from SQLite (or empty for new entities)
-  3. Seek cf_entity_actions from last_gsn + 1 and decode each row's GSN list
-  4. Replay each action's updates in GSN order
-  5. Write the materialized entity back to SQLite
-  6. Compare-and-clear the dirty mark with the observed generation
-
-  ## Options
-
-  - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
-  - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
-  - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
-  - `:after_scan` - test seam: a 0-arity fun invoked once after the RocksDB
-    scan and before the result is handled. Tests use it to interleave a
-    concurrent write with an in-flight materialization deterministically,
-    with no sleeps.
+  `:after_scan` is a test seam: a 0-arity fun invoked once after the RocksDB
+  scan and before the result is handled. Tests use it to interleave a
+  concurrent write with an in-flight materialization deterministically,
+  with no sleeps.
   """
   @spec materialize(String.t(), keyword()) :: {:ok, map()} | :not_found | {:error, term()}
   def materialize(entity_id, opts \\ []) do
@@ -870,31 +838,15 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   @doc """
-  Queries a model's entities with permission filtering and optional field
-  filters, given as a disjunction of filter groups (see
-  `EbbServer.Storage.QueryFilter`).
-
-  First materializes any dirty entities of the requested model, then delegates
-  to SQLite for the permission-checked query. The model is the row's committed
-  model — the query source and the column it selects on.
-
   A platform component name (`ebb/membership`) is also a query source, and
   the more precise one: an `ebb/*` component may sit on a row committed under
   any model, so asking by component returns the rows that carry it. Asking for
   the model alone returns every kind at once.
 
-  ## Options
-  - `:rocks_name` - RocksDB server name (default: `EbbServer.Storage.RocksDB`)
-  - `:sqlite_name` - SQLite server name (default: `EbbServer.Storage.SQLite`)
-  - `:dirty_set` - ETS table name for dirty tracking (default: `:ebb_dirty_set`)
   - `:limit` - Maximum results to return; defaults to #{@default_limit} and is
     capped at #{@max_limit}. Validated before any materialization work.
   - `:offset` - Number of results to skip; must be non-negative and fit in a
     signed 64-bit integer
-
-  Returns `{:ok, [entity_maps]}`, `{:error, :invalid_limit}`,
-  `{:error, :invalid_offset}`, `{:error, :invalid_filter}` or
-  `{:error, term()}`.
   """
   @spec query(String.t(), [map()] | nil, String.t(), keyword()) ::
           {:ok, [map()]}

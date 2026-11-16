@@ -15,32 +15,7 @@ defmodule EbbServer.Storage.ActionFormat do
   order. They stay outside the payload because they are cache-dependent and
   only known at claim time.
 
-  ## Scope belongs to the subject
-
-  A subject's group set is one decision, so the frame records it once per
-  subject rather than once per Update. The C component Updates of one row
-  share one entry; an Update is delivered through its subject's entry. The
-  `cf_group_actions` index still holds the distinct union, once per Action.
-
-  The frame is *not* one ETF term. Storing the scopes beside the payload
-  rather than inside the same term lets a reader slice out the payload
-  and decode only that, which is what the materialization paths need; they
-  never read the scopes. It also makes the claim-time write a binary copy
-  plus one small `term_to_binary` of the scopes, with no traversal of the
-  payload. Measured (#552, `docs/research/552-action-envelope.md`): 5–10%
-  cheaper than the previous wrapper on the export read and 2–5% on
-  catch-up, for 0.05–0.10 µs/Action more encode; the companion form that
-  keeps the scopes in a second key costs a second durable put and is 53–72%
-  dearer on every read that needs them.
-
   ## One shape, no compatibility layer
-
-  Ebb is greenfield: there are no Actions written by another build to keep
-  reading, so this reader accepts exactly the frame above and raises on
-  anything else. No version byte, no read-through, no rollback story. A
-  version tag was priced in the comparison that chose this shape and is
-  free, and it was dropped anyway — with nothing to migrate it is a byte
-  and a branch that buy only a different error message.
 
   Raising is still worth doing: a value in any other shape is corrupt or
   came from another database, and it must not decode as something
@@ -57,21 +32,6 @@ defmodule EbbServer.Storage.ActionFormat do
   value; the pre-component wire's row record is never read. A payload with
   any other Update shape raises, so an old-shape Action is unreadable rather
   than half-understood.
-
-  ## Two readers, one decode
-
-  Log readers (`decode/2`, catch-up, materialization, export) join the two
-  halves out of the stored frame. Live fan-out does not read the frame: the
-  Writer hands the Router `payload_etf` and `subject_scopes` beside the
-  commit notification, and `decode_carried/3` rejoins them from there. Both
-  readers share the same payload decode, so the live path and the log path
-  cannot drift.
-
-  ## Migration
-
-  The pre-#814 frame stored one group list per Update under `update_scopes`,
-  index-aligned with the Update list. That shape raises: this build never
-  wrote it, and there is no migration or read-through.
   """
 
   alias EbbServer.Storage.Component
@@ -89,13 +49,6 @@ defmodule EbbServer.Storage.ActionFormat do
 
   @type carried_payload :: {payload_etf :: binary(), subject_scopes :: [subject_scope()]}
 
-  @doc """
-  Builds the GSN-free, scopes-free storage map for an Action.
-
-  Accepts anything with `id`, `actor_id`, `hlc`, and `updates` (a
-  `PreparedAction` or a validated Action); an atom Update method is
-  stringified to its wire form.
-  """
   @spec build(map()) :: payload()
   def build(action) do
     %{
@@ -109,12 +62,6 @@ defmodule EbbServer.Storage.ActionFormat do
   @spec encode(payload()) :: binary()
   def encode(payload), do: :erlang.term_to_binary(payload)
 
-  @doc """
-  Frames an already-encoded payload with the Action's per-subject scopes.
-
-  The payload binary is copied, not traversed, so a claim pays one small
-  `term_to_binary` of the scopes plus the copy.
-  """
   @spec frame(binary(), [subject_scope()]) :: binary()
   def frame(payload_etf, subject_scopes) do
     subject_scopes = validate_subject_scopes!(subject_scopes)
@@ -130,26 +77,12 @@ defmodule EbbServer.Storage.ActionFormat do
     end
   end
 
-  @doc """
-  Decodes a stored Action into the full map readers expect.
-
-  `"gsn"` comes from the `cf_actions` key; `"subject_scopes"` comes from the
-  frame and is the per-subject delivery contract.
-  """
   @spec decode(binary(), non_neg_integer()) :: action()
   def decode(value, gsn) do
     {payload_etf, scopes_etf} = split(value)
     decode_carried(payload_etf, decode_term(scopes_etf), gsn)
   end
 
-  @doc """
-  Decodes an Action from the two halves live fan-out carries.
-
-  The Writer sends the already-encoded payload and its pre-resolved scopes
-  with the commit notification; the GSN comes from the range position.
-  This is the same map `decode/2` returns for the stored frame, without the
-  frame split or the scopes decode.
-  """
   @spec decode_carried(binary(), [subject_scope()], non_neg_integer()) :: action()
   def decode_carried(payload_etf, subject_scopes, gsn) do
     payload_etf
@@ -157,13 +90,6 @@ defmodule EbbServer.Storage.ActionFormat do
     |> Map.put("subject_scopes", validate_subject_scopes!(subject_scopes))
   end
 
-  @doc """
-  Decodes the payload of a stored Action, leaving `"subject_scopes"` out.
-
-  This is the read for a path that only replays Updates — materialization,
-  query, group listing, and the boot backfill — and it skips the scopes
-  term entirely.
-  """
   @spec decode_payload(binary(), non_neg_integer()) :: payload()
   def decode_payload(value, gsn) do
     {payload_etf, _scopes_etf} = split(value)

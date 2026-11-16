@@ -3,26 +3,12 @@ defmodule EbbServer.Tailscale.Config do
   Boot-time configuration for the Tailscale node.
 
   `resolve/2` reads one `EBB_TAILSCALE_*` variable per setting, falling back to
-  the matching `:ebb_server` application key and then to the default below.
-  The environment wins, in the order `EbbServer.Application.runtime_auth/0`
-  uses for security-sensitive settings: the operator's runtime instruction must
-  not be silently overridden by a value baked into a release.
+  the matching `:ebb_server` application key. The environment wins, in the
+  order `EbbServer.Application.runtime_auth/0` uses for security-sensitive
+  settings: the operator's runtime instruction must not be silently overridden
+  by a value baked into a release.
 
-  | Variable                    | App key                    | Default                         |
-  | --------------------------- | -------------------------- | ------------------------------- |
-  | `EBB_TAILSCALE_NODE`        | `:tailscale_node`          | `:embedded`                     |
-  | `EBB_TAILSCALE_STATE_DIR`   | `:tailscale_state_dir`     | `<data_dir>/tailscale`          |
-  | `EBB_TAILSCALE_HOSTNAME`    | `:tailscale_hostname`      | `ebb`                           |
-  | `EBB_TAILSCALE_AUTHKEY`     | `:tailscale_authkey`       | unset                           |
-  | `EBB_TAILSCALE_CONTROL_URL` | `:tailscale_control_url`   | unset                           |
-  | `EBB_TAILSCALE_TAGS`        | `:tailscale_tags`          | `[]`                            |
-  | `EBB_TAILSCALE_REQUIRE_TAGS`| `:tailscale_require_tags`  | `false`                         |
-  | `EBB_TAILSCALE_HTTPS`       | `:tailscale_https`         | `auto`                          |
-  | `EBB_TAILSCALE_QR`          | `:tailscale_qr`            | `true`                          |
-  | `EBB_TAILSCALE_PROXY_BIN`   | `:tailscale_proxy_bin`     | `priv/tsnode/ebb_tsnode`        |
-
-  Blank values count as unset, so an unfilled compose variable cannot select a
-  mode by accident. Every accepted value is checked here and raises with an
+  Every accepted value is checked here and raises with an
   operator-facing message: a node that cannot serve its tailnet is a boot
   failure, not a request-time surprise.
 
@@ -53,12 +39,6 @@ defmodule EbbServer.Tailscale.Config do
   # that fails on every start rather than as a bad setting.
   @hostname_format ~r/\A[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z/
 
-  @doc """
-  Resolves every setting, raising on a value the gateway cannot use.
-
-  `data_dir` is the node's resolved storage directory, used only to place the
-  default state directory; `port` is the Bandit port the gateway proxies to.
-  """
   @spec resolve(String.t(), integer()) :: map()
   def resolve(data_dir, port) do
     config = %{

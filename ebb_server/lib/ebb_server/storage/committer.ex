@@ -57,13 +57,6 @@ defmodule EbbServer.Storage.Committer do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @doc """
-  Queues one prepared batch for the durable write.
-
-  Asynchronous by design: the sequencer must stay responsive while the
-  write is in flight. The outcome arrives as
-  `{:committer_result, ref, result}` on the owner process.
-  """
   @spec commit(GenServer.server(), reference(), [PreparedAction.t()], integer(), integer()) :: :ok
   def commit(committer, ref, prepared, gsn_start, gsn_end) do
     GenServer.cast(committer, {:commit, ref, prepared, gsn_start, gsn_end})

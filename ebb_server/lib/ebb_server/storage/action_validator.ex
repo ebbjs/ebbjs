@@ -50,8 +50,6 @@ defmodule EbbServer.Storage.ActionValidator do
   are still accepted. The Update count is checked first because counting is a
   shallow walk, while the size check traverses the whole term.
 
-  This module is stateless and focuses purely on validation and transformation.
-  It does NOT perform authorization - that's handled by the Authorizer.
   """
 
   import Bitwise
@@ -88,21 +86,6 @@ defmodule EbbServer.Storage.ActionValidator do
   @max_action_bytes 1_048_576
   @max_updates_per_action 1_000
 
-  @doc """
-  Validates a list of raw actions, returning validated actions and rejections.
-
-  Each action is validated for:
-  - Caps (at most 1 000 Updates and 1 MiB in external term format)
-  - Structure (valid fields, non-empty values)
-  - Actor (actor_id matches the authenticated actor)
-  - HLC (valid timestamp within future drift bounds)
-  - Field leaf HLCs (no leaf further in the future than the drift window)
-
-  Note: HLC stale validation was removed because GSN provides total ordering
-  and HLC is only used for conflict resolution during replica sync. The stale
-  limit will be re-added when compaction watermark is implemented, since
-  compaction overwrites entire entities and stale HLC updates would be lost.
-  """
   @spec validate([raw_action()], String.t(), keyword()) ::
           {accepted :: [validated_action()], rejected :: [rejection()]}
   def validate(actions, actor_id, opts \\ []) do
@@ -166,16 +149,6 @@ defmodule EbbServer.Storage.ActionValidator do
     end
   end
 
-  @doc """
-  Validates the structure of a raw action.
-
-  Checks that:
-  - id is a non-empty string
-  - actor_id is a non-empty string
-  - hlc is a positive integer (or parsable string)
-  - updates is a non-empty list
-  - each update has valid id, subject_id, method, component, and data
-  """
   @spec validate_structure(raw_action()) :: :ok | {:error, String.t(), String.t()}
   def validate_structure(action) do
     cond do
@@ -520,9 +493,6 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp valid_map_entry?(_value), do: false
 
-  @doc """
-  Validates that the action's actor_id matches the authenticated actor.
-  """
   @spec validate_actor(raw_action(), String.t()) :: :ok | {:error, String.t(), String.t()}
   def validate_actor(action, actor_id) do
     if action["actor_id"] == actor_id do
@@ -532,16 +502,6 @@ defmodule EbbServer.Storage.ActionValidator do
     end
   end
 
-  @doc """
-  Validates the HLC timestamp.
-
-  Checks that:
-  - hlc is a positive integer
-  - logical time is not more than 120s in the future
-
-  There is no stale bound: GSN provides total ordering (see
-  `validate/3`). #123 reintroduces one with the compaction watermark.
-  """
   @spec validate_hlc(raw_action(), keyword() | non_neg_integer()) ::
           :ok | {:error, String.t(), String.t()}
   def validate_hlc(action, opts \\ [])
@@ -640,11 +600,6 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp logical_time_ms(hlc), do: hlc >>> 16
 
-  @doc """
-  Normalizes an HLC value to an integer.
-
-  Accepts integers or string representations of positive integers.
-  """
   @spec normalize_hlc(non_neg_integer() | String.t() | nil) :: non_neg_integer() | nil
   def normalize_hlc(hlc)
 
@@ -659,12 +614,6 @@ defmodule EbbServer.Storage.ActionValidator do
 
   def normalize_hlc(_), do: nil
 
-  @doc """
-  Converts a raw action to validated action format.
-
-  Transforms string keys to atoms where appropriate (e.g., method) and
-  splits a component into the row's `model` and `field`.
-  """
   @spec to_validated_action(raw_action()) :: validated_action()
   def to_validated_action(action) do
     %{
@@ -702,7 +651,6 @@ defmodule EbbServer.Storage.ActionValidator do
     }
   end
 
-  # A delete names the row and carries no component.
   defp split_component(component) when is_binary(component), do: Component.split(component)
   defp split_component(nil), do: {nil, nil}
 

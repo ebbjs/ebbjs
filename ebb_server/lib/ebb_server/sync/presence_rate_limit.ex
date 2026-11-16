@@ -3,13 +3,10 @@ defmodule EbbServer.Sync.PresenceRateLimit do
   Per-actor token-bucket limit for `POST /sync/presence`, and the ETS-backed
   bucket store it reads.
 
-  ## Placement
-
   Runs in `EbbServer.Sync.Router`'s pipeline after
   `EbbServer.Sync.AuthPlug` — it needs `conn.assigns.actor` — and before
   `plug(:match)`, so a limited request is rejected before the route touches
-  the entity index or the fan-out. It inspects only `POST /sync/presence`;
-  every other request passes through untouched. The Action path deliberately
+  the entity index or the fan-out. The Action path deliberately
   has no server-side limit here: the client already batches Actions through
   its flush scheduler, while presence does not.
 
@@ -25,8 +22,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
 
   `config :ebb_server, :presence_rate_limit, {per_second, burst}`
 
-  `per_second` is the sustained refill rate and `burst` the bucket capacity,
-  both positive integers. The default is `{100, 200}`. The client debounces a
+  The default is `{100, 200}`. The client debounces a
   send by 100 ms per `(entity, channel)` per tab, but a channel may declare a
   shorter `debounceMs`, so a limit sized to the cursor-only two-tab workload
   (20 sends a second) would reject legitimate peers. 100 a second covers
@@ -47,8 +43,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
   most one extra request per race. That is acceptable for an amplifier cap;
   it is not a quota.
 
-  The owner process exists only for the table's lifetime and to sweep idle
-  buckets. Because every request carries its own `now`, the arithmetic stays a
+  Because every request carries its own `now`, the arithmetic stays a
   pure function of `(bucket, now, rate)` and is testable without a clock.
   """
 
@@ -86,12 +81,6 @@ defmodule EbbServer.Sync.PresenceRateLimit do
     end
   end
 
-  @doc """
-  The configured `{per_second, burst}` rate.
-
-  An invalid value raises rather than silently disabling the limit: a
-  misconfigured node should fail loudly, not quietly drop the protection.
-  """
   @spec rate() :: Buckets.rate()
   def rate do
     case Application.get_env(:ebb_server, :presence_rate_limit, @default_rate) do

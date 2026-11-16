@@ -35,20 +35,6 @@ defmodule EbbServer.Storage.GroupAppsCache do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc """
-  Stores a group's `apps` value and its projection.
-
-  `apps_field` is the app-id list from the group's atomic value, or `nil`
-  for an unscoped group.
-
-  ## Examples
-
-      iex> GroupAppsCache.put_group_apps("g_1", ["notes"])
-      :ok
-
-      iex> GroupAppsCache.put_group_apps("g_2", nil)
-      :ok
-  """
   @spec put_group_apps(String.t(), field(), keyword()) :: :ok
   def put_group_apps(group_id, apps_field, opts \\ []) do
     table = Keyword.get(opts, :group_apps) || CacheTables.group_apps()
@@ -56,19 +42,6 @@ defmodule EbbServer.Storage.GroupAppsCache do
     :ok
   end
 
-  @doc """
-  Returns the projected app ids for a group.
-
-  No entry or a `nil` value is `:unscoped`; an empty list is an empty set.
-
-  ## Examples
-
-      iex> GroupAppsCache.get_apps("g_unscoped")
-      :unscoped
-
-      iex> GroupAppsCache.get_apps("g_notes")
-      MapSet.new(["notes"])
-  """
   @spec get_apps(String.t(), atom()) :: apps()
   def get_apps(group_id, table \\ nil) do
     case lookup(group_id, table) do
@@ -78,8 +51,6 @@ defmodule EbbServer.Storage.GroupAppsCache do
   end
 
   @doc """
-  Whether a group row has been cached at all, unscoped or not.
-
   Presence is how the by-id caches answer "is this id a group row?", since
   the `apps` value cannot.
   """
@@ -92,14 +63,6 @@ defmodule EbbServer.Storage.GroupAppsCache do
     :ets.info(table, :name) != :undefined and :ets.member(table, group_id)
   end
 
-  @doc """
-  Deletes a group's app scope.
-
-  ## Examples
-
-      iex> GroupAppsCache.delete_group_apps("g_1")
-      :ok
-  """
   @spec delete_group_apps(String.t(), keyword()) :: :ok
   def delete_group_apps(group_id, opts \\ []) do
     table = Keyword.get(opts, :group_apps) || CacheTables.group_apps()
@@ -107,14 +70,6 @@ defmodule EbbServer.Storage.GroupAppsCache do
     :ok
   end
 
-  @doc """
-  Clears every group's app scope.
-
-  ## Examples
-
-      iex> GroupAppsCache.reset()
-      :ok
-  """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     table = Keyword.get(opts, :group_apps) || CacheTables.group_apps()

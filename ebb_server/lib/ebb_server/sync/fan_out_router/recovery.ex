@@ -11,13 +11,7 @@ defmodule EbbServer.Sync.FanOutRouter.Recovery do
   alias EbbServer.Storage.RocksDB
 
   @doc """
-  Re-derives the un-pushed committed GSN ranges in `[from, to]` and the
-  group set each recovered Action belongs to, straight from the durable
-  log.
-
-  Called only when the persisted pushed frontier is behind the log (a
-  Router restart or a commit that landed while the Router was down). Keys
-  alone drive the range folding; the Router re-reads the Actions when it
+  Keys alone drive the range folding; the Router re-reads the Actions when it
   drains. The group scan is a full `cf_group_actions` pass so a group that
   gains a subscriber after the restart still receives the pending Action
   live.

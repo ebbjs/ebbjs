@@ -153,8 +153,6 @@ defmodule EbbServer.Functions.Store do
   raising. This process is shared by every function on the node, so a failure a
   caller can act on (`:already_exists`, `:not_found`, an unresolvable schema) is
   replied rather than raised, and transaction bodies roll back on their own.
-  `list/1` and `versions/2` return a list by contract, so a read that fails is
-  an empty list rather than a crashed shared process.
 
   ## Isolated instances
 
@@ -183,10 +181,6 @@ defmodule EbbServer.Functions.Store do
   deployment_hash
   """
 
-  # ---------------------------------------------------------------------------
-  # SQL constants
-  # ---------------------------------------------------------------------------
-
   @pragmas """
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
@@ -196,7 +190,6 @@ defmodule EbbServer.Functions.Store do
   """
 
   @migrations [
-    # v1 — the table plus the active-slot constraint and the per-name lookup.
     """
     CREATE TABLE IF NOT EXISTS function_versions (
       id TEXT PRIMARY KEY,
@@ -311,10 +304,6 @@ defmodule EbbServer.Functions.Store do
 
   @user_version_sql "PRAGMA user_version"
 
-  # ---------------------------------------------------------------------------
-  # Public API
-  # ---------------------------------------------------------------------------
-
   @doc """
   Starts the store.
 
@@ -334,11 +323,6 @@ defmodule EbbServer.Functions.Store do
 
   @doc """
   Records a new function version, retired until somebody activates it.
-
-  Required attributes: `:name`, `:version`, `:code`, `:digest`, `:runtime`,
-  `:contract`, `:access`, `:timeout_ms`, `:memory_bytes`, `:entry`. Optional:
-  `:signature`, `:signer_key_id`, `:params_schema`, `:output_schema`,
-  `:created_by`, `:pinned`, `:deployment_hash`.
 
   `params_schema` and `output_schema` are validated here, before the row
   exists: a schema that draft-7 resolution rejects can never be stored, so it
@@ -420,9 +404,6 @@ defmodule EbbServer.Functions.Store do
     GenServer.call(server, {:active, name})
   end
 
-  @doc """
-  A specific `(name, version)` row, retired or not.
-  """
   @spec get(String.t(), String.t(), GenServer.server()) ::
           {:ok, Version.t()} | :not_found | {:error, term()}
   def get(name, version, server \\ __MODULE__) do
@@ -451,10 +432,6 @@ defmodule EbbServer.Functions.Store do
   def versions(name, server \\ __MODULE__) do
     GenServer.call(server, {:versions, name})
   end
-
-  # ---------------------------------------------------------------------------
-  # GenServer callbacks
-  # ---------------------------------------------------------------------------
 
   @impl true
   def init(opts) do
@@ -523,10 +500,6 @@ defmodule EbbServer.Functions.Store do
     Enum.each(Map.values(stmts), fn stmt -> Sqlite3.release(db, stmt) end)
     Sqlite3.close(db)
   end
-
-  # ---------------------------------------------------------------------------
-  # Operations
-  # ---------------------------------------------------------------------------
 
   defp do_put_version(state, attrs) do
     with {:ok, attrs} <- normalize(attrs),
@@ -642,10 +615,6 @@ defmodule EbbServer.Functions.Store do
   defp prune(db, stmt, name, retention) do
     write(db, stmt, [name, name, retention])
   end
-
-  # ---------------------------------------------------------------------------
-  # Attribute normalization
-  # ---------------------------------------------------------------------------
 
   defp normalize(attrs) when is_map(attrs) do
     with :ok <- check_required(attrs),
@@ -777,10 +746,6 @@ defmodule EbbServer.Functions.Store do
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # Migrations
-  # ---------------------------------------------------------------------------
-
   defp migrate!(db) do
     current = user_version!(db)
 
@@ -846,10 +811,6 @@ defmodule EbbServer.Functions.Store do
     )
     |> Map.new()
   end
-
-  # ---------------------------------------------------------------------------
-  # Statement helpers
-  # ---------------------------------------------------------------------------
 
   defp insert_version(db, stmt, version) do
     params = [
@@ -970,10 +931,6 @@ defmodule EbbServer.Functions.Store do
         error
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # Row decoding
-  # ---------------------------------------------------------------------------
 
   defp row_to_version([
          id,

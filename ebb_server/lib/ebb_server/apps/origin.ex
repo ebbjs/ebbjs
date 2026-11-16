@@ -8,14 +8,6 @@ defmodule EbbServer.Apps.Origin do
   `normalize/1` decides what is registrable and renders it canonically, so a
   stored origin is always comparable string-for-string.
 
-  ## Canonical form
-
-    * only `http` and `https`; the scheme and host are lowercased
-    * the scheme's default port is dropped (`:443` for https, `:80` for http),
-      any other explicit port is kept
-    * IPv6 hosts keep the bracket form
-    * no userinfo, query, fragment, or path other than empty or `/`
-
   ## Wildcards
 
   The only wildcard is a whole leading host label: `https://*.example.com`,
@@ -37,20 +29,6 @@ defmodule EbbServer.Apps.Origin do
   @max_host_bytes 253
   @max_label_bytes 63
 
-  @doc """
-  Renders a registrable origin in canonical form.
-
-  ## Examples
-
-      iex> Origin.normalize("HTTPS://App.Example.com:443/")
-      {:ok, "https://app.example.com"}
-
-      iex> Origin.normalize("https://app.example.com/path")
-      {:error, :invalid_origin}
-
-      iex> Origin.normalize("*")
-      {:error, :invalid_origin}
-  """
   @spec normalize(term()) :: {:ok, canonical()} | {:error, :invalid_origin}
   def normalize(origin) when is_binary(origin) do
     with {:ok, parts} <- parse(origin) do
@@ -60,22 +38,6 @@ defmodule EbbServer.Apps.Origin do
 
   def normalize(_origin), do: {:error, :invalid_origin}
 
-  @doc """
-  Canonicalizes a non-empty list of origins, rejecting repeats after
-  normalization.
-
-  The registry admits an origin once, so the same value twice — including two
-  spellings of one canonical origin — is a conflict rather than a duplicate
-  entry.
-
-  ## Examples
-
-      iex> Origin.normalize_all(["HTTPS://A.example.com:443", "http://b.example.com"])
-      {:ok, ["https://a.example.com", "http://b.example.com"]}
-
-      iex> Origin.normalize_all(["https://a.example.com", "https://A.example.com"])
-      {:error, :duplicate_origin}
-  """
   @spec normalize_all(term()) ::
           {:ok, [canonical()]} | {:error, :invalid_origin | :duplicate_origin}
   def normalize_all(origins) when is_list(origins) and origins != [] do
@@ -94,21 +56,6 @@ defmodule EbbServer.Apps.Origin do
 
   def normalize_all(_origins), do: {:error, :invalid_origin}
 
-  @doc """
-  Returns whether `origin` is admitted by `pattern`.
-
-  Both sides are canonicalized here, so a caller may pass raw request input.
-  Anything unparsable is `false` rather than an error: an origin that cannot be
-  named cannot be matched.
-
-  ## Examples
-
-      iex> Origin.match?("https://a.example.com", "https://*.example.com")
-      true
-
-      iex> Origin.match?("https://example.com", "https://*.example.com")
-      false
-  """
   @spec match?(term(), term()) :: boolean()
   def match?(origin, pattern) when is_binary(origin) and is_binary(pattern) do
     with {:ok, origin_parts} <- parse(origin),
@@ -126,17 +73,6 @@ defmodule EbbServer.Apps.Origin do
 
   def match?(_origin, _pattern), do: false
 
-  @doc """
-  Returns whether a canonical origin carries a wildcard host label.
-
-  ## Examples
-
-      iex> Origin.wildcard?("https://*.example.com")
-      true
-
-      iex> Origin.wildcard?("https://example.com")
-      false
-  """
   @spec wildcard?(term()) :: boolean()
   def wildcard?(origin) when is_binary(origin) do
     case parse(origin) do

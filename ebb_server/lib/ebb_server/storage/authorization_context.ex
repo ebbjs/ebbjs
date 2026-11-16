@@ -1,9 +1,6 @@
 defmodule EbbServer.Storage.AuthorizationContext do
   @moduledoc """
-  Holds resolved configuration for authorization operations.
-
-  Eliminates duplicated table name resolution and provides a clean
-  context struct for passing around authorization configuration.
+  The table names and clock one authorization call resolves against.
   """
 
   @enforce_keys []
@@ -38,12 +35,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @default_relationships_by_id :ebb_relationships_by_id
   @default_group_apps :ebb_group_apps
 
-  @doc """
-  Builds an AuthorizationContext from keyword options.
-
-  If values are not provided in opts, falls back to Application env,
-  then to sensible defaults.
-  """
   @spec build(keyword()) :: t()
   def build(opts \\ []) do
     %__MODULE__{
@@ -67,13 +58,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
       default
   end
 
-  @doc """
-  Returns the cache-backed lookup options for this context.
-
-  The single source for the entity/group resolution keyword list shared by
-  `Authorizer`, `EntityScope`, and `PermissionChecker`, so a new table
-  cannot be added to one call site and forgotten at another.
-  """
   @spec to_opts(t()) :: keyword()
   def to_opts(%__MODULE__{} = ctx) do
     [

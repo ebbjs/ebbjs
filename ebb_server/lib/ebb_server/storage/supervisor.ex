@@ -2,10 +2,6 @@ defmodule EbbServer.Storage.Supervisor do
   @moduledoc """
   Supervisor for the storage layer.
 
-  Starts children in order with `rest_for_one` strategy, ensuring RocksDB
-  and SQLite are ready before SystemCache, WatermarkTracker and
-  InFlightActions are ready before Writer, and Writer is last.
-
   The `rest_for_one` strategy means if any child crashes, those started
   after it (higher in the list) will be restarted, but those before it
   will not. Two reasons drive the order:
@@ -18,10 +14,6 @@ defmodule EbbServer.Storage.Supervisor do
     it, though a worker already inside `write_batch` may finish late. The
     replacement Writer clears the surviving in-flight ids and treats
     every unresolved claim as orphaned on `init/1`.
-
-  `:writer_opts` is merged over the Writer's boot defaults so tests can
-  inject a `:commit_fn` or a bad cache table while still exercising the
-  real tree.
 
   ## Restarting over a dying predecessor
 

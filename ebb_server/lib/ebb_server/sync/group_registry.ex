@@ -15,10 +15,6 @@ defmodule EbbServer.Sync.GroupRegistry do
 
   @registry __MODULE__
 
-  @doc """
-  The live `GroupServer` pid for `group_id`, or `nil` when there is none
-  or the registry is not running.
-  """
   @spec lookup(String.t()) :: pid() | nil
   def lookup(group_id) do
     case Registry.lookup(@registry, group_id) do
@@ -29,7 +25,6 @@ defmodule EbbServer.Sync.GroupRegistry do
     ArgumentError -> nil
   end
 
-  @doc "The `:via` name a `GroupServer` for `group_id` registers under."
   @spec name(String.t()) :: {:via, module(), {module(), String.t()}}
   def name(group_id), do: {:via, Registry, {@registry, group_id}}
 end

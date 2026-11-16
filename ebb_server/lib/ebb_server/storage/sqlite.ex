@@ -16,13 +16,6 @@ defmodule EbbServer.Storage.SQLite do
   storage module goes through this one for entity materialization and
   read queries.
 
-  ## Lifecycle
-
-  On init, opens the SQLite database with PRAGMAs (WAL mode, 64MB cache,
-  5s busy timeout, foreign keys on) and runs the DDL to create or migrate
-  the schema. All reads and writes are routed through `GenServer.call`
-  using cached statements.
-
   ## Schema (managed here)
 
   Generated columns extract field values from the per-entity JSON `data`
@@ -60,18 +53,9 @@ defmodule EbbServer.Storage.SQLite do
 
   ## Reads vs. writes
 
-  This module is read+upsert against the entity cache, plus the small
-  `cursors` table of durable consumer positions (Action export today, peer
-  replication later). The Writer commits to RocksDB and triggers on-demand
-  materialization in this module via `upsert_entity/1` /
-  `upsert_entities/1`. We never write to SQLite on the hot write path —
-  that goes through RocksDB and fans out to materialization after commit;
-  a cursor write happens off the commit path, on the consumer's own poll.
-
-  ## Isolated instances
-
-  Every accessor takes an optional `server` (default `__MODULE__`) so
-  concurrent tests can run multiple isolated DBs.
+  We never write to SQLite on the hot write path — that goes through RocksDB
+  and fans out to materialization after commit; a cursor write happens off
+  the commit path, on the consumer's own poll.
   """
 
   use GenServer
@@ -80,10 +64,6 @@ defmodule EbbServer.Storage.SQLite do
 
   alias EbbServer.Storage.QueryFilter
   alias Exqlite.Sqlite3
-
-  # ---------------------------------------------------------------------------
-  # SQL constants
-  # ---------------------------------------------------------------------------
 
   # SQLite binds a window as signed 64-bit integers; a larger offset raises in
   # the NIF rather than returning an error a caller can handle.
@@ -268,8 +248,6 @@ defmodule EbbServer.Storage.SQLite do
     ON r.source_id = m.entity_id AND r.source_id IS NOT NULL AND r.deleted_hlc IS NULL
   """
 
-  # Generic durable consumer cursor. #367's Action export owns the
-  # `"action_export"` row; peer replication (#113) will add its own.
   @create_cursors_table """
   CREATE TABLE IF NOT EXISTS cursors (name TEXT PRIMARY KEY, gsn INTEGER NOT NULL);
   """
@@ -281,36 +259,17 @@ defmodule EbbServer.Storage.SQLite do
   ON CONFLICT(name) DO UPDATE SET gsn = excluded.gsn
   """
 
-  # ---------------------------------------------------------------------------
-  # Public API — start / stop
-  # ---------------------------------------------------------------------------
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  # ---------------------------------------------------------------------------
-  # Public API — entity operations
-  # ---------------------------------------------------------------------------
-
   @doc """
-  Upserts an entity row into the entities table.
-
   The upsert is monotonic in `last_gsn`: it only advances a row, never
   regresses it. Concurrent materializations of the same dirty entity can
   finish out of order, and an older snapshot must not clobber a newer one.
   An equal `last_gsn` still applies, so rematerialization stays idempotent.
-
-  `entity_row` must be a map with keys: `:id`, `:model`, `:data`,
-  `:created_hlc`, `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, `:last_gsn`.
-  An optional `:components` list mirrors the row's sorted component names
-  into `entity_components` in the same statement that writes the row.
-  `created_hlc` is the row's creation time. A fresh data directory's schema
-  refuses a row without one, and the repo discards old data rather than
-  migrating it (#793 decision 9), so a materializer that loses the stamp
-  fails there instead of storing a null the client has to interpret.
   """
   @spec upsert_entity(map(), GenServer.server()) :: :ok
   def upsert_entity(entity_row, server \\ __MODULE__) do
@@ -318,33 +277,23 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Applies a per-key patch to an existing entity row with `json_set`.
+  The caller is responsible for quoting any map key and for rejecting a
+  top-level field name that is not a safe JSON path component.
 
-  `fields` maps a JSON path relative to `$.fields.` to that path's
-  already-encoded JSON value. A path is a top-level field name, optionally
-  extended with `.map."<key>"` components to reach a key inside a map
-  field. Each entry becomes a `json_set(data, '$.fields.<path>', json(?))`
-  pair, so SQLite rewrites the `data` JSON in place and recomputes the
-  STORED generated columns. The caller is responsible for quoting any map
-  key and for rejecting a top-level field name that is not a safe JSON path
-  component.
-
-  `meta` carries the row's non-JSON columns — `:model`, `:created_hlc`,
-  `:updated_hlc`, `:deleted_hlc`, `:deleted_by`, and `:last_gsn` — and each
-  is written as given. The materializer replays a delta from the row it
-  already holds, so `created_hlc` is the value that row was created with and
-  a later patch restates it rather than moving the stamp. An empty `fields`
-  map performs a metadata-only update, which is also the write form a
-  zero-component row takes.
+  The materializer replays a delta from the row it already holds, so
+  `created_hlc` is the value that row was created with and a later patch
+  restates it rather than moving the stamp. An empty `fields` map performs a
+  metadata-only update, which is also the write form a zero-component row
+  takes.
 
   Like `upsert_entity/2`, the write is monotonic in `last_gsn`: the row is
   only updated when its current `last_gsn` is less than or equal to the
   patch's. A lower `last_gsn` is rejected and the row is left alone.
 
-  `components` is the row's sorted `<model>/<field>` list. It replaces the
-  entity's `entity_components` rows inside the same GenServer call, and is
-  written into `data.components` in the same `json_set` statement as the
-  field patches, so the canonical JSON cannot go stale.
+  `components` replaces the entity's `entity_components` rows inside the
+  same GenServer call, and is written into `data.components` in the same
+  `json_set` statement as the field patches, so the canonical JSON cannot
+  go stale.
   """
   @spec patch_entity(
           String.t(),
@@ -357,35 +306,19 @@ defmodule EbbServer.Storage.SQLite do
     GenServer.call(server, {:patch_entity, entity_id, fields, components, meta})
   end
 
-  @doc """
-  Fetches an entity by ID.
-
-  Returns `{:ok, entity_map}` or `:not_found`.
-  """
   @spec get_entity(String.t(), GenServer.server()) :: {:ok, map()} | :not_found
   def get_entity(id, server \\ __MODULE__) do
     GenServer.call(server, {:get_entity, id})
   end
 
-  @doc """
-  Fetches just the `last_gsn` for an entity by ID.
-
-  Returns `{:ok, last_gsn}` or `:not_found`.
-  """
   @spec get_entity_last_gsn(String.t(), GenServer.server()) :: {:ok, integer()} | :not_found
   def get_entity_last_gsn(id, server \\ __MODULE__) do
     GenServer.call(server, {:get_entity_last_gsn, id})
   end
 
   @doc """
-  Lists the group's live `ebb/grant` rows in keyset order.
-
-  Ordered by `(actor_id, id)`; `after_key` is `nil` to start from the
-  beginning or the `{actor_id, id}` pair of the last row returned by a
-  previous call. The pair, not `actor_id` alone, is the key so two grants
+  The `{actor_id, id}` pair, not `actor_id` alone, is the key so two grants
   for one actor cannot shadow each other at a page boundary.
-
-  Returns `[{id, actor_id}]`.
   """
   @spec list_grants(
           String.t(),
@@ -397,14 +330,6 @@ defmodule EbbServer.Storage.SQLite do
     GenServer.call(server, {:list_grants, group_id, after_key, limit})
   end
 
-  @doc """
-  Lists the group's live `ebb/membership` rows in keyset order.
-
-  Ordered by row `id`; `after_key` is `nil` to start from the beginning or
-  the last row id returned by a previous call.
-
-  Returns `[{membership_id, entity_id}]`.
-  """
   @spec list_memberships(
           String.t(),
           String.t() | nil,
@@ -416,9 +341,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Lists the live `ebb/link` row ids whose source a live `ebb/membership` row
-  in the group's window names.
-
   The window is `(after_key, window_end]` over the membership keyset
   `list_memberships/4` pages. It is bounded by the membership
   rows the caller already read rather than recomputed, so a row committed
@@ -441,9 +363,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Returns SQLite's `EXPLAIN QUERY PLAN` details for the per-page relationship
-  statement, for the `after_key` variant a page would run.
-
   The statement names `idx_entities_source_id` on purpose, so a renamed or
   dropped index fails at prepare instead of quietly becoming a scan on a
   database that has never been `ANALYZE`d. This seam lets a test assert the
@@ -456,9 +375,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Returns SQLite's `EXPLAIN QUERY PLAN` details for a group-member keyset
-  statement, for the `after_key` variant a page would run.
-
   The plan rests on the component guard matching the partial index's
   predicate, which a re-typed guard silently breaks; this seam lets a test
   assert the plan rather than the SQL text.
@@ -470,9 +386,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Returns SQLite's `EXPLAIN QUERY PLAN` details for a membership keyset
-  statement, for the `after_key` variant a page would run.
-
   See `explain_list_grants/2`: the plan has to name the partial
   `idx_entities_membership_page` index.
   """
@@ -483,11 +396,7 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Lists the live ids of entities holding `component`, ascending.
-
-  Reads through `idx_entity_components_component` and joins `entities` so a
-  tombstoned row, which keeps its component rows, is not returned. This is
-  the read seam for #799; no wire query path uses it yet.
+  This is the read seam for #799; no wire query path uses it yet.
   """
   @spec query_component_ids(String.t(), pos_integer(), GenServer.server()) ::
           {:ok, [String.t()]} | {:error, term()}
@@ -496,8 +405,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Returns SQLite's `EXPLAIN QUERY PLAN` details for the component read.
-
   Like `explain_page_relationship_ids/2`, this seam lets a test assert the
   plan, rather than the SQL text, names `idx_entity_components_component`.
   """
@@ -508,8 +415,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Fetches multiple live entity rows by id.
-
   Rows deleted by tombstone are omitted, so the result can be shorter than
   the id list. Order is unspecified; callers that need an order index the
   result by `id`.
@@ -522,13 +427,7 @@ defmodule EbbServer.Storage.SQLite do
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # Public API — durable consumer cursors
-  # ---------------------------------------------------------------------------
-
   @doc """
-  Reads a named durable cursor.
-
   Returns `:not_found` when the cursor has never been written, which a
   consumer should treat as "start from 0".
   """
@@ -537,9 +436,6 @@ defmodule EbbServer.Storage.SQLite do
     GenServer.call(server, {:get_cursor, name})
   end
 
-  @doc """
-  Writes a named durable cursor, upserting any existing value.
-  """
   @spec put_cursor(String.t(), non_neg_integer(), GenServer.server()) :: :ok
   def put_cursor(name, gsn, server \\ __MODULE__) do
     GenServer.call(server, {:put_cursor, name, gsn})
@@ -559,10 +455,6 @@ defmodule EbbServer.Storage.SQLite do
     GenServer.call(server, :health, @health_timeout)
   end
 
-  # ---------------------------------------------------------------------------
-  # GenServer callbacks
-  # ---------------------------------------------------------------------------
-
   @impl true
   def init(opts) do
     data_dir = Keyword.fetch!(opts, :data_dir)
@@ -571,19 +463,15 @@ defmodule EbbServer.Storage.SQLite do
     path = Path.join(data_dir, "ebb.db")
     {:ok, db} = Sqlite3.open(path)
 
-    # PRAGMAs
     :ok = Sqlite3.execute(db, @pragmas)
-
     :ok = reset_stale_schema(db)
 
-    # DDL
     :ok = Sqlite3.execute(db, @create_entities_table)
     :ok = Sqlite3.execute(db, @create_indexes)
     :ok = Sqlite3.execute(db, @create_entity_components_table)
     :ok = Sqlite3.execute(db, @create_entity_components_indexes)
     :ok = Sqlite3.execute(db, @create_cursors_table)
 
-    # Prepare cached statements
     {:ok, upsert_stmt} = Sqlite3.prepare(db, @upsert_sql)
     {:ok, get_entity_stmt} = Sqlite3.prepare(db, @get_entity_sql)
     {:ok, get_last_gsn_stmt} = Sqlite3.prepare(db, @get_last_gsn_sql)
@@ -1002,14 +890,8 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Queries entities of a given model with permission JOINs and optional filters.
-
   The query map must carry a `:limit`; `EbbServer.Storage.EntityStore.query/4`
-  normalizes and bounds it. `:offset` is optional.
-
-  Returns `{:ok, [entity_maps]}`, `{:error, :invalid_filter}`,
-  `{:error, :invalid_limit}`, `{:error, :invalid_offset}` or
-  `{:error, reason}`.
+  normalizes and bounds it.
   """
   @spec query_entities(map(), GenServer.server()) ::
           {:ok, [map()]} | {:error, :invalid_filter | :invalid_limit | :invalid_offset | term()}
@@ -1019,17 +901,12 @@ defmodule EbbServer.Storage.SQLite do
 
   @impl true
   def terminate(_reason, %{db: db, stmts: stmts}) do
-    # Release all prepared statements before closing
     Enum.each(Map.values(stmts), fn stmt ->
       Sqlite3.release(db, stmt)
     end)
 
     Sqlite3.close(db)
   end
-
-  # ---------------------------------------------------------------------------
-  # Query helpers
-  # ---------------------------------------------------------------------------
 
   defp build_filter_clauses(filter) do
     with {:ok, normalized} <- QueryFilter.normalize(filter) do
@@ -1192,8 +1069,6 @@ defmodule EbbServer.Storage.SQLite do
     pairs
   end
 
-  # Every failure on the read path becomes a reply: this process is shared by
-  # every tenant, so a statement SQLite refuses must not take it down.
   defp collect_ids(state, sql, params) do
     %{db: db} = state
 
@@ -1238,10 +1113,6 @@ defmodule EbbServer.Storage.SQLite do
       :done -> Enum.reverse(acc)
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # Private helpers
-  # ---------------------------------------------------------------------------
 
   defp row_to_entity([
          id,
