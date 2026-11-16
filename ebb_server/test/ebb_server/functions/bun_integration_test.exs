@@ -98,7 +98,7 @@ defmodule EbbServer.Functions.BunIntegrationTest do
       body = Jason.decode!(response.resp_body)
       view = body["result"]
       assert view["id"] == entity_id
-      assert view["type"] == "todo"
+      assert view["model"] == "todo"
       assert view["data"]["fields"]["title"]["value"] == "from bun"
 
       # The function sees the same view `/entities/:id` returns; the parity is

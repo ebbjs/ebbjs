@@ -23,7 +23,7 @@ function fakeTransport(
 
 const view = {
   id: "e_doc",
-  type: "doc",
+  model: "doc",
   data: { fields: { title: { type: "lww", value: "hello", hlc: "1" } } },
   created_hlc: "1",
   updated_hlc: "1",
