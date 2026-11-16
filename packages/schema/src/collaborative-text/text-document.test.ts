@@ -11,6 +11,7 @@ import {
   componentField,
   componentName,
   format,
+  isComponentUpdate,
   mergeFieldValue,
   pack,
   type Action,
@@ -34,7 +35,7 @@ const BASE_ACTOR = "actor_a";
 const makeHlc = (ts: number, count = 0): HLCTimestamp => format(pack(BigInt(ts), BigInt(count)));
 
 const contentOf = (update: Update): FieldValue | undefined => {
-  if (update.method === "drop" || update.method === "delete") return undefined;
+  if (!isComponentUpdate(update) || update.method === "drop") return undefined;
   return componentField(update.component) === DOC_CONTENT_FIELD ? update.data : undefined;
 };
 

@@ -18,6 +18,7 @@ import {
   componentValue,
   ebbComponent,
   ebbComponentKind,
+  isRowCreate,
   systemValue,
   systemValueString,
   type EbbComponentKind,
@@ -64,9 +65,11 @@ export interface SubjectWrites {
   readonly written: Set<string>;
   deleted: boolean;
   /**
-   * Whether the batch carries a `replace`, which is how a create states itself on
-   * the wire: an atomic value's `replace` is also its update.
+   * Whether the batch carries the row's create, which is the only way a row
+   * exists: a component write never implies one.
    */
+  created: boolean;
+  /** Whether the batch carries a `replace` of one of the row's components. */
   replaced: boolean;
 }
 
@@ -82,13 +85,20 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
       components: new Map(),
       written: new Set(),
       deleted: false,
+      created: false,
       replaced: false,
     };
-    if (update.method === "delete") {
+    if (isRowCreate(update)) {
+      // The create names the row's model whatever order the components arrive
+      // in, so it is the one place the fold can learn identity from a row fact.
+      entry.created = true;
+      entry.model = update.model;
+    } else if (update.method === "delete") {
       entry.deleted = true;
     } else {
       entry.kind = ebbComponentKind(update.component) ?? entry.kind;
-      entry.model = componentModel(update.component);
+      // The create fixes identity: a component may only agree with it.
+      if (!entry.created) entry.model = componentModel(update.component);
       entry.replaced = entry.replaced || update.method === "replace";
       entry.written.add(update.component);
       if (update.method !== "drop") entry.components.set(update.component, update.data);

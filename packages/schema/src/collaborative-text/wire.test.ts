@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   componentName,
   format,
+  isComponentUpdate,
   pack,
   type Action,
   type FieldValue,
@@ -120,10 +121,10 @@ describe("version", () => {
   it("writes one Update per component, the version leaf beside the cells", () => {
     const updates = docActionToUpdate([run("r1", "hi")], { docId: "doc_1", updateId: "u1" })!;
     const content = updates.find(
-      (update) => update.method !== "delete" && update.component === "text_document/content",
+      (update) => isComponentUpdate(update) && update.component === "text_document/content",
     )!;
     const version = updates.find(
-      (update) => update.method !== "delete" && update.component === "text_document/version",
+      (update) => isComponentUpdate(update) && update.component === "text_document/version",
     )!;
 
     expect(version.data).toMatchObject({ value: CURRENT_TEXT_VERSION });

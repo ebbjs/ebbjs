@@ -1,20 +1,27 @@
 /**
- * The platform row emitters: one Update per row, carrying the component's
- * whole value.
+ * The platform row emitters: a create plus one Update per row, the single
+ * Update carrying the component's whole value.
  *
  * These pin the property the slice exists for — a torn edge, membership, or
  * grant cannot be emitted, because there is no Update that carries half of
- * one.
+ * one — and that a platform row is created before anything is written to it.
  */
 
 import { describe, expect, it } from "vitest";
-import { EBB_COMPONENTS, EBB_COMPONENT_KINDS, ebbComponent, type Update } from "@ebbjs/core";
+import {
+  EBB_COMPONENTS,
+  EBB_COMPONENT_KINDS,
+  isComponentUpdate,
+  isRowCreate,
+  type ComponentUpdate,
+  type Update,
+} from "@ebbjs/core";
 
 import {
-  grantRowUpdate,
-  groupRowUpdate,
-  linkRowUpdate,
-  membershipRowUpdate,
+  grantRowUpdates,
+  groupRowUpdates,
+  linkRowUpdates,
+  membershipRowUpdates,
   systemRowDelete,
   systemRowUpdate,
 } from "./system-rows";
@@ -25,27 +32,37 @@ const ids = (hlc = "hlc_1") => {
   return { updateId: () => `u_${++next}`, hlc: () => hlc };
 };
 
-/** The Update narrowed to one that carries a component value. */
-const valueUpdate = (update: Update): Extract<Update, { method: "replace" | "merge" }> => {
-  if (update.method === "delete" || update.method === "drop") {
-    throw new Error("a value Update expected");
-  }
-  return update;
+/** A component Update that carries a value. */
+type ValueUpdate = Extract<ComponentUpdate, { method: "merge" | "replace" }>;
+
+/** The one component Update of a row. */
+const valueUpdate = (updates: readonly Update[]): ValueUpdate => {
+  const update = updates.filter(isComponentUpdate);
+  expect(update).toHaveLength(1);
+  const [only] = update;
+  if (only === undefined || only.method === "drop") throw new Error("a value Update expected");
+  return only;
+};
+
+/** The row's create: always first, always naming the platform model. */
+const createOf = (updates: readonly Update[]): Update => {
+  const [first] = updates;
+  if (first === undefined || !isRowCreate(first)) throw new Error("a create Update expected first");
+  return first;
 };
 
 /** The value a component Update carries. */
-const valueOf = (update: Update): Record<string, unknown> =>
-  valueUpdate(update).data.value as Record<string, unknown>;
-
+const valueOf = (updates: readonly Update[]): Record<string, unknown> =>
+  valueUpdate(updates).data.value as Record<string, unknown>;
 describe("system row emitters", () => {
   it.each(EBB_COMPONENT_KINDS)("names the %s component from the platform vocabulary", (kind) => {
     const update = systemRowUpdate(kind, "e_1", {}, ids());
 
-    expect(valueUpdate(update).component).toBe(ebbComponent(kind));
+    expect(valueUpdate([update]).component).toBe(EBB_COMPONENTS[kind]);
   });
 
-  it("writes ebb/link as one Update carrying all four fields", () => {
-    const update = linkRowUpdate(
+  it("opens a row with its create, naming the platform model", () => {
+    const updates = linkRowUpdates(
       {
         linkId: "rel_1",
         sourceId: "e_issue",
@@ -56,8 +73,31 @@ describe("system row emitters", () => {
       ids(),
     );
 
-    expect(update).toEqual({
+    expect(createOf(updates)).toEqual({
       id: "u_1",
+      subject_id: "rel_1",
+      model: "ebb",
+      method: "create",
+      hlc: "hlc_1",
+      data: null,
+    });
+  });
+
+  it("writes ebb/link as one Update carrying all four fields", () => {
+    const updates = linkRowUpdates(
+      {
+        linkId: "rel_1",
+        sourceId: "e_issue",
+        targetId: "e_project",
+        field: "project",
+        type: "issue",
+      },
+      ids(),
+    );
+
+    expect(updates).toHaveLength(2);
+    expect(valueUpdate(updates)).toEqual({
+      id: "u_2",
       subject_id: "rel_1",
       component: EBB_COMPONENTS.link,
       method: "replace",
@@ -68,43 +108,45 @@ describe("system row emitters", () => {
           type: "issue",
           field: "project",
         },
-        update_id: "u_1",
+        update_id: "u_2",
         hlc: "hlc_1",
       },
     });
   });
 
   it("writes ebb/membership as one Update, so a mismatched pair is unrepresentable", () => {
-    const update = membershipRowUpdate(
+    const updates = membershipRowUpdates(
       { membershipId: "eg_1", entityId: "e_todo", groupId: "g_1" },
       ids(),
     );
 
-    expect(valueUpdate(update).component).toBe(EBB_COMPONENTS.membership);
-    expect(valueOf(update)).toEqual({ entity_id: "e_todo", group_id: "g_1" });
+    expect(createOf(updates)).toMatchObject({ subject_id: "eg_1", model: "ebb" });
+    expect(valueUpdate(updates).component).toBe(EBB_COMPONENTS.membership);
+    expect(valueOf(updates)).toEqual({ entity_id: "e_todo", group_id: "g_1" });
   });
 
   it("writes ebb/grant as one Update carrying the actor, group, and permissions", () => {
     const permissions = ["todo.*", "issue.*"];
-    const update = grantRowUpdate(
+    const updates = grantRowUpdates(
       { grantId: "gm_1", actorId: "a_1", groupId: "g_1", permissions },
       ids(),
     );
 
-    expect(valueUpdate(update).component).toBe(EBB_COMPONENTS.grant);
-    expect(valueOf(update)).toEqual({
+    expect(createOf(updates)).toMatchObject({ subject_id: "gm_1", model: "ebb" });
+    expect(valueUpdate(updates).component).toBe(EBB_COMPONENTS.grant);
+    expect(valueOf(updates)).toEqual({
       actor_id: "a_1",
       group_id: "g_1",
       permissions: ["todo.*", "issue.*"],
     });
     // The value is a copy: a caller mutating its list cannot tear a buffered row.
-    expect(valueOf(update)["permissions"]).not.toBe(permissions);
+    expect(valueOf(updates)["permissions"]).not.toBe(permissions);
   });
 
   it("omits apps from an unscoped group and keeps an empty list distinct from absence", () => {
-    const unscoped = groupRowUpdate({ groupId: "g_1", name: "Team" }, ids());
-    const noApps = groupRowUpdate({ groupId: "g_2", name: "Team", apps: [] }, ids());
-    const scoped = groupRowUpdate({ groupId: "g_3", name: "Team", apps: ["notes"] }, ids());
+    const unscoped = groupRowUpdates({ groupId: "g_1", name: "Team" }, ids());
+    const noApps = groupRowUpdates({ groupId: "g_2", name: "Team", apps: [] }, ids());
+    const scoped = groupRowUpdates({ groupId: "g_3", name: "Team", apps: ["notes"] }, ids());
 
     expect(valueUpdate(unscoped).component).toBe(EBB_COMPONENTS.group);
     expect(valueOf(unscoped)).toEqual({ name: "Team" });

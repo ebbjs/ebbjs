@@ -3,7 +3,8 @@
  * relationship module. Storage-backed traversal stays in `@ebbjs/client`.
  *
  * A link and a membership are each one atomic component, so every builder here
- * emits one Update per row. The emitters themselves live in `system-rows.ts`.
+ * emits a row's create and its one component Update. The emitters themselves
+ * live in `system-rows.ts`.
  */
 
 import { componentName, generateId, type Update } from "@ebbjs/core";
@@ -13,9 +14,8 @@ import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 import { membershipRowId } from "./membership";
 import { normalizePointer, type PointerValue } from "./pointer";
 import {
-  fixedRowIds,
-  linkRowUpdate,
-  membershipRowUpdate,
+  linkRowUpdates,
+  membershipRowUpdates,
   systemRowDelete,
   type SystemRowIds,
 } from "./system-rows";
@@ -64,8 +64,8 @@ export interface BuildRelationshipWriteOptions {
    * to recover the relationship's group).
    */
   relationshipSubjectId?: string;
-  /** The local clock a link's value is stamped with; absent leaves the leaf unstamped. */
-  hlc?: () => string;
+  /** The local clock the link row is stamped with: its creation time and its value. */
+  hlc: () => string;
   /**
    * Mints the link row and Update ids. Defaults to core's
    * nanoid `generateId`; a caller that needs a deterministic batch
@@ -141,46 +141,32 @@ export function buildRelationshipUpdate(args: {
   targetId: string | null;
   field: string;
   type: string;
-  updateId: string;
-  /** Drawn only when a value Update is built: a `delete` must not consume a tick. */
-  hlc?: () => string;
+  ids: SystemRowIds;
 }): Update[] {
   if (args.targetId === null) {
-    return [systemRowDelete(args.relationshipId, { updateId: () => args.updateId })];
+    return [systemRowDelete(args.relationshipId, { updateId: () => args.ids.updateId() })];
   }
-  return [
-    linkRowUpdate(
-      {
-        linkId: args.relationshipId,
-        sourceId: args.sourceId,
-        targetId: args.targetId,
-        field: args.field,
-        type: args.type,
-      },
-      fixedRowIds(args.updateId, args.hlc?.()),
-    ),
-  ];
+  return linkRowUpdates(
+    {
+      linkId: args.relationshipId,
+      sourceId: args.sourceId,
+      targetId: args.targetId,
+      field: args.field,
+      type: args.type,
+    },
+    args.ids,
+  );
 }
 
-/** Build the Update for an `ebb/membership` row filing `entityId` into `groupId`. */
-export function buildMembershipUpdate(args: {
-  membershipId: string;
-  entityId: string;
-  groupId: string;
-  updateId: string;
-  /** The leaf's clock; absent leaves it unstamped. */
-  hlc?: string;
-}): Update[] {
-  return [
-    membershipRowUpdate(
-      {
-        membershipId: args.membershipId,
-        entityId: args.entityId,
-        groupId: args.groupId,
-      },
-      fixedRowIds(args.updateId, args.hlc),
-    ),
-  ];
+/** The Updates for an `ebb/membership` row filing `entityId` into `groupId`. */
+export function buildMembershipUpdate(
+  args: { membershipId: string; entityId: string; groupId: string },
+  ids: SystemRowIds,
+): Update[] {
+  return membershipRowUpdates(
+    { membershipId: args.membershipId, entityId: args.entityId, groupId: args.groupId },
+    ids,
+  );
 }
 
 /**
@@ -201,8 +187,8 @@ export function buildMembershipUpdates(
   groupIds: readonly string[],
   ids: SystemRowIds,
 ): Update[] {
-  return groupIds.map((groupId) =>
-    membershipRowUpdate(
+  return groupIds.flatMap((groupId) =>
+    membershipRowUpdates(
       { membershipId: membershipRowId(entityId, groupId), entityId, groupId },
       ids,
     ),
@@ -296,14 +282,19 @@ function wireTypeFor(registry: ModelRegistry, sourceName: string, as: string): s
   return rel?.type ?? sourceName;
 }
 
-/** Build the link row's one Update for one many-cardinality target. */
+/** The row ids, drawn from the caller's id and clock seams. */
+function rowIds(newId: (prefix: string) => string, hlc: () => string): SystemRowIds {
+  return { updateId: () => newId("u"), hlc };
+}
+
+/** Build the link row's Updates for one many-cardinality target. */
 function makeManyRelationshipUpdate(
   sourceId: string,
   as: string,
   wireType: string,
   targetId: string,
   newId: (prefix: string) => string,
-  hlc: (() => string) | undefined,
+  hlc: () => string,
 ): Update[] {
   return buildRelationshipUpdate({
     relationshipId: newId("rel"),
@@ -311,8 +302,7 @@ function makeManyRelationshipUpdate(
     targetId,
     field: as,
     type: wireType,
-    updateId: newId("u"),
-    hlc,
+    ids: rowIds(newId, hlc),
   });
 }
 
@@ -373,7 +363,6 @@ export function buildRelationshipWrite(
   if (cardinality === "one") {
     const sourceId = requireSourceId(opts, as);
     const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
-    const updateId = newId("u");
     const relationshipId = opts.relationshipSubjectId ?? newId("rel");
     const relationshipUpdates = buildRelationshipUpdate({
       relationshipId,
@@ -381,8 +370,7 @@ export function buildRelationshipWrite(
       targetId,
       field: as,
       type: wireTypeFor(registry, sourceName, as),
-      updateId,
-      hlc: opts.hlc,
+      ids: rowIds(newId, opts.hlc),
     });
     return { relationshipUpdates };
   }

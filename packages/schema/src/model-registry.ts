@@ -7,7 +7,15 @@
  * tags.
  */
 
-import { componentField, componentModel, isFieldMap, isUnset, type Action } from "@ebbjs/core";
+import {
+  componentField,
+  componentModel,
+  isComponentUpdate,
+  isFieldMap,
+  isRowCreate,
+  isUnset,
+  type Action,
+} from "@ebbjs/core";
 import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox/type";
@@ -264,16 +272,34 @@ export class ModelRegistry {
    * no models and no relationships are registered, unless the action
    * breaks a structural method rule that needs no schema.
    *
-   * The model a write is committed under is the component's prefix, so a
-   * component the model does not declare is the whole membership question.
-   * A `delete` names no component and carries nothing to resolve.
+   * A row's committed model is the one its create named, so a create only has
+   * to name a declared model and every component of that row has to agree with
+   * it — the create decides, whichever Update arrives first. A component the
+   * model does not declare is the other membership question. A `delete` names
+   * no component and carries nothing to resolve, and a create is not checked
+   * as a component because it names none.
    */
   validateAction(action: Action): ValidationViolation[] {
     const registered = this.models.size > 0 || this.relationships.size > 0;
     const violations: ValidationViolation[] = [];
+    const createdModels = new Map<string, string>();
+    for (const update of action.updates) {
+      if (isRowCreate(update)) createdModels.set(update.subject_id, update.model);
+    }
     for (let i = 0; i < action.updates.length; i++) {
       const update = action.updates[i];
-      if (update === undefined || update.method === "delete") continue;
+      if (update === undefined) continue;
+      if (isRowCreate(update)) {
+        if (!registered) continue;
+        if (this.models.has(update.model)) continue;
+        violations.push({
+          entityName: UNKNOWN_ENTITY,
+          updateIndex: i,
+          message: `Unknown model "${update.model}" for create`,
+        });
+        continue;
+      }
+      if (!isComponentUpdate(update)) continue;
       const modelName = componentModel(update.component);
       const field = componentField(update.component);
       // A wholesale replace of a key space would discard a concurrent
@@ -285,6 +311,16 @@ export class ModelRegistry {
           field,
           message: `Component "${update.component}" is a keyed component; replace is refused`,
         });
+      }
+      const createdModel = createdModels.get(update.subject_id);
+      if (registered && createdModel !== undefined && createdModel !== modelName) {
+        violations.push({
+          entityName: createdModel,
+          updateIndex: i,
+          field,
+          message: `Component "${update.component}" names model "${modelName}" but the row's create names "${createdModel}"`,
+        });
+        continue;
       }
       if (!registered) continue;
       const model = this.models.get(modelName);

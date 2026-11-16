@@ -37,9 +37,11 @@ import {
   componentField,
   componentModel,
   componentName,
+  isComponentUpdate,
   isFieldLeaf,
   isFieldMap,
   type Action,
+  type ComponentUpdate,
   type FieldValue,
   type HLCTimestamp,
   type Update,
@@ -107,13 +109,14 @@ export const versionField = (
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether an Update targets the given document model. Use this to
- * filter updates from an Action before applying them to a TextDocument (so
- * non-doc updates pass through unchanged). A `delete` names no component and
- * so belongs to no single component of the row; it is not a cell delivery.
+ * Check whether an Update is a component write to the given document model,
+ * narrowing it to a component Update. Use this to filter updates from an
+ * Action before applying them to a TextDocument (so non-doc updates pass
+ * through unchanged). A `create` and a `delete` name no component and so
+ * belong to no single component of the row; neither is a cell delivery.
  */
-export const isDocModelUpdate = (update: Update, docModel: string): boolean =>
-  update.method !== "delete" && componentModel(update.component) === docModel;
+export const isDocModelUpdate = (update: Update, docModel: string): update is ComponentUpdate =>
+  isComponentUpdate(update) && componentModel(update.component) === docModel;
 
 // ---------------------------------------------------------------------------
 // Read side: parse a content map into cells
@@ -171,7 +174,7 @@ export const contentKeys = (content: unknown): readonly string[] => {
  * envelope consistently.
  */
 export const readCellFields = (update: Update): ReadonlyMap<string, CellFieldValue> => {
-  if (update.method === "drop" || update.method === "delete") return new Map();
+  if (!isComponentUpdate(update) || update.method === "drop") return new Map();
   if (componentField(update.component) !== DOC_CONTENT_FIELD) return new Map();
   return parseContentField(update.data);
 };
@@ -208,7 +211,7 @@ export const applyActions = (
     for (const update of action.updates) {
       if (!isDocModelUpdate(update, docModel)) continue;
 
-      if (update.method === "drop" || update.method === "delete") continue;
+      if (update.method === "drop") continue;
       const field = componentField(update.component);
       if (field === DOC_VERSION_FIELD) {
         assertKnownVersion(update.data);

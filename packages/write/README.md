@@ -6,6 +6,10 @@ registry, and the actor, and returns the wire Updates it would emit together
 with the group set those Updates fan out to. The committer runs a batch under
 one context and produces one Action.
 
+A row exists because of a `create` Update, never because something was written
+to it: every operation that brings a row into existence emits its create first,
+then the component Updates that carry its fields.
+
 No storage reads, no network, and no dependency on `@ebbjs/client`.
 `@ebbjs/client` re-exports this package, so the client API is unchanged.
 
@@ -61,7 +65,8 @@ its own sequence.
 | `src/verbs.ts`            | `WriteVerb` / `operationCallFor` / `createEntityInput` — semantic verbs to planner calls.                  |
 | `src/relationship.ts`     | Wire builders for link and membership Updates.                                                             |
 | `src/membership.ts`       | Group-scope resolution and the membership refusals.                                                        |
-| `src/system-rows.ts`      | The platform row emitters: one atomic `ebb/*` Update per row.                                              |
+| `src/row-create.ts`       | `rowCreate` — the one Update that brings a row into existence.                                             |
+| `src/system-rows.ts`      | The platform row emitters: a row's create plus its one atomic `ebb/*` Update.                              |
 | `src/pointer.ts`          | `PointerValue` / `normalizePointer`.                                                                       |
 | `src/field-projection.ts` | `projectFieldValue` — wire field to application value.                                                     |
 | `src/rejection.ts`        | `Rejection` / `WriteResponse` wire shapes.                                                                 |
