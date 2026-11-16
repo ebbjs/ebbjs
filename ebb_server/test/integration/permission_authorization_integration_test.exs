@@ -1011,6 +1011,61 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
+  # #803: the subject a write names is the component on the wire, and grants
+  # match by ancestry, so a field grant separates `note/title` from
+  # `note/body` while `note.*` still covers both.
+  describe "per-component permissions (#803)" do
+    setup do
+      bootstrap_group("owner", "g_1", ["note.*", "ebb/grant.create"])
+
+      hlc = generate_hlc()
+      note_id = "note_#{Nanoid.generate()}"
+      leaf = fn value -> %{"type" => "lww", "value" => value, "hlc" => hlc} end
+
+      assert write_entity_in_group("owner", note_id, "note", "g_1", %{
+               "title" => leaf.("Title"),
+               "body" => leaf.("Body")
+             }).status == 200
+
+      %{note_id: note_id}
+    end
+
+    test "a model grant covers every component of the row", %{note_id: note_id} do
+      assert %{"rejected" => []} =
+               submit(
+                 patch_action(note_id, "owner", %{"title" => "New title", "body" => "New body"}),
+                 "owner"
+               )
+
+      note = Jason.decode!(get_entity(note_id, "owner").resp_body)
+      assert note["data"]["fields"]["title"]["value"] == "New title"
+      assert note["data"]["fields"]["body"]["value"] == "New body"
+    end
+
+    test "a field grant covers only its own component", %{note_id: note_id} do
+      member = add_grant("owner", "g_1", "actor_2", ["note/title.*"])
+      assert member.status == 200
+      assert Jason.decode!(member.resp_body) == %{"rejected" => []}
+
+      assert %{"rejected" => []} =
+               submit(patch_action(note_id, "actor_2", %{"title" => "New title"}), "actor_2")
+
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} =
+               submit(patch_action(note_id, "actor_2", %{"body" => "New body"}), "actor_2")
+
+      # Every component named on the wire is checked, not just one of them.
+      assert %{"rejected" => [%{"reason" => "not_authorized"}]} =
+               submit(
+                 patch_action(note_id, "actor_2", %{"title" => "T2", "body" => "B2"}),
+                 "actor_2"
+               )
+
+      note = Jason.decode!(get_entity(note_id, "owner").resp_body)
+      assert note["data"]["fields"]["title"]["value"] == "New title"
+      assert note["data"]["fields"]["body"]["value"] == "Body"
+    end
+  end
+
   # A relationship row fans out to its source's group set, so the wire
   # `source_id` may not move an existing row to another source.
   describe "relationship row identity (#624)" do
@@ -1220,6 +1275,30 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), "actor_1")
     assert conn.status == 200
     Jason.decode!(conn.resp_body)
+  end
+
+  defp patch_action(subject_id, actor_id, fields) do
+    hlc = generate_hlc()
+
+    updates =
+      fields
+      |> Enum.with_index()
+      |> Enum.map(fn {{field, value}, index} ->
+        component_update(
+          "upd_patch_#{index}_#{Nanoid.generate()}",
+          subject_id,
+          "note/#{field}",
+          "merge",
+          %{"type" => "lww", "value" => value, "hlc" => hlc}
+        )
+      end)
+
+    %{
+      "id" => "act_patch_#{Nanoid.generate()}",
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => updates
+    }
   end
 
   # Helpers return one Update per component, so an Action's `updates` list

@@ -46,9 +46,10 @@ defmodule EbbServer.Storage.Authorizer do
   `ebb` for all four. Which group set a write resolves to is not a rule
   here — it is declared on the component and read through `SystemComponent`
   and `EntityScope` (`fan_out_groups/2`) — so these are the **permission**
-  rules that ride on that scope. Each component carries its own permission
-  (decision 12), so the subject is `ebb/<kind>`, e.g. `ebb/grant.create`.
-  The permission verb follows from the two facts: a create asks for
+  rules that ride on that scope. The subject is the component the write
+  names — `ebb/<kind>`, e.g. `ebb/grant.create` — and grants match by
+  ancestry, so `ebb.*` covers all four without a special case. The
+  permission verb follows from the two facts: a create asks for
   `<subject>.create`, a delete asks for `<subject>.delete`, and a write to
   an existing row asks for `<subject>.update`.
 
@@ -125,9 +126,21 @@ defmodule EbbServer.Storage.Authorizer do
 
   ## User entities
 
-  User-entity writes require `<model>.<verb>` in at least one group of
-  the entity's group set (union/any-match), where `<model>` is the model
-  the id was **committed** under, not the one its component prefix names:
+  A user row's write names its subject: a create or a delete checks the
+  model (`note.create`, `note.delete`) because neither names a component,
+  and an update checks **every** component the wire names
+  (`note/body.update`). Grants match by ancestry, so a model grant still
+  covers its components — `note.*` covers `note/body`, while
+  `note/title.*` covers only `note/title`. That is what keeps a whole-model
+  grant, a mirror with no existing data, and a field added after the grant
+  was written all working, and it lets an app separate fields by granting
+  the field and never the model. The server holds no schema, so it cannot
+  reject a component under a committed model that it has never seen; the
+  client refuses those.
+
+  The permission is required in at least one group of the entity's group
+  set (union/any-match), where `<model>` is the model the id was
+  **committed** under, not the one its component prefix names:
   the prefix is client input, and an existing id may not change model
   (#624). An id that exists but whose model cannot be resolved — a
   membership row the entity-model cache has not caught up with — is
@@ -307,6 +320,9 @@ defmodule EbbServer.Storage.Authorizer do
       deleted_memberships: resolve_deleted_memberships(mutations, opts),
       deleted_relationships:
         MapSet.union(sim.deleted_relationships, deleted_relationship_ids(mutations)),
+      # A user row's update is authorized against the components the wire
+      # names, so the subject is read from the Updates, not the folded row.
+      written_components: PermissionHelper.written_components(action.updates),
       mutations: mutations,
       opts: opts,
       ctx: ctx
@@ -1076,6 +1092,10 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
+  # The subject a user row's write names: its model for a create or a
+  # delete, since neither names a component, and every component named on the
+  # wire for an update (#803). A write that names no component at all falls
+  # back to the model.
   defp authorize_user_entity_update(model, update, actor_id, authz) do
     case EntityScope.resolve_groups(model, update.subject_id, authz.intra_opts) do
       [] ->
@@ -1083,15 +1103,41 @@ defmodule EbbServer.Storage.Authorizer do
          "entity has no group membership; every write must resolve at least one owning group"}
 
       group_ids ->
-        check_group_permission(group_ids, actor_id, model, permission_for(update), authz)
+        check_write_subjects(group_ids, update, model, actor_id, authz)
     end
   end
+
+  # An update must hold every permission the components it names require;
+  # the first one the actor misses rejects the Action.
+  defp check_write_subjects(group_ids, update, model, actor_id, authz) do
+    permission = permission_for(update)
+
+    update
+    |> write_subjects(model, authz)
+    |> Enum.reduce_while(:ok, fn subject, :ok ->
+      case check_group_permission(group_ids, actor_id, subject, permission, authz) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp write_subjects(%{created?: false, deleted?: false} = update, model, authz) do
+    case Map.get(authz.written_components, update.subject_id, []) do
+      [] -> [model]
+      components -> components
+    end
+  end
+
+  defp write_subjects(_update, model, _authz), do: [model]
 
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.
   #
-  # `subject` is a user row's model (`todo`) or a platform component's own
-  # name (`ebb/grant`); either way the grant string is `<subject>.<verb>`.
+  # `subject` is the model a user row's create or delete names, the component
+  # a user row's update names, or a platform component's own name
+  # (`ebb/grant`); either way the grant string is `<subject>.<verb>` and a
+  # grant covers a subject of its own or one descended from it.
   #
   # `permissions_fun` selects the source: the cache unioned with the
   # Action's declared bootstrap permissions by default, or the cache
