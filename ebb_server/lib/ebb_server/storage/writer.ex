@@ -444,6 +444,7 @@ defmodule EbbServer.Storage.Writer do
             ranges: %{optional(reference()) => range_timing()}
           },
           committer_pool: pid() | nil,
+          commit_opts: keyword(),
           pipeline: CommitPipeline.t(),
           after_commit: (-> any()) | nil,
           batch_max_size: integer(),
