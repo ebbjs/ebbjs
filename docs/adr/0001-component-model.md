@@ -266,6 +266,28 @@ model**.
   `created_hlc`, so `REPLICA_RECORD_FORMAT` goes 1 → 2 and an old record reads as absent. Decision 9
   makes that a reset, not a migration.
 
+### Amendments from the row create ([#817](https://github.com/ebbjs/ebbjs/issues/817))
+
+- **A row is a wire fact.** "One Update names one `(entity, component)`" is revised: an Update
+  names either a component or the row. `create` names the row's model, its creation time and no
+  component, so `client.create({})` is a legal Action and a zero-component row can be created,
+  delivered by catch-up and materialized from a backfill or listing seed.
+- **The create's model is authoritative; its HLC is the row's creation time.** There is no prior
+  record to contradict the model, so a component Update whose prefix disagrees is a structure
+  violation. `created_hlc` is the create's `hlc` and nothing else — the Action HLC cannot serve,
+  because a synthetic backfill base is stamped at the row's latest position.
+- **An unseen create is held on the client and refused on the server.** Per-subject,
+  group-scoped delivery hands a component write to a group that never saw the create; the client
+  keeps its `exists: false` placeholder and backfills the base rather than dropping data. A commit
+  is never out of order, so the server refuses instead: no create, no `:put`, and an unknown row
+  fails authorization. Nothing is ever reconstructed by inference.
+- **`<model>.create` means "this Action carries the row's create".** The verb no longer follows the
+  existence index, so a drop-only Action is an update and a create is a create by construction.
+- **Things the epic listed as compensations are gone:** `fetchedEmpty`, the
+  `replace`-implies-create inference, the first-write `created_hlc` stamp, the
+  `snapshotAction` synthesis of a base from component Updates, and the testing seed's `version`
+  component. `REPLICA_RECORD_FORMAT` bumps 5 → 6 and resets.
+
 ### What this does not decide
 
 - **Where `ebb/link` lives** — its own row carrying an atomic `ebb/link`, or a keyed pair on its

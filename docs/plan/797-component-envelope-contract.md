@@ -1,5 +1,12 @@
 # #797 — the component envelope: implementation contract
 
+> **Revised by [#817](https://github.com/ebbjs/ebbjs/issues/817).** A row is a wire fact now:
+> a `create` Update names the row's model, its creation time and no component, so a row with
+> nothing attached can be created, delivered and backfilled. `817-row-create-contract.md`
+> supersedes this note's "one Update names one `(entity, component)`", its
+> `replace`-implies-create rule, its first-write `created_hlc` stamp, and its "a zero-component
+> row cannot be created" paragraph. Read the two together, this one first.
+
 Epic: [#793](https://github.com/ebbjs/ebbjs/issues/793) · Slice: [#797](https://github.com/ebbjs/ebbjs/issues/797)
 ADR: [`docs/adr/0001-component-model.md`](../adr/0001-component-model.md) · Vocabulary: [`CONTEXT.md`](../../CONTEXT.md)
 
