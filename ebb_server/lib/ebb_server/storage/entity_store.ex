@@ -207,8 +207,8 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   # Counting map keys is itself O(N); the JSON blob byte size is free and is
-  # the size proxy the catalogue promises. `data` is JSON text on rows read
-  # back from SQLite and an already-decoded map on the materialize path.
+  # the size proxy the catalogue promises. Every row here came from SQLite,
+  # so `data` is JSON text.
   defp blob_byte_size(%{data: data}) when is_binary(data), do: byte_size(data)
   defp blob_byte_size(_row), do: 0
 
