@@ -41,8 +41,8 @@ defmodule EbbServer.Storage.EntityScope do
   @typep subject_id :: String.t()
 
   @doc """
-  Missing required options raise `ArgumentError` rather than silently
-  falling back to a global default.
+  A missing required option raises `KeyError` rather than falling back to a
+  global default.
   """
   @spec resolve_groups(scope_key(), subject_id(), keyword()) :: [String.t()]
   def resolve_groups(key, subject_id, opts \\ [])
