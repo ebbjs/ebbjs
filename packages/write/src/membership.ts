@@ -69,8 +69,6 @@ export interface SubjectWrites {
    * exists: a component write never implies one.
    */
   created: boolean;
-  /** Whether the batch carries a `replace` of one of the row's components. */
-  replaced: boolean;
 }
 
 /**
@@ -86,7 +84,6 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
       written: new Set(),
       deleted: false,
       created: false,
-      replaced: false,
     };
     if (isRowCreate(update)) {
       // The create names the row's model whatever order the components arrive
@@ -99,7 +96,6 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
       entry.kind = ebbComponentKind(update.component) ?? entry.kind;
       // The create fixes identity: a component may only agree with it.
       if (!entry.created) entry.model = componentModel(update.component);
-      entry.replaced = entry.replaced || update.method === "replace";
       entry.written.add(update.component);
       if (update.method !== "drop") entry.components.set(update.component, update.data);
     }
