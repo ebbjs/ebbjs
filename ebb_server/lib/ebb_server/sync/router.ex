@@ -1,102 +1,14 @@
 defmodule EbbServer.Sync.Router do
   @moduledoc """
-  HTTP router for the sync API. The full endpoint table is documented
-  in `EbbServer`'s top-level README (`@ebb_server/README.md` after #109
-  lands in PR 6).
-
-  ## What this module is
-
-  A `Plug.Router` with one route per endpoint and one catch-all 404:
-
-    - `GET /healthz` — unauthenticated readiness probe backed by
-      `EbbServer.Health`; `200` once the storage layer answers, `503`
-      while it is still coming up.
-    - `POST /sync/handshake` — returns actor identity, group memberships,
-      per-group cursors. Requires `x-ebb-actor-id` header (bypass mode).
-    - `GET /sync/identity` — returns the actor the server resolved from the
-      request (and, in tailscale mode, its display name and provider id). The
-      client's only way to learn an identity it cannot know in advance.
-    - `GET /sync/groups/:group_id?offset=N` — paginated catch-up for one group.
-    - `GET /sync/groups/:group_id/entities?cursor=&limit=` — cold-bootstrap
-      listing of the group's state at a watermark (see
-      `EbbServer.Sync.GroupListing`).
-    - `GET /sync/live?groups=...&cursor=N` — SSE stream of live actions.
-    - `POST /sync/actions` — submit a batch of Actions for write.
-    - `POST /sync/presence` — broadcast ephemeral presence data on an entity.
-    - `GET /entities/:id` — fetch a materialized entity (permission-checked;
-      a non-member gets `404`, same as a missing entity).
-    - `POST /entities/query` — query entities by model with `json_extract`
-      filter and permission JOINs (used by `ctx.query()`).
-    - `POST /functions/:name` — invoke a deployed function. The `/functions`
-      paths exist only while the boot-time functions flag is on, in which case
-      `EbbServer.Functions.Router` answers them; when it is off they fall
-      through to the catch-all like any unknown path.
-    - `GET /functions` — list deployed functions with their active version,
-      permission posture, and RPC schemas (never code).
-    - `POST /functions/:name/versions` — upload a bundle (admin credential).
-    - `GET /functions/:name/versions` — a name's version history (admin
-      credential; never code).
-    - `POST /functions/:name/activate` — activate an uploaded version (admin
-      credential).
-    - `POST /functions/:name/rollback` — activate the previous version (admin
-      credential).
-    - `POST /functions/:name/disable` — the per-function kill switch (admin
-      credential).
-    - `/admin/apps` — the app registry: list, register, and revoke the browser
-      origins an app admits to CORS. Authenticated by the admin credential
-      alone, before `AuthPlug`; see `EbbServer.Admin.Router`.
+  HTTP router for the sync API.
 
   ## Status codes
 
-  All errors use the appropriate HTTP status code (`400` for malformed
-  body or a body the adapter could not read, `401` for auth failures, `403`
-  for permission denied, `404` for unknown entity, `409` for HLC drift, `413`
-  for a body over its route's limit, `429` with `Retry-After` when Writer
-  admission control rejects a call or a presence sender is over its per-actor
-  rate, `500`/`502`/`503` for server errors and readiness failures). The
-  Action-submission endpoint also returns per-Action rejections in a
+  The Action-submission endpoint also returns per-Action rejections in a
   `rejected` array so the client can roll back optimistic applies. A `503
   write_failed` is a failed or abandoned write; a `503` from a Writer call
   timeout means the outcome is unknown, so the client retries the same Action
   ids idempotently.
-
-  ## Request body limits
-
-  Every body-bearing route reads through `EbbServer.Sync.BodyReader` with a
-  per-route bound from `EbbServer.Sync.BodyLimits`, so an over-limit body is
-  `413 payload_too_large` and an unreadable one is `400 invalid_body`, before
-  the route parses anything. The limits are configurable and documented in
-  `EbbServer.Sync.BodyLimits`. They bound HTTP/1 `Content-Length` and HTTP/2
-  data-frame bodies; Bandit 1.x drains a `Transfer-Encoding: chunked` body in
-  one call, so the chunked case needs a reverse-proxy body limit (see
-  `docs/self-hosting.md`).
-
-  ## Presence volume
-
-  Presence has no schema, log, or idempotency, and the server fans it out to
-  every subscriber of every group the entity belongs to, so it is bounded by
-  volume instead: a body over `:presence_max_body_bytes` (default 32 KiB, four
-  times the client's 8 KiB payload cap) is `413 payload_too_large`, and an
-  actor over `:presence_rate_limit` (default `{100, 200}` tokens, see
-  `EbbServer.Sync.PresenceRateLimit`) gets `429 rate_limited` with
-  `Retry-After`. Neither changes the `{entity_id, data}` request shape, and
-  neither applies to the Action path.
-
-  ## What this module is not
-
-  This is **request plumbing**; the actual business logic lives in:
-
-  - `EbbServer.CORS` — browser-origin admission (not authorization)
-  - `EbbServer.Sync.AuthPlug` — actor identity extraction
-  - `EbbServer.Sync.PresenceRateLimit` — per-actor presence volume cap
-  - `EbbServer.Storage.PermissionChecker` — per-update auth
-  - `EbbServer.Storage.Writer` — write serialization
-  - `EbbServer.Storage.EntityStore` — reads with on-demand materialization
-  - `EbbServer.Storage.EntityView` — the authorized read and its wire view
-  - `EbbServer.Storage.ActionSubmission` — the write sequence and its rejection list
-  - `EbbServer.Sync.SSEHandler` — the SSE wire format
-  - `EbbServer.Sync.CatchUp` — paginated catch-up
-  - `EbbServer.Sync.GroupListing` — group-scoped cold-bootstrap listing
   """
 
   use Plug.Router
@@ -135,7 +47,7 @@ defmodule EbbServer.Sync.Router do
 
   # After AuthPlug (the bucket is keyed by the assigned actor) and before
   # `:match`, so a limited presence request never reaches the entity index or
-  # the fan-out. Only `POST /sync/presence` is inspected.
+  # the fan-out.
   plug(EbbServer.Sync.PresenceRateLimit)
 
   plug(:functions)
@@ -150,8 +62,6 @@ defmodule EbbServer.Sync.Router do
   # as any unknown path does — including `GET /functions`, which the child
   # router answers as its own `/`. The flag is resolved once at boot
   # (`EbbServer.Functions`); this check only reads that resolved value.
-  # `AuthPlug` stays in front of both, so an anonymous request gets the shared
-  # `401` before the route matters.
   #
   # `Plug.forward/4` strips whatever prefix it is handed, so the rest of the
   # path is handed over as the forward path: `Plug.forward/4` keeps the
@@ -225,9 +135,9 @@ defmodule EbbServer.Sync.Router do
   end
 
   # The client cannot know a server-derived actor before asking, so this is
-  # the one read route whose whole payload is the resolved identity. AuthPlug
-  # has already accepted or rejected the request; a service-token request has
-  # no actor and is denied here like any other anonymous sync route.
+  # the one read route whose whole payload is the resolved identity. A
+  # service-token request has no actor and is denied here like any other
+  # anonymous sync route.
   get "/sync/identity" do
     case conn.assigns[:actor] do
       nil -> send_json(conn, 401, %{"error" => "unauthorized"})
@@ -273,8 +183,6 @@ defmodule EbbServer.Sync.Router do
     end
   end
 
-  # An omitted parameter is the whole row; a present one filters `data.fields`
-  # to the requested components' fields, ignoring names the row does not hold.
   defp requested_components(nil), do: nil
 
   defp requested_components(param) do
@@ -330,8 +238,7 @@ defmodule EbbServer.Sync.Router do
   end
 
   # App scope is a sync filter, not authorization: the handshake publishes
-  # it and the client decides which groups it keeps. An unscoped group is
-  # `null`; a scoped one is its truthy app ids, sorted for determinism.
+  # it and the client decides which groups it keeps.
   defp group_apps(group_id) do
     case GroupAppsCache.get_apps(group_id) do
       :unscoped -> nil
@@ -415,12 +322,9 @@ defmodule EbbServer.Sync.Router do
           watermark = WatermarkTracker.committed_watermark()
 
           if cursor > watermark do
-            # Cursor is ahead of the watermark. Send a single SSE
-            # control event with reconnect instructions, then halt
-            # the plug pipeline. The plug pipeline expects every
-            # match clause to return a `%Plug.Conn{}`; `{:stop,
-            # :normal}` triggers a RuntimeError that drops the
-            # connection before the response is flushed.
+            # The plug pipeline expects every match clause to return a
+            # `%Plug.Conn{}`; `{:stop, :normal}` triggers a RuntimeError that
+            # drops the connection before the response is flushed.
             conn
             |> SSEHandler.write_stale_cursor_response(watermark + 1)
             |> Plug.Conn.halt()

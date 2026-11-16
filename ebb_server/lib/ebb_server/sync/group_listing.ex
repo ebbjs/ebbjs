@@ -2,8 +2,6 @@ defmodule EbbServer.Sync.GroupListing do
   @moduledoc """
   Cold-bootstrap listing of a Group's current state as of a resolution frontier.
 
-  ## What a listing is
-
   `W = WatermarkTracker.committed_watermark()` is read **once, before the
   first row**, and every page carries it. Every effect with `gsn <= W` that
   the group's view can observe is in the listing (this page or an earlier
@@ -17,13 +15,9 @@ defmodule EbbServer.Sync.GroupListing do
   no membership row of their own, so a membership join alone would miss them.
 
   A link row is scoped by its source and never gets a membership row of its
-  own, so enumerating memberships alone never named one. Nothing else on the
-  cold path fetches them either, which left a replica seeded from this
-  listing with no link row created before its watermark — derived rows and
-  domain rows alike — and every accessor that traverses one reporting a live
-  link as absent. A link row rides the page its source appears on, scoped by
-  that source: it is shipped only when its source is one of the page's live
-  membership rows.
+  own, so enumerating memberships alone never named one. A link row rides the
+  page its source appears on, scoped by that source: it is shipped only when
+  its source is one of the page's live membership rows.
 
   A membership row deleted between the page's two reads is the one window
   this leaves: the source still ships, its rows do not, because the page's
@@ -33,28 +27,11 @@ defmodule EbbServer.Sync.GroupListing do
 
   ## Materialization
 
-  The SQLite read model is materialized lazily and `DirtyTracker` marks are
-  in-memory only. Boot repairs the gap that leaves: the cache rebuild
-  re-marks every modeled row in the derived component index dirty (#564), so the
-  first read or per-model query after a restart replays the row's delta. This module still
-  materializes the group's dirty system rows before paging and **every**
-  returned row unconditionally as it is read. A seeded row that is stale at
-  `W` would be stale forever, because the tail never revisits it, and that
-  `W` claim must not depend on the dirty set being a complete record.
+  A seeded row that is stale at `W` would be stale forever, because the tail
+  never revisits it, and that `W` claim must not depend on the dirty set being
+  a complete record.
 
   ## Pagination
-
-  Keyset, never `OFFSET`. Phase 0 is the bounded prefix — the `ebb/group`
-  row, then its `ebb/grant` rows keyed on `(actor_id, id)` through
-  `idx_entities_grant`. Phase 1 pages the group's `ebb/membership`
-  rows by row id through `idx_entities_membership_page`, fetching the
-  named entities and the link rows of the page's sources.
-
-  An `ebb/membership` row may name an entity that is also named by another
-  membership row; a repeat is idempotent for the client, whose store is
-  keyed by entity id. Rows are deduplicated within a page only, and so are
-  the link rows two membership rows naming one source would otherwise
-  repeat.
 
   The cursor is opaque: base64url of `{v, group_id, w, key}`. The `w` is
   echoed on every page so a client can assert it did not move, and a cursor
@@ -101,23 +78,6 @@ defmodule EbbServer.Sync.GroupListing do
   @type error :: {:error, :not_member | :bad_cursor | :invalid_limit | :materialization_failed}
 
   @doc """
-  Returns one page of the group's state as of `W`, plus the cursor for the
-  next page.
-
-  ## Options
-
-    - `:cursor` - opaque token from a previous page (`nil` starts at page 1,
-      which is also the only page that reads the frontier)
-    - `:limit` - maximum membership keys in the page, 200 by default, 1000
-      at most; a membership key also ships its entity and its live
-      relationship rows, so a page's row count is that of its keys' rows
-      rather than of the keys
-    - `:sqlite_name`, `:rocks_name`, `:dirty_set` - isolated storage
-      instances (tests)
-    - `:watermark_tracker` - the tracker process name (tests)
-    - `:after_watermark` - test seam: a 0-arity fun invoked once after the
-      frontier is read and before any row is materialized
-
   A non-member and an unknown group both return `{:error, :not_member}`, so
   the endpoint leaks no group existence.
   """
@@ -246,10 +206,9 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  # Phase 0 — the bounded prefix. The group row is materialized
-  # unconditionally: `group` has no eager boot populator, so it stays lazy
-  # like a user model and the listing's `W` guarantee must not rest on the
-  # dirty mark being present.
+  # The group row is materialized unconditionally: `group` has no eager boot
+  # populator, so it stays lazy like a user model and the listing's `W`
+  # guarantee must not rest on the dirty mark being present.
   defp build_prefix(group_id, limit, :start, opts) do
     case fetch_group_row(group_id, opts) do
       {:ok, nil} -> build_prefix_members(group_id, limit, nil, [], opts)
@@ -355,9 +314,6 @@ defmodule EbbServer.Sync.GroupListing do
     Enum.flat_map(taken, fn {membership_id, entity_id} -> [membership_id, entity_id] end)
   end
 
-  # A membership row ships followed by the entity it names. Two membership
-  # rows can name one entity; a repeat is idempotent for the client but is
-  # collapsed within the page.
   defp membership_rows(taken, by_id) do
     {rows, _seen} =
       Enum.reduce(taken, {[], MapSet.new()}, fn {membership_id, entity_id}, {rows, seen} ->

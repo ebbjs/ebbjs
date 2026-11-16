@@ -61,11 +61,9 @@ defmodule EbbServer.Storage.Component do
   def update_keys_for(method) when method in ["merge", "replace", "drop"], do: @component_keys
   def update_keys_for(_method), do: @update_keys
 
-  @doc "The wire method strings, in the order an error message names them."
   @spec method_names() :: [String.t()]
   def method_names, do: Enum.map(@method_pairs, &elem(&1, 0))
 
-  @doc "Whether `method` is one of the envelope's wire methods."
   @spec method?(term()) :: boolean()
   def method?(method), do: is_binary(method) and Map.has_key?(@methods, method)
 
@@ -79,12 +77,10 @@ defmodule EbbServer.Storage.Component do
   @spec value_method?(term()) :: boolean()
   def value_method?(method), do: method in @value_methods
 
-  @doc "The wire string for a method, given as its atom or already as a string."
   @spec method_string(method() | String.t()) :: String.t()
   def method_string(method) when is_atom(method), do: Atom.to_string(method)
   def method_string(method) when is_binary(method), do: method
 
-  @doc "The internal method for a wire method string."
   @spec to_method(String.t()) :: method()
   def to_method(method) do
     case Map.fetch(@methods, method) do
@@ -114,7 +110,6 @@ defmodule EbbServer.Storage.Component do
 
   def valid?(_component), do: false
 
-  @doc "The component's `{model, field}`."
   @spec split(name()) :: {String.t(), String.t()}
   def split(component) when is_binary(component) do
     if valid?(component) do
@@ -127,11 +122,9 @@ defmodule EbbServer.Storage.Component do
 
   def split(component), do: malformed!(component)
 
-  @doc "The model a component's value is committed under."
   @spec model(name()) :: String.t()
   def model(component), do: component |> split() |> elem(0)
 
-  @doc "The row field a component's value is stored at."
   @spec field(name()) :: String.t()
   def field(component), do: component |> split() |> elem(1)
 

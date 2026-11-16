@@ -31,31 +31,18 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
 
   defstruct rows: %{}, membership_ids: %{}, group_entity_ids: %{}
 
-  @doc "An empty overlay."
   @spec empty() :: t()
   def empty, do: %Overlay{}
 
-  @doc "Normalizes a caller-supplied overlay; `nil` is the empty overlay."
   @spec normalize(t() | nil) :: t()
   def normalize(nil), do: empty()
   def normalize(%Overlay{} = overlay), do: overlay
 
-  @doc """
-  Fetches a planned row, distinguishing a tombstone from an untouched key.
-  """
   @spec fetch(t(), cache(), String.t()) :: {:ok, row()} | :error
   def fetch(%Overlay{rows: rows}, cache, id) do
     Map.fetch(rows, {cache, id})
   end
 
-  @doc """
-  Returns the groups an entity would have after the overlay is applied.
-
-  The cached entries are the ones `MembershipCache` holds for the same
-  entity. Any membership id the overlay touches replaces its cached row;
-  an untouched entity returns `:error` so the caller reads the cache
-  directly.
-  """
   @spec memberships(t(), String.t(), [map()]) :: {:ok, [String.t()]} | :error
   def memberships(%Overlay{} = overlay, entity_id, cached_entries) do
     case Map.fetch(overlay.membership_ids, entity_id) do
@@ -100,7 +87,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     end)
   end
 
-  @doc "The entity a touched `membership` row belongs to, alive or deleted."
   @spec entity_for_membership(t(), String.t()) :: String.t() | nil
   def entity_for_membership(%Overlay{} = overlay, membership_id) do
     case Map.fetch(overlay.rows, {:memberships_by_id, membership_id}) do
@@ -109,7 +95,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     end
   end
 
-  @doc "Puts a row or tombstone and maintains the entity-membership projection."
   @spec put(t(), cache_key(), row()) :: t()
   def put(%Overlay{} = overlay, {:memberships_by_id, id} = key, %{} = row) do
     overlay = drop_entity_membership(overlay, id)
@@ -121,7 +106,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     %{overlay | rows: Map.put(overlay.rows, key, value)}
   end
 
-  @doc "Tombstones an `membership` row and records the entity it belonged to."
   @spec delete_membership(t(), String.t(), String.t() | nil) :: t()
   def delete_membership(%Overlay{} = overlay, id, entity_id \\ nil) do
     entity_id = entity_id || entity_for_membership(overlay, id)
@@ -130,7 +114,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     add_entity_membership(overlay, id, entity_id)
   end
 
-  @doc "Merges `overlay` over `base`, later rows winning."
   @spec merge(t(), t()) :: t()
   def merge(%Overlay{} = base, %Overlay{} = overlay) do
     rows = Map.merge(base.rows, overlay.rows)

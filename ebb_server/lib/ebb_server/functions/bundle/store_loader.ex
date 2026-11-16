@@ -8,13 +8,6 @@ defmodule EbbServer.Functions.Bundle.StoreLoader do
   files is cheaper to produce than a database; both answer the same envelope
   shape, so `BundleCache` never learns which one it has.
 
-  The loader is deliberately narrow. It does not cache (the cache above it
-  re-reads on every invocation, so an activation is visible without a restart),
-  it does not validate the envelope or its schemas, and it does not verify the
-  digest. `BundleCache` fingerprints the answer and `Bundle.new/2` verifies the
-  digest, contract, and name and resolves the schemas once, for every loader
-  alike. Reading the active row is this module's only job.
-
   A name with no active row — including a disabled one, which the store leaves
   with no active slot — is `:not_found`. A store that cannot answer is
   `{:error, {:store_unavailable, reason}}`: an unreadable or corrupt deployment

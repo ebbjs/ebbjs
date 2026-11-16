@@ -5,37 +5,15 @@ defmodule EbbServer.Storage.CommitterPool do
 
   ## Why a pool
 
-  The V0 Writer started one linked Committer. A Committer death therefore
-  killed the Writer, and the Writer's `init/1` reconcile healed the one
-  claimed range. That cannot contain a failure once more than one range is
-  in flight: a bad range must become a resolved hole without taking the
-  healthy ranges (or the sequencer) down with it.
-
   The pool gives every dispatch a worker and a `ref`-keyed job. The Writer
-  keeps all ordering and failure policy; the pool only:
-
-  - starts and maintains the configured number of workers;
-  - assigns one job at a time to an idle worker;
-  - forwards `{:committer_result, ref, result}` unchanged;
-  - turns a worker `:DOWN` into
-    `{:committer_result, ref, {:crashed, reason}}` for the job that worker
-    owned, and starts a replacement;
-  - stops when its owner (the Writer) goes away.
+  keeps all ordering and failure policy.
 
   ## Commit watchdog
 
   `commit_fn` is `RocksDB.write_batch/2`, a NIF. A process inside a NIF
   cannot be killed until the NIF returns, so killing a worker does not
   free its slot: waiting for the `:DOWN` would hang in exactly the failure
-  the watchdog exists for. Instead the watchdog times out the *job*:
-
-  - every dispatched job records `started_at`;
-  - a sweeper fails any job older than `:commit_timeout_ms` (default
-    2 000 ms, application env `:writer_commit_timeout_ms`) by sending its
-    owner `{:committer_result, ref, {:crashed, :commit_timeout}}`;
-  - the timed-out job is deleted, its worker is retired from
-    `workers`/`idle`, and replaced, so the pool's capacity is restored
-    without waiting for the stuck NIF.
+  the watchdog exists for. Instead the watchdog times out the *job*.
 
   A retired worker is not killed synchronously: it may still be inside the
   NIF, where a kill signal is not delivered until the call returns, and the
@@ -58,13 +36,8 @@ defmodule EbbServer.Storage.CommitterPool do
   claim as orphaned. GSNs are never reused, so a late write can only fill a
   range already resolved as a hole, never a newly claimed range.
 
-  ## Lifecycle
-
-  A job is `{ref, prepared, gsn_start, gsn_end}`. The pool sends
-  `{:committer_assigned, ref, worker}` before dispatching the job, which
-  lets the Writer record the owner on its `CommitPipeline.Batch`. Results
-  and crashes are reported by `ref`, never by worker pid, so a replacement
-  worker cannot inherit or resolve another range's failure.
+  Results and crashes are reported by `ref`, never by worker pid, so a
+  replacement worker cannot inherit or resolve another range's failure.
   """
 
   use GenServer
@@ -122,8 +95,6 @@ defmodule EbbServer.Storage.CommitterPool do
   end
 
   @doc """
-  Queues a prepared range for an available Committer.
-
   Asynchronous: the Writer must remain responsive while the commit runs.
   The pool answers with `{:committer_assigned, ref, worker}` followed by
   exactly one `{:committer_result, ref, result}` (a crash is reported as

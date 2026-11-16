@@ -26,8 +26,7 @@ defmodule EbbServer.Functions do
   would look flippable without being able to start or stop the bundle cache,
   and the route and the cache could disagree: a route that answers while no
   cache exists is a `500` for every caller. Resolving once keeps both readers
-  on the same bool for the life of the node. The real per-function kill switch
-  is #595's disable, not this flag.
+  on the same bool for the life of the node.
 
   Only `true`, `false`, `"true"`, `"false"`, `"1"` and `"0"` are understood.
   Anything else raises at boot: a typo in a deployment must not read as
@@ -347,27 +346,22 @@ defmodule EbbServer.Functions do
     }
   end
 
-  @doc "The largest request body an invocation accepts, before the frame bound."
   @spec max_invoke_body_bytes() :: pos_integer()
   def max_invoke_body_bytes do
     Keyword.get(config(), :max_invoke_body_bytes, @default_max_invoke_body_bytes)
   end
 
-  @doc "The largest result a handler may return, in bytes."
   @spec max_output_bytes() :: pos_integer()
   def max_output_bytes do
     Keyword.get(config(), :max_output_bytes, EbbServer.Functions.Protocol.max_frame_bytes())
   end
 
-  @doc "The host-call budget one invocation may spend."
   @spec max_host_calls() :: pos_integer()
   def max_host_calls, do: Keyword.get(config(), :max_host_calls, @default_max_host_calls)
 
-  @doc "The log lines one invocation may emit before the server drops the rest."
   @spec max_log_lines() :: pos_integer()
   def max_log_lines, do: Keyword.get(config(), :max_log_lines, @default_max_log_lines)
 
-  @doc "The log bytes one invocation may emit before the server drops the rest."
   @spec max_log_bytes() :: pos_integer()
   def max_log_bytes, do: Keyword.get(config(), :max_log_bytes, @default_max_log_bytes)
 
@@ -461,7 +455,6 @@ defmodule EbbServer.Functions do
     end
   end
 
-  @doc "The number of warm workers the pool keeps, default `min(4, schedulers)`."
   @spec pool_size() :: non_neg_integer()
   def pool_size do
     Keyword.get(config(), :pool_size, min(4, System.schedulers_online()))
@@ -475,7 +468,6 @@ defmodule EbbServer.Functions do
   @spec queue_timeout_ms() :: pos_integer()
   def queue_timeout_ms, do: Keyword.get(config(), :queue_timeout_ms, @default_queue_timeout_ms)
 
-  @doc "The Bun executable the Bun transport runs."
   @spec bun_path() :: String.t() | nil
   def bun_path do
     Keyword.get(config(:worker_opts) || [], :bun_path) || System.find_executable("bun")
@@ -523,7 +515,6 @@ defmodule EbbServer.Functions do
     end)
   end
 
-  # A blank env value is unset, not false.
   defp env_value(name) do
     case System.get_env(name) do
       nil -> nil

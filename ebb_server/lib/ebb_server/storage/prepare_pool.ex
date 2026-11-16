@@ -63,12 +63,6 @@ defmodule EbbServer.Storage.PreparePool do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @doc """
-  Queues one call's Actions for payload build and encode.
-
-  Asynchronous: the Writer keeps accepting calls while prepare runs. The
-  owner receives `{:prepare_result, ref, result}` exactly once per job.
-  """
   @spec prepare(GenServer.server(), reference(), [Preparer.action()]) :: :ok
   def prepare(pool, ref, actions) do
     GenServer.cast(pool, {:prepare, ref, actions})

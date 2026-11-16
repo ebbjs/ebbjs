@@ -206,8 +206,6 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Returns the model of every user entity this Action creates.
-
   The `ebb/membership` row carries only `entity_id`, so the authorizer
   recovers the entity's model from the same Action to pick the right
   `<model>.create` permission.
@@ -304,11 +302,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Builds an intra-action context map for membership resolution.
-
-  Maps `entity_id` to the list of group ids carried by `ebb/membership`
-  rows within the same action. Link rows do not move an entity into a
-  group.
+  Link rows do not move an entity into a group.
   """
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(mutations) do

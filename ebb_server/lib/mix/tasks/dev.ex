@@ -4,9 +4,6 @@ defmodule Mix.Tasks.Dev do
 
   A thin wrapper around `mix run --no-halt`. No file watcher — restart
   with `mix dev` after editing anything under `lib/` or `config/`.
-
-  Usage:
-      mix dev
   """
   use Mix.Task
 

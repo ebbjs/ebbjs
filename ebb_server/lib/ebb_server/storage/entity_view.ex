@@ -20,8 +20,6 @@ defmodule EbbServer.Storage.EntityView do
   @type view :: %{String.t() => term()}
 
   @doc """
-  Reads an entity on behalf of an actor and formats it.
-
   A denied read is reported as `:not_found`, the same as a missing entity:
   a distinct result would turn the read into an existence oracle for ids
   the actor cannot read.
@@ -40,16 +38,6 @@ defmodule EbbServer.Storage.EntityView do
     end
   end
 
-  @doc """
-  Narrows a row view to the components a caller asked for.
-
-  `components` is a set of component names, or `nil` for the whole row. A
-  field survives only when the row's own component names it, so a component
-  of another model cannot address a same-named field, and an unknown name
-  simply matches nothing. A platform row's name is its component's
-  (`ebb/link`). The row shape — `data.fields` — stays as it is; this is a
-  read filter, not a wire change.
-  """
   @spec filter_components(view(), MapSet.t(String.t()) | nil) :: view()
   def filter_components(view, nil), do: project_view(view)
 

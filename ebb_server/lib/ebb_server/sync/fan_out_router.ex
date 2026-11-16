@@ -3,79 +3,6 @@ defmodule EbbServer.Sync.FanOutRouter do
   Routes committed Action batches from the Writer to per-group
   GroupServers, in claim order, gated on the watermark.
 
-  ## What this module does
-
-  The Writer is the only writer of the Action log and notifies
-  `FanOutRouter` after each commit. The Router then:
-
-  1. Waits until the committed watermark from `WatermarkTracker` is past
-     the batch's end.
-  2. Decodes the Actions carried with the commit. The Writer sends each
-     committed Action's pre-encoded payload, pre-resolved scopes, and the
-     set of actors whose group view the apply changed, so live fan-out
-     neither reads `cf_actions` nor joins the stored frame. A recovered
-     range, which has no notification, still reads the log and wakes no
-     connection; so does a carried list whose length does not match the
-     range.
-  3. Takes each Action's group set from the Writer's commit snapshot,
-     falling back to `GroupResolution.resolve_group_ids/2` (per-Action,
-     via `EntityScope`) only when the notifier did not annotate the GSN.
-  4. Filters each Action's Updates to the ones whose subject's persisted
-     scope includes the recipient group. An Update scoped to one group is
-     never delivered to another group that the same Action also touches.
-  5. Encodes the range's frames once per (Action, distinct Update subset)
-     for the groups with a live GroupServer, via
-     `FanOutRouter.Frames.build/1`, then dispatches bytes. Groups that
-     receive the same subset share one encode; the GroupServer only
-     concatenates. A group with no live GroupServer has no subscriber to
-     receive the bytes, so its Actions are not encoded at all — the same
-     work the old GroupServer-local encode skipped.
-
-  Carrying the payload binaries costs the hand-off a list, not a copy:
-  binaries above 64 bytes are refc-shared across processes. The list lives
-  in `batch_meta` beside the range, as does the deduped actor set the
-  apply touched, and both are dropped when the range is pushed (or
-  resolved as a hole).
-
-  Using the Writer's snapshot keeps live fan-out in agreement with the
-  `cf_group_actions` index catch-up reads: the cache has already moved
-  by dispatch time, so re-resolving an `ebb/link`/`ebb/grant` delete there
-  finds no by-id entry, and the wire form carries no component for a delete.
-  Each Action is stored with its per-subject scopes (`"subject_scopes"`) for
-  the same reason. Every frame this build writes carries them, and a frame
-  whose scopes half is not one `{subject_id, [group_id]}` entry per subject
-  raises on read rather than delivering whole (#814).
-
-  ## Resolved holes
-
-  The Writer abandons a claimed range when its commit fails: the range is
-  marked resolved (the watermark advances over the hole) and the Writer
-  sends `{:range_resolved, from, to}`. That nudge drops the abandoned
-  claim, re-reads the watermark, and re-drains the already-buffered
-  notifications. It never adds, reads, or pushes the hole itself — the
-  abandoned GSNs have no durable Actions.
-
-  Multi-Writer pipelining is parked: #287 records the claim-ownership and
-  orphan-vs-in-flight reconcile a second claim owner would need, and #529
-  keeps one claim owner as a fixed constraint. Should a second claim owner
-  land, the Router needs ordered-fanout coordination so groups don't see
-  one writer's GSN 5 before another's GSN 3.
-  `EbbServer.Sync.FanOutRouter.Plan` owns that release order; today, with
-  one Writer, the watermark gating is trivially satisfied.
-
-  ## Restart resume
-
-  The in-memory claim buffer is lost if the Router restarts. The
-  highest pushed GSN is not: `EbbServer.Sync.FanOutFrontier` persists it
-  so `init/1` can resume. On a restart the Router re-derives the
-  un-pushed committed ranges from `cf_actions` (and their group sets from
-  `cf_group_actions`) between the persisted frontier and the log max, then
-  drains them against the watermark. This also recovers commits that
-  landed while the Router was down, whose `{:batch_committed, ...}` the
-  Writer dropped via its `Process.whereis/1` guard. A cold boot starts
-  from the current watermark instead, so it never replays history to
-  live subscribers; connecting clients catch up from the log.
-
   ## SSE out-of-order dispatch is safe
 
   Even when the Plan releases disjoint GSN ranges (possible across a
@@ -89,40 +16,10 @@ defmodule EbbServer.Sync.FanOutRouter do
   A committed, applied range that changes an actor's group view pushes
   `event: control` with `{"groups_changed": true, "reason":
   "membership"}` to every live connection of every affected actor. The
-  event carries no delta: the client re-handshakes, and the handshake
-  reads `GrantCache`.
-
-  The Writer decides which actors were affected while it applies its
-  planned cache mutations, so the set rides the `{:batch_committed, ...}`
-  notification and the push happens on the post-apply path, never at
+  Writer decides which actors were affected while it applies its planned
+  cache mutations, so the push happens on the post-apply path, never at
   commit time. A client that reacts immediately therefore cannot
   handshake into the pre-apply state.
-
-  Membership is the trigger: an `ebb/grant` put, patch, or delete,
-  including a permissions-only patch, and a re-put that re-keys the row to
-  another actor (the old actor's view changed too). An Action that touches
-  no grant emits nothing; a recovered range carries no actor set and
-  emits nothing either.
-
-  Coalescing is per connection per released range. `actor_connections`
-  maps an actor to its live connection pids and the Writer's actor list is
-  already deduped, so a range that moves several of an actor's rows casts
-  one event. The actor index alone decides who is woken, not the range's
-  group fan-out: a membership row is scoped to the group it grants, and a
-  newly added actor may be live on a different group. Delivery is
-  best-effort — a cast to a connection that died is dropped — and a missed
-  event is covered by the reconnect handshake.
-
-  ## Sibling modules
-
-  - `EbbServer.Sync.FanOutRouter.Plan` — pure claim-order release and
-    watermark gating.
-  - `EbbServer.Sync.GroupServer` — one pid per active group; holds its
-    SSE subscribers' senders.
-  - `EbbServer.Sync.FanOutFrontier` — persisted last-pushed GSN across a
-    Router restart.
-  - `EbbServer.Sync.SSEConnection` — one pid per live `GET /sync/live`
-    subscription; receives pushes via its GroupServer.
 
   ## Group registry outage
 
@@ -133,8 +30,6 @@ defmodule EbbServer.Sync.FanOutRouter do
   same push (`init/1` re-derives the un-pushed ranges), and that restart
   loop consumes `Sync.Supervisor`'s restart intensity, which takes the tree
   and any process linked to it down with it (#653).
-
-  Started under `EbbServer.Sync.Supervisor`.
   """
 
   use GenServer
@@ -335,10 +230,6 @@ defmodule EbbServer.Sync.FanOutRouter do
     received_at = System.monotonic_time()
     range = {from_gsn, to_gsn}
 
-    # Keep the Writer-provided group sets, carried payloads, affected
-    # actors, commit time, and receive time alongside the buffered ranges,
-    # so a range that waits for the watermark still dispatches from the
-    # commit snapshot and reports its true latency.
     meta = %{
       committed_at: committed_at,
       received_at: received_at,
@@ -382,8 +273,7 @@ defmodule EbbServer.Sync.FanOutRouter do
         end
 
       # Forward the authenticated actor_id so GroupServer's broadcast_presence
-      # guard can filter out self-echoes. (Previously this passed group_id,
-      # which made every subscriber look like the group itself.)
+      # guard can filter out self-echoes.
       GroupServer.add_subscriber(group_pid, connection_pid, actor_id)
     end
 
@@ -541,8 +431,8 @@ defmodule EbbServer.Sync.FanOutRouter do
   defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, actor_connections, meta) do
     decode_started_at = System.monotonic_time()
 
-    # All five caches, so a delete naming no component still resolves its
-    # row's kind, and so its scope.
+    # All registered caches, so a delete naming no component still resolves
+    # its row's kind, and so its scope.
     resolve_opts = [
       memberships: CacheTables.memberships(),
       memberships_by_id: CacheTables.memberships_by_id(),
@@ -588,8 +478,6 @@ defmodule EbbServer.Sync.FanOutRouter do
     push_groups_changed(actor_connections, meta.affected_actors)
   end
 
-  # One cast per connection per released range, however many membership
-  # rows in the range touched its actor.
   defp push_groups_changed(actor_connections, affected_actors) do
     Enum.each(affected_actors, fn actor_id ->
       for pid <- Map.get(actor_connections, actor_id, []) do
@@ -600,7 +488,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
   # Only groups with a live GroupServer can receive a push. Resolving them
   # before the encode keeps an unsubscribed group's Actions out of the frame
-  # build, as they were when the GroupServer itself encoded.
+  # build.
   defp live_group_pids(memberships) do
     memberships
     |> Enum.map(&elem(&1, 0))
@@ -651,8 +539,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   # One push per group per committed range, so a batch that fans out to a
-  # group is dispatched — and sampled — once, not once per Action. Each
-  # copy is filtered to the Updates whose own scope includes the group.
+  # group is dispatched — and sampled — once, not once per Action.
   defp grantships(action, groups_by_gsn, resolve_opts) do
     group_ids =
       case Map.fetch(groups_by_gsn, action["gsn"]) do

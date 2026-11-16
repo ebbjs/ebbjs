@@ -34,24 +34,9 @@ defmodule EbbServer.Apps.Store do
           created_at: String.t()
         }
 
-  @doc """
-  The registry document inside `data_dir`.
-
-  ## Examples
-
-      iex> Store.path("/var/lib/ebb")
-      "/var/lib/ebb/apps.json"
-  """
   @spec path(Path.t()) :: Path.t()
   def path(data_dir), do: Path.join(data_dir, @file_name)
 
-  @doc """
-  Reads and validates the registry document.
-
-  An absent file is `{:error, :enoent}` and is not an error condition: a fresh
-  install has no apps. Anything readable but not a valid document is
-  `{:error, :corrupt}`.
-  """
   @spec load(Path.t()) ::
           {:ok, [app()]} | {:error, :enoent} | {:error, :corrupt} | {:error, term()}
   def load(data_dir) do
@@ -61,9 +46,6 @@ defmodule EbbServer.Apps.Store do
     end
   end
 
-  @doc """
-  Replaces the registry document atomically.
-  """
   @spec write(Path.t(), [app()]) :: :ok | {:error, term()}
   def write(data_dir, apps) do
     path = path(data_dir)
@@ -75,8 +57,6 @@ defmodule EbbServer.Apps.Store do
   end
 
   @doc """
-  Whether `name` is already registered, compared case-insensitively.
-
   The write path and `load/1` share this rule so a registry accepted at boot is
   one the admin API would also accept.
   """
@@ -86,18 +66,12 @@ defmodule EbbServer.Apps.Store do
     Enum.any?(apps, fn app -> String.downcase(app.name) == key end)
   end
 
-  @doc """
-  Whether any of `origins` is already registered to any of `apps`.
-  """
   @spec duplicate_origins?([app()], [String.t()]) :: boolean()
   def duplicate_origins?(apps, origins) do
     registered = apps |> Enum.flat_map(& &1.origins) |> MapSet.new()
     Enum.any?(origins, &MapSet.member?(registered, &1))
   end
 
-  @doc """
-  The wire shape of one app.
-  """
   @spec to_json(app()) :: map()
   def to_json(app) do
     %{
@@ -109,8 +83,6 @@ defmodule EbbServer.Apps.Store do
   end
 
   @doc """
-  Trims and validates a display name.
-
   Names are for humans, so the comparison the registry enforces is
   case-insensitive over the trimmed form.
   """

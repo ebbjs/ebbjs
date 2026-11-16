@@ -10,10 +10,6 @@ defmodule EbbServer.Storage.EntityModelCache do
   entries, which the boot replay reconstructs from `cf_actions`, and maintained
   by the Writer for every committed row.
 
-  A plain `:set` keyed by entity id. The GenServer exists solely to own
-  the table lifetime and publish its name; every read is a lock-free
-  ETS lookup.
-
   Entries are monotonic: there is no delete, so a tombstoned entity
   keeps its entry. The table is therefore an **existence** signal (a
   deleted id still reads as existing, fail-closed) and the recorded
@@ -33,8 +29,6 @@ defmodule EbbServer.Storage.EntityModelCache do
   end
 
   @doc """
-  Records the resolved committed model for an entity id.
-
   Accepts nothing when either side is missing so the Writer can call it
   unconditionally. A later write for the same id replaces the entry.
   """
@@ -48,18 +42,6 @@ defmodule EbbServer.Storage.EntityModelCache do
     :ok
   end
 
-  @doc """
-  Looks up an entity's resolved committed model.
-
-  ## Examples
-
-      iex> EntityModelCache.put_model("todo_1", "todo")
-      iex> EntityModelCache.get_model("todo_1")
-      "todo"
-
-      iex> EntityModelCache.get_model("unknown")
-      nil
-  """
   @spec get_model(String.t(), atom()) :: String.t() | nil
   def get_model(entity_id, table \\ @default_entity_models) do
     case :ets.lookup(table, entity_id) do
@@ -68,14 +50,6 @@ defmodule EbbServer.Storage.EntityModelCache do
     end
   end
 
-  @doc """
-  Clears every entry.
-
-  ## Examples
-
-      iex> EntityModelCache.reset()
-      :ok
-  """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     table = Keyword.get(opts, :entity_models, @default_entity_models)

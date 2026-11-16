@@ -80,12 +80,6 @@ defmodule EbbServer.Functions.Worker do
     end
   end
 
-  @doc """
-  Returns a healthy worker to its transport for reuse.
-
-  Falls back to `close/1` when the transport has no pooling seam, so a caller
-  can release unconditionally after a successful invocation.
-  """
   @spec release(t()) :: :ok
   def release(%__MODULE__{transport: transport, handle: handle} = worker) do
     if function_exported?(transport, :release, 1) do

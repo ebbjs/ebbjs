@@ -10,21 +10,6 @@ defmodule EbbServer.Apps do
   `EbbServer.Apps.Origin`), unique across the registry, and app names are
   unique case-insensitively.
 
-  ## Reads are lock-free
-
-  The full snapshot is published to `:persistent_term` under `:key`, so `list/1`,
-  `get/2` and `match_origin/2` never call this GenServer. Requests can serve
-  CORS and app-id assignment from the snapshot without serializing through one
-  process, and a read works for as long as the key exists — including after
-  the owning process stopped.
-
-  ## Writes persist before they publish
-
-  Every mutation is a `GenServer.call`: validate, write the whole document
-  atomically, then publish the new snapshot. If the write fails the caller gets
-  `{:error, :storage_error}` and memory is left untouched, so the snapshot
-  never claims state the disk does not have. `remove/2` follows the same order.
-
   ## Boot is fail-closed
 
   `start_link/1` loads `<data_dir>/apps.json` through
@@ -32,12 +17,6 @@ defmodule EbbServer.Apps do
   malformed — bad JSON, an unknown version, a duplicate name or origin, an
   invalid origin — is logged with the file path and read as empty. The file is
   not rewritten, so an operator can inspect what failed.
-
-  ## Isolated instances
-
-  `start_link/1` takes `:data_dir`, `:name` and `:key`, and every function
-  takes `:server` (writes) or `:key` (reads), so tests can run registries side
-  by side without touching the global one.
   """
 
   use GenServer
@@ -50,33 +29,16 @@ defmodule EbbServer.Apps do
 
   @type state :: %{data_dir: Path.t(), key: term(), apps: [Store.app()]}
 
-  @doc """
-  Starts the registry, loading its snapshot from `:data_dir`.
-
-  Options:
-
-    * `:data_dir` — defaults to `:apps_data_dir`, then `:data_dir`, then
-      `"./data"`
-    * `:name` — the GenServer name, default `#{inspect(__MODULE__)}`
-    * `:key` — the `:persistent_term` key for reads, default
-      `{#{inspect(__MODULE__)}, :apps}`
-  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc """
-  Returns every registered app, sorted by name and then id.
-  """
   @spec list(keyword()) :: [Store.app()]
   def list(opts \\ []) do
     opts |> snapshot() |> sorted()
   end
 
-  @doc """
-  Returns the app with `id`, or `{:error, :not_found}`.
-  """
   @spec get(String.t(), keyword()) :: {:ok, Store.app()} | {:error, :not_found}
   def get(id, opts \\ []) do
     case Enum.find(snapshot(opts), fn app -> app.id == id end) do
@@ -85,13 +47,6 @@ defmodule EbbServer.Apps do
     end
   end
 
-  @doc """
-  Registers an app with at least one origin.
-
-  Returns `{:error, :invalid_name}`, `{:error, :invalid_origin}`,
-  `{:error, :duplicate_name}`, `{:error, :duplicate_origin}` or
-  `{:error, :storage_error}`.
-  """
   @spec add(term(), term(), keyword()) ::
           {:ok, Store.app()}
           | {:error,
@@ -104,17 +59,11 @@ defmodule EbbServer.Apps do
     GenServer.call(server(opts), {:add, name, origins})
   end
 
-  @doc """
-  Removes the app with `id` and all of its origins.
-  """
   @spec remove(String.t(), keyword()) :: :ok | {:error, :not_found | :storage_error}
   def remove(id, opts \\ []) do
     GenServer.call(server(opts), {:remove, id})
   end
 
-  @doc """
-  Registers one more origin for the app with `id` and returns the updated app.
-  """
   @spec add_origin(String.t(), term(), keyword()) ::
           {:ok, Store.app()}
           | {:error, :not_found | :invalid_origin | :duplicate_origin | :storage_error}
@@ -122,9 +71,6 @@ defmodule EbbServer.Apps do
     GenServer.call(server(opts), {:add_origin, id, origin})
   end
 
-  @doc """
-  Unregisters one origin from the app with `id` and returns the updated app.
-  """
   @spec remove_origin(String.t(), term(), keyword()) ::
           {:ok, Store.app()}
           | {:error, :not_found | :origin_not_found | :invalid_origin | :storage_error}
@@ -133,9 +79,6 @@ defmodule EbbServer.Apps do
   end
 
   @doc """
-  Returns the id of the app whose exact origin admits `origin`, falling back to
-  a wildcard origin, or `:error` when none does.
-
   Exact origins win over wildcard patterns so a specific registration is not
   shadowed by another app's broader one.
   """
@@ -148,8 +91,6 @@ defmodule EbbServer.Apps do
   end
 
   @doc """
-  Clears the registry in memory and on disk.
-
   There is no HTTP route for this: operators revoke apps one at a time through
   `DELETE /admin/apps/:id`. It exists for tests and for a local repair of a
   registry whose file has already been restored by hand.

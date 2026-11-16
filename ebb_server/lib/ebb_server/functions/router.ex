@@ -79,28 +79,6 @@ defmodule EbbServer.Functions.Router do
   not end up sharing a dedup key. Such a response still carries a freshly
   minted invocation id, because the body names the invocation that refused.
 
-  ## Order of work for an invocation
-
-  1. Read the body within a size limit.
-  2. Resolve the active bundle through `EbbServer.Functions.BundleCache`.
-  3. Authorize with `EbbServer.Functions.Access` — before any worker is
-     spawned, so a denied request costs nothing.
-  4. Validate the params against the bundle's stored params schema
-     (`EbbServer.Functions.Validate`) — also before any worker is checked out,
-     so a request that cannot run costs nothing either.
-  5. Build the `invoke` frame and hand it to
-     `EbbServer.Functions.Invocation.run/1`.
-
-  The result is then checked against the bundle's optional output schema. A
-  result that fails it is `422 invalid_output`, and the invocation's writes
-  stay committed: the commit happened inside the handler, and the output schema
-  describes the reply, not the transaction. The runner revalidates with the
-  full Standard Schema; this side is the cheap gate at the trust boundary.
-
-  A tampered or broken bundle is a `500`, never a `404`: a digest mismatch is
-  not a typo in the URL, and answering `not_found` for a bundle that exists but
-  fails verification would hide a bad deploy.
-
   ## Size limits
 
   An invocation body is read with `EbbServer.Functions.max_invoke_body_bytes/0`
@@ -138,8 +116,7 @@ defmodule EbbServer.Functions.Router do
   Activation is `{"version": "<version>"}` and is one store transaction:
   whatever was active is retired, the target becomes active, and the target's
   schemas are re-resolved first, so a row tampered with after upload cannot
-  become active. Rollback is the store's operation, not a route of its own in
-  this issue.
+  become active.
 
   ## Options
 
@@ -248,15 +225,9 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # `Plug.Router` requires a catch-all. The parent only forwards `/functions`,
-  # so this answers a wrong method exactly as the parent's own catch-all would.
   match _ do
     conn |> Plug.Conn.send_resp(404, "") |> Plug.Conn.halt()
   end
-
-  # ---------------------------------------------------------------------------
-  # Route plumbing
-  # ---------------------------------------------------------------------------
 
   defp cache(conn) do
     Keyword.get(conn.assigns.functions_opts, :cache, BundleCache)
@@ -278,8 +249,6 @@ defmodule EbbServer.Functions.Router do
     )
   end
 
-  # The parent's `AuthPlug` answers this first in production; the branch is for
-  # a direct call and says the same thing in the plain envelope.
   defp with_actor(conn, fun) do
     case conn.assigns[:actor] do
       %Actor{id: actor_id} when is_binary(actor_id) and actor_id != "" -> fun.(conn, actor_id)
@@ -323,9 +292,6 @@ defmodule EbbServer.Functions.Router do
     Admin.authorize(conn, admin_token: admin_token(conn)) == :ok
   end
 
-  # A plain `{ok|error}` body with no invocation envelope or headers, used by
-  # the catalogue and deploy routes. `EbbServer.Sync.Router` names the same
-  # helper the same way.
   defp send_json(conn, status, body), do: respond(conn, {status, body, []})
 
   defp internal_error(conn) do
@@ -334,8 +300,6 @@ defmodule EbbServer.Functions.Router do
 
   defp store_unavailable, do: "the functions store is unavailable"
 
-  # Every body and header is built as `{status, body, headers}`; this is the
-  # only place that writes them to the conn.
   defp respond(conn, {status, body, headers} = response) do
     case Jason.encode(body) do
       {:ok, json} -> send_body(conn, status, json, headers)
@@ -369,14 +333,6 @@ defmodule EbbServer.Functions.Router do
     end)
   end
 
-  # ---------------------------------------------------------------------------
-  # GET / — list
-  # ---------------------------------------------------------------------------
-
-  # Authenticated, not admin-only: a caller needs the names, versions, and
-  # schemas of what it may invoke, and none of that is code. The admin
-  # credential is what lets a caller publish, never what lets it read the
-  # catalogue.
   defp list_functions(conn, _principal) do
     case list_versions(conn) do
       {:ok, versions} ->
@@ -391,11 +347,6 @@ defmodule EbbServer.Functions.Router do
     with_store(fn -> Store.list(store(conn)) end)
   end
 
-  # --- GET /health ---------------------------------------------------------
-
-  # Admin-only: the counters name every version the node has served, including
-  # retired and disabled ones, and an operator is the reader. The pool gauges
-  # are the same numbers the telemetry event carries.
   defp health(conn) do
     if admin_authorized?(conn) do
       # Health answers even when the store is unavailable: the counters and
@@ -422,8 +373,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # The store's active versions are the rows an operator expects to see even
-  # before anything invoked them; the counters fill in whatever has run.
   defp merge_health(versions, counters) do
     counted = Map.new(counters, fn row -> {{row["name"], row["version"]}, row} end)
 
@@ -474,10 +423,6 @@ defmodule EbbServer.Functions.Router do
 
   defp put_schema(summary, _key, nil), do: summary
   defp put_schema(summary, key, schema), do: Map.put(summary, key, schema)
-
-  # ---------------------------------------------------------------------------
-  # POST /:name/versions — upload
-  # ---------------------------------------------------------------------------
 
   # The credential is checked before the body is read: an unauthorized caller
   # should not be able to make the server buffer eight megabytes first.
@@ -584,8 +529,6 @@ defmodule EbbServer.Functions.Router do
       "upload a new version instead of replacing code"
   end
 
-  # The shape checks the route owns; everything about the bundle itself is
-  # `Bundle.new/2`'s, so the two cannot disagree.
   defp upload_payload(payload, name) do
     envelope = payload["envelope"]
     code = payload["code"]
@@ -622,8 +565,6 @@ defmodule EbbServer.Functions.Router do
 
   defp valid_deployment_hash?(_hash), do: false
 
-  # Every reason is a sentence for the uploader, never a stack or an internal
-  # term. The status already says which class of refusal it is.
   defp invalid_bundle_details(:envelope_not_object), do: "envelope must be a JSON object"
 
   defp invalid_bundle_details(:code_not_string),
@@ -689,10 +630,6 @@ defmodule EbbServer.Functions.Router do
          conn}
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # POST /:name/activate — activation
-  # ---------------------------------------------------------------------------
 
   defp activate_version(conn, name) do
     with_actor(conn, fn conn, _actor_id ->
@@ -772,10 +709,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # Version history, rollback, and disable
-  # ---------------------------------------------------------------------------
-
   defp list_function_versions(conn, name) do
     with_actor(conn, fn conn, _actor_id ->
       if admin_authorized?(conn) do
@@ -805,10 +738,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # The history says what an operator needs to choose a version and what a CLI
-  # needs to print or to skip a no-op deploy; code stays out of it. The
-  # deployment hash is present only on rows that carried one, so a row from an
-  # older CLI does not report a value it never had.
   defp version_info(%Version{} = version) do
     %{
       "version" => version.version,
@@ -897,10 +826,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # POST /:name — invoke
-  # ---------------------------------------------------------------------------
-
   defp new_invocation_id do
     "inv_" <> Nanoid.generate(16, "abcdefghijklmnopqrstuvwxyz0123456789")
   end
@@ -929,11 +854,6 @@ defmodule EbbServer.Functions.Router do
   defp invocation_id_for(_principal, _name, nil), do: new_invocation_id()
   defp invocation_id_for(principal, name, key), do: derived_invocation_id(principal, name, key)
 
-  # The principal and function scope the key: it is caller-chosen, so two
-  # callers that pick the same string are not retrying the same request. For a
-  # service credential the principal is the credential, so two credentials
-  # sharing a subject actor still get distinct Actions. Callers behind one
-  # credential share this key space and must use their own keys.
   defp derived_invocation_id(%{id: principal_id}, name, key) do
     digest =
       :crypto.hash(:sha256, [principal_id, "\n", name, "\n", key])
@@ -960,8 +880,6 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  # An empty body is no parameters; a JSON body must be an object because the
-  # frame's `input` is the function's argument map.
   defp read_input(conn) do
     case read_limited_body(conn, Functions.max_invoke_body_bytes()) do
       {:ok, "", conn} ->
@@ -1202,9 +1120,6 @@ defmodule EbbServer.Functions.Router do
   defp replayed(nil), do: nil
   defp replayed(%{replayed: replayed}), do: replayed
 
-  # Loader failures are described for an operator without echoing internals or
-  # a stack: the status is the classification, the detail is a reason a person
-  # can act on.
   defp lookup_details(:digest_mismatch), do: "bundle digest does not match its code"
 
   defp lookup_details({:duplicate_active_version, {_name, version}}),
@@ -1213,10 +1128,6 @@ defmodule EbbServer.Functions.Router do
   defp lookup_details({:invalid_bundle, _reason}), do: "the active bundle is invalid"
   defp lookup_details({:loader_failed, _reason}), do: "the bundle could not be loaded"
   defp lookup_details(_reason), do: "the bundle could not be loaded"
-
-  # ---------------------------------------------------------------------------
-  # OpenAPI
-  # ---------------------------------------------------------------------------
 
   @doc """
   The published operation for one route, in the shape `Sync.Router` uses.
