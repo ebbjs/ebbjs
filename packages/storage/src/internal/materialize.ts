@@ -238,7 +238,9 @@ export const applyUpdate = (
 
   return {
     ...entity,
-    model: componentModel(update.component),
+    // The create fixes the row's model; only a placeholder — a row whose create
+    // has not arrived — takes the prefix from the write that reached it first.
+    model: entity.exists ? entity.model : componentModel(update.component),
     // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
     // rule: an out-of-order base snapshot must not clobber a newer write.
     data: mergeFields(entity.data, write, options),
