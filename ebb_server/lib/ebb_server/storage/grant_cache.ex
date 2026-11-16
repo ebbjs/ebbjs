@@ -92,17 +92,14 @@ defmodule EbbServer.Storage.GrantCache do
     :ok
   end
 
+  # The primary bag is keyed by actor, so the member id only exists in the
+  # value: matching on both keeps the delete inside the actor's bucket, where
+  # `tab2list` used to copy the whole cache. Both key shapes are matched
+  # because the cache accepts either.
   defp delete_from_primary(table, member_id, actor_id) do
-    table
-    |> :ets.tab2list()
-    |> Enum.each(fn entry ->
-      [stored_actor_id, stored_entry] = Tuple.to_list(entry)
-      entry_id = stored_entry[:id] || stored_entry["id"]
-
-      if stored_actor_id == actor_id && entry_id == member_id do
-        :ets.delete_object(table, entry)
-      end
-    end)
+    :ets.match_delete(table, {actor_id, %{id: member_id}})
+    :ets.match_delete(table, {actor_id, %{"id" => member_id}})
+    :ok
   end
 
   @spec get_grant(String.t(), atom()) :: map() | nil
