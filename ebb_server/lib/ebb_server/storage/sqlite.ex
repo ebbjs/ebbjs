@@ -385,14 +385,15 @@ defmodule EbbServer.Storage.SQLite do
   previous call. The pair, not `actor_id` alone, is the key so two grants
   for one actor cannot shadow each other at a page boundary.
 
-  Returns `[{id, actor_id}]`.
+  Returns `[{id, actor_id}]`, or `{:error, reason}` when SQLite refuses the
+  statement.
   """
   @spec list_grants(
           String.t(),
           {String.t(), String.t()} | nil,
           pos_integer(),
           GenServer.server()
-        ) :: [{String.t(), String.t()}]
+        ) :: [{String.t(), String.t()}] | {:error, term()}
   def list_grants(group_id, after_key, limit, server \\ __MODULE__) do
     GenServer.call(server, {:list_grants, group_id, after_key, limit})
   end
@@ -403,14 +404,15 @@ defmodule EbbServer.Storage.SQLite do
   Ordered by row `id`; `after_key` is `nil` to start from the beginning or
   the last row id returned by a previous call.
 
-  Returns `[{membership_id, entity_id}]`.
+  Returns `[{membership_id, entity_id}]`, or `{:error, reason}` when SQLite
+  refuses the statement.
   """
   @spec list_memberships(
           String.t(),
           String.t() | nil,
           pos_integer(),
           GenServer.server()
-        ) :: [{String.t(), String.t()}]
+        ) :: [{String.t(), String.t()}] | {:error, term()}
   def list_memberships(group_id, after_key, limit, server \\ __MODULE__) do
     GenServer.call(server, {:list_memberships, group_id, after_key, limit})
   end
@@ -835,7 +837,11 @@ defmodule EbbServer.Storage.SQLite do
   @impl true
   def handle_call({:list_grants, group_id, after_key, limit}, _from, state) do
     {sql, params} = grant_statement(group_id, after_key, limit)
-    {:reply, collect_pairs(state, sql, params), state}
+
+    case collect_pairs(state, sql, params) do
+      {:ok, pairs} -> {:reply, pairs, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -848,7 +854,11 @@ defmodule EbbServer.Storage.SQLite do
   @impl true
   def handle_call({:list_memberships, group_id, after_key, limit}, _from, state) do
     {sql, params} = membership_statement(group_id, after_key, limit)
-    {:reply, collect_pairs(state, sql, params), state}
+
+    case collect_pairs(state, sql, params) do
+      {:ok, pairs} -> {:reply, pairs, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -1180,16 +1190,27 @@ defmodule EbbServer.Storage.SQLite do
     :ok
   end
 
+  # The pair-collecting listings read through the same process, so their
+  # failures are replies too: a failure here would take every tenant's cache
+  # down, and a refused bind must not leak the statement that was prepared.
   defp collect_pairs(state, sql, params) do
     %{db: db} = state
 
-    {:ok, stmt} = Sqlite3.prepare(db, sql)
-    :ok = Sqlite3.bind(stmt, params)
+    case Sqlite3.prepare(db, sql) do
+      {:ok, stmt} ->
+        try do
+          with :ok <- Sqlite3.bind(stmt, params) do
+            collect_pair_rows(db, stmt, [])
+          end
+        rescue
+          error -> {:error, error}
+        after
+          Sqlite3.release(db, stmt)
+        end
 
-    pairs = collect_pair_rows(db, stmt, [])
-    Sqlite3.release(db, stmt)
-
-    pairs
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   # Every failure on the read path becomes a reply: this process is shared by
@@ -1235,7 +1256,9 @@ defmodule EbbServer.Storage.SQLite do
   defp collect_pair_rows(db, stmt, acc) do
     case Sqlite3.step(db, stmt) do
       {:row, [first, second]} -> collect_pair_rows(db, stmt, [{first, second} | acc])
-      :done -> Enum.reverse(acc)
+      :done -> {:ok, Enum.reverse(acc)}
+      :busy -> {:error, :busy}
+      {:error, reason} -> {:error, reason}
     end
   end
 
