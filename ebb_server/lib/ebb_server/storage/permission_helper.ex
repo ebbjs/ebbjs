@@ -4,8 +4,8 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   ## Row mutations
 
-  The wire names one component per Update; the rule engine was written
-  against a whole row. Every function here that reads a row therefore takes
+  The wire names one component, or the row itself, per Update; the rule
+  engine was written against a whole row. Every function here that reads a row therefore takes
   `EbbServer.Storage.RowMutations` output — one mutation per subject with
   `model`, `kind`, `created?`, `deleted?`, and `data` a
   `%{"fields" => %{field => value}}` map — never a raw Update.
