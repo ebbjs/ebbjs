@@ -1130,10 +1130,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
 
     test "a create names the model, not the component", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note.create"])
+      put_grant(tables, "g_1", ["note.create", "note/title.update"])
 
       action =
         build_action([
+          validated_create("note_new", "note", id: "note_new_create"),
           component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
           membership_put("eg_new", "note_new", "g_1")
         ])
@@ -1141,11 +1142,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a field create does not authorize a create", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note/title.create"])
+    test "a component grant does not authorize a row create", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.create", "note/title.update"])
 
       action =
         build_action([
+          validated_create("note_new", "note", id: "note_new_create"),
           component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
           membership_put("eg_new", "note_new", "g_1")
         ])
