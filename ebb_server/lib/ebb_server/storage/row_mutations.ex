@@ -16,18 +16,20 @@ defmodule EbbServer.Storage.RowMutations do
 
   One mutation per subject, in first-appearance order:
 
-      %{id, subject_id, model, kind, method: :put | :patch | :delete,
+      %{id, subject_id, model, kind, created?: boolean, deleted?: boolean,
         data: %{"fields" => %{field => value}} | nil}
 
-  - Any `delete` for the subject collapses the row to a single `:delete`
-    mutation with `data: nil`; a delete names the row, not a component.
+  - Any `delete` for the subject collapses the row to a single delete
+    mutation: `deleted?: true`, `created?: false`, `data: nil`. A delete names
+    the row, not a component, and it supersedes everything the Action wrote
+    before it, so a row one Action creates and then deletes is not reported as
+    created either.
   - Otherwise the component values fold in order: `merge` merges the field
-    with `FieldMerge`, `replace` sets it whole, `drop` removes it.
-  - `:put` when the row is new — the entity-model cache does not know the id
-    and no earlier Action of the same request created it — and `:patch` when
-    it exists. Deriving the method from existence is what makes
-    `<model>.create` mean "first write to a row" and `<model>.update` mean "a
-    write to an existing row".
+    with `FieldMerge`, `replace` sets it whole, `drop` removes it. `created?`
+    answers whether the row is new — the entity-model cache does not know the
+    id and no earlier Action of the same request created it. Deriving it from
+    existence is what makes `<model>.create` mean "first write to a row" and
+    `<model>.update` mean "a write to an existing row".
   - Update ids and leaf stamps pass through untouched.
 
   The model is the component's prefix. A `delete` names no component, so its
@@ -35,32 +37,50 @@ defmodule EbbServer.Storage.RowMutations do
   (the entity-model cache widened with the by-id caches, by default). A
   resolver that answers `nil` for an id nothing knows keeps the delete's
   model `nil` rather than inventing one.
+
+  This fold is a shim for the rule engine, not a property of rows: an Action
+  says whether it creates or deletes a row, while a row carries no such
+  vocabulary of its own. #815 removes the fold once the write path stops
+  projecting to rows.
   """
 
   alias EbbServer.Storage.{Component, EntityScope, FieldMerge, SystemComponent}
 
   @typedoc """
-  One whole-row projection of an Action's component Updates.
+  One whole-row projection of an Action's component Updates: whether the
+  Action creates or deletes the row, and the fields it folds to.
 
   `model` is `nil` only for a delete the server cannot resolve a committed
   model for; every consumer treats that as "nothing known", never as an
-  identity claim.
+  identity claim. A delete reports `deleted?: true`, `created?: false` and
+  `data: nil`.
   """
   @type mutation :: %{
           id: String.t(),
           subject_id: String.t(),
           model: String.t() | nil,
           kind: SystemComponent.kind() | nil,
-          method: :put | :patch | :delete,
+          created?: boolean(),
+          deleted?: boolean(),
           data: %{String.t() => %{String.t() => term()}} | nil
         }
+
+  @doc """
+  Whether the mutation writes the row rather than deleting it.
+
+  Every caller that needs this as a boolean calls it, so the distinction has
+  one definition. Function heads that dispatch on it match `deleted?:`
+  directly, since a guard cannot call a function.
+  """
+  @spec write?(mutation()) :: boolean()
+  def write?(%{deleted?: deleted?}), do: not deleted?
 
   @doc """
   Normalizes one decoded stored Update (string keys) into the internal shape.
 
   `ActionFormat` stores the wire keys so catch-up and export can deliver them;
-  the fold needs the split `model`/`field` and an atom method, so a replay
-  path converts through here rather than parsing the component twice.
+  the fold needs the split `model`/`field` and the Update's method atom, so a
+  replay path converts through here rather than parsing the component twice.
   """
   @spec from_stored(map()) :: map()
   def from_stored(update) do
@@ -89,7 +109,7 @@ defmodule EbbServer.Storage.RowMutations do
   - `:exists?` — `(entity_id -> boolean)` deciding whether a row already
     exists. Defaults to the entity-model cache. A caller that has existence
     signals the index can lag (the authorizer's by-id caches) passes its own
-    predicate, so the verb keeps meaning what that caller's rules mean.
+    predicate, so `created?` keeps meaning what that caller's rules mean.
   - `:model_resolver` — `(entity_id -> model | nil)` used for a delete, whose
     Update names no component. Defaults to `EntityScope.committed_model/2`
     against `:entity_models` and the by-id caches in the same options.
@@ -97,9 +117,9 @@ defmodule EbbServer.Storage.RowMutations do
     passed through to `EntityScope`.
 
   One of `:entity_models`, or both predicates, is required: without an
-  existence signal every row would fold to `:put`, which the rule engine
-  reads as `<model>.create`, and without a committed-model signal a delete
-  would forget the model it was authorized under.
+  existence signal every row would fold to `created?: true`, which the rule
+  engine reads as `<model>.create`, and without a committed-model signal a
+  delete would forget the model it was authorized under.
   """
   @spec fold([map()], keyword()) :: [mutation()]
   def fold(updates, opts \\ []) do
@@ -176,18 +196,22 @@ defmodule EbbServer.Storage.RowMutations do
       subject_id: entry.subject_id,
       model: resolve_model.(entry.subject_id) || entry.model,
       kind: SystemComponent.kind(entry.component),
-      method: :delete,
+      created?: false,
+      deleted?: true,
       data: nil
     }
   end
 
   defp finish(entry, created, exists?, resolve_model) do
+    created? = not earlier_created?(entry.subject_id, created) and not exists?.(entry.subject_id)
+
     %{
       id: entry.id,
       subject_id: entry.subject_id,
       model: row_model(entry, resolve_model),
       kind: SystemComponent.kind(entry.component),
-      method: if(new_row?(entry.subject_id, created, exists?), do: :put, else: :patch),
+      created?: created?,
+      deleted?: false,
       data: %{"fields" => entry.fields}
     }
   end
@@ -200,10 +224,6 @@ defmodule EbbServer.Storage.RowMutations do
     else
       entry.model
     end
-  end
-
-  defp new_row?(subject_id, created, exists?) do
-    not created?(subject_id, created) and not exists?.(subject_id)
   end
 
   defp exists_fun!(opts) do
@@ -238,9 +258,9 @@ defmodule EbbServer.Storage.RowMutations do
     end
   end
 
-  # A fold without the reads its two derivations need cannot answer `:put` vs
-  # `:patch` or a delete's model, and guessing either silently changes what
-  # the rule engine authorizes. The caller says which reads it has.
+  # A fold without the reads its two derivations need cannot answer whether
+  # the row is new or a delete's model, and guessing either silently changes
+  # what the rule engine authorizes. The caller says which reads it has.
   defp require_read!(opts, what, expected) do
     unless Keyword.has_key?(opts, :entity_models) do
       raise ArgumentError, "RowMutations.fold/2 needs #{what}: pass #{expected}"
@@ -249,6 +269,9 @@ defmodule EbbServer.Storage.RowMutations do
     :ok
   end
 
-  defp created?(subject_id, %MapSet{} = created), do: MapSet.member?(created, subject_id)
-  defp created?(subject_id, created) when is_map(created), do: Map.has_key?(created, subject_id)
+  defp earlier_created?(subject_id, %MapSet{} = created),
+    do: MapSet.member?(created, subject_id)
+
+  defp earlier_created?(subject_id, created) when is_map(created),
+    do: Map.has_key?(created, subject_id)
 end

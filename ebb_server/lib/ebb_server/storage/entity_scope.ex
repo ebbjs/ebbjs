@@ -67,6 +67,7 @@ defmodule EbbServer.Storage.EntityScope do
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
   alias EbbServer.Storage.EntityModelCache
   alias EbbServer.Storage.MembershipCache
+  alias EbbServer.Storage.RowMutations
   alias EbbServer.Storage.SystemComponent
 
   @model SystemComponent.model()
@@ -355,9 +356,10 @@ defmodule EbbServer.Storage.EntityScope do
   Returns `{:wire, group_ids}` when the row carries the group on the
   wire, `{:source, entity_id}` when its scope follows a resolved link
   source, and `{:by_id, kind | model}` when the subject has to be
-  resolved from the caches. A link's source is resolved by method — the
-  stored row for a delete and the wire for a put or patch, #624 — so
-  fan-out cannot scope a delete more widely than its authorization did.
+  resolved from the caches. A link's source follows whether the row
+  mutation is a write — the wire for a write and the stored row for a
+  delete, #624 — so fan-out cannot scope a delete more widely than its
+  authorization did.
   """
   @spec fan_out_preference(map(), keyword()) ::
           {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, scope_key()}
@@ -382,21 +384,19 @@ defmodule EbbServer.Storage.EntityScope do
 
   def fan_out_preference(update, _opts), do: {:by_id, update.model}
 
-  # A put or patch is already bound to its stored source by the authorizer's
-  # row-identity check, so its wire source is the identity to resolve. Any
-  # other method has no such check and must not be able to pick its scope.
+  # A write is already bound to its stored source by the authorizer's
+  # row-identity check, so its wire source is the identity to resolve. A
+  # delete has no such check and must not be able to pick its scope.
   defp scope_owner(update, kind, field, opts) do
     wire = scope_field(update, kind, field, opts)
     stored = stored_field(update.subject_id, kind, field, opts)
 
-    if put_or_patch?(update.method) do
+    if RowMutations.write?(update) do
       wire || stored
     else
       stored || wire
     end
   end
-
-  defp put_or_patch?(method), do: method in [:put, :patch]
 
   # The current Action's value wins: that is the value the authorizer bound
   # (#624). The flush row supplies what an earlier Action of the same commit

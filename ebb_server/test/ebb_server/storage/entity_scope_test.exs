@@ -141,18 +141,31 @@ defmodule EbbServer.Storage.EntityIndexTest do
   end
 
   # A folded platform row: one atomic component value, and its kind.
-  defp system_update(kind, subject_id, method, value) do
+  defp system_write(kind, subject_id, value) do
     %{
       subject_id: subject_id,
       model: "ebb",
       kind: kind,
-      method: method,
-      data:
-        if(method == :delete,
-          do: nil,
-          else: %{"fields" => %{Atom.to_string(kind) => %{"value" => value || %{}}}}
-        )
+      created?: false,
+      deleted?: false,
+      data: system_data(kind, value)
     }
+  end
+
+  # A delete names the row rather than a component, so it carries no data.
+  defp system_delete(kind, subject_id) do
+    %{
+      subject_id: subject_id,
+      model: "ebb",
+      kind: kind,
+      created?: false,
+      deleted?: true,
+      data: nil
+    }
+  end
+
+  defp system_data(kind, value) do
+    %{"fields" => %{Atom.to_string(kind) => %{"value" => value || %{}}}}
   end
 
   describe "resolve_groups/3" do
@@ -398,7 +411,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
 
       update =
-        system_update(:membership, "eg_1", :put, %{
+        system_write(:membership, "eg_1", %{
           "entity_id" => "todo_1",
           "group_id" => "g_wire"
         })
@@ -411,7 +424,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = system_update(:membership, "eg_1", :delete, nil)
+      update = system_delete(:membership, "eg_1")
 
       assert EntityScope.fan_out_preference(update, opts(t)) == {:by_id, :membership}
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -421,7 +434,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = system_update(:link, "rel_1", :put, %{"source_id" => "todo_1"})
+      update = system_write(:link, "rel_1", %{"source_id" => "todo_1"})
 
       assert EntityScope.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -432,7 +445,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
       :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
-      update = system_update(:link, "rel_1", :delete, nil)
+      update = system_delete(:link, "rel_1")
 
       assert EntityScope.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
@@ -447,19 +460,22 @@ defmodule EbbServer.Storage.EntityIndexTest do
       :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
       :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
 
-      # A folded delete carries no data; the wire source is supplied here to
-      # pin that fan-out ignores it even if one reaches this function.
-      update = system_update(:link, "rel_victim", :delete, %{"source_id" => "todo_attacker"})
+      # The fold gives a delete no data; a wire source is supplied here to pin
+      # that fan-out ignores it even if one reaches this function.
+      update = %{
+        system_delete(:link, "rel_victim")
+        | data: system_data(:link, %{"source_id" => "todo_attacker"})
+      }
 
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_victim"]
     end
 
-    test "falls back to the stored row for a patch that omits the source" do
+    test "falls back to the stored row for a write that omits the source" do
       t = tables()
       :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
       :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
 
-      update = system_update(:link, "rel_victim", :patch, %{"target_id" => "col_2"})
+      update = system_write(:link, "rel_victim", %{"target_id" => "col_2"})
 
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_victim"]
     end
@@ -468,7 +484,13 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = %{subject_id: "todo_1", model: "todo", method: :put, data: %{"fields" => %{}}}
+      update = %{
+        subject_id: "todo_1",
+        model: "todo",
+        created?: true,
+        deleted?: false,
+        data: %{"fields" => %{}}
+      }
 
       assert EntityScope.fan_out_preference(update, opts(t)) == {:by_id, "todo"}
 
@@ -489,7 +511,13 @@ defmodule EbbServer.Storage.EntityIndexTest do
     test "reads a predecessor batch's planned entity model from the overlay" do
       t = tables()
 
-      update = %{subject_id: "todo_1", model: "todo", method: :put, data: %{"fields" => %{}}}
+      update = %{
+        subject_id: "todo_1",
+        model: "todo",
+        created?: true,
+        deleted?: false,
+        data: %{"fields" => %{}}
+      }
 
       {_mutations, overlay} =
         CacheMutationPlanner.plan([update], %{
@@ -532,7 +560,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end
   end
 
-  # A link row the Action itself wrote has no stored row yet; the put's source
+  # A link row the Action itself wrote has no stored row yet; the write's source
   # is the only scope the delete can have (`:intra_relationship_sources`).
   describe "resolve_groups/3 for a link row the Action wrote" do
     test "falls back to the Action's own source when the row is not cached" do
@@ -550,7 +578,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = system_update(:link, "rel_new", :delete, nil)
+      update = system_delete(:link, "rel_new")
       opts = opts(t) ++ [intra_relationship_sources: %{"rel_new" => "todo_1"}]
 
       assert EntityScope.fan_out_preference(update, opts) == {:by_id, :link}

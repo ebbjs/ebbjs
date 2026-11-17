@@ -49,13 +49,13 @@ defmodule EbbServer.Storage.RowMutationsTest do
 
     assert [first, second] = RowMutations.fold(updates, entity_models: table)
     assert first.subject_id == "note_1"
-    assert first.method == :put
+    assert first.created?
     assert first.model == "note"
     assert first.data == %{"fields" => %{"title" => leaf("t", 1), "body" => leaf("b", 1)}}
     assert second.subject_id == "note_2"
   end
 
-  test "a known row folds to :patch, and a request-created id is not new" do
+  test "a known row and a request-created id are not created" do
     table = unknown_type_index()
     :ets.insert(table, {"note_1", "note"})
 
@@ -64,7 +64,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
         entity_models: table
       )
 
-    assert known.method == :patch
+    refute known.created?
 
     [created] =
       RowMutations.fold(
@@ -73,7 +73,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
         created: MapSet.new(["note_9"])
       )
 
-    assert created.method == :patch
+    refute created.created?
   end
 
   test "merge folds by the field's last-writer-wins rule" do
@@ -103,7 +103,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
         entity_models: table
       )
 
-    assert mutation.method == :put
+    assert mutation.created?
     assert mutation.data == %{"fields" => %{"title" => leaf("t", 1)}}
   end
 
@@ -120,8 +120,28 @@ defmodule EbbServer.Storage.RowMutationsTest do
         model_resolver: fn _id -> "note" end
       )
 
-    assert %{method: :delete, data: nil, model: "note"} = mutation
+    assert %{deleted?: true, created?: false, data: nil, model: "note"} = mutation
     assert mutation.subject_id == "note_1"
+  end
+
+  test "a delete supersedes a create for the same row" do
+    table = unknown_type_index()
+
+    # The row is new to the index, so without the rule the write half alone
+    # would report `created?: true` and the bootstrap exemption would
+    # authorize a row the same Action removes.
+    [created_then_deleted] =
+      RowMutations.fold(
+        [
+          component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
+          delete("u2", "note_1")
+        ],
+        entity_models: table,
+        model_resolver: fn _id -> "note" end
+      )
+
+    assert created_then_deleted.deleted?
+    refute created_then_deleted.created?
   end
 
   test "a delete's model comes from the resolver, falling back to a sibling component" do
@@ -147,7 +167,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert from_sibling.model == "relationship"
   end
 
-  # A fold with no existence signal would derive `:put` for every row, which
+  # A fold with no existence signal would report every row as created, which
   # the rule engine reads as `<model>.create`; a fold with no committed-model
   # signal would forget the model a delete was authorized under. Both are the
   # caller's to provide, so neither may default silently.
@@ -171,7 +191,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
         model_resolver: fn _id -> nil end
       )
 
-    assert mutation.method == :patch
+    refute mutation.created?
   end
 
   test "a delete's default model falls back to the by-id caches" do
@@ -195,7 +215,17 @@ defmodule EbbServer.Storage.RowMutationsTest do
     # A by-id cache row is a platform row, and every platform row is
     # committed under the one platform model.
     assert mutation.model == "ebb"
-    assert mutation.method == :delete
+    assert mutation.deleted?
+  end
+
+  test "a delete is not a write" do
+    [mutation] =
+      RowMutations.fold([delete("u1", "note_1")],
+        entity_models: unknown_type_index(),
+        model_resolver: fn _id -> "note" end
+      )
+
+    refute RowMutations.write?(mutation)
   end
 
   test "the entity-model cache is the default existence signal" do
@@ -213,7 +243,7 @@ defmodule EbbServer.Storage.RowMutationsTest do
         entity_models: table
       )
 
-    assert unknown.method == :put
-    assert known.method == :patch
+    assert unknown.created?
+    refute known.created?
   end
 end

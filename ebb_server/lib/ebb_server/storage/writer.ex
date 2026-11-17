@@ -2040,8 +2040,8 @@ defmodule EbbServer.Storage.Writer do
   # One flush is one commit — the normal case is a whole request — so the
   # Actions after the first see the subjects the flush already folded as
   # created. Without that, a second write to a row whose create is still in
-  # this flush folds as `:put`, which the cache planner reads as "replace the
-  # whole row" instead of "patch the components this Action carries".
+  # this flush would ask the rule engine for `<model>.create` again instead
+  # of `<model>.update`.
   #
   # `flush_rows` carries the same idea one step further: the fields those
   # earlier Actions wrote, so a system row's fan-out scope can still read the
@@ -2096,9 +2096,9 @@ defmodule EbbServer.Storage.Writer do
   end
 
   # Every subject this Action folded is a row the flush has already written,
-  # so later Actions of the same flush have to patch it rather than put it.
-  # Keyed by subject id alone: a cross-kind collision cannot change the plan,
-  # since a `:put` and a `:patch` with no cached row project identically.
+  # so for a later Action of the same flush the fold reports the row as not
+  # created. Keyed by subject id alone: a cross-kind collision cannot change
+  # the plan, since the created and not-created cases project identically.
   defp fold_subjects(mutations, created) do
     Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
   end
