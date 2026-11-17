@@ -147,6 +147,14 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
       "hlc" => hlc,
       "updates" => [
         %{
+          "id" => "upd_create_" <> id,
+          "subject_id" => entity_id,
+          "model" => "todo",
+          "method" => "create",
+          "hlc" => hlc,
+          "data" => nil
+        },
+        %{
           "id" => "upd_" <> id,
           "subject_id" => entity_id,
           "component" => "todo/title",
@@ -159,11 +167,12 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
 
   defp oversize_action(id, entity_id, payload_bytes) do
     action = put_action(id, "a_1", entity_id)
-    [update] = action["updates"]
+    [create, update] = action["updates"]
 
     %{
       action
       | "updates" => [
+          create,
           %{
             update
             | "data" => %{
@@ -177,7 +186,7 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
 
   defp many_updates_action(id, entity_id, count) do
     action = put_action(id, "a_1", entity_id)
-    template = hd(action["updates"])
+    template = List.last(action["updates"])
 
     %{
       action

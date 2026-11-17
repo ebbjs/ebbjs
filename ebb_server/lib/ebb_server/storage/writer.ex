@@ -2037,14 +2037,10 @@ defmodule EbbServer.Storage.Writer do
   # intra-action membership on top, so two Actions that move the same entity
   # cannot see each other's membership.
   #
-  # One flush is one commit — the normal case is a whole request — so the
-  # Actions after the first see the subjects the flush already folded as
-  # created. Without that, a second write to a row whose create is still in
-  # this flush would ask the rule engine for `<model>.create` again instead
-  # of `<model>.update`.
-  #
-  # `flush_rows` carries the same idea one step further: the fields those
-  # earlier Actions wrote, so a system row's fan-out scope can still read the
+  # The verb follows each Action's own explicit create, so a coalesced flush
+  # needs no "created earlier in this flush" bookkeeping. `flush_rows` is the
+  # one fact the cache cannot supply: the fields an earlier Action of the same
+  # flush wrote, so a system row's fan-out scope can still read the
   # `group_id` / `source_id` its create carried when the by-id caches have not
   # seen it yet (#813).
   defp prepare(fresh, gsn_start, state, incoming_overlay) do
@@ -2063,7 +2059,6 @@ defmodule EbbServer.Storage.Writer do
             payload_etf,
             state,
             resolve_opts,
-            acc.created,
             acc.flush_rows,
             acc.memo
           )
@@ -2072,7 +2067,6 @@ defmodule EbbServer.Storage.Writer do
          %{
            groups: Map.put(acc.groups, gsn, prepared_action.groups),
            mutations: Enum.reverse(action_mutations, acc.mutations),
-           created: fold_subjects(action_mutations, acc.created),
            flush_rows: remember_flush_rows(acc.flush_rows, action.updates),
            memo: memo
          }}
@@ -2083,31 +2077,28 @@ defmodule EbbServer.Storage.Writer do
   end
 
   # The fold's state across one flush: the per-GSN scopes already computed, the
-  # mutations to plan, the subjects earlier Actions created, the fields they
-  # left behind for scope resolution, and the group-resolution memo.
+  # mutations to plan, the fields earlier Actions left behind for scope
+  # resolution, and the group-resolution memo.
   defp flush_acc do
     %{
       groups: %{},
       mutations: [],
-      created: MapSet.new(),
       flush_rows: %{},
       memo: %{}
     }
   end
 
-  # Every subject this Action folded is a row the flush has already written,
-  # so for a later Action of the same flush the fold reports the row as not
-  # created. Keyed by subject id alone: a cross-kind collision cannot change
-  # the plan, since the created and not-created cases project identically.
-  defp fold_subjects(mutations, created) do
-    Enum.reduce(mutations, created, &MapSet.put(&2, &1.subject_id))
-  end
-
   # The row shape an earlier Action of this flush left behind. Built from the
   # raw Updates, so a `drop` removes a field and a `delete` removes the row.
+  # A `create` contributes no field: a user row's create establishes an empty
+  # row, and a platform row's create always carries its one component beside
+  # it, which is what scope resolution reads.
   defp remember_flush_rows(rows, updates) do
     Enum.reduce(updates, rows, fn update, rows ->
       case update.method do
+        :create ->
+          Map.put_new(rows, update.subject_id, %{"fields" => %{}})
+
         :delete ->
           Map.delete(rows, update.subject_id)
 
@@ -2160,11 +2151,10 @@ defmodule EbbServer.Storage.Writer do
   defp overlay_before(state, ref),
     do: CommitPipeline.cache_overlay_before(state.pipeline, ref)
 
-  defp prepare_action(action, payload_etf, state, resolve_opts, created, flush_rows, memo) do
+  defp prepare_action(action, payload_etf, state, resolve_opts, flush_rows, memo) do
     # Scope is a per-subject decision, so the folded row decides for every
     # Update of it.
-    mutations =
-      RowMutations.fold(action.updates, Keyword.put(resolve_opts, :created, created))
+    mutations = RowMutations.fold(action.updates, resolve_opts)
 
     intra_action_context = PermissionHelper.build_intra_action_context(mutations)
 

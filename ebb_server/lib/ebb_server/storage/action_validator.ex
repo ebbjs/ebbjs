@@ -15,17 +15,29 @@ defmodule EbbServer.Storage.ActionValidator do
 
   ## The component envelope
 
-  One Update names one `(entity, component)`:
+  One Update names one `(entity, component)`, or the row itself:
 
       %{"id", "subject_id", "component" => "note/title",
         "method" => "merge" | "replace" | "drop", "data" => field_value | nil}
+      %{"id", "subject_id", "model" => "note", "method" => "create",
+        "hlc" => created_hlc, "data" => nil}
       %{"id", "subject_id", "method" => "delete", "data" => nil}
 
   `component` is `<model>/<field>` and `data` is the component's own value,
-  never a row's field record. A `delete` names the row and carries no
-  component. `replace` is refused for a keyed component (any `data` carrying
-  `map`), because a wholesale replace would discard a concurrent writer's
-  siblings.
+  never a row's field record. A `create` names the row's `model` and the HLC
+  the row was created at; a zero-component create is a complete row. A
+  `delete` names the row and carries no component. `replace` is refused for
+  a keyed component (any `data` carrying `map`), because a wholesale replace
+  would discard a concurrent writer's siblings.
+
+  ## The create decides the row's model
+
+  A row has one model. Every component Update for a subject in an Action must
+  name the create's model; a disagreement is a structure violation. A create
+  may arrive after its components — the client can deliver out of order — so
+  the create, not the first component, decides. One create per subject per
+  Action, and a platform (`ebb`) create must carry exactly one `ebb/*`
+  component in the same Action, because a platform row is one kind.
 
   The pre-component wire — a per-Update type name, `put`/`patch` methods,
   and `data.fields` — is rejected here rather than read through: there is
@@ -61,8 +73,9 @@ defmodule EbbServer.Storage.ActionValidator do
           component: String.t() | nil,
           model: String.t() | nil,
           field: String.t() | nil,
-          method: :merge | :replace | :drop | :delete,
-          data: map() | nil
+          method: :create | :merge | :replace | :drop | :delete,
+          data: map() | nil,
+          hlc: non_neg_integer() | nil
         }
 
   @type rejection :: %{
@@ -184,27 +197,123 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   # Ordered: the per-Update shape first, so every component below is well
-  # formed; the model check next, because it reads the prefix; and the
-  # platform-component count last.
+  # formed; then one create per subject; the model check next, because it
+  # reads the create and the prefix; and the platform-component counts last.
+  # A create's own HLC is validated with the leaf HLCs, where the clock is
+  # available.
   defp validate_updates(updates) do
     with :ok <- validate_updates_structure(updates),
-         :ok <- validate_subject_models(updates) do
-      validate_subject_components(updates)
+         :ok <- validate_create_uniqueness(updates),
+         :ok <- validate_subject_models(updates),
+         :ok <- validate_subject_components(updates) do
+      validate_platform_creates(updates)
     end
   end
 
+  # One explicit create per subject: a second one cannot be ordered against
+  # the first, so it would leave the row's model and creation time ambiguous.
+  defp validate_create_uniqueness(updates) do
+    Enum.reduce_while(updates, MapSet.new(), fn
+      %{"method" => "create", "subject_id" => subject_id}, seen ->
+        if MapSet.member?(seen, subject_id) do
+          {:halt,
+           {:error, "invalid_structure",
+            "a row is created once per action: #{inspect(subject_id)} has more than one create"}}
+        else
+          {:cont, MapSet.put(seen, subject_id)}
+        end
+
+      _update, seen ->
+        {:cont, seen}
+    end)
+    |> case do
+      {:error, _reason, _details} = error -> error
+      _seen -> :ok
+    end
+  end
+
+  # A platform row is one kind, so an `ebb` create without exactly one
+  # `ebb/*` component would materialize a row with no way to tell which.
+  defp validate_platform_creates(updates) do
+    case Enum.find(updates, &platform_create_without_component?(&1, updates)) do
+      nil ->
+        :ok
+
+      create ->
+        {:error, "invalid_structure",
+         "an ebb create must carry exactly one ebb/* component: " <>
+           inspect(create["subject_id"])}
+    end
+  end
+
+  defp platform_create_without_component?(%{"method" => "create"} = create, updates) do
+    create["model"] == SystemComponent.model() and
+      Enum.count(updates, &platform_component_of?(&1, create["subject_id"])) != 1
+  end
+
+  defp platform_create_without_component?(_update, _updates), do: false
+
+  defp platform_component_of?(%{"component" => component, "subject_id" => subject_id}, subject_id)
+       when is_binary(component) do
+    SystemComponent.component?(component)
+  end
+
+  defp platform_component_of?(_update, _subject_id), do: false
+
   # A row has one model. Every component Update for one subject in an Action
-  # must name the same prefix, or the fold would keep the first and
-  # materialize, say, a `note` row carrying a `group_id` field. A delete names
-  # no component, so it constrains nothing.
+  # must name the same prefix, and the create (when there is one) decides it,
+  # or the fold could materialize, say, a `note` row carrying a `group_id`
+  # field. A delete names no component, so it constrains nothing.
   #
   # Runs after the per-Update checks, so each component here is well formed
   # and `Component.split/1` cannot raise.
   defp validate_subject_models(updates) do
+    with :ok <- component_subject_models(updates) do
+      create_subject_models(updates)
+    end
+  end
+
+  defp component_subject_models(updates) do
     case Enum.reduce_while(updates, %{}, &check_subject_model/2) do
       {:error, _reason, _details} = error -> error
       _models -> :ok
     end
+  end
+
+  defp create_subject_models(updates) do
+    models = component_models(updates)
+
+    Enum.reduce_while(updates, :ok, fn
+      %{"method" => "create", "subject_id" => subject_id, "model" => model}, :ok ->
+        case Map.fetch(models, subject_id) do
+          {:ok, component_model} when component_model != model ->
+            {:halt, create_model_error(subject_id, model, component_model)}
+
+          _ ->
+            {:cont, :ok}
+        end
+
+      _update, :ok ->
+        {:cont, :ok}
+    end)
+  end
+
+  defp component_models(updates) do
+    Enum.reduce(updates, %{}, fn
+      %{"component" => component, "subject_id" => subject_id}, models
+      when is_binary(component) ->
+        Map.put_new(models, subject_id, Component.model(component))
+
+      _update, models ->
+        models
+    end)
+  end
+
+  defp create_model_error(subject_id, create_model, component_model) do
+    {:error, "invalid_structure",
+     "the create's model and every component of a row must be one model: " <>
+       "#{inspect(subject_id)} names #{inspect(create_model)} and " <>
+       inspect(component_model)}
   end
 
   defp check_subject_model(%{"component" => component, "subject_id" => subject_id}, models)
@@ -277,16 +386,18 @@ defmodule EbbServer.Storage.ActionValidator do
          :ok <- validate_update_subject_id(update["subject_id"]),
          :ok <- validate_update_method(update["method"]),
          :ok <- validate_update_component(update),
+         :ok <- validate_create_fields(update),
          :ok <- validate_update_data(update) do
       validate_replace_target(update)
     end
   end
 
-  # The envelope has exactly five keys. A per-Update type name or a row's
+  # Each method has its exact key set. A per-Update type name or a row's
   # field record cannot ride along unrecognised: the pre-component wire is
-  # refused here, and a stored frame in that shape raises on decode.
+  # refused here, and a stored frame in that shape raises on decode. A
+  # `model` or `hlc` on a component Update is refused the same way.
   defp validate_update_keys(update) do
-    case Map.keys(update) -- Component.update_keys() do
+    case Map.keys(update) -- Component.update_keys_for(update["method"]) do
       [] ->
         :ok
 
@@ -316,9 +427,10 @@ defmodule EbbServer.Storage.ActionValidator do
          "update method must be one of: " <> Enum.join(Component.method_names(), ", ")}
   end
 
-  defp validate_update_component(%{"method" => "delete"} = update) do
+  defp validate_update_component(%{"method" => method} = update)
+       when method in ["create", "delete"] do
     if Map.has_key?(update, "component") do
-      {:error, "invalid_structure", "a delete names the row and carries no component"}
+      {:error, "invalid_structure", "a #{method} names the row and carries no component"}
     else
       :ok
     end
@@ -336,6 +448,27 @@ defmodule EbbServer.Storage.ActionValidator do
     {:error, "invalid_structure",
      "update component must be <model>/<field>, got: #{inspect(component, limit: 4)}"}
   end
+
+  # A create names its model and the HLC the row was created at. The model
+  # is a model name (no `/`); the field segment of a component is not one.
+  defp validate_create_fields(%{"method" => "create"} = update) do
+    model = update["model"]
+
+    cond do
+      not is_binary(model) or model == "" or :binary.match(model, "/") != :nomatch ->
+        {:error, "invalid_structure",
+         "a create's model must be a model name, got: " <>
+           inspect(model, limit: 4)}
+
+      normalize_hlc(update["hlc"]) == nil ->
+        {:error, "invalid_structure", "a create's hlc must be a positive integer"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_create_fields(_update), do: :ok
 
   defp validate_update_data(%{"method" => method} = update) when method in ["merge", "replace"] do
     data = update["data"]
@@ -444,7 +577,13 @@ defmodule EbbServer.Storage.ActionValidator do
   end
 
   # A delete or drop carries no value. Every other method's data is the
-  # component's own value, so the walk starts at the component name.
+  # component's own value, so the walk starts at the component name. A
+  # create's own `hlc` is the row's creation time, so it is held to the same
+  # future-drift window as a leaf.
+  defp update_leaf_hlc_error(%{"method" => "create"} = update, now_ms) do
+    leaf_hlc_error(update["hlc"], ["create"], now_ms)
+  end
+
   defp update_leaf_hlc_error(update, now_ms) do
     data = update["data"]
 
@@ -533,6 +672,19 @@ defmodule EbbServer.Storage.ActionValidator do
       actor_id: action["actor_id"],
       hlc: normalize_hlc(action["hlc"]),
       updates: Enum.map(action["updates"], &to_validated_update/1)
+    }
+  end
+
+  defp to_validated_update(%{"method" => "create"} = update) do
+    %{
+      id: update["id"],
+      subject_id: update["subject_id"],
+      component: nil,
+      model: update["model"],
+      field: nil,
+      method: :create,
+      data: nil,
+      hlc: normalize_hlc(update["hlc"])
     }
   end
 

@@ -1088,14 +1088,29 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           description:
             "The component being written, `<model>/<field>`. The prefix is the model the entity " <>
               "is committed under and the leaf is the row field the value is stored at. Required " <>
-              "for merge, replace and drop; a delete names the row and carries none."
+              "for merge, replace and drop; a create or delete names the row and carries none."
+        },
+        model: %OpenApiSpex.Schema{
+          type: :string,
+          description:
+            "The row's model, with no `/`. Required for create and refused on every other " <>
+              "method; every component Update of the same subject in the Action must name the " <>
+              "same model."
+        },
+        hlc: %OpenApiSpex.Schema{
+          type: :integer,
+          format: :int64,
+          description:
+            "The row's creation time. Required for create and refused on every other method; " <>
+              "it is the `created_hlc` the row is materialized with."
         },
         method: %OpenApiSpex.Schema{
           type: :string,
           enum: Component.method_names(),
           description:
-            "merge folds the value into the component under last-writer-wins; replace sets it " <>
-              "whole (refused for a keyed component); drop detaches the component; delete " <>
+            "create brings the row into existence (a zero-component create is a complete row); " <>
+              "merge folds the value into the component under last-writer-wins; replace sets " <>
+              "it whole (refused for a keyed component); drop detaches the component; delete " <>
               "tombstones the row"
         },
         data: %OpenApiSpex.Schema{
@@ -1103,8 +1118,8 @@ defmodule EbbServer.Sync.Router.OperationSchema do
           nullable: true,
           description:
             "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value " <>
-              "`{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must " <>
-              "sit at most 120s ahead of the server clock"
+              "`{map: {key => FieldValue}}`. Null for create, drop and delete. Each leaf's " <>
+              "`hlc` must sit at most 120s ahead of the server clock"
         }
       }
     }
@@ -1124,7 +1139,7 @@ defmodule EbbServer.Sync.Router.OperationSchema do
         created_hlc: %OpenApiSpex.Schema{
           type: :integer,
           format: :int64,
-          description: "The HLC of the row's first write, whatever its method"
+          description: "The HLC the row's create carried"
         },
         updated_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64},
         deleted_hlc: %OpenApiSpex.Schema{type: :integer, format: :int64, nullable: true},

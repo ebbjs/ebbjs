@@ -35,9 +35,11 @@ defmodule EbbServer.ActionExport do
   `ebb/membership`) are stripped by default, and an Action left with no
   Updates is dropped entirely. The exclusion names the components, not the
   model `ebb`: excluding the model would strip the `ebb/group` creates too.
-  A `delete` names no component, so it is always exported. The per-subject
-  delivery scopes (#473) are internal routing metadata, not part of the
-  Action contract, so they are stripped too.
+  A `delete` names no component, so it is always exported. A `create` names
+  no component either; an `ebb` create is exported with the one `ebb/*`
+  component that identifies its row, so excluding that component drops the
+  create with it. The per-subject delivery scopes (#473) are internal routing
+  metadata, not part of the Action contract, so they are stripped too.
 
   ## Opt-in
 
@@ -208,7 +210,8 @@ defmodule EbbServer.ActionExport do
   defp filter_actions(actions, excluded) do
     {kept, dropped} =
       Enum.reduce(actions, {[], 0}, fn action, {kept, dropped} ->
-        updates = Enum.reject(action["updates"], &(update_component(&1) in excluded))
+        {updates, excluded_subjects} = reject_excluded(action["updates"], excluded)
+        updates = Enum.reject(updates, &create_of_excluded_subject?(&1, excluded_subjects))
         removed = length(action["updates"]) - length(updates)
 
         case updates do
@@ -230,7 +233,25 @@ defmodule EbbServer.ActionExport do
     kept
   end
 
-  # A delete names the row and no component, so it has nothing to exclude.
+  # A delete and a create name the row and no component, so they have nothing
+  # to exclude directly; a create's row is identified by the component the
+  # export does exclude.
+  defp reject_excluded(updates, excluded) do
+    Enum.reduce(updates, {[], MapSet.new()}, fn update, {kept, subjects} ->
+      if update_component(update) in excluded do
+        {kept, MapSet.put(subjects, update["subject_id"])}
+      else
+        {[update | kept], subjects}
+      end
+    end)
+    |> then(fn {kept, subjects} -> {Enum.reverse(kept), subjects} end)
+  end
+
+  defp create_of_excluded_subject?(%{"method" => "create", "subject_id" => subject_id}, subjects),
+    do: MapSet.member?(subjects, subject_id)
+
+  defp create_of_excluded_subject?(_update, _subjects), do: false
+
   defp update_component(%{"component" => component}) when is_binary(component), do: component
 
   defp update_component(_update), do: nil

@@ -60,6 +60,12 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           [
+            create_update(
+              "upd_valid_create_#{:erlang.unique_integer([:positive])}",
+              entity_id,
+              "todo",
+              hlc
+            ),
             %{
               "id" => "upd_valid_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity_id,
@@ -122,6 +128,12 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "hlc" => hlc1,
         "updates" =>
           [
+            create_update(
+              "upd_seq1_create_#{:erlang.unique_integer([:positive])}",
+              entity1,
+              "todo",
+              hlc1
+            ),
             %{
               "id" => "upd_seq1_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity1,
@@ -138,6 +150,12 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "hlc" => hlc2,
         "updates" =>
           [
+            create_update(
+              "upd_seq2_create_#{:erlang.unique_integer([:positive])}",
+              entity2,
+              "todo",
+              hlc2
+            ),
             %{
               "id" => "upd_seq2_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity2,
@@ -187,6 +205,12 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           [
+            create_update(
+              "upd_dedup_create_#{:erlang.unique_integer([:positive])}",
+              entity_id,
+              "todo",
+              hlc
+            ),
             %{
               "id" => "upd_dedup_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity_id,
@@ -232,6 +256,12 @@ defmodule EbbServer.WritingActionsIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           [
+            create_update(
+              "upd_dirty_create_#{:erlang.unique_integer([:positive])}",
+              entity_id,
+              "todo",
+              hlc
+            ),
             %{
               "id" => "upd_dirty_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity_id,

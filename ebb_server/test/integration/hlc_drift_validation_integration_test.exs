@@ -102,6 +102,7 @@ defmodule EbbServer.HLCDriftValidationIntegrationTest do
       "hlc" => action_hlc,
       "updates" =>
         [
+          create_update("upd_create_" <> Nanoid.generate(), entity_id, "todo", action_hlc),
           %{
             "id" => "upd_put_" <> Nanoid.generate(),
             "subject_id" => entity_id,

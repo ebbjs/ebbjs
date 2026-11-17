@@ -479,6 +479,7 @@ defmodule EbbServer.Functions.AcceptanceTest do
       "hlc" => hlc,
       "updates" =>
         [
+          create_update(unique("upd_create"), entity_id, "todo", hlc),
           component_update(
             unique("upd_fn"),
             entity_id,

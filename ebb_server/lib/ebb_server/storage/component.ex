@@ -2,7 +2,7 @@ defmodule EbbServer.Storage.Component do
   @moduledoc """
   The one owner of the component envelope's vocabulary.
 
-  An Update names one `(entity, component)`. A `ComponentName` is
+  A component Update names one `(entity, component)`. A `ComponentName` is
   `<model>/<field>`:
 
     - the segment before the first `/` is the **model** the row is committed
@@ -10,6 +10,9 @@ defmodule EbbServer.Storage.Component do
       key;
     - the segment after it is the row **field** the component's value is
       stored at.
+
+  A row-scoped `create` names no component: it carries the row's `model` and
+  the create's `hlc` instead. A `delete` names no component either.
 
   Exactly one `/`, both segments non-empty. The server has no schema, so this
   shape is the whole of what the wire promises, and every module that has to
@@ -22,13 +25,17 @@ defmodule EbbServer.Storage.Component do
   that validates on decode, so `split/1` and friends raise rather than return
   an error tuple — a malformed name there is a bug, not a rejection.
 
-  The envelope's key set and method set live here too, for the same reason:
+  The envelope's key sets and method set live here too, for the same reason:
   the validator and the stored-frame reader must accept exactly the same
   shape, and the old wire's `put`/`patch` must be unreadable in both.
   """
 
-  @update_keys ["id", "subject_id", "component", "method", "data"]
+  @update_keys ["id", "subject_id", "component", "model", "method", "hlc", "data"]
+  @component_keys ["id", "subject_id", "component", "method", "data"]
+  @row_method_keys ["id", "subject_id", "method", "data"]
+  @create_keys ["id", "subject_id", "model", "method", "hlc", "data"]
   @method_pairs [
+    {"create", :create},
     {"merge", :merge},
     {"replace", :replace},
     {"drop", :drop},
@@ -39,11 +46,35 @@ defmodule EbbServer.Storage.Component do
   @value_methods ["merge", "replace"]
 
   @type name :: String.t()
-  @type method :: :merge | :replace | :drop | :delete
+  @type method :: :create | :merge | :replace | :drop | :delete
 
-  @doc "The exact key set of a stored or received Update."
+  @doc """
+  Every key a stored or received Update may carry.
+
+  The per-method key sets below are the exact ones; this union is the
+  first-pass filter for a key no Update of any method may name.
+  """
   @spec update_keys() :: [String.t()]
   def update_keys, do: @update_keys
+
+  @doc "The exact key set of a `create` Update."
+  @spec create_keys() :: [String.t()]
+  def create_keys, do: @create_keys
+
+  @doc "The exact key set of a component Update (`merge`, `replace`, `drop`)."
+  @spec component_keys() :: [String.t()]
+  def component_keys, do: @component_keys
+
+  @doc "The exact key set of a `delete` Update, which names the row."
+  @spec row_method_keys() :: [String.t()]
+  def row_method_keys, do: @row_method_keys
+
+  @doc "The exact key set of any Update with `method`."
+  @spec update_keys_for(term()) :: [String.t()]
+  def update_keys_for("create"), do: @create_keys
+  def update_keys_for("delete"), do: @row_method_keys
+  def update_keys_for(method) when method in ["merge", "replace", "drop"], do: @component_keys
+  def update_keys_for(_method), do: @update_keys
 
   @doc "The wire method strings, in the order an error message names them."
   @spec method_names() :: [String.t()]
@@ -56,8 +87,9 @@ defmodule EbbServer.Storage.Component do
   @doc """
   Whether the method carries a component value.
 
-  `merge` and `replace` are the two writes at a field; `drop` detaches the
-  component and `delete` names the row, so neither carries data.
+  `merge` and `replace` are the two writes at a field; `create` and the two
+  row-scoped methods (`drop` detaches one component, `delete` tombstones the
+  row) carry no component value.
   """
   @spec value_method?(term()) :: boolean()
   def value_method?(method), do: method in @value_methods

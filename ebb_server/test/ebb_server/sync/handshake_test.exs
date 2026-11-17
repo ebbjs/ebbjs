@@ -70,7 +70,8 @@ defmodule EbbServer.Sync.HandshakeTest do
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" =>
-        [group_update(group_update_id, group_id, apps, hlc)] ++
+        [create_update("upd_create_" <> group_id, group_id, "ebb", hlc)] ++
+          [group_update(group_update_id, group_id, apps, hlc)] ++
           grant_updates(gm_id, actor_id, group_id, permissions, hlc)
     }
 
@@ -92,8 +93,20 @@ defmodule EbbServer.Sync.HandshakeTest do
     }
   end
 
+  defp create_update(id, subject_id, model, hlc) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
+  end
+
   defp grant_updates(gm_id, actor_id, group_id, permissions, hlc) do
     [
+      create_update("#{gm_id}_create", gm_id, "ebb", hlc),
       %{
         "id" => "#{gm_id}_grant",
         "subject_id" => gm_id,

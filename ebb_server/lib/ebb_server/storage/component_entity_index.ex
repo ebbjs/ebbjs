@@ -38,10 +38,11 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
   ## Writes follow the wire
 
   For each Update of an Action, in order: `merge` and `replace` put the
-  component entry, `drop` deletes it, and `delete` writes no component entry
-  because it names the row and cannot know which components to detach. The
-  model entry is put once per folded subject, including for a delete, so a
-  tombstoned row keeps its existence signal. That is why a delete leaves the
+  component entry, `drop` deletes it, and `create`/`delete` write no
+  component entry because they name the row and cannot know which components
+  it carries or detaches. The model entry is put once per folded subject,
+  including for a zero-component create and for a delete, so every row the
+  log models keeps its existence signal. That is why a delete leaves the
   row's component entries behind: they are candidates for an existence query
   and the row-level tombstone is the liveness filter (see
   `component_entry_ids/2`).

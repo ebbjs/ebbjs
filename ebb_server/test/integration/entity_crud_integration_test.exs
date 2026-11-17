@@ -38,7 +38,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/completed",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => false, "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
@@ -74,7 +75,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Cached item", "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
@@ -114,7 +116,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "GSN test", "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
@@ -147,7 +150,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Dirty test", "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
@@ -182,7 +186,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "First entity", "hlc" => hlc1}
-            }
+            },
+            create_update("upd_create_" <> entity1, entity1, "todo", hlc1)
           ] ++ membership_update(entity1, "g_test", hlc1)
       }
 
@@ -198,7 +203,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Second entity", "hlc" => hlc2}
-            }
+            },
+            create_update("upd_create_" <> entity2, entity2, "todo", hlc2)
           ] ++ membership_update(entity2, "g_test", hlc2)
       }
 
@@ -251,7 +257,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "Integer HLC", "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 
@@ -277,7 +284,8 @@ defmodule EbbServer.EntityCrudIntegrationTest do
               "component" => "todo/title",
               "method" => "replace",
               "data" => %{"type" => "lww", "value" => "String HLC", "hlc" => hlc}
-            }
+            },
+            create_update("upd_create_" <> entity_id, entity_id, "todo", hlc)
           ] ++ membership_update(entity_id, "g_test", hlc)
       }
 

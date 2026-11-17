@@ -5,6 +5,19 @@ defmodule EbbServer.Storage.RowMutationsTest do
 
   defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
 
+  defp create(id, subject_id, model, hlc) do
+    %{
+      id: id,
+      subject_id: subject_id,
+      component: nil,
+      model: model,
+      field: nil,
+      method: :create,
+      data: nil,
+      hlc: hlc
+    }
+  end
+
   defp component(id, subject_id, component, method, data) do
     [model, field] = :binary.split(component, "/")
 
@@ -38,11 +51,13 @@ defmodule EbbServer.Storage.RowMutationsTest do
     table
   end
 
-  test "folds a row's components into one mutation, in first-appearance order" do
+  test "folds a row's updates into one mutation, in first-appearance order" do
     table = unknown_type_index()
 
     updates = [
+      create("c1", "note_1", "note", 1),
       component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
+      create("c2", "note_2", "note", 2),
       component("u2", "note_2", "note/title", :replace, leaf("other", 1)),
       component("u3", "note_1", "note/body", :merge, leaf("b", 1))
     ]
@@ -53,70 +68,119 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert first.model == "note"
     assert first.data == %{"fields" => %{"title" => leaf("t", 1), "body" => leaf("b", 1)}}
     assert second.subject_id == "note_2"
+    assert second.created?
   end
 
-  test "a known row and a request-created id are not created" do
+  test "the verb follows the explicit create, not the entity-model cache" do
     table = unknown_type_index()
     :ets.insert(table, {"note_1", "note"})
 
-    [known] =
-      RowMutations.fold([component("u1", "note_1", "note/title", :merge, leaf("t", 1))],
+    [created] =
+      RowMutations.fold(
+        [
+          create("c1", "note_1", "note", 10),
+          component("u1", "note_1", "note/title", :merge, leaf("t", 1))
+        ],
         entity_models: table
       )
 
-    refute known.created?
+    assert created.created?
 
-    [created] =
+    [patched] =
       RowMutations.fold(
         [component("u1", "note_9", "note/title", :replace, leaf("t", 1))],
-        entity_models: table,
-        created: MapSet.new(["note_9"])
+        entity_models: table
       )
 
-    refute created.created?
+    refute patched.created?
   end
 
-  test "merge folds by the field's last-writer-wins rule" do
-    table = unknown_type_index()
+  test "a zero-component create is a user row with no fields" do
+    [mutation] =
+      RowMutations.fold([create("c1", "note_1", "note", 10)], entity_models: unknown_type_index())
 
+    assert mutation.created?
+    assert mutation.model == "note"
+    assert mutation.kind == nil
+    assert mutation.data == %{"fields" => %{}}
+  end
+
+  test "a create contributes no field" do
     [mutation] =
       RowMutations.fold(
         [
+          create("c1", "note_1", "note", 10),
+          component("u1", "note_1", "note/title", :replace, leaf("t", 1))
+        ],
+        entity_models: unknown_type_index()
+      )
+
+    assert mutation.data == %{"fields" => %{"title" => leaf("t", 1)}}
+  end
+
+  test "the create decides the model even when it arrives after a component" do
+    [mutation] =
+      RowMutations.fold(
+        [
+          component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
+          create("c1", "note_1", "note", 10)
+        ],
+        entity_models: unknown_type_index()
+      )
+
+    assert mutation.model == "note"
+    assert mutation.created?
+  end
+
+  test "merge folds by the field's last-writer-wins rule" do
+    [mutation] =
+      RowMutations.fold(
+        [
+          create("c1", "note_1", "note", 1),
           component("u_low", "note_1", "note/title", :merge, leaf("low", 10)),
           component("u_high", "note_1", "note/title", :merge, leaf("high", 20))
         ],
-        entity_models: table
+        entity_models: unknown_type_index()
       )
 
     assert mutation.data["fields"]["title"] == leaf("high", 20)
   end
 
   test "drop removes the field and leaves the row" do
-    table = unknown_type_index()
-
     [mutation] =
       RowMutations.fold(
         [
+          create("c1", "note_1", "note", 1),
           component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
           component("u2", "note_1", "note/body", :drop, nil)
         ],
-        entity_models: table
+        entity_models: unknown_type_index()
       )
 
     assert mutation.created?
     assert mutation.data == %{"fields" => %{"title" => leaf("t", 1)}}
   end
 
-  test "any delete for the subject collapses the row to one delete" do
-    table = unknown_type_index()
+  test "a drop-only Action is an update, not a create" do
+    [mutation] =
+      RowMutations.fold(
+        [component("u1", "note_1", "note/title", :drop, nil)],
+        entity_models: unknown_type_index()
+      )
 
+    refute mutation.created?
+    assert RowMutations.write?(mutation)
+  end
+
+  test "any delete for the subject collapses the row to one delete" do
     [mutation] =
       RowMutations.fold(
         [
+          create("c1", "note_1", "note", 1),
           component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
           delete("u2", "note_1")
         ],
-        entity_models: table,
+        entity_models: unknown_type_index(),
         model_resolver: fn _id -> "note" end
       )
 
@@ -167,31 +231,42 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert from_sibling.model == "relationship"
   end
 
-  # A fold with no existence signal would report every row as created, which
-  # the rule engine reads as `<model>.create`; a fold with no committed-model
-  # signal would forget the model a delete was authorized under. Both are the
-  # caller's to provide, so neither may default silently.
-  test "a fold without an existence signal raises" do
-    assert_raise ArgumentError, ~r/needs an existence signal/, fn ->
-      RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))])
-    end
+  test "a delete keeps a platform component's kind and committed model" do
+    [mutation] =
+      RowMutations.fold(
+        [
+          create("c1", "gm_1", "ebb", 1),
+          component("u1", "gm_1", "ebb/grant", :replace, %{"value" => %{}}),
+          delete("u2", "gm_1")
+        ],
+        entity_models: unknown_type_index(),
+        model_resolver: fn _id -> "ebb" end
+      )
+
+    assert mutation.deleted?
+    refute mutation.created?
+    assert mutation.model == "ebb"
+    assert mutation.kind == :grant
   end
 
+  # A fold without the read its delete model needs cannot answer it, and
+  # guessing would silently change what the rule engine authorizes. The
+  # caller says which reads it has.
   test "a fold without a committed-model signal raises" do
     assert_raise ArgumentError, ~r/needs a committed-model signal/, fn ->
-      RowMutations.fold([delete("u1", "note_1")], exists?: fn _id -> true end)
+      RowMutations.fold([delete("u1", "note_1")])
     end
   end
 
   test "explicit predicates stand in for the index" do
     [mutation] =
-      RowMutations.fold(
-        [component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        exists?: fn _id -> true end,
+      RowMutations.fold([delete("u1", "note_1")],
         model_resolver: fn _id -> nil end
       )
 
+    assert mutation.deleted?
     refute mutation.created?
+    assert mutation.model == nil
   end
 
   test "a delete's default model falls back to the by-id caches" do
@@ -228,22 +303,19 @@ defmodule EbbServer.Storage.RowMutationsTest do
     refute RowMutations.write?(mutation)
   end
 
-  test "the entity-model cache is the default existence signal" do
+  test "the entity-model cache is the default committed-model signal" do
     table = unknown_type_index()
-
-    [unknown] =
-      RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        entity_models: table
-      )
-
     :ets.insert(table, {"note_1", "note"})
 
     [known] =
-      RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        entity_models: table
-      )
+      RowMutations.fold([delete("u1", "note_1")], entity_models: table)
 
-    assert unknown.created?
+    [unknown] =
+      RowMutations.fold([delete("u2", "note_2")], entity_models: table)
+
     refute known.created?
+    refute unknown.created?
+    assert known.model == "note"
+    assert unknown.model == nil
   end
 end

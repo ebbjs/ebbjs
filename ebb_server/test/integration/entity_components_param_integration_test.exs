@@ -28,6 +28,7 @@ defmodule EbbServer.EntityComponentsParamIntegrationTest do
       "hlc" => hlc,
       "updates" =>
         [
+          create_update("upd_create_components", entity_id, "todo", hlc),
           %{
             "id" => "upd_title",
             "subject_id" => entity_id,

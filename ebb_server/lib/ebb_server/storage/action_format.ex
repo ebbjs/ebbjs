@@ -50,8 +50,10 @@ defmodule EbbServer.Storage.ActionFormat do
 
   ## The stored Update
 
-  An Update is stored as `id`, `subject_id`, `method`, `data`, and — for
-  every method but `delete` — `component`. `data` is the component's own
+  A component Update is stored as `id`, `subject_id`, `method`, `data`, and
+  `component`; a `delete` names the row and stores no component. A
+  `create` stores the row fact instead — `id`, `subject_id`, `model`,
+  `method`, `hlc`, `data` — with no component. `data` is the component's own
   value; the pre-component wire's row record is never read. A payload with
   any other Update shape raises, so an old-shape Action is unreadable rather
   than half-understood.
@@ -223,6 +225,17 @@ defmodule EbbServer.Storage.ActionFormat do
     |> inspect(printable_limit: 16)
   end
 
+  defp build_update(%{method: :create} = update) do
+    %{
+      "id" => update.id,
+      "subject_id" => update.subject_id,
+      "model" => update.model,
+      "method" => "create",
+      "hlc" => update.hlc,
+      "data" => nil
+    }
+  end
+
   defp build_update(update) do
     %{
       "id" => update.id,
@@ -247,20 +260,21 @@ defmodule EbbServer.Storage.ActionFormat do
   end
 
   # The reader accepts exactly the component envelope. An Update naming a row
-  # (a delete) carries no component; every other method names one
-  # `<model>/<field>` component and its value.
+  # (a create or a delete) carries no component; every other method names one
+  # `<model>/<field>` component and its value. Each method also has its exact
+  # key set, so a `model` or `hlc` on a component Update is corrupt.
   defp validate_update!(update) when is_map(update) do
     method = update["method"]
 
     cond do
-      Map.keys(update) -- Component.update_keys() != [] ->
+      not Component.method?(method) ->
+        reject_update(update, "unknown method")
+
+      Map.keys(update) -- Component.update_keys_for(method) != [] ->
         reject_update(update, "unknown keys")
 
       not is_binary(update["id"]) or not is_binary(update["subject_id"]) ->
         reject_update(update, "missing id or subject_id")
-
-      not Component.method?(method) ->
-        reject_update(update, "unknown method")
 
       true ->
         validate_method_shape!(update, method)
@@ -269,6 +283,25 @@ defmodule EbbServer.Storage.ActionFormat do
 
   defp validate_update!(update) do
     raise ArgumentError, "cf_actions Update is not a map: #{inspect(update, limit: 4)}"
+  end
+
+  # A create names the row's model and creation time, and carries no value.
+  defp validate_method_shape!(update, "create") do
+    model = update["model"]
+
+    cond do
+      not is_binary(model) or model == "" or :binary.match(model, "/") != :nomatch ->
+        reject_update(update, "a create's model is not a model name")
+
+      not is_integer(update["hlc"]) or update["hlc"] <= 0 ->
+        reject_update(update, "a create carries its creation hlc")
+
+      not is_nil(update["data"]) ->
+        reject_update(update, "a create carries no value")
+
+      true ->
+        :ok
+    end
   end
 
   # A delete names the row; every value method names one `<model>/<field>`

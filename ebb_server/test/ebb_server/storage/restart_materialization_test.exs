@@ -280,26 +280,35 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
   end
 
   defp component_updates(kind, subject_id, value, method, hlc) when is_atom(kind) do
-    [
-      TestHelpers.validated_component(
-        subject_id,
-        SystemComponent.component(kind),
-        %{"value" => value, "hlc" => hlc},
-        method: method
-      )
-    ]
+    create_updates(method, subject_id, SystemComponent.model(), hlc) ++
+      [
+        TestHelpers.validated_component(
+          subject_id,
+          SystemComponent.component(kind),
+          %{"value" => value, "hlc" => hlc},
+          method: method
+        )
+      ]
   end
 
-  defp component_updates(model, subject_id, fields, method, _hlc) do
-    Enum.map(fields, fn {field, value} ->
-      TestHelpers.validated_component(
-        subject_id,
-        "#{model}/#{field}",
-        value,
-        method: method
-      )
-    end)
+  defp component_updates(model, subject_id, fields, method, hlc) do
+    create_updates(method, subject_id, model, hlc) ++
+      Enum.map(fields, fn {field, value} ->
+        TestHelpers.validated_component(
+          subject_id,
+          "#{model}/#{field}",
+          value,
+          method: method
+        )
+      end)
   end
+
+  # A `replace` fixture opens the row; `merge` and `drop` are deltas on a row
+  # an earlier Action created.
+  defp create_updates(:replace, subject_id, model, hlc),
+    do: [TestHelpers.validated_create(subject_id, model, hlc: hlc)]
+
+  defp create_updates(_method, _subject_id, _model, _hlc), do: []
 
   defp lww(value, base_hlc, counter) do
     %{"type" => "lww", "value" => value, "hlc" => TestHelpers.hlc_from(base_hlc, counter)}

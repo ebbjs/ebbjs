@@ -44,7 +44,9 @@ defmodule EbbServer.StructureValidationIntegrationTest do
 
       rejection = submit_one(action)
       assert rejection["reason"] == "invalid_structure"
-      assert rejection["details"] == "update method must be one of: merge, replace, drop, delete"
+
+      assert rejection["details"] ==
+               "update method must be one of: create, merge, replace, drop, delete"
     end
 
     test "an Update without a component is refused" do

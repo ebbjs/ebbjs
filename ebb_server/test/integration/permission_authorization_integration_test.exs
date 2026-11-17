@@ -28,6 +28,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
+            create_update("upd_create_multi_#{Nanoid.generate()}", entity_id, "todo", hlc),
             %{
               "id" => "upd_multi_#{Nanoid.generate()}",
               "subject_id" => entity_id,
@@ -219,6 +220,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
+            create_update("upd_create_auth_" <> Nanoid.generate(), entity_id, "todo", hlc),
             %{
               "id" => "upd_auth_" <> Nanoid.generate(),
               "subject_id" => entity_id,
@@ -255,6 +257,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           List.flatten([
+            create_update("upd_create_intra_" <> Nanoid.generate(), entity_id, "todo", hlc),
             %{
               "id" => "upd_intra_" <> Nanoid.generate(),
               "subject_id" => entity_id,
@@ -1239,7 +1242,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => put_id,
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" => List.flatten([relationship_put(edge, new_id, "col_x", hlc)])
+        "updates" => List.flatten([link_update(edge, "replace", new_id, "col_x", hlc)])
       }
 
       assert %{"rejected" => []} = submit(put, "owner")
@@ -1293,6 +1296,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
   # flattens their results.
   defp todo_put(entity_id, hlc) do
     [
+      create_update("upd_create_#{Nanoid.generate()}", entity_id, "todo", hlc),
       %{
         "id" => "upd_todo_#{Nanoid.generate()}",
         "subject_id" => entity_id,
@@ -1305,6 +1309,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   defp membership_put(eg_id, entity_id, group_id, hlc) do
     [
+      create_update(eg_id <> "_create", eg_id, "ebb", hlc),
       %{
         "id" => eg_id <> "_membership",
         "subject_id" => eg_id,
@@ -1320,6 +1325,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   defp relationship_put(rel_id, source_id, target_id, hlc) do
     [
+      create_update(rel_id <> "_create", rel_id, "ebb", hlc),
       link_update(rel_id, "replace", source_id, target_id, hlc)
     ]
   end

@@ -84,7 +84,11 @@ defmodule EbbServer.Storage.EntityViewTest do
     update =
       validated_component(entity_id, "todo/title", %{"value" => "Buy milk", "hlc" => hlc})
 
-    action = validated_action(%{actor_id: "a_member", updates: [update]})
+    action =
+      validated_action(%{
+        actor_id: "a_member",
+        updates: [validated_create(entity_id, "todo", hlc: hlc), update]
+      })
 
     assert {:ok, _gsn_range, []} = Writer.write_actions([action], ctx.writer_name)
   end

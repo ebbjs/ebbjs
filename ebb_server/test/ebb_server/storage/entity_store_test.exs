@@ -35,13 +35,21 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
   import EbbServer.TestHelpers
 
-  # A row's components are one Update each, so a fixture that names a row's
-  # fields expands into one validated Update per field.
+  # A row's components are one Update each, and the row's existence is its
+  # explicit create, so a fixture that names a row's fields expands into a
+  # create and one validated Update per field.
   defp put_action(id, entity_id, fields, hlc) do
+    create_action(id, entity_id, fields, hlc, :replace)
+  end
+
+  defp create_action(id, entity_id, fields, hlc, method) do
     validated_action(%{
       "id" => id,
       "hlc" => hlc,
-      "updates" => component_updates(id, entity_id, fields, :replace)
+      "updates" => [
+        validated_create(entity_id, "todo", id: "#{id}_create", hlc: hlc)
+        | component_updates(id, entity_id, fields, method)
+      ]
     })
   end
 
@@ -71,6 +79,14 @@ defmodule EbbServer.Storage.EntityStoreTest do
 
       validated_component(entity_id, "todo/#{field}", value, id: update_id, method: method)
     end)
+  end
+
+  # Existence is an explicit create on the wire, so a fixture that opens a
+  # row prepends one. A test that exercises a delta starts from an Action
+  # that already carries the row's create.
+  defp with_create(action, entity_id, model \\ "todo") do
+    create = validated_create(entity_id, model, id: "#{action.id}_create", hlc: action.hlc)
+    %{action | updates: [create | action.updates]}
   end
 
   defp map_field(entries), do: %{"map" => entries}
@@ -120,6 +136,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       hlc = generate_hlc()
 
       updates = [
+        validated_create(entity_id, "todo", id: "upd_create_first_read", hlc: hlc),
         validated_component(entity_id, "todo/title", leaf("Buy milk", hlc)),
         validated_component(entity_id, "todo/completed", leaf(false, hlc))
       ]
@@ -150,7 +167,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_abc"
       update = validated_update(%{subject_id: entity_id})
-      action = validated_action(%{updates: [update]})
+      action = with_create(validated_action(%{updates: [update]}), entity_id)
 
       Writer.write_actions([action], writer_name)
 
@@ -182,6 +199,16 @@ defmodule EbbServer.Storage.EntityStoreTest do
           actor_id: "a_test",
           hlc: hlc,
           updates: [
+            %{
+              id: "#{update_id}_create",
+              subject_id: entity_id,
+              component: nil,
+              model: "todo",
+              field: nil,
+              method: :create,
+              data: nil,
+              hlc: hlc
+            },
             %{
               id: update_id,
               subject_id: entity_id,
@@ -431,7 +458,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_abc"
       update = validated_update(%{"subject_id" => entity_id})
-      action = validated_action(%{updates: [update]})
+      action = with_create(validated_action(%{updates: [update]}), entity_id)
 
       Writer.write_actions([action], writer_name)
       assert DirtyTracker.dirty?(entity_id, dirty_set)
@@ -454,7 +481,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_provisional"
       update = validated_update(%{subject_id: entity_id})
 
-      Writer.write_actions([validated_action(%{updates: [update]})], writer_name)
+      Writer.write_actions(
+        [with_create(validated_action(%{updates: [update]}), entity_id)],
+        writer_name
+      )
 
       opts = [rocks_name: rocks_name, sqlite_name: sqlite_name, dirty_set: dirty_set]
 
@@ -501,7 +531,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
     } do
       entity_id = "todo_abc"
       update = validated_update(%{"subject_id" => entity_id})
-      action = validated_action(%{updates: [update]})
+      action = with_create(validated_action(%{updates: [update]}), entity_id)
 
       Writer.write_actions([action], writer_name)
 
@@ -574,7 +604,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
       Writer.write_actions([patch_action], writer_name)
 
       assert {:ok, entity} =
@@ -624,7 +654,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
       Writer.write_actions([patch_action], writer_name)
 
       assert {:ok, entity} =
@@ -678,7 +708,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
 
       assert {:ok, entity1} =
                EntityStore.get(entity_id, "a_test",
@@ -741,7 +771,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([action1], writer_name)
+      Writer.write_actions([with_create(action1, entity_id)], writer_name)
       Writer.write_actions([action2], writer_name)
 
       assert {:ok, entity} =
@@ -792,7 +822,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([action1], writer_name)
+      Writer.write_actions([with_create(action1, entity_id)], writer_name)
       Writer.write_actions([action2], writer_name)
 
       assert {:ok, entity} =
@@ -1037,11 +1067,12 @@ defmodule EbbServer.Storage.EntityStoreTest do
       hlc_c = hlc_from(4_000)
 
       create =
-        patch_action(
+        create_action(
           "act_put_1",
           entity_id,
           %{"content" => map_field(%{"a" => leaf(1, hlc_a)})},
-          hlc_from(1_000)
+          hlc_from(1_000),
+          :merge
         )
 
       patch_b =
@@ -1445,7 +1476,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           "updates" => [delete_update]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
       Writer.write_actions([delete_action], writer_name)
 
       assert :not_found =
@@ -1504,7 +1535,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
 
       assert {:ok, alive} = EntityStore.get(entity_id, "a_test", opts)
       assert alive.data["fields"]["title"]["value"] == "Buy milk"
@@ -1581,7 +1612,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
       assert {:ok, _materialized} = EntityStore.get(entity_id, "a_test", opts)
 
       Writer.write_actions([delete_action], writer_name)
@@ -1654,7 +1685,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      Writer.write_actions([put_action], writer_name)
+      Writer.write_actions([with_create(put_action, entity_id)], writer_name)
       Writer.write_actions([delete_action], writer_name)
       Writer.write_actions([patch_action], writer_name)
 
@@ -1727,7 +1758,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([with_create(action1, entity_id)], writer_name)
 
       assert {:ok, entity1} =
                EntityStore.get(entity_id, "a_test",
@@ -1870,7 +1902,8 @@ defmodule EbbServer.Storage.EntityStoreTest do
           ]
         })
 
-      assert {:ok, {1, 1}, []} = Writer.write_actions([action1], writer_name)
+      assert {:ok, {1, 1}, []} =
+               Writer.write_actions([with_create(action1, entity_id)], writer_name)
 
       # Materialize E at GSN 1 and leave it clean.
       assert {:ok, entity1} =
@@ -1957,47 +1990,161 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert entity.data["fields"]["title"]["value"] == "newer"
     end
 
-    test "the first write stamps created_hlc, whatever its method", ctx do
-      entity_id = "todo_first_write_created"
+    test "created_hlc is the create's hlc, not the Action's, and later writes keep it", ctx do
+      entity_id = "todo_create_hlc"
       opts = store_opts(ctx)
-      merge_hlc = hlc_from(1_000)
-      replace_hlc = hlc_from(2_000)
+      create_hlc = hlc_from(1_000)
+      action_hlc = hlc_from(1_500)
+      patch_hlc = hlc_from(2_000)
 
-      # Writing a component is what creates the row, so a `merge` stamps the
-      # creation time exactly as a `replace` does.
       created =
-        patch_action(
-          "act_merge",
-          entity_id,
-          %{"title" => leaf("draft", merge_hlc)},
-          merge_hlc
-        )
+        validated_action(%{
+          "id" => "act_create",
+          "hlc" => action_hlc,
+          "updates" => [
+            validated_create(entity_id, "todo", id: "upd_create", hlc: create_hlc),
+            validated_component(entity_id, "todo/title", leaf("draft", create_hlc),
+              id: "upd_title"
+            )
+          ]
+        })
 
       Writer.write_actions([created], ctx.writer_name)
 
-      assert {:ok, merged} = EntityStore.get(entity_id, "a_test", opts)
-      assert merged.created_hlc == merge_hlc
+      assert {:ok, row} = EntityStore.get(entity_id, "a_test", opts)
+      assert row.created_hlc == create_hlc
+      assert row.updated_hlc == action_hlc
 
-      # A later `replace` is a later write, not a create: the stamp stands.
-      replace =
-        put_action(
-          "act_replace",
-          entity_id,
-          %{"title" => leaf("final", replace_hlc)},
-          replace_hlc
-        )
+      # A later write is not a create: the creation time stands.
+      Writer.write_actions(
+        [
+          patch_action(
+            "act_patch",
+            entity_id,
+            %{"title" => leaf("final", patch_hlc)},
+            patch_hlc
+          )
+        ],
+        ctx.writer_name
+      )
 
-      Writer.write_actions([replace], ctx.writer_name)
-
-      assert {:ok, replaced} = EntityStore.get(entity_id, "a_test", opts)
-      assert replaced.created_hlc == merge_hlc
-      assert replaced.updated_hlc == replace_hlc
-      assert replaced.data["fields"]["title"]["value"] == "final"
+      assert {:ok, patched} = EntityStore.get(entity_id, "a_test", opts)
+      assert patched.created_hlc == create_hlc
+      assert patched.updated_hlc == patch_hlc
+      assert patched.data["fields"]["title"]["value"] == "final"
 
       # The stamp has to reach SQLite, not just this read's snapshot: the
       # replay takes the per-key patch path for an existing row.
       assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
-      assert cached.created_hlc == merge_hlc
+      assert cached.created_hlc == create_hlc
+    end
+
+    test "a zero-component create materializes a live row with no fields", ctx do
+      entity_id = "todo_zero_component_create"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      created =
+        validated_action(%{
+          "id" => "act_zero",
+          "hlc" => create_hlc,
+          "updates" => [validated_create(entity_id, "todo", id: "upd_create", hlc: create_hlc)]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([created], ctx.writer_name)
+
+      assert {:ok, row} = EntityStore.get(entity_id, "a_test", opts)
+      assert row.model == "todo"
+      assert row.created_hlc == create_hlc
+      assert row.updated_hlc == create_hlc
+      assert row.deleted_hlc == nil
+      assert row.data == %{"fields" => %{}, "components" => []}
+      assert row.last_gsn == 1
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+      assert cached.created_hlc == create_hlc
+      assert Jason.decode!(cached.data) == %{"fields" => %{}, "components" => []}
+    end
+
+    test "a duplicate create changes nothing", ctx do
+      entity_id = "todo_duplicate_create"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      created =
+        validated_action(%{
+          "id" => "act_create",
+          "hlc" => create_hlc,
+          "updates" => [
+            validated_create(entity_id, "todo", id: "upd_create", hlc: create_hlc),
+            validated_component(entity_id, "todo/title", leaf("set", create_hlc), id: "upd_title")
+          ]
+        })
+
+      Writer.write_actions([created], ctx.writer_name)
+      assert {:ok, before} = EntityStore.get(entity_id, "a_test", opts)
+
+      duplicate =
+        validated_action(%{
+          "id" => "act_duplicate",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_create(entity_id, "relabelled", id: "upd_create_2", hlc: hlc_from(9_000))
+          ]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([duplicate], ctx.writer_name)
+
+      assert {:ok, after_duplicate} = EntityStore.get(entity_id, "a_test", opts)
+      assert after_duplicate.model == "todo"
+      assert after_duplicate.created_hlc == create_hlc
+      assert after_duplicate.data["fields"] == before.data["fields"]
+      assert after_duplicate.last_gsn == 2
+    end
+
+    test "a component write with no create materializes nothing", ctx do
+      entity_id = "todo_component_without_create"
+      opts = store_opts(ctx)
+
+      component =
+        validated_action(%{
+          "id" => "act_component",
+          "hlc" => hlc_from(1_000),
+          "updates" => [
+            validated_component(entity_id, "todo/title", leaf("orphan", hlc_from(1_000)),
+              id: "upd_title"
+            )
+          ]
+        })
+
+      assert {:ok, {1, 1}, []} = Writer.write_actions([component], ctx.writer_name)
+
+      assert :not_found = EntityStore.get(entity_id, "a_test", opts)
+      assert :not_found = SQLite.get_entity(entity_id, ctx.sqlite_name)
+    end
+
+    test "a create that arrives after its components materializes both", ctx do
+      entity_id = "todo_create_late"
+      opts = store_opts(ctx)
+      create_hlc = hlc_from(1_000)
+
+      action =
+        validated_action(%{
+          "id" => "act_late",
+          "hlc" => create_hlc,
+          "updates" => [
+            validated_component(entity_id, "todo/title", leaf("kept", create_hlc),
+              id: "upd_title"
+            ),
+            validated_create(entity_id, "todo", id: "upd_create", hlc: create_hlc)
+          ]
+        })
+
+      Writer.write_actions([action], ctx.writer_name)
+
+      assert {:ok, row} = EntityStore.get(entity_id, "a_test", opts)
+      assert row.created_hlc == create_hlc
+      assert row.data["fields"]["title"]["value"] == "kept"
     end
 
     test "a row survives dropping its only component", ctx do
@@ -2306,6 +2453,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           id: "act_platform_grant",
           hlc: hlc,
           updates: [
+            validated_create(entity_id, "ebb", id: "upd_platform_create", hlc: hlc),
             validated_component(
               entity_id,
               "ebb/grant",
@@ -2340,6 +2488,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           id: "act_note",
           hlc: hlc,
           updates: [
+            validated_create(note_id, "note", id: "upd_note_create", hlc: hlc),
             validated_component(note_id, "note/title", leaf("linked", hlc), id: "upd_title")
           ]
         })
@@ -2371,6 +2520,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
           id: "act_grant",
           hlc: hlc,
           updates: [
+            validated_create("gm_1", "ebb", id: "upd_grant_create", hlc: hlc),
             validated_component(
               "gm_1",
               "ebb/grant",
@@ -2380,6 +2530,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
               ),
               id: "upd_grant"
             ),
+            validated_create("eg_1", "ebb", id: "upd_membership_create", hlc: hlc),
             validated_component(
               "eg_1",
               "ebb/membership",
@@ -2412,10 +2563,13 @@ defmodule EbbServer.Storage.EntityStoreTest do
       entity_id = "todo_after_commit"
 
       action =
-        validated_action(%{
-          id: "act_after_commit",
-          updates: [validated_update(%{subject_id: entity_id})]
-        })
+        with_create(
+          validated_action(%{
+            id: "act_after_commit",
+            updates: [validated_update(%{subject_id: entity_id})]
+          }),
+          entity_id
+        )
 
       opts = [
         rocks_name: ctx.rocks_name,
@@ -2454,7 +2608,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       assert {:ok, %{model: "todo"}} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
 
@@ -2478,7 +2635,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       # The first read materializes and clears the dirty mark.
       assert {:ok, _entity} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
@@ -2513,7 +2673,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       ref = attach_telemetry([[:ebb, :entity_store, :cache_hit_rate]])
 
@@ -2555,7 +2718,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: "gm_telemetry"})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), "gm_telemetry")],
+                 ctx.writer_name
+               )
 
       ref = attach_telemetry([[:ebb, :entity_store, :cache_hit_rate]])
 
@@ -2577,7 +2743,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
       events = telemetry_events(ref)
@@ -2620,7 +2789,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
 
@@ -2651,7 +2823,10 @@ defmodule EbbServer.Storage.EntityStoreTest do
       update = validated_update(%{subject_id: entity_id})
 
       assert {:ok, {1, 1}, []} =
-               Writer.write_actions([validated_action(%{updates: [update]})], ctx.writer_name)
+               Writer.write_actions(
+                 [with_create(validated_action(%{updates: [update]}), entity_id)],
+                 ctx.writer_name
+               )
 
       assert {:ok, _} = EntityStore.get(entity_id, "a_test", store_opts(ctx))
 

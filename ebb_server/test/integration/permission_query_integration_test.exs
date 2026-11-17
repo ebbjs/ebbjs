@@ -23,6 +23,7 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
         "hlc" => hlc_1,
         "updates" =>
           [
+            create_update("upd_create_q1_" <> Nanoid.generate(), "todo_1", "todo", hlc_1),
             %{
               "id" => "upd_q1_" <> Nanoid.generate(),
               "subject_id" => "todo_1",
@@ -39,6 +40,7 @@ defmodule EbbServer.PermissionQueryIntegrationTest do
         "hlc" => hlc_2,
         "updates" =>
           [
+            create_update("upd_create_q2_" <> Nanoid.generate(), "todo_2", "todo", hlc_2),
             %{
               "id" => "upd_q2_" <> Nanoid.generate(),
               "subject_id" => "todo_2",

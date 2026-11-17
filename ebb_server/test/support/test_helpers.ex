@@ -33,7 +33,8 @@ defmodule EbbServer.TestHelpers do
   - `validated_action/1` - Create sample action with atom keys (post-validation format)
   - `validated_update/1` - Create sample component update with atom keys (post-validation format)
   - `validated_component/4` - Build one validated component update
-  - `validated_row_updates/4` - Build one validated update per row field
+  - `validated_create/3` - Build one validated row-scoped `create`
+  - `validated_row_updates/4` - Build a create and one validated update per row field
   - `stored_update/1` - Project a validated update into its stored (string-keyed) form
   - `subject_scopes/1` - The scopes half of a stored frame for a set of updates
 
@@ -712,6 +713,26 @@ defmodule EbbServer.TestHelpers do
   defp normalize_wire_update(update), do: update
 
   @doc """
+  Returns a valid row-scoped `create` with string keys.
+
+  A create names the row's model and the HLC the row was created at, and
+  carries no component.
+  """
+  def sample_create(overrides \\ %{}) do
+    hlc = generate_hlc()
+
+    %{
+      "id" => "upd_" <> Nanoid.generate(),
+      "subject_id" => "todo_" <> Nanoid.generate(),
+      "model" => "todo",
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
+    |> Map.merge(overrides)
+  end
+
+  @doc """
   Returns a valid action map with atom keys (validated_action format).
   Used for testing the Writer after PermissionChecker validation.
 
@@ -817,6 +838,25 @@ defmodule EbbServer.TestHelpers do
   defp derive_component(update), do: update
 
   @doc """
+  Builds one validated row-scoped `create`.
+
+  `hlc` defaults to a fresh clock value; pass `hlc:` when the test asserts
+  the materialized `created_hlc`.
+  """
+  def validated_create(subject_id, model, opts \\ []) do
+    %{
+      id: Keyword.get(opts, :id, "upd_" <> Nanoid.generate()),
+      subject_id: subject_id,
+      component: nil,
+      model: model,
+      field: nil,
+      method: :create,
+      data: nil,
+      hlc: Keyword.get_lazy(opts, :hlc, &generate_hlc/0)
+    }
+  end
+
+  @doc """
   Builds one validated component update.
   """
   def validated_component(subject_id, component, data, opts \\ []) do
@@ -830,11 +870,16 @@ defmodule EbbServer.TestHelpers do
   end
 
   @doc """
-  Builds one validated update per field of a row.
+  Builds one validated update per field of a row, preceded by its create.
 
   `fields` is `%{field => component value}`. The default method is `:replace`
   (a create writes one `replace` per leaf component); pass `method: :merge`
-  for a leaf patch, or for a keyed component, whose create must merge.
+  for a leaf patch, or for a keyed component, whose create must merge. Pass
+  `create: false` for a delta on a row an earlier Action created; pass
+  `model: name` only when the row's create model is not the first argument.
+
+  A create with no fields is a complete row, so `%{}` is a zero-component
+  create.
   """
   def validated_row_updates(subject_id, model, fields, opts \\ []) do
     method = Keyword.get(opts, :method, :replace)
@@ -845,14 +890,32 @@ defmodule EbbServer.TestHelpers do
         :error -> [method: method]
       end
 
-    Enum.map(fields, fn {field, value} ->
-      validated_component(subject_id, "#{model}/#{field}", value, component_opts)
-    end)
+    component_updates =
+      Enum.map(fields, fn {field, value} ->
+        validated_component(subject_id, "#{model}/#{field}", value, component_opts)
+      end)
+
+    if Keyword.get(opts, :create, true) do
+      [validated_create(subject_id, model) | component_updates]
+    else
+      component_updates
+    end
   end
 
   @doc """
   Projects a validated update into its stored, string-keyed form.
   """
+  def stored_update(%{method: :create} = update) do
+    %{
+      "id" => update.id,
+      "subject_id" => update.subject_id,
+      "model" => update.model,
+      "method" => "create",
+      "hlc" => update.hlc,
+      "data" => nil
+    }
+  end
+
   def stored_update(update) do
     %{
       "id" => update.id,

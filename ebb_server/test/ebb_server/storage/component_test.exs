@@ -37,7 +37,7 @@ defmodule EbbServer.Storage.ComponentTest do
   end
 
   test "the method set is the envelope's, in one place" do
-    assert Component.method_names() == ["merge", "replace", "drop", "delete"]
+    assert Component.method_names() == ["create", "merge", "replace", "drop", "delete"]
 
     for method <- Component.method_names() do
       assert Component.method?(method)
@@ -50,6 +50,21 @@ defmodule EbbServer.Storage.ComponentTest do
   end
 
   test "the update key set is the envelope's" do
-    assert Component.update_keys() == ["id", "subject_id", "component", "method", "data"]
+    assert Component.update_keys() == [
+             "id",
+             "subject_id",
+             "component",
+             "model",
+             "method",
+             "hlc",
+             "data"
+           ]
+
+    assert Component.create_keys() == ["id", "subject_id", "model", "method", "hlc", "data"]
+    assert Component.component_keys() == ["id", "subject_id", "component", "method", "data"]
+    assert Component.row_method_keys() == ["id", "subject_id", "method", "data"]
+    assert Component.update_keys_for("create") == Component.create_keys()
+    assert Component.update_keys_for("merge") == Component.component_keys()
+    assert Component.update_keys_for("delete") == Component.row_method_keys()
   end
 end
