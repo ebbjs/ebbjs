@@ -32,7 +32,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       # Hold the watermark back: reserve GSN 1 without resolving it. The
       # real batch below commits at GSN 2 and is buffered behind the hole.
-      %{gsn_counter: counter} = GsnCounter.get_resources()
+      counter = :sys.get_state(EbbServer.Storage.Writer).gsn_counter
       assert {1, 1} = GsnCounter.claim_gsn_range(1, counter)
 
       post_bootstrap!(actor_id, group_id)
@@ -64,7 +64,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
 
       # Hold the watermark back: reserve GSN 1 without resolving it. The
       # real batch below commits at GSN 2 and is buffered behind the hole.
-      %{gsn_counter: counter} = GsnCounter.get_resources()
+      counter = :sys.get_state(EbbServer.Storage.Writer).gsn_counter
       assert {1, 1} = GsnCounter.claim_gsn_range(1, counter)
       post_bootstrap!(actor_id, group_id)
       assert :sys.get_state(FanOutRouter).plan.pending_notifications == [{2, 2}]
@@ -118,7 +118,7 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
       {:ok, sse_pid} = SSEConnection.start_link(self(), [group_id], %{group_id => 0})
       :ok = FanOutRouter.subscribe([group_id], sse_pid, actor_id)
 
-      %{gsn_counter: counter} = GsnCounter.get_resources()
+      counter = :sys.get_state(EbbServer.Storage.Writer).gsn_counter
       assert {1, 1} = GsnCounter.claim_gsn_range(1, counter)
       post_bootstrap!(actor_id, group_id)
 

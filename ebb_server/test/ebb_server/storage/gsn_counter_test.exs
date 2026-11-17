@@ -24,15 +24,9 @@ defmodule EbbServer.Storage.GsnCounterTest do
   alias EbbServer.Storage.GsnCounter
 
   defp with_isolated_counter do
-    counter_name = :"test_gsn_#{System.unique_integer([:positive])}"
     counter = :atomics.new(1, signed: false)
-    :persistent_term.put(counter_name, counter)
 
-    on_exit(fn ->
-      :persistent_term.erase(counter_name)
-    end)
-
-    %{counter: counter, counter_name: counter_name}
+    %{counter: counter}
   end
 
   describe "claim_gsn_range/2" do
@@ -45,14 +39,8 @@ defmodule EbbServer.Storage.GsnCounterTest do
     end
 
     test "starts from the provided offset when counter is pre-initialized" do
-      counter_name = :"test_gsn_offset_#{System.unique_integer([:positive])}"
       counter = :atomics.new(1, signed: false)
       :atomics.put(counter, 1, 100)
-      :persistent_term.put(counter_name, counter)
-
-      on_exit(fn ->
-        :persistent_term.erase(counter_name)
-      end)
 
       assert {101, 101} = GsnCounter.claim_gsn_range(1, counter)
     end
@@ -75,26 +63,16 @@ defmodule EbbServer.Storage.GsnCounterTest do
     end
   end
 
-  describe "reset/2" do
+  describe "reset/1" do
     test "resets GSN counter to 0" do
       %{counter: counter} = with_isolated_counter()
 
       assert {1, 5} = GsnCounter.claim_gsn_range(5, counter)
       assert {6, 10} = GsnCounter.claim_gsn_range(5, counter)
 
-      :ok = GsnCounter.reset(:not_used, counter)
+      :ok = GsnCounter.reset(counter)
 
       assert {1, 1} = GsnCounter.claim_gsn_range(1, counter)
-    end
-  end
-
-  describe "get_resources/0" do
-    test "returns gsn_counter and gsn_counter_name keys" do
-      resources = GsnCounter.get_resources()
-
-      assert Map.has_key?(resources, :gsn_counter)
-      assert Map.has_key?(resources, :gsn_counter_name)
-      assert is_atom(resources.gsn_counter_name)
     end
   end
 end

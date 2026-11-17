@@ -14,17 +14,14 @@ defmodule EbbServer.Storage.GsnCounter do
   raises the counter, so a Writer restart cannot replay a GSN.
   """
 
-  @default_gsn_counter_name :ebb_gsn_counter
-
   @doc """
   The range is guaranteed to be gap-free and monotonically increasing across
   concurrent calls.
   """
-  @spec claim_gsn_range(pos_integer(), :atomics.atomics() | nil) ::
+  @spec claim_gsn_range(pos_integer(), :atomics.atomics()) ::
           {pos_integer(), pos_integer()}
-  def claim_gsn_range(count, counter \\ nil) when is_integer(count) and count > 0 do
-    counter_ref = counter || :persistent_term.get(@default_gsn_counter_name)
-    gsn_end = :atomics.add_get(counter_ref, 1, count)
+  def claim_gsn_range(count, counter) when is_integer(count) and count > 0 do
+    gsn_end = :atomics.add_get(counter, 1, count)
     gsn_start = gsn_end - count + 1
     {gsn_start, gsn_end}
   end
@@ -48,25 +45,9 @@ defmodule EbbServer.Storage.GsnCounter do
     end
   end
 
-  @spec get_resources() :: %{
-          gsn_counter: :atomics.atomics() | nil,
-          gsn_counter_name: atom()
-        }
-  def get_resources do
-    %{
-      gsn_counter: :persistent_term.get(@default_gsn_counter_name),
-      gsn_counter_name: @default_gsn_counter_name
-    }
-  end
-
-  @spec reset(atom(), :atomics.atomics() | nil) :: :ok
-  def reset(counter_name \\ @default_gsn_counter_name, counter \\ nil) do
-    counter_ref = counter || :persistent_term.get(counter_name, nil)
-
-    if counter_ref do
-      :atomics.put(counter_ref, 1, 0)
-    end
-
+  @spec reset(:atomics.atomics()) :: :ok
+  def reset(counter) do
+    :atomics.put(counter, 1, 0)
     :ok
   end
 end

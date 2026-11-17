@@ -48,13 +48,18 @@ defmodule EbbServer.Storage.Supervisor do
     data_dir = Keyword.get(opts, :data_dir, Application.get_env(:ebb_server, :data_dir, "./data"))
     writer_opts = Keyword.merge(@writer_defaults, Keyword.get(opts, :writer_opts, []))
 
+    # The counter's lifetime is the tree's: `SystemCache` seeds it from the
+    # durable log and the Writer claims from it, including across a Writer-only
+    # restart. Building it here hands both children the same reference.
+    gsn_counter = :atomics.new(1, signed: false)
+
     children = [
       {EbbServer.Storage.RocksDB, data_dir: data_dir},
       {EbbServer.Storage.SQLite, data_dir: data_dir},
-      {EbbServer.Storage.SystemCache, []},
+      {EbbServer.Storage.SystemCache, gsn_counter: gsn_counter},
       {EbbServer.Storage.WatermarkTracker, []},
       {EbbServer.Storage.InFlightActions, []},
-      {EbbServer.Storage.Writer, writer_opts}
+      {EbbServer.Storage.Writer, Keyword.put_new(writer_opts, :gsn_counter, gsn_counter)}
     ]
 
     :ok = await_predecessor(Enum.map(children, fn {module, _opts} -> module end))

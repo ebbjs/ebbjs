@@ -222,7 +222,7 @@ defmodule EbbServer.Sync.FanOutRouterClaimOrderTest do
 
       # Reserve the next GSN without resolving it: the range behind the hole
       # commits but waits, so the frontier must stay put.
-      %{gsn_counter: counter} = GsnCounter.get_resources()
+      counter = :sys.get_state(EbbServer.Storage.Writer).gsn_counter
       hole_gsn = pushed_gsn + 1
       assert {^hole_gsn, ^hole_gsn} = GsnCounter.claim_gsn_range(1, counter)
 

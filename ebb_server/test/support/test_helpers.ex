@@ -216,7 +216,6 @@ defmodule EbbServer.TestHelpers do
   def start_isolated_cache do
     unique_id = System.unique_integer([:positive])
     dirty_set_name = :"ebb_dirty_#{unique_id}"
-    gsn_counter_name = :"ebb_gsn_#{unique_id}"
     gm_table = :"ebb_gm_#{unique_id}"
     gm_by_id_table = :"ebb_gm_by_id_#{unique_id}"
     gm_by_group_table = :"ebb_gm_by_group_#{unique_id}"
@@ -242,7 +241,6 @@ defmodule EbbServer.TestHelpers do
     ifa_table = :"ifa_ids_#{unique_id}"
 
     counter = :atomics.new(1, signed: false)
-    :persistent_term.put(gsn_counter_name, counter)
     :persistent_term.put({DirtyTracker, :dirty_set}, dirty_set_name)
     :persistent_term.put({GrantCache, :grants}, gm_table)
     :persistent_term.put({GrantCache, :grants_by_id}, gm_by_id_table)
@@ -311,7 +309,6 @@ defmodule EbbServer.TestHelpers do
           pid = Process.whereis(name),
           do: safe_stop(pid)
 
-      :persistent_term.erase(gsn_counter_name)
       :persistent_term.erase({DirtyTracker, :dirty_set})
       :persistent_term.erase({GrantCache, :grants})
       :persistent_term.erase({GrantCache, :grants_by_id})
