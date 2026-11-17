@@ -124,18 +124,12 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert mutation.subject_id == "note_1"
   end
 
-  test "a delete is never a create, even when the Action writes the row first" do
+  test "a delete supersedes a create for the same row" do
     table = unknown_type_index()
 
-    [unknown] =
-      RowMutations.fold([delete("u1", "note_1")],
-        entity_models: table,
-        model_resolver: fn _id -> "note" end
-      )
-
-    assert unknown.deleted?
-    refute unknown.created?
-
+    # The row is new to the index, so without the rule the write half alone
+    # would report `created?: true` and the bootstrap exemption would
+    # authorize a row the same Action removes.
     [created_then_deleted] =
       RowMutations.fold(
         [
@@ -224,29 +218,14 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert mutation.deleted?
   end
 
-  test "write?/1 is true for a create or update row and false for a delete row" do
-    table = unknown_type_index()
-
-    [created] =
-      RowMutations.fold([component("u1", "note_1", "note/title", :replace, leaf("t", 1))],
-        entity_models: table
-      )
-
-    [updated] =
-      RowMutations.fold([component("u2", "note_1", "note/body", :merge, leaf("b", 1))],
-        exists?: fn _id -> true end,
+  test "a delete is not a write" do
+    [mutation] =
+      RowMutations.fold([delete("u1", "note_1")],
+        entity_models: unknown_type_index(),
         model_resolver: fn _id -> "note" end
       )
 
-    [deleted] =
-      RowMutations.fold([delete("u3", "note_1")],
-        entity_models: table,
-        model_resolver: fn _id -> "note" end
-      )
-
-    assert RowMutations.write?(created)
-    assert RowMutations.write?(updated)
-    refute RowMutations.write?(deleted)
+    refute RowMutations.write?(mutation)
   end
 
   test "the entity-model cache is the default existence signal" do

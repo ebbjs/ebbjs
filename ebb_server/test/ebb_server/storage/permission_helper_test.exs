@@ -329,12 +329,20 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     test "extracts membership writes into an entity => groups map" do
       mutations = [
         membership_write("eg_1", "todo_1", "g_1"),
-        membership_write("eg_2", "post_1", "g_2", false)
+        membership_write("eg_2", "post_1", "g_2")
       ]
 
       ctx = PermissionHelper.build_intra_action_context(mutations)
 
       assert ctx == %{"todo_1" => ["g_1"], "post_1" => ["g_2"]}
+    end
+
+    # Filing an entity into a second group writes an existing membership row;
+    # that write is part of the Action's membership context just like a create.
+    test "counts a write to an existing membership row" do
+      mutations = [membership_write("eg_1", "todo_1", "g_1", false)]
+
+      assert PermissionHelper.build_intra_action_context(mutations) == %{"todo_1" => ["g_1"]}
     end
 
     test "collects several memberships for the same entity" do
