@@ -1115,13 +1115,16 @@ export class SyncClient<
   }
 
   /**
-   * Read-only permission query (#322): ask the same `<type>.<verb>`
-   * question the write-path pre-check answers, so an app can hide or
-   * disable a control instead of catching {@link PermissionError}.
+   * Read-only permission query (#322): ask the question the write-path
+   * pre-check answers, so an app can hide or disable a control instead of
+   * catching {@link PermissionError}.
    *
-   * The global form asks whether the actor holds the permission in any
-   * of its groups. The per-entity form resolves the entity's group set
-   * and union-matches it. The result is a discriminated union: `denied`
+   * The global form asks whether the actor holds `<subject>.<verb>` in any
+   * of its groups, matching by ancestry: a `note.*` grant also covers
+   * `note/body.update`. The per-entity form names no component, so it
+   * resolves a user row at its model and a platform row at its `ebb/*`
+   * component; a field-only grant therefore reports `denied` there. The
+   * result is a discriminated union: `denied`
    * carries the same {@link PermissionViolation} the write path throws —
    * the missing permission, plus the consulted groups — and `unknown`
    * (no handshake, an unresolvable entity, or an entity with no local

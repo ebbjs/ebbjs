@@ -489,6 +489,7 @@ const subjectRules = (
   groupIds: readonly string[],
   cachedOnly: boolean,
 ): RuleResolution => {
+  if (subjects.length === 0) throw new Error("a write rule needs at least one subject");
   const rules = subjects.map((subject) => ({
     subject,
     verb,
@@ -1156,6 +1157,9 @@ export async function queryActorPermission(
   };
 }
 
+/** The query path names no component, so a user row is checked at its model. */
+const NO_WRITTEN: ReadonlySet<string> = new Set();
+
 /**
  * The per-entity form: resolve the entity's model and group set and apply
  * the same rule table the write path uses. `unknown` covers an id the
@@ -1224,9 +1228,6 @@ export async function queryEntityPermission(
       return assertNever(decision);
   }
 }
-
-/** The query path names no component, so a user row is checked at its model. */
-const NO_WRITTEN: ReadonlySet<string> = new Set();
 
 /**
  * Parse a `"<subject>.<verb>"` permission string into the rule's two parts.

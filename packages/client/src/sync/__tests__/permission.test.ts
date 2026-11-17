@@ -424,7 +424,7 @@ describe("collectPermissionViolations — component subjects", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("authorizes a drop as a write to the component it detaches", async () => {
+  it("denies a drop of a component the grant does not cover", async () => {
     const client = await mkNoteClient(["note/title.*"]);
 
     const error = await client

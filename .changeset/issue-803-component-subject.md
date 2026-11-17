@@ -21,9 +21,10 @@ matches or is `*`:
 
 A user row's create and delete still name no component, so they check the model: `note.create` and
 `note.delete` keep their meaning. A value write checks the component named on the wire, so a
-`note/body` update requires `note/body.update` (satisfied by `note.*`, `note.*`'s model ancestor
-`note.update`, or a `note/body` grant). Every component an Action writes must be covered; an
-Action that writes `note/title` and `note/body` needs a grant for both.
+`note/body` update requires `note/body.update`. `note.*` covers it, and so does a grant whose
+subject is the model (`note.update`), because the model is an ancestor of every component under
+it. Every component an Action writes must be covered; an Action that writes `note/title` and
+`note/body` needs a grant for both.
 
 The platform's four components need no special case: `ebb/grant` is a subject under `ebb`, so
 `ebb.*` covers it. `fullGroupPermissions` is one `<model>.*` wildcard per model instead of one per
