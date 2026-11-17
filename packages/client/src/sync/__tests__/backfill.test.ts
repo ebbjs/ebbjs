@@ -275,6 +275,20 @@ describe("snapshotAction", () => {
       hlc: entity.updated_hlc,
     });
   });
+  it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
+    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
+    const action = snapshotAction(entity);
+
+    expect(action.gsn).toBe(entity.last_gsn);
+    expect(action.hlc).toBe(entity.updated_hlc);
+    const components = action.updates.filter(isComponentUpdate);
+    expect(components.every((update) => update.method === "replace")).toBe(true);
+    expect(
+      Object.fromEntries(
+        components.map((update) => [componentField(update.component), update.data]),
+      ),
+    ).toEqual(entity.data.fields);
+  });
 });
 
 describe("createBackfill", () => {
@@ -432,23 +446,6 @@ describe("createBackfill", () => {
 
     expect(backfill.pending.get()).toEqual([]);
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Hello");
-  });
-});
-
-describe("snapshotAction", () => {
-  it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
-    const action = snapshotAction(entity);
-
-    expect(action.gsn).toBe(entity.last_gsn);
-    expect(action.hlc).toBe(entity.updated_hlc);
-    const components = action.updates.filter(isComponentUpdate);
-    expect(components.every((update) => update.method === "replace")).toBe(true);
-    expect(
-      Object.fromEntries(
-        components.map((update) => [componentField(update.component), update.data]),
-      ),
-    ).toEqual(entity.data.fields);
   });
 });
 

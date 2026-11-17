@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { componentName, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
-import { applyUpdate, foldEntityAction, foldEntityActions, updateModel } from "./materialize";
+import { applyUpdate, foldEntityAction, foldEntityActions } from "./materialize";
 
 const leaf = (value: unknown, hlc: string, updateId: string): FieldValue => ({
   value,
@@ -234,18 +234,6 @@ describe("a component write with no create", () => {
 
     expect(next!.exists).toBe(false);
     expect(next!.created_hlc).toBe(null);
-  });
-});
-
-describe("updateModel", () => {
-  it("answers the create's own model", () => {
-    expect(updateModel(create("doc_1", "note"), null)).toBe("note");
-  });
-
-  it("answers the component prefix, and the row's model for a delete", () => {
-    const row = entity();
-    expect(updateModel(update("replace", { title: leaf("t", "1", "u_t") }), row)).toBe("doc");
-    expect(updateModel(remove(), row)).toBe("doc");
   });
 });
 

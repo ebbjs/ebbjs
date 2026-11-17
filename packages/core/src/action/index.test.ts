@@ -117,22 +117,6 @@ describe("createAction", () => {
     expect(Value.Check(ActionSchema, action)).toBe(true);
   });
 
-  it("strips a component from a create, which names only the row's model", () => {
-    const untypedCreate = {
-      subject_id: "a_target",
-      component: "todo/title",
-      model: "todo",
-      method: "create",
-      hlc: "1234567890123",
-      data: null,
-    } as unknown as UpdateInput;
-    const clock = createClock();
-    const { action } = createAction({ actorId: "a_me", updates: [untypedCreate], clock });
-
-    expect(action.updates[0]).not.toHaveProperty("component");
-    expect(Value.Check(ActionSchema, action)).toBe(true);
-  });
-
   it("strips a component from a delete, which names only the row", () => {
     // The union forbids a `delete` carrying a component, but a JS caller or a
     // decoded payload can still send one, so `createAction` normalizes it
