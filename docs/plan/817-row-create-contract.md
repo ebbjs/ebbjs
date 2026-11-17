@@ -112,6 +112,13 @@ export const isRowCreate = (update: Update): update is RowCreateUpdate;
 
 `updateModel(update, entity)` answers `update.model` for a create.
 
+A create also makes its row **present** in the replica, independent of component residency:
+a row whose components are declared lazy (an on-demand document body) is a live row with
+no fields held, and the replica's stats read that as presence (`byModel`) with residency
+reported separately (`heldByModel`, `nonResidentComponents`). The alternative — letting the
+create drag unheld components in, or hiding the row until a component is held — would make
+`get(id)` answer `null` for a row the server says exists, which §6 forbids.
+
 ### 3.2 Replica record
 
 `REPLICA_RECORD_FORMAT` bumps `5 → 6`; a record of another format reads as absent and the
@@ -253,6 +260,13 @@ finds nothing.
   delivered write was a component write and whose base arrived through backfill.
 - A duplicate create (replay, catch-up plus seed, retried Action) changes nothing.
 - The server refuses a component write for a row it has no create for.
+
+The acceptance items live at: `packages/client/src/__tests__/integration/row-create.test.ts`
+(the real-server round trips, catch-up, listing seed, drop-last-component, `created_hlc`
+through backfill, duplicate create, server refusal), `packages/storage/src/internal/materialize.test.ts`
+and `packages/storage/src/testing/entity-store.test-suite.ts` (the fold, both adapters),
+`packages/client/src/sync/__tests__/{backfill,group-listing}.test.ts` (the synthetic bases),
+and `ebb_server/test/integration/row_create_integration_test.exs` (the server half).
 
 ## 7. Verification
 
