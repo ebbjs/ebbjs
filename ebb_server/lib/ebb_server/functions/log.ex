@@ -36,6 +36,15 @@ defmodule EbbServer.Functions.Log do
   @type budget :: %{lines: non_neg_integer(), bytes: non_neg_integer(), truncated: boolean()}
   @type meta :: %{name: String.t(), version: String.t(), invocation_id: String.t()}
 
+  @doc """
+  Every level string `emit/6` accepts, sorted.
+
+  `warning` is Logger's spelling of `warn` and `log` is `console.log`'s level;
+  both map to a Logger level here. No TypeScript peer emits `warning`.
+  """
+  @spec levels() :: [level()]
+  def levels, do: @levels |> Map.keys() |> Enum.sort()
+
   @spec new_budget() :: budget()
   def new_budget, do: %{lines: 0, bytes: 0, truncated: false}
 

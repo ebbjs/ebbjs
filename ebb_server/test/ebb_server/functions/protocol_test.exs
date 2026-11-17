@@ -1,6 +1,7 @@
 defmodule EbbServer.Functions.ProtocolTest do
   use ExUnit.Case, async: true
 
+  alias EbbServer.Functions.Log
   alias EbbServer.Functions.Protocol
   alias EbbServer.TestFunctions
 
@@ -169,6 +170,27 @@ defmodule EbbServer.Functions.ProtocolTest do
 
       assert Protocol.ready(ready["pid"], ready["runner_version"], ready["protocol_version"]) ==
                ready
+    end
+
+    test "the frame bound and protocol version match the TypeScript codec" do
+      constants = TestFunctions.load_constants!()
+
+      assert Protocol.max_frame_bytes() == constants["max_frame_bytes"]
+      assert Protocol.protocol_version() == constants["protocol_version"]
+    end
+
+    test "the result kinds are the ones the host maps to a status" do
+      constants = TestFunctions.load_constants!()
+
+      assert Enum.sort(Protocol.result_kinds()) == Enum.sort(constants["result_kinds"])
+    end
+
+    test "the log levels are this peer's and cover the union both peers accept" do
+      constants = TestFunctions.load_constants!()
+      %{"elixir" => elixir, "typescript" => typescript} = constants["log_levels_by_peer"]
+
+      assert Log.levels() == elixir
+      assert Enum.sort(Enum.uniq(elixir ++ typescript)) == constants["log_levels"]
     end
   end
 

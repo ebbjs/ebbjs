@@ -18,6 +18,8 @@ import {
   decodeFrames,
   ready,
   PROTOCOL_VERSION,
+  RESULT_KIND_HANDLER_ERROR,
+  RESULT_KIND_HOST_CALL_LIMIT,
   type DecodeError,
   type Frame,
   type InvokeFrame,
@@ -87,7 +89,7 @@ export function createSession(options: SessionOptions): Session {
     // process ends, so it fails with a message instead of a dead socket.
     if (current !== null && !settled) {
       settled = true;
-      send(boundedResultFrame({ ok: false, kind: "handler_error", message }));
+      send(boundedResultFrame({ ok: false, kind: RESULT_KIND_HANDLER_ERROR, message }));
     }
 
     fatal = true;
@@ -209,7 +211,8 @@ export function createSession(options: SessionOptions): Session {
 function failureOutcome(error: unknown): ResultOutcome {
   return {
     ok: false,
-    kind: error instanceof HostCallLimitError ? "host_call_limit" : "handler_error",
+    kind:
+      error instanceof HostCallLimitError ? RESULT_KIND_HOST_CALL_LIMIT : RESULT_KIND_HANDLER_ERROR,
     message: messageOf(error),
   };
 }

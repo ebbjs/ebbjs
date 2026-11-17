@@ -22,6 +22,8 @@ defmodule EbbServer.Functions.Protocol do
   @max_frame_bytes 1_048_576
   @protocol_version 1
 
+  @result_kinds ["handler_error", "host_call_limit", "output_too_large"]
+
   @type frame :: %{required(String.t()) => term()}
   @type reason ::
           :empty_frame
@@ -34,6 +36,15 @@ defmodule EbbServer.Functions.Protocol do
 
   @spec protocol_version() :: pos_integer()
   def protocol_version, do: @protocol_version
+
+  @doc """
+  The result kinds the host maps to a status; any other kind is a runner error.
+
+  These are the `kind` values `EbbServer.Functions.Invocation` pattern-matches
+  when it turns a failed result into an HTTP error.
+  """
+  @spec result_kinds() :: [String.t()]
+  def result_kinds, do: @result_kinds
 
   @spec compatible_version?(term()) :: boolean()
   def compatible_version?(version), do: version == @protocol_version

@@ -95,6 +95,26 @@ export interface ResultOkFrame {
   readonly [field: string]: unknown;
 }
 
+/**
+ * The result kinds the host's error taxonomy maps to a status.
+ *
+ * `kind` stays an open string on the frame: an unknown kind is a runner error,
+ * not a decode failure. These are the kinds both peers know by name.
+ */
+export const RESULT_KIND_HANDLER_ERROR = "handler_error";
+export const RESULT_KIND_HOST_CALL_LIMIT = "host_call_limit";
+export const RESULT_KIND_OUTPUT_TOO_LARGE = "output_too_large";
+
+/** Every result kind the host knows by name. */
+export const RESULT_KINDS = [
+  RESULT_KIND_HANDLER_ERROR,
+  RESULT_KIND_HOST_CALL_LIMIT,
+  RESULT_KIND_OUTPUT_TOO_LARGE,
+] as const;
+
+/** A result kind the host knows by name. */
+export type ResultKind = (typeof RESULT_KINDS)[number];
+
 /** Runner → host: the invocation failed with a kind and a message. */
 export interface ResultErrorFrame {
   readonly type: "result";
@@ -107,8 +127,17 @@ export interface ResultErrorFrame {
 /** Runner → host: how the invocation ended. `ok` splits the two shapes. */
 export type ResultFrame = ResultOkFrame | ResultErrorFrame;
 
-/** The levels a `log` frame carries. `log` is `console.log`'s level. */
-export type LogLevel = "debug" | "info" | "log" | "warn" | "error";
+/**
+ * The levels a `log` frame carries. `log` is `console.log`'s level.
+ *
+ * The host also accepts `warning`, Logger's spelling of `warn`, which no
+ * TypeScript peer emits; `fixtures/functions/frames/constants.json` records the
+ * union both sides agree on.
+ */
+export const LOG_LEVELS = ["debug", "info", "log", "warn", "error"] as const;
+
+/** A level a `log` frame carries. */
+export type LogLevel = (typeof LOG_LEVELS)[number];
 
 /** Runner → host: one log line from the invocation. Fire-and-forget. */
 export interface LogFrame {

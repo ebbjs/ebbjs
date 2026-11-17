@@ -7,7 +7,13 @@
  * host a frame it would refuse from its length prefix.
  */
 
-import { encodeFrame, MAX_FRAME_BYTES, result, type ResultFrame } from "@ebbjs/functions-protocol";
+import {
+  encodeFrame,
+  MAX_FRAME_BYTES,
+  RESULT_KIND_OUTPUT_TOO_LARGE,
+  result,
+  type ResultFrame,
+} from "@ebbjs/functions-protocol";
 
 /** What one invocation ended as, before it is framed. */
 export type ResultOutcome =
@@ -36,7 +42,7 @@ export function boundedResultFrame(
 
     return result({
       ok: false,
-      kind: "output_too_large",
+      kind: RESULT_KIND_OUTPUT_TOO_LARGE,
       message:
         `invocation output exceeds the ${bound}-byte result frame limit; ` +
         "return less data, or write it as an entity and return an id",
