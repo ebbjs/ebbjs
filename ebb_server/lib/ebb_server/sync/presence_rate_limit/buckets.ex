@@ -16,6 +16,7 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
   use GenServer
 
   alias EbbServer.Sync.PresenceRateLimit
+  alias EbbServer.Sync.Timing
 
   @default_table :ebb_presence_rate_limit_buckets
   @min_idle_ms 60_000
@@ -46,7 +47,7 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
     if refilled >= 1000 do
       {:ok, {refilled - 1000, now_ms}}
     else
-      {:limited, {refilled, now_ms}, ceil_div(1000 - refilled, per_second)}
+      {:limited, {refilled, now_ms}, Timing.ceil_div(1000 - refilled, per_second)}
     end
   end
 
@@ -87,13 +88,10 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
 
   @spec idle_after_ms(rate()) :: pos_integer()
   def idle_after_ms({per_second, burst}) do
-    max(ceil_div(burst * 1000, per_second), @min_idle_ms)
+    max(Timing.ceil_div(burst * 1000, per_second), @min_idle_ms)
   end
 
   defp row(actor_id, {tokens, updated_at}), do: {actor_id, tokens, updated_at}
-
-  @spec ceil_div(non_neg_integer(), pos_integer()) :: non_neg_integer()
-  def ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 
   @impl true
   def init(opts) do
@@ -124,14 +122,12 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
 
   @impl true
   def handle_info(:sweep, state) do
-    sweep(now_ms(), state.idle_after_ms, state.table)
+    sweep(Timing.now_ms(), state.idle_after_ms, state.table)
     schedule_sweep(state.sweep_interval_ms)
     {:noreply, state}
   end
 
   defp schedule_sweep(interval_ms), do: Process.send_after(self(), :sweep, interval_ms)
-
-  defp now_ms, do: System.monotonic_time(:millisecond)
 
   @impl true
   def terminate(_reason, state) do

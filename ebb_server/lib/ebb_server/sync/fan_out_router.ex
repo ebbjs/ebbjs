@@ -41,6 +41,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   alias EbbServer.Sync.{FanOutFrontier, GroupDynamicSupervisor, GroupRegistry, GroupServer}
   alias EbbServer.Sync.FanOutRouter.{Frames, GroupResolution, Plan, Recovery}
   alias EbbServer.Sync.SSEConnection
+  alias EbbServer.Sync.Timing
   alias EbbServer.Telemetry
 
   @default_conn_sample_rate 100
@@ -324,7 +325,7 @@ defmodule EbbServer.Sync.FanOutRouter do
 
       # A recovered range has no commit time and no receive time, so it
       # emits neither the queue nor the dwell hop.
-      Telemetry.fanout_hop(:router_queue, span(committed_at, received_at), nil)
+      Telemetry.fanout_hop(:router_queue, Timing.span(committed_at, received_at), nil)
       emit_dwell(received_at, released_at, range, just_received)
 
       push_gsn_range(from, to, state.pending_groups, state.actor_connections, %{
@@ -350,7 +351,7 @@ defmodule EbbServer.Sync.FanOutRouter do
   # the immediate path would report a ~0 sample for the same `handle_info`.
   defp emit_dwell(received_at, released_at, range, just_received)
        when range != just_received do
-    case span(received_at, released_at) do
+    case Timing.span(received_at, released_at) do
       duration when is_integer(duration) and duration > 0 ->
         Telemetry.fanout_hop(:router_dwell, duration, nil)
 
@@ -360,9 +361,6 @@ defmodule EbbServer.Sync.FanOutRouter do
   end
 
   defp emit_dwell(_received_at, _released_at, _range, _just_received), do: :ok
-
-  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
-  defp span(_from, _to), do: nil
 
   defp drop_groups(pending_groups, {from_gsn, to_gsn}) do
     Enum.reduce(from_gsn..to_gsn, pending_groups, &Map.delete(&2, &1))

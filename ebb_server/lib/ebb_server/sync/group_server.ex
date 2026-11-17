@@ -9,6 +9,7 @@ defmodule EbbServer.Sync.GroupServer do
   use GenServer, restart: :transient
 
   alias EbbServer.Sync.GroupRegistry
+  alias EbbServer.Sync.Timing
   alias EbbServer.Telemetry
 
   @type frame_batch :: [binary()]
@@ -76,7 +77,7 @@ defmodule EbbServer.Sync.GroupServer do
     committed_at = Map.get(meta, :committed_at)
     sample_rate = Map.get(meta, :conn_sample_rate, @default_conn_sample_rate)
 
-    Telemetry.fanout_hop(:group_queue, span(cast_at, received_at), state.group_id)
+    Telemetry.fanout_hop(:group_queue, Timing.span(cast_at, received_at), state.group_id)
 
     # One frame per Action, and every subscriber of this group gets the
     # same bytes, so the batch is flattened once and that binary is shared.
@@ -87,7 +88,7 @@ defmodule EbbServer.Sync.GroupServer do
 
     Telemetry.fanout_hop(
       :group_encode,
-      span(encode_started_at, encode_finished_at),
+      Timing.span(encode_started_at, encode_finished_at),
       state.group_id
     )
 
@@ -108,7 +109,7 @@ defmodule EbbServer.Sync.GroupServer do
 
     Telemetry.fanout_hop(
       :group_cast,
-      span(encode_finished_at, System.monotonic_time()),
+      Timing.span(encode_finished_at, System.monotonic_time()),
       state.group_id
     )
 
@@ -187,7 +188,4 @@ defmodule EbbServer.Sync.GroupServer do
   end
 
   defp sample_delivery?(_rate, _index, _offset), do: true
-
-  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
-  defp span(_from, _to), do: nil
 end
