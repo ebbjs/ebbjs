@@ -1706,8 +1706,14 @@ export class SyncClient<
    * over every Update before enqueuing, and the server remains the
    * trust boundary.
    */
-  buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
-    return buildRelationshipWriteFree(this.registry, opts);
+  /**
+   * Build a link write. The client owns the clock and the id space, so the
+   * caller supplies only the row it is writing.
+   */
+  buildRelationshipWrite(
+    opts: Omit<BuildRelationshipWriteOptions, "hlc">,
+  ): BuildRelationshipWriteResult {
+    return buildRelationshipWriteFree(this.registry, { hlc: () => this.freshHlc(), ...opts });
   }
 
   // -------------------------------------------------------------------------
