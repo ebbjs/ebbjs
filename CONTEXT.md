@@ -312,7 +312,7 @@ lifecycle stamps. Say _entity_ about the domain, _row_ about storage.
 _Avoid_: record, document
 
 **Committed model**:
-The model an entity id is known by, set by its first write. Every later write
+The model an entity id is known by, set by the row's `create`. Every later write
 must name a component that model declares, so an id cannot be re-filed under
 another model's permissions.
 _Avoid_: wire type, declared type, committed type, relabel, retype

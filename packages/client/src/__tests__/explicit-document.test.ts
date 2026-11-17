@@ -12,6 +12,7 @@ import {
   isComponentUpdate,
   isFieldMap,
   makeHlc,
+  updateModel,
   type Action,
   type FieldValue,
   type Update,
@@ -32,7 +33,7 @@ import {
 } from "@ebbjs/schema";
 import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
-import { callApplyAction, jsonResponse, updateModel, waitFor } from "../sync/test-utils";
+import { callApplyAction, jsonResponse, waitFor } from "../sync/test-utils";
 
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(

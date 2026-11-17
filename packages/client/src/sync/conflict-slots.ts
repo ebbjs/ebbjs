@@ -17,10 +17,10 @@
  */
 
 import {
-  componentModel,
   isComponentUpdate,
   isFieldMap,
   mergeFieldValue,
+  updateModel,
   type Action,
   type FieldValue,
   type Update,
@@ -70,17 +70,6 @@ export interface PendingWrite {
 const isDeleteUpdate = (update: Update): update is Extract<Update, { method: "delete" }> =>
   update.method === "delete";
 
-/**
- * The model an Update commits under: the create's own model, the component's
- * prefix, or `""` for a delete, which names none.
- */
-const updateModel = (update: Update): string =>
-  update.method === "create"
-    ? update.model
-    : isComponentUpdate(update)
-      ? componentModel(update.component)
-      : "";
-
 /** Fold one component Update into a per-subject component map. */
 const mergeUpdateComponents = (components: Map<string, FieldValue>, update: Update): void => {
   if (!isComponentUpdate(update)) return;
@@ -99,7 +88,7 @@ const mergeUpdateComponents = (components: Map<string, FieldValue>, update: Upda
 const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void => {
   for (const update of action.updates) {
     const current = subjects.get(update.subject_id) ?? {
-      model: updateModel(update),
+      model: updateModel(update) ?? "",
       deleted: false,
       components: new Map<string, FieldValue>(),
     };
@@ -110,7 +99,7 @@ const foldAction = (subjects: Map<string, InboundSubject>, action: Action): void
     const components = new Map(current.components);
     mergeUpdateComponents(components, update);
     subjects.set(update.subject_id, {
-      model: updateModel(update),
+      model: updateModel(update) ?? "",
       deleted: current.deleted,
       components,
     });
@@ -149,7 +138,7 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
     const components = new Map(current?.components ?? []);
     mergeUpdateComponents(components, update);
     writes.set(update.subject_id, {
-      model: current?.model ?? updateModel(update),
+      model: current?.model ?? updateModel(update) ?? "",
       components,
     });
   }

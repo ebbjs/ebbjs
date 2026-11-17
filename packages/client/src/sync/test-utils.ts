@@ -19,7 +19,6 @@
  */
 import { vi, type MockInstance } from "vitest";
 import {
-  componentModel,
   componentName,
   ebbComponent,
   EBB_COMPONENT_KINDS,
@@ -28,8 +27,8 @@ import {
   isComponentUpdate,
   isEbbComponent,
   isFieldMap,
-  isRowCreate,
   makeHlc,
+  updateModel,
   type Action,
   type EbbComponentKind,
   type Entity,
@@ -239,13 +238,6 @@ export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
     out[update.component.slice(update.component.indexOf("/") + 1)] = value;
   }
   return out;
-};
-
-/** The model an Update commits under; `undefined` for a delete, which names none. */
-export const updateModel = (update: Update): string | undefined => {
-  if (update.method === "delete") return undefined;
-  if (isRowCreate(update)) return update.model;
-  return componentModel(update.component);
 };
 
 /** A JSON `Response` carrying `body` and optional extra headers. */

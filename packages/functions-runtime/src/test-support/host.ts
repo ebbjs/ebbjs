@@ -4,10 +4,9 @@
  */
 
 import {
-  componentModel,
   isComponentUpdate,
   isFieldMap,
-  isRowCreate,
+  updateModel,
   type ComponentUpdate,
   type FieldValue,
   type Update,
@@ -140,11 +139,7 @@ export const testContext = (host: FakeHost, options: TestContextOptions = {}): C
 
 /** The model each Update commits under; `undefined` for a delete. */
 export const modelsOf = (updates: readonly Update[]): readonly (string | undefined)[] =>
-  updates.map((update) => {
-    if (isRowCreate(update)) return update.model;
-    if (isComponentUpdate(update)) return componentModel(update.component);
-    return undefined;
-  });
+  updates.map(updateModel);
 
 /** The Updates of one model, grouped into one list per subject row. */
 export const rowsOf = (
@@ -153,12 +148,7 @@ export const rowsOf = (
 ): readonly (readonly Update[])[] => {
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
-    const updateModel = isRowCreate(update)
-      ? update.model
-      : isComponentUpdate(update)
-        ? componentModel(update.component)
-        : undefined;
-    if (updateModel !== model) continue;
+    if (updateModel(update) !== model) continue;
     const row = bySubject.get(update.subject_id);
     if (row === undefined) bySubject.set(update.subject_id, [update]);
     else row.push(update);

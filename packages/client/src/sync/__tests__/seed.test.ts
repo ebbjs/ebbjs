@@ -5,10 +5,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, isComponentUpdate, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, updateModel, type Action } from "@ebbjs/core";
 
 import { createClient } from "../client";
-import { updateModel } from "../test-utils";
 import type { Rejection } from "../types";
 import { SeedRejectedError, type SeedData } from "@ebbjs/core/seed";
 

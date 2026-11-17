@@ -5,6 +5,7 @@ import {
   isComponentUpdate,
   latestHlc,
   mergeFieldValue,
+  updateModel as baseUpdateModel,
 } from "@ebbjs/core";
 
 import { adoptMapFields, mergeResidentFieldValue, toWireMapFields } from "./map-field";
@@ -24,19 +25,12 @@ export type ComponentUpdate =
   | { readonly field: string; readonly method: "drop"; readonly value: null };
 
 /**
- * The model an Update commits under: the create's own model, the component
- * prefix, or the row's model for a delete.
+ * The model an Update commits under, as delivered to `entity`. A delete names
+ * no model of its own, so it commits under the model the row was delivered
+ * under; every other Update answers through the shared definition.
  */
-export const updateModel = (update: Update, entity: Entity | null): string => {
-  switch (update.method) {
-    case "create":
-      return update.model;
-    case "delete":
-      return entity?.model ?? "";
-    default:
-      return componentModel(update.component);
-  }
-};
+export const updateModel = (update: Update, entity: Entity | null): string =>
+  baseUpdateModel(update) ?? entity?.model ?? "";
 
 /**
  * Project one wire Update to the component write it carries. A `create` or a

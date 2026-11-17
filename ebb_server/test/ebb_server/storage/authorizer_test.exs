@@ -2535,20 +2535,31 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "an existing group re-put by a member with group.update still succeeds" do
+    test "an existing group re-put by a member holding ebb/group.create still succeeds" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_entity_model(tables, "g_1", "group")
+      # A platform row commits under `ebb`, the model its create names.
+      put_entity_model(tables, "g_1", "ebb")
+      put_grant(tables, "g_1", ["ebb/group.create", "ebb/group.update"])
+
+      # A committed group's re-create is an ordinary write against the
+      # permission table: the bootstrap exemption covers only a group the
+      # existence index does not already know.
+      assert_accepted(Authorizer.authorize([build_action(group_put("g_1"))], "a_1", ctx))
+    end
+
+    test "an existing group's create is not bootstrap-exempt" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_model(tables, "g_1", "ebb")
       put_grant(tables, "g_1", ["ebb/group.update"])
 
-      # An existing group is re-written by a component update, not a create.
-      update =
-        component_update("g_1_patch", "g_1", "ebb/group", :replace, %{
-          "value" => %{"name" => "Test Group"}
-        })
-
-      assert_accepted(Authorizer.authorize([build_action([update])], "a_1", ctx))
+      assert_rejected(
+        Authorizer.authorize([build_action(group_put("g_1"))], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "filing an existing entity into a group the actor really belongs to still works" do

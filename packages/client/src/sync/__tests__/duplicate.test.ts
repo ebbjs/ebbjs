@@ -8,7 +8,14 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, isComponentUpdate, makeHlc, type Action, type Entity } from "@ebbjs/core";
+import {
+  decodeSync,
+  isComponentUpdate,
+  makeHlc,
+  updateModel,
+  type Action,
+  type Entity,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -18,7 +25,7 @@ import { defineAction } from "../../schema/action";
 import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
-import { jsonResponse, openSseResponse, platformEntity, updateModel } from "../test-utils";
+import { jsonResponse, openSseResponse, platformEntity } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),

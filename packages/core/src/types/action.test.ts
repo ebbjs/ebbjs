@@ -10,6 +10,7 @@ import {
   FieldValueSchema,
   isComponentUpdate,
   isRowCreate,
+  updateModel,
   updateComponentValue,
   type Update,
 } from "./action";
@@ -355,6 +356,12 @@ describe("row-scoped and component-scoped updates", () => {
   it("updateComponentValue answers only for a written component", () => {
     expect(updateComponentValue(merge)).toEqual(leaf);
     for (const update of [drop, create, del]) expect(updateComponentValue(update)).toBeUndefined();
+  });
+
+  it("updateModel answers the create's own model, the component prefix, or nothing", () => {
+    expect(updateModel(create)).toBe("todo");
+    for (const update of [merge, drop]) expect(updateModel(update)).toBe("todo");
+    expect(updateModel(del)).toBeUndefined();
   });
 });
 

@@ -322,6 +322,44 @@ defmodule EbbServer.ActionExportTest do
 
       assert {%{count: 2}, %{}} = await_event(ref, [:ebb, :action_export, :filtered])
     end
+
+    test "keeps a create whose row survives a partial component exclusion", ctx do
+      write(
+        [
+          validated_action(%{
+            id: "act_partial",
+            updates: [
+              validated_create("note_1", "note"),
+              validated_component("note_1", "note/title", %{
+                "value" => "A title",
+                "hlc" => generate_hlc()
+              }),
+              validated_component("note_1", "note/draft", %{
+                "value" => "an unpublished draft",
+                "hlc" => generate_hlc()
+              })
+            ]
+          })
+        ],
+        ctx.writer_name
+      )
+
+      test_pid = self()
+
+      %{name: name} =
+        start_exporter(ctx,
+          excluded_components: ["note/draft"],
+          on_action: fn action -> send(test_pid, {:exported, action}) end
+        )
+
+      assert_receive {:exported, action}, 2_000
+
+      assert Enum.map(action["updates"], & &1["method"]) == ["create", "replace"]
+      assert Enum.map(action["updates"], & &1["component"]) == [nil, "note/title"]
+
+      refute_receive {:exported, _action}, 200
+      assert wait_until(fn -> ActionExport.cursor(name) == 1 end)
+    end
   end
 
   describe "cursor resume" do

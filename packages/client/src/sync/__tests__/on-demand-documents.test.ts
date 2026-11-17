@@ -12,7 +12,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  decodeSync,
+  makeHlc,
+  updateModel,
+  type Action,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -32,7 +39,7 @@ import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, jsonResponse, rowComponents, updateModel, waitFor } from "../test-utils";
+import { callApplyAction, jsonResponse, rowComponents, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;

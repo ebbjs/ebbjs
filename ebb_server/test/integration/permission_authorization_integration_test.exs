@@ -1242,16 +1242,22 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => put_id,
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" => List.flatten([link_update(edge, "replace", new_id, "col_x", hlc)])
+        "updates" =>
+          List.flatten([
+            create_update("upd_create_#{Nanoid.generate()}", edge, "ebb", hlc),
+            link_update(edge, "replace", new_id, "col_x", hlc)
+          ])
       }
 
       assert %{"rejected" => []} = submit(put, "owner")
 
-      # The link is one atomic Update, scoped to the new source's group; it
-      # does not reach the old source's group.
+      # What a moving edge actually sends: the create for its row and the one
+      # atomic link component. Both are scoped to the new source's group and
+      # neither reaches the old source's group.
       updates = action_updates("g_new", "owner", put_id)
-      assert length(updates) == 1
-      assert Enum.all?(updates, &(&1["subject_id"] == edge and &1["method"] == "replace"))
+      assert length(updates) == 2
+      assert updates |> Enum.map(& &1["method"]) |> Enum.sort() == ["create", "replace"]
+      assert Enum.all?(updates, &(&1["subject_id"] == edge))
       assert action_updates("g_victim", "owner", put_id) == []
     end
   end

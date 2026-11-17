@@ -87,9 +87,9 @@ defmodule EbbServer.Storage.Component do
   @doc """
   Whether the method carries a component value.
 
-  `merge` and `replace` are the two writes at a field; `create` and the two
-  row-scoped methods (`drop` detaches one component, `delete` tombstones the
-  row) carry no component value.
+  Only `merge` and `replace` write a field and so carry a value. `create`,
+  `drop` and `delete` carry none: `create` states the row, `drop` detaches
+  one component, `delete` tombstones the row.
   """
   @spec value_method?(term()) :: boolean()
   def value_method?(method), do: method in @value_methods

@@ -15,7 +15,7 @@
  *   4. `reset` — clear all state
  */
 import "fake-indexeddb/auto";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "../memory/memory-adapter";
 import { createIndexedDBAdapter } from "../indexeddb/indexeddb-adapter";
 import type { StorageAdapter } from "../types/storage-adapter";
@@ -40,25 +40,36 @@ const factories: readonly AdapterFactory[] = [
 const ACTIONS = 1000;
 const ENTITIES_PER_MODEL = 100;
 
-const buildAction = (id: number, entityId: string, gsn: number): Action => ({
-  id: `a_${id}`,
-  actor_id: "a_user1",
-  hlc: makeHlc(1_700_000_000_000 + id),
-  gsn,
-  updates: [
-    {
-      id: `u_${id}`,
+/** The first pass over the entities opens each row; later passes write on it. */
+const opensRow = (id: number): boolean => id < ENTITIES_PER_MODEL;
+
+const buildAction = (id: number, entityId: string, gsn: number): Action => {
+  const hlc = makeHlc(1_700_000_000_000 + id);
+  const updates: Update[] = [];
+
+  // A row exists because its create was folded; the component write alone
+  // materializes a placeholder, which is not the wire that ships.
+  if (opensRow(id)) {
+    updates.push({
+      id: `u_${id}_create`,
       subject_id: entityId,
-      component: "todo/title",
-      method: "replace",
-      data: {
-        value: `Entity ${id}`,
-        update_id: `u_${id}`,
-        hlc: makeHlc(1_700_000_000_000 + id),
-      },
-    },
-  ],
-});
+      model: "todo",
+      method: "create",
+      hlc,
+      data: null,
+    });
+  }
+
+  updates.push({
+    id: `u_${id}`,
+    subject_id: entityId,
+    component: "todo/title",
+    method: "replace",
+    data: { value: `Entity ${id}`, update_id: `u_${id}`, hlc },
+  });
+
+  return { id: `a_${id}`, actor_id: "a_user1", hlc, gsn, updates };
+};
 
 interface TimedResult {
   ms: number;
@@ -145,7 +156,7 @@ export const runBenchmarks = async (): Promise<string> => {
   const lines = [
     "# Storage adapter benchmark",
     "",
-    `Workload: ${ACTIONS} actions × ${ENTITIES_PER_MODEL} entities of model "todo".`,
+    `Workload: ${ACTIONS} actions × ${ENTITIES_PER_MODEL} entities of model "todo", each row opened by its create.`,
     "Each `get` materializes one entity; each `query` materializes the full type.",
     "",
     formatHeader(),

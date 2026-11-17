@@ -12,6 +12,7 @@
 
 import {
   componentField,
+  componentModel,
   ebbComponentField,
   ebbComponentKind,
   generateId,
@@ -27,7 +28,6 @@ import type { EntityResponse } from "@ebbjs/client";
 import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 import {
   createHandle,
-  foldSubjects,
   normalizeGroupIds,
   operationCallFor,
   requireRelationship,
@@ -219,11 +219,14 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const rowValues = new Map<string, Record<string, unknown>>();
 
   /**
-   * The model each buffered subject commits under, folded by the shared
-   * subject fold: the row's create names it, and a component write speaks for
-   * a row only until that create is seen.
+   * The model each buffered subject commits under: the row's create names
+   * it, and a component write speaks for a row only until that create is
+   * seen. Folded in `indexWrite`, so an overlay read is one map lookup.
    */
-  const modelOf = (id: string): string | undefined => foldSubjects(updates).get(id)?.model;
+  const models = new Map<string, string>();
+  const createdSubjects = new Set<string>();
+
+  const modelOf = (id: string): string | undefined => models.get(id);
 
   /** Fold one component Update into the subject's plain values. */
   const foldRow = (update: Update): Record<string, unknown> | undefined => {
@@ -244,6 +247,14 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
    */
   const indexWrite = (update: Update): void => {
     const id = update.subject_id;
+
+    if (isComponentUpdate(update)) {
+      if (!createdSubjects.has(id)) models.set(id, componentModel(update.component));
+    } else if (update.method === "create") {
+      models.set(id, update.model);
+      createdSubjects.add(id);
+    }
+
     if (update.method === "delete") {
       const kind = rowKinds.get(id);
       rowKinds.delete(id);

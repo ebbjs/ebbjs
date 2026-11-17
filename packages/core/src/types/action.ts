@@ -279,6 +279,16 @@ export const isComponentUpdate = (update: Update): update is ComponentUpdate =>
 export const isRowCreate = (update: Update): update is RowCreate => update.method === "create";
 
 /**
+ * The model an Update commits under. A create names its own model; a component
+ * Update speaks the model in its `<model>/<field>` prefix; a delete names none
+ * and belongs to the row it tombstones. The one definition every caller folds.
+ */
+export const updateModel = (update: Update): string | undefined => {
+  if (isRowCreate(update)) return update.model;
+  return isComponentUpdate(update) ? componentModel(update.component) : undefined;
+};
+
+/**
  * The component value an Update carries; `undefined` for `create`, `drop`, and
  * `delete`, none of which names a component value.
  */

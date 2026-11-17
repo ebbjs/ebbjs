@@ -8,14 +8,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, isComponentUpdate, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, updateModel, type Action } from "@ebbjs/core";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { createClient } from "../client";
-import { updateModel } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;

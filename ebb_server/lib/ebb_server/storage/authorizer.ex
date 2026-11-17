@@ -2,8 +2,8 @@ defmodule EbbServer.Storage.Authorizer do
   @moduledoc """
   Authorizes validated actions against the #121 permission table.
 
-  The wire names one component per Update, but every rule here is a rule
-  about a row, so authorization runs against the Action's folded row
+  The wire names one component or the row per Update, but every rule here is a
+  rule about a row, so authorization runs against the Action's folded row
   mutations (`EbbServer.Storage.RowMutations`). The first failure rejects
   that Action. Authorization is per-Action: a rejected Action is reported
   beside its accepted siblings instead of failing the batch (#469). Only
