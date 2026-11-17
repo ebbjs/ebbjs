@@ -94,15 +94,6 @@ defmodule EbbServer.Storage.PermissionChecker do
     %{action_id: action.id, reason: reason, details: details}
   end
 
-  @spec validate_structure(raw_action()) :: :ok | {:error, String.t(), String.t()}
-  defdelegate validate_structure(action), to: ActionValidator
-
-  @spec validate_actor(raw_action(), String.t()) :: :ok | {:error, String.t(), String.t()}
-  defdelegate validate_actor(action, actor_id), to: ActionValidator
-
-  @spec validate_hlc(raw_action(), keyword()) :: :ok | {:error, String.t(), String.t()}
-  defdelegate validate_hlc(action, opts \\ []), to: ActionValidator
-
   @spec authorize_updates(raw_action(), String.t(), keyword()) ::
           :ok | {:error, String.t(), String.t()}
   def authorize_updates(action, actor_id, opts \\ []) do

@@ -34,9 +34,6 @@ defmodule EbbServer.Functions.Stats do
   ]
   @pool_metrics [:idle, :busy, :queued, :workers, :spawn_failures, :kills, :respawning]
 
-  @spec table() :: atom()
-  def table, do: @table
-
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -110,11 +107,6 @@ defmodule EbbServer.Functions.Stats do
     end)
 
     :ok
-  end
-
-  @spec bump_pool(atom(), integer()) :: :ok
-  def bump_pool(metric, amount \\ 1) when metric in @pool_metrics do
-    increment({:pool, metric}, amount)
   end
 
   @doc """
