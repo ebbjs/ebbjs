@@ -426,14 +426,14 @@ describe("drafts — duplicate", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const [put] = rowsOf(updates, "todo");
+    const [row] = rowsOf(updates, "todo");
     expect(copy.id).toMatch(/^e_/);
-    expect(put![0]!.subject_id).toBe(copy.id);
-    expect(put!.every((update) => update.method === "replace")).toBe(true);
-    expect(fieldsOf(put!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
+    expect(row![0]).toMatchObject({ subject_id: copy.id, method: "create", model: "todo" });
+    expect(row!.slice(1).every((update) => update.method === "replace")).toBe(true);
+    expect(fieldsOf(row!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
     // Verbatim stamps: the copy is a snapshot of the source's merge state,
     // not a re-stamped write.
-    const title = put!.find(
+    const title = row!.find(
       (update) => isComponentUpdate(update) && update.component === "todo/title",
     )!;
     expect(title.method).not.toBe("delete");
@@ -742,7 +742,8 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_2" });
 
     const updates = updatesOf(seen);
-    expect(updates[0]).toMatchObject({ subject_id: created.id, component: "todo/title" });
+    expect(updates[0]).toMatchObject({ subject_id: created.id, method: "create", model: "todo" });
+    expect(updates[1]).toMatchObject({ subject_id: created.id, component: "todo/title" });
     const memberships = rowsOf(updates, "membership");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
     expect(memberships[1]![0]!.subject_id).toBe(membershipRowId(created.id, "g_2"));

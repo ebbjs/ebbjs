@@ -162,7 +162,11 @@ export const platformEntity = (
   last_gsn: 0,
 });
 
-/** The Update a platform row write implies: one atomic component, whole value. */
+/**
+ * The Updates a platform row write implies: its create and one atomic
+ * component, whole value. A patch of a row that already exists is the
+ * component alone.
+ */
 export const platformUpdate = (
   subjectId: string,
   kind: EbbComponentKind,
@@ -172,14 +176,24 @@ export const platformUpdate = (
   if (method === "delete") {
     return [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }];
   }
+  const component: Update = {
+    id: `u_${subjectId}_${method}`,
+    subject_id: subjectId,
+    component: ebbComponent(kind),
+    method: "replace",
+    data: { value: values, update_id: `u_${subjectId}_${method}`, hlc: makeHlc(1) },
+  };
+  if (method === "patch") return [component];
   return [
     {
-      id: `u_${subjectId}_${method}`,
+      id: `u_${subjectId}_create`,
       subject_id: subjectId,
-      component: ebbComponent(kind),
-      method: "replace",
-      data: { value: values, update_id: `u_${subjectId}_${method}`, hlc: makeHlc(1) },
+      model: EBB_MODEL_NAME,
+      method: "create",
+      hlc: makeHlc(1),
+      data: null,
     },
+    component,
   ];
 };
 

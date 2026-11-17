@@ -5,7 +5,7 @@ import { ReservedNameError } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { normalizeManyPointers, normalizePointer } from "../sync/relationship";
 import { createClient } from "../sync/client";
-import type { Update } from "@ebbjs/core";
+import { isComponentUpdate, isRowCreate, type Update } from "@ebbjs/core";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -224,14 +224,13 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     });
 
     expect(result.entityUpdate).toBeUndefined();
-    // One atomic `ebb/link` value, not four per-field Updates.
-    expect(result.relationshipUpdates).toHaveLength(1);
+    // The edge is a row, so its create comes first…
+    expect(result.relationshipUpdates).toHaveLength(2);
+    expect(result.relationshipUpdates[0]).toMatchObject({ method: "create", model: "ebb" });
+    // …then one atomic `ebb/link` value, not four per-field Updates.
+    const link = result.relationshipUpdates.find(isComponentUpdate)!;
     const value = (field: string): unknown =>
-      (
-        result.relationshipUpdates[0]!.data as {
-          value: Record<string, unknown>;
-        }
-      ).value[field];
+      (link.data as { value: Record<string, unknown> }).value[field];
     expect(value("source_id")).toBe("todo_1");
     expect(value("target_id")).toBe("list_1");
     expect(value("field")).toBe("list");
@@ -284,9 +283,8 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       sourceId: "todo_1",
       targetId: { id: "list_99" },
     });
-    expect(
-      (result.relationshipUpdates[0]!.data as { value: { target_id: string } }).value.target_id,
-    ).toBe("list_99");
+    const link = result.relationshipUpdates.find(isComponentUpdate)!;
+    expect((link.data as { value: { target_id: string } }).value.target_id).toBe("list_99");
   });
 
   it("throws EntityValidationError when the source entity is not registered", () => {
@@ -380,11 +378,13 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       rows.set(update.subject_id, [...(rows.get(update.subject_id) ?? []), update]);
     }
     expect(rows.size).toBe(3);
+    for (const row of rows.values()) {
+      expect(isRowCreate(row[0]!)).toBe(true);
+      expect(row[0]).toMatchObject({ model: "ebb" });
+    }
     const targets = [...rows.values()]
-      .map(
-        (row) =>
-          (row[0]!.data as { value: { target_id: string } } | null)?.value.target_id as string,
-      )
+      .map((row) => row.find(isComponentUpdate)!)
+      .map((update) => (update.data as { value: { target_id: string } }).value.target_id)
       .sort();
     expect(targets).toEqual(["list_1", "list_2", "list_3"]);
   });

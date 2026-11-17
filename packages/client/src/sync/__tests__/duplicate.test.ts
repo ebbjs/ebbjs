@@ -198,11 +198,13 @@ describe("duplicate — field copy", () => {
     const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     expect(id).not.toBe("t_1");
-    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
-    expect(put!.every((update) => update.method === "replace")).toBe(true);
-    expect(put![0]!.subject_id).toBe(id);
-    expect(componentOf(put!, "title")).toBe("Ship");
-    expect(componentOf(put!, "completed")).toBe(false);
+    const [row] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
+    // The copy is a new row, so its create names the model; every field
+    // Update after it is a `replace`, not a merge of the source's state.
+    expect(row![0]).toMatchObject({ subject_id: id, method: "create", model: "todo" });
+    expect(row!.slice(1).every((update) => update.method === "replace")).toBe(true);
+    expect(componentOf(row!, "title")).toBe("Ship");
+    expect(componentOf(row!, "completed")).toBe(false);
 
     // Local materialization: the backup is readable immediately.
     const copy = await storage.entities.get(id);
