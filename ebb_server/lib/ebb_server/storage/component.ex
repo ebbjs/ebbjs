@@ -49,27 +49,12 @@ defmodule EbbServer.Storage.Component do
   @type method :: :create | :merge | :replace | :drop | :delete
 
   @doc """
-  Every key a stored or received Update may carry.
+  The exact key set of any Update with `method`.
 
-  The per-method key sets below are the exact ones; this union is the
-  first-pass filter for a key no Update of any method may name.
+  The per-method sets are the truth; the union is only the fallback for a
+  method no reader accepts, so the key check stays a filter rather than
+  becoming the place an unknown method is defined.
   """
-  @spec update_keys() :: [String.t()]
-  def update_keys, do: @update_keys
-
-  @doc "The exact key set of a `create` Update."
-  @spec create_keys() :: [String.t()]
-  def create_keys, do: @create_keys
-
-  @doc "The exact key set of a component Update (`merge`, `replace`, `drop`)."
-  @spec component_keys() :: [String.t()]
-  def component_keys, do: @component_keys
-
-  @doc "The exact key set of a `delete` Update, which names the row."
-  @spec row_method_keys() :: [String.t()]
-  def row_method_keys, do: @row_method_keys
-
-  @doc "The exact key set of any Update with `method`."
   @spec update_keys_for(term()) :: [String.t()]
   def update_keys_for("create"), do: @create_keys
   def update_keys_for("delete"), do: @row_method_keys
