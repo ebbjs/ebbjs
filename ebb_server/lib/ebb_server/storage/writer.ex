@@ -254,6 +254,12 @@ defmodule EbbServer.Storage.Writer do
 
   defp commit_timeout_ms(state), do: Keyword.get(state.commit_opts, :commit_timeout_ms, 0)
 
+  # Every operator knob reads the application key first, then the environment
+  # variable: a container deployment may carry only the latter.
+  defp config_value(key, env_name, default) do
+    Application.get_env(:ebb_server, key) || env_integer(env_name, default)
+  end
+
   defp env_integer(name, default) do
     case System.get_env(name) do
       nil ->
@@ -373,14 +379,14 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :batch_max_size,
-        Application.get_env(:ebb_server, :writer_batch_max_size, 1000)
+        config_value(:writer_batch_max_size, "EBB_WRITER_BATCH_MAX_SIZE", 1000)
       )
 
     batch_timeout_ms =
       Keyword.get(
         opts,
         :batch_timeout_ms,
-        Application.get_env(:ebb_server, :writer_batch_timeout_ms, 0)
+        config_value(:writer_batch_timeout_ms, "EBB_WRITER_BATCH_TIMEOUT_MS", 0)
       )
 
     fan_out_router = Keyword.get(opts, :fan_out_router, nil)
@@ -394,7 +400,7 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :max_in_flight,
-        Application.get_env(:ebb_server, :writer_max_in_flight, 1)
+        config_value(:writer_max_in_flight, "EBB_WRITER_MAX_IN_FLIGHT", 1)
       )
 
     unless is_integer(max_in_flight) and max_in_flight in 1..@max_overlay_chain do
@@ -409,9 +415,9 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :prepare_pool_size,
-        Application.get_env(
-          :ebb_server,
+        config_value(
           :writer_prepare_pool_size,
+          "EBB_WRITER_PREPARE_POOL_SIZE",
           @default_prepare_pool_size
         )
       )
@@ -420,9 +426,9 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :prepare_queue_max,
-        Application.get_env(
-          :ebb_server,
+        config_value(
           :writer_prepare_queue_max,
+          "EBB_WRITER_PREPARE_QUEUE_MAX",
           @default_prepare_queue_max
         )
       )
@@ -431,9 +437,9 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :prepare_timeout_ms,
-        Application.get_env(
-          :ebb_server,
+        config_value(
           :writer_prepare_timeout_ms,
+          "EBB_WRITER_PREPARE_TIMEOUT_MS",
           @default_prepare_timeout_ms
         )
       )
@@ -442,8 +448,11 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :max_pending_calls,
-        Application.get_env(:ebb_server, :writer_max_pending_calls) ||
-          env_integer("EBB_WRITER_MAX_PENDING_CALLS", @default_max_pending_calls)
+        config_value(
+          :writer_max_pending_calls,
+          "EBB_WRITER_MAX_PENDING_CALLS",
+          @default_max_pending_calls
+        )
       )
 
     unless is_integer(max_pending_calls) and max_pending_calls > 0 do
@@ -474,8 +483,11 @@ defmodule EbbServer.Storage.Writer do
       Keyword.get(
         opts,
         :commit_timeout_ms,
-        Application.get_env(:ebb_server, :writer_commit_timeout_ms) ||
-          env_integer("EBB_WRITER_COMMIT_TIMEOUT_MS", @default_commit_timeout_ms)
+        config_value(
+          :writer_commit_timeout_ms,
+          "EBB_WRITER_COMMIT_TIMEOUT_MS",
+          @default_commit_timeout_ms
+        )
       )
 
     sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @default_sweep_interval_ms)
