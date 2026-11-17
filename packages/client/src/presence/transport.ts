@@ -56,8 +56,6 @@ export interface PresenceTransport {
 }
 
 interface PendingSend {
-  readonly entityId: string;
-  readonly channel: string;
   readonly body: string;
   readonly keepalive: boolean;
   timer: ReturnType<typeof setTimeout>;
@@ -67,7 +65,7 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
   const pending = new Map<string, PendingSend>();
   const inFlight = new Set<Promise<void>>();
 
-  const post = (send: { entityId: string; body: string; keepalive: boolean }): Promise<void> => {
+  const post = (send: { body: string; keepalive: boolean }): Promise<void> => {
     const request: RequestInit = {
       method: "POST",
       headers: {
@@ -121,10 +119,10 @@ export function createPresenceTransport(opts: PresenceTransportOptions): Presenc
       const debounceMs = opts.channels?.[channel]?.debounceMs ?? DEFAULT_PRESENCE_DEBOUNCE_MS;
       const timer = setTimeout(() => {
         pending.delete(key);
-        void post({ entityId, body, keepalive });
+        void post({ body, keepalive });
       }, debounceMs);
       unrefTimer(timer);
-      pending.set(key, { entityId, channel, body, keepalive, timer });
+      pending.set(key, { body, keepalive, timer });
     },
 
     async flush() {

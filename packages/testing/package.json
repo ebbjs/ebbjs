@@ -30,7 +30,6 @@
   },
   "devDependencies": {
     "@ebbjs/client": "workspace:*",
-    "tsx": "^4.20.4",
     "vitest": "^3.2.4"
   }
 }
