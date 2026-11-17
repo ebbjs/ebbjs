@@ -10,7 +10,6 @@ defmodule EbbServer.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases(),
       test_coverage: test_coverage()
     ]
   end
@@ -47,12 +46,6 @@ defmodule EbbServer.MixProject do
         EbbServer.TestFunctions.LocalHttp
       ]
     ]
-  end
-
-  defp aliases do
-    # `mix dev` runs the server under MIX_ENV=dev. See Mix.Tasks.Dev for
-    # details. No file watcher — restart after editing lib/ or config/.
-    [dev: ["dev"]]
   end
 
   defp deps do

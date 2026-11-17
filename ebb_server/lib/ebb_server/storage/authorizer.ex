@@ -924,12 +924,12 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # A committed id can reach here unmodeled: the entity-model cache is a
-  # projection that an ablation (`EBB_ABLATE=component_entities`) or an
-  # unfinished rebuild can omit an entry from. A membership row proves the id
-  # is not new and nothing models it, so a component prefix cannot stand in
-  # for a committed model (#624). An id nothing records is new, and the model the
-  # request gave it — an earlier Action's create or this Action's own first
-  # write — is the only one there is.
+  # projection that an ablation (`--ablate component_entities` on the bench,
+  # which reaches `opts[:ablate]`) or an unfinished rebuild can omit an entry
+  # from. A membership row proves the id is not new and nothing models it, so
+  # a component prefix cannot stand in for a committed model (#624). An id
+  # nothing records is new, and the model the request gave it — an earlier
+  # Action's create or this Action's own first write — is the only one there is.
   defp check_unresolved_model(update, authz) do
     if EntityScope.source_groups(update.subject_id, authz.opts) != [] do
       {:error, "not_authorized", "cannot resolve the model this entity was committed under"}
