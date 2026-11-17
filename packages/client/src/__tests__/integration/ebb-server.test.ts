@@ -74,36 +74,56 @@ const modelOf = (update: Update): string | undefined => {
   return update.component.slice(0, update.component.indexOf("/"));
 };
 
-/** One wire Update per field: a user model's components write one at a time. */
+/** The row's existence and its creation time: the first Update of every new row. */
+const rowCreate = (
+  subjectId: string,
+  model: string,
+  hlc: string,
+  updateId = "seed",
+): UpdateInput => ({
+  id: `${updateId}_create`,
+  subject_id: subjectId,
+  model,
+  method: "create" as const,
+  hlc,
+  data: null,
+});
+
+/** One wire Update per field, after the row's create. */
 const componentUpdates = (
   subjectId: string,
   model: string,
   fields: Record<string, unknown>,
   hlc: string,
   updateId = "seed",
-): UpdateInput[] =>
-  Object.entries(fields).map(([field, value]) => ({
+): UpdateInput[] => [
+  rowCreate(subjectId, model, hlc, updateId),
+  ...Object.entries(fields).map(([field, value]) => ({
     id: `${updateId}_${field}`,
     subject_id: subjectId,
     component: componentName(model, field),
     method: "replace" as const,
     data: { value, update_id: `${updateId}_${field}`, hlc },
-  }));
+  })),
+];
 
-/** One atomic platform Update: the whole value in that component's single leaf. */
+/** One platform row: its create, then the whole value in that component's single leaf. */
 const platformUpdate = (
   kind: EbbComponentKind,
   subjectId: string,
   value: Readonly<Record<string, unknown>>,
   hlc: string,
   updateId = "seed",
-): UpdateInput => ({
-  id: `${updateId}_${kind}`,
-  subject_id: subjectId,
-  component: ebbComponent(kind),
-  method: "replace" as const,
-  data: { value, update_id: `${updateId}_${kind}`, hlc },
-});
+): UpdateInput[] => [
+  rowCreate(subjectId, EBB_MODEL_NAME, hlc, `${updateId}_${kind}`),
+  {
+    id: `${updateId}_${kind}`,
+    subject_id: subjectId,
+    component: ebbComponent(kind),
+    method: "replace" as const,
+    data: { value, update_id: `${updateId}_${kind}`, hlc },
+  },
+];
 
 /**
  * Submit one Action as `actorId`, surfacing the server's per-Action rejections:
@@ -156,7 +176,7 @@ async function addMemberWithPerms(actorId: string, permissions: readonly string[
     actorId: TEST_SEEDER,
     clock,
     updates: [
-      platformUpdate(
+      ...platformUpdate(
         "grant",
         grantRowId(actorId),
         { actor_id: actorId, group_id: TEST_GROUP_ID, permissions: [...permissions] },
@@ -236,8 +256,8 @@ beforeAll(async () => {
   const clock = createClock();
   const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
-    platformUpdate("group", TEST_GROUP_ID, { name: `Integration Test ${RUN_ID}` }, hlc),
-    platformUpdate(
+    ...platformUpdate("group", TEST_GROUP_ID, { name: `Integration Test ${RUN_ID}` }, hlc),
+    ...platformUpdate(
       "grant",
       grantRowId(TEST_SEEDER),
       {
@@ -253,13 +273,14 @@ beforeAll(async () => {
       },
       hlc,
     ),
+    rowCreate(bootstrapDocId, "text_document", hlc),
     {
       subject_id: bootstrapDocId,
       component: "text_document/version",
       method: "replace",
       data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    platformUpdate(
+    ...platformUpdate(
       "membership",
       bootstrapMembershipId,
       { entity_id: bootstrapDocId, group_id: TEST_GROUP_ID },
@@ -323,13 +344,14 @@ async function createTestDoc(docId: string): Promise<void> {
   const clock = createClock();
   const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
+    rowCreate(docId, "text_document", hlc),
     {
       subject_id: docId,
       component: "text_document/version",
       method: "replace",
       data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
     },
-    platformUpdate(
+    ...platformUpdate(
       "membership",
       `eg_${RUN_ID}_${docId}`,
       { entity_id: docId, group_id: TEST_GROUP_ID },
@@ -685,7 +707,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       clock: seedClock,
       updates: [
         ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
-        platformUpdate(
+        ...platformUpdate(
           "membership",
           membershipId,
           { entity_id: todoId, group_id: TEST_GROUP_ID },
@@ -766,7 +788,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
       clock: seedClock,
       updates: [
         ...componentUpdates(todoId, "todo", { title: "seed" }, seedHlc),
-        platformUpdate(
+        ...platformUpdate(
           "membership",
           membershipId,
           { entity_id: todoId, group_id: TEST_GROUP_ID },
