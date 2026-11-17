@@ -126,7 +126,7 @@ describe("@ebbjs/write", () => {
       value: {
         group_id: bootstrap.groupId,
         actor_id: "a_actor",
-        permissions: expect.arrayContaining(["ebb/group.*", "issue.*"]),
+        permissions: ["ebb.*", "issue.*", "project.*"],
       },
     });
   });

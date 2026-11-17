@@ -55,7 +55,6 @@ registry.componentOf("issue", "issue/body"); // by full name, or by field key
 registry.isOptional("issue", "body");
 registry.loadingOf("issue", "body"); // "lazy"
 registry.conflictScopeOf("issue", "body");
-registry.permissionOf("issue", "body"); // "issue" unless the component opts in
 ```
 
 A field declares a read-time default with `.default(v)`; `create()` may then

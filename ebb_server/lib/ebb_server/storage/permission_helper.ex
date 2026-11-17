@@ -14,6 +14,14 @@ defmodule EbbServer.Storage.PermissionHelper do
   is `EbbServer.Storage.SystemComponent.path/3` and the row's kind is the
   folded mutation's `kind`, never its model: all four commit under `ebb`.
 
+  ## Permission subjects
+
+  The subject a check names is the component the write names: a row create
+  or delete checks the model, and an update checks every component on the
+  wire. Grants match by ancestry
+  (`EbbServer.Storage.PermissionHelper.check_permission/3`), so a model
+  grant covers its components and `ebb.*` covers `ebb/grant`.
+
   ## Group bootstrap
 
   An actor creating a group has no prior membership to authorize against,
@@ -46,18 +54,65 @@ defmodule EbbServer.Storage.PermissionHelper do
   alias EbbServer.Storage.{RowMutations, SystemComponent}
 
   @doc """
-  Checks if actor has the required permission.
+  Checks if actor has the required permission for `subject`.
 
-  Permissions can be exact match (e.g., "todo.create") or wildcard (e.g., "todo.*").
+  Grants match by ancestry. A grant `<grant_subject>.<verb|*>` covers
+  `subject` when the subjects are equal or `subject` is a descendant —
+  `note.*` covers `note/body`, while `note/title.*` covers only
+  `note/title`. `ebb.*` therefore covers every platform component, and a
+  model grant keeps working for components added to that model later.
   """
   @spec check_permission([String.t()], String.t(), String.t()) :: boolean()
-  def check_permission(permissions, model, permission) do
-    required = "#{model}.#{permission}"
-
-    Enum.any?(permissions, fn p ->
-      p == required or p == "#{model}.*"
-    end)
+  def check_permission(permissions, subject, permission) do
+    Enum.any?(permissions, &covers?(&1, subject, permission))
   end
+
+  # A grant names its subject before its last dot, so a subject may itself
+  # contain dots or a `/`.
+  defp covers?(grant, subject, permission) do
+    case grant_parts(grant) do
+      {grant_subject, verb} ->
+        (verb == permission or verb == "*") and ancestor?(grant_subject, subject)
+
+      :error ->
+        false
+    end
+  end
+
+  defp grant_parts(grant) do
+    case String.split(grant, ".") do
+      [_verb] -> :error
+      parts -> {parts |> Enum.drop(-1) |> Enum.join("."), List.last(parts)}
+    end
+  end
+
+  defp ancestor?(grant_subject, subject) do
+    grant_subject == subject or String.starts_with?(subject, grant_subject <> "/")
+  end
+
+  @doc """
+  Maps each subject this Action writes to the components the wire names for
+  it, in wire order.
+
+  An update is authorized against the components it names, not the row's
+  model: `note/body` needs `note/body.update`. A delete names no component
+  and a row create names its model, so both are absent here and are handled
+  by the caller. A `drop` names its component like any other write — it
+  removes a value from that component.
+  """
+  @spec written_components([map()]) :: %{String.t() => [String.t()]}
+  def written_components(updates) do
+    updates
+    |> Enum.reject(&(&1.method == :delete))
+    |> Enum.reduce(%{}, &add_component/2)
+  end
+
+  defp add_component(%{subject_id: subject_id, component: component}, acc)
+       when is_binary(component) do
+    Map.update(acc, subject_id, [component], &Enum.uniq(&1 ++ [component]))
+  end
+
+  defp add_component(_update, acc), do: acc
 
   @doc """
   Returns the groups an actor bootstraps in this Action, mapped to the

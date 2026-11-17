@@ -2,9 +2,9 @@
  * Local permission pre-check (#319) and its read-only query (#322).
  *
  * A best-effort client-side mirror of `EbbServer.Storage.Authorizer` +
- * `PermissionHelper`: every Update a client authors is checked for
- * `<model>.<verb>` before the Action reaches the Outbox, so the common
- * "you can't do that" case fails fast with no round-trip. The server
+ * `PermissionHelper`: every write a client authors is checked against the
+ * permissions the actor holds before the Action reaches the Outbox, so the
+ * common "you can't do that" case fails fast with no round-trip. The server
  * remains the authority; when the actor's groups are not yet known
  * (`handshake()` has not run) the whole pass is skipped and the write
  * goes to the wire.
@@ -18,10 +18,19 @@
  * cannot see; `can()` is correspondingly conservative and reports
  * `unknown` where it cannot resolve a subject.
  *
- * A permission is held in a group when its list contains `"<subject>.<verb>"`
- * or `"<subject>.*"`, over the union of the entity's group set. Checks are per
- * row, not per Update: one Action's Updates for one subject fold into one
- * mutation, a `create` or an `update`.
+ * A permission is held in a group when one of its grants covers the
+ * write's subject: the grant's subject is the write's subject or an
+ * ancestor of it, and its verb is the write's verb or `*`. So
+ * `note.*` covers `note/body`, while `note/title.*` covers only
+ * `note/title`. A user row's create and delete name the model; its
+ * update names every component it writes, and every one must be
+ * covered. A platform row names its component, `ebb/<kind>`; its
+ * membership and link writes keep their own semantic subjects.
+ * Checks are per row, not per Update: one Action's Updates for one
+ * subject fold into one mutation, a `create` or an `update`.
+ *
+ * There is no deny: narrowing a member who holds `note.*` means
+ * rewriting that grant to enumerate what they keep.
  *
  * Three refusals mirror the server structurally, so no grant can make them
  * pass: a user write naming a model other than the id's committed one (#624),
@@ -36,9 +45,9 @@ import {
   carriesComponent,
   componentName,
   componentValue,
-  EBB_COMPONENTS,
   EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
+  ebbComponent,
   isFieldMap,
   systemValueField,
   systemValueString,
@@ -68,8 +77,9 @@ export type PermissionViolation =
 export interface MissingPermissionViolation {
   readonly kind: "missing-permission";
   /**
-   * The permission's subject: the row's committed model for a user row, or
-   * the `ebb/*` component for a platform row.
+   * The permission's subject: the committed model for a user row's create
+   * or delete, or a component a user row's update writes, or the `ebb/*`
+   * component a platform row names.
    */
   readonly permissionSubject: string;
   readonly subjectId: string;
@@ -202,29 +212,51 @@ const VERBS: ReadonlySet<string> = new Set(["create", "update", "delete"]);
 
 const isVerb = (value: string): value is PermissionVerb => VERBS.has(value);
 
+const GRANT_ANY_VERB = "*";
+
 /**
- * The single `<model>.<verb>` rule: a permission is granted by an exact
- * match or the `model.*` wildcard. Both the write-path pre-check and
- * `client.can()` decide through this.
+ * Parse a grant and a query string the same way, at the last dot: a subject
+ * may contain dots and slashes, so only the final segment names the verb.
+ */
+const splitPermission = (
+  permission: string,
+): { readonly subject: string; readonly verb: string } | null => {
+  const dot = permission.lastIndexOf(".");
+  if (dot <= 0 || dot === permission.length - 1) return null;
+  return { subject: permission.slice(0, dot), verb: permission.slice(dot + 1) };
+};
+
+/** Whether `grantSubject` is `subject` itself or an ancestor of it. */
+const coversSubject = (grantSubject: string, subject: string): boolean =>
+  subject === grantSubject || subject.startsWith(`${grantSubject}/`);
+
+/**
+ * Whether a grant covers a write: its subject is the write's subject or an
+ * ancestor of it, and its verb is the write's verb or `*`. Both the
+ * write-path pre-check and `client.can()` decide through this. A grant that
+ * does not parse covers nothing.
  */
 const grantsPermission = (
   permissions: readonly string[],
-  model: string,
+  subject: string,
   verb: PermissionVerb,
-): boolean => permissions.includes(`${model}.${verb}`) || permissions.includes(`${model}.*`);
+): boolean =>
+  permissions.some((permission) => {
+    const grant = splitPermission(permission);
+    if (grant === null) return false;
+    if (grant.verb !== verb && grant.verb !== GRANT_ANY_VERB) return false;
+    return coversSubject(grant.subject, subject);
+  });
 
 /**
  * One subject's authorization rule, resolved: the permission the actor
  * must hold and the group set it is union-matched over.
  */
 interface ResolvedRule {
-  /**
-   * The permission's subject: the row's committed model (`todo` for
-   * `todo.update`), or the `ebb/*` component for a platform row.
-   */
-  readonly model: string;
+  /** The permission's subject, e.g. `todo` or `note/body` or `ebb/grant`. */
+  readonly subject: string;
   readonly verb: PermissionVerb;
-  /** The permission string the actor must hold, `${model}.${verb}`. */
+  /** The permission string the actor must hold, `${subject}.${verb}`. */
   readonly required: string;
   readonly groupIds: readonly string[];
   /** Membership mutations consult cached permissions only. */
@@ -338,7 +370,7 @@ const rowFieldValue = (writes: SubjectWrites, name: string): unknown => {
 
 /** One field of the platform value a subject's writes carry, or `undefined`. */
 const systemField = (writes: SubjectWrites, kind: EbbComponentKind, field: string): unknown =>
-  componentValue(writes.components.get(EBB_COMPONENTS[kind]))?.[field];
+  componentValue(writes.components.get(ebbComponent(kind)))?.[field];
 
 /**
  * The platform kind a stored row carries, or `null` for a user row. Every
@@ -391,16 +423,19 @@ const committedRelationshipSource = (
 ): Promise<string | null> => committedSystemField(subjectId, "link", "source_id", inputs);
 
 /**
- * The rule table: for a subject `(kind, id, verb)`, the permission it
- * requires and the groups to union-match. Returns `unresolved` when the
- * inputs the rule needs are not locally available — the write path then defers
- * to the server, and `can()` reports `unknown`.
+ * The rule table: for a write `(kind, model, id, verb, components)`, the
+ * permissions it requires and the groups to union-match. Returns
+ * `unresolved` when the inputs the rule needs are not locally available —
+ * the write path then defers to the server, and `can()` reports `unknown`.
  *
- * Rules mirror `EbbServer.Storage.PermissionHelper` (#319) and dispatch on the
- * component kind, because every platform row is committed under `ebb`.
- * - user entity → `<committed model>.<verb>` over its group set. A declared
+ * Rules mirror `EbbServer.Storage.PermissionHelper` (#319). The permission
+ * subject is the one the write names; platform rows keep their own scope and
+ * semantic subjects:
+ * - user entity create/delete → `<committed model>.<verb>` over its group
+ *   set; an update → the same verb at every component it writes. A declared
  *   model contradicting the committed one is refused outright (#624).
- * - `ebb/group` → its own group; `ebb/grant` → the grant's group.
+ * - `ebb/group` → `ebb/group.<verb>` over its own group; `ebb/grant` →
+ *   `ebb/grant.<verb>` over the grant's group.
  * - `ebb/membership` create → `<entityModel>.create` in the target group
  *   **and** `.update` over the entity's current set, because filing an entity
  *   the store already places in a group is a write to it (#623).
@@ -414,22 +449,14 @@ async function resolveRule(
   model: string,
   subjectId: string,
   verb: PermissionVerb,
+  written: ReadonlySet<string>,
   inputs: RuleInputs,
   released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
-  if (kind === null) return resolveUserRule(model, subjectId, verb, inputs);
+  if (kind === null) return resolveUserRule(model, subjectId, verb, written, inputs);
   switch (kind) {
     case "group":
-      return {
-        kind: "rule",
-        rule: {
-          model: EBB_COMPONENTS.group,
-          verb,
-          required: `${EBB_COMPONENTS.group}.${verb}`,
-          groupIds: [subjectId],
-          cachedOnly: false,
-        },
-      };
+      return componentRule("group", verb, [subjectId], false);
     case "grant":
       return resolveGrantRule(subjectId, verb, inputs, released);
     case "membership":
@@ -442,13 +469,48 @@ async function resolveRule(
 }
 
 /**
- * A user-entity write: the permission model is the model the id was committed
- * under, never the component's model prefix, which is forgeable (#624).
+ * A platform row's own permission: the component it names, scoped as the
+ * caller reads its kind.
+ */
+const componentRule = (
+  kind: EbbComponentKind,
+  verb: PermissionVerb,
+  groupIds: readonly string[],
+  cachedOnly: boolean,
+): RuleResolution => subjectRules([ebbComponent(kind)], verb, groupIds, cachedOnly);
+
+/**
+ * The rules a write naming `subjects` needs. Every one must hold: an update
+ * that writes several components is only allowed if its grant covers each.
+ */
+const subjectRules = (
+  subjects: readonly string[],
+  verb: PermissionVerb,
+  groupIds: readonly string[],
+  cachedOnly: boolean,
+): RuleResolution => {
+  if (subjects.length === 0) throw new Error("a write rule needs at least one subject");
+  const rules = subjects.map((subject) => ({
+    subject,
+    verb,
+    required: `${subject}.${verb}`,
+    groupIds,
+    cachedOnly,
+  }));
+  return rules.length === 1 ? { kind: "rule", rule: rules[0] } : { kind: "rules", rules };
+};
+
+/**
+ * A user-entity write: the model is the model the id was committed under,
+ * never the component's model prefix, which is forgeable (#624). A create or
+ * delete is a write to the row, so it names the model; an update names every
+ * component it writes, and falls back to the model when it names none.
  */
 async function resolveUserRule(
   model: string,
   subjectId: string,
   verb: PermissionVerb,
+  written: ReadonlySet<string>,
   inputs: RuleInputs,
 ): Promise<RuleResolution> {
   const groupIds = await inputs.groupSetFor(subjectId);
@@ -462,16 +524,8 @@ async function resolveUserRule(
     return { kind: "refused", reason: "type-mismatch", committedModel, groupIds };
   }
   const resolved = committedModel ?? model;
-  return {
-    kind: "rule",
-    rule: {
-      model: resolved,
-      verb,
-      required: `${resolved}.${verb}`,
-      groupIds,
-      cachedOnly: false,
-    },
-  };
+  const subjects = verb === "update" && written.size > 0 ? [...written] : [resolved];
+  return subjectRules(subjects, verb, groupIds, false);
 }
 
 /** The refusal a re-pointed key field reports, or `null` when the key is kept. */
@@ -486,7 +540,7 @@ const keyMismatch = async (
   return {
     kind: "refused",
     reason: "key-mismatch",
-    component: EBB_COMPONENTS[kind],
+    component: ebbComponent(kind),
     field,
     declaredValue: declared,
     committedValue: committed,
@@ -522,16 +576,7 @@ async function resolveGrantRule(
         ? [committedGroupId]
         : await resolveMembershipGroupIds(subjectId, inputs);
   if (groupIds.length === 0) return { kind: "unresolved", reason: "entity-unknown" };
-  return {
-    kind: "rule",
-    rule: {
-      model: EBB_COMPONENTS.grant,
-      verb,
-      required: `${EBB_COMPONENTS.grant}.${verb}`,
-      groupIds,
-      cachedOnly: false,
-    },
-  };
+  return componentRule("grant", verb, groupIds, false);
 }
 
 /** `ebb/membership`: filing an entity is a write to it (#623). */
@@ -551,7 +596,7 @@ async function resolveMembershipRule(
     return {
       kind: "rule",
       rule: {
-        model,
+        subject: model,
         verb: "update",
         required: `${model}.update`,
         groupIds: await inputs.groupSetFor(membership.entityId),
@@ -582,7 +627,7 @@ async function resolveMembershipRule(
 
   const rules: ResolvedRule[] = [
     {
-      model,
+      subject: model,
       verb: "create",
       required: `${model}.create`,
       groupIds: [declaredGroupId],
@@ -592,7 +637,7 @@ async function resolveMembershipRule(
   const sourceGroups = await inputs.committedGroupSetFor(declaredEntityId);
   if (sourceGroups.length > 0) {
     rules.push({
-      model,
+      subject: model,
       verb: "update",
       required: `${model}.update`,
       groupIds: sourceGroups,
@@ -646,7 +691,7 @@ async function resolveLinkRule(
     return {
       kind: "rule",
       rule: {
-        model,
+        subject: model,
         verb: "update",
         required: `${model}.update`,
         groupIds,
@@ -661,16 +706,7 @@ async function resolveLinkRule(
   if (sourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
   const groupIds = await inputs.groupSetFor(sourceId);
   if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
-  return {
-    kind: "rule",
-    rule: {
-      model: EBB_COMPONENTS.link,
-      verb,
-      required: `${EBB_COMPONENTS.link}.${verb}`,
-      groupIds,
-      cachedOnly: false,
-    },
-  };
+  return componentRule("link", verb, groupIds, false);
 }
 
 /** Shared empty bootstrap map for the query path, which has no Action in flight. */
@@ -704,22 +740,30 @@ const ruleHolds = (
 ): boolean =>
   rule.groupIds.some((groupId) => {
     const permissions = permissionsFor(groupId, rule.cachedOnly);
-    return permissions !== null && grantsPermission(permissions, rule.model, rule.verb);
+    return permissions !== null && grantsPermission(permissions, rule.subject, rule.verb);
   });
 
-/** The subject a decision is about, in the violation's vocabulary. */
+/**
+ * How a structural refusal names the row: a user row is the model it is
+ * committed under, a platform row the component it carries rather than `ebb`.
+ */
+const rowSubject = (kind: EbbComponentKind | null, model: string): string =>
+  kind === null ? model : ebbComponent(kind);
+
+/** The row a decision is about. */
 interface DecisionSubject {
-  readonly permissionSubject: string;
+  /**
+   * How a structural refusal names the row: the model for a user row, the
+   * component for a platform row.
+   */
+  readonly rowSubject: string;
   readonly subjectId: string;
 }
 
-const missingPermission = (
-  subject: DecisionSubject,
-  rule: ResolvedRule,
-): MissingPermissionViolation => ({
+const missingPermission = (subjectId: string, rule: ResolvedRule): MissingPermissionViolation => ({
   kind: "missing-permission",
-  permissionSubject: subject.permissionSubject,
-  subjectId: subject.subjectId,
+  permissionSubject: rule.subject,
+  subjectId,
   required: rule.required,
   groupIds: rule.groupIds,
 });
@@ -733,7 +777,7 @@ const refusedViolation = (
     case "type-mismatch":
       return {
         kind: "type-mismatch",
-        model: subject.permissionSubject,
+        model: subject.rowSubject,
         subjectId: subject.subjectId,
         committedModel: resolution.committedModel,
         groupIds: resolution.groupIds,
@@ -741,7 +785,7 @@ const refusedViolation = (
     case "source-mismatch":
       return {
         kind: "source-mismatch",
-        component: subject.permissionSubject,
+        component: subject.rowSubject,
         subjectId: subject.subjectId,
         declaredSourceId: resolution.declaredSourceId,
         committedSourceId: resolution.committedSourceId,
@@ -777,7 +821,7 @@ const decideRule = (
     case "rule":
       return ruleHolds(resolution.rule, permissionsFor)
         ? { kind: "allowed", groupIds: resolution.rule.groupIds }
-        : { kind: "denied", violation: missingPermission(subject, resolution.rule) };
+        : { kind: "denied", violation: missingPermission(subject.subjectId, resolution.rule) };
     case "rules": {
       // Every rule must hold. The first one that does not is the one
       // reported: it is the grant the caller has to go and get.
@@ -788,7 +832,7 @@ const decideRule = (
           groupIds: [...new Set(resolution.rules.flatMap((rule) => rule.groupIds))],
         };
       }
-      return { kind: "denied", violation: missingPermission(subject, missing) };
+      return { kind: "denied", violation: missingPermission(subject.subjectId, missing) };
     }
     case "refused":
       return { kind: "denied", violation: refusedViolation(resolution, subject) };
@@ -991,6 +1035,7 @@ const collectActionViolations = async (
       model,
       subjectId,
       verb,
+      writes.written,
       {
         ...storageInputs(ctx.storage, (name) => subjectField(writes, name)),
         resolveModel,
@@ -1002,8 +1047,7 @@ const collectActionViolations = async (
     );
     const decision = decideRule(
       resolution,
-      // A platform row's permission subject is its component, not `ebb`.
-      { permissionSubject: kind === null ? model : EBB_COMPONENTS[kind], subjectId },
+      { rowSubject: rowSubject(kind, model), subjectId },
       permissionsFor,
     );
     switch (decision.kind) {
@@ -1035,7 +1079,7 @@ const mergeLocalMemberships = async (
   cached: Map<string, readonly string[]>,
   ctx: PermissionContext,
 ): Promise<void> => {
-  const grantIds = await ctx.storage.entities.queryByComponent(EBB_COMPONENTS.grant);
+  const grantIds = await ctx.storage.entities.queryByComponent(ebbComponent("grant"));
   for (const id of grantIds) {
     const row = await ctx.storage.entities.get(id);
     if (row === null) continue;
@@ -1074,14 +1118,14 @@ export interface CanContext extends PermissionContext {
 
 /** The `client.can(...)` surface. */
 export interface PermissionQuery {
-  /** Does the actor hold `<model>.<verb>` in any of its groups? */
+  /** Does a grant on `<subject>.<verb>` or an ancestor of it hold in any group? */
   can(permission: string): Promise<CanResult>;
   /** Does the actor hold `<verb>` for the entity `subject` names? */
   can(subject: CanSubject, verb: PermissionVerb): Promise<CanResult>;
 }
 
 /**
- * The global form: does the actor hold `<model>.<verb>` anywhere? Consulted
+ * The global form: does the actor hold `<subject>.<verb>` anywhere? Consulted
  * groups are the handshake's actor groups plus the actor's local grants.
  * Mirrors the write path: with no handshake the actor's
  * groups are unknown, so the answer is `unknown` rather than `denied`.
@@ -1090,33 +1134,41 @@ export async function queryActorPermission(
   permission: string,
   ctx: CanContext,
 ): Promise<CanResult> {
-  const { model, verb } = parsePermission(permission);
+  const { subject, verb } = parsePermission(permission);
   if (!ctx.handshaken) {
     return { kind: "unknown", reason: "no-handshake" };
   }
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
   await mergeLocalMemberships(cached, ctx);
   const groupIds = [...cached.keys()];
-  if (groupIds.some((id) => grantsPermission(cached.get(id) ?? [], model, verb))) {
+  if (groupIds.some((id) => grantsPermission(cached.get(id) ?? [], subject, verb))) {
     return { kind: "allowed", groupIds };
   }
   return {
     kind: "denied",
-    // The global form has no single subject; `"*"` marks "the actor".
+    // The global form has no single entity; `"*"` marks "the actor".
     violation: {
       kind: "missing-permission",
-      permissionSubject: model,
+      permissionSubject: subject,
       subjectId: "*",
-      required: `${model}.${verb}`,
+      required: `${subject}.${verb}`,
       groupIds,
     },
   };
 }
 
+/** The query path names no component, so a user row is checked at its model. */
+const NO_WRITTEN: ReadonlySet<string> = new Set();
+
 /**
  * The per-entity form: resolve the entity's model and group set and apply
  * the same rule table the write path uses. `unknown` covers an id the
  * local store cannot resolve and an entity with no local owner.
+ *
+ * The query names no component, so a user row is checked at its model. A
+ * grant that covers only some of the row's fields therefore reports
+ * `denied` for an update: the query is conservative, and a caller that wants
+ * the per-field answer has to ask about the write itself.
  */
 export async function queryEntityPermission(
   subject: CanSubject,
@@ -1148,6 +1200,7 @@ export async function queryEntityPermission(
     row.model,
     id,
     verb,
+    NO_WRITTEN,
     {
       ...inputs,
       resolveModel: async (entityId) => (await inputs.exists(entityId))?.model ?? null,
@@ -1161,7 +1214,7 @@ export async function queryEntityPermission(
   );
   const decision = decideRule(
     resolution,
-    { permissionSubject: kind === null ? row.model : EBB_COMPONENTS[kind], subjectId: id },
+    { rowSubject: rowSubject(kind, row.model), subjectId: id },
     permissionsFor,
   );
   switch (decision.kind) {
@@ -1177,19 +1230,17 @@ export async function queryEntityPermission(
 }
 
 /**
- * Parse a `"<model>.<verb>"` permission string into the rule's two parts.
- * The verb is split on the last dot so a dotted model survives. Throws a
- * `TypeError` on a malformed string — this is a programming error, not a
- * permission outcome.
+ * Parse a `"<subject>.<verb>"` permission string into the rule's two parts.
+ * The verb is the segment after the last dot, so a subject containing dots
+ * or a `/` survives. Throws a `TypeError` on a malformed string — this is a
+ * programming error, not a permission outcome.
  */
-const parsePermission = (permission: string): { model: string; verb: PermissionVerb } => {
-  const dot = permission.lastIndexOf(".");
-  const model = dot > 0 ? permission.slice(0, dot) : "";
-  const verb = dot > 0 ? permission.slice(dot + 1) : "";
-  if (model.length === 0 || !isVerb(verb)) {
+const parsePermission = (permission: string): { subject: string; verb: PermissionVerb } => {
+  const parsed = splitPermission(permission);
+  if (parsed === null || !isVerb(parsed.verb)) {
     throw new TypeError(
-      `can(): expected "<model>.<verb>" with verb one of create/update/delete, got "${permission}"`,
+      `can(): expected "<subject>.<verb>" with verb one of create/update/delete, got "${permission}"`,
     );
   }
-  return { model, verb };
+  return { subject: parsed.subject, verb: parsed.verb };
 };

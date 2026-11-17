@@ -21,7 +21,7 @@ import { vi, type MockInstance } from "vitest";
 import {
   componentModel,
   componentName,
-  EBB_COMPONENTS,
+  ebbComponent,
   EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
   ebbComponentField,
@@ -126,7 +126,7 @@ export const rowComponents = (
   fields: Record<string, unknown>,
 ): readonly (readonly [`${string}/${string}`, unknown])[] =>
   isPlatformModel(model)
-    ? [[EBB_COMPONENTS[model], fields] as const]
+    ? [[ebbComponent(model), fields] as const]
     : Object.entries(fields).map(([key, value]) => [componentName(model, key), value] as const);
 
 /** A materialized platform row: an `ebb` row carrying one atomic component. */
@@ -164,7 +164,7 @@ export const platformUpdate = (
     {
       id: `u_${subjectId}_${method}`,
       subject_id: subjectId,
-      component: EBB_COMPONENTS[kind],
+      component: ebbComponent(kind),
       method: "replace",
       data: { value: values, update_id: `u_${subjectId}_${method}`, hlc: makeHlc(1) },
     },
@@ -181,7 +181,7 @@ export const rowsByModel = (
 ): readonly (readonly Update[])[] => {
   const matches = (update: Update): boolean =>
     isPlatformModel(model)
-      ? update.method !== "delete" && update.component === EBB_COMPONENTS[model]
+      ? update.method !== "delete" && update.component === ebbComponent(model)
       : updateModel(update) === model;
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {

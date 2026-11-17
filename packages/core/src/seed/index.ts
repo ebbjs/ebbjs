@@ -16,7 +16,7 @@
 
 import { createAction } from "../action";
 import { createClock, localEvent } from "../hlc";
-import { EBB_COMPONENTS, type EbbComponentKind } from "../system";
+import { ebbComponent, type EbbComponentKind } from "../system";
 import type { Action, FieldValue, UpdateInput } from "../types/action";
 import type { HLCState } from "../hlc/types";
 
@@ -111,7 +111,7 @@ const systemUpdate = (
   clock: HLCState,
 ): UpdateInput => ({
   subject_id: subjectId,
-  component: EBB_COMPONENTS[kind],
+  component: ebbComponent(kind),
   method: "replace",
   data: stamp(value, clock),
 });

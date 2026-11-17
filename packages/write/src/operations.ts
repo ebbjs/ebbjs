@@ -371,25 +371,15 @@ export const createGroup: Operation<CreateGroupInput> = (ctx, input) => {
 };
 
 /**
- * The permissions a bootstrapping actor needs on every registered entity. The
- * server matches only an exact `<subject>.<verb>` or `<subject>.*`, so the actor
- * carries one wildcard per permission subject rather than a global `*` that
- * grants nothing.
- *
- * A subject is a model, except where a component declares its own permission:
- * the four platform components do. The model subject is granted as well, because
- * a row `delete` is authorized against the row's committed model.
+ * The permissions a bootstrapping actor needs on every registered model. The
+ * server matches `<subject>.<verb>` by ancestor, so a grant on `note.*` covers
+ * `note/body` and `ebb.*` covers every platform component under `ebb`. The
+ * actor therefore carries one wildcard per registered model rather than a
+ * global `*` that grants nothing, and a row create or delete — which names the
+ * model, not a component — is covered by that same grant.
  */
-export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] => {
-  const subjects = new Set<string>();
-  for (const name of registry.modelNames()) {
-    subjects.add(name);
-    for (const component of registry.componentsOf(name)) {
-      subjects.add(registry.permissionOf(name, component.name));
-    }
-  }
-  return [...subjects].sort().map((subject) => `${subject}.*`);
-};
+export const fullGroupPermissions = (registry: ModelRegistry): readonly string[] =>
+  [...registry.modelNames()].sort().map((name) => `${name}.*`);
 
 /** The ids and call the group bootstrap shares across both authoring surfaces. */
 export interface GroupBootstrap {

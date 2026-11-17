@@ -30,6 +30,30 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert PermissionHelper.check_permission(perms, "ebb/group", "read") == true
       assert PermissionHelper.check_permission(perms, "post", "create") == false
     end
+
+    test "a field grant covers only its own component" do
+      assert PermissionHelper.check_permission(["note/title.*"], "note/title", "update") == true
+      assert PermissionHelper.check_permission(["note/title.*"], "note/body", "update") == false
+
+      assert PermissionHelper.check_permission(["note/title.update"], "note/body", "update") ==
+               false
+    end
+
+    test "a field grant does not cover its model" do
+      assert PermissionHelper.check_permission(["note/title.*"], "note", "update") == false
+    end
+
+    test "ancestry matches whole path segments" do
+      assert PermissionHelper.check_permission(["note/title.*"], "note/titlelong", "update") ==
+               false
+
+      assert PermissionHelper.check_permission(["note.*"], "notebook", "update") == false
+    end
+
+    test "ebb.* covers the platform components" do
+      assert PermissionHelper.check_permission(["ebb.*"], "ebb/grant", "create") == true
+      assert PermissionHelper.check_permission(["ebb.*"], "ebb/membership", "delete") == true
+    end
   end
 
   describe "bootstrap_group_permissions/3" do

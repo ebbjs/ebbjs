@@ -1059,6 +1059,116 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
+  # #803: the subject a write names is the component on the wire, and grants
+  # match by ancestry — so `note.*` still covers every field of a note, while
+  # a field grant covers only itself. Creates and deletes name the model.
+  describe "authorize/3 - per-component permissions (#803)" do
+    setup do
+      tables = create_isolated_tables()
+      put_membership(tables, "note_1", "g_1", "eg_1")
+      put_entity_model(tables, "note_1", "note")
+
+      %{tables: tables, ctx: auth_context(tables)}
+    end
+
+    defp note_update(fields, subject_id \\ "note_1") do
+      component_updates("#{subject_id}_upd", subject_id, "note", :merge, fields)
+    end
+
+    test "a field grant authorizes its own component", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.*"])
+
+      action = build_action(note_update(%{"title" => "New title"}))
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a field grant does not authorize a sibling component", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.*"])
+
+      action = build_action(note_update(%{"body" => "New body"}))
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "every component named on the wire must be authorized", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.*"])
+
+      action = build_action(note_update(%{"title" => "New title", "body" => "New body"}))
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a drop is authorized against the component it names", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.*"])
+
+      drop = fn id, field ->
+        build_action([component_update(id, "note_1", "note/#{field}", :drop, nil)])
+      end
+
+      assert_accepted(Authorizer.authorize([drop.("note_1_drop_title", "title")], "a_1", ctx))
+
+      assert_rejected(
+        Authorizer.authorize([drop.("note_1_drop_body", "body")], "a_1", ctx),
+        "not_authorized"
+      )
+    end
+
+    test "a create names the model, not the component", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note.create"])
+
+      action =
+        build_action([
+          component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
+          membership_put("eg_new", "note_new", "g_1")
+        ])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a field create does not authorize a create", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.create"])
+
+      action =
+        build_action([
+          component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
+          membership_put("eg_new", "note_new", "g_1")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a delete names the model, not the component", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note.delete"])
+
+      action = build_action([entity_delete("note_1", "note")])
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+
+    test "a field delete does not authorize a delete", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.delete"])
+
+      action = build_action([entity_delete("note_1", "note")])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    # The server holds no schema, so it cannot know `note/madeup` is not a
+    # declared component. The client refuses the write; the server accepts it
+    # under the ancestor grant (the accepted residual of #803).
+    test "an undeclared component is authorized by the model grant", %{
+      tables: tables,
+      ctx: ctx
+    } do
+      put_grant(tables, "g_1", ["note.*"])
+
+      action = build_action(note_update(%{"madeup" => "value"}))
+
+      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
+    end
+  end
+
   # A relationship row fans out to its source's group set, so the source
   # is row identity, like an `membership` row's entity (#623). The wire
   # `source_id` may not move an existing row to another source.

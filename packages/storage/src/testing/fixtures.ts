@@ -1,6 +1,6 @@
 import {
   componentName,
-  EBB_COMPONENTS,
+  ebbComponent,
   makeHlc,
   type Action,
   type EbbComponentKind,
@@ -102,7 +102,7 @@ const systemRowUpdate = (
 ): Update => ({
   id: updateId,
   subject_id: subjectId,
-  component: EBB_COMPONENTS[kind],
+  component: ebbComponent(kind),
   method: "replace",
   data: { value, update_id: updateId, hlc },
 });

@@ -425,8 +425,6 @@ export interface ComponentOptions {
    * this way. Defaults to `false`.
    */
   readonly structural?: boolean;
-  /** Opt in to `<model>/<component>.<verb>` permissions. Defaults to the model. */
-  readonly permission?: "own";
   /**
    * The entity whose group set this component's write resolves against.
    * `"self"` is the row itself; a string names a field of the component's
@@ -437,6 +435,17 @@ export interface ComponentOptions {
   /** Component version for read migrations. Defaults to `1`. */
   readonly version?: number;
 }
+
+/** The option keys a component declaration accepts. */
+const COMPONENT_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "optional",
+  "loading",
+  "conflictScope",
+  "indexed",
+  "structural",
+  "scope",
+  "version",
+]);
 
 /** A frozen component declaration. A bare field builder is one, anonymously. */
 export interface ComponentDef<TShape extends TSchema = TSchema, TName extends string = string> {
@@ -452,7 +461,6 @@ export interface ComponentDef<TShape extends TSchema = TSchema, TName extends st
   readonly conflictScope: ConflictScope | undefined;
   readonly indexed: boolean;
   readonly structural: boolean;
-  readonly permission: "own" | undefined;
   /**
    * Scope owner: `"self"`, a field name, or `undefined` to inherit the
    * entity's membership. Only `ebb/*` components may declare one.
@@ -653,6 +661,22 @@ const defaultedFieldOf = (shape: TSchema): string | undefined => {
   return Object.entries(properties).find(([, property]) => hasDefault(property))?.[0];
 };
 
+/** Raised when a component declares an option it does not know. */
+export class UnknownComponentOptionError extends Error {
+  readonly componentName: string;
+  readonly option: string;
+
+  constructor(componentName: string, option: string) {
+    super(
+      `Component "${componentName}" declares unknown option "${option}". Accepted options are ` +
+        `${[...COMPONENT_OPTION_KEYS].join(", ")}.`,
+    );
+    this.name = "UnknownComponentOptionError";
+    this.componentName = componentName;
+    this.option = option;
+  }
+}
+
 /** Build a frozen component declaration. Shared by `defineComponent` and anonymous fields. */
 export function buildComponentDef<TShape extends TSchema, TName extends string>(
   name: TName,
@@ -660,6 +684,10 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
   options: ComponentOptions = {},
   createShape: TSchema = shape,
 ): ComponentDef<TShape, TName> {
+  for (const option of Object.keys(options)) {
+    if (!COMPONENT_OPTION_KEYS.has(option)) throw new UnknownComponentOptionError(name, option);
+  }
+
   if (options.optional === true) {
     if (hasDefault(shape)) throw new OptionalDefaultConflictError(name, undefined);
     const field = defaultedFieldOf(shape);
@@ -684,7 +712,6 @@ export function buildComponentDef<TShape extends TSchema, TName extends string>(
     conflictScope: options.conflictScope,
     indexed: options.indexed ?? false,
     structural: options.structural ?? false,
-    permission: options.permission,
     scope: options.scope,
     version,
   });
@@ -704,12 +731,14 @@ type DeclaredComponentShape<
 /**
  * Declare a component under `<model>/<leaf>`. The result is frozen and
  * carries the policy later slices read: existence, loading, conflict
- * scope, indexing, permission, scope owner, and version.
+ * scope, indexing, scope owner, and version.
  *
  * Throws {@link OptionalDefaultConflictError} when `optional: true` is
- * combined with a declared `.default()`, and {@link ComponentScopeError}
+ * combined with a declared `.default()`, {@link ComponentScopeError}
  * when a `scope` is declared outside the `ebb/` namespace or is not a scope
- * shape.
+ * shape, and {@link UnknownComponentOptionError} for an option it does not
+ * accept (including a removed one), so a stale declaration fails where it is
+ * written instead of being silently ignored.
  */
 export function defineComponent<
   const TShape extends ComponentShapeInput,

@@ -21,25 +21,30 @@ import { componentName, type ComponentName, type Entity, type FieldValue } from 
 export const EBB_MODEL_NAME = "ebb";
 
 /** The four platform components, as `<model>/<leaf>` names. */
-export const EBB_COMPONENTS = Object.freeze({
+const COMPONENTS_BY_KIND = Object.freeze({
   group: "ebb/group",
   grant: "ebb/grant",
   membership: "ebb/membership",
   link: "ebb/link",
 } as const);
 
-export type EbbComponentKind = keyof typeof EBB_COMPONENTS;
+/** The same table, keyed by kind, under the name the public API has always used. */
+export const EBB_COMPONENTS = COMPONENTS_BY_KIND;
 
-export const EBB_COMPONENT_KINDS = Object.freeze(Object.keys(EBB_COMPONENTS) as EbbComponentKind[]);
+export type EbbComponentKind = keyof typeof COMPONENTS_BY_KIND;
 
-export const ebbComponent = (kind: EbbComponentKind): ComponentName => EBB_COMPONENTS[kind];
+export const EBB_COMPONENT_KINDS = Object.freeze(
+  Object.keys(COMPONENTS_BY_KIND) as EbbComponentKind[],
+);
+
+export const ebbComponent = (kind: EbbComponentKind): ComponentName => COMPONENTS_BY_KIND[kind];
 
 /** The row field a kind's value is stored at: the leaf after the `/`. */
 export const ebbComponentField = (kind: EbbComponentKind): string =>
   componentName(EBB_MODEL_NAME, kind).split("/")[1] as string;
 
 const KINDS_BY_COMPONENT = new Map<string, EbbComponentKind>(
-  EBB_COMPONENT_KINDS.map((kind) => [EBB_COMPONENTS[kind], kind]),
+  EBB_COMPONENT_KINDS.map((kind) => [ebbComponent(kind), kind]),
 );
 
 /** The kind a component name names, or `null` for a non-platform component. */

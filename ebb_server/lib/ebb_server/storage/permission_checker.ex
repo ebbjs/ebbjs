@@ -13,9 +13,11 @@ defmodule EbbServer.Storage.PermissionChecker do
      `now + 120s`). There is no stale bound: GSN provides total ordering, and
      the bound returns with the compaction watermark tracked by #123.
   2. **Authorizer** — for each row the Action's Updates fold into, does the
-     actor have the right `<model>.<verb>` (or `<model>.*`) on the entity's
-     group, where `<model>` is the model the id was committed under rather
-     than a component's prefix (#624)?
+     actor have the right permission for the component the write names? A
+     row create or delete names the model (`<model>.create`), a value write
+     names its component (`<model>/<component>.update`), and grants match by
+     ancestry, so `<model>.*` covers the whole model. `<model>` is the model
+     the id was committed under rather than a component's prefix (#624).
 
   Delivery scope is no longer a validation concern: the Writer persists
   each Update's own fan-out scope and the router delivers per Update
@@ -38,14 +40,16 @@ defmodule EbbServer.Storage.PermissionChecker do
 
   ## What "permission" means here
 
-  Permissions are stored on the Group system component as a list of
-  `<model>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`). The
-  actor's per-group permissions are loaded into `GrantCache` on startup;
-  a write to a Group updates the cache in place. Writes that arrive
-  referencing an entity whose group the actor is not a member of, or
-  referencing a permission the actor doesn't have, are rejected with
-  `not_authorized`. The error shape mirrors the Writer's other reject
-  reasons so the client can present a uniform error UI.
+  Permissions are stored on `ebb/grant` rows as a list of
+  `<subject>.<verb>` strings (e.g. `"todo.update"`, `"todo.*"`,
+  `"note/body.update"`, `"ebb/grant.create"`). A grant covers its own
+  subject and every subject descended from it, so `todo.*` covers
+  `todo/body`. The actor's per-group permissions are loaded into
+  `GrantCache` on startup; a write to a Group updates the cache in place.
+  Writes that arrive referencing an entity whose group the actor is not a
+  member of, or referencing a permission the actor doesn't have, are
+  rejected with `not_authorized`. The error shape mirrors the Writer's
+  other reject reasons so the client can present a uniform error UI.
 
   ## Read authorization
 
