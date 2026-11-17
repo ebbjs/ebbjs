@@ -361,8 +361,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const get = (id: string): Entity | undefined => viewOf(id) ?? undefined;
 
   const iterate = (model: string): readonly Entity[] => {
-    // The base index answers for every composed row, and the overlay can move a
-    // row between models without touching the base, so its overrides win.
+    // The base index answers for every composed row, but the overlay can know a
+    // row the base has never seen — an optimistic create — or hold the create
+    // that settles a placeholder's provisional model, so its rows win.
     const ids = new Set(modelIndex.get(model) ?? []);
     for (const [id, row] of effective) {
       if (row !== null && row.model === model) ids.add(id);
@@ -384,20 +385,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     else pending.push(entry);
   };
 
-  /** Drop dormant names the row's current model cannot carry. */
-  const dropStaleDormant = (id: string, type: string): void => {
-    const known = dormant.get(id);
-    if (known === undefined) return;
-    for (const component of known) {
-      const model = componentModel(component);
-      if (model !== type && model !== EBB_MODEL_NAME) known.delete(component);
-    }
-    if (known.size === 0) dormant.delete(id);
-  };
-
   /** Remove a non-held component's value from a base row and keep its existence. */
   const stripToResidency = (id: string, row: Entity): Entity => {
-    dropStaleDormant(id, row.model);
     let changed = false;
     const fields: Record<string, FieldValue> = {};
     for (const [field, value] of Object.entries(row.data.fields)) {
@@ -467,13 +456,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
             notePendingPresence(id, component, update.method !== "drop");
             return;
           }
-          const sameModel = componentModel(component) === previous.model;
           if (update.method === "drop") forgetDormant(id, component);
           else ensureDormant(id, component);
-          // A write in the row's own model changes no retained value, so it must
-          // not advance the row's metadata and invalidate every reader of the
-          // model. A write naming another model moves the row and falls through.
-          if (sameModel) return;
+          // The create fixes the row's model, so a component write moves nothing,
+          // and a value the policy does not retain cannot reach a reader: keeping
+          // it must not advance the row's metadata and re-run the model's readers.
+          return;
         }
       }
     }
@@ -541,12 +529,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
     if (row === base) return;
 
-    const residentRow = stripToResidency(id, row);
-    entities.set(id, residentRow);
-    if (base.model !== residentRow.model) {
-      removeFromModel(base.model, id);
-      addToModel(residentRow.model, id);
-    }
+    // Buffered writes are drops, which detach a field and never move a model.
+    entities.set(id, stripToResidency(id, row));
   };
 
   /**

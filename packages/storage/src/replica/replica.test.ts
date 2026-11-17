@@ -523,7 +523,7 @@ describe("replica: durable fold", () => {
     ]);
   });
 
-  it("serves iterate from the model index across an optimistic model change", () => {
+  it("serves iterate an id whose model only the overlay knows", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -551,36 +551,39 @@ describe("replica: durable fold", () => {
     );
     expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_1", "note_2"]);
 
-    // The optimistic write moves a row out of its model without touching the
-    // base, so `iterate` must honour the overlay's model override.
+    // An optimistic create lands a row the base has never seen, so the base's
+    // model index cannot answer for it: `iterate` must serve the overlay's row.
     replica.optimistic(
-      put({
+      create({
         actionId: "a_local",
         updateId: "u_local",
-        entityId: "note_1",
-        model: "page",
+        entityId: "note_3",
+        model: "note",
         ms: 20,
-        fields: { title: leaf("Promoted", "u_local", 20) },
       }),
     );
-    expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_2"]);
-    expect(replica.iterate("page").map((row) => row.id)).toEqual(["note_1"]);
+    expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_1", "note_2", "note_3"]);
+    expect(replica.iterate("todo")).toEqual([]);
+    expect(replica.get("note_3")?.model).toBe("note");
 
     replica.discard("a_local");
     expect(replica.iterate("note").map((row) => row.id)).toEqual(["note_1", "note_2"]);
-    expect(replica.iterate("page")).toEqual([]);
+    expect(replica.get("note_3")).toBeUndefined();
   });
 
-  it("moves an id between type indices when a put changes its type", () => {
+  it("does not move an id out of the model its create named", () => {
     const replica = createReplica();
     ingest(
       replica,
       put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("Todo", "u_1", 10) } }),
       1,
     );
+    // The wire refuses a component prefix that disagrees with the row's created
+    // model. A replica that meets one anyway must not relabel the row, and must
+    // not let the id answer under a second model.
     ingest(
       replica,
-      put({
+      patch({
         actionId: "a_2",
         updateId: "u_2",
         gsn: 2,
@@ -590,9 +593,9 @@ describe("replica: durable fold", () => {
       }),
       2,
     );
-    expect(replica.iterate("todo")).toEqual([]);
-    expect(replica.iterate("note")).toHaveLength(1);
-    expect(replica.get("e_1")?.model).toBe("note");
+    expect(replica.get("e_1")?.model).toBe("todo");
+    expect(replica.iterate("todo").map((row) => row.id)).toEqual(["e_1"]);
+    expect(replica.iterate("note")).toEqual([]);
   });
 
   it("folds only the delta, so a re-delivered put cannot revert a newer patch", () => {
@@ -977,38 +980,49 @@ describe("replica: materialization policy", () => {
     });
   });
 
-  it("journals the held row a put moves into a not-held type exactly once", () => {
+  it("journals a row that loses its last held component exactly once", () => {
     const replica = createReplica({
-      materialization: { holds: (component) => !component.startsWith("cold/") },
+      materialization: { holds: (component) => component !== "cold/body" },
     });
     ingest(
       replica,
       put({
         actionId: "a_1",
         updateId: "u_1",
+        entityId: "e_cold",
+        model: "cold",
         ms: 10,
-        fields: { title: leaf("Todo", "u_1", 10) },
+        fields: { keep: leaf("Kept", "u_keep", 10), body: leaf("Body", "u_body", 10) },
       }),
       1,
     );
     expect(replica.revision).toBe(1);
+    // The lazy body's value is not retained; its existence is.
+    expect(replica.components("cold/body")).toEqual(["e_cold"]);
+
+    // With the held component detached the lazy one is all the row carries, so
+    // it retains nothing and leaves the replica: one removal, naming every
+    // component it had.
     ingest(
       replica,
-      put({
+      drop({
         actionId: "a_2",
         updateId: "u_2",
-        gsn: 2,
+        entityId: "e_cold",
         model: "cold",
+        gsn: 2,
         ms: 20,
-        fields: { title: leaf("Cold", "u_2", 20) },
+        fields: { keep: leaf(null, "u_keep", 20) },
       }),
       2,
     );
-    expect(replica.get("e_1")).toBeUndefined();
-    expect(replica.iterate("todo")).toEqual([]);
+
+    expect(replica.get("e_cold")).toBeUndefined();
+    expect(replica.iterate("cold")).toEqual([]);
+    expect(replica.components("cold/body")).toEqual([]);
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", deleted: true, components: ["todo/title"] },
+      { revision: 2, id: "e_cold", deleted: true, components: ["cold/keep", "cold/body"] },
     ]);
   });
 });
@@ -1486,31 +1500,34 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.revision).toBe(0);
   });
 
-  it("drops the pin when a fold moves the row into a held type", async () => {
+  it("drops the pin when a fold detaches the pinned component", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
     await replica.open("doc_1", "document/text");
 
     ingest(
       replica,
-      put({
-        actionId: "a_move",
-        updateId: "u_move",
+      drop({
+        actionId: "a_drop",
+        updateId: "u_drop",
         entityId: "doc_1",
-        model: "todo",
+        model: "document",
         gsn: 9,
         ms: 9,
-        fields: { title: leaf("Now held", "u_move", 9) },
+        fields: { text: leaf(null, "u_drop", 9) },
       }),
       9,
     );
 
-    expect(replica.get("doc_1")?.model).toBe("todo");
+    // The row keeps the model its create named and survives with no component;
+    // the pin that held the detached value goes with the component.
+    expect(replica.get("doc_1")?.model).toBe("document");
+    expect(replica.get("doc_1")?.data.fields.text).toBeUndefined();
     expect(replica.isOpen("doc_1", "document/text")).toBe(false);
     expect(replica.stats().pinned).toBe(0);
 
     replica.close("doc_1", "document/text");
-    expect(replica.get("doc_1")?.model).toBe("todo");
+    expect(replica.get("doc_1")?.model).toBe("document");
   });
 
   it("keeps folding live updates into a pinned row", async () => {
@@ -2106,28 +2123,6 @@ describe("replica: residency per component (#802)", () => {
     expect(hydrated.get(noteId)?.data.fields.body).toBeUndefined();
     expect(hydrated.components("note/body")).toEqual([noteId]);
     expect(hydrated.stats()).toMatchObject({ nonResident: 1 });
-  });
-
-  it("drops dormant components a model move cannot carry", () => {
-    const replica = noteReplica();
-    ingest(
-      replica,
-      patch({
-        actionId: "a_move",
-        updateId: "u_move",
-        entityId: noteId,
-        model: "page",
-        gsn: 2,
-        ms: 20,
-        fields: { title: leaf("Page title", "u_move", 20) },
-      }),
-      2,
-    );
-
-    expect(replica.get(noteId)?.model).toBe("page");
-    expect(replica.components("note/body")).toEqual([]);
-    expect(replica.components("page/title")).toEqual([noteId]);
-    expect(replica.stats()).toMatchObject({ nonResident: 0 });
   });
 
   it("drops a lazy component's existence with the component", () => {
