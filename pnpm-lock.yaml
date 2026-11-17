@@ -556,6 +556,9 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@ebbjs/client':
+        specifier: workspace:*
+        version: link:../client
       tsx:
         specifier: ^4.20.4
         version: 4.21.0
