@@ -51,6 +51,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
 
   alias EbbServer.Actor
   alias EbbServer.Sync.PresenceRateLimit.Buckets
+  alias EbbServer.Sync.Timing
 
   @default_rate {100, 200}
 
@@ -68,7 +69,7 @@ defmodule EbbServer.Sync.PresenceRateLimit do
   def call(conn, _opts), do: conn
 
   defp limit(conn, actor_id) do
-    case Buckets.consume(actor_id, now_ms(), rate()) do
+    case Buckets.consume(actor_id, Timing.now_ms(), rate()) do
       :ok ->
         conn
 
@@ -95,11 +96,9 @@ defmodule EbbServer.Sync.PresenceRateLimit do
     end
   end
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
-
   # `Retry-After` is whole seconds, rounded up so a client that honours it
   # cannot retry before a token is actually available.
   defp retry_after_seconds(retry_after_ms) do
-    max(Buckets.ceil_div(retry_after_ms, 1000), 1) |> Integer.to_string()
+    max(Timing.ceil_div(retry_after_ms, 1000), 1) |> Integer.to_string()
   end
 end

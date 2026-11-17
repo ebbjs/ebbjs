@@ -18,6 +18,7 @@ defmodule EbbServer.Sync.SSEConnection do
 
   use GenServer, restart: :temporary
 
+  alias EbbServer.Sync.Timing
   alias EbbServer.Telemetry
 
   @type t :: %__MODULE__{
@@ -99,7 +100,7 @@ defmodule EbbServer.Sync.SSEConnection do
     if is_map(meta) do
       Telemetry.fanout_hop(
         :conn_deliver,
-        span(Map.get(meta, :cast_at), System.monotonic_time()),
+        Timing.span(Map.get(meta, :cast_at), System.monotonic_time()),
         Map.get(meta, :group_id)
       )
     end
@@ -111,9 +112,6 @@ defmodule EbbServer.Sync.SSEConnection do
   # needs the commit time to close `conn_chunk`.
   defp data_message(bytes, meta) when is_map(meta), do: {:sse_data, bytes, meta}
   defp data_message(bytes, _meta), do: {:sse_data, bytes}
-
-  defp span(from, to) when is_integer(from) and is_integer(to), do: max(to - from, 0)
-  defp span(_from, _to), do: nil
 
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) when pid == state.parent_pid do
