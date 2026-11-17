@@ -3,12 +3,6 @@ defmodule EbbServer.Storage.ActionSubmission do
   The write seam: validation and authorization, then the Writer, then one
   rejection list.
 
-  `submit/3` is the sequence `POST /sync/actions` runs and the one the
-  function runtime's `ctx.commit` will use, so both surface the same
-  rejections in the same shape. A caller that runs the two calls itself
-  has to rediscover that a batch rejected in full never reaches the
-  Writer and that permission and writer rejections are reported together.
-
   `{:ok, {0, 0}, rejections}` means no GSN was assigned to this caller —
   every Action was rejected, already durable, or already in flight. It
   does not mean the Actions are durable; see `EbbServer.Storage.Writer`.
@@ -30,11 +24,8 @@ defmodule EbbServer.Storage.ActionSubmission do
       PermissionChecker.validate_and_authorize(actions, actor_id, opts)
 
     if accepted == [] do
-      # The Writer is not asked to write an empty batch: no Actions survived
-      # validation, so no GSN belongs to this caller.
       {:ok, {0, 0}, format_rejections(permission_rejected)}
     else
-      # The Router owns HTTP mapping; this seam owns the shared exit contract.
       try do
         case Writer.write_actions(accepted, Keyword.get(opts, :writer_name, Writer)) do
           {:ok, gsn_range, writer_rejected} ->

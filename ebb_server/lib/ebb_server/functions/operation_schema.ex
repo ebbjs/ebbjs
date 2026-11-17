@@ -173,12 +173,6 @@ defmodule EbbServer.Functions.Router.OperationSchema do
     }
   end
 
-  @doc """
-  The invocation request body: the function's params.
-
-  The shape is the function's own params schema, so this documents the
-  envelope around it rather than guessing fields. An absent body is `{}`.
-  """
   def invoke_request do
     %OpenApiSpex.Schema{
       type: :object,

@@ -43,16 +43,6 @@ defmodule EbbServer.Functions.Invocation do
   survives the boundary — a rejected commit is `422 rejected`, a failed read
   `500 read_failed` — so the endpoint can put it in the response envelope
   unchanged.
-
-  ## Telemetry and reuse
-
-  `run/1` emits `[:ebb, :functions, :invoke, :start]` and `:stop` around the
-  invocation with `name`, `version`, `actor_id`, `caller_kind`, `outcome`,
-  counters, `duration`, and `worker_pid`; an unexpected raise is an
-  `:exception` event. A successful result *releases* the worker when its
-  transport supports reuse (the pool) and closes it otherwise. Every failure
-  path closes it: a worker that timed out or failed must not serve another
-  caller.
   """
 
   alias EbbServer.Functions.{Host, Log, Protocol, Worker}
@@ -158,8 +148,6 @@ defmodule EbbServer.Functions.Invocation do
       input_bytes: Keyword.get(opts, :input_bytes, 0),
       log_budget: Log.new_budget(),
       worker_pid: nil,
-      # `nil` until a commit succeeds, then the reply's `replayed` flag. An
-      # invocation commits at most one Action, so there is nothing to merge.
       commit: nil
     }
 
@@ -356,8 +344,6 @@ defmodule EbbServer.Functions.Invocation do
   defp count_op(state, "commit", {:ok, _value}), do: %{state | writes: state.writes + 1}
   defp count_op(state, _op, _result), do: state
 
-  # Only a successful commit says anything about the invocation's writes; a
-  # failing one ends the invocation with the host's own error.
   defp record_commit(state, "commit", {:ok, %{"replayed" => replayed}})
        when is_boolean(replayed) do
     %{state | commit: %{replayed: replayed}}

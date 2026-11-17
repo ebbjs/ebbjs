@@ -34,7 +34,6 @@ defmodule EbbServer.Functions.Stats do
   ]
   @pool_metrics [:idle, :busy, :queued, :workers, :spawn_failures, :kills, :respawning]
 
-  @doc "The ETS table holding the counters."
   @spec table() :: atom()
   def table, do: @table
 
@@ -92,7 +91,6 @@ defmodule EbbServer.Functions.Stats do
     set_pool(measurements)
   end
 
-  @doc "Increments one counter for a function version."
   @spec increment_function(map(), atom(), integer()) :: :ok
   def increment_function(metadata, metric, amount \\ 1) do
     with name when is_binary(name) <- Map.get(metadata, :name),
@@ -103,7 +101,6 @@ defmodule EbbServer.Functions.Stats do
     :ok
   end
 
-  @doc "Sets the pool gauges from a map of `metric => value`."
   @spec set_pool(map()) :: :ok
   def set_pool(measurements) when is_map(measurements) do
     Enum.each(measurements, fn {metric, value} ->
@@ -115,7 +112,6 @@ defmodule EbbServer.Functions.Stats do
     :ok
   end
 
-  @doc "Increments one pool gauge."
   @spec bump_pool(atom(), integer()) :: :ok
   def bump_pool(metric, amount \\ 1) when metric in @pool_metrics do
     increment({:pool, metric}, amount)

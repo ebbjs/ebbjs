@@ -9,21 +9,10 @@ defmodule EbbServer.Tailscale.Node do
   contract stays this narrow — the gateway knows only "login is identity" — so
   either half can be replaced without the other.
 
-  Events:
-
-    * `login` — a URL the operator has to visit, logged once per URL;
-    * `qr` — the same URL as ASCII lines, printed raw, because a `Logger`
-      prefix on every line breaks the block characters a scanner needs;
-    * `running` — the node is serving: stored for `status/1` and reported with
-      its addresses and the tags Tailscale actually applied;
-    * `error` — forwarded as an error line.
-
   A gateway that exits is restarted with exponential backoff, because the usual
   reason is a control-plane outage the operator cannot act on. The attempt
   counter resets on `running`, so a node that never reaches the tailnet retries
-  slowly instead of hammering the control plane. An exit the gateway marks as
-  fatal (a bad configuration, or a listener it cannot bind) stops the child
-  instead: the next attempt would fail the same way.
+  slowly instead of hammering the control plane.
 
   The node stops itself when tags were requested, Tailscale applied none of
   them, and `EBB_TAILSCALE_REQUIRE_TAGS` is set. A tagged node is the
@@ -59,16 +48,6 @@ defmodule EbbServer.Tailscale.Node do
 
   @default_tag "tag:ebb"
 
-  @doc """
-  Starts the gateway, writing the initial configuration immediately.
-
-  `:config` is the map `EbbServer.Tailscale.Config.resolve/2` returns, plus the
-  `:proxy_secret` the gateway must echo per request. The remaining options are
-  test knobs so a suite never needs the environment or a real tailnet:
-  `:name` (default `__MODULE__`, `nil` for an anonymous process),
-  `:backoff_initial_ms`, `:backoff_max_ms`, `:shutdown_timeout_ms`, and
-  `:spawn_opts` (extra `Port.open/2` options).
-  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     {config, opts} = Keyword.pop(opts, :config)
@@ -94,11 +73,9 @@ defmodule EbbServer.Tailscale.Node do
     }
   end
 
-  @doc "The last `running` event, or `nil` before the node has served."
   @spec status(GenServer.server()) :: map() | nil
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
 
-  @doc "The last login URL the gateway reported, or `nil` while authorized."
   @spec last_login_url(GenServer.server()) :: String.t() | nil
   def last_login_url(server \\ __MODULE__), do: GenServer.call(server, :last_login_url)
 

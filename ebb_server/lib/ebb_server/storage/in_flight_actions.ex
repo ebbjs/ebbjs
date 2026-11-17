@@ -20,16 +20,6 @@ defmodule EbbServer.Storage.InFlightActions do
   by history. `cf_action_dedup` still grows without bound, and compacting
   it is out of scope ([#123](https://github.com/ebbjs/ebbjs/issues/123)).
 
-  ## Data structures
-
-  - `:persistent_term {InFlightActions, :table}` — the public named ETS
-    `:set` of action ids. `:named_table` plus `:public` lets every process
-    insert, delete, and count without a `GenServer.call`.
-
-  The Writer's `EbbServer.Storage.CommitPipeline` owns the claim/release
-  decision and its ordered view of the ids; this table is the lock-free
-  projection that makes the claim atomic across processes.
-
   ## Lifecycle
 
   The GenServer exists only to own the ETS table lifetime. **All public
@@ -66,14 +56,6 @@ defmodule EbbServer.Storage.InFlightActions do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc """
-  Claims `ids`, returning the ones this caller won and the ones that were
-  already in flight.
-
-  Each id is inserted with `:ets.insert_new/2`, so exactly one concurrent
-  claimant wins it. `ids` is expected to be unique; a duplicate inside one
-  call reports the later occurrence as already in flight.
-  """
   @spec claim([id()], GenServer.name()) :: {[id()], [id()]}
   def claim(ids, name \\ __MODULE__) do
     table = table(name)

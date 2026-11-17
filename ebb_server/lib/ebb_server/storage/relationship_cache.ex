@@ -2,11 +2,6 @@ defmodule EbbServer.Storage.RelationshipCache do
   @moduledoc """
   GenServer that owns the relationship ETS tables.
 
-  Manages domain relationship edges, with a secondary index that
-  allows lookups by relationship id. Uses two ETS tables:
-  - `:ebb_relationships` - `:bag` of `{source_id, entry}`, one row per edge
-  - `:ebb_relationships_by_id` - maps relationship id to entry
-
   Entity↔Group membership lives in `MembershipCache`, not here: a
   `Relationship` is a pure domain edge with no membership marker.
 
@@ -30,22 +25,6 @@ defmodule EbbServer.Storage.RelationshipCache do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc """
-  Stores a relationship entry.
-
-  Accepts both atom keys (`:source_id`) and string keys (`"source_id"`).
-
-  ## Examples
-
-      iex> RelationshipCache.put_relationship(%{
-      ...>   id: "rel_1",
-      ...>   source_id: "todo_1",
-      ...>   target_id: "g_1",
-      ...>   type: "todo",
-      ...>   field: "group"
-      ...> })
-      :ok
-  """
   @spec put_relationship(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
   def put_relationship(rel, opts \\ []) do
     rel_table = Keyword.get(opts, :relationships, @default_relationships)
@@ -79,14 +58,6 @@ defmodule EbbServer.Storage.RelationshipCache do
     end
   end
 
-  @doc """
-  Deletes a relationship entry by ID.
-
-  ## Examples
-
-      iex> RelationshipCache.delete_relationship("rel_1")
-      :ok
-  """
   @spec delete_relationship(String.t(), keyword()) :: :ok
   def delete_relationship(rel_id, opts \\ []) do
     rel_table = Keyword.get(opts, :relationships, @default_relationships)
@@ -105,20 +76,6 @@ defmodule EbbServer.Storage.RelationshipCache do
     end
   end
 
-  @doc """
-  Looks up a relationship entry by its id.
-
-  Returns the full entry map (with `:id`, `:source_id`, `:target_id`,
-  `:type`, `:field`) or `nil` if no relationship with that id exists.
-
-  ## Examples
-
-      iex> RelationshipCache.get_relationship("rel_1")
-      %{id: "rel_1", source_id: "todo_1", target_id: "g_1", type: "todo", field: "group"}
-
-      iex> RelationshipCache.get_relationship("unknown")
-      nil
-  """
   @spec get_relationship(String.t(), atom()) :: map() | nil
   def get_relationship(rel_id, table \\ @default_relationships_by_id) do
     case :ets.lookup(table, rel_id) do
@@ -127,14 +84,6 @@ defmodule EbbServer.Storage.RelationshipCache do
     end
   end
 
-  @doc """
-  Resets all relationship tables by clearing every entry.
-
-  ## Examples
-
-      iex> RelationshipCache.reset()
-      :ok
-  """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     rel_table = Keyword.get(opts, :relationships, @default_relationships)

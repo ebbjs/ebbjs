@@ -160,7 +160,6 @@ defmodule EbbServer.Storage.RowMutations do
 
   defp resolve_kind(mutation, _opts), do: mutation
 
-  # A delete names the row and carries no component.
   defp split_component(component) when is_binary(component), do: Component.split(component)
   defp split_component(nil), do: {nil, nil}
 

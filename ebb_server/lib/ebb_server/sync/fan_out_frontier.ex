@@ -45,10 +45,6 @@ defmodule EbbServer.Sync.FanOutFrontier do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc """
-  Returns the persisted frontier, or `:empty` when nothing has been
-  pushed yet (or the frontier table is not available).
-  """
   @spec get(GenServer.name()) :: {:ok, gsn()} | :empty
   def get(name \\ __MODULE__) do
     case table(name) do

@@ -11,20 +11,7 @@ defmodule EbbServer.Admin.Token do
 
   `EbbServer.Application` calls `resolve!/0` once at boot, before any listener
   accepts a request and before `EbbServer.Functions.resolve!/0` reads the
-  value. Precedence, highest first:
-
-    1. `EBB_ADMIN_TOKEN`
-    2. `:ebb_server, :admin_token`
-    3. `EBB_FUNCTIONS_ADMIN_TOKEN`
-    4. `:ebb_server, :functions, :admin_token`
-
-  The last two are the pre-promotion location and stay as a fallback, so an
-  existing functions deployment keeps its credential without rewriting its
-  configuration. `resolve!/0` writes the winner to `:ebb_server, :admin_token`
-  and deletes the key when there is no winner. Blank values count as unset.
-
-  `value/0` reads the resolved value and falls back to the functions key for a
-  caller that runs before `resolve!/0` (a test or a direct module call).
+  value.
 
   ## Failing closed
 
@@ -50,11 +37,8 @@ defmodule EbbServer.Admin.Token do
   @type error :: {:error, :denied} | {:error, :not_configured}
 
   @doc """
-  Resolves the admin credential once and writes it to `:ebb_server, :admin_token`.
-
-  Called by `EbbServer.Application` at boot. A blank winner is removed rather
-  than stored as an empty string, so `value/0` cannot mistake it for a
-  configured credential.
+  A blank winner is removed rather than stored as an empty string, so `value/0`
+  cannot mistake it for a configured credential.
   """
   @spec resolve!() :: :ok
   def resolve! do
@@ -81,12 +65,6 @@ defmodule EbbServer.Admin.Token do
       functions_value()
   end
 
-  @doc """
-  The effective admin credential, or `nil` when this node has none.
-
-  Reads the value `resolve!/0` wrote, falling back to the functions key so a
-  direct call before boot still sees a configured credential.
-  """
   @spec value() :: String.t() | nil
   def value do
     case blank_to_nil(Application.get_env(:ebb_server, @server_key)) do
@@ -95,17 +73,6 @@ defmodule EbbServer.Admin.Token do
     end
   end
 
-  @doc """
-  Authorizes a request against the admin credential.
-
-  Options:
-
-    * `:token` — the credential to compare against (default: `value/0`).
-      Tests pass their own so they do not have to mutate application config.
-
-  Returns `:ok`, `{:error, :denied}` for a missing, malformed, or wrong
-  credential, or `{:error, :not_configured}` when no credential exists.
-  """
   @spec authorize(Plug.Conn.t(), keyword()) :: :ok | error()
   def authorize(conn, opts \\ []) do
     token =

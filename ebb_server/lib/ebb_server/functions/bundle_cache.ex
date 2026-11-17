@@ -21,10 +21,6 @@ defmodule EbbServer.Functions.BundleCache do
   neither: the endpoint above maps `:unknown_function` to `404` and the rest to
   a platform failure, so collapsing them here would make a tampered bundle
   look like a typo in the URL.
-
-  The loader is injected as an option, and its own options are passed through
-  untouched, so #595's store loader is a different `:loader` rather than a
-  change here.
   """
 
   use GenServer
@@ -63,12 +59,6 @@ defmodule EbbServer.Functions.BundleCache do
     end
   end
 
-  @doc """
-  Returns the active bundle for `name`.
-
-  `:cache` is the server to ask, so a test or a second cache instance never has
-  to share the registered name.
-  """
   @spec active(String.t(), GenServer.server()) :: {:ok, Bundle.t()} | {:error, error()}
   def active(name, cache \\ __MODULE__) do
     GenServer.call(cache, {:active, name})

@@ -41,9 +41,6 @@ defmodule EbbServer.Functions.Validate do
   def params(%Bundle{resolved_params_schema: nil}, _data), do: :ok
   def params(%Bundle{resolved_params_schema: root}, data), do: validate(root, data)
 
-  @doc """
-  Validates a function's result against the bundle's optional output schema.
-  """
   @spec output(Bundle.t(), term()) :: :ok | {:error, [issue()]}
   def output(%Bundle{resolved_output_schema: nil}, _data), do: :ok
   def output(%Bundle{resolved_output_schema: root}, data), do: validate(root, data)

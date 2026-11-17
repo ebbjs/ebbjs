@@ -83,8 +83,6 @@ defmodule EbbServer.Application do
   def bind_ip(:tailscale), do: {127, 0, 0, 1}
   def bind_ip(_mode), do: :any
 
-  # Resolves the node and, for the embedded mode, mints the proxy secret
-  # `AuthPlug` requires. Returns the children to start after Bandit.
   @doc false
   @spec resolve_tailscale!(String.t(), integer()) :: [Supervisor.child_spec()]
   def resolve_tailscale!(data_dir, port) do
@@ -114,8 +112,6 @@ defmodule EbbServer.Application do
         [{Tailscale.Node, [config: Map.put(config, :proxy_secret, secret)]}]
     end
   rescue
-    # Same reason as `resolve_auth!/0`: a release whose `start/2` raises is
-    # reported as a generic shutdown and loses the actionable message.
     error in RuntimeError ->
       IO.puts(:stderr, "ebb_server boot failed: #{Exception.message(error)}")
       reraise error, __STACKTRACE__
@@ -211,8 +207,6 @@ defmodule EbbServer.Application do
     end
   end
 
-  # The exporter is opt-in: without a configured handler it is never
-  # started, so an unconfigured node pays nothing for the feature.
   @doc false
   @spec action_export_children() :: [Supervisor.child_spec()]
   def action_export_children do
@@ -223,10 +217,6 @@ defmodule EbbServer.Application do
     end
   end
 
-  # The functions store and bundle cache are opt-in: `children/1` is `[]` when
-  # the flag is off, the store then the cache when versions live in SQLite, or
-  # the cache alone over `:bundle_dir`. The data dir is the one the node
-  # resolved once, so the functions database always sits beside the others.
   defp functions_children(data_dir), do: EbbServer.Functions.children(data_dir: data_dir)
 
   # The suite points the registry at a per-run directory so `apps.json` never
@@ -235,11 +225,6 @@ defmodule EbbServer.Application do
     Application.get_env(:ebb_server, :apps_data_dir, data_dir)
   end
 
-  # Resolution order for the storage data directory:
-  #   1. `Application.get_env(:ebb_server, :data_dir)` (set by `config/*.exs`)
-  #   2. `EBB_DATA_DIR` environment variable (set by containerized deployments)
-  #   3. `./data` (the historical default for `mix run`)
-  #
   # The application env is checked first so that `MIX_ENV=test mix test`
   # honors the path declared in `config/test.exs` instead of leaking test
   # state into `./data` at the project root.

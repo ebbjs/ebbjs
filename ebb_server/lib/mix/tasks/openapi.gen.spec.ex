@@ -3,12 +3,8 @@ defmodule Mix.Tasks.Openapi.Gen.Spec do
   Generates an OpenAPI 3.1 spec from the routers' published operations and
   writes it to `openapi.yaml`.
 
-  Usage:
-      mix openapi.gen.spec
-
   Each route names the module that owns it, so a router's operations are its
-  own; the task never has to know which surface a path belongs to. The spec is
-  written to the project root (openapi.yaml).
+  own; the task never has to know which surface a path belongs to.
   """
   use Mix.Task
 

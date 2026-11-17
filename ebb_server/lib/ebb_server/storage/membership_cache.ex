@@ -2,16 +2,6 @@ defmodule EbbServer.Storage.MembershipCache do
   @moduledoc """
   GenServer that owns the entity↔Group membership ETS tables.
 
-  Manages entity-to-group mappings carried by the `ebb/membership`
-  component, with secondary indexes keyed by row id and by group.
-  Uses three ETS tables:
-  - `:ebb_memberships` - `:bag` of `{entity_id, entry}`, one row per
-    membership
-  - `:ebb_memberships_by_id` - maps membership id to entry
-  - `:ebb_memberships_by_group` - `:ordered_set` of `{{group_id,
-    entity_id}}`, one row per membership, so a membership write is
-    O(log N) rather than the O(group size) a `:bag` lookup costs
-
   This mirrors `RelationshipCache`'s table shape and API — keyword-list
   options and `reset/1` — rather than `GrantCache`'s single-table
   signatures. The split from `GrantCache` is deliberate: a grant carries
@@ -40,16 +30,6 @@ defmodule EbbServer.Storage.MembershipCache do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc """
-  Stores an entity↔Group membership entry.
-
-  Accepts both atom keys (`:entity_id`) and string keys (`"entity_id"`).
-
-  ## Examples
-
-      iex> MembershipCache.put_membership(%{id: "eg_1", entity_id: "todo_1", group_id: "g_1"})
-      :ok
-  """
   @spec put_membership(map(), keyword()) :: :ok | {:error, :nil_values_not_allowed}
   def put_membership(membership, opts \\ []) do
     table = Keyword.get(opts, :memberships, @default_memberships)
@@ -97,14 +77,6 @@ defmodule EbbServer.Storage.MembershipCache do
     :ets.delete(by_group_table, {entry.group_id, entry.entity_id})
   end
 
-  @doc """
-  Deletes an entity↔Group membership entry by its id.
-
-  ## Examples
-
-      iex> MembershipCache.delete_membership("eg_1")
-      :ok
-  """
   @spec delete_membership(String.t(), keyword()) :: :ok
   def delete_membership(entry_id, opts \\ []) do
     table = Keyword.get(opts, :memberships, @default_memberships)
@@ -124,17 +96,6 @@ defmodule EbbServer.Storage.MembershipCache do
     end
   end
 
-  @doc """
-  Looks up an entity↔Group membership entry by its id.
-
-  ## Examples
-
-      iex> MembershipCache.get_membership("eg_1")
-      %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"}
-
-      iex> MembershipCache.get_membership("unknown")
-      nil
-  """
   @spec get_membership(String.t(), atom()) :: map() | nil
   def get_membership(entry_id, table \\ @default_memberships_by_id) do
     case :ets.lookup(table, entry_id) do
@@ -143,17 +104,6 @@ defmodule EbbServer.Storage.MembershipCache do
     end
   end
 
-  @doc """
-  Returns the distinct group ids an entity belongs to.
-
-  ## Examples
-
-      iex> MembershipCache.memberships("todo_1")
-      ["g_1", "g_2"]
-
-      iex> MembershipCache.memberships("unknown")
-      []
-  """
   @spec memberships(String.t(), atom()) :: [String.t()]
   def memberships(entity_id, table \\ @default_memberships) do
     entity_id
@@ -161,12 +111,6 @@ defmodule EbbServer.Storage.MembershipCache do
     |> memberships_from_entries()
   end
 
-  @doc """
-  Projects raw membership entries to the distinct group ids they name.
-
-  An overlay caller replaces the membership rows it touches before this
-  projection, so a tombstone removes the cached group.
-  """
   @spec memberships_from_entries([map()]) :: [String.t()]
   def memberships_from_entries(entries) do
     entries
@@ -174,13 +118,6 @@ defmodule EbbServer.Storage.MembershipCache do
     |> Enum.uniq()
   end
 
-  @doc """
-  Returns the raw membership entries for an entity.
-
-  `memberships/2` is the plain cached answer; this form lets an overlay
-  replace individual membership rows by id before the group set is
-  projected.
-  """
   @spec membership_entries(String.t(), atom()) :: [map()]
   def membership_entries(entity_id, table \\ @default_memberships) do
     table
@@ -189,32 +126,17 @@ defmodule EbbServer.Storage.MembershipCache do
   end
 
   @doc """
-  Returns the entity ids that belong to a group, in no particular
-  order.
-
   No production caller yet; the cache tests use it to pin the by-group
-  index's put/delete behavior. Reads the `:ordered_set` by the
-  partially-bound composite key, so cost scales with the number of
-  members rather than the whole index.
+  index's put/delete behavior.
 
-  ## Examples
-
-      iex> MembershipCache.group_entities("g_1")
-      ["todo_1", "todo_2"]
+  Reads the `:ordered_set` by the partially-bound composite key, so cost
+  scales with the number of members rather than the whole index.
   """
   @spec group_entities(String.t(), atom()) :: [String.t()]
   def group_entities(group_id, table \\ @default_memberships_by_group) do
     :ets.select(table, [{{{group_id, :"$1"}}, [], [:"$1"]}])
   end
 
-  @doc """
-  Resets all membership tables by clearing every entry.
-
-  ## Examples
-
-      iex> MembershipCache.reset()
-      :ok
-  """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     table = Keyword.get(opts, :memberships, @default_memberships)

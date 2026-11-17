@@ -61,15 +61,7 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
   @labels_counter :"$counter"
   @select_chunk 1_000
 
-  @typedoc """
-  One not-yet-deduplicated index write: a `(label, entity_id)` key to create
-  or remove. The label is a model name or a `<model>/<field>` component name.
-  """
   @type op :: {:put | :delete, {String.t(), String.t()}}
-
-  # ---------------------------------------------------------------------------
-  # Table lifecycle
-  # ---------------------------------------------------------------------------
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -91,13 +83,8 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     :ok
   end
 
-  @doc """
-  The `{entries, labels}` table pair for the given overrides, defaulting to
-  the instance this process tree started.
-
-  Callers that override one name should override both; a lone name falls back
-  to the other half of the live instance.
-  """
+  # Override both names or neither: a lone override pairs with the live
+  # instance's other table.
   @spec tables(keyword()) :: {atom(), atom()}
   def tables(opts \\ []) do
     case {Keyword.get(opts, :component_index), Keyword.get(opts, :component_entity_labels)} do
@@ -109,9 +96,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     end
   end
 
-  @doc """
-  Clears both tables, creating them if the caller has no started instance.
-  """
   @spec reset(keyword()) :: :ok
   def reset(opts \\ []) do
     {entries, labels} = create_tables(opts)
@@ -120,10 +104,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     :ok
   end
 
-  @doc """
-  Number of entries currently held. Tests use it to pin the op plan; the
-  resident-set bench reads the tables directly.
-  """
   @spec size(keyword()) :: non_neg_integer()
   def size(opts \\ []) do
     {entries, _labels} = tables(opts)
@@ -151,13 +131,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     ArgumentError -> :ok
   end
 
-  # ---------------------------------------------------------------------------
-  # Op plan
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  The component entries one Action's Updates imply, in wire order.
-  """
   @spec update_ops([map()]) :: [op()]
   def update_ops(updates), do: Enum.flat_map(updates, &update_op/1)
 
@@ -174,11 +147,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
   # A delete names the row, so the components it detaches are unknown.
   defp update_op(_update), do: []
 
-  @doc """
-  One Action's index writes: a component entry per value Update (unless
-  `components: false`, the bench-only split), then one model entry per folded
-  subject.
-  """
   @spec action_ops([map()], [{String.t() | nil, String.t()}], keyword()) :: [op()]
   def action_ops(updates, model_entries, opts \\ []) do
     component_ops =
@@ -187,13 +155,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     component_ops ++ model_ops(model_entries)
   end
 
-  @doc """
-  One model entry per folded subject, skipping a subject the fold could not
-  resolve a model for.
-
-  `entries` is `{model | nil, entity_id}` per subject, in first-appearance
-  order.
-  """
   @spec model_ops([{String.t() | nil, String.t()}]) :: [op()]
   def model_ops(entries) do
     Enum.flat_map(entries, fn
@@ -216,9 +177,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     |> Enum.map(fn {key, op} -> {op, key} end)
   end
 
-  @doc """
-  Reduces a flush's per-Action op lists, in GSN order, to one write per key.
-  """
   @spec reduce_batch_ops([[op()]]) :: [op()]
   def reduce_batch_ops(op_lists) do
     op_lists
@@ -226,13 +184,6 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
     |> reduce_ops()
   end
 
-  # ---------------------------------------------------------------------------
-  # Store
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  Applies ordered ops. Last write wins across the list.
-  """
   @spec apply_ops([op()], keyword()) :: :ok
   def apply_ops(ops, opts \\ []) do
     {entries, labels} = tables(opts)

@@ -54,18 +54,7 @@ defmodule EbbServer.Storage.PermissionChecker do
   ## Read authorization
 
   The same membership cache answers read-side checks, so a single
-  module owns "is this actor allowed to see this?". Writes and reads
-  share one definition of membership:
-
-    - `member_of_group?/3` — the actor has any membership in the group.
-    - `member_of_all_groups?/3` — the actor is a member of every group
-      (subscription scoping for catch-up and the SSE stream).
-    - `member_group_ids/3` — the subset of a group list the actor may
-      read, used to narrow a presence broadcast.
-    - `can_read?/3` — resolves an entity's groups through
-      `EntityScope.source_groups/2` and passes when the actor is a
-      member of at least one. Group-scoped, matching the write model;
-      there are no per-entity or per-field read permissions yet.
+  module owns "is this actor allowed to see this?".
 
   Read checks take the same table options as the authorization
   pipeline; callers that omit them get the cache tables published by
@@ -128,8 +117,6 @@ defmodule EbbServer.Storage.PermissionChecker do
   end
 
   @doc """
-  Returns true when the actor holds a membership in the group.
-
   Mirrors `GrantCache.get_permissions/3`: a membership whose permission
   list is empty does not count, matching how the write pipeline decides
   group ownership.
@@ -140,8 +127,6 @@ defmodule EbbServer.Storage.PermissionChecker do
   end
 
   @doc """
-  Returns true when the actor is a member of every listed group.
-
   Used to scope subscriptions (catch-up, the SSE stream) to groups the
   actor may read. An empty list passes vacuously; callers that need a
   non-empty selection validate that before calling.
@@ -151,19 +136,12 @@ defmodule EbbServer.Storage.PermissionChecker do
     Enum.all?(group_ids, &member_of_group?(&1, actor_id, opts))
   end
 
-  @doc """
-  Returns the subset of `group_ids` the actor is a member of, preserving
-  the input order. Used to narrow a broadcast to the groups that should
-  receive it.
-  """
   @spec member_group_ids([String.t()], String.t(), keyword()) :: [String.t()]
   def member_group_ids(group_ids, actor_id, opts \\ []) do
     Enum.filter(group_ids, &member_of_group?(&1, actor_id, opts))
   end
 
   @doc """
-  Returns true when the actor may read the entity.
-
   Resolves the entity's groups with `EntityScope.source_groups/2` and
   passes when the actor is a member of at least one. An entity in no
   group is readable by nobody — including its would-be author — matching

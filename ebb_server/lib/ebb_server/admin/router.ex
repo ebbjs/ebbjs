@@ -13,20 +13,6 @@ defmodule EbbServer.Admin.Router do
   `EbbServer.Sync.AuthPlug`, so an admin request is authenticated by the
   admin credential alone. A node with no credential configured answers `403`
   for every route rather than opening them.
-
-    - `GET /apps` — the registered apps.
-    - `POST /apps` — `{"name", "origins"}`; the name is unique
-      case-insensitively and each origin is unique across apps.
-    - `DELETE /apps/:id` — remove an app and every origin it admits.
-    - `POST /apps/:id/origins` — `{"origin"}`.
-    - `DELETE /apps/:id/origins/:origin` — the origin is URL-encoded in the
-      path.
-
-  Origins are normalized by `EbbServer.Apps.Origin`: lowercase scheme and
-  host, default port stripped, no path/query/fragment, `null` rejected. A
-  wildcard is accepted only as the whole first host label
-  (`https://*.example.com`). Registration admits browser origins to CORS; it
-  is not authorization and does not affect non-browser clients.
   """
 
   use Plug.Router
@@ -91,10 +77,6 @@ defmodule EbbServer.Admin.Router do
     conn |> send_resp(404, "") |> Plug.Conn.halt()
   end
 
-  # ---------------------------------------------------------------------------
-  # Auth
-  # ---------------------------------------------------------------------------
-
   # `:admin_opts` is how a suite injects an isolated registry and token; a
   # forwarded request has none and uses the node's resolved credential.
   defp authorize(conn, _opts) do
@@ -125,10 +107,6 @@ defmodule EbbServer.Admin.Router do
   defp apps_opts(conn), do: Keyword.get(admin_opts(conn), :apps, [])
 
   defp admin_opts(conn), do: Map.get(conn.assigns, :admin_opts, [])
-
-  # ---------------------------------------------------------------------------
-  # Request plumbing
-  # ---------------------------------------------------------------------------
 
   defp app_fields(%{"name" => name, "origins" => origins})
        when is_binary(name) and is_list(origins) do
@@ -226,10 +204,6 @@ defmodule EbbServer.Admin.Router do
         |> Plug.Conn.halt()
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # OpenAPI
-  # ---------------------------------------------------------------------------
 
   def openapi_operation(:list_apps) do
     %{

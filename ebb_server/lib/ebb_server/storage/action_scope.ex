@@ -9,11 +9,6 @@ defmodule EbbServer.Storage.ActionScope do
   catch-up use this so an Update reaches exactly the groups its subject
   scopes to.
 
-  `EbbServer.Storage.ActionFormat` is the one gate on the list's shape: every
-  reader of a committed Action goes through it, and it raises rather than
-  returning a record with a missing or mistyped half. There is no second
-  shape check here.
-
   ## A subject with no entry
 
   A listed subject with `[]` means "deliver to nobody", and its Updates are
@@ -25,10 +20,6 @@ defmodule EbbServer.Storage.ActionScope do
   delete's by-id entry is already gone.
   """
 
-  @doc """
-  Returns the Updates of `action` whose own subject's scope includes
-  `group_id`.
-  """
   @spec updates_for_group(map(), String.t()) :: [map()]
   def updates_for_group(action, group_id) do
     scopes = Map.new(action["subject_scopes"])
