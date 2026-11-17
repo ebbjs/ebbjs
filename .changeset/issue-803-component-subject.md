@@ -13,10 +13,10 @@ declares it now fails at load with an unknown-option error rather than being acc
 A grant covers a write when its subject is the write's subject or an ancestor of it, and its verb
 matches or is `*`:
 
-```diff
-- "note.update"     // only the model subject
-+ "note.*"          // covers note/title and note/body
-+ "note/title.*"    // covers note/title, not note/body
+```text
+"note.*"       // covers note/title and note/body
+"note/title.*" // covers note/title, not note/body
+"note.update"  // covers both: the model is the ancestor of its components
 ```
 
 A user row's create and delete still name no component, so they check the model: `note.create` and

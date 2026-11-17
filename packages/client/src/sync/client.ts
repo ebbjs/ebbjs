@@ -1122,9 +1122,9 @@ export class SyncClient<
    * The global form asks whether the actor holds `<subject>.<verb>` in any
    * of its groups, matching by ancestry: a `note.*` grant also covers
    * `note/body.update`. The per-entity form names no component, so it
-   * resolves a user row at its model and a platform row at its `ebb/*`
-   * component; a field-only grant therefore reports `denied` there. The
-   * result is a discriminated union: `denied`
+   * resolves a user row at its model and a platform row at the subject its
+   * own rule names; a field-only grant therefore reports `denied` there.
+   * The result is a discriminated union: `denied`
    * carries the same {@link PermissionViolation} the write path throws —
    * the missing permission, plus the consulted groups — and `unknown`
    * (no handshake, an unresolvable entity, or an entity with no local
