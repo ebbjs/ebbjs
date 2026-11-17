@@ -54,8 +54,6 @@ defmodule EbbServer.Storage.SystemCache do
 
   alias EbbServer.Telemetry
 
-  @default_gsn_counter_name :ebb_gsn_counter
-
   # Boot re-marking writes one mark per indexed entity, so the batches are
   # bounded to keep a large index from ever being collected into one list.
   @dirty_mark_chunk_size 1_000
@@ -166,8 +164,6 @@ defmodule EbbServer.Storage.SystemCache do
     # whole storage tree.
     Process.flag(:trap_exit, true)
 
-    gsn_counter_name = Keyword.get(opts, :gsn_counter_name, @default_gsn_counter_name)
-
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
     group_cache_opts = Keyword.take(opts, [:table, :grants_by_id, :grants_by_group])
 
@@ -193,10 +189,10 @@ defmodule EbbServer.Storage.SystemCache do
     case Supervisor.start_link(__MODULE__.Children, {:start_children, children}) do
       {:ok, sup_pid} ->
         try do
-          gsn_counter = setup_gsn_counter(opts, gsn_counter_name)
+          gsn_counter = setup_gsn_counter(opts)
           :ok = populate_system_caches(Keyword.take(opts, @populate_opt_keys))
 
-          {:ok, %{sup_pid: sup_pid, gsn_counter: gsn_counter, gsn_counter_name: gsn_counter_name}}
+          {:ok, %{sup_pid: sup_pid, gsn_counter: gsn_counter}}
         catch
           kind, reason ->
             # A partial start must not serve reads: stop the children this
@@ -256,14 +252,12 @@ defmodule EbbServer.Storage.SystemCache do
     end
   end
 
-  defp setup_gsn_counter(opts, gsn_counter_name) do
+  defp setup_gsn_counter(opts) do
     counter =
       case Keyword.get(opts, :gsn_counter) do
         nil -> :atomics.new(1, signed: false)
         existing -> existing
       end
-
-    :persistent_term.put(gsn_counter_name, counter)
 
     case Keyword.get_lazy(opts, :initial_gsn, fn -> RocksDB.get_max_gsn() end) do
       n when n > 0 -> :atomics.put(counter, 1, n)

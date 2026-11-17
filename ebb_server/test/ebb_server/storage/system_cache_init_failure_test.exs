@@ -77,8 +77,6 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
 
     counter = :atomics.new(1, signed: false)
     name = unique_name("system_cache")
-    gsn_counter_name = unique_name("gsn_counter")
-    on_exit(fn -> :persistent_term.erase(gsn_counter_name) end)
 
     assert {:ok, pid} =
              SystemCache.start_link(
@@ -86,12 +84,10 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
                rocks_name: rocks.name,
                sqlite_name: sqlite.name,
                gsn_counter: counter,
-               gsn_counter_name: gsn_counter_name,
                initial_gsn: 42
              )
 
     assert Process.whereis(name) == pid
-    assert :persistent_term.get(gsn_counter_name) === counter
     assert :atomics.get(counter, 1) == 42
 
     assert :ok = GenServer.stop(pid)
@@ -105,8 +101,6 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
     sqlite = TestHelpers.start_sqlite(rocks.dir)
 
     name = unique_name("system_cache")
-    gsn_counter_name = unique_name("gsn_counter")
-    on_exit(fn -> :persistent_term.erase(gsn_counter_name) end)
 
     assert {:ok, pid} =
              SystemCache.start_link(
@@ -114,7 +108,6 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
                rocks_name: rocks.name,
                sqlite_name: sqlite.name,
                gsn_counter: :atomics.new(1, signed: false),
-               gsn_counter_name: gsn_counter_name,
                initial_gsn: 0
              )
 

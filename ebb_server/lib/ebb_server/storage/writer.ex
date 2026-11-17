@@ -296,7 +296,7 @@ defmodule EbbServer.Storage.Writer do
 
     dirty_set = Keyword.get(opts, :dirty_set, DirtyTracker.dirty_set_name())
 
-    gsn_counter = Keyword.get(opts, :gsn_counter, GsnCounter.get_resources().gsn_counter)
+    gsn_counter = Keyword.fetch!(opts, :gsn_counter)
 
     grants =
       Keyword.get(
