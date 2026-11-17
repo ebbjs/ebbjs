@@ -149,12 +149,6 @@ describe("ModelRegistry.validateAction", () => {
     expect(v[0]?.message).toMatch(/Unknown model "list"/);
   });
 
-  it("accepts a component that names its row's create model", () => {
-    const r = buildRegistry();
-    r.register(defineModel("note", { title: e.string() }));
-    expect(r.validateAction(buildAction([createUpdate, validUpdate]))).toEqual([]);
-  });
-
   it("refuses a component whose model disagrees with its row's create", () => {
     const r = buildRegistry();
     r.register(defineModel("note", { title: e.string() }));

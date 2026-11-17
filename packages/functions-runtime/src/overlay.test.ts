@@ -40,12 +40,17 @@ describe("ctx.get overlay", () => {
       done: false,
       labels: [],
     });
-    expect(view?.data.fields["title"]).toMatchObject({ value: "New" });
-    // The creation time is the create's; the component writes carry their own,
-    // later stamps and the newest of them is the row's updated time.
-    expect(view?.created_hlc).toMatch(/^\d+$/);
+    // The leaf is a complete wire stamp of its own: the create carries the
+    // row's creation time, the component write that follows carries a later one.
+    expect(view?.data.fields["title"]).toEqual({
+      value: "New",
+      update_id: expect.any(String),
+      hlc: expect.stringMatching(/^\d+$/),
+    });
+    const title = view!.data.fields["title"] as { hlc: string };
+    expect(BigInt(title.hlc)).toBeGreaterThan(BigInt(view!.created_hlc));
     expect(view?.updated_hlc).toMatch(/^\d+$/);
-    expect(BigInt(view!.updated_hlc)).toBeGreaterThan(BigInt(view!.created_hlc));
+    expect(BigInt(view!.updated_hlc)).toBeGreaterThanOrEqual(BigInt(title.hlc));
     // The write is the only source: no host read was needed.
     expect(host.calls).toEqual([]);
   });

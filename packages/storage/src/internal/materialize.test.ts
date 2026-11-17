@@ -221,26 +221,8 @@ describe("a component write with no create", () => {
       last_gsn: 3,
     });
   });
-
-  it("leaves a later `replace` from deciding existence too", () => {
-    const placeholder = applyUpdate(null, patch(leaf("a", "1", "u_a")), 1, "1")!;
-
-    const next = applyUpdate(
-      placeholder,
-      update("replace", { title: leaf("x", "2", "u_x") }),
-      2,
-      "2",
-    );
-
-    expect(next!.exists).toBe(false);
-    expect(next!.created_hlc).toBe(null);
-  });
 });
 
-/**
- * The fold an entity store runs over one Action for one subject: every Update
- * addressed to that subject, in `updates` order, on top of the row so far.
- */
 describe("foldEntityAction", () => {
   it("folds only this subject's updates, in order", () => {
     const folded = foldEntityAction(

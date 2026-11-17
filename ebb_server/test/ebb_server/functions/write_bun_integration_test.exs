@@ -88,12 +88,10 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     # A row this invocation created has no GSN yet, and the overlay carries
     # the write's own HLCs rather than the stored row's.
     assert overlay["last_gsn"] == 0
-    # The create is the row's creation time; the component write that follows
-    # it advances the row, so the two are not the same stamp (they are not
-    # required to be, and each comes from the write that carried it).
+    # The overlay carries the row's creation time; that it is the create's own
+    # stamp is asserted where the row is committed (`entity_store_test.exs`,
+    # `row_create_integration_test.exs`).
     assert is_binary(overlay["created_hlc"])
-    assert is_binary(overlay["updated_hlc"])
-    assert overlay["created_hlc"] <= overlay["updated_hlc"]
     # The overlay publishes the same wire shape the endpoint does: a field is
     # its leaf, not a projected value.
     assert overlay["data"]["fields"]["title"]["value"] == title

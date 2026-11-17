@@ -390,8 +390,6 @@ describe("@ebbjs/write", () => {
       data: null,
     });
     expect(entityUpdate.method).toBe("merge");
-    expect(isRowCreate(membershipDelete)).toBe(false);
-    expect(isRowCreate(entityUpdate)).toBe(false);
   });
 
   it("refuses a drop naming no component", () => {

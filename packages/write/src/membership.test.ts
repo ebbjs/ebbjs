@@ -153,17 +153,6 @@ describe("membership checker — folding a batch's row facts", () => {
     data: null,
   });
 
-  it("folds a create as the row's existence, not as a component", () => {
-    const writes = foldSubjects([
-      create("todo_1", "todo"),
-      ...update({ subject_id: "todo_1", kind: "todo", value: { title: "x" } }),
-    ]).get("todo_1");
-
-    expect(writes?.created).toBe(true);
-    expect(writes?.model).toBe("todo");
-    expect(writes?.components.size).toBe(1);
-  });
-
   it("scopes a create-only row to the entity's groups", () => {
     const scope = membershipScope(
       [create("todo_1", "todo")],

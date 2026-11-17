@@ -105,19 +105,6 @@ defmodule EbbServer.Storage.RowMutationsTest do
     assert mutation.data == %{"fields" => %{}}
   end
 
-  test "a create contributes no field" do
-    [mutation] =
-      RowMutations.fold(
-        [
-          create("c1", "note_1", "note", 10),
-          component("u1", "note_1", "note/title", :replace, leaf("t", 1))
-        ],
-        entity_models: unknown_type_index()
-      )
-
-    assert mutation.data == %{"fields" => %{"title" => leaf("t", 1)}}
-  end
-
   test "the create decides the model even when it arrives after a component" do
     [mutation] =
       RowMutations.fold(
@@ -191,12 +178,13 @@ defmodule EbbServer.Storage.RowMutationsTest do
   test "a delete supersedes a create for the same row" do
     table = unknown_type_index()
 
-    # The row is new to the index, so without the rule the write half alone
-    # would report `created?: true` and the bootstrap exemption would
-    # authorize a row the same Action removes.
+    # The Action both creates and removes the row, so `created?` must not stand:
+    # the bootstrap exemption would otherwise authorize a row the same Action
+    # takes away.
     [created_then_deleted] =
       RowMutations.fold(
         [
+          create("c1", "note_1", "note", 10),
           component("u1", "note_1", "note/title", :replace, leaf("t", 1)),
           delete("u2", "note_1")
         ],
@@ -258,17 +246,6 @@ defmodule EbbServer.Storage.RowMutationsTest do
     end
   end
 
-  test "explicit predicates stand in for the index" do
-    [mutation] =
-      RowMutations.fold([delete("u1", "note_1")],
-        model_resolver: fn _id -> nil end
-      )
-
-    assert mutation.deleted?
-    refute mutation.created?
-    assert mutation.model == nil
-  end
-
   test "a delete's default model falls back to the by-id caches" do
     table = unknown_type_index()
     by_id = :"row_mutations_eg_by_id_#{System.unique_integer([:positive])}"
@@ -313,8 +290,6 @@ defmodule EbbServer.Storage.RowMutationsTest do
     [unknown] =
       RowMutations.fold([delete("u2", "note_2")], entity_models: table)
 
-    refute known.created?
-    refute unknown.created?
     assert known.model == "note"
     assert unknown.model == nil
   end

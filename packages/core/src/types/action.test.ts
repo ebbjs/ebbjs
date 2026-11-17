@@ -193,6 +193,19 @@ describe("UpdateSchema", () => {
     ).toBe(false);
   });
 
+  it("rejects a create whose model names a component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo/title",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
   it("rejects a create carrying component data", () => {
     expect(
       Value.Check(UpdateSchema, {

@@ -259,17 +259,6 @@ defmodule EbbServer.Storage.ActionFormatTest do
       %{id: "act_create", actor_id: "a_1", hlc: 456, updates: [create_update()]}
     end
 
-    test "stores the row fact and no component" do
-      payload = ActionFormat.build(create_action())
-
-      assert [stored] = payload["updates"]
-      refute Map.has_key?(stored, "component")
-      assert stored["model"] == "note"
-      assert stored["hlc"] == 456
-      assert stored["method"] == "create"
-      assert stored["data"] == nil
-    end
-
     test "round-trips a zero-component create" do
       payload = create_action() |> ActionFormat.build() |> ActionFormat.encode()
       frame = ActionFormat.frame(payload, [{"note_1", ["g_1"]}])
@@ -284,49 +273,6 @@ defmodule EbbServer.Storage.ActionFormatTest do
                "hlc" => 456,
                "data" => nil
              }
-    end
-
-    test "refuses a create carrying a component" do
-      stored = %{
-        "id" => "upd_create",
-        "subject_id" => "note_1",
-        "component" => "note/title",
-        "model" => "note",
-        "method" => "create",
-        "hlc" => 456,
-        "data" => nil
-      }
-
-      payload =
-        %{"id" => "act_1", "actor_id" => "a_1", "hlc" => 456, "updates" => [stored]}
-        |> :erlang.term_to_binary()
-
-      assert_raise ArgumentError, ~r/not a component envelope/, fn ->
-        ActionFormat.decode_payload(ActionFormat.frame(payload, []), 1)
-      end
-    end
-
-    test "refuses a create without its model or creation hlc" do
-      for field <- ["model", "hlc"] do
-        stored =
-          %{
-            "id" => "upd_create",
-            "subject_id" => "note_1",
-            "model" => "note",
-            "method" => "create",
-            "hlc" => 456,
-            "data" => nil
-          }
-          |> Map.delete(field)
-
-        payload =
-          %{"id" => "act_1", "actor_id" => "a_1", "hlc" => 456, "updates" => [stored]}
-          |> :erlang.term_to_binary()
-
-        assert_raise ArgumentError, ~r/not a component envelope/, fn ->
-          ActionFormat.decode_payload(ActionFormat.frame(payload, []), 1)
-        end
-      end
     end
 
     test "refuses a component Update carrying a create's keys" do

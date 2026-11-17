@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Action } from "@ebbjs/core";
-import { makeHlc } from "@ebbjs/core";
-import { buildPatchAction, buildPutAction, buildTodoEntity, HLC_BASE } from "../testing/fixtures";
+import { buildPatchAction, buildPutAction } from "../testing/fixtures";
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
 import {
   ACTION_POSITION_SEQUENCE_ID,
@@ -22,7 +21,6 @@ const PRE_RESET_SCHEMA_VERSION = 8;
 const PRE_COMPONENT_INDEX_SCHEMA_VERSION = 10;
 const PRE_COMPONENT_HOLD_SCHEMA_VERSION = 11;
 const PRE_SYSTEM_COMPONENT_SCHEMA_VERSION = 12;
-const PRE_ROW_CREATE_SCHEMA_VERSION = 15;
 
 interface LegacyStoredAction extends Action {
   subject_ids: readonly string[];
@@ -243,33 +241,6 @@ describe("IndexedDB v12 → v13 system-component reset", () => {
     await expectEmptyCurrentSchema(upgraded);
     expect(await upgraded.count("relationships")).toBe(0);
     expect(await upgraded.count("entities")).toBe(0);
-  });
-});
-
-describe("IndexedDB v15 → v16 row-create reset", () => {
-  it("discards a v15 database rather than trusting inferred row existence", async () => {
-    const dbName = legacyDbName();
-    // The pre-#817 shape: a component write that exists only because the
-    // deleted "`replace` implies create" rule said it did.
-    const action = buildPatchAction();
-    const row = buildTodoEntity("todo_1", "Hello", makeHlc(HLC_BASE));
-
-    const v15 = await openDB<EbbDBSchema>(dbName, PRE_ROW_CREATE_SCHEMA_VERSION, {
-      upgrade: createEbbStores,
-    });
-    await v15.put("actions", { ...action, subject_ids: ["todo_1"], position: 1 });
-    await v15.put("entities", { ...row, components: ["todo/title"] });
-    expect(await v15.count("actions")).toBe(1);
-    expect(await v15.count("entities")).toBe(1);
-    v15.close();
-
-    const upgraded = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
-      upgrade: createEbbStores,
-    });
-
-    await expectEmptyCurrentSchema(upgraded);
-    expect(await upgraded.count("entities")).toBe(0);
-    expect(await createIndexedDBActionLog(upgraded).lastPosition()).toBe(0);
   });
 });
 

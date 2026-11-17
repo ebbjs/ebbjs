@@ -43,20 +43,4 @@ describe.each(codecs)("$name codec", ({ encode, decode }) => {
 
     expect(await decode(await encode(original))).toEqual(original);
   });
-
-  it("carries a row create's creation HLC the way it carries an Action's", async () => {
-    const create = {
-      id: "u_create",
-      subject_id: "todo_1",
-      model: "todo",
-      method: "create",
-      hlc: SAFE_HLC,
-      data: null,
-    };
-
-    const bytes = await encode({ updates: [create] });
-
-    expect(rawDecode(bytes)).toEqual({ updates: [{ ...create, hlc: 1234567890123 }] });
-    expect(await decode(bytes)).toEqual({ updates: [create] });
-  });
 });

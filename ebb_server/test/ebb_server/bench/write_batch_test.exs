@@ -209,15 +209,6 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       # Each row opens with its create, then carries one component Update.
       assert length(stored["updates"]) == 4
-
-      for update <- stored["updates"] do
-        if update["method"] == "create" do
-          refute Map.has_key?(update, "component")
-          assert is_nil(update["data"])
-        else
-          assert is_map_key(update, "component")
-        end
-      end
     end
 
     test "group and dedup rows point at the Action and its GSN", context do

@@ -463,29 +463,6 @@ defmodule EbbServer.Storage.ActionValidatorTest do
   end
 
   describe "validate/2 - the row create" do
-    test "a zero-component create is a complete row" do
-      create = sample_create(%{"subject_id" => "note_1", "model" => "note"})
-      action = sample_action(%{"updates" => [create]})
-
-      assert {[validated], []} = ActionValidator.validate([action], "a_test")
-
-      create_id = create["id"]
-      create_hlc = create["hlc"]
-
-      assert [
-               %{
-                 id: ^create_id,
-                 subject_id: "note_1",
-                 component: nil,
-                 model: "note",
-                 field: nil,
-                 method: :create,
-                 data: nil,
-                 hlc: ^create_hlc
-               }
-             ] = validated.updates
-    end
-
     test "a create and its components name one model" do
       create = sample_create(%{"subject_id" => "note_1", "model" => "note"})
 

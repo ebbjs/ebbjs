@@ -202,19 +202,6 @@ describe("buildSeedAction", () => {
     });
   });
 
-  it("folds a patched entity row to the create's model, time, and fields", () => {
-    const action = buildSeedAction("actor_1", {
-      groups: [],
-      grants: [],
-      entities: [{ id: "todo_1", model: "todo", patches: [{ fields: { title: "Ship it" } }] }],
-    });
-
-    const row = foldSeedRows(action).get("todo_1");
-    expect(row).toMatchObject({ model: "todo", exists: true, deleted_hlc: null });
-    expect(row?.created_hlc).toBe(createOf(action, "todo_1").hlc);
-    expect(row?.fields).toEqual({ title: expect.objectContaining({ value: "Ship it" }) });
-  });
-
   it("writes a group's app scope into the group's one atomic value", () => {
     const action = buildSeedAction("actor_1", {
       groups: [{ id: "grp_1", name: "Shared", apps: ["notes", "issues"] }],

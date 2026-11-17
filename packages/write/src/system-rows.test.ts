@@ -61,28 +61,6 @@ describe("system row emitters", () => {
     expect(valueUpdate([update]).component).toBe(EBB_COMPONENTS[kind]);
   });
 
-  it("opens a row with its create, naming the platform model", () => {
-    const updates = linkRowUpdates(
-      {
-        linkId: "rel_1",
-        sourceId: "e_issue",
-        targetId: "e_project",
-        field: "project",
-        type: "issue",
-      },
-      ids(),
-    );
-
-    expect(createOf(updates)).toEqual({
-      id: "u_1",
-      subject_id: "rel_1",
-      model: "ebb",
-      method: "create",
-      hlc: "hlc_1",
-      data: null,
-    });
-  });
-
   it("writes ebb/link as one Update carrying all four fields", () => {
     const updates = linkRowUpdates(
       {
@@ -96,6 +74,14 @@ describe("system row emitters", () => {
     );
 
     expect(updates).toHaveLength(2);
+    expect(createOf(updates)).toEqual({
+      id: "u_1",
+      subject_id: "rel_1",
+      model: "ebb",
+      method: "create",
+      hlc: "hlc_1",
+      data: null,
+    });
     expect(valueUpdate(updates)).toEqual({
       id: "u_2",
       subject_id: "rel_1",
