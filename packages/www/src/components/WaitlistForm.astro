@@ -56,28 +56,22 @@ const { id = 'waitlist', showLinks = true } = Astro.props;
 </div>
 
 <script>
-  const GHOST_SITE = 'https://www.drewlyton.com';
+  import { ghostFetch } from '../lib/ghost';
+
   const GHOST_LABELS = ['ebb'];
 
   async function getIntegrityToken(): Promise<string> {
-    const res = await fetch(`${GHOST_SITE}/members/api/integrity-token/`, {
-      headers: {
-        'app-pragma': 'no-cache',
-        'x-ghost-version': '5.90',
-      },
-    });
+    const res = await ghostFetch('/members/api/integrity-token/');
     if (!res.ok) throw new Error('Failed to get integrity token');
     return res.text();
   }
 
   async function signupToGhost(email: string): Promise<void> {
     const integrityToken = await getIntegrityToken();
-    const res = await fetch(`${GHOST_SITE}/members/api/send-magic-link/`, {
+    const res = await ghostFetch('/members/api/send-magic-link/', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'app-pragma': 'no-cache',
-        'x-ghost-version': '5.47',
       },
       body: JSON.stringify({
         email,

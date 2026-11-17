@@ -1,5 +1,6 @@
 ---
 import authorImage from '../assets/drew-lyton.jpg';
+import { ghostUrl } from '../lib/ghost';
 ---
 
 <footer class="py-12">
@@ -13,7 +14,7 @@ import authorImage from '../assets/drew-lyton.jpg';
       <p class="font-semibold text-stone-100">Drew Lyton</p>
       <p class="text-sm text-stone-400 mb-2">Entrepreneur, engineer, and writer based in Charlottesville, VA.</p>
       <div class="flex gap-3">
-        <a href="https://www.drewlyton.com?ref=ebb" target="_blank" rel="noopener noreferrer" class="text-stone-400 hover:text-stone-100 transition-colors" aria-label="Website">
+        <a href={ghostUrl('/', { attribution: true })} target="_blank" rel="noopener noreferrer" class="text-stone-400 hover:text-stone-100 transition-colors" aria-label="Website">
           <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10"/>
             <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>

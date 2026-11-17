@@ -1,7 +1,9 @@
+import type { APIRoute, GetStaticPaths } from "astro";
 import satori from "satori";
 import { Resvg } from "@resvg/resvg-js";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { getDocs, getPosts } from "./content";
 
 // ── Font loading ────────────────────────────────────────────────────────────
 
@@ -347,3 +349,33 @@ export async function renderOgImage(options: OgCardOptions): Promise<Response> {
     headers: { "Content-Type": "image/png" },
   });
 }
+
+// ── Collection cards ────────────────────────────────────────────────────────
+
+// The devlog and docs cards differ only in the collection they walk and the
+// badge they stamp. Generating the paths from the same helpers the pages use
+// keeps a card from outliving the page it belongs to.
+export function staticPathsFor(collection: "devlog" | "docs", badge: string): GetStaticPaths {
+  return async () => {
+    const entries: { id: string; data: { title: string; description: string } }[] =
+      collection === "devlog" ? await getPosts() : await getDocs();
+
+    return entries.map((entry) => ({
+      params: { slug: entry.id },
+      props: { title: entry.data.title, subtitle: entry.data.description, badge },
+    }));
+  };
+}
+
+/**
+ * Shared `GET` for the collection card endpoints; the badge arrives via props.
+ */
+export const renderOgCard: APIRoute = async ({ props }) => {
+  const { title, subtitle, badge } = props as {
+    title: string;
+    subtitle: string;
+    badge: string;
+  };
+
+  return renderOgImage({ title, subtitle, badge });
+};
