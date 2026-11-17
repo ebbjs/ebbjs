@@ -43,14 +43,13 @@ defmodule EbbServer.Sync.GroupListing do
   alias EbbServer.Storage.{
     DirtyTracker,
     EntityStore,
+    Pagination,
     PermissionChecker,
     SQLite,
     SystemComponent,
     WatermarkTracker
   }
 
-  @default_limit 200
-  @max_limit 1000
   @token_version 1
   # The kinds differ by component, so the boot repair is one dirty lookup on
   # their shared model.
@@ -84,7 +83,7 @@ defmodule EbbServer.Sync.GroupListing do
   @spec list(String.t(), String.t(), keyword()) :: {:ok, page()} | error()
   def list(group_id, actor_id, opts \\ []) do
     with :ok <- authorize(group_id, actor_id, opts),
-         {:ok, limit} <- normalize_limit(Keyword.get(opts, :limit)),
+         {:ok, limit} <- Pagination.normalize_limit(Keyword.get(opts, :limit)),
          {:ok, watermark, key} <- resolve_cursor(Keyword.get(opts, :cursor), group_id, opts),
          :ok <- materialize_prefix(key, opts),
          {:ok, entities, next_key, has_more} <- build_page(group_id, limit, key, opts) do
@@ -111,13 +110,6 @@ defmodule EbbServer.Sync.GroupListing do
       {:error, :not_member}
     end
   end
-
-  defp normalize_limit(nil), do: {:ok, @default_limit}
-
-  defp normalize_limit(limit) when is_integer(limit) and limit > 0 and limit <= @max_limit,
-    do: {:ok, limit}
-
-  defp normalize_limit(_limit), do: {:error, :invalid_limit}
 
   # Page 1 is the only page that reads the frontier: later pages echo the
   # token's `w` so a client sees the same `watermark` on every page of one

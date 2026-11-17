@@ -21,6 +21,7 @@ defmodule EbbServer.Sync.Router do
     EntityView,
     GrantCache,
     GroupAppsCache,
+    Pagination,
     PermissionChecker,
     QueryFilter,
     WatermarkTracker
@@ -868,7 +869,7 @@ defmodule EbbServer.Sync.Router do
 
   defp parse_limit(value) when is_binary(value) do
     case Integer.parse(value) do
-      {limit, ""} when limit > 0 -> {:ok, limit}
+      {limit, ""} -> Pagination.normalize_limit(limit)
       _ -> {:error, :invalid_limit}
     end
   end
