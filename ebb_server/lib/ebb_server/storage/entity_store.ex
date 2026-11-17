@@ -115,6 +115,7 @@ defmodule EbbServer.Storage.EntityStore do
     Component,
     DirtyTracker,
     FieldMerge,
+    Pagination,
     QueryFilter,
     RocksDB,
     SQLite,
@@ -127,11 +128,6 @@ defmodule EbbServer.Storage.EntityStore do
   @default_rocks_name EbbServer.Storage.RocksDB
   @default_sqlite_name EbbServer.Storage.SQLite
   @default_dirty_set :ebb_dirty_set
-
-  # Same page window as `EbbServer.Sync.GroupListing`: a query is never
-  # unbounded, and a caller cannot ask for a page larger than a listing page.
-  @default_limit 200
-  @max_limit 1000
 
   # SQLite binds an offset as a signed 64-bit integer; a larger value raises in
   # the NIF rather than returning an error a caller can handle.
@@ -843,8 +839,9 @@ defmodule EbbServer.Storage.EntityStore do
   any model, so asking by component returns the rows that carry it. Asking for
   the model alone returns every kind at once.
 
-  - `:limit` - Maximum results to return; defaults to #{@default_limit} and is
-    capped at #{@max_limit}. Validated before any materialization work.
+  - `:limit` - Maximum results to return; defaults to
+    #{Pagination.default_limit()} and is capped at #{Pagination.max_limit()}.
+    Validated before any materialization work.
   - `:offset` - Number of results to skip; must be non-negative and fit in a
     signed 64-bit integer
   """
@@ -864,29 +861,22 @@ defmodule EbbServer.Storage.EntityStore do
   @doc """
   Resolves a caller-supplied page window into the values a read applies.
 
-  An omitted limit becomes `#{@default_limit}`; an omitted offset stays `nil` so
-  the read skips nothing. A value that is not a positive integer no larger than
-  `#{@max_limit}` (or a non-negative offset that fits in a signed 64-bit word)
-  is rejected rather than clamped: SQLite reads `LIMIT -1` as "no limit", and a
-  caller whose page is impossible should hear about it instead of silently
-  getting another one.
+  An omitted limit becomes `#{Pagination.default_limit()}`; an omitted offset stays
+  `nil` so the read skips nothing. A value that is not a positive integer no
+  larger than `#{Pagination.max_limit()}` (or a non-negative offset that fits in a
+  signed 64-bit word) is rejected rather than clamped: SQLite reads `LIMIT -1`
+  as "no limit", and a caller whose page is impossible should hear about it
+  instead of silently getting another one.
   """
   @spec normalize_pagination(term(), term()) ::
           {:ok, pos_integer(), non_neg_integer() | nil}
           | {:error, :invalid_limit | :invalid_offset}
   def normalize_pagination(limit, offset) do
-    with {:ok, limit} <- normalize_limit(limit),
+    with {:ok, limit} <- Pagination.normalize_limit(limit),
          {:ok, offset} <- normalize_offset(offset) do
       {:ok, limit, offset}
     end
   end
-
-  defp normalize_limit(nil), do: {:ok, @default_limit}
-
-  defp normalize_limit(limit) when is_integer(limit) and limit > 0 and limit <= @max_limit,
-    do: {:ok, limit}
-
-  defp normalize_limit(_limit), do: {:error, :invalid_limit}
 
   defp normalize_offset(nil), do: {:ok, nil}
 
