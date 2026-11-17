@@ -15,9 +15,8 @@ import {
   componentModel,
   ebbComponentField,
   ebbComponentKind,
-  EBB_MODEL_NAME,
   generateId,
-  isEbbComponent,
+  isComponentUpdate,
   isFieldMap,
   localEvent,
   type EbbComponentKind,
@@ -115,14 +114,6 @@ export interface WriteSurface extends PreflightView {
 const edgeKey = (type: string, sourceId: string, as: string): string =>
   `${type}\u0000${sourceId}\u0000${as}`;
 
-/**
- * The model a component write commits under: `ebb` for a platform component, the
- * component's own namespace otherwise. The two coincide today; #820's overlay
- * components are where they stop coinciding.
- */
-const committedModelOf = (component: string): string =>
-  isEbbComponent(component) ? EBB_MODEL_NAME : componentModel(component);
-
 const stringListField = (
   fields: Record<string, FieldValue>,
   key: string,
@@ -170,7 +161,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   /** Buffered Updates, in wire order — the Action's `updates[]`. */
   const updates: Update[] = [];
   const updatesById = new Map<string, Update[]>();
-  const models = new Map<string, string>();
   /** Membership row id → the group it scopes to. */
   const membershipGroup = new Map<string, string>();
   /** Membership row id → the entity it files. */
@@ -228,9 +218,20 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
    */
   const rowValues = new Map<string, Record<string, unknown>>();
 
+  /**
+   * The model each buffered subject commits under: the row's create names
+   * it, and a component write speaks for a row only until that create is
+   * seen. Folded in `indexWrite`, so an overlay read is one map lookup.
+   */
+  const models = new Map<string, string>();
+  const createdSubjects = new Set<string>();
+
+  const modelOf = (id: string): string | undefined => models.get(id);
+
   /** Fold one component Update into the subject's plain values. */
   const foldRow = (update: Update): Record<string, unknown> | undefined => {
-    if (update.method === "delete") return undefined;
+    // A create is the row fact and carries no component value.
+    if (!isComponentUpdate(update)) return undefined;
     const field = componentField(update.component);
     const previous = rowValues.get(update.subject_id) ?? {};
     const values = { ...previous };
@@ -246,6 +247,14 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
    */
   const indexWrite = (update: Update): void => {
     const id = update.subject_id;
+
+    if (isComponentUpdate(update)) {
+      if (!createdSubjects.has(id)) models.set(id, componentModel(update.component));
+    } else if (update.method === "create") {
+      models.set(id, update.model);
+      createdSubjects.add(id);
+    }
+
     if (update.method === "delete") {
       const kind = rowKinds.get(id);
       rowKinds.delete(id);
@@ -269,6 +278,9 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       rowValues.delete(id);
       return;
     }
+
+    // Row-scoped Updates name no kind: a create only states the row exists.
+    if (!isComponentUpdate(update)) return;
 
     const kind = ebbComponentKind(update.component);
     const values = foldRow(update);
@@ -332,9 +344,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       const held = updatesById.get(update.subject_id);
       if (held === undefined) updatesById.set(update.subject_id, [update]);
       else held.push(update);
-      if (update.method !== "delete") {
-        models.set(update.subject_id, committedModelOf(update.component));
-      }
       indexWrite(update);
     }
   };
@@ -388,7 +397,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
 
   const overlay = createOverlay({
     updatesFor: (id) => updatesById.get(id) ?? [],
-    modelOf: (id) => models.get(id),
+    modelOf,
     readHost,
   });
 
@@ -427,7 +436,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     const groupId = membershipGroup.get(membershipId);
     const entityId = membershipEntity.get(membershipId);
     if (groupId === undefined || entityId === undefined) return;
-    assertLastMembership(preflightView, models.get(entityId) ?? "", entityId, [groupId]);
+    assertLastMembership(preflightView, modelOf(entityId) ?? "", entityId, [groupId]);
   };
 
   const create = (
@@ -463,7 +472,7 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       id,
       batch.filter(
         (update) =>
-          update.method !== "delete" && ebbComponentKind(update.component) === "membership",
+          isComponentUpdate(update) && ebbComponentKind(update.component) === "membership",
       ),
     );
     return createHandle(id);

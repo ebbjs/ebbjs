@@ -11,18 +11,22 @@ export type EntityData = Static<typeof EntityDataSchema>;
 
 export const EntitySchema = Type.Object({
   id: NanoIdSchema,
-  /** The committed model: the model the id's first write filed it under. */
+  /** The committed model: the model the row's create named. */
   model: Type.String(),
   data: EntityDataSchema,
   /**
    * Whether this replica has seen the row's create (or a base that carries
-   * it). A component write can materialize a row before its create arrives;
-   * that placeholder has `exists: false` and is a backfill candidate. The
-   * row's presence in the store is its row existence; this flag is the
-   * separate, local fact of whether the base has been seen.
+   * it). Only a create sets it: a component write that arrives before its
+   * create materializes an `exists: false` placeholder, and that placeholder
+   * is a backfill candidate. The row's presence in the store is its row
+   * existence; this flag is the separate, local fact of whether the base has
+   * been seen.
    */
   exists: Type.Boolean(),
-  /** The HLC of the row's first write, or `null` for a placeholder. Time only, never a predicate. */
+  /**
+   * The create's HLC, the row's creation time. `null` only while `exists` is
+   * false. Time only, never a predicate.
+   */
   created_hlc: Type.Union([HLCTimestampSchema, Type.Null()]),
   updated_hlc: HLCTimestampSchema,
   deleted_hlc: Type.Union([HLCTimestampSchema, Type.Null()]),

@@ -7,7 +7,19 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { Value } from "@sinclair/typebox/value";
 
+import { compare } from "../hlc";
+import {
+  ActionSchema,
+  componentField,
+  isComponentUpdate,
+  isRowCreate,
+  type Action,
+  type ComponentUpdate,
+  type RowCreate,
+  type Update,
+} from "../types/action";
 import {
   SeedRejectedError,
   assertSeedAccepted,
@@ -53,30 +65,100 @@ const buildRepresentativeSeed = (): SeedData => ({
 });
 
 /** The one Update carrying `component`, or a failure naming the miss. */
-const componentOf = (
-  action: ReturnType<typeof buildSeedAction>,
-  component: string,
-  subjectId?: string,
-) => {
-  const update = action.updates.find(
-    (u) =>
-      u.method !== "delete" &&
-      u.component === component &&
-      (subjectId === undefined || u.subject_id === subjectId),
-  );
+const componentOf = (action: Action, component: string, subjectId?: string): ComponentUpdate => {
+  const update = action.updates
+    .filter(isComponentUpdate)
+    .find(
+      (u) => u.component === component && (subjectId === undefined || u.subject_id === subjectId),
+    );
   if (update === undefined) throw new Error(`no update for component "${component}"`);
   return update;
 };
 
+const updatesFor = (action: Action, subjectId: string): Update[] =>
+  action.updates.filter((update) => update.subject_id === subjectId);
+
+/** The one row-scoped create for `subjectId`, or a failure naming the miss. */
+const createOf = (action: Action, subjectId: string): RowCreate => {
+  const creates = updatesFor(action, subjectId).filter(isRowCreate);
+  if (creates.length !== 1) throw new Error(`${creates.length} creates for "${subjectId}"`);
+  return creates[0] as RowCreate;
+};
+
+interface FoldedRow {
+  model: string;
+  exists: boolean;
+  created_hlc: string | null;
+  deleted_hlc: string | null;
+  fields: Record<string, unknown>;
+}
+
+/**
+ * Fold a seed Action's Updates into rows the way the contract says a replica
+ * does: a create makes the row live at its own HLC, and a component write
+ * lands its value at the field after the `/`. Written from the contract, not
+ * from any materializer, so the seed is checked against the protocol rather
+ * than against another implementation of it.
+ */
+const foldSeedRows = (action: Action): Map<string, FoldedRow> => {
+  const rows = new Map<string, FoldedRow>();
+  for (const update of action.updates) {
+    const row = rows.get(update.subject_id);
+    if (isRowCreate(update)) {
+      if (row !== undefined) continue;
+      rows.set(update.subject_id, {
+        model: update.model,
+        exists: true,
+        created_hlc: update.hlc,
+        deleted_hlc: null,
+        fields: {},
+      });
+      continue;
+    }
+    if (!isComponentUpdate(update) || update.method === "drop") continue;
+    const fields = row?.fields ?? {};
+    fields[componentField(update.component)] = update.data;
+    rows.set(update.subject_id, {
+      model: row?.model ?? update.component.split("/")[0]!,
+      exists: row?.exists ?? false,
+      created_hlc: row?.created_hlc ?? null,
+      deleted_hlc: null,
+      fields,
+    });
+  }
+  return rows;
+};
+
 describe("buildSeedAction", () => {
-  it("builds one Action carrying one Update per component", () => {
+  it("opens every seeded row with its create, then writes its components", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
 
     expect(action.actor_id).toBe("actor_1");
-    expect(action.updates).toHaveLength(7);
-    for (const update of action.updates) {
-      expect(update.method).toBe("replace");
-      expect(update.data).not.toBeNull();
+    expect(Value.Check(ActionSchema, action)).toBe(true);
+    // Five rows, each a create plus its components: two a piece for the
+    // group, grant, link, and membership rows, three for the entity's patch.
+    expect(action.updates).toHaveLength(12);
+
+    const models: Array<[string, string]> = [
+      ["grp_1", "ebb"],
+      ["gm_1", "ebb"],
+      ["todo_1", "todo"],
+      ["rel_1", "ebb"],
+      ["eg_1", "ebb"],
+    ];
+    for (const [subjectId, model] of models) {
+      const updates = updatesFor(action, subjectId);
+      expect(isRowCreate(updates[0])).toBe(true);
+
+      const create = createOf(action, subjectId);
+      expect(create.model).toBe(model);
+      expect(create.data).toBeNull();
+      // The create is stamped from the builder's clock before the row's
+      // first component, so the row's creation time never trails its data.
+      const firstComponent = updates[1] as ComponentUpdate;
+      const firstHlc = (firstComponent.data as { hlc?: string }).hlc;
+      expect(firstHlc).toEqual(expect.any(String));
+      expect(compare(create.hlc, firstHlc as string)).toBeLessThanOrEqual(0);
     }
 
     expect(componentOf(action, "ebb/group", "grp_1").data).toMatchObject({
@@ -99,6 +181,27 @@ describe("buildSeedAction", () => {
     });
   });
 
+  it("seeds an entity row with no patches as one create that folds to a live row", () => {
+    const action = buildSeedAction("actor_1", {
+      groups: [],
+      grants: [],
+      entities: [{ id: "todo_1", model: "todo", patches: [] }],
+    });
+
+    expect(action.updates).toHaveLength(1);
+    const create = createOf(action, "todo_1");
+    expect(create.model).toBe("todo");
+
+    const row = foldSeedRows(action).get("todo_1");
+    expect(row).toEqual({
+      model: "todo",
+      exists: true,
+      created_hlc: create.hlc,
+      deleted_hlc: null,
+      fields: {},
+    });
+  });
+
   it("writes a group's app scope into the group's one atomic value", () => {
     const action = buildSeedAction("actor_1", {
       groups: [{ id: "grp_1", name: "Shared", apps: ["notes", "issues"] }],
@@ -106,7 +209,7 @@ describe("buildSeedAction", () => {
       entities: [],
     });
 
-    expect(action.updates).toHaveLength(1);
+    expect(action.updates).toHaveLength(2);
     const group = componentOf(action, "ebb/group");
     expect(group.method).toBe("replace");
     expect(group.data).toMatchObject({
@@ -136,6 +239,7 @@ describe("buildSeedAction", () => {
     const action = buildSeedAction("actor_1", buildRepresentativeSeed());
 
     for (const update of action.updates) {
+      if (!isComponentUpdate(update) || update.method === "drop") continue;
       const data = update.data as { value?: unknown; update_id?: string; hlc?: string };
       expect(data.update_id).toBe("seed_update");
       expect(data.hlc).toEqual(expect.any(String));

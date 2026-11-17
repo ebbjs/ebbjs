@@ -6,14 +6,14 @@
  * Every test drives a mounted `run` action, so the callback, the ordered
  * resolver, the committer, and the wire shape are exercised as one path.
  * The stub `fetch` records every request so the tests can decode the
- * submitted Action and assert its Updates (one entity `put` per created
- * entity plus one `Relationship` `put` per resolved pointer), all inside
- * exactly one `POST /sync/actions`.
+ * submitted Action and assert its Updates (an entity create plus its field
+ * Updates per created entity, plus one link row per resolved pointer), all
+ * inside exactly one `POST /sync/actions`.
  */
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, type Action, type Update } from "@ebbjs/core";
+import { decodeSync, isRowCreate, type Action, type Update } from "@ebbjs/core";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -167,8 +167,13 @@ describe("drafts — one Action, forward references", () => {
     const [domainRel] = rowsOf(updates, "link");
     const membershipRows = rowsOf(updates, "membership");
 
-    for (const update of todoRow!) expect(update.method).toBe("replace");
-    expect(todoRow![0]!.subject_id).toBe(created.todo.id);
+    // The row opens with its create; one `replace` per field follows.
+    expect(todoRow![0]).toMatchObject({
+      subject_id: created.todo.id,
+      method: "create",
+      model: "todo",
+    });
+    for (const update of todoRow!.slice(1)) expect(update.method).toBe("replace");
     expect(valueOf(todoRow!, "title")).toBe("Ship it");
     // The relationship pointer is not an entity component on the wire.
     expect(valueOf(todoRow!, "list")).toBeUndefined();
@@ -180,7 +185,14 @@ describe("drafts — one Action, forward references", () => {
     expect(valueOf(domainRel!, "target_id")).toBe(created.list.id);
     expect(valueOf(domainRel!, "type")).toBe("todo");
 
-    for (const row of membershipRows) expect(valueOf(row, "group_id")).toBe("g_1");
+    for (const row of membershipRows) {
+      // A membership row is a row of its own, so it carries its own create.
+      const create = updates.find(
+        (update) => isRowCreate(update) && update.subject_id === row[0]!.subject_id,
+      );
+      expect(create).toMatchObject({ model: "ebb" });
+      expect(valueOf(row, "group_id")).toBe("g_1");
+    }
     expect(membershipRows.map((row) => valueOf(row, "entity_id")).sort()).toEqual(
       [created.list.id, created.todo.id].sort(),
     );

@@ -847,23 +847,24 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        component_update(
-          group_id,
-          SystemComponent.component(:group),
-          "replace",
-          leaf(%{"name" => "Test Group"}, hlc)
-        ),
-        component_update(
-          gm_id,
-          SystemComponent.component(:grant),
-          "replace",
-          leaf(
-            %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
-            hlc
+      "updates" =>
+        with_creates([
+          component_update(
+            group_id,
+            SystemComponent.component(:group),
+            "replace",
+            leaf(%{"name" => "Test Group"}, hlc)
+          ),
+          component_update(
+            gm_id,
+            SystemComponent.component(:grant),
+            "replace",
+            leaf(
+              %{"actor_id" => actor_id, "group_id" => group_id, "permissions" => permissions},
+              hlc
+            )
           )
-        )
-      ]
+        ])
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -881,21 +882,22 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => [
-        component_update(
-          "gm_" <> Nanoid.generate(),
-          SystemComponent.component(:grant),
-          "replace",
-          leaf(
-            %{
-              "actor_id" => member_actor_id,
-              "group_id" => group_id,
-              "permissions" => permissions
-            },
-            hlc
+      "updates" =>
+        with_creates([
+          component_update(
+            "gm_" <> Nanoid.generate(),
+            SystemComponent.component(:grant),
+            "replace",
+            leaf(
+              %{
+                "actor_id" => member_actor_id,
+                "group_id" => group_id,
+                "permissions" => permissions
+              },
+              hlc
+            )
           )
-        )
-      ]
+        ])
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -919,7 +921,10 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => hlc,
-      "updates" => field_updates ++ [membership_component_update(entity_id, group_id, hlc, nil)]
+      "updates" =>
+        with_creates(
+          field_updates ++ [membership_component_update(entity_id, group_id, hlc, nil)]
+        )
     }
 
     post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -1029,7 +1034,13 @@ defmodule EbbServer.Sync.GroupListingTest do
         ] ++ [membership_component_update(entity_id, group_id, hlc, eg_id)]
       end)
 
-    action = %{"id" => unique("act"), "actor_id" => actor_id, "hlc" => hlc, "updates" => updates}
+    action = %{
+      "id" => unique("act"),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => with_creates(updates)
+    }
+
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
 
     assert conn.status == 200
@@ -1084,7 +1095,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => generate_hlc(),
-      "updates" => List.flatten(updates)
+      "updates" => with_creates(updates)
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
@@ -1154,7 +1165,7 @@ defmodule EbbServer.Sync.GroupListingTest do
       "id" => unique("act"),
       "actor_id" => actor_id,
       "hlc" => generate_hlc(),
-      "updates" => updates
+      "updates" => with_creates(updates)
     }
 
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)

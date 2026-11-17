@@ -8,6 +8,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   - `bootstrap_group/3` - Create a test group with permissions
   - `add_grant/4` - Grant an actor permissions in an existing group
   - `write_entity_in_group/5` - Write an entity to a group
+  - `create_update/4` - Build a row-scoped `create`
   - `membership_update/3` - Build a same-Action `membership` create
   - `msgpack_encode!/1` - Encode data as MessagePack binary
   """
@@ -104,13 +105,33 @@ defmodule EbbServer.Integration.ActionHelpers do
     gm_id = "gm_" <> Nanoid.generate()
     group_update_id = "upd_group_" <> Nanoid.generate()
 
-    group_updates = [group_update(group_update_id, group_id, apps, hlc)]
+    group_updates = [
+      create_update("upd_create_" <> group_id, group_id, "ebb", hlc),
+      group_update(group_update_id, group_id, apps, hlc)
+    ]
 
     %{
       "id" => "act_bootstrap_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" => group_updates ++ grant_updates(gm_id, actor_id, group_id, permissions, hlc)
+    }
+  end
+
+  @doc """
+  Builds one row-scoped `create` with the wire's string keys.
+
+  A platform row's create names the model `ebb` and must carry exactly one
+  `ebb/*` component in the same Action; a user row's create names its model.
+  """
+  def create_update(id, subject_id, model, hlc \\ nil) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc || TestHelpers.generate_hlc(),
+      "data" => nil
     }
   end
 
@@ -135,6 +156,36 @@ defmodule EbbServer.Integration.ActionHelpers do
       "value" => value,
       "hlc" => hlc
     })
+  end
+
+  @doc """
+  Prepends the row-scoped create a fixture row needs.
+
+  A component write no longer invents a row, so every fixture that opens one
+  carries its create. The create's model is the first component's prefix and
+  its HLC is a fresh clock value; a subject that already has a create, or
+  that only carries a row-scoped method (`delete`), is left alone.
+  """
+  def with_creates(updates) do
+    updates = List.flatten(updates)
+
+    created =
+      for %{"method" => "create", "subject_id" => subject_id} <- updates,
+          into: MapSet.new(),
+          do: subject_id
+
+    creates =
+      updates
+      |> Enum.reject(&(&1["method"] in ["create", "delete"]))
+      |> Enum.uniq_by(& &1["subject_id"])
+      |> Enum.reject(&MapSet.member?(created, &1["subject_id"]))
+      |> Enum.map(fn update ->
+        [model, _field] = :binary.split(update["component"], "/")
+
+        create_update("upd_create_" <> update["subject_id"], update["subject_id"], model)
+      end)
+
+    creates ++ updates
   end
 
   @doc """
@@ -240,22 +291,27 @@ defmodule EbbServer.Integration.ActionHelpers do
   end
 
   defp grant_updates(gm_id, member_actor_id, group_id, permissions, hlc) do
-    component_updates("upd_#{gm_id}", gm_id, "grant", %{
-      "actor_id" => %{"value" => member_actor_id, "hlc" => hlc},
-      "group_id" => %{"value" => group_id, "hlc" => hlc},
-      "permissions" => %{"value" => permissions, "hlc" => hlc}
-    })
+    [
+      create_update("upd_create_#{gm_id}", gm_id, "ebb", hlc)
+      | component_updates("upd_#{gm_id}", gm_id, "grant", %{
+          "actor_id" => %{"value" => member_actor_id, "hlc" => hlc},
+          "group_id" => %{"value" => group_id, "hlc" => hlc},
+          "permissions" => %{"value" => permissions, "hlc" => hlc}
+        })
+    ]
   end
 
   def write_entity_in_group(actor_id, entity_id, entity_model, group_id, fields) do
     hlc = TestHelpers.generate_hlc()
+    prefix = "upd_entity_" <> Nanoid.generate()
 
     action = %{
       "id" => "act_write_" <> Nanoid.generate(),
       "actor_id" => actor_id,
       "hlc" => hlc,
       "updates" =>
-        component_updates("upd_entity_" <> Nanoid.generate(), entity_id, entity_model, fields) ++
+        [create_update("#{prefix}_create", entity_id, entity_model, hlc)] ++
+          component_updates(prefix, entity_id, entity_model, fields) ++
           membership_update(entity_id, group_id, hlc)
     }
 
@@ -265,10 +321,13 @@ defmodule EbbServer.Integration.ActionHelpers do
   def membership_update(entity_id, group_id, hlc, eg_id \\ nil) do
     eg_id = eg_id || membership_row_id(entity_id, group_id)
 
-    component_updates("upd_#{eg_id}", eg_id, "membership", %{
-      "entity_id" => %{"value" => entity_id, "hlc" => hlc},
-      "group_id" => %{"value" => group_id, "hlc" => hlc}
-    })
+    [
+      create_update("upd_create_#{eg_id}", eg_id, "ebb", hlc)
+      | component_updates("upd_#{eg_id}", eg_id, "membership", %{
+          "entity_id" => %{"value" => entity_id, "hlc" => hlc},
+          "group_id" => %{"value" => group_id, "hlc" => hlc}
+        })
+    ]
   end
 
   @doc """

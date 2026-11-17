@@ -229,7 +229,9 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "actor_id" => actor_id,
         "hlc" => hlc,
         "updates" =>
-          [todo_update(other_id, hlc)] ++ ActionHelpers.membership_update(other_id, g2, hlc)
+          List.flatten(
+            [todo_update(other_id, hlc)] ++ ActionHelpers.membership_update(other_id, g2, hlc)
+          )
       }
 
       assert ActionHelpers.post_actions(
@@ -257,9 +259,11 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
         "actor_id" => actor_id,
         "hlc" => hlc,
         "updates" =>
-          [todo_update(leaked_id, hlc)] ++
-            membership_put(eg_leak, leaked_id, g1, hlc) ++
-            membership_put(eg_other, other_id, g2, hlc)
+          List.flatten(
+            [todo_update(leaked_id, hlc)] ++
+              membership_put(eg_leak, leaked_id, g1, hlc) ++
+              membership_put(eg_other, other_id, g2, hlc)
+          )
       }
 
       assert ActionHelpers.post_actions(
@@ -289,18 +293,28 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
   end
 
   defp todo_update(entity_id, hlc) do
-    %{
-      "id" => "upd_473_rec_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => entity_id,
-      "component" => "todo/title",
-      "method" => "replace",
-      "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
-    }
+    [
+      create_update(
+        "upd_create_473_rec_#{:erlang.unique_integer([:positive])}",
+        entity_id,
+        "todo",
+        hlc
+      ),
+      %{
+        "id" => "upd_473_rec_#{:erlang.unique_integer([:positive])}",
+        "subject_id" => entity_id,
+        "component" => "todo/title",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
+      }
+    ]
   end
 
-  # A membership is one atomic component, so the row is one Update.
+  # A membership is one atomic component, so the row is one Update, carried
+  # after the create that brings the row into existence.
   defp membership_put(eg_id, entity_id, group_id, hlc) do
     [
+      create_update("#{eg_id}_create", eg_id, "ebb", hlc),
       %{
         "id" => "#{eg_id}_0",
         "subject_id" => eg_id,
@@ -314,8 +328,23 @@ defmodule EbbServer.Sync.FanOutRouterRestartTest do
     ]
   end
 
+  defp create_update(id, subject_id, model, hlc) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
+  end
+
   defp update_subject_ids(payload) do
-    payload |> Map.get("updates") |> Enum.map(& &1["subject_id"]) |> Enum.sort()
+    payload
+    |> Map.get("updates")
+    |> Enum.map(& &1["subject_id"])
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp post_bootstrap!(actor_id, group_id) do

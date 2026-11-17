@@ -9,7 +9,14 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { componentName, makeHlc, type Action, type Entity } from "@ebbjs/core";
+import {
+  componentField,
+  componentName,
+  isComponentUpdate,
+  makeHlc,
+  type Action,
+  type Entity,
+} from "@ebbjs/core";
 
 import { createClient } from "../client";
 import type { EntityResponse } from "../types";
@@ -224,8 +231,68 @@ describe("collectBackfillCandidates", () => {
   });
 });
 
+describe("snapshotAction", () => {
+  it("opens with the row's create, stamped with its own creation time", () => {
+    const entity = {
+      ...mkEntity("post_1", "blog_post", { title: "Hello" }),
+      created_hlc: makeHlc(1711036800001),
+      updated_hlc: makeHlc(1711036800009),
+      last_gsn: 7,
+    };
+
+    const action = snapshotAction(entity);
+
+    expect(action.updates[0]).toEqual({
+      id: expect.stringMatching(/\$create$/),
+      subject_id: "post_1",
+      model: "blog_post",
+      method: "create",
+      hlc: entity.created_hlc,
+      data: null,
+    });
+    expect(action.updates.slice(1).map((update) => update.method)).toEqual(["replace"]);
+    expect(action.gsn).toBe(7);
+    expect(action.hlc).toBe(entity.updated_hlc);
+  });
+
+  it("is one create for a row with no components", () => {
+    const action = snapshotAction(mkEntity("post_1", "blog_post", {}));
+
+    expect(action.updates).toHaveLength(1);
+    expect(action.updates[0]).toMatchObject({
+      subject_id: "post_1",
+      model: "blog_post",
+      method: "create",
+      data: null,
+    });
+  });
+
+  it("falls back to the row's updated time when it carries no creation time", () => {
+    const entity = { ...mkEntity("post_1", "blog_post", {}), created_hlc: null };
+
+    expect(snapshotAction(entity).updates[0]).toMatchObject({
+      method: "create",
+      hlc: entity.updated_hlc,
+    });
+  });
+  it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
+    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
+    const action = snapshotAction(entity);
+
+    expect(action.gsn).toBe(entity.last_gsn);
+    expect(action.hlc).toBe(entity.updated_hlc);
+    const components = action.updates.filter(isComponentUpdate);
+    expect(components.every((update) => update.method === "replace")).toBe(true);
+    expect(
+      Object.fromEntries(
+        components.map((update) => [componentField(update.component), update.data]),
+      ),
+    ).toEqual(entity.data.fields);
+  });
+});
+
 describe("createBackfill", () => {
-  it("does not append an empty Action or re-fetch a zero-component base", async () => {
+  it("materializes a fetched zero-component base as a live row, once", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
@@ -242,9 +309,39 @@ describe("createBackfill", () => {
     await backfill.run();
     await backfill.run();
 
+    // The create is the whole base, so the row is no longer a candidate.
     expect(fetches).toBe(1);
-    expect(await storage.actions.getForEntity("post_1")).toEqual([]);
+    const row = await storage.entities.get("post_1");
+    expect(row).toMatchObject({ exists: true, data: { fields: {} } });
+    expect(row?.created_hlc).toBe(HLC);
+    expect(await storage.actions.getForEntity("post_1")).toHaveLength(1);
     expect(backfill.pending.get()).toEqual([]);
+  });
+
+  it("keeps the server's creation time through the round trip, not the base's position", async () => {
+    const storage = createMemoryAdapter();
+    await storage.entities.set(
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
+    );
+    const createdAt = makeHlc(1711036800001);
+    const backfill = createBackfill({
+      storage,
+      fetchEntity: async () =>
+        asResponse({
+          ...mkEntity("post_1", "blog_post", { title: "Hello" }),
+          created_hlc: createdAt,
+          updated_hlc: makeHlc(1711036800009),
+          last_gsn: 9,
+        }),
+    });
+
+    await backfill.run();
+    await storage.entities.reset();
+    await storage.dirtyTracker.mark("post_1", "blog_post");
+
+    const row = await storage.entities.get("post_1");
+    expect(row?.created_hlc).toBe(createdAt);
+    expect(row?.updated_hlc).toBe(makeHlc(1711036800009));
   });
 
   it("writes a fetched entity as a snapshot that survives a log replay", async () => {
@@ -349,27 +446,6 @@ describe("createBackfill", () => {
 
     expect(backfill.pending.get()).toEqual([]);
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Hello");
-  });
-});
-
-describe("snapshotAction", () => {
-  it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
-    const action = snapshotAction(entity);
-
-    expect(action.gsn).toBe(entity.last_gsn);
-    expect(action.hlc).toBe(entity.updated_hlc);
-    expect(action.updates.every((update) => update.method === "replace")).toBe(true);
-    expect(
-      Object.fromEntries(
-        action.updates.map((update) => [
-          update.method === "delete"
-            ? ""
-            : update.component.slice(update.component.indexOf("/") + 1),
-          update.method === "delete" ? null : update.data,
-        ]),
-      ),
-    ).toEqual(entity.data.fields);
   });
 });
 

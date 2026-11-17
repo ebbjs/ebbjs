@@ -1,6 +1,6 @@
 {
   "name": "create",
-  "description": "one create: one Update per component of the row, its membership row, and one relationship row per pointer",
+  "description": "one create: the row's create, one Update per component, a membership row's create and component, and one relationship row per pointer",
   "schema": "schema",
   "invocation_id": "inv_goldenCreate",
   "actor_id": "a_golden",
@@ -12,7 +12,12 @@
       "u_gcreate4",
       "u_gcreate5",
       "u_gcreate6",
-      "u_gcreate7"
+      "u_gcreate7",
+      "u_gcreate8",
+      "u_gcreate9",
+      "u_gcreate10",
+      "u_gcreate11",
+      "u_gcreate12"
     ],
     "rel": ["rel_gcreate1", "rel_gcreate2", "rel_gcreate3"],
     "hlc": [
@@ -21,7 +26,12 @@
       "111690000000000003",
       "111690000000000004",
       "111690000000000005",
-      "111690000000000006"
+      "111690000000000006",
+      "111690000000000007",
+      "111690000000000008",
+      "111690000000000009",
+      "111690000000000010",
+      "111690000000000011"
     ]
   },
   "calls": [
@@ -41,44 +51,60 @@
   "action": {
     "id": "a_cd1ddadf5cc1e680",
     "actor_id": "a_golden",
-    "hlc": "111690000000000006",
+    "hlc": "111690000000000011",
     "gsn": 0,
     "updates": [
       {
         "id": "u_gcreate1",
         "subject_id": "e_gcreate1",
-        "component": "issue/title",
-        "method": "replace",
-        "data": {
-          "value": "Ship it",
-          "update_id": "u_gcreate1",
-          "hlc": "111690000000000001"
-        }
+        "model": "issue",
+        "method": "create",
+        "hlc": "111690000000000001",
+        "data": null
       },
       {
         "id": "u_gcreate2",
         "subject_id": "e_gcreate1",
-        "component": "issue/done",
+        "component": "issue/title",
         "method": "replace",
         "data": {
-          "value": false,
+          "value": "Ship it",
           "update_id": "u_gcreate2",
-          "hlc": "111690000000000001"
+          "hlc": "111690000000000002"
         }
       },
       {
         "id": "u_gcreate3",
         "subject_id": "e_gcreate1",
-        "component": "issue/labels",
+        "component": "issue/done",
         "method": "replace",
         "data": {
-          "value": ["e_glabel1", "e_glabel2"],
+          "value": false,
           "update_id": "u_gcreate3",
-          "hlc": "111690000000000001"
+          "hlc": "111690000000000002"
         }
       },
       {
         "id": "u_gcreate4",
+        "subject_id": "e_gcreate1",
+        "component": "issue/labels",
+        "method": "replace",
+        "data": {
+          "value": ["e_glabel1", "e_glabel2"],
+          "update_id": "u_gcreate4",
+          "hlc": "111690000000000002"
+        }
+      },
+      {
+        "id": "u_gcreate5",
+        "subject_id": "eg_10_e_gcreate1g_gship",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000003",
+        "data": null
+      },
+      {
+        "id": "u_gcreate6",
         "subject_id": "eg_10_e_gcreate1g_gship",
         "component": "ebb/membership",
         "method": "replace",
@@ -87,12 +113,20 @@
             "entity_id": "e_gcreate1",
             "group_id": "g_gship"
           },
-          "update_id": "u_gcreate4",
-          "hlc": "111690000000000002"
+          "update_id": "u_gcreate6",
+          "hlc": "111690000000000004"
         }
       },
       {
-        "id": "u_gcreate5",
+        "id": "u_gcreate7",
+        "subject_id": "rel_gcreate1",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000005",
+        "data": null
+      },
+      {
+        "id": "u_gcreate8",
         "subject_id": "rel_gcreate1",
         "component": "ebb/link",
         "method": "replace",
@@ -103,12 +137,20 @@
             "type": "issue",
             "field": "project"
           },
-          "update_id": "u_gcreate5",
-          "hlc": "111690000000000003"
+          "update_id": "u_gcreate8",
+          "hlc": "111690000000000006"
         }
       },
       {
-        "id": "u_gcreate6",
+        "id": "u_gcreate9",
+        "subject_id": "rel_gcreate2",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000007",
+        "data": null
+      },
+      {
+        "id": "u_gcreate10",
         "subject_id": "rel_gcreate2",
         "component": "ebb/link",
         "method": "replace",
@@ -119,12 +161,20 @@
             "type": "issue",
             "field": "labels"
           },
-          "update_id": "u_gcreate6",
-          "hlc": "111690000000000004"
+          "update_id": "u_gcreate10",
+          "hlc": "111690000000000008"
         }
       },
       {
-        "id": "u_gcreate7",
+        "id": "u_gcreate11",
+        "subject_id": "rel_gcreate3",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000009",
+        "data": null
+      },
+      {
+        "id": "u_gcreate12",
         "subject_id": "rel_gcreate3",
         "component": "ebb/link",
         "method": "replace",
@@ -135,8 +185,8 @@
             "type": "issue",
             "field": "labels"
           },
-          "update_id": "u_gcreate7",
-          "hlc": "111690000000000005"
+          "update_id": "u_gcreate12",
+          "hlc": "111690000000000010"
         }
       }
     ]

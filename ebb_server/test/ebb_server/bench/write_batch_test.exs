@@ -155,15 +155,17 @@ defmodule EbbServer.Bench.WriteBatchTest do
       assert length(ops) == 301
     end
 
-    test "a spread batch writes one entity index row per Action", context do
+    test "a spread batch writes one entity index row per subject", context do
       {:ok, config} =
         Options.parse(["--tier", "t5", "--batch-size", "100", "--distribution", "spread"])
 
       ops = WriteBatch.build_ops(config, context.ctx, 1, 0)
 
       # 100 Actions x (cf_actions + dedup + group) = 300, plus one entity index
-      # row per Action.
-      assert length(ops) == 400
+      # row per folded subject. A spread Action brings its todo row and its
+      # membership row into existence, so it names two subjects; the hot
+      # workload updates one seeded membership row and names one.
+      assert length(ops) == 500
     end
 
     test "cf_actions holds one contiguous GSN range per call, in order", context do
@@ -185,9 +187,11 @@ defmodule EbbServer.Bench.WriteBatchTest do
       # and the scopes ETF. None of them carries the GSN, which lives only in
       # the cf_actions key.
       assert <<size::32, payload_etf::binary-size(size), scopes_etf::binary>> = value
-      # Two component Updates on one subject: the stored scopes hold one
-      # entry for that subject, not one per Update.
-      assert [{subject_id, [group_id]}] = :erlang.binary_to_term(scopes_etf)
+      # One create and one component Update per row, two rows: the stored
+      # scopes hold one entry per subject, not one per Update.
+      assert [{todo_id, [group_id]}, {membership_id, [group_id]}] =
+               :erlang.binary_to_term(scopes_etf)
+
       assert group_id == Workbook.group_id()
 
       payload = :erlang.binary_to_term(payload_etf)
@@ -198,10 +202,13 @@ defmodule EbbServer.Bench.WriteBatchTest do
 
       assert stored["gsn"] == 1_000_000_000
       assert stored["actor_id"] == Workbook.actor_id()
-      assert stored["subject_scopes"] == [{subject_id, [Workbook.group_id()]}]
-      assert Enum.all?(stored["updates"], &(&1["subject_id"] == subject_id))
-      assert length(stored["updates"]) == 2
-      assert Enum.all?(stored["updates"], &is_map_key(&1, "component"))
+      assert stored["subject_scopes"] == [{todo_id, [group_id]}, {membership_id, [group_id]}]
+
+      assert stored["updates"] |> Enum.map(& &1["subject_id"]) |> Enum.uniq() |> Enum.sort() ==
+               Enum.sort([todo_id, membership_id])
+
+      # Each row opens with its create, then carries one component Update.
+      assert length(stored["updates"]) == 4
     end
 
     test "group and dedup rows point at the Action and its GSN", context do

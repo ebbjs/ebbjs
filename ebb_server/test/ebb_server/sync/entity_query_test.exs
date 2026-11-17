@@ -129,25 +129,34 @@ defmodule EbbServer.Sync.EntityQueryTest do
   end
 
   defp component_updates(id_prefix, subject_id, model, fields, hlc) when is_binary(model) do
-    fields
-    |> Enum.with_index()
-    |> Enum.map(fn {{field, value}, index} ->
-      %{
-        id: "#{id_prefix}#{index}_#{Nanoid.generate()}",
-        subject_id: subject_id,
-        component: "#{model}/#{field}",
-        model: model,
-        field: field,
-        method: :replace,
-        data: %{"type" => "lww", "value" => value, "hlc" => hlc}
-      }
-    end)
+    created = validated_create(subject_id, model, id: "#{id_prefix}_create", hlc: hlc)
+
+    components =
+      fields
+      |> Enum.with_index()
+      |> Enum.map(fn {{field, value}, index} ->
+        %{
+          id: "#{id_prefix}#{index}_#{Nanoid.generate()}",
+          subject_id: subject_id,
+          component: "#{model}/#{field}",
+          model: model,
+          field: field,
+          method: :replace,
+          data: %{"type" => "lww", "value" => value, "hlc" => hlc}
+        }
+      end)
+
+    [created | components]
   end
 
   # A platform row is one atomic component: the whole value is the payload and
   # the component name says which kind it is.
   defp component_updates(id_prefix, subject_id, kind, value, hlc) when is_atom(kind) do
     [
+      validated_create(subject_id, SystemComponent.model(),
+        id: "#{id_prefix}_create_#{Nanoid.generate()}",
+        hlc: hlc
+      ),
       %{
         id: "#{id_prefix}_#{Nanoid.generate()}",
         subject_id: subject_id,

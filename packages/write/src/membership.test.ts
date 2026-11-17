@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { componentName, EBB_COMPONENTS, type EbbComponentKind, type Update } from "@ebbjs/core";
 
 import {
+  foldSubjects,
   lastGrantViolation,
   lastMembershipViolation,
   membershipScope,
@@ -139,6 +140,37 @@ describe("membership checker — fan-out scope", () => {
       view({ groupOfMembership: (id) => (id === "eg_2" ? "g_2" : undefined) }),
     );
     expect(scope).toEqual(["g_1", "g_2"]);
+  });
+});
+
+describe("membership checker — folding a batch's row facts", () => {
+  const create = (subjectId: string, model: string): Update => ({
+    id: `u_create_${subjectId}`,
+    subject_id: subjectId,
+    model,
+    method: "create",
+    hlc: "hlc_1",
+    data: null,
+  });
+
+  it("scopes a create-only row to the entity's groups", () => {
+    const scope = membershipScope(
+      [create("todo_1", "todo")],
+      view({ groupsOf: (id) => (id === "todo_1" ? ["g_1"] : []) }),
+    );
+
+    expect(scope).toEqual(["g_1"]);
+  });
+
+  it("lets the create decide the row's model, whichever Update arrives first", () => {
+    const component = update({ subject_id: "todo_1", kind: "note", value: { title: "x" } });
+
+    expect(foldSubjects([create("todo_1", "todo"), ...component]).get("todo_1")?.model).toBe(
+      "todo",
+    );
+    expect(foldSubjects([...component, create("todo_1", "todo")]).get("todo_1")?.model).toBe(
+      "todo",
+    );
   });
 });
 

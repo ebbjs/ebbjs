@@ -63,6 +63,22 @@ defmodule EbbServer.Storage.EntityStore do
   needs one, so neither can invent a row for an id that was never written,
   while a tombstoned row is materialized and does not exist.
 
+  ## Applying a create
+
+  A `create` is the one Update that writes a row record where none is
+  materialized: the row's `model` and `created_hlc` come from the create, its
+  fields start empty, and `updated_hlc`/`last_gsn` come from the Action. For
+  a row that is already materialized — live or tombstoned — it is a no-op:
+  a replay does not restate the model or creation time, clear a tombstone, or
+  resurrect the row. That is what makes a create that arrives twice (catch-up
+  plus a listing seed, a retried Action) harmless.
+
+  A component Update for a row with no materialized row is a no-op: it never
+  invents a row. The server refuses such an Action at authorization, and a
+  replica's delta always carries the Action that created the row before the
+  components. Within one Action the create is applied first, so an Action
+  whose create arrives after its components still materializes both.
+
   ## Applying a component Update
 
   The wire names one `(entity, component)` per Update, while the materialized
@@ -83,14 +99,11 @@ defmodule EbbServer.Storage.EntityStore do
       the leaf-level LWW compare, exactly like a `merge`: it may be refused
       for a keyed component but it never overwrites a newer leaf, so the two
       materializers converge on an out-of-order base snapshot;
-    - the first write of a row stamps `created_hlc` with the Action's HLC,
-      whichever of `merge` or `replace` it is. The column is the row's
-      creation time and nothing else; no path may read it as a signal, and a
-      later write never restates it;
+    - the column `created_hlc` is the create's `hlc` and nothing else. A
+      component write never stamps or restates it;
     - `drop` removes the field; the row survives, keeps its model and its
-      `created_hlc`, and is not tombstoned. `drop` and `delete` never stamp
-      `created_hlc`. A `drop` for a row that was never materialized is a
-      no-op, exactly as it is on the client;
+      `created_hlc`, and is not tombstoned. A `drop` for a row that was never
+      materialized is a no-op, exactly as it is on the client;
     - `delete` tombstones the row. A delete for a row that was never created
       writes nothing, for the same reason a `drop` there is a no-op.
 
@@ -557,10 +570,17 @@ defmodule EbbServer.Storage.EntityStore do
   end
 
   defp apply_action(action, updates, gsn, acc) do
-    Enum.reduce(updates, acc, fn update, inner_acc ->
+    # A create may arrive after its components (the client's out-of-order
+    # delivery), so the row it establishes is applied before them.
+    {creates, others} = Enum.split_with(updates, &(&1["method"] == "create"))
+
+    Enum.reduce(creates ++ others, acc, fn update, inner_acc ->
       case update["method"] do
         method when method in ["merge", "replace"] ->
           apply_component(action, update, gsn, inner_acc)
+
+        "create" ->
+          apply_create(action, update, gsn, inner_acc)
 
         "drop" ->
           apply_drop(action, update, gsn, inner_acc)
@@ -574,34 +594,61 @@ defmodule EbbServer.Storage.EntityStore do
     end)
   end
 
-  defp apply_component(action, update, gsn, acc) do
-    {model, field} = Component.split(update["component"])
-    incoming = FieldMerge.stamp(update["data"], update["id"])
-    existing_fields = fields_of(acc.data)
-    fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
-    model = acc.model || model
+  # A create writes the row only where nothing is materialized. A materialized
+  # row — live or tombstoned — keeps its model, creation time, fields and
+  # tombstone; only the monotonic columns move. A duplicate create is
+  # therefore a no-op that cannot resurrect a row.
+  defp apply_create(action, update, gsn, acc) do
+    if acc.materialized? do
+      %{acc | updated_hlc: action["hlc"], max_gsn: max(acc.max_gsn, gsn)}
+    else
+      model = update["model"]
 
-    %{
-      acc
-      | data: row_data(fields, model, update["component"]),
-        # The model is fixed at the row's first write; a later component's
-        # prefix must agree with it (the authorizer refuses a relabel).
-        model: model,
-        created_hlc: created_hlc(acc.created_hlc, action),
-        updated_hlc: action["hlc"],
-        max_gsn: max(acc.max_gsn, gsn),
-        deleted_hlc: nil,
-        deleted_by: nil,
-        changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
-        written: update["component"],
-        materialized?: true
-    }
+      %{
+        acc
+        | data: row_data(%{}, model, nil),
+          model: model,
+          created_hlc: update["hlc"],
+          updated_hlc: action["hlc"],
+          max_gsn: max(acc.max_gsn, gsn),
+          deleted_hlc: nil,
+          deleted_by: nil,
+          changed: MapSet.new(),
+          written: nil,
+          data_mode: :replace,
+          materialized?: true
+      }
+    end
   end
 
-  # `created_hlc` is the row's creation time: the first write stamps it,
-  # whatever its method, and nothing restates it afterwards.
-  defp created_hlc(nil, action), do: action["hlc"]
-  defp created_hlc(created_hlc, _action), do: created_hlc
+  # A component write never invents a row (decision 2): with nothing
+  # materialized there is no row to write it to, so it is a no-op.
+  defp apply_component(action, update, gsn, acc) do
+    if acc.materialized? do
+      {model, field} = Component.split(update["component"])
+      incoming = FieldMerge.stamp(update["data"], update["id"])
+      existing_fields = fields_of(acc.data)
+      fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
+      model = acc.model || model
+
+      %{
+        acc
+        | data: row_data(fields, model, update["component"]),
+          # The model is fixed by the create; a later component's prefix must
+          # agree with it (the authorizer refuses a relabel).
+          model: model,
+          updated_hlc: action["hlc"],
+          max_gsn: max(acc.max_gsn, gsn),
+          deleted_hlc: nil,
+          deleted_by: nil,
+          changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
+          written: update["component"],
+          materialized?: true
+      }
+    else
+      acc
+    end
+  end
 
   # Detaching a component removes the key, which a `json_set` patch cannot do;
   # it rewrites the whole `fields` blob instead. A drop for a row that does

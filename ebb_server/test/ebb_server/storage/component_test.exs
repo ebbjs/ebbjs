@@ -37,7 +37,7 @@ defmodule EbbServer.Storage.ComponentTest do
   end
 
   test "the method set is the envelope's, in one place" do
-    assert Component.method_names() == ["merge", "replace", "drop", "delete"]
+    assert Component.method_names() == ["create", "merge", "replace", "drop", "delete"]
 
     for method <- Component.method_names() do
       assert Component.method?(method)
@@ -47,9 +47,5 @@ defmodule EbbServer.Storage.ComponentTest do
     refute Component.method?("put")
     refute Component.method?("patch")
     assert_raise ArgumentError, fn -> Component.to_method("put") end
-  end
-
-  test "the update key set is the envelope's" do
-    assert Component.update_keys() == ["id", "subject_id", "component", "method", "data"]
   end
 end

@@ -298,6 +298,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
       "hlc" => hlc,
       "updates" =>
         [
+          create_update("#{group_id}_create", group_id, "ebb", hlc),
           %{
             "id" => unique("upd"),
             "subject_id" => group_id,
@@ -322,6 +323,7 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
 
   defp member_update(gm_id, member_actor_id, group_id, permissions, hlc) do
     [
+      create_update("#{gm_id}_create", gm_id, "ebb", hlc),
       %{
         "id" => "#{gm_id}_grant",
         "subject_id" => gm_id,
@@ -337,6 +339,17 @@ defmodule EbbServer.Sync.GroupsChangedFanOutTest do
         }
       }
     ]
+  end
+
+  defp create_update(id, subject_id, model, hlc) do
+    %{
+      "id" => id,
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
   end
 
   defp post!(action) do

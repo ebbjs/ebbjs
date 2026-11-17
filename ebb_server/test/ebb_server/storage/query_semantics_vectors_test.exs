@@ -122,7 +122,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       id: "act_" <> Nanoid.generate(),
       actor_id: actor_id,
       hlc: hlc,
-      updates: leaf_updates ++ map_updates
+      updates: [validated_create(row_id, "todo", hlc: hlc)] ++ leaf_updates ++ map_updates
     }
 
     {:ok, _gsn_pair, []} = Writer.write_actions([action], writer_name)
@@ -135,6 +135,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
+        validated_create(eg_id, SystemComponent.model(), hlc: eg_hlc),
         validated_component(
           eg_id,
           SystemComponent.component(:membership),
@@ -161,6 +162,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
+        validated_create(gm_id, SystemComponent.model(), hlc: hlc),
         validated_component(
           gm_id,
           SystemComponent.component(:grant),

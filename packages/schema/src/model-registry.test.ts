@@ -13,6 +13,16 @@ const buildRegistry = (): ModelRegistry => {
   return r;
 };
 
+/** The row's create: its model and its creation time, no component. */
+const createUpdate = {
+  id: "u_create",
+  subject_id: "todo_1",
+  model: "todo",
+  method: "create" as const,
+  hlc: makeHlc(1711036800000),
+  data: null,
+};
+
 /** One `replace` per declared field, the shape a create emits. */
 const validUpdate = {
   id: "u_1",
@@ -122,6 +132,43 @@ describe("ModelRegistry.validateAction", () => {
     expect(unknownType?.updateIndex).toBe(1);
     const badField = v.find((x) => x.field === "bogus");
     expect(badField?.updateIndex).toBe(2);
+  });
+
+  it("accepts a create alone and followed by its components", () => {
+    const r = buildRegistry();
+    expect(r.validateAction(buildAction([createUpdate]))).toEqual([]);
+    expect(r.validateAction(buildAction([createUpdate, validUpdate]))).toEqual([]);
+  });
+
+  it("reports a create naming an unregistered model, and checks no component", () => {
+    const r = buildRegistry();
+    const v = r.validateAction(buildAction([{ ...createUpdate, model: "list" }]));
+    expect(v).toHaveLength(1);
+    expect(v[0]?.entityName).toBe("(unknown)");
+    expect(v[0]?.updateIndex).toBe(0);
+    expect(v[0]?.message).toMatch(/Unknown model "list"/);
+  });
+
+  it("refuses a component whose model disagrees with its row's create", () => {
+    const r = buildRegistry();
+    r.register(defineModel("note", { title: e.string() }));
+    const v = r.validateAction(
+      buildAction([createUpdate, { ...validUpdate, id: "u_2", component: "note/title" }]),
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0]?.entityName).toBe("todo");
+    expect(v[0]?.updateIndex).toBe(1);
+    expect(v[0]?.message).toMatch(/create names "todo"/);
+  });
+
+  it("compares every component against its create, whichever arrives first", () => {
+    const r = buildRegistry();
+    r.register(defineModel("note", { title: e.string() }));
+    const v = r.validateAction(
+      buildAction([{ ...validUpdate, component: "note/title" }, createUpdate]),
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0]?.updateIndex).toBe(0);
   });
 
   it("skips fields check for delete updates (data === null)", () => {

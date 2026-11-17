@@ -1,18 +1,29 @@
 {
   "name": "relate",
-  "description": "a one-cardinality link and a many-cardinality FK set, each with its relationship rows",
+  "description": "a one-cardinality link and a many-cardinality FK set, each relationship row born in its create",
   "schema": "schema",
   "invocation_id": "inv_goldenRelate",
   "actor_id": "a_golden",
   "ids": {
-    "u": ["u_grelate1", "u_grelate2", "u_grelate3", "u_grelate4"],
+    "u": [
+      "u_grelate1",
+      "u_grelate2",
+      "u_grelate3",
+      "u_grelate4",
+      "u_grelate5",
+      "u_grelate6",
+      "u_grelate7"
+    ],
     "rel": ["rel_grelate1", "rel_grelate2", "rel_grelate3"],
     "hlc": [
       "111690000000000031",
       "111690000000000032",
       "111690000000000033",
       "111690000000000034",
-      "111690000000000035"
+      "111690000000000035",
+      "111690000000000036",
+      "111690000000000037",
+      "111690000000000038"
     ]
   },
   "calls": [
@@ -34,11 +45,19 @@
   "action": {
     "id": "a_d821b9aa2775e6a4",
     "actor_id": "a_golden",
-    "hlc": "111690000000000035",
+    "hlc": "111690000000000038",
     "gsn": 0,
     "updates": [
       {
         "id": "u_grelate1",
+        "subject_id": "rel_grelate1",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000031",
+        "data": null
+      },
+      {
+        "id": "u_grelate2",
         "subject_id": "rel_grelate1",
         "component": "ebb/link",
         "method": "replace",
@@ -49,23 +68,31 @@
             "type": "issue",
             "field": "project"
           },
-          "update_id": "u_grelate1",
-          "hlc": "111690000000000031"
-        }
-      },
-      {
-        "id": "u_grelate2",
-        "subject_id": "e_gissue1",
-        "component": "issue/labels",
-        "method": "merge",
-        "data": {
-          "value": ["e_glabel1", "e_glabel2"],
           "update_id": "u_grelate2",
           "hlc": "111690000000000032"
         }
       },
       {
         "id": "u_grelate3",
+        "subject_id": "e_gissue1",
+        "component": "issue/labels",
+        "method": "merge",
+        "data": {
+          "value": ["e_glabel1", "e_glabel2"],
+          "update_id": "u_grelate3",
+          "hlc": "111690000000000033"
+        }
+      },
+      {
+        "id": "u_grelate4",
+        "subject_id": "rel_grelate2",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000034",
+        "data": null
+      },
+      {
+        "id": "u_grelate5",
         "subject_id": "rel_grelate2",
         "component": "ebb/link",
         "method": "replace",
@@ -76,12 +103,20 @@
             "type": "issue",
             "field": "labels"
           },
-          "update_id": "u_grelate3",
-          "hlc": "111690000000000033"
+          "update_id": "u_grelate5",
+          "hlc": "111690000000000035"
         }
       },
       {
-        "id": "u_grelate4",
+        "id": "u_grelate6",
+        "subject_id": "rel_grelate3",
+        "model": "ebb",
+        "method": "create",
+        "hlc": "111690000000000036",
+        "data": null
+      },
+      {
+        "id": "u_grelate7",
         "subject_id": "rel_grelate3",
         "component": "ebb/link",
         "method": "replace",
@@ -92,8 +127,8 @@
             "type": "issue",
             "field": "labels"
           },
-          "update_id": "u_grelate4",
-          "hlc": "111690000000000034"
+          "update_id": "u_grelate7",
+          "hlc": "111690000000000037"
         }
       }
     ]

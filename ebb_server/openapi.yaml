@@ -23,12 +23,23 @@
                             {
                               "component":
                                 {
-                                  "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                  "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a create or delete names the row and carries none.",
                                   "type": "string",
+                                },
+                              "model":
+                                {
+                                  "description": "The row's model, with no `/`. Required for create and refused on every other method; every component Update of the same subject in the Action must name the same model.",
+                                  "type": "string",
+                                },
+                              "hlc":
+                                {
+                                  "description": "The row's creation time. Required for create and refused on every other method; it is the `created_hlc` the row is materialized with.",
+                                  "format": "int64",
+                                  "type": "integer",
                                 },
                               "data":
                                 {
-                                  "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                  "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for create, drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                   "nullable": true,
                                   "type": "object",
                                 },
@@ -39,8 +50,8 @@
                                 },
                               "method":
                                 {
-                                  "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
-                                  "enum": ["merge", "replace", "drop", "delete"],
+                                  "description": "create brings the row into existence (a zero-component create is a complete row); merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                  "enum": ["create", "merge", "replace", "drop", "delete"],
                                   "type": "string",
                                 },
                               "subject_id":
@@ -64,7 +75,7 @@
                 {
                   "created_hlc":
                     {
-                      "description": "The HLC of the row's first write, whatever its method",
+                      "description": "The HLC the row's create carried",
                       "format": "int64",
                       "type": "integer",
                     },
@@ -134,20 +145,31 @@
                 {
                   "component":
                     {
-                      "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                      "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a create or delete names the row and carries none.",
                       "type": "string",
+                    },
+                  "model":
+                    {
+                      "description": "The row's model, with no `/`. Required for create and refused on every other method; every component Update of the same subject in the Action must name the same model.",
+                      "type": "string",
+                    },
+                  "hlc":
+                    {
+                      "description": "The row's creation time. Required for create and refused on every other method; it is the `created_hlc` the row is materialized with.",
+                      "format": "int64",
+                      "type": "integer",
                     },
                   "data":
                     {
-                      "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
+                      "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for create, drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                       "nullable": true,
                       "type": "object",
                     },
                   "id": { "description": "Unique update ID within the action", "type": "string" },
                   "method":
                     {
-                      "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
-                      "enum": ["merge", "replace", "drop", "delete"],
+                      "description": "create brings the row into existence (a zero-component create is a complete row); merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                      "enum": ["create", "merge", "replace", "drop", "delete"],
                       "type": "string",
                     },
                   "subject_id":
@@ -1072,7 +1094,7 @@
                                         {
                                           "created_hlc":
                                             {
-                                              "description": "The HLC of the row's first write, whatever its method",
+                                              "description": "The HLC the row's create carried",
                                               "format": "int64",
                                               "type": "integer",
                                             },
@@ -1255,7 +1277,7 @@
                                     {
                                       "created_hlc":
                                         {
-                                          "description": "The HLC of the row's first write, whatever its method",
+                                          "description": "The HLC the row's create carried",
                                           "format": "int64",
                                           "type": "integer",
                                         },
@@ -3725,12 +3747,23 @@
                                                         {
                                                           "component":
                                                             {
-                                                              "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                                              "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a create or delete names the row and carries none.",
                                                               "type": "string",
+                                                            },
+                                                          "model":
+                                                            {
+                                                              "description": "The row's model, with no `/`. Required for create and refused on every other method; every component Update of the same subject in the Action must name the same model.",
+                                                              "type": "string",
+                                                            },
+                                                          "hlc":
+                                                            {
+                                                              "description": "The row's creation time. Required for create and refused on every other method; it is the `created_hlc` the row is materialized with.",
+                                                              "format": "int64",
+                                                              "type": "integer",
                                                             },
                                                           "data":
                                                             {
-                                                              "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                                              "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for create, drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                               "nullable": true,
                                                               "type": "object",
                                                             },
@@ -3741,9 +3774,10 @@
                                                             },
                                                           "method":
                                                             {
-                                                              "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                                              "description": "create brings the row into existence (a zero-component create is a complete row); merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
                                                               "enum":
                                                                 [
+                                                                  "create",
                                                                   "merge",
                                                                   "replace",
                                                                   "drop",
@@ -4011,12 +4045,23 @@
                                                     {
                                                       "component":
                                                         {
-                                                          "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a delete names the row and carries none.",
+                                                          "description": "The component being written, `<model>/<field>`. The prefix is the model the entity is committed under and the leaf is the row field the value is stored at. Required for merge, replace and drop; a create or delete names the row and carries none.",
                                                           "type": "string",
+                                                        },
+                                                      "model":
+                                                        {
+                                                          "description": "The row's model, with no `/`. Required for create and refused on every other method; every component Update of the same subject in the Action must name the same model.",
+                                                          "type": "string",
+                                                        },
+                                                      "hlc":
+                                                        {
+                                                          "description": "The row's creation time. Required for create and refused on every other method; it is the `created_hlc` the row is materialized with.",
+                                                          "format": "int64",
+                                                          "type": "integer",
                                                         },
                                                       "data":
                                                         {
-                                                          "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
+                                                          "description": "The component's own value: a leaf `{value, update_id, hlc?}` or a keyed value `{map: {key => FieldValue}}`. Null for create, drop and delete. Each leaf's `hlc` must sit at most 120s ahead of the server clock",
                                                           "nullable": true,
                                                           "type": "object",
                                                         },
@@ -4027,9 +4072,15 @@
                                                         },
                                                       "method":
                                                         {
-                                                          "description": "merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
+                                                          "description": "create brings the row into existence (a zero-component create is a complete row); merge folds the value into the component under last-writer-wins; replace sets it whole (refused for a keyed component); drop detaches the component; delete tombstones the row",
                                                           "enum":
-                                                            ["merge", "replace", "drop", "delete"],
+                                                            [
+                                                              "create",
+                                                              "merge",
+                                                              "replace",
+                                                              "drop",
+                                                              "delete",
+                                                            ],
                                                           "type": "string",
                                                         },
                                                       "subject_id":
@@ -4179,7 +4230,7 @@
                                                 {
                                                   "created_hlc":
                                                     {
-                                                      "description": "The HLC of the row's first write, whatever its method",
+                                                      "description": "The HLC the row's create carried",
                                                       "format": "int64",
                                                       "type": "integer",
                                                     },

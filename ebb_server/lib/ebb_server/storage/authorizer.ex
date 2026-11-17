@@ -2,8 +2,8 @@ defmodule EbbServer.Storage.Authorizer do
   @moduledoc """
   Authorizes validated actions against the #121 permission table.
 
-  The wire names one component per Update, but every rule here is a rule
-  about a row, so authorization runs against the Action's folded row
+  The wire names one component or the row per Update, but every rule here is a
+  rule about a row, so authorization runs against the Action's folded row
   mutations (`EbbServer.Storage.RowMutations`). The first failure rejects
   that Action. Authorization is per-Action: a rejected Action is reported
   beside its accepted siblings instead of failing the batch (#469). Only
@@ -338,21 +338,15 @@ defmodule EbbServer.Storage.Authorizer do
   end
 
   # The Action's Updates fold into one row mutation per subject, so every
-  # component Update of a row is authorized once, against the row's model and
-  # the row's fields.
+  # Update of a row is authorized once, against the row's model and the row's
+  # fields. The verb is the Action's own create, so no existence predicate is
+  # needed; a delete resolves its committed model through the request's own
+  # earlier creates as well as the caches.
   defp fold_action(action, opts, sim) do
     fold_opts =
-      Keyword.merge(opts,
-        created: MapSet.new(Map.keys(sim.models)),
-        # A system row can be certified by its by-id cache while the type
-        # index still lags, and the authorizer's own rules treat that row as
-        # existing. The verb follows the same existence signal, so a write to
-        # it is an update rather than a create.
-        exists?: fn entity_id -> committed_model(entity_id, opts) != nil end,
-        model_resolver: fn entity_id ->
-          committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
-        end
-      )
+      Keyword.put(opts, :model_resolver, fn entity_id ->
+        committed_model(entity_id, opts) || Map.get(sim.models, entity_id)
+      end)
 
     RowMutations.fold(action.updates, fold_opts)
   end

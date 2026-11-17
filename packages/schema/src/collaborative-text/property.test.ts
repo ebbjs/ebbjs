@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   componentField,
   format,
+  isComponentUpdate,
   mergeFieldValue,
   pack,
   type Action,
@@ -43,9 +44,11 @@ const pick = <T>(rng: () => number, values: readonly T[]): T =>
 const contentOf = (action: Action): FieldValue | undefined => {
   const update = action.updates.find(
     (candidate) =>
-      candidate.method !== "delete" && componentField(candidate.component) === DOC_CONTENT_FIELD,
+      isComponentUpdate(candidate) &&
+      candidate.method !== "drop" &&
+      componentField(candidate.component) === DOC_CONTENT_FIELD,
   );
-  if (update === undefined || update.method === "drop" || update.method === "delete") {
+  if (update === undefined || !isComponentUpdate(update) || update.method === "drop") {
     return undefined;
   }
   return update.data;
@@ -55,7 +58,7 @@ const mergedContent = (actions: readonly Action[], base: FieldValue): FieldValue
   let merged = base;
   for (const action of actions) {
     for (const update of action.updates) {
-      if (update.method === "drop" || update.method === "delete") continue;
+      if (!isComponentUpdate(update) || update.method === "drop") continue;
       if (componentField(update.component) !== DOC_CONTENT_FIELD) continue;
       merged = mergeFieldValue(merged, update.data);
     }

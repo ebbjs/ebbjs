@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { decodeSync, EBB_MODEL_NAME, type Action, type Entity } from "@ebbjs/core";
+import {
+  decodeSync,
+  EBB_MODEL_NAME,
+  isComponentUpdate,
+  type Action,
+  type Entity,
+} from "@ebbjs/core";
 
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
@@ -330,7 +336,7 @@ describe("draft group.create — app scope (#732)", () => {
     // An atomic value has no partial write: the patch carries the whole value,
     // so the name it did not touch survives.
     const [update] = updatesOf(seen).filter(
-      (candidate) => candidate.method !== "delete" && candidate.component === "ebb/group",
+      (candidate) => isComponentUpdate(candidate) && candidate.component === "ebb/group",
     );
     expect(fieldsOf([update!])).toMatchObject({ name: "Team", apps: ["issues"] });
   });

@@ -255,6 +255,12 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
             "hlc" => hlc,
             "updates" =>
               [
+                ActionHelpers.create_update(
+                  "upd_create_363_#{i}_#{:erlang.unique_integer([:positive])}",
+                  entity_id,
+                  "todo",
+                  hlc
+                ),
                 %{
                   "id" => "upd_363_#{i}_#{:erlang.unique_integer([:positive])}",
                   "subject_id" => entity_id,
@@ -310,6 +316,12 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "hlc" => hlc,
         "updates" =>
           [
+            ActionHelpers.create_update(
+              "upd_create_583_hops_#{:erlang.unique_integer([:positive])}",
+              entity_id,
+              "todo",
+              hlc
+            ),
             %{
               "id" => "upd_583_hops_#{:erlang.unique_integer([:positive])}",
               "subject_id" => entity_id,
@@ -354,6 +366,12 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   # model (all four commit under `ebb`).
   defp platform_update(kind, subject_id, value, hlc) do
     [
+      ActionHelpers.create_update(
+        "upd_create_#{kind}_#{:erlang.unique_integer([:positive])}",
+        subject_id,
+        SystemComponent.model(),
+        hlc
+      ),
       %{
         "id" => "upd_#{kind}_#{:erlang.unique_integer([:positive])}",
         "subject_id" => subject_id,
@@ -365,13 +383,23 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   defp user_update(subject_id, component, value, hlc) do
-    %{
-      "id" => "upd_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => subject_id,
-      "component" => component,
-      "method" => "replace",
-      "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
-    }
+    model = component |> :binary.split("/") |> hd()
+
+    [
+      ActionHelpers.create_update(
+        "upd_create_#{:erlang.unique_integer([:positive])}",
+        subject_id,
+        model,
+        hlc
+      ),
+      %{
+        "id" => "upd_#{:erlang.unique_integer([:positive])}",
+        "subject_id" => subject_id,
+        "component" => component,
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+      }
+    ]
   end
 
   defp bootstrap_group(actor_id, group_id, permissions) do
@@ -474,7 +502,8 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "id" => "act_473_seed_#{:erlang.unique_integer([:positive])}",
         "actor_id" => actor_id,
         "hlc" => hlc,
-        "updates" => [todo_update(other_id, hlc)] ++ membership_update(other_id, g2, hlc, nil)
+        "updates" =>
+          List.flatten([todo_update(other_id, hlc)] ++ membership_update(other_id, g2, hlc, nil))
       }
 
       assert ActionHelpers.post_actions(
@@ -503,9 +532,11 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
         "actor_id" => actor_id,
         "hlc" => hlc,
         "updates" =>
-          [todo_update(leaked_id, hlc)] ++
-            membership_put(eg_leak, leaked_id, g1, hlc) ++
-            membership_put(eg_other, other_id, g2, hlc)
+          List.flatten(
+            [todo_update(leaked_id, hlc)] ++
+              membership_put(eg_leak, leaked_id, g1, hlc) ++
+              membership_put(eg_other, other_id, g2, hlc)
+          )
       }
 
       conn =
@@ -531,13 +562,21 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   defp todo_update(entity_id, hlc) do
-    %{
-      "id" => "upd_473_#{:erlang.unique_integer([:positive])}",
-      "subject_id" => entity_id,
-      "component" => "todo/title",
-      "method" => "replace",
-      "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
-    }
+    [
+      ActionHelpers.create_update(
+        "upd_create_473_#{:erlang.unique_integer([:positive])}",
+        entity_id,
+        "todo",
+        hlc
+      ),
+      %{
+        "id" => "upd_473_#{:erlang.unique_integer([:positive])}",
+        "subject_id" => entity_id,
+        "component" => "todo/title",
+        "method" => "replace",
+        "data" => %{"type" => "lww", "value" => "x", "hlc" => hlc}
+      }
+    ]
   end
 
   defp membership_put(eg_id, entity_id, group_id, hlc) do
@@ -575,7 +614,11 @@ defmodule EbbServer.Sync.FanOutRouterIntegrationTest do
   end
 
   defp update_subject_ids(payload) do
-    payload |> Map.get("updates") |> Enum.map(& &1["subject_id"])
+    payload
+    |> Map.get("updates")
+    |> Enum.map(& &1["subject_id"])
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp router_subscriptions do

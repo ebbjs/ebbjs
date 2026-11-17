@@ -35,9 +35,12 @@ defmodule EbbServer.ActionExport do
   `ebb/membership`) are stripped by default, and an Action left with no
   Updates is dropped entirely. The exclusion names the components, not the
   model `ebb`: excluding the model would strip the `ebb/group` creates too.
-  A `delete` names no component, so it is always exported. The per-subject
-  delivery scopes (#473) are internal routing metadata, not part of the
-  Action contract, so they are stripped too.
+  A `delete` names no component, so it is always exported. A `create` names
+  no component either: it is exported with whatever survives of its row, and
+  dropped only when the exclusion took every other Update of its subject,
+  since a row no consumer can materialize is not worth exporting. The
+  per-subject delivery scopes (#473) are internal routing metadata, not part
+  of the Action contract, so they are stripped too.
 
   ## Opt-in
 
@@ -208,7 +211,8 @@ defmodule EbbServer.ActionExport do
   defp filter_actions(actions, excluded) do
     {kept, dropped} =
       Enum.reduce(actions, {[], 0}, fn action, {kept, dropped} ->
-        updates = Enum.reject(action["updates"], &(update_component(&1) in excluded))
+        {updates, dropped_subjects} = reject_excluded(action["updates"], excluded)
+        updates = Enum.reject(updates, &create_of_dropped_subject?(&1, dropped_subjects))
         removed = length(action["updates"]) - length(updates)
 
         case updates do
@@ -230,7 +234,38 @@ defmodule EbbServer.ActionExport do
     kept
   end
 
-  # A delete names the row and no component, so it has nothing to exclude.
+  # A delete and a create name the row and no component, so an exclusion can
+  # only reach their row through its components. A create goes only when the
+  # exclusion took every other Update of its subject: the surviving components
+  # of a partially excluded row would otherwise reach the consumer as a row
+  # nothing can materialize.
+  defp reject_excluded(updates, excluded) do
+    {kept, excluded_subjects, written_subjects} =
+      Enum.reduce(updates, {[], MapSet.new(), MapSet.new()}, &reject_one(&1, &2, excluded))
+
+    {Enum.reverse(kept), MapSet.difference(excluded_subjects, written_subjects)}
+  end
+
+  defp reject_one(update, {kept, excluded_subjects, written_subjects}, excluded) do
+    subject_id = update["subject_id"]
+
+    cond do
+      update_component(update) in excluded ->
+        {kept, MapSet.put(excluded_subjects, subject_id), written_subjects}
+
+      update["method"] == "create" ->
+        {[update | kept], excluded_subjects, written_subjects}
+
+      true ->
+        {[update | kept], excluded_subjects, MapSet.put(written_subjects, subject_id)}
+    end
+  end
+
+  defp create_of_dropped_subject?(%{"method" => "create", "subject_id" => subject_id}, dropped),
+    do: MapSet.member?(dropped, subject_id)
+
+  defp create_of_dropped_subject?(_update, _dropped), do: false
+
   defp update_component(%{"component" => component}) when is_binary(component), do: component
 
   defp update_component(_update), do: nil

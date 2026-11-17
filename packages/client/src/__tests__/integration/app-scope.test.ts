@@ -13,7 +13,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createAction, createClock, EBB_COMPONENTS, localEvent } from "@ebbjs/core";
+import { createAction, createClock, EBB_COMPONENTS, EBB_MODEL_NAME, localEvent } from "@ebbjs/core";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createClient, defineAction, type SyncClient } from "../..";
 
@@ -102,17 +102,26 @@ const notePatch = (title: string) => {
   }).action;
 };
 
-/** One `ebb/membership` put: the pair rides as one atomic value. */
+/** One `ebb/membership` row: its create, then the pair as one atomic value. */
 const fileInto = (entityId: string, groupId: string) => {
   const clock = createClock();
   const updateId = `u_share_${RUN_ID}`;
+  const membershipId = `eg_${RUN_ID}_${groupId}_${entityId}`;
   return createAction({
     actorId: ALICE,
     clock,
     updates: [
       {
+        id: `${updateId}_create`,
+        subject_id: membershipId,
+        model: EBB_MODEL_NAME,
+        method: "create",
+        hlc: localEvent(clock),
+        data: null,
+      },
+      {
         id: `${updateId}_0`,
-        subject_id: `eg_${RUN_ID}_${groupId}_${entityId}`,
+        subject_id: membershipId,
         component: EBB_COMPONENTS.membership,
         method: "replace",
         data: leaf({ entity_id: entityId, group_id: groupId }, updateId, clock),

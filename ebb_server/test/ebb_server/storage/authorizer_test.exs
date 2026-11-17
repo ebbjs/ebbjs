@@ -73,19 +73,25 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp group_put(id) do
-    component_update(id, id, "ebb/group", :replace, %{"value" => %{"name" => "Test Group"}})
+    [
+      validated_create(id, "ebb", id: "#{id}_create"),
+      component_update(id, id, "ebb/group", :replace, %{"value" => %{"name" => "Test Group"}})
+    ]
   end
 
   # A platform row carries exactly one atomic component, so its fixture is one
   # Update whose value is the whole object.
   defp grant_put(id, actor_id, group_id, permissions) do
-    component_update(id, id, "ebb/grant", :replace, %{
-      "value" => %{
-        "actor_id" => actor_id,
-        "group_id" => group_id,
-        "permissions" => permissions
-      }
-    })
+    [
+      validated_create(id, "ebb", id: "#{id}_create"),
+      component_update(id, id, "ebb/grant", :replace, %{
+        "value" => %{
+          "actor_id" => actor_id,
+          "group_id" => group_id,
+          "permissions" => permissions
+        }
+      })
+    ]
   end
 
   defp grant_patch(id, group_id, permissions, actor_id \\ nil) do
@@ -104,7 +110,10 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp entity_put(id, model) do
-    component_update(id, id, "#{model}/title", :replace, %{"value" => "Test"})
+    [
+      validated_create(id, model, id: "#{id}_create"),
+      component_update(id, id, "#{model}/title", :replace, %{"value" => "Test"})
+    ]
   end
 
   defp entity_patch(id, model) do
@@ -116,9 +125,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
   end
 
   defp membership_put(id, entity_id, group_id) do
-    component_update(id, id, "ebb/membership", :replace, %{
-      "value" => %{"entity_id" => entity_id, "group_id" => group_id}
-    })
+    [
+      validated_create(id, "ebb", id: "#{id}_create"),
+      component_update(id, id, "ebb/membership", :replace, %{
+        "value" => %{"entity_id" => entity_id, "group_id" => group_id}
+      })
+    ]
   end
 
   defp membership_delete(id), do: delete_update(id, id)
@@ -126,14 +138,17 @@ defmodule EbbServer.Storage.AuthorizerTest do
   defp grant_delete(id), do: delete_update(id, id)
 
   defp relationship_put(id, source_id, target_id, source_type) do
-    component_update(id, id, "ebb/link", :replace, %{
-      "value" => %{
-        "source_id" => source_id,
-        "target_id" => target_id,
-        "type" => source_type,
-        "field" => "column"
-      }
-    })
+    [
+      validated_create(id, "ebb", id: "#{id}_create"),
+      component_update(id, id, "ebb/link", :replace, %{
+        "value" => %{
+          "source_id" => source_id,
+          "target_id" => target_id,
+          "type" => source_type,
+          "field" => "column"
+        }
+      })
+    ]
   end
 
   defp relationship_patch(id, source_id, target_id) do
@@ -771,7 +786,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_membership(tables, "todo_1", "g_1", "eg_1")
       put_entity_model(tables, "todo_1", "todo")
 
-      action = build_action([entity_put("todo_1", "todo")])
+      action = build_action([entity_patch("todo_1", "todo")])
 
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
@@ -1115,10 +1130,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
 
     test "a create names the model, not the component", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note.create"])
+      put_grant(tables, "g_1", ["note.create", "note/title.update"])
 
       action =
         build_action([
+          validated_create("note_new", "note", id: "note_new_create"),
           component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
           membership_put("eg_new", "note_new", "g_1")
         ])
@@ -1126,11 +1142,12 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "a field create does not authorize a create", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note/title.create"])
+    test "a component grant does not authorize a row create", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.create", "note/title.update"])
 
       action =
         build_action([
+          validated_create("note_new", "note", id: "note_new_create"),
           component_updates("note_new", "note_new", "note", :replace, %{"title" => "Test"}),
           membership_put("eg_new", "note_new", "g_1")
         ])
@@ -1257,7 +1274,11 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
       rejection =
         assert_rejected(
-          Authorizer.authorize([build_action([update])], "a_1", ctx),
+          Authorizer.authorize(
+            [build_action([validated_create("rel_1", "ebb"), update])],
+            "a_1",
+            ctx
+          ),
           "not_authorized"
         )
 
@@ -2516,14 +2537,31 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
-    test "an existing group re-put by a member with group.update still succeeds" do
+    test "an existing group re-put by a member holding ebb/group.create still succeeds" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)
 
-      put_entity_model(tables, "g_1", "group")
+      # A platform row commits under `ebb`, the model its create names.
+      put_entity_model(tables, "g_1", "ebb")
+      put_grant(tables, "g_1", ["ebb/group.create", "ebb/group.update"])
+
+      # A committed group's re-create is an ordinary write against the
+      # permission table: the bootstrap exemption covers only a group the
+      # existence index does not already know.
+      assert_accepted(Authorizer.authorize([build_action(group_put("g_1"))], "a_1", ctx))
+    end
+
+    test "an existing group's create is not bootstrap-exempt" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_entity_model(tables, "g_1", "ebb")
       put_grant(tables, "g_1", ["ebb/group.update"])
 
-      assert_accepted(Authorizer.authorize([build_action([group_put("g_1")])], "a_1", ctx))
+      assert_rejected(
+        Authorizer.authorize([build_action(group_put("g_1"))], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "filing an existing entity into a group the actor really belongs to still works" do
@@ -2687,8 +2725,8 @@ defmodule EbbServer.Storage.AuthorizerTest do
       put_entity_model(tables, "todo_ok", "todo")
       put_entity_model(tables, "todo_bad", "todo")
 
-      bad = build_action([entity_put("todo_bad", "todo")]) |> Map.put(:id, "act_bad")
-      ok = build_action([entity_put("todo_ok", "todo")]) |> Map.put(:id, "act_ok")
+      bad = build_action([entity_patch("todo_bad", "todo")]) |> Map.put(:id, "act_bad")
+      ok = build_action([entity_patch("todo_ok", "todo")]) |> Map.put(:id, "act_ok")
 
       assert {[accepted], [rejection]} = Authorizer.authorize([bad, ok], "a_1", ctx)
       assert accepted.id == "act_ok"

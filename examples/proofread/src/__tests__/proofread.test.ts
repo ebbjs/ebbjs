@@ -72,18 +72,19 @@ const contextFor = (host: FakeHost) =>
 
 interface CommittedUpdate {
   readonly component?: string;
+  readonly model?: string;
   readonly method: string;
   readonly subject_id: string;
   readonly data?: { readonly value?: unknown };
 }
 
 /**
- * The model a committed Update's component names; `undefined` for a delete.
- * A platform component's prefix is the model `ebb`, never its kind, so a
- * membership write reads as `ebb` and its component as `ebb/membership`.
+ * The model an Update commits under: the create's own model, else the
+ * component's prefix (`ebb` for a platform component, never its kind).
+ * `undefined` for a delete, which names neither.
  */
 const modelOf = (update: CommittedUpdate): string | undefined =>
-  update.component?.slice(0, update.component.indexOf("/"));
+  update.model ?? update.component?.slice(0, update.component.indexOf("/"));
 
 interface CommittedAction {
   readonly updates: readonly CommittedUpdate[];
@@ -132,7 +133,18 @@ describe("proofreadDocument", () => {
     // Each created comment is filed into the workspace group, so every comment
     // write is followed by its `ebb/membership` row under the `ebb` model.
     expect(models).toEqual(["comment", "ebb", "comment", "ebb"]);
-    expect(action?.updates.every((update) => update.method === "replace")).toBe(true);
+    // Each row opens with its create; every component write after it replaces.
+    expect(action?.updates.filter((update) => update.method === "create").map(modelOf)).toEqual([
+      "comment",
+      "ebb",
+      "comment",
+      "ebb",
+    ]);
+    expect(
+      action?.updates
+        .filter((update) => update.method !== "create")
+        .every((update) => update.method === "replace"),
+    ).toBe(true);
 
     const components = (action?.updates ?? []).map((update) => update.component);
     expect(components.filter((component) => component === "ebb/membership")).toHaveLength(2);

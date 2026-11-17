@@ -462,6 +462,142 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
   end
 
+  describe "validate/2 - the row create" do
+    test "a create and its components name one model" do
+      create = sample_create(%{"subject_id" => "note_1", "model" => "note"})
+
+      title =
+        sample_update(%{"subject_id" => "note_1", "component" => "note/title"})
+
+      action = sample_action(%{"updates" => [create, title]})
+
+      assert {[_validated], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "the create may arrive after its components" do
+      create = sample_create(%{"subject_id" => "note_1", "model" => "note"})
+
+      title =
+        sample_update(%{"subject_id" => "note_1", "component" => "note/title"})
+
+      action = sample_action(%{"updates" => [title, create]})
+
+      assert {[_validated], []} = ActionValidator.validate([action], "a_test")
+    end
+
+    test "a second create for one subject is a structure violation" do
+      subject_id = "note_1"
+
+      action =
+        sample_action(%{
+          "updates" => [
+            sample_create(%{"subject_id" => subject_id, "model" => "note"}),
+            sample_create(%{"subject_id" => subject_id, "model" => "note"})
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(action)
+
+      assert details =~ "created once"
+    end
+
+    test "a create whose model disagrees with a component is a structure violation" do
+      action =
+        sample_action(%{
+          "updates" => [
+            sample_create(%{"subject_id" => "note_1", "model" => "note"}),
+            sample_update(%{"subject_id" => "note_1", "component" => "other/title"})
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(action)
+
+      assert details =~ "one model"
+    end
+
+    test "an ebb create must carry exactly one ebb component" do
+      without =
+        sample_action(%{
+          "updates" => [sample_create(%{"subject_id" => "gm_1", "model" => "ebb"})]
+        })
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(without)
+
+      assert details =~ "exactly one ebb/*"
+
+      with_component =
+        sample_action(%{
+          "updates" => [
+            sample_create(%{"subject_id" => "gm_1", "model" => "ebb"}),
+            sample_update(%{"subject_id" => "gm_1", "component" => "ebb/grant"})
+          ]
+        })
+
+      assert ActionValidator.validate_structure(with_component) == :ok
+    end
+
+    test "a create names no component and carries no data" do
+      with_component =
+        sample_action(%{
+          "updates" => [
+            Map.put(sample_create(), "component", "note/title")
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(with_component)
+
+      assert details =~ "unknown keys"
+
+      with_data =
+        sample_action(%{
+          "updates" => [%{sample_create() | "data" => %{"value" => 1}}]
+        })
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(with_data)
+
+      assert details =~ "must be null"
+    end
+
+    test "a create's model is a model name and its hlc is positive" do
+      for model <- ["", "note/title", nil] do
+        action = sample_action(%{"updates" => [sample_create(%{"model" => model})]})
+
+        assert {:error, "invalid_structure", details} =
+                 ActionValidator.validate_structure(action)
+
+        assert details =~ "model must be a model name"
+      end
+
+      missing_hlc =
+        sample_action(%{"updates" => [Map.delete(sample_create(), "hlc")]})
+
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(missing_hlc)
+
+      assert details =~ "hlc must be a positive integer"
+    end
+
+    test "a create's hlc is held to the future drift window" do
+      now = System.os_time(:millisecond)
+      future = hlc_from(now + 200_000, 0)
+
+      action =
+        sample_action(%{
+          "hlc" => hlc_from(now, 0),
+          "updates" => [sample_create(%{"hlc" => future})]
+        })
+
+      assert {[], [rejection]} = ActionValidator.validate([action], "a_test", now_ms: now)
+      assert rejection.reason == "invalid_field_hlc"
+      assert rejection.details =~ "create.hlc"
+    end
+  end
+
   describe "validate_actor/2" do
     test "matching actor passes" do
       assert ActionValidator.validate_actor(%{"actor_id" => "a_1"}, "a_1") == :ok

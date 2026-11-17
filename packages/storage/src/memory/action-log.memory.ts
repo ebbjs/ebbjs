@@ -1,4 +1,4 @@
-import { componentModel, type Action } from "@ebbjs/core";
+import { updateModel, type Action } from "@ebbjs/core";
 import { addedUpdates, mergeActionUpdates } from "../internal/action-merge";
 import type { ActionLog, LoggedAction } from "../types/action-log";
 
@@ -41,12 +41,10 @@ const updateTypeIndex = (
     map.set(model, new Set(entityIds));
   }
   for (const update of action.updates) {
-    // A delete names no component; it belongs to the model the id was
+    // A create names its own model and a component write carries it in the
+    // prefix; a delete names none and belongs to the model the id was
     // committed under.
-    const model =
-      update.method === "delete"
-        ? modelOf(map, update.subject_id)
-        : componentModel(update.component);
+    const model = updateModel(update) ?? modelOf(map, update.subject_id);
     if (model === undefined) continue;
     const existing = map.get(model);
     if (existing) {

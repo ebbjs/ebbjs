@@ -4,8 +4,8 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   ## Row mutations
 
-  The wire names one component per Update; the rule engine was written
-  against a whole row. Every function here that reads a row therefore takes
+  The wire names one component, or the row itself, per Update; the rule
+  engine was written against a whole row. Every function here that reads a row therefore takes
   `EbbServer.Storage.RowMutations` output — one mutation per subject with
   `model`, `kind`, `created?`, `deleted?`, and `data` a
   `%{"fields" => %{field => value}}` map — never a raw Update.
@@ -41,14 +41,16 @@ defmodule EbbServer.Storage.PermissionHelper do
   row (the grant row is not in the cache yet while the Action is being
   authorized).
 
-  The exemption applies only to entities the Action is **creating**.
+  The exemption applies only to entities the Action is **creating**
+  (`created?: true`, which the fold derives from an explicit `create`).
   A group qualifies only when the existence index does not already know
   its id, the `ebb/grant` exemption covers only row ids the index does
   not know, and the `ebb/membership` exemption covers only entities the
-  Action is actually creating. Writing a committed group, a committed
-  membership row or a committed entity again therefore falls through to the
-  permission table, and the actor's declared permissions are never unioned
-  into the membership checks for existing entities.
+  Action is actually creating. Creating a committed group, a committed
+  membership row or a committed entity is idempotent on the wire and
+  still falls through to the permission table, and the actor's declared
+  permissions are never unioned into the membership checks for existing
+  entities.
   """
 
   alias EbbServer.Storage.{RowMutations, SystemComponent}
@@ -186,7 +188,7 @@ defmodule EbbServer.Storage.PermissionHelper do
 
   @doc """
   Returns the ids of the user entities this Action **actually creates**
-  (a first write for an id the existence index does not already know).
+  (an explicit create for an id the existence index does not already know).
 
   Anchors a bootstrap `ebb/membership` exemption to entities the Action is
   creating, so the exemption cannot graft an already-existing entity

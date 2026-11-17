@@ -50,6 +50,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationTest do
     hlc = TestHelpers.generate_hlc()
 
     updates = [
+      TestHelpers.validated_create(gm_id, "ebb", hlc: hlc),
       TestHelpers.validated_component(
         gm_id,
         "ebb/grant",
@@ -334,6 +335,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
     case Map.fetch(@system_components, model) do
       {:ok, component} ->
         [
+          create_update(subject_id, "ebb", hlc_from_fields(fields)),
           %{
             "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
             "subject_id" => subject_id,
@@ -344,17 +346,38 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
         ]
 
       :error ->
-        fields
-        |> Enum.map(fn {field, value} ->
-          %{
-            "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
-            "subject_id" => subject_id,
-            "component" => "#{model}/#{field}",
-            "method" => method,
-            "data" => value
-          }
-        end)
+        [create_update(subject_id, model, hlc_from_fields(fields))] ++
+          Enum.map(fields, fn {field, value} ->
+            %{
+              "id" => "upd_282_e2e_#{:erlang.unique_integer([:positive])}",
+              "subject_id" => subject_id,
+              "component" => "#{model}/#{field}",
+              "method" => method,
+              "data" => value
+            }
+          end)
     end
+  end
+
+  defp create_update(subject_id, model, hlc) do
+    %{
+      "id" => "upd_282_e2e_create_#{:erlang.unique_integer([:positive])}",
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
+  end
+
+  defp hlc_from_fields(fields) do
+    fields
+    |> Map.values()
+    |> Enum.find_value(fn
+      %{"hlc" => hlc} -> hlc
+      _ -> nil
+    end)
+    |> Kernel.||(TestHelpers.generate_hlc())
   end
 end
 
@@ -438,6 +461,7 @@ defmodule EbbServer.Sync.ActionDedupLostAckHttpTest do
       "hlc" => hlc,
       "updates" =>
         [
+          ActionHelpers.create_update("upd_285_lost_ack_create", entity_id, "todo", hlc),
           %{
             "id" => "upd_285_lost_ack",
             "subject_id" => entity_id,

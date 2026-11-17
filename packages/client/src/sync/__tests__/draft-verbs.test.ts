@@ -9,7 +9,14 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import {
+  decodeSync,
+  isComponentUpdate,
+  makeHlc,
+  type Action,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { applyUpdate } from "@ebbjs/storage/replica";
 
@@ -419,15 +426,15 @@ describe("drafts — duplicate", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const [put] = rowsOf(updates, "todo");
+    const [row] = rowsOf(updates, "todo");
     expect(copy.id).toMatch(/^e_/);
-    expect(put![0]!.subject_id).toBe(copy.id);
-    expect(put!.every((update) => update.method === "replace")).toBe(true);
-    expect(fieldsOf(put!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
+    expect(row![0]).toMatchObject({ subject_id: copy.id, method: "create", model: "todo" });
+    expect(row!.slice(1).every((update) => update.method === "replace")).toBe(true);
+    expect(fieldsOf(row!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
     // Verbatim stamps: the copy is a snapshot of the source's merge state,
     // not a re-stamped write.
-    const title = put!.find(
-      (update) => update.method !== "delete" && update.component === "todo/title",
+    const title = row!.find(
+      (update) => isComponentUpdate(update) && update.component === "todo/title",
     )!;
     expect(title.method).not.toBe("delete");
     expect((title.data as { update_id: string }).update_id).toBe("u_src");
@@ -600,7 +607,7 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.shareTodo({ id: "todo_1", groupId: "g_1" });
 
     const puts = updatesOf(seen).filter(
-      (update) => update.method !== "delete" && update.component === "ebb/membership",
+      (update) => isComponentUpdate(update) && update.component === "ebb/membership",
     );
     // Derived, not the deleted row's id, so a second device sharing the same
     // pair converges on this one row.
@@ -712,7 +719,7 @@ describe("drafts — call order is wire order", () => {
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
     const titleWrites = updates.filter(
-      (update) => update.method !== "delete" && update.component === "todo/title",
+      (update) => isComponentUpdate(update) && update.component === "todo/title",
     );
     expect(titleWrites).toHaveLength(2);
     expect(titleWrites[0]!.subject_id).toBe(created.id);
@@ -725,7 +732,7 @@ describe("drafts — call order is wire order", () => {
     expect(
       updates
         .slice(0, patchIndex)
-        .some((update) => update.method !== "delete" && update.component === "ebb/membership"),
+        .some((update) => isComponentUpdate(update) && update.component === "ebb/membership"),
     ).toBe(true);
   });
 
@@ -735,7 +742,8 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_2" });
 
     const updates = updatesOf(seen);
-    expect(updates[0]).toMatchObject({ subject_id: created.id, component: "todo/title" });
+    expect(updates[0]).toMatchObject({ subject_id: created.id, method: "create", model: "todo" });
+    expect(updates[1]).toMatchObject({ subject_id: created.id, component: "todo/title" });
     const memberships = rowsOf(updates, "membership");
     expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
     expect(memberships[1]![0]!.subject_id).toBe(membershipRowId(created.id, "g_2"));

@@ -553,6 +553,7 @@ defmodule EbbServer.Functions.HardeningAcceptanceTest do
       "hlc" => hlc,
       "updates" =>
         [
+          create_update(unique("upd_create"), entity_id, "todo", hlc),
           component_update(
             unique("upd_svc"),
             entity_id,

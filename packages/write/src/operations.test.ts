@@ -4,7 +4,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { componentModel, EBB_COMPONENTS, type Update } from "@ebbjs/core";
+import {
+  componentModel,
+  EBB_COMPONENTS,
+  isComponentUpdate,
+  isRowCreate,
+  type RowCreate,
+  type Update,
+} from "@ebbjs/core";
 
 import { EntityValidationError, ModelRegistry, defineModel, defineSchema, e } from "@ebbjs/schema";
 import {
@@ -20,7 +27,7 @@ import {
 const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
-    if (update.method === "delete" || componentModel(update.component) !== model) continue;
+    if (!isComponentUpdate(update) || componentModel(update.component) !== model) continue;
     const row = bySubject.get(update.subject_id);
     if (row === undefined) bySubject.set(update.subject_id, [update]);
     else row.push(update);
@@ -28,16 +35,19 @@ const rowsOf = (updates: readonly Update[], model: string): readonly (readonly U
   return [...bySubject.values()];
 };
 
+/** Every create a result emitted, in order. */
+const createsOf = (updates: readonly Update[]): readonly RowCreate[] => updates.filter(isRowCreate);
+
 /** A row's component values, keyed by field. */
-const fieldsOf = (row: readonly Update[]): Record<string, unknown> =>
-  Object.fromEntries(
-    row
-      .filter((update) => update.method === "merge" || update.method === "replace")
-      .map((update) => [
-        update.method === "delete" ? "" : update.component.slice(update.component.indexOf("/") + 1),
-        update.method === "delete" ? null : (update.data as { value: unknown }).value,
-      ]),
-  );
+const fieldsOf = (row: readonly Update[]): Record<string, unknown> => {
+  const entries: [string, unknown][] = [];
+  for (const update of row) {
+    if (!isComponentUpdate(update) || update.method === "drop") continue;
+    const field = update.component.slice(update.component.indexOf("/") + 1);
+    entries.push([field, update.data.value]);
+  }
+  return Object.fromEntries(entries);
+};
 
 const mkCtx = (registry: ModelRegistry = new ModelRegistry()): OpContext => {
   let next = 0;
@@ -60,7 +70,7 @@ const platformRegistry = (): ModelRegistry =>
   })._registry;
 
 describe("changeGroups", () => {
-  it("emits one membership put per added group then a delete per removed row", () => {
+  it("creates each added membership row, then deletes the removed ones", () => {
     const result = changeGroups(mkCtx(), {
       entity: "todo",
       entityId: "todo_1",
@@ -69,7 +79,8 @@ describe("changeGroups", () => {
       currentGroups: ["g_1"],
     });
 
-    expect(result.updates.map((update) => update.method)).toEqual(["replace", "delete"]);
+    expect(result.updates.map((update) => update.method)).toEqual(["create", "replace", "delete"]);
+    expect(createsOf(result.updates).map((create) => create.model)).toEqual(["ebb"]);
     const [membershipRow] = rowsOf(result.updates, "ebb");
     expect(membershipRow).toHaveLength(1);
     expect(fieldsOf(membershipRow!)["membership"]).toEqual({
@@ -104,7 +115,7 @@ describe("changeGroups", () => {
 });
 
 describe("platform rows", () => {
-  it("writes one whole-value Update for the component a create names", () => {
+  it("creates the row, then writes one whole-value Update for its component", () => {
     const result = createEntity(mkCtx(platformRegistry()), {
       entity: "ebb",
       id: "g_1",
@@ -122,6 +133,9 @@ describe("platform rows", () => {
       method: "replace",
       data: { value: { name: "Team", apps: ["notes"] } },
     });
+    const [create] = createsOf(result.updates);
+    expect(create).toMatchObject({ subject_id: "g_1", model: "ebb" });
+    expect(result.updates[0]).toBe(create);
   });
 
   it("refuses a create naming two components, because a row carries one kind", () => {

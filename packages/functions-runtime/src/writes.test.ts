@@ -4,6 +4,7 @@
  * regardless of how many verbs ran.
  */
 
+import { isComponentUpdate, isRowCreate } from "@ebbjs/core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -44,7 +45,21 @@ describe("ctx.create", () => {
       (model, index, all) => model !== all[index - 1],
     );
     expect(models).toEqual(["issue", "ebb"]);
-    expect(action!.updates.every((update) => update.method === "replace")).toBe(true);
+    // Every row is born in a create that comes before its own component writes.
+    expect(
+      action!.updates.filter(isRowCreate).map((create) => [create.subject_id, create.model]),
+    ).toEqual([
+      ["e_issue1", "issue"],
+      ["eg_8_e_issue1g_1", "ebb"],
+    ]);
+    expect(action!.updates.map((update) => update.method)).toEqual([
+      "create",
+      "replace",
+      "replace",
+      "replace",
+      "create",
+      "replace",
+    ]);
   });
 
   it("collapses a handle used as a later field value or relationship pointer", async () => {
@@ -60,8 +75,8 @@ describe("ctx.create", () => {
     const [copiedRow] = rowsOf(action!.updates, "project").filter(
       (row) => row[0]!.subject_id === "e_proj2",
     );
-    const [link] = rowsOf(action!.updates, "ebb").filter(
-      (row) => row[0]!.method !== "delete" && row[0]!.component === "ebb/link",
+    const [link] = rowsOf(action!.updates, "ebb").filter((row) =>
+      row.some((update) => isComponentUpdate(update) && update.component === "ebb/link"),
     );
 
     expect(valueOf(copiedRow!, "name")).toBe(project.id);
@@ -143,14 +158,15 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.commit();
 
     const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
-    const linkRows = rowsOf(action!.updates, "ebb").filter(
-      (row) => row[0]!.method !== "delete" && row[0]!.component === "ebb/link",
+    const linkRows = rowsOf(action!.updates, "ebb").filter((row) =>
+      row.some((update) => isComponentUpdate(update) && update.component === "ebb/link"),
     );
     const deleted = action!.updates.filter((update) => update.method === "delete");
 
-    // One link row (one atomic component) and its delete.
+    // One link row — its create and one atomic component — and its delete.
     expect(linkRows).toHaveLength(1);
-    expect(linkRows[0]).toHaveLength(1);
+    expect(linkRows[0]).toHaveLength(2);
+    expect(linkRows[0]![0]!.method).toBe("create");
     expect(deleted).toHaveLength(1);
     expect(deleted[0]!.subject_id).toBe(linkRows[0]![0]!.subject_id);
   });
@@ -165,7 +181,7 @@ describe("ctx.relate / ctx.unrelate", () => {
 
     const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
     const labels = action!.updates
-      .filter((update) => update.method !== "delete" && update.component === "issue/labels")
+      .filter((update) => isComponentUpdate(update) && update.component === "issue/labels")
       .map((update) => (update.data as { value: unknown }).value);
 
     expect(labels).toEqual([["e_l1", "e_l2"], []]);
@@ -182,7 +198,7 @@ describe("ctx.relate / ctx.unrelate", () => {
 
     const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
     const labels = action!.updates.find(
-      (update) => update.method !== "delete" && update.component === "issue/labels",
+      (update) => isComponentUpdate(update) && update.component === "issue/labels",
     )!;
     expect(labels.data).toMatchObject({ value: ["e_l2"] });
   });

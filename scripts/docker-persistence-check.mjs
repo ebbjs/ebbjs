@@ -81,9 +81,9 @@ const encode = (value) => {
 const stamp = (value, hlc) => ({ value, update_id: "seed_update", hlc });
 
 // One Update names one component: `component` is `<model>/<field>` and `data`
-// is that component's own value, never a row's field record. A create writes
-// one `replace` per component. The platform's four kinds are each one atomic
-// value under `ebb/*`, so a system row seeds as a single Update.
+// is that component's own value, never a row's field record. The platform's
+// four kinds are each one atomic value under `ebb/*`, so a system row seeds as
+// a single component Update.
 const update = (id, subjectId, component, data) => ({
   id,
   subject_id: subjectId,
@@ -92,13 +92,26 @@ const update = (id, subjectId, component, data) => ({
   data,
 });
 
+// The row's existence and its creation time: the first Update of every row, and
+// the only thing that makes one exist. It names the model and no component.
+const create = (id, subjectId, model, hlc) => ({
+  id,
+  subject_id: subjectId,
+  model,
+  method: "create",
+  hlc,
+  data: null,
+});
+
 /** The bootstrap Action `@ebbjs/core`'s seed builder emits, by hand. */
 const buildSeedAction = (hlc) => ({
   id: `act_docker_smoke_${hlc}`,
   actor_id: ACTOR_ID,
   hlc,
   updates: [
+    create("u_group_create", GROUP_ID, "ebb", hlc),
     update("u_group", GROUP_ID, "ebb/group", stamp({ name: "Docker Smoke" }, hlc)),
+    create("u_grant_create", GRANT_ID, "ebb", hlc),
     update(
       "u_grant",
       GRANT_ID,
@@ -107,7 +120,9 @@ const buildSeedAction = (hlc) => ({
       // verbs this probe reads back.
       stamp({ actor_id: ACTOR_ID, group_id: GROUP_ID, permissions: ["todo.*"] }, hlc),
     ),
+    create("u_entity_create", ENTITY_ID, ENTITY_TYPE, hlc),
     update("u_entity_title", ENTITY_ID, `${ENTITY_TYPE}/title`, stamp(FIELD_VALUE, hlc)),
+    create("u_membership_create", MEMBERSHIP_ID, "ebb", hlc),
     update(
       "u_membership",
       MEMBERSHIP_ID,

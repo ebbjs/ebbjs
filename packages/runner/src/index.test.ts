@@ -83,14 +83,30 @@ describe("runInvocation", () => {
     const frame = commits[0] as {
       readonly actor_id: string;
       readonly gsn: number;
-      readonly updates: readonly { readonly component?: string; readonly method: string }[];
+      readonly updates: readonly {
+        readonly component?: string;
+        readonly model?: string;
+        readonly method: string;
+      }[];
     };
     expect(frame).toMatchObject({ actor_id: "a_test", gsn: 0 });
-    // The membership row is one atomic `ebb/membership` value.
-    expect(new Set(frame.updates.map((update) => update.component))).toEqual(
-      new Set(["issue/title", "ebb/membership"]),
-    );
-    expect(frame.updates.every((update) => update.method === "replace")).toBe(true);
+
+    // Each row opens with its create, then carries its components: the issue's
+    // title and the membership row's one atomic `ebb/membership` value.
+    const creates = frame.updates.filter((update) => update.method === "create");
+    expect(new Set(creates.map((update) => update.model))).toEqual(new Set(["issue", "ebb"]));
+    expect(
+      new Set(
+        frame.updates
+          .filter((update) => update.method !== "create")
+          .map((update) => update.component),
+      ),
+    ).toEqual(new Set(["issue/title", "ebb/membership"]));
+    expect(
+      frame.updates
+        .filter((update) => update.method !== "create")
+        .every((update) => update.method === "replace"),
+    ).toBe(true);
   });
 
   it("reports a service caller when the host resolved one", async () => {

@@ -12,9 +12,10 @@
  *
  * One page becomes one batch of synthetic snapshot `put`s, appended in a
  * single action-log write and folded into the live replica by the caller's
- * `onAppended` (the same seam #475's backfill uses). The Action id is
- * derived from `(group, entity)`, so redoing a page merges into the entry
- * already written instead of duplicating it.
+ * `onAppended` (the same seam #475's backfill uses). Each snapshot opens with
+ * the row's create, so a page row with no components seeds as a live row. The
+ * Action id is derived from `(group, entity)`, so redoing a page merges into
+ * the entry already written instead of duplicating it.
  *
  * `cursor(G) = W` then means "G's view is complete as of W": every effect
  * at or below W is in the seeded base (or in the log), and the tail owns
@@ -74,7 +75,8 @@ export const listingSeedActionId = (groupId: string, entityId: string): string =
  * Deterministic seed Update id. It also carries the row's log position,
  * because a redo reads the row again and may find newer content: an id that
  * ignored the position would make the log's merge drop that change, leaving
- * a stale base below a cursor the tail no longer covers.
+ * a stale base below a cursor the tail no longer covers. The row's create
+ * derives its id from this one, so a redo replays the same create.
  */
 export const listingSeedUpdateId = (groupId: string, entity: Entity): string =>
   `u_seed_${groupId}_${entity.id}_${entity.last_gsn}`;
@@ -147,7 +149,7 @@ const isListingEnvelope = (body: unknown): body is GroupListingResponse => {
   );
 };
 
-/** A row the seed can represent: a `put` cannot carry a tombstone. */
+/** A row the seed can represent: a snapshot cannot carry a tombstone. */
 const isLive = (entity: Entity): boolean => entity.deleted_hlc === null;
 
 export const createGroupListing = (opts: GroupListingOptions): GroupListing => {

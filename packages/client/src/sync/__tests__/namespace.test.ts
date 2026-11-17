@@ -17,7 +17,7 @@ import { defineAction } from "../../schema/action";
 import type { EntityFields } from "../namespace";
 import type { QueryBuilder } from "../query-builder";
 import { createClient } from "../client";
-import { platformEntity, seedReplicaRow } from "../test-utils";
+import { callApplyAction, platformEntity, seedReplicaRow } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -1436,6 +1436,33 @@ describe("client.<entity>.query().has() / hasNot() — component existence", () 
     const present = await client.note.query().has("draft");
     expect(present.map((row) => row.id)).toEqual(["n1"]);
     expect(present[0]?.draft).toBeUndefined();
+  });
+
+  it("returns a zero-component row from its create, and has() is false for every component", async () => {
+    const { client } = await buildClient();
+    await callApplyAction(client, {
+      id: "a_create",
+      actor_id: "seed",
+      hlc: makeHlc(1),
+      gsn: 1,
+      updates: [
+        {
+          id: "u_create",
+          subject_id: "n1",
+          model: "note",
+          method: "create",
+          hlc: makeHlc(1),
+          data: null,
+        },
+      ],
+    });
+
+    const row = await client.note.get("n1");
+    expect(row).not.toBeNull();
+    expect((await client.note.query()).map((candidate) => candidate.id)).toEqual(["n1"]);
+    expect(await client.note.query().has("title")).toEqual([]);
+    expect(await client.note.query().has("draft")).toEqual([]);
+    expect(await ids(client.note.query().hasNot("draft"))).toEqual(["n1"]);
   });
 
   it("projects a row that lost its last component as absent", async () => {

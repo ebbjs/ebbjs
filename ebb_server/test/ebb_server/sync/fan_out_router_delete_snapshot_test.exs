@@ -158,6 +158,12 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
       "hlc" => hlc,
       "updates" =>
         [
+          create_update(
+            "todo_251_create_#{:erlang.unique_integer([:positive])}",
+            todo_id,
+            "todo",
+            hlc
+          ),
           %{
             "id" => "upd_251_#{:erlang.unique_integer([:positive])}",
             "subject_id" => todo_id,
@@ -260,6 +266,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
     case Map.fetch(@system_components, model) do
       {:ok, component} ->
         [
+          create_update(id_prefix, subject_id, "ebb", hlc),
           %{
             "id" => "#{id_prefix}_0",
             "subject_id" => subject_id,
@@ -270,17 +277,29 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
         ]
 
       :error ->
-        fields
-        |> Enum.with_index()
-        |> Enum.map(fn {{field, value}, index} ->
-          %{
-            "id" => "#{id_prefix}_#{index}",
-            "subject_id" => subject_id,
-            "component" => "#{model}/#{field}",
-            "method" => method,
-            "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
-          }
-        end)
+        [
+          create_update(id_prefix, subject_id, model, hlc)
+          | Enum.map(fields, fn {field, value} ->
+              %{
+                "id" => "#{id_prefix}_#{field}",
+                "subject_id" => subject_id,
+                "component" => "#{model}/#{field}",
+                "method" => method,
+                "data" => %{"type" => "lww", "value" => value, "hlc" => hlc}
+              }
+            end)
+        ]
     end
+  end
+
+  defp create_update(id_prefix, subject_id, model, hlc) do
+    %{
+      "id" => "#{id_prefix}_create",
+      "subject_id" => subject_id,
+      "model" => model,
+      "method" => "create",
+      "hlc" => hlc,
+      "data" => nil
+    }
   end
 end

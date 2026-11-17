@@ -927,19 +927,20 @@ const collectActionViolations = async (
   const exists = async (id: string): Promise<Entity | null> => ctx.storage.entities.get(id);
   const released = await releasedByDeletes(releasedBefore, subjects, exists);
 
-  // A row's first write is a create, a write to an existing row an update.
-  // The batch has not materialized anything, so existence is the local store's
-  // and, for the rows this Action introduces, its own.
-  const createdModels = new Map<string, string>();
+  // A row exists because the batch carries its create, and a write to a row
+  // that exists is an update. The batch has not materialized anything, so a
+  // create the local store already knows is a replay and not a create here.
+  const subjectModels = new Map<string, string>();
   for (const [id, writes] of subjects) {
     if (writes.deleted || writes.model === undefined) continue;
     // A platform row is committed under `ebb`, whose own rules are per kind;
     // it is not a user model a later write should be authorized against.
     if (writes.model === EBB_MODEL_NAME) continue;
-    createdModels.set(id, writes.model);
+    subjectModels.set(id, writes.model);
   }
   const createdIds = new Set<string>();
-  for (const id of createdModels.keys()) {
+  for (const [id, writes] of subjects) {
+    if (!writes.created || !subjectModels.has(id)) continue;
     if ((await exists(id)) === null) createdIds.add(id);
   }
 
@@ -965,7 +966,7 @@ const collectActionViolations = async (
   const resolveModel = async (entityId: string): Promise<string | null> => {
     const existing = await exists(entityId);
     if (existing !== null) return existing.model;
-    return createdModels.get(entityId) ?? null;
+    return subjectModels.get(entityId) ?? null;
   };
 
   // The entity's group set: its local membership rows plus the
@@ -1024,7 +1025,7 @@ const collectActionViolations = async (
     const verb: PermissionVerb = writes.deleted
       ? "delete"
       : kind === null
-        ? writes.replaced
+        ? writes.created
           ? "create"
           : "update"
         : row !== null && carriesComponent(row, kind)

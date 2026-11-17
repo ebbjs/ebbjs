@@ -14,6 +14,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
+        validated_create(gm_id, SystemComponent.model(), id: "#{gm_id}_create", hlc: hlc),
         validated_component(
           gm_id,
           SystemComponent.component(:grant),
@@ -39,6 +40,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
+        validated_create(eg_id, SystemComponent.model(), id: "#{eg_id}_create", hlc: eg_hlc),
         validated_component(
           eg_id,
           SystemComponent.component(:membership),
@@ -71,9 +73,10 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates:
-        Enum.map(fields, fn {field, value} ->
-          validated_component(todo_id, "todo/#{field}", %{"value" => value, "hlc" => hlc})
-        end)
+        [validated_create(todo_id, "todo", id: "#{todo_id}_create", hlc: hlc)] ++
+          Enum.map(fields, fn {field, value} ->
+            validated_component(todo_id, "todo/#{field}", %{"value" => value, "hlc" => hlc})
+          end)
     }
 
     {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
@@ -86,6 +89,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
+        validated_create(eg_id, SystemComponent.model(), id: "#{eg_id}_create", hlc: eg_hlc),
         validated_component(
           eg_id,
           SystemComponent.component(:membership),
@@ -800,6 +804,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
+        validated_create(rel_id, SystemComponent.model(), id: "#{rel_id}_create", hlc: hlc),
         validated_component(
           rel_id,
           SystemComponent.component(:link),
@@ -828,6 +833,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: hlc,
       updates: [
+        validated_create(group_id, SystemComponent.model(), id: "#{group_id}_create", hlc: hlc),
         validated_component(
           group_id,
           SystemComponent.component(:group),
@@ -848,6 +854,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: generate_hlc(),
       updates: [
+        validated_create(post_id, "post", id: "#{post_id}_create"),
         validated_component(post_id, "post/title", %{"value" => title, "hlc" => generate_hlc()})
       ]
     }
@@ -862,6 +869,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       actor_id: actor_id,
       hlc: eg_hlc,
       updates: [
+        validated_create(eg_id, SystemComponent.model(), id: "#{eg_id}_create", hlc: eg_hlc),
         validated_component(
           eg_id,
           SystemComponent.component(:membership),

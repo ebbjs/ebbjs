@@ -51,13 +51,27 @@ const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[
     data: value,
   }));
 
-const put = (spec: WriteSpec): Action => ({
-  id: spec.actionId,
-  actor_id: "user_1",
-  hlc: makeHlc(spec.ms ?? 1),
-  gsn: spec.gsn ?? 1,
-  updates: componentUpdates(spec, "replace"),
-});
+/** A row put: the row's create, then one `replace` (or keyed `merge`) per field. */
+const put = (spec: WriteSpec): Action => {
+  const hlc = makeHlc(spec.ms ?? 1);
+  return {
+    id: spec.actionId,
+    actor_id: "user_1",
+    hlc,
+    gsn: spec.gsn ?? 1,
+    updates: [
+      {
+        id: `${spec.updateId}_create`,
+        subject_id: spec.entityId ?? "e_1",
+        model: spec.type ?? "todo",
+        method: "create",
+        hlc,
+        data: null,
+      },
+      ...componentUpdates(spec, "replace"),
+    ],
+  };
+};
 
 const patch = (spec: WriteSpec): Action => ({
   id: spec.actionId,

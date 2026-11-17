@@ -72,21 +72,39 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     method = Keyword.get(opts, :method, "replace")
     id = Keyword.get(opts, :id)
 
-    case Map.fetch(@components, model) do
-      {:ok, leaf_name} ->
-        value = Map.new(fields, fn {field, value} -> {field, value} end)
+    updates =
+      case Map.fetch(@components, model) do
+        {:ok, leaf_name} ->
+          value = Map.new(fields, fn {field, value} -> {field, value} end)
 
-        [
-          update(id || new_id(), subject_id, "ebb/" <> leaf_name, atomic_method(method), %{
-            "value" => value
-          })
-        ]
+          [
+            update(id || new_id(), subject_id, "ebb/" <> leaf_name, atomic_method(method), %{
+              "value" => value
+            })
+          ]
 
-      :error ->
-        Enum.map(fields, fn {field, value} ->
-          update(id || new_id(), subject_id, "#{model}/#{field}", method, leaf(value))
-        end)
+        :error ->
+          Enum.map(fields, fn {field, value} ->
+            update(id || new_id(), subject_id, "#{model}/#{field}", method, leaf(value))
+          end)
+      end
+
+    if method == "replace" do
+      [create_update(subject_id, model) | updates]
+    else
+      updates
     end
+  end
+
+  defp create_update(subject_id, model) do
+    %{
+      "id" => new_id(),
+      "subject_id" => subject_id,
+      "model" => if(Map.has_key?(@components, model), do: "ebb", else: model),
+      "method" => "create",
+      "hlc" => generate_hlc(),
+      "data" => nil
+    }
   end
 
   # A value Update of an atomic component is a `replace` on the wire.
@@ -101,8 +119,14 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     row_updates(subject_id, "todo", %{"title" => "Test"})
   end
 
+  # A component write to a row that already exists, so no create rides along.
+  defp user_patch_updates(subject_id) do
+    row_updates(subject_id, "todo", %{"title" => "Test"}, method: "merge")
+  end
+
   defp membership_put_updates(id, entity_id, group_id) do
     [
+      create_update(id, "membership"),
       update(id, id, "ebb/membership", "replace", %{
         "value" => %{"entity_id" => entity_id, "group_id" => group_id}
       })
@@ -111,6 +135,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
 
   defp relationship_put_updates(id, source_id, target_id) do
     [
+      create_update(id, "relationship"),
       update(id, id, "ebb/link", "replace", %{
         "value" => %{
           "source_id" => source_id,
@@ -276,14 +301,14 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "id" => "act_1",
         "actor_id" => "a_1",
         "hlc" => generate_hlc(),
-        "updates" => user_put_updates("todo_1")
+        "updates" => user_patch_updates("todo_1")
       }
 
       invalid_action = %{
         "id" => "act_2",
         "actor_id" => "a_2",
         "hlc" => generate_hlc(),
-        "updates" => user_put_updates("todo_1")
+        "updates" => user_patch_updates("todo_1")
       }
 
       {accepted, rejected} =
@@ -444,14 +469,14 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         sample_action(%{
           "id" => "act_ok",
           "actor_id" => "a_1",
-          "updates" => user_put_updates("todo_ok")
+          "updates" => user_patch_updates("todo_ok")
         })
 
       unauthorized =
         sample_action(%{
           "id" => "act_bad",
           "actor_id" => "a_1",
-          "updates" => user_put_updates("todo_bad")
+          "updates" => user_patch_updates("todo_bad")
         })
 
       {accepted, rejected} =

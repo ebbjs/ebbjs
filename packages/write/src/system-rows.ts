@@ -1,28 +1,29 @@
 /**
- * The wire builders for the platform's four rows.
+ * The platform row emitters: every `ebb/*` row's Updates.
  *
- * Each row is one atomic component, so every builder here emits exactly **one**
- * Update carrying the whole value: there is no per-field Update to tear. The
- * component names come from `@ebbjs/core`; this module is the only place that
- * knows how a platform value is wrapped into a `FieldValue`.
+ * Each row is one atomic component, so a builder here emits the row's create
+ * followed by exactly **one** Update carrying the whole value: there is no
+ * per-field Update to tear. The component names come from `@ebbjs/core`; this
+ * module is the only place that knows how a platform value is wrapped into a
+ * `FieldValue`.
  */
 
 import {
   ebbComponent,
+  EBB_MODEL_NAME,
   generateId,
   type EbbComponentKind,
   type FieldValue,
   type Update,
 } from "@ebbjs/core";
 
-/** The ids one platform-row Update consumes. */
+import { rowCreate } from "./row-create";
+
+/** The ids one row's Updates consume: a fresh Update id each, and the row's clock. */
 export interface SystemRowIds {
   updateId(): string;
-  /**
-   * The leaf's clock. Omitted only by a caller that has none; a leaf without one
-   * merges as the oldest write.
-   */
-  hlc?(): string;
+  /** The row's clock: its creation time and the stamp of its component value. */
+  hlc(): string;
 }
 
 /** A fresh Update id and the caller's current clock. */
@@ -31,11 +32,9 @@ export const systemRowIds = (hlc: () => string): SystemRowIds => ({
   hlc,
 });
 
-export const fixedRowIds = (updateId: string, hlc?: string): SystemRowIds => {
-  const ids: SystemRowIds = { updateId: () => updateId };
-  if (hlc === undefined) return ids;
-  return { updateId: () => updateId, hlc: () => hlc };
-};
+/** The row's create. A platform row is committed under the platform model. */
+export const systemRowCreate = (subjectId: string, ids: SystemRowIds): Update =>
+  rowCreate(subjectId, EBB_MODEL_NAME, ids);
 
 /** One atomic component Update. `kind` is the value's shape, not its id. */
 export const systemRowUpdate = (
@@ -45,42 +44,44 @@ export const systemRowUpdate = (
   ids: SystemRowIds,
 ): Update => {
   const updateId = ids.updateId();
-  const hlc = ids.hlc?.();
   return {
     id: updateId,
     subject_id: subjectId,
     component: ebbComponent(kind),
     method: "replace",
-    data: (hlc === undefined
-      ? { value, update_id: updateId }
-      : { value, update_id: updateId, hlc }) as FieldValue,
+    data: { value, update_id: updateId, hlc: ids.hlc() } as FieldValue,
   };
 };
 
 /** A row `delete`: it names no component, so the server resolves the kind. */
-export const systemRowDelete = (
-  subjectId: string,
-  ids: { updateId(): string; hlc?(): string },
-): Update => ({
+export const systemRowDelete = (subjectId: string, ids: { updateId(): string }): Update => ({
   id: ids.updateId(),
   subject_id: subjectId,
   method: "delete",
   data: null,
 });
 
+/** A platform row: its create, then its one atomic component. */
+const platformRowUpdates = (
+  kind: EbbComponentKind,
+  subjectId: string,
+  value: Readonly<Record<string, unknown>>,
+  ids: SystemRowIds,
+): Update[] => [systemRowCreate(subjectId, ids), systemRowUpdate(kind, subjectId, value, ids)];
+
 /** `ebb/group`. Omitting `apps` is unscoped (every app), which is not `[]`. */
-export const groupRowUpdate = (
+export const groupRowUpdates = (
   args: { groupId: string; name: string; apps?: readonly string[] },
   ids: SystemRowIds,
-): Update =>
-  systemRowUpdate(
+): Update[] =>
+  platformRowUpdates(
     "group",
     args.groupId,
     args.apps === undefined ? { name: args.name } : { name: args.name, apps: [...args.apps] },
     ids,
   );
 
-export const grantRowUpdate = (
+export const grantRowUpdates = (
   args: {
     grantId: string;
     actorId: string;
@@ -88,8 +89,8 @@ export const grantRowUpdate = (
     permissions: readonly string[];
   },
   ids: SystemRowIds,
-): Update =>
-  systemRowUpdate(
+): Update[] =>
+  platformRowUpdates(
     "grant",
     args.grantId,
     {
@@ -105,11 +106,11 @@ export const grantRowUpdate = (
  * create and the row id is derived from it (`membershipRowId`), so a re-share is
  * idempotent.
  */
-export const membershipRowUpdate = (
+export const membershipRowUpdates = (
   args: { membershipId: string; entityId: string; groupId: string },
   ids: SystemRowIds,
-): Update =>
-  systemRowUpdate(
+): Update[] =>
+  platformRowUpdates(
     "membership",
     args.membershipId,
     { entity_id: args.entityId, group_id: args.groupId },
@@ -117,7 +118,7 @@ export const membershipRowUpdate = (
   );
 
 /** `ebb/link`: one edge from its source. Moving an edge is a delete plus a create. */
-export const linkRowUpdate = (
+export const linkRowUpdates = (
   args: {
     linkId: string;
     sourceId: string;
@@ -126,8 +127,8 @@ export const linkRowUpdate = (
     type: string;
   },
   ids: SystemRowIds,
-): Update =>
-  systemRowUpdate(
+): Update[] =>
+  platformRowUpdates(
     "link",
     args.linkId,
     {

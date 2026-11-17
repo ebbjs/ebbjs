@@ -48,7 +48,8 @@ import {
   buildRelationshipWrite,
   type ManyPointerValue,
 } from "./relationship";
-import { systemRowUpdate } from "./system-rows";
+import { rowCreate } from "./row-create";
+import { systemRowCreate, systemRowUpdate } from "./system-rows";
 
 /**
  * Refusal of an Action: a client-side membership failure
@@ -230,16 +231,16 @@ const platformComponentOf = (
 };
 
 /**
- * Create one entity: one `replace` per leaf component (a keyed component
- * merges, because `replace` is refused for a key space), one membership row
- * per group, then one link row per resolved pointer. Field validation runs
- * here (never partially) unless the caller opted out.
+ * Create one entity: the row's create, then one `replace` per leaf component (a
+ * keyed component merges, because `replace` is refused for a key space), one
+ * membership row per group, then one link row per resolved pointer. Field
+ * validation runs here (never partially) unless the caller opted out.
  *
  * A platform row (`ebb`) is one atomic component, validated as a whole value.
  */
 export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
   const groups = [...input.groups];
-  const updates: Update[] = [];
+  const updates: Update[] = [rowCreate(input.id, input.entity, ctx.ids)];
 
   const platform = platformComponentOf(input.entity, input.fields);
   const def = ctx.registry.get(input.entity);
@@ -274,8 +275,7 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
         targetId: pointer.targetId,
         field: pointer.as,
         type: pointer.type,
-        updateId: ctx.ids.updateId(),
-        hlc: () => ctx.ids.hlc(),
+        ids: { updateId: () => ctx.ids.updateId(), hlc: () => ctx.ids.hlc() },
       }),
     );
   }
@@ -318,7 +318,10 @@ export const createPlatformRow: Operation<CreatePlatformRowInput> = (ctx, input)
       throw new EntityValidationError(violations);
     }
   }
-  const updates = [systemRowUpdate(input.kind, input.id, input.value, ctx.ids)];
+  const updates = [
+    systemRowCreate(input.id, ctx.ids),
+    systemRowUpdate(input.kind, input.id, input.value, ctx.ids),
+  ];
   return {
     updates,
     groups: membershipScope(updates, EMPTY_MEMBERSHIP_VIEW),
@@ -557,12 +560,12 @@ export interface DuplicateEntityInput {
 }
 
 /**
- * Copy a source row onto a fresh id: one Update per component carrying the
- * values verbatim — leaf and nested `update_id` / `hlc` stamps included, so a
- * collaborative-text map survives as a reference snapshot rather than a
- * re-stamped write — plus one membership row per group. A leaf component is
- * a `replace`, a keyed one a `merge`. A platform row's copy is its one
- * `ebb/*` component. The copy is validated against the entity's shape like
+ * Copy a source row onto a fresh id: the copy's create, then one Update per
+ * component carrying the values verbatim — leaf and nested `update_id` / `hlc`
+ * stamps included, so a collaborative-text map survives as a reference snapshot
+ * rather than a re-stamped write — plus one membership row per group. A leaf
+ * component is a `replace`, a keyed one a `merge`. A platform row's copy is its
+ * one `ebb/*` component. The copy is validated against the entity's shape like
  * `create`.
  */
 export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => {
@@ -578,6 +581,7 @@ export const duplicateEntity: Operation<DuplicateEntityInput> = (ctx, input) => 
   }
   return {
     updates: [
+      rowCreate(input.subjectId, input.entity, ctx.ids),
       ...Object.entries(fields).map(([field, value]): Update => {
         const updateId = ctx.ids.updateId();
         return {

@@ -5,7 +5,7 @@ defmodule EbbServer.Storage.EntityModelCache do
   The authorizer needs an existing entity's committed model to gate
   membership mutations by `<model>.create` / `<model>.update` (#264). The
   model is the row's committed model, carried by no component of a sibling
-  write, and a same-Action first write only covers creates, so the
+  write, and a same-Action create only covers the row it creates, so the
   resolved model lives here: populated from the component index's model
   entries, which the boot replay reconstructs from `cf_actions`, and maintained
   by the Writer for every committed row.

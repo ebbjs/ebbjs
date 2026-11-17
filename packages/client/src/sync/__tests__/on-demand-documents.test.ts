@@ -1,17 +1,25 @@
 /**
  * On-demand documents (#500) at the client seam.
  *
- * Metadata (page, relationship, membership) stays held in the replica while an
- * on-demand document entity is materialized only while it is open. A parent
- * row reaches its document through `row.body`; the document itself is read
- * through its own namespace's `get`, which pins it in an LRU window. `close`
- * or the TTL releases it, and it is never persisted as a replica row. A query
+ * Metadata (page, relationship, membership) stays held in the replica. An
+ * on-demand document's row exists as soon as its create arrives, with no
+ * fields; its components are materialized only while it is open. A parent row
+ * reaches its document through `row.body`; the document itself is read through
+ * its own namespace's `get`, which pins it in an LRU window. `close` or the TTL
+ * releases the components, and the body is never persisted as a replica row. A query
  * over an on-demand source is refused; a held source may join an on-demand
  * target, with the cached result going `stale` while the joined row loads.
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { decodeSync, makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  decodeSync,
+  makeHlc,
+  updateModel,
+  type Action,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -31,7 +39,7 @@ import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, jsonResponse, rowComponents, updateModel, waitFor } from "../test-utils";
+import { callApplyAction, jsonResponse, rowComponents, waitFor } from "../test-utils";
 import { testActions } from "./test-actions";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
@@ -193,7 +201,7 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
 // ---------------------------------------------------------------------------
 
 describe("on-demand document residency", () => {
-  it("holds page metadata and memberships while leaving the body out of the replica", async () => {
+  it("holds page metadata and memberships while holding no body component", async () => {
     const { client, written } = harness(pageSchema);
     const { pageId, bodyId } = await createPage(
       client,
@@ -205,9 +213,28 @@ describe("on-demand document residency", () => {
     // The link and the two memberships are platform rows, so they share the
     // `ebb` model and the component is what distinguishes them.
     expect(client.replicaStats.byModel).toMatchObject({ page: 1, ebb: 3 });
-    expect(client.replicaStats.byModel[bodyDocModel]).toBeUndefined();
-    expect(client.replica.get(bodyId)).toBeUndefined();
     expect(client.replica.get(pageId)?.data.fields.title.value).toBe("One");
+    expect(client.replica.components("ebb/membership")).toHaveLength(2);
+    expect(client.replica.components("ebb/link")).toHaveLength(1);
+
+    // A create makes the body row present with the create's facts and no
+    // fields; which components the replica holds is residency, not existence.
+    expect(client.replicaStats.byModel[bodyDocModel]).toBe(1);
+    const body = client.replica.get(bodyId);
+    expect(body?.exists).toBe(true);
+    expect(body?.model).toBe(bodyDocModel);
+    expect(body?.created_hlc).not.toBeNull();
+    expect(Object.keys(body?.data.fields ?? {})).toEqual([]);
+    expect(client.replicaStats.heldByModel[bodyDocModel]).toBeUndefined();
+    expect(client.replicaStats.nonResidentComponents).toMatchObject({
+      "page_body/content": 1,
+      "page_body/version": 1,
+    });
+
+    // Reading a body component still needs the residency path.
+    const open = await client.page_body.get(bodyId);
+    expect(textOf(open!.content ?? {})).toBe("hello");
+    expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
 
     const parent = await client.page.get(pageId);
     expect((await parent!.body)!.id).toBe(bodyId);

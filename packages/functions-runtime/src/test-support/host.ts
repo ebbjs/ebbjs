@@ -3,7 +3,14 @@
  * a context wired to the planner fixture schema.
  */
 
-import { componentModel, type FieldValue, type Update } from "@ebbjs/core";
+import {
+  isComponentUpdate,
+  isFieldMap,
+  updateModel,
+  type ComponentUpdate,
+  type FieldValue,
+  type Update,
+} from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
 import { projectFieldValue, type OperationIds } from "@ebbjs/write";
 
@@ -132,9 +139,7 @@ export const testContext = (host: FakeHost, options: TestContextOptions = {}): C
 
 /** The model each Update commits under; `undefined` for a delete. */
 export const modelsOf = (updates: readonly Update[]): readonly (string | undefined)[] =>
-  updates.map((update) =>
-    update.method === "delete" ? undefined : componentModel(update.component),
-  );
+  updates.map(updateModel);
 
 /** The Updates of one model, grouped into one list per subject row. */
 export const rowsOf = (
@@ -143,7 +148,7 @@ export const rowsOf = (
 ): readonly (readonly Update[])[] => {
   const bySubject = new Map<string, Update[]>();
   for (const update of updates) {
-    if (update.method === "delete" || componentModel(update.component) !== model) continue;
+    if (updateModel(update) !== model) continue;
     const row = bySubject.get(update.subject_id);
     if (row === undefined) bySubject.set(update.subject_id, [update]);
     else row.push(update);
@@ -154,12 +159,10 @@ export const rowsOf = (
 /** One component's value on a row, or `undefined` when absent or dropped. */
 export const valueOf = (row: readonly Update[], field: string): unknown => {
   const update = row.find(
-    (candidate) =>
+    (candidate): candidate is ComponentUpdate & { data: FieldValue } =>
+      isComponentUpdate(candidate) &&
       candidate.method !== "drop" &&
-      candidate.method !== "delete" &&
       candidate.component.endsWith(`/${field}`),
   );
-  return update === undefined || update.method === "drop" || update.method === "delete"
-    ? undefined
-    : update.data.value;
+  return update === undefined || isFieldMap(update.data) ? undefined : update.data.value;
 };

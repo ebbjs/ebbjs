@@ -13,6 +13,7 @@ import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
+  buildCreateAction,
   buildMembershipDeleteAction,
   buildMembershipPutAction,
   buildPatchAction,
@@ -87,8 +88,9 @@ const leaf = (value: unknown, updateId: string, hlc: string): FieldValue => ({
 const map = (entries: Record<string, FieldValue>): FieldValue => ({ map: entries });
 
 /**
- * A whole-row write for `todo_1`: `replace` per leaf component, `merge` per
- * keyed one, the shape a create (or a backfill snapshot) emits.
+ * A whole-row write for `todo_1`: its create, then `replace` per leaf
+ * component and `merge` per keyed one, the shape a create (or a backfill
+ * snapshot) emits.
  */
 const buildRowPutAction = (
   updateId: string,
@@ -100,13 +102,23 @@ const buildRowPutAction = (
   actor_id: "a_user1",
   hlc,
   gsn,
-  updates: Object.entries(fields).map(([field, value]) => ({
-    id: `${updateId}_${field}`,
-    subject_id: "todo_1",
-    component: componentName("todo", field),
-    method: isFieldMap(value) ? "merge" : "replace",
-    data: value,
-  })),
+  updates: [
+    {
+      id: `${updateId}_create`,
+      subject_id: "todo_1",
+      model: "todo",
+      method: "create",
+      hlc,
+      data: null,
+    },
+    ...Object.entries(fields).map(([field, value]) => ({
+      id: `${updateId}_${field}`,
+      subject_id: "todo_1",
+      component: componentName("todo", field),
+      method: isFieldMap(value) ? ("merge" as const) : ("replace" as const),
+      data: value,
+    })),
+  ],
 });
 
 /** A materialized `ebb/link` row, for direct `set()` writes. */
@@ -217,7 +229,7 @@ const seedMembership = async (
   await dirtyTracker.mark(row.id, "ebb");
 };
 
-/** A whole-row write for an arbitrary row: one component Update per field. */
+/** A whole-row write for an arbitrary row: its create, then one component Update per field. */
 const buildRowAction = (
   rowId: string,
   type: string,
@@ -230,13 +242,23 @@ const buildRowAction = (
   actor_id: "a_user1",
   hlc,
   gsn,
-  updates: Object.entries(fields).map(([field, value]) => ({
-    id: `${updateId}_${field}`,
-    subject_id: rowId,
-    component: componentName(type, field),
-    method: isFieldMap(value) ? "merge" : "replace",
-    data: value,
-  })),
+  updates: [
+    {
+      id: `${updateId}_create`,
+      subject_id: rowId,
+      model: type,
+      method: "create",
+      hlc,
+      data: null,
+    },
+    ...Object.entries(fields).map(([field, value]) => ({
+      id: `${updateId}_${field}`,
+      subject_id: rowId,
+      component: componentName(type, field),
+      method: isFieldMap(value) ? ("merge" as const) : ("replace" as const),
+      data: value,
+    })),
+  ],
 });
 
 const buildRowDeleteAction = (rowId: string, hlc: string, gsn: number): Action => ({
@@ -332,9 +354,8 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
       it("creates a placeholder from a merge with no base row", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         // Per-Update delivery (#473) can hand a group a component write whose
-        // row's create stayed in another group. A merge is the only way to
-        // create a model whose components are all keyed, so it materializes a
-        // placeholder that waits for the base.
+        // row's create stayed in another group. The write lands in a
+        // placeholder that waits for the base and is a backfill candidate.
         await actionLog.append(buildPatchAction());
         await dirtyTracker.mark("todo_1", "todo");
 
@@ -344,12 +365,55 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(created!.exists).toBe(false);
         expect(created!.created_hlc).toBe(null);
 
-        await actionLog.append(buildPutAction());
+        await actionLog.append(buildCreateAction());
         await dirtyTracker.mark("todo_1", "todo");
         const entity = await entityStore.get("todo_1");
         expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
         expect(entity!.exists).toBe(true);
-        expect(entity!.created_hlc).not.toBe(null);
+        expect(entity!.created_hlc).toBe(buildCreateAction().hlc);
+      });
+
+      it("materializes a create's row with no components", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildCreateAction());
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const created = await entityStore.get("todo_1");
+
+        expect(created).not.toBe(null);
+        expect(created!.model).toBe("todo");
+        expect(created!.data.fields).toEqual({});
+        expect(created!.exists).toBe(true);
+        expect(created!.created_hlc).toBe(buildCreateAction().hlc);
+        expect(await entityStore.queryByComponent("todo/title")).toEqual([]);
+      });
+
+      it("keeps a live row after its last component is dropped", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(buildRowDropAction("todo_1", "todo", "title", makeHlc(2), 2));
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const row = await entityStore.get("todo_1");
+
+        expect(row).not.toBe(null);
+        expect(row!.exists).toBe(true);
+        expect(row!.data.fields).toEqual({});
+      });
+
+      it("returns a live zero-component row from a fresh replay", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(buildPutAction());
+        await actionLog.append(buildRowDropAction("todo_1", "todo", "title", makeHlc(2), 2));
+        await entityStore.reset();
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const row = await entityStore.get("todo_1");
+
+        expect(row).not.toBe(null);
+        expect(row!.exists).toBe(true);
+        expect(row!.created_hlc).not.toBe(null);
+        expect(row!.data.fields).toEqual({});
       });
     });
 

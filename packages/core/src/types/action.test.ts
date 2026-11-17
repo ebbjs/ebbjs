@@ -24,8 +24,8 @@ describe("ComponentNameSchema", () => {
 });
 
 describe("UpdateMethodSchema", () => {
-  it("accepts the four methods", () => {
-    for (const method of ["merge", "replace", "drop", "delete"]) {
+  it("accepts the five methods", () => {
+    for (const method of ["create", "merge", "replace", "drop", "delete"]) {
       expect(Value.Check(UpdateMethodSchema, method)).toBe(true);
     }
   });
@@ -142,6 +142,83 @@ describe("UpdateSchema", () => {
     ).toBe(false);
   });
 
+  it("accepts a create naming a model and its creation HLC", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects a create that names a component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        component: "todo/title",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create without a model", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create without its creation HLC", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create whose model names a component", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo/title",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a create carrying component data", () => {
+    expect(
+      Value.Check(UpdateSchema, {
+        id: "u_testid",
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: leaf,
+      }),
+    ).toBe(false);
+  });
+
   it("rejects a component method with no component", () => {
     expect(
       Value.Check(UpdateSchema, {
@@ -194,6 +271,29 @@ describe("UpdateInputSchema", () => {
       }),
     ).toBe(true);
   });
+
+  it("accepts an unstamped create", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        subject_id: "a_actor",
+        model: "todo",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects an unstamped create missing its model", () => {
+    expect(
+      Value.Check(UpdateInputSchema, {
+        subject_id: "a_actor",
+        method: "create",
+        hlc: "1234567890123",
+        data: null,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("ActionSchema", () => {
@@ -217,6 +317,26 @@ describe("ActionSchema", () => {
           component: "group/apps",
           method: "merge",
           data: { map: { app: leaf } },
+        },
+      ],
+    };
+    expect(Value.Check(ActionSchema, action)).toBe(true);
+  });
+
+  it("accepts an action whose only update is a zero-component create", () => {
+    const action = {
+      id: "a_testid",
+      actor_id: "a_actorid",
+      hlc: "123456789",
+      gsn: 5,
+      updates: [
+        {
+          id: "u_upd1",
+          subject_id: "a_target",
+          model: "todo",
+          method: "create",
+          hlc: "123456789",
+          data: null,
         },
       ],
     };

@@ -3,6 +3,8 @@ import {
   componentModel,
   componentName,
   EBB_MODEL_NAME,
+  isComponentUpdate,
+  isRowCreate,
   type Action,
   type Entity,
   type FieldValue,
@@ -359,8 +361,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const get = (id: string): Entity | undefined => viewOf(id) ?? undefined;
 
   const iterate = (model: string): readonly Entity[] => {
-    // The base index answers for every composed row, and the overlay can move a
-    // row between models without touching the base, so its overrides win.
+    // The base index answers for every composed row, but the overlay can know a
+    // row the base has never seen — an optimistic create — or hold the create
+    // that settles a placeholder's provisional model, so its rows win.
     const ids = new Set(modelIndex.get(model) ?? []);
     for (const [id, row] of effective) {
       if (row !== null && row.model === model) ids.add(id);
@@ -382,20 +385,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     else pending.push(entry);
   };
 
-  /** Drop dormant names the row's current model cannot carry. */
-  const dropStaleDormant = (id: string, type: string): void => {
-    const known = dormant.get(id);
-    if (known === undefined) return;
-    for (const component of known) {
-      const model = componentModel(component);
-      if (model !== type && model !== EBB_MODEL_NAME) known.delete(component);
-    }
-    if (known.size === 0) dormant.delete(id);
-  };
-
   /** Remove a non-held component's value from a base row and keep its existence. */
   const stripToResidency = (id: string, row: Entity): Entity => {
-    dropStaleDormant(id, row.model);
     let changed = false;
     const fields: Record<string, FieldValue> = {};
     for (const [field, value] of Object.entries(row.data.fields)) {
@@ -445,30 +436,33 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       return;
     }
 
-    if (update.method === "drop") forgetVersion(id, update.component);
-    else if (update.method !== "delete") {
-      stampVersion(id, update.component, declaredVersion(update.component));
-    }
+    // A create names no component, so it has no version to stamp and no
+    // residency to settle: it only makes the row exist.
+    if (!isRowCreate(update)) {
+      if (update.method === "drop") forgetVersion(id, update.component);
+      else if (update.method !== "delete") {
+        stampVersion(id, update.component, declaredVersion(update.component));
+      }
 
-    if (update.method !== "delete") {
-      const component = update.component;
-      const residentComponent = holds(component) || pins.has(pinKey(id, component));
-      if (!residentComponent) {
-        if (previous === null) {
-          // A component the policy does not hold and no pin covers is not
-          // retained. Its existence is all the replica remembers until a held
-          // component makes the row resident.
-          forgetVersion(id, component);
-          notePendingPresence(id, component, update.method !== "drop");
+      if (update.method !== "delete") {
+        const component = update.component;
+        const residentComponent = holds(component) || pins.has(pinKey(id, component));
+        if (!residentComponent) {
+          if (previous === null) {
+            // A component the policy does not hold and no pin covers is not
+            // retained. Its existence is all the replica remembers until a held
+            // component makes the row resident.
+            forgetVersion(id, component);
+            notePendingPresence(id, component, update.method !== "drop");
+            return;
+          }
+          if (update.method === "drop") forgetDormant(id, component);
+          else ensureDormant(id, component);
+          // The create fixes the row's model, so a component write moves nothing,
+          // and a value the policy does not retain cannot reach a reader: keeping
+          // it must not advance the row's metadata and re-run the model's readers.
           return;
         }
-        const sameModel = componentModel(component) === previous.model;
-        if (update.method === "drop") forgetDormant(id, component);
-        else ensureDormant(id, component);
-        // A write in the row's own model changes no retained value, so it must
-        // not advance the row's metadata and invalidate every reader of the
-        // model. A write naming another model moves the row and falls through.
-        if (sameModel) return;
       }
     }
 
@@ -511,30 +505,32 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     entities.set(id, stripped);
     if (previous !== null && previous.model !== stripped.model) removeFromModel(previous.model, id);
     addToModel(stripped.model, id);
+  };
 
-    if (previous === null) {
-      const pending = orphans.get(id);
-      if (pending !== undefined) {
-        orphans.delete(id);
-        // Replay what the store's gsn-ordered replay would: only Updates newer
-        // than the row's first write survive; older ones are subsumed by it.
-        const survivors = pending
-          .filter((orphan) => orphan.gsn > gsn)
-          .sort((a, b) => a.gsn - b.gsn);
-        let row = stripped;
-        for (const orphan of survivors) {
-          row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc, RESIDENT_MAP_FIELDS) ?? row;
-        }
-        if (row !== stripped) {
-          const residentRow = stripToResidency(id, row);
-          entities.set(id, residentRow);
-          if (stripped.model !== residentRow.model) {
-            removeFromModel(stripped.model, id);
-            addToModel(residentRow.model, id);
-          }
-        }
-      }
+  /**
+   * Fold the writes that arrived before this row had a base into it, now that
+   * one does. Only Updates newer than the Action that opened the row survive;
+   * older ones are subsumed by it, exactly as the store's gsn-ordered replay
+   * would fold them.
+   */
+  const replayOrphans = (id: string, baseGsn: number): void => {
+    const pending = orphans.get(id);
+    if (pending === undefined) return;
+    const base = entities.get(id);
+    if (base === undefined) return;
+    orphans.delete(id);
+
+    const survivors = pending
+      .filter((orphan) => orphan.gsn > baseGsn)
+      .sort((a, b) => a.gsn - b.gsn);
+    let row: Entity = base;
+    for (const orphan of survivors) {
+      row = applyUpdate(row, orphan.update, orphan.gsn, orphan.hlc, RESIDENT_MAP_FIELDS) ?? row;
     }
+    if (row === base) return;
+
+    // Buffered writes are drops, which detach a field and never move a model.
+    entities.set(id, stripToResidency(id, row));
   };
 
   /**
@@ -649,7 +645,14 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     // The echo of an optimistic Action now lives in the base; drop its overlay.
     const echoed = dropOverlay(action.id, before);
 
+    // A create opens the row and the row's components land in the same Action,
+    // so a buffered later write is folded once the whole Action is in — not on
+    // the first Update that makes the row exist, which would order it before
+    // the components delivered with the create.
+    const awaitingOrphans = [...orphans.keys()].filter((id) => !entities.has(id));
+
     for (const update of delta) applyBaseUpdate(update, action.gsn, action.hlc, position);
+    for (const id of awaitingOrphans) replayOrphans(id, action.gsn);
     if (position > lastPosition) lastPosition = position;
 
     const touched = new Set<string>(delta.map((update) => update.subject_id));
@@ -1116,7 +1119,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (
       writes?.some(
         (write) =>
-          write.update.method !== "delete" &&
+          isComponentUpdate(write.update) &&
           write.update.method !== "drop" &&
           write.update.component === component,
       ) === true

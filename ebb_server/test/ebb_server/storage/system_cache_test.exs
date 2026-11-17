@@ -121,6 +121,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
         actor_id: "demo-seeder",
         hlc: hlc,
         updates: [
+          TestHelpers.validated_create("grp_test", "ebb", hlc: hlc),
+          TestHelpers.validated_create("gm_test", "ebb", hlc: hlc),
+          TestHelpers.validated_create("eg_test", "ebb", hlc: hlc),
+          TestHelpers.validated_create("rel_test", "ebb", hlc: hlc),
           TestHelpers.validated_component("grp_test", "ebb/group", %{
             "value" => %{"name" => "Test"},
             "update_id" => "u1"
@@ -205,6 +209,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
         actor_id: "demo-seeder",
         hlc: hlc,
         updates: [
+          TestHelpers.validated_create("grp_apps", "ebb", hlc: hlc),
           TestHelpers.validated_component("grp_apps", "ebb/group", %{
             "value" => %{"name" => "Scoped", "apps" => ["notes"]},
             "update_id" => "u1",
@@ -255,6 +260,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
         hlc: hlc,
         updates:
           [
+            TestHelpers.validated_create("todo_typed", "todo", hlc: hlc),
+            TestHelpers.validated_create("eg_typed", "membership", hlc: hlc),
             TestHelpers.validated_component(
               "todo_typed",
               "todo/title",
@@ -293,6 +300,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       action =
         TestHelpers.validated_action(%{
           updates: [
+            TestHelpers.validated_create(subject_id, "todo"),
             TestHelpers.validated_component(subject_id, "todo/title", %{"value" => "Title"}),
             TestHelpers.validated_component(subject_id, "todo/body", %{"value" => "Body"})
           ]
@@ -417,7 +425,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
           ] do
         frame =
           TestHelpers.validated_action(%{
-            updates: [TestHelpers.validated_component(id, component, %{"value" => %{}})]
+            updates: [
+              TestHelpers.validated_create(id, "ebb"),
+              TestHelpers.validated_component(id, component, %{"value" => %{}})
+            ]
           })
           |> ActionFormat.build()
           |> ActionFormat.encode()
@@ -473,6 +484,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       action =
         TestHelpers.validated_action(%{
           updates: [
+            TestHelpers.validated_create("gm_exit", "ebb"),
             TestHelpers.validated_component("gm_exit", "ebb/grant", %{
               "value" => %{
                 "actor_id" => "a_exit",
@@ -509,6 +521,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       action =
         TestHelpers.validated_action(%{
           updates: [
+            TestHelpers.validated_create(entity_id, "todo", hlc: hlc),
             TestHelpers.validated_component(
               entity_id,
               "todo/title",
@@ -546,6 +559,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       write =
         TestHelpers.validated_action(%{
           updates: [
+            TestHelpers.validated_create(entity_id, "todo", hlc: hlc),
             TestHelpers.validated_component(entity_id, "todo/title", %{
               "value" => "Title",
               "hlc" => hlc
@@ -581,6 +595,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       write =
         TestHelpers.validated_action(%{
           updates: [
+            TestHelpers.validated_create(entity_id, "todo", hlc: hlc),
             TestHelpers.validated_component(entity_id, "todo/title", %{
               "value" => "Title",
               "hlc" => hlc

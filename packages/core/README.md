@@ -29,7 +29,7 @@ import { buildSeedAction, type SeedData } from "@ebbjs/core/seed";
 | `src/seed/`       | `@ebbjs/core/seed`: `buildSeedAction` — turns plain `SeedData` into one wire `Action` (browser-safe). |
 | `src/validate.ts` | Runtime shape checks for inbound action/update payloads.                                              |
 
-135 tests across the package (see [Development](#development)).
+143 tests across the package (see [Development](#development)).
 
 ## Usage
 
@@ -42,6 +42,15 @@ const { action, hlc } = createAction({
   actorId: "user_123",
   clock,
   updates: [
+    {
+      subject_id: "todo_abc",
+      // A row's create names its model and no component: it is the row's
+      // existence and its creation time.
+      model: "todo",
+      method: "create",
+      hlc: localEvent(clock),
+      data: null,
+    },
     {
       subject_id: "todo_abc",
       // One Update names one component: `<model>/<field>`.
@@ -62,9 +71,11 @@ const bytes = encodeSync({ actions: [action] });
 `@ebbjs/core/seed` is a browser-safe subpath exporting `SeedData` (and its
 row types) and `buildSeedAction`, which stamps a fixture's plain field values
 into one wire `Action`, plus the shared seed rejection-tolerance policy
-(`assertSeedAccepted` / `SeedRejectedError`). `@ebbjs/client`'s
-`client.seed()` and `@ebbjs/testing`'s raw-POST `seed()` both build through it,
-so browser demos and the server test harness share one builder and one policy.
+(`assertSeedAccepted` / `SeedRejectedError`). Every seeded row opens with its
+create, so a row with no components — an entity seed with `patches: []` — is a
+complete row. `@ebbjs/client`'s `client.seed()` and `@ebbjs/testing`'s
+raw-POST `seed()` both build through it, so browser demos and the server test
+harness share one builder and one policy.
 
 ## HLC
 

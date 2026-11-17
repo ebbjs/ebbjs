@@ -15,7 +15,13 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { createClient } from "./client";
-import { createGroupListing, listingSeedActionId, needsGroupListing } from "./group-listing";
+import { toRuntimeEntity } from "./backfill";
+import {
+  createGroupListing,
+  listingSeedActionId,
+  listingSeedUpdateId,
+  needsGroupListing,
+} from "./group-listing";
 import {
   callApplyAction,
   emptyCatchUpResponse,
@@ -197,6 +203,57 @@ describe("bootstrapGroupListing", () => {
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("One");
     // `cursor(G) = W` means the view is complete as of W; the marker is gone.
     expect(await storage.cursors.getRecord("g_1")).toEqual({ cursor: 40, through: 7 });
+  });
+
+  it("seeds a zero-component row as a live row", async () => {
+    const storage = createMemoryAdapter();
+    const page = {
+      watermark: 40,
+      entities: [wire({ id: "post_1", type: "blog_post", fields: {}, lastGsn: 4 })],
+    };
+    const { fetchImpl } = listingFetch([page]);
+
+    const result = await mkListing(storage, fetchImpl).bootstrap("g_1");
+
+    expect(result).toMatchObject({ seeded: true, cursor: 40, supported: true, through: 4 });
+    const row = await storage.entities.get("post_1");
+    expect(row).toMatchObject({ model: "blog_post", exists: true, data: { fields: {} } });
+    expect(row?.created_hlc).toBe(HLC);
+
+    // The page row is its create alone, under the deterministic seed id.
+    const actions = await storage.actions.getAll();
+    expect(actions).toHaveLength(1);
+    const entity = toRuntimeEntity(page.entities[0]!);
+    expect(actions[0]!.updates).toEqual([
+      expect.objectContaining({
+        id: `${listingSeedUpdateId("g_1", entity)}$create`,
+        subject_id: "post_1",
+        model: "blog_post",
+        method: "create",
+        data: null,
+      }),
+    ]);
+  });
+
+  it("replays a zero-component row's create under the same id on a redo", async () => {
+    const storage = createMemoryAdapter();
+    const page = {
+      watermark: 40,
+      entities: [wire({ id: "post_1", type: "blog_post", fields: {}, lastGsn: 4 })],
+    };
+    const entity = toRuntimeEntity(page.entities[0]!);
+    await mkListing(storage, listingFetch([page]).fetchImpl).bootstrap("g_1");
+
+    // A crash left a marker with no pinned watermark: the redo lists again.
+    await storage.cursors.setRecord("g_1", { seed: { group_id: "g_1" } });
+    await mkListing(storage, listingFetch([page]).fetchImpl).bootstrap("g_1");
+
+    const actions = await storage.actions.getAll();
+    expect(actions.map((action) => action.id)).toEqual([listingSeedActionId("g_1", "post_1")]);
+    expect(actions[0]!.updates.map((update) => update.id)).toEqual([
+      `${listingSeedUpdateId("g_1", entity)}$create`,
+    ]);
+    expect((await storage.entities.get("post_1"))?.exists).toBe(true);
   });
 
   it("leaves a group whose view is already complete alone", async () => {

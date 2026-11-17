@@ -53,6 +53,13 @@ const { action, hlc } = createAction({
   updates: [
     {
       subject_id: "todo_abc",
+      model: "todo",
+      method: "create",
+      hlc: localEvent(clock),
+      data: null,
+    },
+    {
+      subject_id: "todo_abc",
       component: "todo/title",
       method: "replace",
       data: { value: "Buy milk", update_id: "u_1", hlc: localEvent(clock) },

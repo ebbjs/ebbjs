@@ -33,6 +33,7 @@ import {
   type Entity,
   type FieldValue,
   type HLCState,
+  isComponentUpdate,
   localEvent,
   receiveRemoteHLC,
   type Update,
@@ -1056,7 +1057,8 @@ export class SyncClient<
   private async refuseContentRewrites(actions: readonly Action[]): Promise<void> {
     for (const action of actions) {
       for (const update of action.updates) {
-        if (update.method === "drop" || update.method === "delete") continue;
+        if (!isComponentUpdate(update)) continue;
+        if (update.method === "drop") continue;
         if (!isLogPosition(update.component, [])) continue;
 
         // The replica is the read path, but an on-demand body may not be
@@ -1704,8 +1706,14 @@ export class SyncClient<
    * over every Update before enqueuing, and the server remains the
    * trust boundary.
    */
-  buildRelationshipWrite(opts: BuildRelationshipWriteOptions): BuildRelationshipWriteResult {
-    return buildRelationshipWriteFree(this.registry, opts);
+  /**
+   * Build a link write. The client owns the clock and the id space, so the
+   * caller supplies only the row it is writing.
+   */
+  buildRelationshipWrite(
+    opts: Omit<BuildRelationshipWriteOptions, "hlc">,
+  ): BuildRelationshipWriteResult {
+    return buildRelationshipWriteFree(this.registry, { hlc: () => this.freshHlc(), ...opts });
   }
 
   // -------------------------------------------------------------------------
@@ -2522,7 +2530,7 @@ const errorMessage = (err: unknown): string => {
  */
 const isMembershipPut = (action: Action): boolean =>
   action.updates.some(
-    (update) => update.method !== "delete" && update.component === EBB_COMPONENTS.membership,
+    (update) => isComponentUpdate(update) && update.component === EBB_COMPONENTS.membership,
   );
 
 /** Returned by {@link SyncClient.handshake}. */

@@ -19,8 +19,16 @@ delivery.
 _Avoid_: mutation, change set, transaction
 
 **Update**:
-One write to one component of one entity, carrying an HLC and an update id.
+One write: to one component of one entity (`merge`, `replace`, `drop`), or to
+the row itself (`create`, `delete`). Every Update carries an update id.
 _Avoid_: change, event, op
+
+**Create**:
+The row-scoped Update that brings a row into existence: it names the row's
+model and its creation time and no component, so a row with nothing attached
+is a legal row. Idempotent — a create for a row the replica already has, live
+or tombstoned, changes nothing.
+_Avoid_: insert, put, new
 
 **Action log**:
 The replica's append-only history of Actions.
@@ -304,7 +312,7 @@ lifecycle stamps. Say _entity_ about the domain, _row_ about storage.
 _Avoid_: record, document
 
 **Committed model**:
-The model an entity id is known by, set by its first write. Every later write
+The model an entity id is known by, set by the row's `create`. Every later write
 must name a component that model declares, so an id cannot be re-filed under
 another model's permissions.
 _Avoid_: wire type, declared type, committed type, relabel, retype

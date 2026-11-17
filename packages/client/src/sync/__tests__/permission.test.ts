@@ -57,10 +57,20 @@ const fields = (
 ): Record<string, { value: unknown; update_id: string }> =>
   Object.fromEntries(Object.entries(values).map(([k, v]) => [k, field(v)]));
 
+/** The row fact a `put` opens with: a create names the model and no component. */
+const create = (model: string, subjectId: string): Update => ({
+  id: `u_${subjectId}_create`,
+  subject_id: subjectId,
+  model,
+  method: "create",
+  hlc: makeHlc(1),
+  data: null,
+});
+
 /**
- * One Update per field: a former `put` is a `replace`, a former `patch` a
- * `merge`, and `delete` names no component. A platform row is one atomic
- * `replace` instead.
+ * A `put` is a create followed by one Update per field (`replace`), a
+ * `patch` is the field Updates alone (`merge`), and `delete` names no
+ * component. A platform row is one atomic `replace` instead.
  */
 const update = (
   model: string,
@@ -72,13 +82,16 @@ const update = (
     ? platformUpdate(subjectId, model, method, values)
     : method === "delete"
       ? [{ id: `u_${subjectId}_delete`, subject_id: subjectId, method: "delete", data: null }]
-      : Object.entries(fields(values)).map(([name, value]) => ({
-          id: `u_${subjectId}_${method}_${name}`,
-          subject_id: subjectId,
-          component: componentName(model, name),
-          method: method === "put" ? "replace" : "merge",
-          data: value,
-        }));
+      : [
+          ...(method === "put" ? [create(model, subjectId)] : []),
+          ...Object.entries(fields(values)).map(([name, value]) => ({
+            id: `u_${subjectId}_${method}_${name}`,
+            subject_id: subjectId,
+            component: componentName(model, name),
+            method: method === "put" ? ("replace" as const) : ("merge" as const),
+            data: value,
+          })),
+        ];
 
 /** One Action from any number of component-Update groups. */
 const action = (...groups: readonly (readonly Update[])[]): Action => ({
@@ -280,9 +293,10 @@ describe("collectPermissionViolations — user entities", () => {
     ).resolves.toEqual({ rejected: [] });
   });
 
-  it("uses the wire type for an id the local store does not know", async () => {
-    // A new entity has no committed type, so the wire type stands (#624)
-    // — for the grant that satisfies it and for the one that does not.
+  it("uses the wire model for an id the local store does not know", async () => {
+    // A new entity has no committed model, so the create's model stands
+    // (#624/#817) — for the grant that satisfies it and for the one that
+    // does not.
     const allowed = await mkClient([["g_1", ["todo.create"]]]);
     await allowed.client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
