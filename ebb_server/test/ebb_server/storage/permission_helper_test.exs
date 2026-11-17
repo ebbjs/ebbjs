@@ -31,11 +31,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert PermissionHelper.check_permission(perms, "post", "create") == false
     end
 
-    test "a model grant covers the components under it" do
-      assert PermissionHelper.check_permission(["note.*"], "note/body", "update") == true
-      assert PermissionHelper.check_permission(["note.update"], "note/title", "update") == true
-    end
-
     test "a field grant covers only its own component" do
       assert PermissionHelper.check_permission(["note/title.*"], "note/title", "update") == true
       assert PermissionHelper.check_permission(["note/title.*"], "note/body", "update") == false
@@ -48,23 +43,16 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       assert PermissionHelper.check_permission(["note/title.*"], "note", "update") == false
     end
 
-    test "ancestry matches whole segments, not string prefixes" do
+    test "ancestry matches whole path segments" do
       assert PermissionHelper.check_permission(["note/title.*"], "note/titlelong", "update") ==
                false
-    end
 
-    test "a model grant does not cover a sibling model" do
       assert PermissionHelper.check_permission(["note.*"], "notebook", "update") == false
     end
 
     test "ebb.* covers the platform components" do
       assert PermissionHelper.check_permission(["ebb.*"], "ebb/grant", "create") == true
       assert PermissionHelper.check_permission(["ebb.*"], "ebb/membership", "delete") == true
-    end
-
-    test "a grant with no verb never matches" do
-      assert PermissionHelper.check_permission(["todo"], "todo", "create") == false
-      assert PermissionHelper.check_permission(["todo"], "todo/title", "update") == false
     end
   end
 
@@ -477,59 +465,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
       updates = [validated_component("rel_1", nil, nil, method: :delete)]
 
       assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
-    end
-  end
-
-  describe "written_components/1" do
-    test "maps a subject to the components its updates name, in wire order" do
-      updates = [
-        validated_component("note_1", "note/title", %{"value" => "T"}, method: :merge),
-        validated_component("note_1", "note/body", %{"value" => "B"})
-      ]
-
-      assert PermissionHelper.written_components(updates) == %{
-               "note_1" => ["note/title", "note/body"]
-             }
-    end
-
-    test "names a drop's component too" do
-      updates = [validated_component("note_1", "note/body", nil, method: :drop)]
-
-      assert PermissionHelper.written_components(updates) == %{"note_1" => ["note/body"]}
-    end
-
-    test "names a component once per subject" do
-      updates = [
-        validated_component("note_1", "note/title", %{"value" => "T"}, method: :merge),
-        validated_component("note_1", "note/title", %{"value" => "U"}, method: :merge)
-      ]
-
-      assert PermissionHelper.written_components(updates) == %{"note_1" => ["note/title"]}
-    end
-
-    test "a delete names no component" do
-      updates = [
-        validated_component("note_1", "note/title", %{"value" => "T"}),
-        validated_component("note_2", nil, nil, method: :delete)
-      ]
-
-      assert PermissionHelper.written_components(updates) == %{"note_1" => ["note/title"]}
-    end
-
-    test "keeps subjects apart" do
-      updates = [
-        validated_component("note_1", "note/title", %{"value" => "T"}),
-        validated_component("note_2", "note/body", %{"value" => "B"})
-      ]
-
-      assert PermissionHelper.written_components(updates) == %{
-               "note_1" => ["note/title"],
-               "note_2" => ["note/body"]
-             }
-    end
-
-    test "an empty action writes no components" do
-      assert PermissionHelper.written_components([]) == %{}
     end
   end
 

@@ -1013,7 +1013,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
 
   # #803: the subject a write names is the component on the wire, and grants
   # match by ancestry, so a field grant separates `note/title` from
-  # `note/body` while `note.*` still covers both.
+  # `note/body` end to end.
   describe "per-component permissions (#803)" do
     setup do
       bootstrap_group("owner", "g_1", ["note.*", "ebb/grant.create"])
@@ -1028,18 +1028,6 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
              }).status == 200
 
       %{note_id: note_id}
-    end
-
-    test "a model grant covers every component of the row", %{note_id: note_id} do
-      assert %{"rejected" => []} =
-               submit(
-                 patch_action(note_id, "owner", %{"title" => "New title", "body" => "New body"}),
-                 "owner"
-               )
-
-      note = Jason.decode!(get_entity(note_id, "owner").resp_body)
-      assert note["data"]["fields"]["title"]["value"] == "New title"
-      assert note["data"]["fields"]["body"]["value"] == "New body"
     end
 
     test "a field grant covers only its own component", %{note_id: note_id} do

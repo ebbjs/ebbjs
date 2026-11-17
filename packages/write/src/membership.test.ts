@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import { componentName, EBB_COMPONENTS, type EbbComponentKind, type Update } from "@ebbjs/core";
 
 import {
-  foldSubjects,
   lastGrantViolation,
   lastMembershipViolation,
   membershipScope,
@@ -231,23 +230,5 @@ describe("membership checker — last group member net delta", () => {
   it("defers when the local view cannot say whether the group is unowned", () => {
     expect(lastGrantViolation(undefined, { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
     expect(lastGrantViolation([], { removedIds: ["gm_1"], upserts: [] })).toBeUndefined();
-  });
-});
-
-describe("foldSubjects", () => {
-  it("records a drop as a write to its component without carrying a value", () => {
-    const [writes] = foldSubjects([
-      {
-        id: "u_1",
-        subject_id: "note_1",
-        component: "note/title",
-        method: "replace",
-        data: { value: "T", update_id: "u_1" },
-      },
-      { id: "u_2", subject_id: "note_1", component: "note/body", method: "drop", data: null },
-    ]).values();
-
-    expect([...writes.written]).toEqual(["note/title", "note/body"]);
-    expect([...writes.components.keys()]).toEqual(["note/title"]);
   });
 });

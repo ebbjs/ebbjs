@@ -297,12 +297,8 @@ describe("draft group.create — bootstrap", () => {
 
     const [memberRow] = rowsOf(updatesOf(seen), "grant");
     const permissions = fieldsOf(memberRow!)["permissions"] as readonly string[];
-    expect(permissions).toEqual(["ebb.*", "profile.*"]);
     // A grant names a model, and its wildcard covers every component under it.
-    expect(permissions).not.toContain("ebb/group.*");
-    expect(permissions).not.toContain("ebb/grant.*");
-    expect(permissions).not.toContain("ebb/membership.*");
-    expect(permissions).not.toContain("ebb/link.*");
+    expect(permissions).toEqual(["ebb.*", "profile.*"]);
   });
 });
 

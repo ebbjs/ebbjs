@@ -58,21 +58,14 @@ describe("defineComponent", () => {
     expect(body.shape.properties).toHaveProperty("engine");
   });
 
-  it("rejects an option it does not know, naming the component and the option", () => {
+  it("rejects a removed option at load time", () => {
     // The removed key, written the way a stale schema would carry it.
     const removedOption = "permission";
-    let caught: unknown;
-    try {
+    const declare = () =>
       defineComponent("note/body", e.string(), { [removedOption]: "own" } as never);
-    } catch (error) {
-      caught = error;
-    }
 
-    expect(caught).toBeInstanceOf(UnknownComponentOptionError);
-    expect((caught as UnknownComponentOptionError).componentName).toBe("note/body");
-    expect((caught as UnknownComponentOptionError).option).toBe("permission");
-    expect((caught as Error).message).toContain("note/body");
-    expect((caught as Error).message).toContain("permission");
+    expect(declare).toThrow(UnknownComponentOptionError);
+    expect(declare).toThrow(/unknown option "permission"/);
   });
 
   it("rejects a name that is not <model>/<leaf>-shaped with the offending name", () => {

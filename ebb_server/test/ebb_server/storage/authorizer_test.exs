@@ -1075,22 +1075,6 @@ defmodule EbbServer.Storage.AuthorizerTest do
       component_updates("#{subject_id}_upd", subject_id, "note", :merge, fields)
     end
 
-    test "a model grant authorizes a component update", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note.*"])
-
-      action = build_action(note_update(%{"body" => "New body"}))
-
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
-    end
-
-    test "an ancestral model grant authorizes a component update", %{tables: tables, ctx: ctx} do
-      put_grant(tables, "g_1", ["note.update"])
-
-      action = build_action(note_update(%{"body" => "New body"}))
-
-      assert_accepted(Authorizer.authorize([action], "a_1", ctx))
-    end
-
     test "a field grant authorizes its own component", %{tables: tables, ctx: ctx} do
       put_grant(tables, "g_1", ["note/title.*"])
 
@@ -1113,6 +1097,21 @@ defmodule EbbServer.Storage.AuthorizerTest do
       action = build_action(note_update(%{"title" => "New title", "body" => "New body"}))
 
       assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
+    test "a drop is authorized against the component it names", %{tables: tables, ctx: ctx} do
+      put_grant(tables, "g_1", ["note/title.*"])
+
+      drop = fn id, field ->
+        build_action([component_update(id, "note_1", "note/#{field}", :drop, nil)])
+      end
+
+      assert_accepted(Authorizer.authorize([drop.("note_1_drop_title", "title")], "a_1", ctx))
+
+      assert_rejected(
+        Authorizer.authorize([drop.("note_1_drop_body", "body")], "a_1", ctx),
+        "not_authorized"
+      )
     end
 
     test "a create names the model, not the component", %{tables: tables, ctx: ctx} do

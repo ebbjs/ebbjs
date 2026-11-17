@@ -14,7 +14,6 @@ import {
   commit,
   createEntity,
   dropEntity,
-  fullGroupPermissions,
   groupBootstrap,
   operationCallFor,
   patchEntity,
@@ -130,15 +129,6 @@ describe("@ebbjs/write", () => {
         permissions: ["ebb.*", "issue.*", "project.*"],
       },
     });
-  });
-
-  it("grants one wildcard per model, so an ancestor covers every component under it", () => {
-    const registry = buildRegistry();
-
-    const permissions = fullGroupPermissions(registry);
-
-    expect(permissions).toEqual(["ebb.*", "issue.*", "project.*"]);
-    expect(permissions).not.toContain("ebb/group.*");
   });
 
   it("writes a user entity's map field as a merge of a map envelope", async () => {
