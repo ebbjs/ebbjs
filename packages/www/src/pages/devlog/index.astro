@@ -1,14 +1,8 @@
 ---
-export const prerender = false;
-
-import { getCollection } from 'astro:content';
 import Marketing from '../../layouts/Marketing.astro';
+import { getPosts } from '../../lib/content';
 
-const showAll = Astro.url.searchParams.has('all');
-
-const posts = (await getCollection('devlog'))
-.filter((post) => showAll || post.data.published)
-.sort((a,b) => b.data.date.getTime() - a.data.date.getTime())
+const posts = await getPosts();
 
 const formatDate = (date: Date) => {
   return date.toLocaleDateString('en-US', {
