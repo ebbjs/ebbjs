@@ -287,6 +287,62 @@ defmodule EbbServer.Storage.RocksDBTest do
     end
   end
 
+  describe "iterator cleanup" do
+    setup context do
+      %{name: name} = start_rocks(context)
+      cf = RocksDB.cf_actions(name)
+
+      for gsn <- 1..5 do
+        key = RocksDB.encode_gsn_key(gsn)
+        :ok = RocksDB.write_batch([{:put, cf, key, "v#{gsn}"}], name: name)
+      end
+
+      # Every GSN key shares the same leading seven zero bytes.
+      %{cf: cf, name: name, prefix: binary_part(RocksDB.encode_gsn_key(0), 0, 7)}
+    end
+
+    test "full_iterator closes its iterator once, on halt and on full scan", %{
+      cf: cf,
+      name: name
+    } do
+      build = fn close -> RocksDB.full_iterator(cf, name: name, iterator_close: close) end
+
+      assert_closes_once_on_halt(build)
+      assert_closes_once_on_full_scan(build)
+    end
+
+    test "prefix_iterator closes its iterator once, on halt and on full scan", %{
+      cf: cf,
+      name: name,
+      prefix: prefix
+    } do
+      build = fn close ->
+        RocksDB.prefix_iterator(cf, prefix, name: name, iterator_close: close)
+      end
+
+      assert_closes_once_on_halt(build)
+      assert_closes_once_on_full_scan(build)
+    end
+
+    test "range_iterator closes its iterator once, on halt and on full scan", %{
+      cf: cf,
+      name: name
+    } do
+      build = fn close ->
+        RocksDB.range_iterator(
+          cf,
+          RocksDB.encode_gsn_key(1),
+          RocksDB.encode_gsn_key(6),
+          name: name,
+          iterator_close: close
+        )
+      end
+
+      assert_closes_once_on_halt(build)
+      assert_closes_once_on_full_scan(build)
+    end
+  end
+
   describe "GSN list values" do
     test "round-trips a sorted GSN list as raw big-endian integers" do
       gsns = [1, 2, 255, 65_536, 1_000_000_000]
@@ -438,5 +494,41 @@ defmodule EbbServer.Storage.RocksDBTest do
     test "releases handles for a state it does not recognise" do
       assert RocksDB.terminate(:shutdown, :unexpected_state) == :ok
     end
+  end
+
+  defp assert_closes_once_on_halt(build) do
+    results = build.(close_probe()) |> Stream.take(2) |> Enum.to_list()
+
+    assert length(results) == 2
+    assert_closed_once()
+  end
+
+  defp assert_closes_once_on_full_scan(build) do
+    results = build.(close_probe()) |> Enum.to_list()
+
+    assert length(results) == 5
+    assert_closed_once()
+  end
+
+  # Reports the handle the stream's cleanup fun receives, then closes it for
+  # real so the test can probe the handle. `Stream.resource/3` runs the cleanup
+  # fun outside the consumer's reach, so replacing the close call is the only
+  # way to observe it.
+  defp close_probe do
+    test_pid = self()
+
+    fn iter ->
+      send(test_pid, {:iterator_closed, iter})
+      :rocksdb.iterator_close(iter)
+    end
+  end
+
+  defp assert_closed_once do
+    assert_received {:iterator_closed, iter}
+    refute_received {:iterator_closed, _}
+
+    # A closed `ItrObject` fails the NIF's handle lookup with `:badarg`; an
+    # iterator that was never closed would answer normally here.
+    assert_raise ArgumentError, fn -> :rocksdb.iterator_move(iter, :first) end
   end
 end

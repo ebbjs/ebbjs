@@ -286,29 +286,10 @@ defmodule EbbServer.Storage.RocksDB do
   def full_iterator(cf_ref, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
-        {iter, :rocksdb.iterator_move(iter, :first)}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn iter ->
-        try do
-          :rocksdb.iterator_close(iter)
-        catch
-          :error, {:invalid_iterator, _} -> :ok
-        end
-      end
-    )
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
+      {iter, :rocksdb.iterator_move(iter, :first)}
+    end)
   end
 
   # ---------------------------------------------------------------------------
@@ -430,39 +411,12 @@ defmodule EbbServer.Storage.RocksDB do
         upper_bound -> [{:iterate_upper_bound, upper_bound}]
       end
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
 
-        seek_result = :rocksdb.iterator_move(iter, {:seek, prefix})
-        {iter, seek_result}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn iter ->
-        # The iterator may already be invalidated if the DB was closed
-        # mid-stream (e.g., between tests). The BEAM surfaces that as
-        # either an `ArgumentError` (when the NIF returns :badarg) or
-        # a tagged `{:error, :invalid_iterator}` tuple — both of which
-        # Stream.resource turns into exceptions. Swallow them silently:
-        # we got the data we cared about, and the caller is already
-        # cleaning up the DB anyway.
-        try do
-          :rocksdb.iterator_close(iter)
-        catch
-          :error, _ -> :ok
-          {:error, _} -> :ok
-        end
-      end
-    )
+      seek_result = :rocksdb.iterator_move(iter, {:seek, prefix})
+      {iter, seek_result}
+    end)
   end
 
   @doc """
@@ -480,38 +434,11 @@ defmodule EbbServer.Storage.RocksDB do
     name = Keyword.get(opts, :name, __MODULE__)
     iter_opts = if to_key == :none, do: [], else: [{:iterate_upper_bound, to_key}]
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
-        seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
-        {iter, seek_result}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn
-        {iter, _} ->
-          try do
-            :rocksdb.iterator_close(iter)
-          catch
-            :error, {:invalid_iterator, _} -> :ok
-          end
-
-        iter ->
-          try do
-            :rocksdb.iterator_close(iter)
-          catch
-            :error, {:invalid_iterator, _} -> :ok
-          end
-      end
-    )
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
+      seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
+      {iter, seek_result}
+    end)
   end
 
   # ---------------------------------------------------------------------------
@@ -700,5 +627,35 @@ defmodule EbbServer.Storage.RocksDB do
     else
       prefix_upper_bound(head)
     end
+  end
+
+  # The three lazy iterators differ only in how they open and seek. Sharing the
+  # rest of the resource here keeps them from drifting apart: the state is
+  # always the bare iterator plus its latest move, and a finished scan — ran out
+  # of keys or consumer halted — replaces the move with `:done`. So the cleanup
+  # fun has exactly one clause, always receives the handle it must close, and
+  # runs exactly once.
+  defp lazy_iterator(opts, open) do
+    # `:iterator_close` is a test seam: `Stream` runs the cleanup fun after the
+    # consumer stops, out of its reach, so a test can only observe which handle
+    # the fun receives by replacing the close call.
+    close = Keyword.get(opts, :iterator_close, &:rocksdb.iterator_close/1)
+
+    Stream.resource(open, &next_element/1, fn {iter, _state} -> safe_close(iter, close) end)
+  end
+
+  defp next_element({iter, {:ok, key, value}}) do
+    {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
+  end
+
+  defp next_element({iter, {:error, _reason}}), do: {:halt, {iter, :done}}
+
+  # The DB can be closed while a stream is still live, for example between
+  # tests. RocksDB then rejects the handle with `:badarg` and the caller is
+  # already tearing the database down.
+  defp safe_close(iter, close) do
+    close.(iter)
+  catch
+    :error, _ -> :ok
   end
 end
