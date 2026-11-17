@@ -12,9 +12,6 @@ defmodule EbbServer.Telemetry.Sampler do
   Each source is read and emitted independently: a failing read is logged
   and that gauge is skipped for the tick, leaving the other gauge and the
   sampling loop running.
-
-  Disable with `enabled: false` (the default in `MIX_ENV=test`) or by
-  setting `config :ebb_server, EbbServer.Telemetry.Sampler, enabled: false`.
   """
 
   use GenServer
@@ -78,8 +75,6 @@ defmodule EbbServer.Telemetry.Sampler do
     {:noreply, state}
   end
 
-  # Each gauge is read and emitted independently, so one failing source
-  # skips only its own gauge for the tick and the loop keeps running.
   defp sample(event, read) do
     Telemetry.execute(event, read.(), %{})
   rescue

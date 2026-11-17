@@ -33,35 +33,14 @@ defmodule EbbServer.Storage.FieldMerge do
   - **Tombstone**: a leaf `value: null` participates in the merge like any
     other leaf, so a late-arriving write can still beat it. Storage retains
     it; projection is what hides a tombstoned map key.
-
-  This deliberately keeps the materialization logic simple — there is no
-  per-type dispatch table. CRDT-style merging (e.g. G-Counter, causal-tree
-  text) is **not** a server-side concern: the per-leaf LWW rule is enough
-  for the server's job (decide which blob wins), and the typed reducer on
-  the client interprets a `causal-tree` blob correctly. See Epic #110 for
-  how `e.collaborativeText()` is defined and Epic #111 for the
-  storage-architecture rationale.
   """
 
-  @typedoc """
-  A leaf field value: `%{"value" => term, "hlc" => hlc, "update_id" => id}`.
-  """
   @type leaf :: %{String.t() => term()}
 
-  @typedoc """
-  A map field value: `%{"map" => %{key => field_value}}`. The `map` key is
-  the discriminant.
-  """
   @type field_map :: %{String.t() => field_value()}
 
-  @typedoc "Any field value on the wire."
   @type field_value :: leaf() | field_map()
 
-  @doc """
-  Merges `incoming` over `existing` under the wire's LWW rule.
-
-  A `nil` `existing` returns `incoming` unchanged.
-  """
   @spec merge(field_value() | nil, field_value()) :: field_value()
   def merge(nil, incoming), do: incoming
 

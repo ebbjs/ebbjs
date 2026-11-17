@@ -36,7 +36,6 @@ defmodule EbbServer.Functions.Log do
   @type budget :: %{lines: non_neg_integer(), bytes: non_neg_integer(), truncated: boolean()}
   @type meta :: %{name: String.t(), version: String.t(), invocation_id: String.t()}
 
-  @doc "The zero budget for a new invocation."
   @spec new_budget() :: budget()
   def new_budget, do: %{lines: 0, bytes: 0, truncated: false}
 
@@ -65,7 +64,6 @@ defmodule EbbServer.Functions.Log do
     end
   end
 
-  @doc "Writes the one truncation notice for an invocation."
   @spec truncation_notice(meta(), pos_integer(), pos_integer()) :: :ok
   def truncation_notice(meta, max_lines, max_bytes) do
     write(

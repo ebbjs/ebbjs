@@ -28,13 +28,6 @@ defmodule EbbServer.Functions.Response do
   its value is absent, which is why an unknown function (`404`) carries no
   version header: there is no active version to name.
 
-  A failure whose cause already produced a code — anything `Invocation`
-  reports, such as `handler_error`, `rejected`, or `protocol_error` — passes it
-  as `:code`. Without one, `code_for_status/1` supplies the code for the
-  statuses this endpoint produces itself (a malformed body, an absent route, a
-  bundle that failed verification). The map is the fallback, not a second
-  vocabulary: both paths end in the same `"error"` field.
-
   ## Issues and details
 
   `details` is text for a person, never a stack. A runner that reports a
@@ -122,9 +115,6 @@ defmodule EbbServer.Functions.Response do
     {status, body, headers(opts)}
   end
 
-  @doc """
-  Maps an HTTP status to the envelope's error code.
-  """
   @spec code_for_status(term()) :: String.t()
   def code_for_status(status), do: Map.get(@status_codes, status, "internal_error")
 

@@ -229,6 +229,82 @@ defmodule EbbServer.Storage.GrantCacheTest do
       assert GrantCache.get_grant("gm_1", ctx.by_id) == nil
       assert GrantCache.grant_ids("g_1", ctx.by_group) == []
     end
+
+    test "leaves the actor's other primary rows alone" do
+      ctx = with_isolated_cache()
+
+      for {id, group_id} <- [{"gm_keep_1", "g_1"}, {"gm_drop", "g_1"}, {"gm_keep_2", "g_2"}] do
+        :ok =
+          GrantCache.put_grant(
+            %{id: id, actor_id: "a_1", group_id: group_id, permissions: ["todo.read"]},
+            cache_opts(ctx)
+          )
+      end
+
+      :ok = GrantCache.delete_grant("gm_drop", cache_opts(ctx))
+
+      assert ctx.table
+             |> :ets.lookup("a_1")
+             |> Enum.map(fn {_actor_id, entry} -> entry.id end)
+             |> Enum.sort() == ["gm_keep_1", "gm_keep_2"]
+    end
+
+    test "deletes a primary row whose value map uses string keys" do
+      ctx = with_isolated_cache()
+
+      :ets.insert(
+        ctx.by_id,
+        {"gm_str", %{id: "gm_str", actor_id: "a_1", group_id: "g_1", permissions: ["todo.read"]}}
+      )
+
+      :ets.insert(
+        ctx.table,
+        {"a_1",
+         %{
+           "id" => "gm_str",
+           "actor_id" => "a_1",
+           "group_id" => "g_1",
+           "permissions" => ["todo.read"]
+         }}
+      )
+
+      :ets.insert(ctx.by_group, {{"g_1", "gm_str"}})
+
+      :ok = GrantCache.delete_grant("gm_str", cache_opts(ctx))
+
+      assert :ets.lookup(ctx.table, "a_1") == []
+      assert GrantCache.get_grant("gm_str", ctx.by_id) == nil
+      assert GrantCache.grant_ids("g_1", ctx.by_group) == []
+    end
+
+    test "a re-put that changes the actor drops a string-keyed stale primary row" do
+      ctx = with_isolated_cache()
+
+      :ets.insert(
+        ctx.by_id,
+        {"gm_str", %{id: "gm_str", actor_id: "a_1", group_id: "g_1", permissions: ["todo.read"]}}
+      )
+
+      :ets.insert(
+        ctx.table,
+        {"a_1",
+         %{
+           "id" => "gm_str",
+           "actor_id" => "a_1",
+           "group_id" => "g_1",
+           "permissions" => ["todo.read"]
+         }}
+      )
+
+      :ok =
+        GrantCache.put_grant(
+          %{id: "gm_str", actor_id: "a_2", group_id: "g_1", permissions: ["todo.read"]},
+          cache_opts(ctx)
+        )
+
+      assert :ets.lookup(ctx.table, "a_1") == []
+      assert GrantCache.get_permissions("a_2", "g_1", ctx.table) == ["todo.read"]
+    end
   end
 
   describe "grant_ids/2" do

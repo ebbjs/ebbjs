@@ -133,15 +133,12 @@ defmodule EbbServer.Functions.Worker.Pool do
   @spec checkout(atom() | pid()) :: {:ok, Lease.t()} | {:error, :saturated}
   def checkout(pool), do: GenServer.call(pool, :checkout, :infinity)
 
-  @doc "Returns a healthy worker to the pool."
   @spec checkin(atom() | pid(), Lease.t()) :: :ok
   def checkin(pool, lease), do: GenServer.call(pool, {:checkin, lease}, 5_000)
 
-  @doc "Kills the leased worker and replaces its slot."
   @spec discard(atom() | pid(), Lease.t()) :: :ok
   def discard(pool, lease), do: GenServer.cast(pool, {:discard, lease})
 
-  @doc "The current gauges; for tests and `ebb functions health`."
   @spec snapshot(atom() | pid()) :: map()
   def snapshot(pool), do: GenServer.call(pool, :snapshot)
 
@@ -295,8 +292,6 @@ defmodule EbbServer.Functions.Worker.Pool do
     :ok
   end
 
-  # --- checkout / checkin --------------------------------------------------
-
   defp queue_checkout(from, caller, state) do
     if :queue.len(state.waiting) < state.queue_limit do
       wait_ref = make_ref()
@@ -380,8 +375,6 @@ defmodule EbbServer.Functions.Worker.Pool do
       [] -> :error
     end
   end
-
-  # --- workers -------------------------------------------------------------
 
   defp spawn_slot(state, ref \\ make_ref()) do
     if MapSet.member?(state.pending, ref) do
@@ -477,8 +470,6 @@ defmodule EbbServer.Functions.Worker.Pool do
 
   defp demonitor(nil), do: :ok
   defp demonitor(ref), do: Process.demonitor(ref, [:flush])
-
-  # --- gauges --------------------------------------------------------------
 
   defp emit(state) do
     :telemetry.execute([:ebb, :functions, :pool, :state], gauges(state), %{})

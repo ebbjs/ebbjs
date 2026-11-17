@@ -211,16 +211,12 @@ defmodule EbbServer.Storage.Authorizer do
            updates: [map()]
          }
 
-  # What the request knows so far on top of the cache snapshot. Caches
-  # only advance once the Writer commits, so the last-membership delta
-  # and the models the earlier Actions resolve travel here.
   @typep grant_row :: %{
            id: String.t(),
            group_id: String.t(),
            permissions: [String.t()]
          }
 
-  # A touched group's members as the request leaves them.
   @typep members_by_group :: %{String.t() => %{String.t() => [String.t()]}}
 
   @typep request_sim :: %{
@@ -240,24 +236,11 @@ defmodule EbbServer.Storage.Authorizer do
           details: String.t() | nil
         }
 
-  @doc """
-  Authorizes a list of validated actions, returning the accepted Actions
-  and the per-Action rejections.
-
-  A rejected Action is reported and left out of the accepted list while
-  its siblings proceed. The request simulation advances only for
-  accepted Actions, so a rejected Action contributes neither its created
-  models nor its membership delta to a later Action.
-  """
   @spec authorize([validated_action()], String.t(), AuthorizationContext.t()) ::
           {accepted :: [validated_action()], rejected :: [rejection()]}
   def authorize(actions, actor_id, ctx),
     do: authorize(actions, actor_id, ctx, new_sim(), [], [])
 
-  # The fourth argument is the running simulation of what the request's
-  # earlier **accepted** Actions added, removed and created. Caches only
-  # advance once the Writer commits, so the last-membership delta and the
-  # created models must travel here (see `check_last_membership/2`).
   defp authorize([], _actor_id, _ctx, _sim, accepted, rejected),
     do: {Enum.reverse(accepted), Enum.reverse(rejected)}
 
@@ -311,8 +294,8 @@ defmodule EbbServer.Storage.Authorizer do
           PermissionHelper.build_intra_relationship_sources(action.updates)
         ),
       bootstrap: PermissionHelper.bootstrap_group_permissions(mutations, actor_id, exists?),
-      bootstrap_membership_ids:
-        PermissionHelper.bootstrap_membership_row_ids(mutations, actor_id, member_exists?),
+      bootstrap_grant_ids:
+        PermissionHelper.bootstrap_grant_row_ids(mutations, actor_id, member_exists?),
       created_ids: PermissionHelper.created_subject_ids(mutations, exists?),
       # An id the request already modeled keeps that model: a later Action may
       # only model ids the simulation does not know.
@@ -378,7 +361,7 @@ defmodule EbbServer.Storage.Authorizer do
          actor_id,
          authz.bootstrap,
          authz.created_ids,
-         authz.bootstrap_membership_ids
+         authz.bootstrap_grant_ids
        ) do
       :ok
     else
@@ -503,12 +486,9 @@ defmodule EbbServer.Storage.Authorizer do
     end)
   end
 
-  # #479: a group must never resolve to zero memberships holding a
-  # non-empty permission list. Permissions live only on `ebb/grant`
-  # rows and `get_permissions/3` treats an empty list as no membership,
-  # so a group with no capable row is unreachable through the API. The
-  # check is a net delta per touched group, carried across the request's
-  # Actions because caches only advance once the Writer commits.
+  # Permissions live only on `ebb/grant` rows and `get_permissions/3`
+  # treats an empty list as no membership, so a group with no capable row
+  # is unreachable through the API.
   defp check_last_grant(authz, sim) do
     sim =
       authz.mutations
@@ -569,7 +549,6 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp resulting_permissions(_update, nil, _existing), do: []
 
-  # The request's own prior effect first, the committed cache otherwise.
   defp resolve_grant(member_id, authz, sim) do
     case Map.fetch(sim.member_overlay, member_id) do
       {:ok, row} -> row
@@ -625,8 +604,6 @@ defmodule EbbServer.Storage.Authorizer do
     Enum.any?(members, fn {_member_id, permissions} -> permissions != [] end)
   end
 
-  # Resolve every `ebb/membership` delete once; the delete authorization and
-  # the last-membership delta both read the resolved pair from `authz`.
   # Keyed by the membership row id, not the mutation id: two deletes for one
   # row in an Action are already one row mutation, and collapsing them would
   # authorize one against the other's entity and hide one removal from the
@@ -971,10 +948,6 @@ defmodule EbbServer.Storage.Authorizer do
      "the component's model does not match the model this entity was committed under"}
   end
 
-  # The entity-model cache wins whenever it has an entry; failing that, a by-id
-  # cache row carries the platform model by construction. Shared with the
-  # Writer's fold, whose delete has the same question (see
-  # `EntityScope.committed_model/2`).
   defp committed_model(entity_id, opts), do: EntityScope.committed_model(entity_id, opts)
 
   # `ebb/membership`'s pair is immutable after create (decision 13): the old

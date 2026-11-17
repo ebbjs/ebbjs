@@ -28,27 +28,6 @@ defmodule EbbServer.Sync.CatchUp do
           {:ok, [map()], %{next_offset: non_neg_integer() | nil, up_to_date: boolean()}}
           | {:error, :not_member}
 
-  @doc """
-  Returns paginated actions for a group, starting from the given GSN offset.
-
-  ## Parameters
-
-    - `group_id`: The group to fetch actions for
-    - `actor_id`: The actor requesting the catch-up (for membership check)
-    - `offset`: GSN to start from (exclusive, actions with GSN > offset are returned)
-    - `opts`: Keyword options
-      - `:limit` - Upper bound on the `cf_group_actions` rows one page consumes,
-        and so on the Actions it returns (default 200). A page can return fewer
-        Actions than `limit`, and a page that consumes exactly `limit` rows
-        reports `up_to_date: false` even when nothing is left, so a caller that
-        reaches the end makes one more (empty) request. Values below 1 are
-        treated as 1.
-
-  ## Returns
-
-    - `{:ok, actions, meta}` on success where `meta` contains pagination info
-    - `{:error, :not_member}` when the actor is not a member of the group
-  """
   @spec catch_up_group(String.t(), String.t(), non_neg_integer(), keyword()) :: result()
   def catch_up_group(group_id, actor_id, offset \\ 0, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)

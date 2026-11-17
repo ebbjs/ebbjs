@@ -28,9 +28,6 @@ defmodule EbbServer.Telemetry.HTTP do
   counted twice.
 
   The `/sync/live` literal mirrors the route in `EbbServer.Sync.Router`.
-
-  Disable with `enabled: false` or by setting
-  `config :ebb_server, EbbServer.Telemetry.HTTP, enabled: false`.
   """
 
   use GenServer

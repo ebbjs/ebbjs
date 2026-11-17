@@ -4,10 +4,8 @@ defmodule EbbServer.Storage.CommitPipeline do
   state that gates durable commits, apply, and fan-out.
 
   The Writer is the imperative shell: it owns the live caches, the
-  Committer pool, timers, and the durable side effects. This module owns the
-  bookkeeping that used to be spread across the Writer's `pending`,
-  `inflight`, `flush_*`, `InFlightActions`, and release-order fields. Every
-  transition is a pure function of the pipeline state and an event, so the
+  Committer pool, timers, and the durable side effects. Every transition is
+  a pure function of the pipeline state and an event, so the
   state machine is testable without a Writer, caches, or RocksDB.
 
   ## Batch lifecycle
@@ -111,9 +109,8 @@ defmodule EbbServer.Storage.CommitPipeline do
     @moduledoc """
     One claimed GSN range and everything the Writer needs to resolve it.
 
-    The struct is the named replacement for the ad-hoc `inflight` map the
-    Writer used to carry. `phase` is owned by `CommitPipeline`; the other
-    fields are immutable input for the transition that consumes them.
+    `phase` is owned by `CommitPipeline`; the other fields are immutable
+    input for the transition that consumes them.
     """
 
     @enforce_keys [
@@ -191,8 +188,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Records a caller and its pre-encoded Actions as pending.
-
   The payload build and encode already happened in the Prepare pool
   before the call reaches this transition, so nothing here touches a
   cache or storage.
@@ -206,18 +201,12 @@ defmodule EbbServer.Storage.CommitPipeline do
     }
   end
 
-  @doc "The number of Actions waiting in the pre-flush burst."
   @spec pending_count(t()) :: non_neg_integer()
   def pending_count(%__MODULE__{pending_count: count}), do: count
 
   @doc """
-  Decides what the Writer should do after a call arrived or a batch finished.
-
-  Returns one of `:flush` (flush synchronously now), `:send_flush` (queue a
-  burst-drain marker), `:schedule_timer` (start the coalescing timer),
-  `:wait` (a commit or timer is already in flight), or `:idle` (nothing
-  pending). The returned state records the logical timer/marker flags; the
-  shell owns the actual timer reference and mailbox send.
+  The returned state records the logical timer/marker flags; the shell owns
+  the actual timer reference and mailbox send.
   """
   @spec schedule(t(), integer(), non_neg_integer()) ::
           {:flush | :send_flush | :schedule_timer | :wait | :idle, t()}
@@ -247,10 +236,7 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Takes the pending burst for one flush, oldest caller first.
-
-  Clears the pending list and both coalescing flags. A stale `:flush` marker
-  that arrives after this is a no-op.
+  A stale `:flush` marker that arrives after this is a no-op.
   """
   @spec take_pending(t()) :: {t(), [pending_call()]}
   def take_pending(%__MODULE__{} = state) do
@@ -267,8 +253,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   def clear_timer(%__MODULE__{} = state), do: %{state | flush_timer: false}
 
   @doc """
-  Registers a claimed GSN range and guards its action ids.
-
   The Writer claims the ids in the `InFlightActions` ETS guard and the GSN
   range before calling this; this transition takes ownership of the
   ordering and release bookkeeping for that claim. Depth is enforced by
@@ -287,7 +271,6 @@ defmodule EbbServer.Storage.CommitPipeline do
     {:ok, batch, state}
   end
 
-  @doc "Attaches the prepared batch, group snapshot, provisional marks, and cache slice."
   @spec prepared(t(), reference(), [PreparedAction.t()], map(), pending_marks(), cache_plan()) ::
           {:ok, Batch.t(), t()} | {:error, term()}
   def prepared(
@@ -333,9 +316,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Marks the batch as handed to the Committer and records the worker that
-  owns the range.
-
   The owner is informational for the Writer: the pool reports the result
   and any worker death by `ref`, so a restart or reassignment cannot make
   the Writer resolve another range's claim. `nil` keeps the transition
@@ -347,8 +327,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Records the worker assigned to a committing range.
-
   The pool dispatches asynchronously, so the Writer learns the owner after
   the claim has already been handed over. Assigning is idempotent and only
   valid while the range is committing.
@@ -359,8 +337,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Marks the durable commit and releases the batch's in-flight id guard.
-
   The Writer still owns the ETS release; `Batch.action_ids` is the exact set
   to release. This transition makes the ordering state agree that the ids
   are durable, so a pure model and the shell cannot diverge.
@@ -370,15 +346,12 @@ defmodule EbbServer.Storage.CommitPipeline do
     update(state, ref, [:committing], :committed, & &1, :release_ids)
   end
 
-  @doc "Marks a committed batch as being applied and notified."
   @spec applying(t(), reference()) :: {:ok, Batch.t(), t()} | {:error, term()}
   def applying(%__MODULE__{} = state, ref) do
     update(state, ref, [:committed], :applying, & &1)
   end
 
   @doc """
-  Marks an applied batch released and prunes it from the pipeline.
-
   Released is terminal and order-safe: the next claimed range becomes the
   head of `claim_order`.
   """
@@ -391,8 +364,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Abandons a batch and prunes it from the pipeline.
-
   Valid before the durable mark: `:claimed`, `:prepared`, `:committing`, or
   `:committed`. Abandoning a `:committed` batch is the post-ack pre-apply
   failure path; the batch is already durable but its range still has to be
@@ -417,8 +388,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Returns the committed batches that may be applied next, in claim order.
-
   Stops at the first batch that is still committing or already applying, so
   a later durable range never overtakes an earlier one. Abandoned ranges
   were pruned when they were abandoned, so they do not block the buffer.
@@ -432,8 +401,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  The reorder buffer as telemetry measurements.
-
   `in_flight_batches` counts every open claim; `oldest_unreleased_gsn` is
   the start of the oldest claim that has not been released, or `0` when the
   buffer is empty.
@@ -453,9 +420,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  Reports the phase of the oldest open batch, or `:idle` when the pipeline
-  has no claim.
-
   The pipeline can hold several batches in V2; the oldest one is the range
   that gates release and is therefore the one that defines the pipeline's
   observable phase.
@@ -470,17 +434,14 @@ defmodule EbbServer.Storage.CommitPipeline do
   @spec get(t(), reference()) :: Batch.t() | nil
   def get(%__MODULE__{} = state, ref), do: Map.get(state.batches, ref)
 
-  @doc "True when no claimed range is in flight, applying, or awaiting release."
   @spec idle?(t()) :: boolean()
   def idle?(%__MODULE__{} = state), do: state.batches == %{}
 
-  @doc "The open batches in claim order, oldest first."
   @spec open_batches(t()) :: [Batch.t()]
   def open_batches(%__MODULE__{} = state) do
     Enum.map(state.claim_order, &Map.fetch!(state.batches, &1))
   end
 
-  @doc "The cache slices of the open batches, oldest first."
   @spec cache_slices(t()) :: [CacheMutationPlanner.overlay()]
   def cache_slices(%__MODULE__{} = state) do
     state
@@ -491,15 +452,12 @@ defmodule EbbServer.Storage.CommitPipeline do
     end)
   end
 
-  @doc "The merged cache overlay of every open batch."
   @spec cache_overlay(t()) :: CacheMutationPlanner.overlay()
   def cache_overlay(%__MODULE__{} = state) do
     state |> cache_slices() |> CacheMutationPlanner.merge_overlays()
   end
 
   @doc """
-  The merged cache overlay of the open batches claimed before `ref`.
-
   This is the snapshot a successor resolved against. Callers that gate a
   commit also read `unresolved_cache_overlay_before/2`, which ignores
   already-durable predecessors.
@@ -513,8 +471,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   end
 
   @doc """
-  The merged cache overlay of the non-durable batches claimed before `ref`.
-
   A durable predecessor can no longer abandon, so its slice no longer
   blocks a successor from committing. A claimed, prepared, or committing
   predecessor still can.
@@ -528,16 +484,12 @@ defmodule EbbServer.Storage.CommitPipeline do
     |> overlay_from_batches()
   end
 
-  @doc "True when `ref` is waiting for a Committer result."
   @spec committing?(t(), reference()) :: boolean()
   def committing?(%__MODULE__{} = state, ref) do
     match?(%Batch{phase: :committing}, get(state, ref))
   end
 
   @doc """
-  True while the pipeline holds any batch, including one applying or waiting
-  in the release buffer.
-
   The shell asks `at_capacity?/1` when deciding whether to claim; this
   predicate remains the convenient "anything open?" check for callers and
   tests.
@@ -546,8 +498,6 @@ defmodule EbbServer.Storage.CommitPipeline do
   def inflight?(%__MODULE__{} = state), do: inflight_count(state) > 0
 
   @doc """
-  True when the pipeline holds as many batches as the configured depth.
-
   The shell uses this to decide whether a new claim may start. At the V0
   depth of one it is equivalent to `inflight?/1`, but a test or a later V2
   configuration can allow several ranges to commit at once without changing

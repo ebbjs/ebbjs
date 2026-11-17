@@ -109,23 +109,14 @@ defmodule EbbServer.Functions.Bundle do
           | :digest_mismatch
           | {:unsupported_contract, term()}
 
-  @doc """
-  The bundle ABI this server speaks.
-  """
   @spec contract_version() :: pos_integer()
   def contract_version, do: @contract_version
 
-  @doc """
-  The canonical digest of `code`: `sha256:` and the lowercase hex hash.
-  """
   @spec digest_for(binary()) :: String.t()
   def digest_for(code) when is_binary(code) do
     "sha256:" <> (:crypto.hash(:sha256, code) |> Base.encode16(case: :lower))
   end
 
-  @doc """
-  The name grammar, without the length and reserved-word checks.
-  """
   @spec valid_name?(term()) :: boolean()
   def valid_name?(name) when is_binary(name) do
     byte_size(name) <= @max_name_bytes and name not in @reserved_names and
@@ -134,11 +125,6 @@ defmodule EbbServer.Functions.Bundle do
 
   def valid_name?(_name), do: false
 
-  @doc """
-  Validates a decoded envelope against `code`.
-
-  Returns the struct a loader serves or the reason it may not be served.
-  """
   @spec new(term(), term()) :: {:ok, t()} | {:error, reason()}
   def new(envelope, _code) when not is_map(envelope), do: {:error, {:invalid_field, "envelope"}}
   def new(_envelope, code) when not is_binary(code), do: {:error, {:invalid_field, "code"}}

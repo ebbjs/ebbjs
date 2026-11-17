@@ -61,9 +61,6 @@ defmodule EbbServer.Storage.WatermarkTracker do
   avoids serializing through a single process for what should be
   scalable hot-path state.
 
-  - `:ets :committed_ranges` - ordered_set table, key is the range's first
-    GSN, value is its last GSN
-
   The Writer's `EbbServer.Storage.CommitPipeline` owns which claimed range
   is committed or resolved and in what order; this module owns the global
   frontier that fan-out and restart recovery read.
@@ -84,8 +81,6 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Returns the current resolution frontier (0 if never advanced).
-
   The name is kept for compatibility; see the moduledoc for why the
   value is a resolution frontier rather than a pure committed watermark.
   """
@@ -101,11 +96,6 @@ defmodule EbbServer.Storage.WatermarkTracker do
   Resolved means committed *or* deliberately abandoned; the frontier
   advance cannot tell them apart by design. Use this for a range whose
   commit failed and will never be written.
-
-  ## Examples
-
-      iex> WatermarkTracker.mark_range_resolved(1, 5)
-      :ok
   """
   @spec mark_range_resolved(gsn(), gsn(), GenServer.name()) :: :ok
   def mark_range_resolved(first, last, name \\ __MODULE__) do
@@ -113,17 +103,12 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Records a resolved range as one row. Does not advance the watermark.
+  Does not advance the watermark.
 
   Call `advance_watermark/1` afterwards; that is what moves the frontier.
   One row per range is enough because the frontier moves a whole range at a
   time, and a range that cannot move it yet is only ever re-examined as a
   unit.
-
-  ## Examples
-
-      iex> WatermarkTracker.mark_range_committed(1, 5)
-      :ok
   """
   @spec mark_range_committed(gsn(), gsn(), GenServer.name()) :: :ok
   def mark_range_committed(first, last, name \\ __MODULE__) when first <= last do
@@ -133,9 +118,6 @@ defmodule EbbServer.Storage.WatermarkTracker do
   end
 
   @doc """
-  Advances the watermark to the highest GSN covered by a contiguous run of
-  resolved ranges.
-
   Returns the new watermark value. If no advancement is possible (a gap in
   the sequence), returns the current watermark.
 

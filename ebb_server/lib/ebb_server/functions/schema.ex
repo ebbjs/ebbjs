@@ -23,9 +23,6 @@ defmodule EbbServer.Functions.Schema do
 
   @type error :: {:invalid_schema, String.t(), String.t()}
 
-  @doc """
-  Resolves `schema`, returning the raw document and its resolved root.
-  """
   @spec resolve(term(), String.t()) :: {:ok, term(), term()} | {:error, error()}
   def resolve(nil, _field), do: {:ok, nil, nil}
 
@@ -45,9 +42,6 @@ defmodule EbbServer.Functions.Schema do
     {:error, {:invalid_schema, field, "schema must be a JSON object or boolean"}}
   end
 
-  @doc """
-  Whether `schema` can be resolved, with no root to keep.
-  """
   @spec validate(term(), String.t()) :: :ok | {:error, error()}
   def validate(schema, field) do
     case resolve(schema, field) do
@@ -56,9 +50,6 @@ defmodule EbbServer.Functions.Schema do
     end
   end
 
-  @doc """
-  Validates schema text as read back from storage.
-  """
   @spec validate_text(term(), String.t()) :: :ok | {:error, error()}
   def validate_text(nil, _field), do: :ok
 

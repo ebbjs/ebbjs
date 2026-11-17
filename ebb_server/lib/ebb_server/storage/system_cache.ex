@@ -16,25 +16,6 @@ defmodule EbbServer.Storage.SystemCache do
   the only serialized path (correctness) while everything else reads in
   parallel with no contention.
 
-  ## Children
-
-    - `DirtyTracker`      — the set of `entity_id`s whose materialized form is stale.
-    - `GrantCache`        — per-group grant rows; permission checks read this on every write.
-    - `MembershipCache`   — entity → group membership; reaches in for fan-out and entity reads.
-    - `GroupAppsCache`    — each group's app scope, projected for the handshake.
-    - `EntityModelCache`  — entity id → committed model; the authorizer resolves an existing
-                            entity's model from here for membership permissions (#264).
-    - `RelationshipCache` — domain relationship edges; reaches in for relationship resolution.
-
-  `SystemCache` itself is a `GenServer` that owns these children under an
-  inner `one_for_all` supervisor. It also creates the GSN counter — an
-  `:atomics` reference stored in `:persistent_term`, not a process child —
-  and repopulates the caches from RocksDB on `init/1`.
-
-  `WatermarkTracker` and `InFlightActions` are *not* children here. They
-  are siblings under `Storage.Supervisor`, started after `SystemCache` and
-  before the Writer.
-
   ## Lifecycle
 
   On init, the supervisor rebuilds the derived component existence index
@@ -49,62 +30,6 @@ defmodule EbbServer.Storage.SystemCache do
   supervision tree blocks accepting connections until this returns. If
   population raises, `init/1` tears down the cache children and fails the
   start rather than reporting health over a half-populated cache.
-
-  ## Load-bearing decisions
-
-  - **Inner `one_for_all`, outer `rest_for_one`.** The cache children
-    above share the same lifecycle: if one dies the `Children` supervisor
-    restarts them all together against the live RocksDB. The *outer*
-    `Storage.Supervisor` deliberately uses `rest_for_one` instead — a
-    `SystemCache` failure must rebuild the caches, the watermark, and the
-    Writer (which reconciles from the log), because a cache that diverged
-    from RocksDB cannot be trusted to serve the write path.
-  - **No message-passing API.** All read paths are pure ETS reads from
-    `GenServer`-less modules; the GSN counter is an `:atomics` reference
-    and `WatermarkTracker` / `InFlightActions` coordinate through their own
-    ETS (plus `:atomics` for the frontier), so none of them adds mailbox
-    traffic to the write path.
-  - **Populate-on-startup only.** The caches are loaded once from RocksDB
-    on `init/1` and then mutated in-memory by the Writer; they do not
-    re-read from RocksDB on each access. The same boot walk marks every
-    indexed entity dirty so a read after a restart still sees a mark and
-    replays its delta instead of trusting a possibly-stale SQLite row.
-  - **Boot re-mark, not a persisted dirty set.** The dirty set can hold
-    every lazily materialized entity after a boot, but persisting it would
-    add write amplification and wiping SQLite would lose the cache #421
-    rebuilds. Re-marking on the walk that already fills the type cache
-    costs no extra RocksDB scan. The replay source is the existing
-    `EntityStore` materializer and its coalesced `cf_entity_actions` rows;
-    this fix deliberately adds no second reconcile source. The horizon is the
-    row's `last_gsn`; #123
-    owns how far the log retains the deltas.
-  - **Fail loud, never half-populated.** A raise during population
-    propagates out of `init/1`; there is no rescue that turns a partial
-    rebuild into a healthy-looking cache. The Writer then cannot serve
-    reads derived from a diverged cache.
-  - **The component index is rebuilt every boot.** It is derived state: the
-    `cf_actions` walk is its constructor, not a migration, and there is no
-    durable copy to reconcile against. The walk is O(all Updates) by design;
-    #849 accepted that against the resident-set gate, and a checkpoint is the
-    answer if boot becomes a measured problem.
-
-  ## Child start arguments
-
-  All child modules accept optional keyword arguments to override default ETS table names:
-  - `:dirty_set` - defaults to `:ebb_dirty_set`
-  - `:table` (GrantCache) - defaults to `:ebb_grants`
-  - `:grants_by_group` (GrantCache) - defaults to `:ebb_grants_by_group`
-  - `:memberships` - defaults to `:ebb_memberships`
-  - `:memberships_by_id` - defaults to `:ebb_memberships_by_id`
-  - `:memberships_by_group` - defaults to `:ebb_memberships_by_group`
-  - `:group_apps` - defaults to `:ebb_group_apps`
-  - `:entity_models` - defaults to `:ebb_entity_models`
-  - `:relationships` - defaults to `:ebb_relationships`
-  - `:relationships_by_id` - defaults to `:ebb_relationships_by_id`
-
-  ## Example
-
-      SystemCache.start_link([])
   """
 
   use GenServer
@@ -165,20 +90,10 @@ defmodule EbbServer.Storage.SystemCache do
   end
 
   @doc """
-  Public entry point for the startup cache-rebuild flow, and what
-  `init/1` runs. It rebuilds the derived component index and `EntityModelCache`
-  from `cf_actions`, then materializes every system component into `GrantCache`,
-  `MembershipCache`, `GroupAppsCache` and `RelationshipCache`.
-
   Emits `[:ebb, :system_cache, :populated]` with per-cache counts and a
   native `duration`, and metadata `outcome` (`:ok` or `:error`). On a
   failed rebuild the counts reached so far are included, so a partially
   populated cache is observable before the raise propagates.
-
-  Accepts the same keyword options as `init/1` (`:rocks_name`,
-  `:table`, `:relationships`, `:relationships_by_id`,
-  `:sqlite_name`) so callers can drive the rebuild against isolated
-  stores without relying on global `:persistent_term` state.
   """
 
   @spec populate_system_caches(keyword()) :: :ok
@@ -551,18 +466,6 @@ defmodule EbbServer.Storage.SystemCache do
     )
   end
 
-  # The index is derived state: rebuild both key kinds from the action log on
-  # every boot, in GSN order, with the Writer's own rules. Applying each
-  # Action's ops directly keeps the last write per key without holding a
-  # second full copy of the index; the log is the source of truth, so this is
-  # construction, not a migration.
-  #
-  # The same pass fills `EntityModelCache` from the model entries the authorizer
-  # resolves, and collects every modeled id so the boot re-mark can dirty it.
-  # Marks are ETS-only, so without this a restart leaves a row clean-but-stale
-  # or missing (#564). Eager models are marked too; their populators run next
-  # and clear the marks by materializing, so a surviving mark is a genuine
-  # repair candidate.
   defp seed_component_entities(
          rocks_name,
          entity_models_table,
@@ -593,8 +496,6 @@ defmodule EbbServer.Storage.SystemCache do
     models
   end
 
-  # One generation per chunk. The boundary only bounds the batch applied to
-  # the index and the dirty marks it implies.
   defp mark_dirty_in_chunks(marks, dirty_set) do
     marks
     |> Enum.chunk_every(@dirty_mark_chunk_size)
@@ -649,8 +550,6 @@ defmodule EbbServer.Storage.SystemCache do
       name: rocks_name
     )
     |> Stream.map(fn {gsn_key, action_etf} ->
-      # The seed only needs the Updates, so it decodes the payload half of the
-      # frame and skips the delivery scopes.
       ActionFormat.decode_payload(action_etf, RocksDB.decode_gsn_key(gsn_key))
     end)
   end

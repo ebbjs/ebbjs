@@ -1,10 +1,6 @@
 defmodule EbbServer.Sync.SSEConnectionSupervisor do
   @moduledoc """
   Dynamic supervisor for per-client SSE connections.
-
-  Children are started on demand via `start_child/3`. All children use
-  `restart: :temporary` so they are never automatically restarted
-  (SSEConnection handles its own cleanup on client disconnect).
   """
 
   use DynamicSupervisor

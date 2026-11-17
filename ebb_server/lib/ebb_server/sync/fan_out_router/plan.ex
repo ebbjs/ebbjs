@@ -49,15 +49,6 @@ defmodule EbbServer.Sync.FanOutRouter.Plan do
             acked: MapSet.new(),
             last_pushed_gsn: 0
 
-  @doc """
-  Builds a plan, optionally seeded from a persisted frontier.
-
-  Seed `pending_notifications` with ranges that are already committed (for
-  example the ranges recovered from the log after a restart); `new/1`
-  orders them by GSN and marks every seeded range as acknowledged. Use
-  `claim/2` followed by `release/3` when claims become known before their
-  commits do.
-  """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     pending =
@@ -91,17 +82,6 @@ defmodule EbbServer.Sync.FanOutRouter.Plan do
     end
   end
 
-  @doc """
-  Acknowledges a claimed range and returns the ranges now safe to dispatch.
-
-  A range that was never claimed is claimed first, which preserves the
-  Router's pre-#534 message contract: a `batch_committed` notification is
-  both the claim and the ack. Pre-register claims with `claim/2` when acks
-  can arrive out of order.
-
-  Returns `{released, plan}`, where `released` is in claim order and the
-  returned plan no longer holds them.
-  """
   @spec release(t(), gsn_range(), gsn()) :: {[gsn_range()], t()}
   def release(%__MODULE__{} = plan, acked_range, watermark) do
     plan
@@ -110,12 +90,6 @@ defmodule EbbServer.Sync.FanOutRouter.Plan do
     |> split_pushable(watermark)
   end
 
-  @doc """
-  Acknowledges a committed range and drains the releasable prefix.
-
-  Equivalent to `release(plan, {from, to}, watermark)` for a Writer that
-  notifies in claim order.
-  """
   @spec process_batch(t(), gsn(), gsn(), gsn()) :: {[gsn_range()], t()}
   def process_batch(%__MODULE__{} = plan, from_gsn, to_gsn, watermark) do
     release(plan, {from_gsn, to_gsn}, watermark)
@@ -142,14 +116,6 @@ defmodule EbbServer.Sync.FanOutRouter.Plan do
     }
   end
 
-  @doc """
-  Splits the claim order at the first range that is not releasable.
-
-  A range is releasable when it has been acknowledged and its end is at or
-  below `watermark`. Only the prefix is released; everything from the
-  first blocked claim onward stays pending. Returns `{released, plan}`
-  with `last_pushed_gsn` advanced to the highest released end.
-  """
   @spec split_pushable(t(), gsn()) :: {[gsn_range()], t()}
   def split_pushable(%__MODULE__{} = plan, watermark) do
     {released, remaining} =

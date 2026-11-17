@@ -36,12 +36,6 @@ defmodule EbbServer.CORS do
   header outside that set is a `403` with no allow headers. `Max-Age` is 300
   seconds so `DELETE /admin/apps/:id` (or removing an origin) revokes within
   about five minutes rather than after a long-lived cache.
-
-  ## Configuration
-
-  The policy is resolved at boot by `EbbServer.CORS.Policy.resolve!/1`; this
-  plug reads only the resolved value. Tests can inject `:policy` and
-  `:lookup` through `call/2`.
   """
 
   @behaviour Plug

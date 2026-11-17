@@ -55,11 +55,6 @@ defmodule EbbServer.Functions.Principal do
     end
   end
 
-  @doc """
-  The service credentials the node accepts.
-
-  Tests pass `:services` so they do not have to mutate application config.
-  """
   @spec services(keyword()) :: [map()]
   def services(opts), do: Keyword.get(opts, :services) || Functions.services()
 

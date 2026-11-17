@@ -49,25 +49,6 @@ defmodule EbbServer.ActionExport do
   receives the stored Action map — string keys, `"updates"` filtered — as
   its single argument.
 
-  ## Example
-
-  A logging sink is enough to watch the stream:
-
-      config :ebb_server, on_action: {MyApp.ActionSink, :handle}
-
-      defmodule MyApp.ActionSink do
-        require Logger
-
-        def handle(action) do
-          Logger.info("[action] \#{action["id"]} by \#{action["actor_id"]}")
-          :ok
-        end
-      end
-
-  A handler that returns `{:error, reason}` — or raises, exits, or runs past
-  the timeout — stalls the cursor and the batch is re-delivered, so keep the
-  sink idempotent and dedup on `action["id"]`. A fuller warehouse sink lives
-  in `examples/action_export/`.
   """
 
   use GenServer
@@ -178,7 +159,6 @@ defmodule EbbServer.ActionExport do
           %{from_gsn: from_gsn, to_gsn: to_gsn}
         )
 
-        # Drain any backlog without waiting for the interval.
         send(self(), :poll)
         {:noreply, %{state | cursor: to_gsn}}
 
@@ -205,9 +185,6 @@ defmodule EbbServer.ActionExport do
     end
   end
 
-  # Rejects excluded Updates and drops an Action left with none. The count
-  # is the number of Updates removed; it is only emitted when non-zero so
-  # the steady state is quiet.
   defp filter_actions(actions, excluded) do
     {kept, dropped} =
       Enum.reduce(actions, {[], 0}, fn action, {kept, dropped} ->

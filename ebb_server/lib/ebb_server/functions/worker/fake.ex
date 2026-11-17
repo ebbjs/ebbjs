@@ -47,10 +47,6 @@ defmodule EbbServer.Functions.Worker.Fake do
     {:ok, %{pid: pid}}
   end
 
-  @doc """
-  Sends a decoded frame to the fake. The fake decides whether it matches the
-  step it is waiting on.
-  """
   @spec send_frame(handle(), map()) :: :ok | {:error, :closed}
   def send_frame(%{pid: pid}, frame) do
     if Process.alive?(pid) do

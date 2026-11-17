@@ -174,9 +174,9 @@ defmodule EbbServer.Storage.PermissionHelper do
   write is then authorized against the permission table, in the group the
   row already belongs to.
   """
-  @spec bootstrap_membership_row_ids([map()], String.t(), (String.t() -> boolean())) ::
+  @spec bootstrap_grant_row_ids([map()], String.t(), (String.t() -> boolean())) ::
           MapSet.t(String.t())
-  def bootstrap_membership_row_ids(mutations, actor_id, exists?) do
+  def bootstrap_grant_row_ids(mutations, actor_id, exists?) do
     group_ids = bootstrapped_group_ids(mutations, exists?)
 
     mutations
@@ -206,8 +206,6 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Returns the model of every user entity this Action creates.
-
   The `ebb/membership` row carries only `entity_id`, so the authorizer
   recovers the entity's model from the same Action to pick the right
   `<model>.create` permission.
@@ -233,7 +231,7 @@ defmodule EbbServer.Storage.PermissionHelper do
 
     - `ebb/group` creates for the groups the actor is creating and joining;
     - the acting actor's own `ebb/grant` creates for rows
-      `bootstrap_membership_row_ids/3` reports, in those groups;
+      `bootstrap_grant_row_ids/3` reports, in those groups;
     - `ebb/membership` creates targeting those groups whose entity the
       Action is creating.
 
@@ -248,9 +246,9 @@ defmodule EbbServer.Storage.PermissionHelper do
           MapSet.t(String.t()),
           MapSet.t(String.t())
         ) :: boolean()
-  def bootstrap_update?(mutation, actor_id, bootstrap, created_ids, membership_row_ids) do
+  def bootstrap_update?(mutation, actor_id, bootstrap, created_ids, grant_row_ids) do
     group_bootstrap_update?(mutation, bootstrap) or
-      own_membership_bootstrap_update?(mutation, actor_id, membership_row_ids) or
+      own_grant_bootstrap_update?(mutation, actor_id, grant_row_ids) or
       entity_membership_bootstrap_update?(mutation, bootstrap, created_ids)
   end
 
@@ -258,10 +256,10 @@ defmodule EbbServer.Storage.PermissionHelper do
     creates_kind?(mutation, :group) and Map.has_key?(bootstrap, mutation.subject_id)
   end
 
-  defp own_membership_bootstrap_update?(mutation, actor_id, membership_row_ids) do
+  defp own_grant_bootstrap_update?(mutation, actor_id, grant_row_ids) do
     creates_kind?(mutation, :grant) and
       grant_field(mutation, "actor_id") == actor_id and
-      MapSet.member?(membership_row_ids, mutation.subject_id)
+      MapSet.member?(grant_row_ids, mutation.subject_id)
   end
 
   defp entity_membership_bootstrap_update?(mutation, bootstrap, created_ids) do
@@ -304,11 +302,7 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Builds an intra-action context map for membership resolution.
-
-  Maps `entity_id` to the list of group ids carried by `ebb/membership`
-  rows within the same action. Link rows do not move an entity into a
-  group.
+  Link rows do not move an entity into a group.
   """
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(mutations) do

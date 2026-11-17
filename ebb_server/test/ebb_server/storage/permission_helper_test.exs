@@ -163,15 +163,15 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "bootstrap_membership_row_ids/3" do
-    test "collects the actor's own membership rows in the groups the action creates" do
+  describe "bootstrap_grant_row_ids/3" do
+    test "collects the actor's own grant rows in the groups the action creates" do
       mutations = [
         group_create("g_1"),
         grant_create("gm_1", "a_1", "g_1", ["ebb/group.read"]),
         grant_create("gm_2", "a_2", "g_1", ["ebb/group.read"])
       ]
 
-      assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", fn _ -> false end) ==
+      assert PermissionHelper.bootstrap_grant_row_ids(mutations, "a_1", fn _ -> false end) ==
                MapSet.new(["gm_1"])
     end
 
@@ -182,14 +182,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
         grant_create("gm_old", "a_1", "g_1", ["ebb/group.read"])
       ]
 
-      assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", &(&1 == "gm_old")) ==
+      assert PermissionHelper.bootstrap_grant_row_ids(mutations, "a_1", &(&1 == "gm_old")) ==
                MapSet.new(["gm_new"])
     end
 
     test "ignores a membership row in a group the action does not create" do
       mutations = [grant_create("gm_1", "a_1", "g_1", ["ebb/group.read"])]
 
-      assert PermissionHelper.bootstrap_membership_row_ids(mutations, "a_1", fn _ -> false end) ==
+      assert PermissionHelper.bootstrap_grant_row_ids(mutations, "a_1", fn _ -> false end) ==
                MapSet.new()
     end
   end
@@ -198,15 +198,15 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     setup do
       bootstrap = %{"g_1" => ["ebb/group.read", "todo.*"]}
       created = MapSet.new(["todo_1"])
-      membership_rows = MapSet.new(["gm_1"])
+      grant_rows = MapSet.new(["gm_1"])
 
-      %{bootstrap: bootstrap, created: created, membership_rows: membership_rows}
+      %{bootstrap: bootstrap, created: created, grant_rows: grant_rows}
     end
 
     test "exempts the group create", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = group_create("g_1")
 
@@ -215,14 +215,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == true
     end
 
     test "exempts the acting actor's own grant create", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = grant_create("gm_1", "a_1", "g_1", ["ebb/group.read"])
 
@@ -231,14 +231,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == true
     end
 
     test "does not exempt a row the action is not creating", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = grant_create("gm_existing", "a_1", "g_1", ["ebb/group.read"])
 
@@ -247,14 +247,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
 
     test "does not exempt a third party's grant create", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = grant_create("gm_2", "a_2", "g_1", ["*"])
 
@@ -263,14 +263,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
 
     test "exempts an membership write for an entity the action creates", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = membership_write("eg_1", "todo_1", "g_1")
 
@@ -279,14 +279,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == true
     end
 
     test "does not exempt an membership write for an entity the action does not create", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = membership_write("eg_1", "todo_other", "g_1")
 
@@ -295,14 +295,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
 
     test "does not exempt an membership write in a different group", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = membership_write("eg_1", "todo_1", "g_other")
 
@@ -311,14 +311,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
 
     test "does not exempt a relationship create", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row =
         mutation("rel_1", "relationship", true, %{"source_id" => "todo_1"})
@@ -328,14 +328,14 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
 
     test "does not exempt a write to an existing group", %{
       bootstrap: bootstrap,
       created: created,
-      membership_rows: membership_rows
+      grant_rows: grant_rows
     } do
       row = mutation("g_1", "group", false, %{"name" => "Renamed"})
 
@@ -344,7 +344,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
                "a_1",
                bootstrap,
                created,
-               membership_rows
+               grant_rows
              ) == false
     end
   end

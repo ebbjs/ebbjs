@@ -38,22 +38,12 @@ defmodule EbbServer.Functions.Protocol do
   @spec compatible_version?(term()) :: boolean()
   def compatible_version?(version), do: version == @protocol_version
 
-  @doc """
-  Encodes one frame, prefixing its JSON payload with its byte length.
-  """
   @spec encode_frame(frame()) :: binary()
   def encode_frame(%{} = frame) do
     json = Jason.encode_to_iodata!(frame)
     IO.iodata_to_binary([<<IO.iodata_length(json)::32>>, json])
   end
 
-  @doc """
-  Decodes every complete frame in `buffer`.
-
-  Returns the frames in arrival order and the trailing bytes of an incomplete
-  frame. An oversize length prefix is an error even when the rest of the frame
-  has not arrived, because the caller must not keep buffering it.
-  """
   @spec decode(binary()) :: {:ok, [frame()], binary()} | {:error, reason()}
   def decode(buffer) when is_binary(buffer), do: decode(buffer, [])
 
@@ -96,16 +86,9 @@ defmodule EbbServer.Functions.Protocol do
     IO.iodata_length(encode_frame(frame)) <= @max_frame_bytes
   end
 
-  @doc """
-  Builds an `invoke` frame. Fields the caller omits stay omitted; the worker
-  reads the ones it understands.
-  """
   @spec invoke(map() | keyword()) :: frame()
   def invoke(fields), do: frame("invoke", fields)
 
-  @doc """
-  Builds a `reply` frame for one host call.
-  """
   @spec reply(String.t(), {:ok, term()} | {:error, term()}) :: frame()
   def reply(call_id, {:ok, value}) do
     frame("reply", %{"call_id" => call_id, "ok" => true, "value" => value})
@@ -115,26 +98,17 @@ defmodule EbbServer.Functions.Protocol do
     frame("reply", %{"call_id" => call_id, "ok" => false, "error" => error})
   end
 
-  @doc """
-  Builds a `call` frame from a worker to the host.
-  """
   @spec call(String.t(), String.t(), term()) :: frame()
   def call(call_id, op, payload) do
     frame("call", %{"call_id" => call_id, "op" => op, "payload" => payload})
   end
 
-  @doc """
-  Builds a `result` frame: either a value or a failure kind and message.
-  """
   @spec result({:ok, term()} | {:error, String.t(), String.t()}) :: frame()
   def result({:ok, value}), do: frame("result", %{"ok" => true, "value" => value})
 
   def result({:error, kind, message}),
     do: frame("result", %{"ok" => false, "kind" => kind, "message" => message})
 
-  @doc """
-  Builds the worker's `ready` frame.
-  """
   @spec ready(term(), String.t(), non_neg_integer()) :: frame()
   def ready(pid, runner_version, protocol_version \\ @protocol_version) do
     frame("ready", %{

@@ -2,12 +2,6 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
   @moduledoc """
   ETS table of presence token buckets, owned by a small GenServer.
 
-  One row per actor: `{actor_id, milli_tokens, updated_at_ms}`, where
-  `milli_tokens` is the remaining budget scaled by 1000 so all arithmetic
-  stays integral. `EbbServer.Sync.PresenceRateLimit` reads and writes it
-  directly; the owning process only gives the table a lifetime that outlives
-  a single connection, and sweeps it.
-
   ## Sweeping
 
   A bucket idle for at least the time an empty one needs to refill to the
@@ -37,21 +31,12 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc "The table the named owner created, falling back to the default name."
   @spec table(atom()) :: atom()
   def table(name \\ __MODULE__), do: :persistent_term.get({name, :table}, @default_table)
 
-  @doc "A bucket with the full budget available at `now_ms`."
   @spec full(rate(), integer()) :: bucket()
   def full({_per_second, burst}, now_ms), do: {burst * 1000, now_ms}
 
-  @doc """
-  Refills a bucket up to `now_ms` and spends one token.
-
-  Returns `{:ok, bucket}` with the token spent, or `{:limited, bucket,
-  retry_after_ms}` with the bucket refilled but untouched and the wait until
-  one token is available.
-  """
   @spec take(bucket(), integer(), rate()) ::
           {:ok, bucket()} | {:limited, bucket(), pos_integer()}
   def take({tokens, updated_at}, now_ms, {per_second, burst}) do
@@ -66,12 +51,9 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
   end
 
   @doc """
-  Spends one token from the actor's bucket, creating it full on first sight.
-
-  `:ok` admits the request; `{:limited, retry_after_ms}` rejects it. A missing
-  table (the owner restarting) admits: the table is an amplifier cap, and
-  turning a supervisor restart into a presence outage would be worse than
-  admitting a few requests without it.
+  A missing table (the owner restarting) admits: the table is an amplifier
+  cap, and turning a supervisor restart into a presence outage would be worse
+  than admitting a few requests without it.
   """
   @spec consume(String.t(), integer(), rate(), atom()) :: :ok | {:limited, pos_integer()}
   def consume(actor_id, now_ms, rate, table \\ table()) do
@@ -94,7 +76,6 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
     ArgumentError -> :ok
   end
 
-  @doc "Deletes buckets idle for longer than `idle_after_ms` at `now_ms`."
   @spec sweep(integer(), non_neg_integer(), atom()) :: :ok
   def sweep(now_ms, idle_after_ms, table \\ table()) do
     cutoff = now_ms - idle_after_ms
@@ -104,11 +85,6 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
     ArgumentError -> :ok
   end
 
-  @doc """
-  How long a bucket must sit untouched before deleting it is equivalent to
-  keeping it: the time an empty bucket needs to refill to the burst, with a
-  floor so a fast rate does not churn the table.
-  """
   @spec idle_after_ms(rate()) :: pos_integer()
   def idle_after_ms({per_second, burst}) do
     max(ceil_div(burst * 1000, per_second), @min_idle_ms)
@@ -116,7 +92,6 @@ defmodule EbbServer.Sync.PresenceRateLimit.Buckets do
 
   defp row(actor_id, {tokens, updated_at}), do: {actor_id, tokens, updated_at}
 
-  @doc "Integer division rounded up; shared with the plug's `Retry-After`."
   @spec ceil_div(non_neg_integer(), pos_integer()) :: non_neg_integer()
   def ceil_div(dividend, divisor), do: div(dividend + divisor - 1, divisor)
 

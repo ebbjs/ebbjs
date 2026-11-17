@@ -38,14 +38,6 @@ defmodule EbbServer.Storage.QueryFilter do
   @type group :: %{optional(String.t()) => nil | boolean() | number() | String.t()}
   @type filter :: [group()]
 
-  @doc """
-  Returns the filter when it is a valid disjunction of field-value groups.
-
-  `nil`, `[]`, and any list holding an empty group are unfiltered and return
-  `nil`. Anything that is not a list of maps, holds a `nil` entry, carries a
-  key that is not an identifier-shaped string, carries a value that is not a
-  JSON scalar, or has more than #{@max_keys} keys in a group is rejected.
-  """
   @spec normalize(term()) :: {:ok, filter() | nil} | {:error, :invalid_filter}
   def normalize(nil), do: {:ok, nil}
   def normalize([]), do: {:ok, nil}
@@ -60,7 +52,6 @@ defmodule EbbServer.Storage.QueryFilter do
 
   def normalize(_filter), do: {:error, :invalid_filter}
 
-  @doc "The largest number of field filters one group may carry."
   @spec max_keys() :: pos_integer()
   def max_keys, do: @max_keys
 

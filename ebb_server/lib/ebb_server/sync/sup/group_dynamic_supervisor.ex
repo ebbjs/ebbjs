@@ -1,10 +1,6 @@
 defmodule EbbServer.Sync.GroupDynamicSupervisor do
   @moduledoc """
   Dynamic supervisor for per-Group GenServers.
-
-  Uses `one_for_one` strategy with max 100 restarts per second
-  to support frequent group creation/destruction.
-  GroupServers are transient and do not restart after normal shutdown.
   """
 
   use DynamicSupervisor

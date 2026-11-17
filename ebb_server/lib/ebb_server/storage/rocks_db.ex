@@ -47,28 +47,14 @@ defmodule EbbServer.Storage.RocksDB do
                         an 8-byte big-endian integer (see `encode_gsn_list/1`)
     cf_action_dedup   - action_id -> GSN (duplicate detection)
     cf_group_actions  - (group_id, GSN) -> action_id binary
-
-  ## Isolated instances
-
-  Every accessor takes an optional `name` (default `__MODULE__`) so
-  concurrent tests can run multiple isolated DBs with disjoint
-  `:persistent_term` keys and disjoint supervision tree registrations.
   """
 
   use GenServer
   require Logger
 
-  # ---------------------------------------------------------------------------
-  # Types
-  # ---------------------------------------------------------------------------
-
   @type cf_ref :: :rocksdb.cf_handle()
   @type gsn :: non_neg_integer()
   @type name :: GenServer.name()
-
-  # ---------------------------------------------------------------------------
-  # Column family descriptors (charlists for the Erlang NIF)
-  # ---------------------------------------------------------------------------
 
   @cf_descriptors [
     {~c"default", []},
@@ -121,10 +107,6 @@ defmodule EbbServer.Storage.RocksDB do
   @spec tuning() :: keyword()
   def tuning, do: @tuning
 
-  # ---------------------------------------------------------------------------
-  # Public API — start / stop
-  # ---------------------------------------------------------------------------
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -137,10 +119,6 @@ defmodule EbbServer.Storage.RocksDB do
   # touching the database. Cleans up after a database whose owner was killed
   # before `terminate/2` could run.
   def forget(name), do: erase_handles(name)
-
-  # ---------------------------------------------------------------------------
-  # Public API — persistent_term accessors
-  # ---------------------------------------------------------------------------
 
   @spec db_ref(name()) :: :rocksdb.db_handle()
   def db_ref(name \\ __MODULE__), do: handle(:db, name)
@@ -166,10 +144,6 @@ defmodule EbbServer.Storage.RocksDB do
   def cf_default(name \\ __MODULE__), do: handle(:default, name)
 
   defp handle(key, name), do: :persistent_term.get({Map.fetch!(@handle_keys, key), name})
-
-  # ---------------------------------------------------------------------------
-  # Public API — key encoding / decoding
-  # ---------------------------------------------------------------------------
 
   @doc """
   Encodes GSN as 64-bit big-endian unsigned integer.
@@ -207,9 +181,8 @@ defmodule EbbServer.Storage.RocksDB do
   @doc """
   Encodes the `cf_entity_actions` row for one subject's GSNs in a flush.
 
-  Returns `{key, value}` with the key at the list's **highest** GSN and the
-  value holding the sorted, unique list. Normalization lives here so every
-  writer emits the same row whatever order the flush accumulated the GSNs in.
+  Normalization lives here so every writer emits the same row whatever order
+  the flush accumulated the GSNs in.
   """
   @spec encode_entity_gsn_row(binary(), [gsn()]) :: {binary(), binary()}
   def encode_entity_gsn_row(entity_id, gsns) when is_list(gsns) and gsns != [] do
@@ -221,8 +194,6 @@ defmodule EbbServer.Storage.RocksDB do
   Encodes a non-empty GSN list as raw 8-byte big-endian integers, concatenated.
 
   No count prefix is needed: `byte_size(value) / 8` is the number of GSNs.
-  The list is sorted and deduplicated here; the matching row key is the last
-  element of that normalized list (`encode_entity_gsn_row/2`).
   """
   @spec encode_gsn_list([gsn()]) :: binary()
   def encode_gsn_list([_ | _] = gsns) do
@@ -260,7 +231,6 @@ defmodule EbbServer.Storage.RocksDB do
   end
 
   @doc """
-  Composite key for group -> actions index.
   Group ID is variable-length prefix, GSN is fixed 8 bytes at the end.
   Prefix scans on group_id return that group's actions in GSN order.
   """
@@ -278,42 +248,15 @@ defmodule EbbServer.Storage.RocksDB do
 
   def decode_group_action_key(_key), do: :error
 
-  @doc """
-  Iterator over an entire column family. Yields `{key, value}` tuples
-  in key-sorted order. Convenience wrapper around `:rocksdb.iterator/3`.
-  """
   @spec full_iterator(cf_ref(), keyword()) :: Enumerable.t()
   def full_iterator(cf_ref, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
-        {iter, :rocksdb.iterator_move(iter, :first)}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn iter ->
-        try do
-          :rocksdb.iterator_close(iter)
-        catch
-          :error, {:invalid_iterator, _} -> :ok
-        end
-      end
-    )
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, [])
+      {iter, :rocksdb.iterator_move(iter, :first)}
+    end)
   end
-
-  # ---------------------------------------------------------------------------
-  # Public API — data operations
-  # ---------------------------------------------------------------------------
 
   @doc """
   Rows of the entity-actions index for `entity_id` whose key GSN is at or
@@ -340,12 +283,6 @@ defmodule EbbServer.Storage.RocksDB do
     )
   end
 
-  @doc """
-  Returns the highest GSN stored in the `cf_actions` column family.
-
-  Uses a RocksDB iterator to seek to the last key, then decodes it.
-  Returns 0 if the database is empty.
-  """
   @spec get_max_gsn(name()) :: non_neg_integer()
   def get_max_gsn(name \\ __MODULE__) do
     {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_actions(name), [])
@@ -390,12 +327,6 @@ defmodule EbbServer.Storage.RocksDB do
     :rocksdb.get(db_ref(name), cf_ref, key, [])
   end
 
-  @doc """
-  Retrieves multiple values from a single column family in a single RocksDB call.
-
-  Returns a list of values in the same order as the input keys.
-  Returns `:not_found` for keys that don't exist.
-  """
   @spec multi_get(cf_ref(), [binary()], keyword()) :: [{:ok, binary()} | :not_found]
   def multi_get(cf_ref, keys, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -430,46 +361,18 @@ defmodule EbbServer.Storage.RocksDB do
         upper_bound -> [{:iterate_upper_bound, upper_bound}]
       end
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
 
-        seek_result = :rocksdb.iterator_move(iter, {:seek, prefix})
-        {iter, seek_result}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn iter ->
-        # The iterator may already be invalidated if the DB was closed
-        # mid-stream (e.g., between tests). The BEAM surfaces that as
-        # either an `ArgumentError` (when the NIF returns :badarg) or
-        # a tagged `{:error, :invalid_iterator}` tuple — both of which
-        # Stream.resource turns into exceptions. Swallow them silently:
-        # we got the data we cared about, and the caller is already
-        # cleaning up the DB anyway.
-        try do
-          :rocksdb.iterator_close(iter)
-        catch
-          :error, _ -> :ok
-          {:error, _} -> :ok
-        end
-      end
-    )
+      seek_result = :rocksdb.iterator_move(iter, {:seek, prefix})
+      {iter, seek_result}
+    end)
   end
 
   @doc """
   Returns a lazy stream of `{key, value}` pairs whose keys fall in the
   half-open range `[from_key, to_key)`.
 
-  Uses RocksDB's `iterate_upper_bound` option for efficient bounded scanning.
   The bound check happens in RocksDB itself, not in Elixir, so this is as
   efficient as `prefix_iterator` for large ranges. `to_key: :none` scans to
   the end of the column family, which is only correct when `from_key` is the
@@ -480,43 +383,12 @@ defmodule EbbServer.Storage.RocksDB do
     name = Keyword.get(opts, :name, __MODULE__)
     iter_opts = if to_key == :none, do: [], else: [{:iterate_upper_bound, to_key}]
 
-    Stream.resource(
-      fn ->
-        {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
-        seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
-        {iter, seek_result}
-      end,
-      fn
-        {iter, {:ok, key, value}} ->
-          {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
-
-        {iter, {:error, :invalid_iterator}} ->
-          {:halt, iter}
-
-        {iter, {:error, _reason}} ->
-          {:halt, iter}
-      end,
-      fn
-        {iter, _} ->
-          try do
-            :rocksdb.iterator_close(iter)
-          catch
-            :error, {:invalid_iterator, _} -> :ok
-          end
-
-        iter ->
-          try do
-            :rocksdb.iterator_close(iter)
-          catch
-            :error, {:invalid_iterator, _} -> :ok
-          end
-      end
-    )
+    lazy_iterator(opts, fn ->
+      {:ok, iter} = :rocksdb.iterator(db_ref(name), cf_ref, iter_opts)
+      seek_result = :rocksdb.iterator_move(iter, {:seek, from_key})
+      {iter, seek_result}
+    end)
   end
-
-  # ---------------------------------------------------------------------------
-  # GenServer callbacks
-  # ---------------------------------------------------------------------------
 
   @impl true
   def init(opts) do
@@ -684,10 +556,6 @@ defmodule EbbServer.Storage.RocksDB do
     _ -> :ok
   end
 
-  # ---------------------------------------------------------------------------
-  # Private helpers
-  # ---------------------------------------------------------------------------
-
   # All bytes were 0xFF — no upper bound exists for this prefix.
   defp prefix_upper_bound(<<>>), do: :none
 
@@ -700,5 +568,35 @@ defmodule EbbServer.Storage.RocksDB do
     else
       prefix_upper_bound(head)
     end
+  end
+
+  # The three lazy iterators differ only in how they open and seek. Sharing the
+  # rest of the resource here keeps them from drifting apart: the state is
+  # always the bare iterator plus its latest move, and a finished scan — ran out
+  # of keys or consumer halted — replaces the move with `:done`. So the cleanup
+  # fun has exactly one clause, always receives the handle it must close, and
+  # runs exactly once.
+  defp lazy_iterator(opts, open) do
+    # `:iterator_close` is a test seam: `Stream` runs the cleanup fun after the
+    # consumer stops, out of its reach, so a test can only observe which handle
+    # the fun receives by replacing the close call.
+    close = Keyword.get(opts, :iterator_close, &:rocksdb.iterator_close/1)
+
+    Stream.resource(open, &next_element/1, fn {iter, _state} -> safe_close(iter, close) end)
+  end
+
+  defp next_element({iter, {:ok, key, value}}) do
+    {[{key, value}], {iter, :rocksdb.iterator_move(iter, :next)}}
+  end
+
+  defp next_element({iter, {:error, _reason}}), do: {:halt, {iter, :done}}
+
+  # The DB can be closed while a stream is still live, for example between
+  # tests. RocksDB then rejects the handle with `:badarg` and the caller is
+  # already tearing the database down.
+  defp safe_close(iter, close) do
+    close.(iter)
+  catch
+    :error, _ -> :ok
   end
 end

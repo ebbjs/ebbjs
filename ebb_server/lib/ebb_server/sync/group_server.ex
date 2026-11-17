@@ -147,10 +147,6 @@ defmodule EbbServer.Sync.GroupServer do
 
   @impl true
   def handle_cast({:broadcast_presence, entity_id, actor_id, data}, state) do
-    # `entity_id` is the original entity_id from POST /sync/presence
-    # (e.g., "doc_demo"). We forward it on the wire event so subscribers
-    # can filter by document — not just by group ("grp_demo").
-
     for {subscriber_pid, subscriber_actor} <- state.actors do
       if subscriber_actor != actor_id do
         try do
