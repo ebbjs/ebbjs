@@ -1,6 +1,6 @@
 defmodule EbbServer.Storage.AuthorizationContext do
   @moduledoc """
-  The table names and clock one authorization call resolves against.
+  The table names one authorization call resolves against.
   """
 
   @enforce_keys []
@@ -11,8 +11,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
             memberships_by_id_table: :ebb_memberships_by_id,
             entity_models_table: :ebb_entity_models,
             relationships_by_id_table: :ebb_relationships_by_id,
-            group_apps_table: :ebb_group_apps,
-            now_ms: nil
+            group_apps_table: :ebb_group_apps
 
   @type t :: %__MODULE__{
           grants_table: atom(),
@@ -22,8 +21,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
           memberships_by_id_table: atom(),
           entity_models_table: atom(),
           relationships_by_id_table: atom(),
-          group_apps_table: atom(),
-          now_ms: non_neg_integer() | nil
+          group_apps_table: atom()
         }
 
   @default_grants :ebb_grants
@@ -47,8 +45,7 @@ defmodule EbbServer.Storage.AuthorizationContext do
       entity_models_table: resolve_table(opts, :entity_models, @default_entity_models),
       relationships_by_id_table:
         resolve_table(opts, :relationships_by_id, @default_relationships_by_id),
-      group_apps_table: resolve_table(opts, :group_apps, @default_group_apps),
-      now_ms: Keyword.get(opts, :now_ms)
+      group_apps_table: resolve_table(opts, :group_apps, @default_group_apps)
     }
   end
 

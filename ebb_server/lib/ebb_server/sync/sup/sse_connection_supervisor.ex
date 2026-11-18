@@ -21,7 +21,7 @@ defmodule EbbServer.Sync.SSEConnectionSupervisor do
   def start_child(parent_pid, group_ids, cursors) do
     spec = %{
       id: make_ref(),
-      start: {SSEConnection, :start_link, [parent_pid, group_ids, cursors, []]},
+      start: {SSEConnection, :start_link, [parent_pid, group_ids, cursors]},
       restart: :temporary
     }
 

@@ -13,7 +13,6 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert ctx.memberships_table == :ebb_memberships
       assert ctx.memberships_by_id_table == :ebb_memberships_by_id
       assert ctx.relationships_by_id_table == :ebb_relationships_by_id
-      assert ctx.now_ms == nil
     end
 
     test "accepts custom table names via opts" do
@@ -35,17 +34,10 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert ctx.relationships_by_id_table == :custom_rbi
     end
 
-    test "accepts now_ms for time-sensitive tests" do
-      ctx = AuthorizationContext.build(now_ms: 1_700_000_000_000)
-
-      assert ctx.now_ms == 1_700_000_000_000
-    end
-
     test "accepts mixed options" do
-      ctx = AuthorizationContext.build(grants: :test_gm, now_ms: 123)
+      ctx = AuthorizationContext.build(grants: :test_gm)
 
       assert ctx.grants_table == :test_gm
-      assert ctx.now_ms == 123
       assert ctx.memberships_table == :ebb_memberships
     end
 
@@ -67,7 +59,6 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert Map.has_key?(ctx, :memberships_table)
       assert Map.has_key?(ctx, :memberships_by_id_table)
       assert Map.has_key?(ctx, :relationships_by_id_table)
-      assert Map.has_key?(ctx, :now_ms)
     end
   end
 end

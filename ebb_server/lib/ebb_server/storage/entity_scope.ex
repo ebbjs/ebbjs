@@ -99,10 +99,9 @@ defmodule EbbServer.Storage.EntityScope do
   # it: a group value travels on the row's fan-out preference, and a resolve
   # without one has no earlier write of its own to read.
   defp resolve_uncached(subject_id, :entity, opts) do
-    case Keyword.get(opts, :intra_relationship_sources, %{}) do
-      %{} = sources -> resolve_owner_value(Map.get(sources, subject_id), :entity, opts)
-      _ -> {[], nil}
-    end
+    %{} = sources = Keyword.get(opts, :intra_relationship_sources, %{})
+
+    resolve_owner_value(Map.get(sources, subject_id), :entity, opts)
   end
 
   defp resolve_uncached(_subject_id, _owner, _opts), do: {[], nil}
