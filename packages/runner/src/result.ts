@@ -13,12 +13,8 @@ import {
   RESULT_KIND_OUTPUT_TOO_LARGE,
   result,
   type ResultFrame,
+  type ResultOutcome,
 } from "@ebbjs/functions-protocol";
-
-/** What one invocation ended as, before it is framed. */
-export type ResultOutcome =
-  | { readonly ok: true; readonly value: unknown }
-  | { readonly ok: false; readonly kind: string; readonly message: string };
 
 /**
  * Builds the frame to send, within `maxOutputBytes`.

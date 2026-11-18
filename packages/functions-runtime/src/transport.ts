@@ -1,15 +1,14 @@
 /** The host-call channel a runtime is given, and who invoked the function. */
 
-import type { LogLevel } from "@ebbjs/functions-protocol";
+import type { FrameOp, LogFields } from "@ebbjs/functions-protocol";
 
 /** The host operations a runtime may call in v1. */
-export type HostOp = "get" | "commit";
+export type HostOp = FrameOp;
 
-/** One log line, at the level the host records it. */
-export interface LogEntry {
-  readonly level: LogLevel;
-  readonly message: string;
-}
+/** One log line, at the level the host records it: a `log` frame without its type. */
+export type LogEntry = LogFields;
+
+export type { Caller, CallerKind } from "@ebbjs/write";
 
 /**
  * One host call, answered by the server through the frame channel.
@@ -27,10 +26,4 @@ export interface HostTransport {
    * dropped. The runtime never lets a log line fail an invocation.
    */
   log?(entry: LogEntry): void;
-}
-
-/** Who invoked the function. Never client-supplied. */
-export interface Caller {
-  readonly kind: "actor" | "service";
-  readonly id: string;
 }

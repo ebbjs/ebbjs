@@ -2,13 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LogEntry } from "@ebbjs/functions-runtime";
 
-import {
-  captureConsole,
-  createLogSink,
-  formatArgs,
-  formatValue,
-  LOG_TRUNCATION_NOTICE,
-} from "./logging.ts";
+import { captureConsole, createLogSink, LOG_TRUNCATION_NOTICE } from "./logging.ts";
 
 const sinkWith = (options: { maxLines?: number; maxBytes?: number } = {}) => {
   const entries: LogEntry[] = [];
@@ -91,44 +85,6 @@ describe("createLogSink", () => {
     });
 
     expect(() => sink.log(line("hello"))).not.toThrow();
-  });
-});
-
-describe("formatValue", () => {
-  it("stringifies anything a handler may print", () => {
-    expect(formatValue("text")).toBe("text");
-    expect(formatValue(42)).toBe("42");
-    expect(formatValue(undefined)).toBe("undefined");
-    expect(formatValue(null)).toBe("null");
-    expect(formatValue({ a: 1 })).toBe('{"a":1}');
-    expect(formatValue(Symbol("s"))).toBe("Symbol(s)");
-    expect(formatValue(7n)).toBe("7n");
-    expect(formatValue(new Error("boom"))).toBe("Error: boom");
-    expect(formatValue([1, 2])).toBe("[1,2]");
-  });
-
-  it("survives a circular object and a throwing toString", () => {
-    const circular: Record<string, unknown> = {};
-    circular["self"] = circular;
-    expect(formatValue(circular)).toBe("[object Object]");
-
-    const hostile: Record<string, unknown> = {};
-    Object.defineProperty(hostile, "boom", {
-      enumerable: true,
-      get() {
-        throw new Error("no json");
-      },
-    });
-    Object.defineProperty(hostile, "toString", {
-      value: () => {
-        throw new Error("no string");
-      },
-    });
-    expect(formatValue(hostile)).toBe("[unprintable]");
-  });
-
-  it("joins arguments with a space", () => {
-    expect(formatArgs(["hello", 42, { a: 1 }])).toBe('hello 42 {"a":1}');
   });
 });
 

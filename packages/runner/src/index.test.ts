@@ -299,6 +299,7 @@ describe("runInvocation guardrails", () => {
       bundle: bundle(`
         ctx.log("note", "debug");
         ctx.log("plain");
+        ctx.log({ a: 1 });
         ctx.log({ toString() { throw new Error("no"); } });
         return null;
       `),
@@ -309,7 +310,9 @@ describe("runInvocation guardrails", () => {
     expect(logs).toEqual([
       { level: "debug", message: "note" },
       { level: "info", message: "plain" },
-      { level: "info", message: "[unprintable]" },
+      // `ctx.log` renders a value the way `console.log` does, as JSON.
+      { level: "info", message: '{"a":1}' },
+      { level: "info", message: "{}" },
     ]);
   });
 

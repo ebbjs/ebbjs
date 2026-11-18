@@ -109,6 +109,8 @@ never written to a host call or a log line by the runtime.
 
 `ctx.log(message, level?)` sends one fire-and-forget `log` frame; `level`
 defaults to `"info"` and may be `"debug" | "info" | "log" | "warn" | "error"`.
+A value that is not a string is rendered the way `console.log` renders it —
+objects as JSON, errors as `Name: message` — rather than as `[object Object]`.
 The runner also captures `console.debug/info/log/warn/error` for the
 invocation and sends each call as a `log` frame, so a handler that prints with
 either one lands in the same place.

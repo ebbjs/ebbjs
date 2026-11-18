@@ -10,91 +10,41 @@
  */
 
 import { createClock, type HLCState } from "@ebbjs/core";
-import type { EntityResponse } from "@ebbjs/client";
-import { LOG_LEVELS, type LogLevel } from "@ebbjs/functions-protocol";
+import { formatLogValue, isLogLevel, type LogLevel } from "@ebbjs/functions-protocol";
 import type { ModelRegistry } from "@ebbjs/schema";
-import type { CreateHandle, OperationIds, PointerTarget } from "@ebbjs/write";
+import type { Caller, ContextBase, OperationIds } from "@ebbjs/write";
 
-import type { CommitOutcome } from "./commit.ts";
-import type { Caller, HostOp, HostTransport, LogEntry } from "./transport.ts";
-import {
-  createWriteSurface,
-  defaultOperationIds,
-  type CreateOptions,
-  type UnrelateOptions,
-  type WriteOptions,
-  type WriteSurface,
-} from "./writes.ts";
+import type { HostTransport, LogEntry } from "./transport.ts";
+import { createWriteSurface, defaultOperationIds, type WriteSurface } from "./writes.ts";
 
 export { ActionRejectedError } from "@ebbjs/write";
 export { EntityValidationError } from "@ebbjs/schema";
-export { HostCallError, actionIdForInvocation, type CommitOutcome } from "./commit.ts";
+export { HostCallError, actionIdForInvocation } from "./commit.ts";
 export { MissingSchemaError, WritesCommittedError } from "./errors.ts";
-export type { Caller, HostOp, HostTransport, LogEntry } from "./transport.ts";
-export type { CreateOptions, UnrelateOptions, WriteOptions } from "./writes.ts";
-export type { CreateHandle } from "@ebbjs/write";
-export type { OperationIds } from "@ebbjs/write";
+export type { Caller, CallerKind, HostOp, HostTransport, LogEntry } from "./transport.ts";
+export type {
+  CommitOutcome,
+  CreateHandle,
+  CreateOptions,
+  OperationIds,
+  RelationshipTarget,
+  UnrelateOptions,
+  WriteOptions,
+} from "@ebbjs/write";
 export type { ModelRegistry } from "@ebbjs/schema";
 
-/** A reference to an existing row: its id, or anything carrying one. */
-export type RelationshipTarget = PointerTarget;
-
 /**
- * The handler's view of one invocation.
+ * The handler's view of one invocation: the shared `ctx` port plus what only a
+ * live invocation has.
  *
- * `get` is the only entity read in v1 (<code>ctx.query</code> and
- * <code>ctx.getMany</code> are not in v1). A missing entity and an entity the
- * subject may not read are deliberately indistinguishable: both are `null`.
- * There is no `ctx.fetch`; handlers use the runtime's global `fetch`.
- *
- * The write verbs buffer; nothing reaches the server until {@link Context.commit}
- * or the runner's flush at handler return. See the package README for the
- * one-Action rule and the v1 resolution gaps.
+ * The verbs, their options, and `commit` are {@link ContextBase}, declared in
+ * `@ebbjs/write` and shared with the SDK's `Context<S>` — one definition, so
+ * the two can no longer disagree about what a handler may call. The write verbs
+ * buffer; nothing reaches the server until `commit` or the runner's flush at
+ * handler return, and the package README states the one-Action rule. There is
+ * no `ctx.fetch`; handlers use the runtime's global `fetch`.
  */
-export interface Context {
-  get(id: string): Promise<EntityResponse | null>;
-
-  /**
-   * Create one row and return its handle. `groups` is required and
-   * non-empty; one membership row per group lands in the same Action.
-   */
-  create(entity: string, fields: Record<string, unknown>, options: CreateOptions): CreateHandle;
-  /** Patch an existing row. Validated against the entity's shape at the call. */
-  update(entity: string, id: string, patch: Record<string, unknown>, options?: WriteOptions): void;
-  /** Soft-delete an existing row. */
-  delete(entity: string, id: string): void;
-  /**
-   * Link a relationship. One-cardinality relationships take a single target;
-   * a many-cardinality relationship's canonical FK set lives on the source
-   * row, so passing a list sets the whole set.
-   */
-  relate(
-    entity: string,
-    sourceId: string,
-    as: string,
-    target: RelationshipTarget | readonly RelationshipTarget[],
-  ): void;
-  /**
-   * Remove a relationship. A one-cardinality edge is deleted by its
-   * `relationship` row id (taken explicitly unless this invocation created
-   * the edge); a many-cardinality edge drops `target` from the current FK set,
-   * or clears the set when no target is given.
-   */
-  unrelate(
-    entity: string,
-    sourceId: string,
-    as: string,
-    target?: RelationshipTarget,
-    options?: UnrelateOptions,
-  ): Promise<void>;
-
-  /**
-   * Submit the buffered writes as one Action now. Resolves `{ replayed }`,
-   * where `replayed: true` means the server dropped the submission because its
-   * `action_id` was already recorded. A no-op when nothing is buffered.
-   */
-  commit(): Promise<CommitOutcome>;
-
+export interface Context extends ContextBase {
   /**
    * Send one log line to the host, fire-and-forget. `level` defaults to
    * `"info"`; `"log"` is the level `console.log` maps to.
@@ -106,10 +56,6 @@ export interface Context {
    * logs `env` for it.
    */
   log(message: string, level?: LogLevel): void;
-
-  readonly actor: { readonly id: string };
-  readonly caller: Caller;
-  readonly invocationId: string;
 
   /**
    * The invocation's per-function secrets, from the invoke frame. Frozen and
@@ -176,30 +122,10 @@ export function createContext(options: CreateContextOptions): Context {
   });
 }
 
-/** The levels a `log` frame may carry; a handler's level is validated against them. */
-const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
-
-const isLogLevel = (value: unknown): value is LogLevel =>
-  typeof value === "string" && LOG_LEVEL_SET.has(value);
-
 const logEntry = (message: unknown, level: unknown): LogEntry => ({
   level: isLogLevel(level) ? level : "info",
-  message: messageOf(message),
+  message: formatLogValue(message),
 });
-
-/**
- * A handler can pass anything to `ctx.log`, so stringifying must not throw:
- * an object whose `toString` throws is a log line, not an invocation failure.
- */
-const messageOf = (message: unknown): string => {
-  if (typeof message === "string") return message;
-
-  try {
-    return String(message);
-  } catch {
-    return "[unprintable]";
-  }
-};
 
 /** A frozen copy: `env` is per-invocation data, never a shared host object. */
 const freezeEnv = (

@@ -461,9 +461,6 @@ importers:
       '@ebbjs/functions-runtime':
         specifier: workspace:*
         version: link:../functions-runtime
-      '@ebbjs/server':
-        specifier: workspace:*
-        version: link:../server
     devDependencies:
       '@ebbjs/schema':
         specifier: workspace:^

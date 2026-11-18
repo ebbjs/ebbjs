@@ -5,13 +5,16 @@
  * resolved mutation into Updates, verbs map a semantic call onto those
  * operations, the committer wraps a batch in one Action, and the system-row
  * emitters build the atomic `ebb/*` rows (group, grant, membership, link) those
- * Updates carry. Every row is born in one create Update. No storage reads and
- * no client dependency.
+ * Updates carry. Every row is born in one create Update. The handler's `ctx`
+ * port lives here too, because both the SDK and the functions runtime publish
+ * it. No storage reads and no client dependency.
  */
 
 export { isUnset, unset, type Unset } from "@ebbjs/core";
 export * from "./committer";
+export * from "./context";
 export * from "./entity-diff";
+export * from "./entity-response";
 export * from "./field-projection";
 export * from "./membership";
 export * from "./operations";

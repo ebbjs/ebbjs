@@ -1,6 +1,10 @@
-import { createContext, type ModelRegistry, type LogEntry } from "@ebbjs/functions-runtime";
-import type { FetchAuditFields, FunctionLimits } from "@ebbjs/functions-protocol";
-import type { Context } from "@ebbjs/server";
+import {
+  createContext,
+  type Context,
+  type LogEntry,
+  type ModelRegistry,
+} from "@ebbjs/functions-runtime";
+import type { CallerKind, FetchAuditFields, FunctionLimits } from "@ebbjs/functions-protocol";
 
 import { captureConsole, createLogSink } from "./logging.ts";
 import { installFetchGuard } from "./fetch.ts";
@@ -16,7 +20,7 @@ export interface RunInvocationOptions {
   invocationId: string;
   subjectActorId: string;
   /** How the host resolved the subject; absent means an actor. */
-  callerKind?: "actor" | "service";
+  callerKind?: CallerKind;
   bundle: string;
   entry: string;
   input: unknown;
@@ -83,7 +87,8 @@ export async function runInvocation(options: RunInvocationOptions): Promise<unkn
       throw new HandlerError(`bundle does not export a function named ${options.entry}`);
     }
 
-    // Annotated so the runtime context keeps satisfying the SDK's handler view.
+    // The runtime's `Context` is the SDK's `ContextBase` plus `log`/`env`, so a
+    // handler typed against the SDK's narrowed verb names accepts it as is.
     const ctx: Context = createContext({
       transport,
       invocationId: options.invocationId,

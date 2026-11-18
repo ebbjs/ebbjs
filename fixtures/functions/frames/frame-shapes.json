@@ -21,6 +21,7 @@
         "entry": "proofreadDocument",
         "input": {},
         "subject_actor_id": "a_test",
+        "caller_kind": "actor",
         "env": {},
         "limits": {
           "timeout_ms": 30000,

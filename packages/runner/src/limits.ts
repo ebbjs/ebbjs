@@ -3,18 +3,17 @@
  *
  * Every field is optional on the wire and every default is the protocol's
  * `DEFAULT_LIMITS`, so a host that states nothing gets the same budget as one
- * that states the defaults. The host owns the process group: `timeout_ms` and
- * `memory_bytes` are carried for completeness but the runner does not enforce
- * them — it cannot preempt a synchronous handler, and the host kills the group
- * at the deadline. What the runner does enforce locally is the host-call
- * budget, the log budget, the output frame bound, and the fetch response cap.
+ * that states the defaults. The host owns the process group and the deadline: a
+ * `timeout_ms` is not resolved here, because the runner cannot preempt a
+ * synchronous handler and the host kills the group at the deadline. What the
+ * runner does enforce locally is the host-call budget, the log budget, the
+ * output frame bound, and the fetch response cap.
  */
 
 import { DEFAULT_LIMITS, MAX_FRAME_BYTES, type FunctionLimits } from "@ebbjs/functions-protocol";
 
 /** The budget the runner itself enforces for one invocation. */
 export interface InvocationLimits {
-  readonly timeoutMs: number;
   readonly maxHostCalls: number;
   /** The result frame bound: `max_output_bytes`, clamped to the frame bound. */
   readonly maxOutputBytes: number;
@@ -34,7 +33,6 @@ export interface InvocationLimits {
 /** Resolves an optional wire `limits` object into the runner's budget. */
 export function resolveLimits(limits: FunctionLimits | undefined): InvocationLimits {
   return {
-    timeoutMs: positive(limits?.timeout_ms) ?? DEFAULT_LIMITS.timeout_ms,
     maxHostCalls: positive(limits?.max_host_calls) ?? DEFAULT_LIMITS.max_host_calls,
     // A host cannot raise the result bound past what the codec can decode, and
     // a larger frame would be refused by the host from its length prefix.

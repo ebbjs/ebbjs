@@ -16,20 +16,22 @@
 
 import {
   decodeFrames,
+  messageOf,
   ready,
   PROTOCOL_VERSION,
   RESULT_KIND_HANDLER_ERROR,
   RESULT_KIND_HOST_CALL_LIMIT,
+  type CallerKind,
   type DecodeError,
   type Frame,
   type InvokeFrame,
   type ReplyFrame,
+  type ResultOutcome,
 } from "@ebbjs/functions-protocol";
 
 import type { RunInvocationOptions } from "./index.ts";
 import { HostCallLimitError, resolveLimits } from "./limits.ts";
-import { messageOf } from "./messages.ts";
-import { boundedResultFrame, type ResultOutcome } from "./result.ts";
+import { boundedResultFrame } from "./result.ts";
 import { SocketHostTransport } from "./transport.ts";
 
 export interface SessionOptions {
@@ -129,7 +131,7 @@ export function createSession(options: SessionOptions): Session {
           transport: active,
           invocationId: String(frame.invocation_id ?? ""),
           subjectActorId: String(frame.subject_actor_id ?? ""),
-          callerKind: frame.caller_kind === "service" ? "service" : "actor",
+          callerKind: callerKindOf(frame.caller_kind),
           bundle: String(frame.bundle ?? ""),
           entry: String(frame.entry ?? frame.name ?? ""),
           input: frame.input,
@@ -215,6 +217,17 @@ function failureOutcome(error: unknown): ResultOutcome {
       error instanceof HostCallLimitError ? RESULT_KIND_HOST_CALL_LIMIT : RESULT_KIND_HANDLER_ERROR,
     message: messageOf(error),
   };
+}
+
+/**
+ * The caller kind the host stated, defaulting to an actor.
+ *
+ * The codec does not validate a field's value, so anything other than
+ * `"service"` — a kind a newer peer names, or garbage — reads as an actor
+ * rather than failing the invoke.
+ */
+function callerKindOf(value: unknown): CallerKind {
+  return value === "service" ? "service" : "actor";
 }
 
 /** A stable one-line description of a decode failure, for the exit message. */

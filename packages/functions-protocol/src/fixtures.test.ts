@@ -6,6 +6,7 @@ import { decodeFrames, encodeFrame } from "./codec.ts";
 import { ready } from "./constructors.ts";
 import {
   DEFAULT_LIMITS,
+  isLogLevel,
   LOG_LEVELS,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -185,5 +186,18 @@ describe("shared constants", () => {
     expect(sorted([...new Set([...(typescript ?? []), ...(elixir ?? [])])])).toEqual(
       sorted(constants.log_levels),
     );
+  });
+
+  it("accepts exactly the levels this peer emits, and not the host-only spelling", () => {
+    for (const level of LOG_LEVELS) expect(isLogLevel(level)).toBe(true);
+
+    const hostOnly = constants.log_levels.filter(
+      (level) => !LOG_LEVELS.some((own) => own === level),
+    );
+    expect(hostOnly).toEqual(["warning"]);
+    for (const level of hostOnly) expect(isLogLevel(level)).toBe(false);
+
+    expect(isLogLevel("verbose")).toBe(false);
+    expect(isLogLevel(1)).toBe(false);
   });
 });
