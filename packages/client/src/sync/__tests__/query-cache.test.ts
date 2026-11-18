@@ -13,7 +13,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
-import { flushTasks, isPlatformModel, rowComponents } from "../test-utils";
+import { flushTasks, isPlatformModel, linkAction, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 
@@ -82,6 +82,25 @@ const write = (
 };
 
 /** Detach one component; the row survives with its siblings. */
+/** Merge one edge key onto its source row. */
+const writeLink = (
+  replica: ReturnType<typeof createReplica>,
+  sourceId: string,
+  as: string,
+  type: string,
+  targetId: string,
+): void => {
+  gsn += 1;
+  const action = linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
+  });
+  replica.ingest(action, action.updates, gsn);
+};
+
 const detach = (
   replica: ReturnType<typeof createReplica>,
   id: string,
@@ -403,7 +422,8 @@ describe("query cache: invalidation", () => {
     await flushTasks();
     expect(source.runs).toBe(1);
 
-    ingest(replica, "link", "rel_1");
+    // An edge lands on its source row as the `ebb/link` component.
+    writeLink(replica, "todo_1", "owner", "todo", "user_1");
     expect(source.runs).toBe(2);
   });
 

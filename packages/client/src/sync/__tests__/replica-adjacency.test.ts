@@ -98,13 +98,8 @@ const remove = (
     { id: `u_${opts.actionId}`, subject_id: id, method: "delete", data: null },
   ]);
 
-/**
- * A link merge on its source row: one presence key at `(as, type)`. The `rowId`
- * is the id the old edge row would have had; an edge has no row of its own, so
- * the fixture keeps the slot to keep call sites readable.
- */
+/** A link merge on its source row: one presence key at `(as, type)`. */
 const putRel = (
-  _rowId: string,
   sourceId: string,
   targetId: string,
   as: string,
@@ -167,7 +162,7 @@ describe("replica adjacency accessors (#520)", () => {
       put("todo_1", "todo", { title: "Ship" }, { actionId: "a_1", gsn: 1, ms: 10 }),
       put("user_1", "user", { name: "Ada" }, { actionId: "a_2", gsn: 2, ms: 20 }),
       put("group_1", "group", { name: "Work" }, { actionId: "a_3", gsn: 3, ms: 30 }),
-      putRel("rel_1", "todo_1", "user_1", "owner", "todo", { actionId: "a_4", gsn: 4, ms: 40 }),
+      putRel("todo_1", "user_1", "owner", "todo", { actionId: "a_4", gsn: 4, ms: 40 }),
       putMembership("eg_1", "todo_1", "group_1", { actionId: "a_5", gsn: 5, ms: 50 }),
     ]);
     await storage.replica.save(replica.toRecord());
@@ -206,7 +201,7 @@ describe("replica adjacency accessors (#520)", () => {
     );
     await callApplyAction(
       writer,
-      putRel("rel_1", "todo_1", "user_1", "owner", "todo", {
+      putRel("todo_1", "user_1", "owner", "todo", {
         actionId: "a_4",
         gsn: 4,
         ms: 40,
@@ -245,7 +240,7 @@ describe("replica adjacency accessors (#520)", () => {
     );
     await callApplyAction(
       client,
-      putRel("rel_1", "todo_1", "user_1", "owner", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
+      putRel("todo_1", "user_1", "owner", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
     );
     await callApplyAction(
       client,
@@ -301,11 +296,11 @@ describe("replica adjacency accessors (#520)", () => {
     // The same key written twice is one edge: it is a key of its source row.
     await callApplyAction(
       client,
-      putRel("rel_a", "todo_1", "label_1", "tags", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
+      putRel("todo_1", "label_1", "tags", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
     );
     await callApplyAction(
       client,
-      putRel("rel_b", "todo_1", "label_1", "tags", "todo", { actionId: "a_4", gsn: 4, ms: 40 }),
+      putRel("todo_1", "label_1", "tags", "todo", { actionId: "a_4", gsn: 4, ms: 40 }),
     );
 
     const row = await client.todo.get("todo_1");

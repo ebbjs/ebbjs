@@ -14,6 +14,7 @@ import type { SyncClientOptions } from "../types";
 import {
   callApplyAction,
   emptyCatchUpResponse,
+  linkAction,
   openSseResponse,
   rowComponents,
   waitFor,
@@ -239,14 +240,17 @@ describe("replica scope eviction (#499)", () => {
       client,
       membership("eg_2", "todo_2", "group_2", { actionId: "a_eg2", gsn: 6, ms: 60 }),
     );
+    // An edge crosses scope on its source row: `todo_1` is in the subscribed
+    // group and points at a row that is not.
     await callApplyAction(
       client,
-      put(
-        "rel_1",
-        "link",
-        { source_id: "todo_1", target_id: "todo_2", field: "related", type: "todo" },
-        { actionId: "a_rel", gsn: 7, ms: 70 },
-      ),
+      linkAction({
+        id: "a_rel",
+        hlc: makeHlc(1_711_036_800_070),
+        gsn: 7,
+        sourceId: "todo_1",
+        edges: [{ as: "related", type: "todo", targetId: "todo_2" }],
+      }),
     );
   };
 
@@ -257,7 +261,7 @@ describe("replica scope eviction (#499)", () => {
 
     expect(scopeEvictedGroupIds(client.replica, ["group_1"])).toEqual(["group_2"]);
     expect([...evictableRowIds(client.replica, ["group_1"])].sort()).toEqual(
-      ["eg_2", "group_2", "rel_1", "todo_2"].sort(),
+      ["eg_2", "group_2", "todo_2"].sort(),
     );
     // A row in a subscribed group survives a relationship that crosses scope.
     expect(evictableRowIds(client.replica, ["group_1"])).not.toContain("todo_1");
@@ -277,7 +281,6 @@ describe("replica scope eviction (#499)", () => {
     expect(client.replica.get("todo_2")).toBeUndefined();
     expect(client.replica.get("group_2")).toBeUndefined();
     expect(client.replica.get("eg_2")).toBeUndefined();
-    expect(client.replica.get("rel_1")).toBeUndefined();
     expect(client.replicaStats.entities).toBeLessThan(7);
 
     onlyFirst();
@@ -307,7 +310,6 @@ describe("replica scope eviction (#499)", () => {
     await waitFor(() => client.replica.get("todo_2") !== undefined);
     expect(client.replica.get("todo_1")).toBeUndefined();
     expect(client.replica.get("group_2")).toBeDefined();
-    expect(client.replica.get("rel_1")).toBeUndefined();
     second();
   });
 
@@ -346,7 +348,7 @@ describe("replica scope eviction (#499)", () => {
 
     const record = await storage.replica.load();
     expect(record?.entities.map((row) => row.id).sort()).toEqual(
-      ["eg_1", "eg_2", "group_1", "group_2", "rel_1", "todo_1", "todo_2"].sort(),
+      ["eg_1", "eg_2", "group_1", "group_2", "todo_1", "todo_2"].sort(),
     );
   });
 });
