@@ -209,6 +209,26 @@ describe("ctx.relate / ctx.unrelate", () => {
     ]);
   });
 
+  it("adds a many-cardinality set even when the source row's edges are readable", async () => {
+    const host = fakeHost({
+      e_issue1: hostRow("e_issue1", "issue", {
+        link: { labels: { issue: { e_l1: true, e_l2: true } } },
+      }),
+    });
+    const ctx = testContext(host);
+
+    ctx.relate("issue", "e_issue1", "labels", ["e_l3"]);
+    await ctx.commit();
+
+    const [action] = host.commits as { updates: Update[] }[];
+    // This surface's `relate` is an add: it gives presence to the targets it
+    // names and tombstones no edge, readable row or not.
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "labels", type: "issue", targetId: "e_l3", value: true },
+    ]);
+    expect(host.calls.filter((call) => call.op === "get")).toHaveLength(0);
+  });
+
   it("tombstones a named target without reading the row", async () => {
     const host = fakeHost();
     const ctx = testContext(host);

@@ -71,12 +71,6 @@ export interface BuildRelationshipWriteResult {
   relationshipUpdates: readonly Update[];
 }
 
-/** The ids one edge write consumes: a fresh Update id each, and the local clock. */
-export interface LinkWriteIds {
-  updateId(): string;
-  hlc(): string;
-}
-
 /** The three-level value one Update carries: accessor, type label, then target leaves. */
 const linkComponentValue = (
   as: string,
@@ -93,13 +87,13 @@ const linkComponentValue = (
  *
  * A key named in both lists is removed: the tombstone is the newer intent.
  */
-export const linkEdgeUpdate = (args: {
+const linkEdgeUpdate = (args: {
   sourceId: string;
   as: string;
   type: string;
   present: readonly string[];
   removed: readonly string[];
-  ids: LinkWriteIds;
+  ids: SystemRowIds;
 }): Update => {
   const updateId = args.ids.updateId();
   const hlc = args.ids.hlc();
@@ -134,7 +128,7 @@ export const linkEdgeUpdates = (args: {
   present: readonly string[];
   removed: readonly string[];
   combined?: boolean;
-  ids: LinkWriteIds;
+  ids: SystemRowIds;
 }): Update[] => {
   if (args.combined) {
     if (args.present.length === 0 && args.removed.length === 0) return [];
@@ -335,7 +329,7 @@ export function buildRelationshipWrite(
   checkEntityRegistered(registry, sourceName, "source");
   const cardinality = resolveCardinality(registry, sourceName, as, opts.sourceCardinality);
   const type = wireTypeFor(registry, sourceName, as);
-  const ids: LinkWriteIds = { updateId: () => newId("u"), hlc: opts.hlc };
+  const ids: SystemRowIds = { updateId: () => newId("u"), hlc: opts.hlc };
 
   if (cardinality === "one") {
     if (opts.targetIds !== undefined) {

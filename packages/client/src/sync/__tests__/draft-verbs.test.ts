@@ -534,6 +534,27 @@ describe("drafts — link / unlink / setLinks", () => {
     });
   });
 
+  it("refuses a replace on a row the local store cannot see, while link still resolves", async () => {
+    const { client, seen } = await mkClient();
+
+    const refusal = await client.actions
+      .setTodoLabels({ id: "todo_missing", labels: ["label_1"] })
+      .catch((err: unknown) => err);
+
+    // A replace names the whole set, so without the live edges it would leave
+    // whatever it cannot see behind; an add names only the key it writes.
+    expect(refusal).toBeInstanceOf(EntityValidationError);
+    expect((refusal as Error).message).toContain("todo_missing");
+    expect(actionCalls(seen)).toHaveLength(0);
+
+    await client.actions.linkTodoList({ id: "todo_missing", targetId: { id: "list_1" } });
+
+    expect(actionCalls(seen)).toHaveLength(1);
+    expect(linkLeaves(linkUpdate(updatesOf(seen)), "list", "todo")).toMatchObject({
+      list_1: { value: true },
+    });
+  });
+
   it("setLinks tombstones the keys the new set drops", async () => {
     const { client, storage, seen } = await mkClient();
     await storage.entities.set(

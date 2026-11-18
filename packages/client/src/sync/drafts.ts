@@ -954,10 +954,6 @@ const resolveDuplicate = async (
   ];
 };
 
-/** The cardinality the registry declares for an accessor; `one` is the default. */
-const cardinalityOf = (registry: ModelRegistry, entity: string, as: string): "one" | "many" =>
-  registry.getRelationship(entity, as)?.sourceCardinality ?? "one";
-
 /** The wire type label the registry declares for an accessor. */
 const typeOf = (registry: ModelRegistry, entity: string, as: string): string =>
   registry.getRelationship(entity, as)?.type ?? entity;
@@ -969,35 +965,31 @@ const pointerIds = (values: readonly PointerValue[], label: string): string[] =>
     return id === null ? [] : [id];
   });
 
-/** The verb one target names: a move for `one`, an added edge for `many`. */
+/**
+ * The verb one target names: `relate` with that target, or `unrelate` when the
+ * pointer names none. The cardinality decides what the verb means when it
+ * resolves — a move for `one`, an added edge for `many` — so `link` needs no
+ * live set of its own.
+ */
 const singleTargetVerb = (
   base: { readonly entity: string; readonly id: string; readonly as: string },
   targetId: PointerValue,
-  known: readonly string[] | undefined,
-  registry: ModelRegistry,
 ): RelateVerb | UnrelateVerb => {
   const id = normalizePointer(targetId, `target for "${base.entity}.${base.as}"`);
   if (id === null) return { verb: "unrelate", ...base };
-  if (cardinalityOf(registry, base.entity, base.as) === "one") {
-    return { verb: "relate", ...base, target: id };
-  }
-  // A many-cardinality `link` adds one edge, so its verb carries the whole set
-  // the write should leave: the live targets plus the new one, which is what
-  // the verb's set diff reads.
-  return {
-    verb: "relate",
-    ...base,
-    targets: known === undefined ? [id] : [...new Set([...known, id])],
-  };
+  return { verb: "relate", ...base, target: id };
 };
 
 /**
  * `link` / `unlink` / `setLinks`: every one is an `ebb/link` write on the
  * source row, so each resolves through the shared verb table against the
- * accessor's live target set. A one-cardinality move and a `replace` diff
- * against it — one Update carrying the old key's tombstone and the new key's
- * presence — and a verb that must diff refuses when the caller cannot see the
- * set. A `{ add, remove }` patch reads nothing: it writes the keys it names.
+ * accessor's live target set. A one-cardinality move, a many-cardinality
+ * `replace` and a clear diff against it — one Update carrying the old key's
+ * tombstone and the new key's presence for a move — and a verb that must diff
+ * refuses when the caller cannot see the set. A many-cardinality `link` is an
+ * add: it gives the named key presence and never tombstones a sibling, so the
+ * live set cannot change what it writes. A `{ add, remove }` patch writes the
+ * keys it names and looks at nothing else.
  */
 const resolveRelationship = async (
   intent: Extract<DraftIntent, { kind: "relationship" }>,
@@ -1009,16 +1001,14 @@ const resolveRelationship = async (
   const groups = await readGroups(ctx, sourceId);
 
   /** Resolve one verb against the accessor's live target set. */
-  const resolve = async (
-    verbFor: (known: readonly string[] | undefined) => RelateVerb | UnrelateVerb,
-  ): Promise<readonly OperationCall[]> => {
+  const resolve = async (verb: RelateVerb | UnrelateVerb): Promise<readonly OperationCall[]> => {
     const known = await ctx.cap.read.relationshipTargets(
       as,
       typeOf(registry, entity, as),
       sourceId,
     );
     const resolution: VerbResolution = { groupsOf: () => groups, targetsOf: () => known };
-    const operationCall = operationCallFor(registry, verbFor(known), resolution);
+    const operationCall = operationCallFor(registry, verb, resolution);
     return operationCall === undefined ? [] : [operationCall];
   };
 
@@ -1037,9 +1027,11 @@ const resolveRelationship = async (
       ];
     }
     const targets = pointerIds(patch.replace, `target for "${entity}.${as}"`);
-    return resolve(() => ({ verb: "relate", ...base, targets }));
+    // `setLinks({ replace })` names the whole set: the verb diffs it against
+    // the live edges and refuses when they are unreadable.
+    return resolve({ verb: "relate", ...base, targets, replace: true });
   }
-  return resolve((known) => singleTargetVerb(base, pointer.targetId, known, registry));
+  return resolve(singleTargetVerb(base, pointer.targetId));
 };
 
 const resolveGroupVerb = async (
