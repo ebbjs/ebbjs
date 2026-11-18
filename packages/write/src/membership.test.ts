@@ -173,6 +173,20 @@ describe("membership checker — folding a batch's row facts", () => {
       "todo",
     );
   });
+
+  it("does not let an overlay name the row's model", () => {
+    const edge = update({ subject_id: "todo_1", kind: "link", value: { map: {} } });
+
+    // The overlay never supplies a model, so an unknown row stays unknown and
+    // a row another component named keeps that name.
+    expect(foldSubjects(edge).get("todo_1")?.model).toBeUndefined();
+    expect(
+      foldSubjects([
+        ...update({ subject_id: "todo_1", kind: "note", value: { title: "x" } }),
+        ...edge,
+      ]).get("todo_1")?.model,
+    ).toBe("note");
+  });
 });
 
 describe("membership checker — last membership net delta", () => {

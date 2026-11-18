@@ -613,6 +613,34 @@ describe("collectPermissionViolations — link edges", () => {
     ).rejects.toBeInstanceOf(PermissionError);
   });
 
+  it("checks a delete that carries an edge write as the row's model delete", async () => {
+    // A delete names the row, so the batch's subject is the model whatever
+    // components ride with it — the rule the server applies to the same fold.
+    const { client } = await mkClient([["g_source", ["todo.delete"]]]);
+    await seedSource(client, "g_source");
+
+    await expect(
+      client.write([
+        action([
+          { id: "u_delete", subject_id: "todo_1", method: "delete", data: null },
+          linkUpdate("todo_1"),
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const edgeDelete = await mkClient([["g_source", ["ebb/link.delete"]]]);
+    await seedSource(edgeDelete.client, "g_source");
+
+    await expect(
+      edgeDelete.client.write([
+        action([
+          { id: "u_delete", subject_id: "todo_1", method: "delete", data: null },
+          linkUpdate("todo_1"),
+        ]),
+      ]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
   it("defers a link write on a row the local store cannot see", async () => {
     // No membership rows for the row means no group set to check, so the
     // server decides.

@@ -878,7 +878,9 @@ const collectActionViolations = async (
     // A delete of a row the store does not know names no model: the server
     // resolves it from its own index, and this pass has nothing to say.
     if (model === undefined) return null;
-    const kind = writtenKind ?? platformKindOf(row);
+    // A delete names the row, so its subject is the row's model whatever
+    // components ride in the same Action — the server folds it the same way.
+    const kind = writes.deleted ? platformKindOf(row) : (writtenKind ?? platformKindOf(row));
     // The verb follows the Action, not the store: a create is the Action that
     // carries the row's create, everything else is an update (#817). Asking
     // existence answers a different question — a row an earlier Action created
