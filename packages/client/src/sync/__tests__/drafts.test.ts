@@ -27,14 +27,9 @@ import { membershipRowId } from "@ebbjs/write";
 import { ActionRejectedError, ActionResolutionError, resolveReferences } from "../drafts";
 import type { Rejection } from "../types";
 import { createClient } from "../client";
-import { testActions } from "./test-actions";
-import { rowFields, rowsByModel } from "../test-utils";
+import { rowFields, rowsByModel, testActions } from "../test-utils";
 
 /** The Updates of one model, grouped into one list per subject row. */
-/** The rows of `model`; a platform name matches its component's rows. */
-const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] =>
-  rowsByModel(updates, model);
-
 /** A field's value on a row, or `undefined` when absent or dropped. */
 const valueOf = (row: readonly Update[], field: string): unknown => rowFields(row)[field];
 
@@ -157,15 +152,15 @@ describe("drafts — one Action, forward references", () => {
     expect(actions).toHaveLength(1);
     const updates = actions[0]!.updates;
     // 2 entity rows + 2 membership rows + 1 domain relationship row.
-    expect(rowsOf(updates, "todo")).toHaveLength(1);
-    expect(rowsOf(updates, "list")).toHaveLength(1);
-    expect(rowsOf(updates, "membership")).toHaveLength(2);
-    expect(rowsOf(updates, "link")).toHaveLength(1);
+    expect(rowsByModel(updates, "todo")).toHaveLength(1);
+    expect(rowsByModel(updates, "list")).toHaveLength(1);
+    expect(rowsByModel(updates, "membership")).toHaveLength(2);
+    expect(rowsByModel(updates, "link")).toHaveLength(1);
 
-    const [todoRow] = rowsOf(updates, "todo");
-    const [listRow] = rowsOf(updates, "list");
-    const [domainRel] = rowsOf(updates, "link");
-    const membershipRows = rowsOf(updates, "membership");
+    const [todoRow] = rowsByModel(updates, "todo");
+    const [listRow] = rowsByModel(updates, "list");
+    const [domainRel] = rowsByModel(updates, "link");
+    const membershipRows = rowsByModel(updates, "membership");
 
     // The row opens with its create; one `replace` per field follows.
     expect(todoRow![0]).toMatchObject({
@@ -209,7 +204,7 @@ describe("drafts — one Action, forward references", () => {
 
     const actions = actionCalls(seen);
     expect(actions).toHaveLength(1);
-    const membershipRows = rowsOf(decodeActions(actions[0]!)[0]!.updates, "membership");
+    const membershipRows = rowsByModel(decodeActions(actions[0]!)[0]!.updates, "membership");
     expect(membershipRows).toHaveLength(2);
     // Each membership is one atomic Update; a repeated id filing the group
     // twice would add a third row under the same subject.
@@ -279,8 +274,8 @@ describe("drafts — one Action, forward references", () => {
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
     // 3 entity rows + 3 membership rows + 2 domain relationship rows.
-    expect(rowsOf(updates, "membership")).toHaveLength(3);
-    const relTargets = rowsOf(updates, "link").map((row) => valueOf(row, "target_id"));
+    expect(rowsByModel(updates, "membership")).toHaveLength(3);
+    const relTargets = rowsByModel(updates, "link").map((row) => valueOf(row, "target_id"));
     expect(relTargets).toContain(created.a.id);
     expect(relTargets).toContain(created.b.id);
   });
@@ -296,9 +291,9 @@ describe("drafts — one Action, forward references", () => {
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
     // 1 entity row + 1 membership row + 1 domain relationship row.
-    expect(rowsOf(updates, "membership")).toHaveLength(1);
-    expect(rowsOf(updates, "todo")).toHaveLength(1);
-    const [relRow] = rowsOf(updates, "link");
+    expect(rowsByModel(updates, "membership")).toHaveLength(1);
+    expect(rowsByModel(updates, "todo")).toHaveLength(1);
+    const [relRow] = rowsByModel(updates, "link");
     expect(valueOf(relRow!, "field")).toBe("list");
     expect(valueOf(relRow!, "target_id")).toBe("list_existing");
   });
@@ -333,8 +328,8 @@ describe("drafts — one Action, forward references", () => {
     expect(created.todo.tags).toEqual([created.a.id, created.b.id]);
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
     // 3 entity rows + 3 membership rows + 2 domain relationship rows.
-    expect(rowsOf(updates, "membership")).toHaveLength(3);
-    const [todoRow] = rowsOf(updates, "todo");
+    expect(rowsByModel(updates, "membership")).toHaveLength(3);
+    const [todoRow] = rowsByModel(updates, "todo");
     expect(valueOf(todoRow!, "tags")).toEqual([created.a.id, created.b.id]);
   });
 
@@ -361,7 +356,7 @@ describe("drafts — one Action, forward references", () => {
     });
 
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    const entityRows = rowsOf(updates, "todo").concat(rowsOf(updates, "list"));
+    const entityRows = rowsByModel(updates, "todo").concat(rowsByModel(updates, "list"));
     expect(entityRows).toHaveLength(2);
   });
 
@@ -405,7 +400,7 @@ describe("drafts — per-Update delivery (#473)", () => {
 
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
-    const membershipRows = rowsOf(decodeActions(calls[0]!)[0]!.updates, "membership");
+    const membershipRows = rowsByModel(decodeActions(calls[0]!)[0]!.updates, "membership");
     const rowsFor = (entityId: string) =>
       membershipRows
         .filter((row) => valueOf(row, "entity_id") === entityId)
@@ -502,7 +497,7 @@ describe("drafts — setGroups delta", () => {
     expect(
       updates.filter((update) => update.method === "delete").map((update) => update.subject_id),
     ).toEqual([membershipRowId(created.id, "g_1")]);
-    expect(rowsOf(updates, "membership")).toEqual([]);
+    expect(rowsByModel(updates, "membership")).toEqual([]);
   });
 });
 

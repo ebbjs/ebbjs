@@ -10,7 +10,7 @@ import type { Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { Replica } from "@ebbjs/storage/types";
 import { createClient } from "../client";
-import { platformEntity, seedReplicaRow } from "../test-utils";
+import { entityRow, linkRow, membershipRow, platformEntity, seedReplicaRow } from "../test-utils";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
@@ -23,32 +23,6 @@ const schema = defineSchema({
   relationships: { todo_owner: defineRelationship({ source: todo, target: user, as: "owner" }) },
   version: 1,
 });
-
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
-const mkRel = (id: string, sourceId: string, targetId: string): Entity =>
-  platformEntity(id, "link", {
-    source_id: sourceId,
-    target_id: targetId,
-    type: "todo",
-    field: "owner",
-  });
-
-const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
 
 /** Write `row` to the shim and fold it into the replica the queries read (#520). */
 const seedRow = async (
@@ -67,8 +41,8 @@ const fresh = async (): Promise<{
 }> => {
   const storage = createMemoryAdapter();
   const client = createClient({ serverUrl: "http://x", actorId: "a", storage, schema });
-  await seedRow(storage, client.replica, mkEntity("t1", "todo", { title: "T" }));
-  await seedRow(storage, client.replica, mkEntity("u1", "user", { name: "Ada" }));
+  await seedRow(storage, client.replica, entityRow("t1", "todo", { title: "T" }));
+  await seedRow(storage, client.replica, entityRow("u1", "user", { name: "Ada" }));
   return { storage, client };
 };
 
@@ -88,7 +62,7 @@ describe("relationship accessor reactivity", () => {
     const unsubSnapshot = before.subscribe((snapshot) => {
       snapshots.push(snapshot.id);
     });
-    await seedRow(storage, client.replica, mkRel("rel_1", "t1", "u1"));
+    await seedRow(storage, client.replica, linkRow("rel_1", "t1", "u1", "owner", "todo"));
     expect(accessorFires).toBe(1);
     // `row.subscribe` re-reads the row and fires too, so a direct
     // subscriber (not just useEntity) is woken by the accessor change.
@@ -121,7 +95,7 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await seedRow(storage, client.replica, mkRel("rel_1", "t1", "u1"));
+    await seedRow(storage, client.replica, linkRow("rel_1", "t1", "u1", "owner", "todo"));
     expect(fires).toBe(1);
     expect((await query).map((row) => row.id)).toEqual(["t1"]);
 
@@ -146,7 +120,7 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await seedRow(storage, client.replica, mkMembership("eg_1", "t1", "grp_1"));
+    await seedRow(storage, client.replica, membershipRow("eg_1", "t1", "grp_1"));
     expect(fires).toBe(1);
 
     const moved = await client.todo.get("t1");
@@ -167,7 +141,7 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await seedRow(storage, client.replica, mkMembership("eg_1", "t1", "grp_1"));
+    await seedRow(storage, client.replica, membershipRow("eg_1", "t1", "grp_1"));
     expect(fires).toBe(1);
     expect((await query).map((row) => row.id)).toEqual(["t1"]);
 

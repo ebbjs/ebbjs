@@ -63,7 +63,7 @@ import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { ebbModel } from "@ebbjs/schema";
-import { testActions } from "../../sync/__tests__/test-actions";
+import { testActions } from "../../sync/test-utils";
 
 const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 

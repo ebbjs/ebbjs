@@ -259,16 +259,6 @@ const decodeActions = (request: RecordedRequest): readonly Action[] =>
 const updatesOf = (seen: readonly RecordedRequest[]): Action["updates"] =>
   actionCalls(seen).flatMap((call) => decodeActions(call).flatMap((action) => action.updates));
 
-/** The Updates of one model, grouped into one list per subject row. */
-const rowsOf = (
-  updates: readonly Action["updates"][number][],
-  model: string,
-): readonly (readonly Action["updates"][number][])[] => rowsByModel(updates, model);
-
-/** A row's component values, keyed by field. */
-const fieldsOf = (row: readonly Action["updates"][number][]): Record<string, unknown> =>
-  rowFields(row);
-
 describe("draft group.create — bootstrap", () => {
   it("submits one Action with the group put and the actor's own grant put", async () => {
     const { client, seen } = await mkClient();
@@ -276,20 +266,20 @@ describe("draft group.create — bootstrap", () => {
     const created = await client.actions.createGroup({ name: "Team" });
 
     const updates = updatesOf(seen);
-    const groupRows = rowsOf(updates, "group");
+    const groupRows = rowsByModel(updates, "group");
     expect(groupRows).toHaveLength(1);
     expect(groupRows[0]![0]!.subject_id).toBe(created.id);
-    expect(fieldsOf(groupRows[0]!)["name"]).toBe("Team");
+    expect(rowFields(groupRows[0]!)["name"]).toBe("Team");
 
-    const memberRows = rowsOf(updates, "grant");
+    const memberRows = rowsByModel(updates, "grant");
     expect(memberRows).toHaveLength(1);
-    expect(fieldsOf(memberRows[0]!)).toMatchObject({
+    expect(rowFields(memberRows[0]!)).toMatchObject({
       actor_id: "actor_1",
       group_id: created.id,
     });
 
     // No `membership` row for the group itself — a group is its own group.
-    expect(rowsOf(updates, "membership")).toHaveLength(0);
+    expect(rowsByModel(updates, "membership")).toHaveLength(0);
 
     // Exactly one Action reached the wire.
     expect(actionCalls(seen)).toHaveLength(1);
@@ -301,8 +291,8 @@ describe("draft group.create — bootstrap", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const [memberRow] = rowsOf(updatesOf(seen), "grant");
-    const permissions = fieldsOf(memberRow!)["permissions"] as readonly string[];
+    const [memberRow] = rowsByModel(updatesOf(seen), "grant");
+    const permissions = rowFields(memberRow!)["permissions"] as readonly string[];
     // A grant names a model, and its wildcard covers every component under it.
     expect(permissions).toEqual(["ebb.*", "profile.*"]);
   });
@@ -314,8 +304,8 @@ describe("draft group.create — app scope (#732)", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const [groupRow] = rowsOf(updatesOf(seen), "group");
-    expect(fieldsOf(groupRow!)["apps"]).toEqual(["notes"]);
+    const [groupRow] = rowsByModel(updatesOf(seen), "group");
+    expect(rowFields(groupRow!)["apps"]).toEqual(["notes"]);
   });
 
   it("omits apps when the client declares no app", async () => {
@@ -323,8 +313,8 @@ describe("draft group.create — app scope (#732)", () => {
 
     await client.actions.createGroup({ name: "Team" });
 
-    const [groupRow] = rowsOf(updatesOf(seen), "group");
-    expect(fieldsOf(groupRow!)["apps"]).toBeUndefined();
+    const [groupRow] = rowsByModel(updatesOf(seen), "group");
+    expect(rowFields(groupRow!)["apps"]).toBeUndefined();
   });
 
   it("rewrites the whole group value when the app scope changes", async () => {
@@ -338,7 +328,7 @@ describe("draft group.create — app scope (#732)", () => {
     const [update] = updatesOf(seen).filter(
       (candidate) => isComponentUpdate(candidate) && candidate.component === "ebb/group",
     );
-    expect(fieldsOf([update!])).toMatchObject({ name: "Team", apps: ["issues"] });
+    expect(rowFields([update!])).toMatchObject({ name: "Team", apps: ["issues"] });
   });
 });
 
@@ -353,17 +343,17 @@ describe("draft membership.create", () => {
     });
 
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "grant");
+    const [row] = rowsByModel(updates, "grant");
     // One atomic `ebb/grant` value, not three per-field Updates.
     expect(row).toHaveLength(1);
     expect(created.id).toMatch(/^e_/);
     expect(row![0]!.subject_id).toBe(created.id);
-    expect(fieldsOf(row!)).toMatchObject({
+    expect(rowFields(row!)).toMatchObject({
       group_id: "g_1",
       actor_id: "actor_2",
       permissions: ["profile.*"],
     });
-    expect(rowsOf(updates, "membership")).toHaveLength(0);
+    expect(rowsByModel(updates, "membership")).toHaveLength(0);
   });
 });
 
@@ -421,7 +411,7 @@ describe("draft system — shared verbs", () => {
 
     await client.actions.updateGroup({ id: "g_1", name: "Renamed" });
 
-    const [row] = rowsOf(updatesOf(seen), "group");
+    const [row] = rowsByModel(updatesOf(seen), "group");
     expect(row).toHaveLength(1);
     // An atomic value is written whole, so a name patch replaces it.
     expect(row![0]).toMatchObject({
@@ -429,7 +419,7 @@ describe("draft system — shared verbs", () => {
       component: "ebb/group",
       method: "replace",
     });
-    expect(fieldsOf(row!)["name"]).toBe("Renamed");
+    expect(rowFields(row!)["name"]).toBe("Renamed");
   });
 
   it("group.delete emits one delete Update carrying no data", async () => {
@@ -450,14 +440,14 @@ describe("draft system — shared verbs", () => {
     const copy = await client.actions.duplicateGroup({ id: "g_src", groups: ["g_1"] });
 
     const updates = updatesOf(seen);
-    const [put] = rowsOf(updates, "group").filter((row) => row[0]!.subject_id === copy.id);
+    const [put] = rowsByModel(updates, "group").filter((row) => row[0]!.subject_id === copy.id);
     expect(copy.id).toMatch(/^e_/);
     expect(put!.every((update) => update.method === "replace")).toBe(true);
-    expect(fieldsOf(put!)["name"]).toBe("Team");
-    const filed = rowsOf(updates, "membership").filter(
-      (row) => fieldsOf(row)["entity_id"] === copy.id,
+    expect(rowFields(put!)["name"]).toBe("Team");
+    const filed = rowsByModel(updates, "membership").filter(
+      (row) => rowFields(row)["entity_id"] === copy.id,
     );
-    expect(filed.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1"]);
+    expect(filed.map((row) => rowFields(row)["group_id"])).toEqual(["g_1"]);
     expect(actionCalls(seen)).toHaveLength(1);
   });
 
@@ -473,10 +463,10 @@ describe("draft system — shared verbs", () => {
 
     const copy = await client.actions.duplicateMembership({ id: "gm_src" });
 
-    const [put] = rowsOf(updatesOf(seen), "grant");
+    const [put] = rowsByModel(updatesOf(seen), "grant");
     expect(put![0]!.subject_id).toBe(copy.id);
     expect(put!.every((update) => update.method === "replace")).toBe(true);
-    expect(fieldsOf(put!)).toMatchObject({
+    expect(rowFields(put!)).toMatchObject({
       group_id: "g_1",
       actor_id: "actor_2",
       permissions: ["profile.*"],
@@ -488,11 +478,11 @@ describe("draft system — shared verbs", () => {
 
     await client.actions.linkGroupLead({ id: "g_1", profileId: "profile_1" });
 
-    const relationships = rowsOf(updatesOf(seen), "link");
+    const relationships = rowsByModel(updatesOf(seen), "link");
     expect(relationships).toHaveLength(1);
     // The link's `type` is the source model the declaration names (`ebb`), not
     // the logical kind.
-    expect(fieldsOf(relationships[0]!)).toMatchObject({
+    expect(rowFields(relationships[0]!)).toMatchObject({
       source_id: "g_1",
       target_id: "profile_1",
       field: "lead",
@@ -536,8 +526,8 @@ describe("draft system creates — validate pass-through", () => {
 
     await client.actions.createGroupWith({ name: 42, validate: false });
 
-    const [groupRow] = rowsOf(updatesOf(seen), "group");
-    expect(fieldsOf(groupRow!)["name"]).toBe(42);
+    const [groupRow] = rowsByModel(updatesOf(seen), "group");
+    expect(rowFields(groupRow!)["name"]).toBe(42);
   });
 
   it("membership.create validates the payload by default", async () => {
@@ -556,8 +546,8 @@ describe("draft system creates — validate pass-through", () => {
 
     await client.actions.createMembershipWith({ permissions: 42, validate: false });
 
-    const [memberRow] = rowsOf(updatesOf(seen), "grant");
-    expect(fieldsOf(memberRow!)["permissions"]).toBe(42);
+    const [memberRow] = rowsByModel(updatesOf(seen), "grant");
+    expect(rowFields(memberRow!)["permissions"]).toBe(42);
   });
 });
 
@@ -589,13 +579,13 @@ describe("system drafts — one Action", () => {
 
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
-    expect(rowsOf(updates, "group")).toHaveLength(1);
-    expect(rowsOf(updates, "grant")).toHaveLength(1);
-    expect(rowsOf(updates, "profile")).toHaveLength(1);
+    expect(rowsByModel(updates, "group")).toHaveLength(1);
+    expect(rowsByModel(updates, "grant")).toHaveLength(1);
+    expect(rowsByModel(updates, "profile")).toHaveLength(1);
 
-    const membership = rowsOf(updates, "membership");
+    const membership = rowsByModel(updates, "membership");
     expect(membership).toHaveLength(1);
-    expect(fieldsOf(membership[0]!)).toEqual({
+    expect(rowFields(membership[0]!)).toEqual({
       entity_id: result.member.id,
       group_id: result.team.id,
     });
@@ -614,11 +604,11 @@ describe("defineAction — addToWorkspace", () => {
 
     const updates = updatesOf(seen);
     expect(actionCalls(seen)).toHaveLength(1);
-    expect(rowsOf(updates, "grant")).toHaveLength(1);
+    expect(rowsByModel(updates, "grant")).toHaveLength(1);
 
-    const membership = rowsOf(updates, "membership");
+    const membership = rowsByModel(updates, "membership");
     expect(membership).toHaveLength(1);
-    expect(fieldsOf(membership[0]!)).toEqual({
+    expect(rowFields(membership[0]!)).toEqual({
       entity_id: "profile_1",
       group_id: "g_1",
     });

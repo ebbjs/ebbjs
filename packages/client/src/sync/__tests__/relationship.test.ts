@@ -24,41 +24,7 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
-import { platformEntity } from "../test-utils";
-
-const mkEntity = (
-  id: string,
-  model: string,
-  fields: Record<string, unknown>,
-  deletedHlc: string | null = null,
-): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: deletedHlc,
-  last_gsn: 0,
-});
-
-const mkRel = (
-  id: string,
-  sourceId: string,
-  targetId: string,
-  field: string,
-  type: string,
-): Entity =>
-  platformEntity(id, "link", {
-    source_id: sourceId,
-    target_id: targetId,
-    field,
-    type,
-  });
+import { entityRow, linkRow, platformEntity } from "../test-utils";
 
 const readLocalEntity =
   (store: Map<string, Entity>) =>
@@ -132,9 +98,9 @@ const shape = (props: Record<string, unknown>): never =>
 describe("forwardOne", () => {
   it("resolves the target entity when a Relationship edge exists", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("l1", mkEntity("l1", "list", { name: "Work" }));
-    store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
+    store.set("t1", entityRow("t1", "todo", {}));
+    store.set("l1", entityRow("l1", "list", { name: "Work" }));
+    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -164,9 +130,9 @@ describe("forwardOne", () => {
 
   it("returns undefined when the source row exists but has the wrong type", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "user", {}));
-    store.set("l1", mkEntity("l1", "list", { name: "Work" }));
-    store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
+    store.set("t1", entityRow("t1", "user", {}));
+    store.set("l1", entityRow("l1", "list", { name: "Work" }));
+    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -181,8 +147,8 @@ describe("forwardOne", () => {
 
   it("returns null when the link is cleared (no Relationship edge)", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("l1", mkEntity("l1", "list", { name: "Work" }));
+    store.set("t1", entityRow("t1", "todo", {}));
+    store.set("l1", entityRow("l1", "list", { name: "Work" }));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -197,8 +163,8 @@ describe("forwardOne", () => {
 
   it("returns undefined when the edge exists but the target is missing (dangling)", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
-    store.set("rel-1", mkRel("rel-1", "t1", "ghost", "parentList", "todo"));
+    store.set("t1", entityRow("t1", "todo", {}));
+    store.set("rel-1", linkRow("rel-1", "t1", "ghost", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -215,13 +181,13 @@ describe("forwardOne", () => {
 describe("forwardMany", () => {
   it("projects the targets whose Relationship edges point at this source", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "tag", {}));
-    store.set("label-a", mkEntity("label-a", "label", { name: "a" }));
-    store.set("label-b", mkEntity("label-b", "label", { name: "b" }));
-    store.set("label-c", mkEntity("label-c", "label", { name: "c" }));
-    store.set("rel-a", mkRel("rel-a", "t1", "label-a", "tags", "tag"));
-    store.set("rel-b", mkRel("rel-b", "t1", "label-b", "tags", "tag"));
-    store.set("rel-c", mkRel("rel-c", "t1", "label-c", "tags", "tag"));
+    store.set("t1", entityRow("t1", "tag", {}));
+    store.set("label-a", entityRow("label-a", "label", { name: "a" }));
+    store.set("label-b", entityRow("label-b", "label", { name: "b" }));
+    store.set("label-c", entityRow("label-c", "label", { name: "c" }));
+    store.set("rel-a", linkRow("rel-a", "t1", "label-a", "tags", "tag"));
+    store.set("rel-b", linkRow("rel-b", "t1", "label-b", "tags", "tag"));
+    store.set("rel-c", linkRow("rel-c", "t1", "label-c", "tags", "tag"));
     const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
@@ -239,15 +205,15 @@ describe("forwardMany", () => {
 
   it("dedupes repeated targets and drops wrong-type entities", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "tag", {}));
-    store.set("label-a", mkEntity("label-a", "label", { name: "a" }));
+    store.set("t1", entityRow("t1", "tag", {}));
+    store.set("label-a", entityRow("label-a", "label", { name: "a" }));
     // Same target reached through two distinct relationship rows.
-    store.set("rel-a1", mkRel("rel-a1", "t1", "label-a", "tags", "tag"));
-    store.set("rel-a2", mkRel("rel-a2", "t1", "label-a", "tags", "tag"));
+    store.set("rel-a1", linkRow("rel-a1", "t1", "label-a", "tags", "tag"));
+    store.set("rel-a2", linkRow("rel-a2", "t1", "label-a", "tags", "tag"));
     // A dangling edge and an entity whose type is not the declared target.
-    store.set("rel-ghost", mkRel("rel-ghost", "t1", "ghost", "tags", "tag"));
-    store.set("other", mkEntity("other", "list", { name: "nope" }));
-    store.set("rel-other", mkRel("rel-other", "t1", "other", "tags", "tag"));
+    store.set("rel-ghost", linkRow("rel-ghost", "t1", "ghost", "tags", "tag"));
+    store.set("other", entityRow("other", "list", { name: "nope" }));
+    store.set("rel-other", linkRow("rel-other", "t1", "other", "tags", "tag"));
     const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
@@ -281,8 +247,8 @@ describe("forwardMany", () => {
 
   it("returns an empty list when no Relationship edges exist", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "tag", {}));
-    store.set("label-a", mkEntity("label-a", "label", { name: "a" }));
+    store.set("t1", entityRow("t1", "tag", {}));
+    store.set("label-a", entityRow("label-a", "label", { name: "a" }));
     const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
@@ -301,13 +267,13 @@ describe("forwardMany", () => {
 describe("reverse", () => {
   it("projects sources that point at the target through the reverse index", async () => {
     const store = new Map<string, Entity>();
-    store.set("l1", mkEntity("l1", "list", { name: "Work" }));
-    store.set("t1", mkEntity("t1", "todo", { title: "Ship" }));
-    store.set("t2", mkEntity("t2", "todo", { title: "Other" }));
-    store.set("t3", mkEntity("t3", "todo", { title: "Off-list" }));
-    store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
-    store.set("rel-2", mkRel("rel-2", "t2", "l1", "parentList", "todo"));
-    store.set("rel-3", mkRel("rel-3", "t3", "l2", "parentList", "todo"));
+    store.set("l1", entityRow("l1", "list", { name: "Work" }));
+    store.set("t1", entityRow("t1", "todo", { title: "Ship" }));
+    store.set("t2", entityRow("t2", "todo", { title: "Other" }));
+    store.set("t3", entityRow("t3", "todo", { title: "Off-list" }));
+    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
+    store.set("rel-2", linkRow("rel-2", "t2", "l1", "parentList", "todo"));
+    store.set("rel-3", linkRow("rel-3", "t3", "l2", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),
@@ -324,12 +290,12 @@ describe("reverse", () => {
 
   it("drops dangling sources and wrong-type entities", async () => {
     const store = new Map<string, Entity>();
-    store.set("l1", mkEntity("l1", "list", {}));
-    store.set("t1", mkEntity("t1", "todo", { title: "Ship" }));
-    store.set("other", mkEntity("other", "user", { name: "not-a-todo" }));
-    store.set("rel-1", mkRel("rel-1", "t1", "l1", "parentList", "todo"));
-    store.set("rel-2", mkRel("rel-2", "other", "l1", "parentList", "todo"));
-    store.set("rel-3", mkRel("rel-3", "ghost", "l1", "parentList", "todo"));
+    store.set("l1", entityRow("l1", "list", {}));
+    store.set("t1", entityRow("t1", "todo", { title: "Ship" }));
+    store.set("other", entityRow("other", "user", { name: "not-a-todo" }));
+    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
+    store.set("rel-2", linkRow("rel-2", "other", "l1", "parentList", "todo"));
+    store.set("rel-3", linkRow("rel-3", "ghost", "l1", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),
@@ -347,7 +313,7 @@ describe("reverse", () => {
 describe("membershipGroups", () => {
   it("projects the groups an entity is filed into, ascending by group id", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
+    store.set("t1", entityRow("t1", "todo", {}));
     store.set("g2", platformEntity("g2", "group", { name: "Second" }));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
     store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
@@ -365,9 +331,9 @@ describe("membershipGroups", () => {
 
   it("drops missing and wrong-type groups", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
+    store.set("t1", entityRow("t1", "todo", {}));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
-    store.set("other", mkEntity("other", "list", {}));
+    store.set("other", entityRow("other", "list", {}));
     store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
     store.set("eg-2", platformEntity("eg-2", "membership", { entity_id: "t1", group_id: "ghost" }));
     store.set("eg-3", platformEntity("eg-3", "membership", { entity_id: "t1", group_id: "other" }));
@@ -384,7 +350,7 @@ describe("membershipGroups", () => {
 
   it("returns an empty list when the entity has no memberships", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
+    store.set("t1", entityRow("t1", "todo", {}));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),
@@ -398,10 +364,10 @@ describe("membershipGroups", () => {
 
   it("returns each group once when duplicate membership rows name it", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", mkEntity("t1", "todo", {}));
+    store.set("t1", entityRow("t1", "todo", {}));
     store.set("g1", platformEntity("g1", "group", { name: "First" }));
     store.set("eg-1", platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }));
-    store.set("eg-2", mkEntity("eg-2", "membership", { entity_id: "t1", group_id: "g1" }));
+    store.set("eg-2", entityRow("eg-2", "membership", { entity_id: "t1", group_id: "g1" }));
     const reader = mkAdjacency(store);
     const qb = membershipGroups(
       readLocalEntity(store),

@@ -28,8 +28,7 @@ import {
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
-import { callApplyAction, jsonResponse, waitFor } from "../test-utils";
-import { testActions } from "./test-actions";
+import { callApplyAction, jsonResponse, testActions, waitFor } from "../test-utils";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 

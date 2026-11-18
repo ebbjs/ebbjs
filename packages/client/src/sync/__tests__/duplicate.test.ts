@@ -8,14 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
-import {
-  decodeSync,
-  isComponentUpdate,
-  makeHlc,
-  updateModel,
-  type Action,
-  type Entity,
-} from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { defineModel, e } from "@ebbjs/schema";
@@ -25,7 +18,13 @@ import { defineAction } from "../../schema/action";
 import type { DuplicateAt } from "../drafts";
 import { createClient } from "../client";
 import type { Conflict } from "../conflicts";
-import { jsonResponse, openSseResponse, platformEntity } from "../test-utils";
+import {
+  entityRow,
+  jsonResponse,
+  membershipRow,
+  openSseResponse,
+  rowsByModel,
+} from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -102,27 +101,9 @@ const mkFetch = (seen: RecordedRequest[]): typeof fetch =>
     return new Response("{}", { status: 200 });
   }) as unknown as typeof fetch;
 
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [
-        k,
-        { value: v, update_id: "u_src", hlc: makeHlc(5) },
-      ]),
-    ),
-  },
-  exists: true,
-  created_hlc: makeHlc(1),
-  updated_hlc: makeHlc(1),
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
-const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
-
+/** A row as a peer's write left it: a field stamp older than the row's create. */
+const syncedRow = (id: string, model: string, fields: Record<string, unknown>): Entity =>
+  entityRow(id, model, fields, { updateId: "u_src", hlc: makeHlc(5), createdHlc: makeHlc(1) });
 /** The `ebb/membership` values one Action writes, one per membership row. */
 const membershipValues = (
   updates: readonly Action["updates"][number][],
@@ -157,29 +138,14 @@ const seedTodo = async (
   fields: Record<string, unknown>,
   groups: readonly string[] = ["g_1"],
 ): Promise<void> => {
-  await storage.entities.set(mkEntity(id, "todo", fields));
+  await storage.entities.set(syncedRow(id, "todo", fields));
   for (const [index, groupId] of groups.entries()) {
-    await storage.entities.set(mkMembership(`eg_${id}_${index}`, id, groupId));
+    await storage.entities.set(membershipRow(`eg_${id}_${index}`, id, groupId));
   }
 };
 
 const actionRequests = (seen: readonly RecordedRequest[]): RecordedRequest[] =>
   seen.filter((r) => r.url.endsWith("/sync/actions"));
-
-/** The Updates of one model, grouped into one list per subject row. */
-const rowsOf = (
-  updates: readonly Action["updates"][number][],
-  model: string,
-): readonly (readonly Action["updates"][number][])[] => {
-  const bySubject = new Map<string, Action["updates"][number][]>();
-  for (const update of updates) {
-    if (updateModel(update) !== model) continue;
-    const row = bySubject.get(update.subject_id);
-    if (row === undefined) bySubject.set(update.subject_id, [update]);
-    else row.push(update);
-  }
-  return [...bySubject.values()];
-};
 
 /** One component's value on a row. */
 const componentOf = (row: readonly Action["updates"][number][], field: string): unknown => {
@@ -205,7 +171,7 @@ describe("duplicate — field copy", () => {
     const { id } = await client.actions.duplicateTodo({ id: "t_1" });
 
     expect(id).not.toBe("t_1");
-    const [row] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
+    const [row] = rowsByModel(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
     // The copy is a new row, so its create names the model; every field
     // Update after it is a `replace`, not a merge of the source's state.
     expect(row![0]).toMatchObject({ subject_id: id, method: "create", model: "todo" });
@@ -228,14 +194,14 @@ describe("duplicate — field copy", () => {
       hlc: makeHlc(9),
     };
     await storage.entities.set({
-      ...mkEntity("doc_1", "doc", {}),
+      ...syncedRow("doc_1", "doc", {}),
       data: { fields: { content: { map: { run_1: runField } } } },
     });
-    await storage.entities.set(mkMembership("eg_1", "doc_1", "g_1"));
+    await storage.entities.set(membershipRow("eg_1", "doc_1", "g_1"));
 
     const { id } = await client.actions.duplicateDoc({ id: "doc_1" });
 
-    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "doc");
+    const [put] = rowsByModel(decodeFirstAction(actionRequests(seen)[0]!).updates, "doc");
     const content = put!.find(
       (update) => isComponentUpdate(update) && update.component === "doc/content",
     )!;
@@ -270,7 +236,7 @@ describe("duplicate — field copy", () => {
 
   it("throws when the source id names another model", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("d_1", "doc", {}));
+    await storage.entities.set(syncedRow("d_1", "doc", {}));
     await expect(client.actions.duplicateTodo({ id: "d_1" })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
@@ -287,7 +253,7 @@ describe("duplicate — field copy", () => {
 
   it("validates the copied row like create and refuses a non-conforming source", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("t_1", "todo", { title: 42, completed: false }));
+    await storage.entities.set(syncedRow("t_1", "todo", { title: 42, completed: false }));
     await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
@@ -296,7 +262,9 @@ describe("duplicate — field copy", () => {
 
   it("refuses an undeclared field on the source", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("t_1", "todo", { title: "T", completed: false, bogus: 1 }));
+    await storage.entities.set(
+      syncedRow("t_1", "todo", { title: "T", completed: false, bogus: 1 }),
+    );
     await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
@@ -349,7 +317,7 @@ describe("duplicate — memberships", () => {
 
   it("throws when the source has no live groups and none are given", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("t_1", "todo", { title: "T", completed: false }));
+    await storage.entities.set(syncedRow("t_1", "todo", { title: "T", completed: false }));
     await expect(client.actions.duplicateTodo({ id: "t_1" })).rejects.toBeInstanceOf(
       EntityValidationError,
     );
@@ -368,7 +336,7 @@ const mkConflict = (before: Entity): Conflict => ({
       subjectId: before.id,
       model: before.model,
       before,
-      after: mkEntity(before.id, before.model, { title: "merged", completed: false }),
+      after: syncedRow(before.id, before.model, { title: "merged", completed: false }),
       diff: [],
     },
   ],
@@ -381,12 +349,12 @@ describe("duplicate — at: preSync", () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "t_1", { title: "merged", completed: false });
 
-    const before = mkEntity("t_1", "todo", { title: "mine", completed: true });
+    const before = syncedRow("t_1", "todo", { title: "mine", completed: true });
     vi.spyOn(client.conflicts, "list").mockResolvedValue([mkConflict(before)]);
 
     const { id } = await client.actions.duplicateTodo({ id: "t_1", at: "preSync" });
 
-    const [put] = rowsOf(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
+    const [put] = rowsByModel(decodeFirstAction(actionRequests(seen)[0]!).updates, "todo");
     expect(componentOf(put!, "title")).toBe("mine");
     expect(componentOf(put!, "completed")).toBe(true);
     expect((await storage.entities.get(id))?.data?.fields?.["title"]?.value).toBe("mine");

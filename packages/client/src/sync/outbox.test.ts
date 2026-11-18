@@ -18,6 +18,7 @@ import type {
 } from "@ebbjs/storage/types";
 
 import { createOutbox, type OutboxDependencies, type OutboxEntry, type StoreFault } from "./outbox";
+import { entityRow } from "./test-utils";
 
 /** Minimal well-formed Action; only the identity matters to the outbox. */
 const mkAction = (id: string): Action => ({
@@ -125,18 +126,9 @@ const mkStore = (
   };
 };
 
-/** A full entity row for the before/after capture fixtures. */
-const mkEntity = (id: string, title: string): Entity => ({
-  id,
-  model: "todo",
-  data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: "1" } } },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 1,
-});
-
+/** A `todo` row holding one title, as a sync pass reads it back. */
+const todoRow = (id: string, title: string): Entity =>
+  entityRow(id, "todo", { title }, { updateId: `u_${id}`, hlc: "1", createdHlc: "1", lastGsn: 1 });
 /** Deps with recording fakes; overrides let a test swap one behavior. */
 const mkDeps = (
   overrides: Partial<OutboxDependencies> = {},
@@ -776,8 +768,8 @@ describe("createOutbox conflict detection", () => {
   });
 
   it("attaches the captured and materialized rows per losing subject", async () => {
-    const before = mkEntity("todo_1", "mine");
-    const after = mkEntity("todo_1", "theirs");
+    const before = todoRow("todo_1", "mine");
+    const after = todoRow("todo_1", "theirs");
     const preSyncRow = vi.fn(() => before);
     const readEntity = vi.fn(async () => after);
     const deps = mkDeps({ preSyncRow, readEntity });
@@ -792,8 +784,8 @@ describe("createOutbox conflict detection", () => {
   });
 
   it("reads the pass's captured row keyed by the pass's catchUpId", async () => {
-    const preSyncRow = vi.fn(() => mkEntity("todo_1", "mine"));
-    const deps = mkDeps({ preSyncRow, readEntity: async () => mkEntity("todo_1", "theirs") });
+    const preSyncRow = vi.fn(() => todoRow("todo_1", "mine"));
+    const deps = mkDeps({ preSyncRow, readEntity: async () => todoRow("todo_1", "theirs") });
     const { outbox } = await seed(deps);
 
     await outbox.detectConflicts([peerTitle()], "cu_42");
@@ -802,8 +794,8 @@ describe("createOutbox conflict detection", () => {
   });
 
   it("carries both rows on an entity-scope loss with no position overlap", async () => {
-    const before = mkEntity("todo_1", "mine");
-    const after = mkEntity("todo_1", "theirs");
+    const before = todoRow("todo_1", "mine");
+    const after = todoRow("todo_1", "theirs");
     const deps = mkDeps({
       conflictScope: () => "entity",
       preSyncRow: () => before,
@@ -843,7 +835,7 @@ describe("createOutbox conflict detection", () => {
   });
 
   it("records a null after when replay yields no row", async () => {
-    const before = mkEntity("todo_1", "mine");
+    const before = todoRow("todo_1", "mine");
     const deps = mkDeps({ preSyncRow: () => before, readEntity: async () => null });
     const { outbox } = await seed(deps);
 

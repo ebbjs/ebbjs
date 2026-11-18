@@ -11,11 +11,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { componentName, makeHlc, type Action, type Entity, type Update } from "@ebbjs/core";
+import { componentName, makeHlc, type Action, type Update } from "@ebbjs/core";
 
 import { createClient } from "../client";
 import { PermissionError } from "../permission";
 import {
+  entityRow,
   isPlatformModel,
   makeFetchMock,
   platformEntity,
@@ -25,27 +26,6 @@ import {
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
-
-/** A materialized user row on the local store. Platform rows use `platformEntity`. */
-const mkEntity = (
-  id: string,
-  model: string,
-  fields: Record<string, unknown>,
-  deletedHlc: string | null = null,
-): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: deletedHlc,
-  last_gsn: 0,
-});
 
 const field = (value: unknown): { value: unknown; update_id: string } => ({
   value,
@@ -227,7 +207,7 @@ describe("collectPermissionViolations — user entities", () => {
     "refuses a wire type that contradicts the committed type for a %s",
     async (method) => {
       const { client, calls } = await mkClient([["g_1", ["todo.*"]]]);
-      await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+      await client.storage.entities.set(entityRow("invoice_1", "invoice", { amount: 100 }));
       await client.storage.entities.set(
         platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
       );
@@ -263,7 +243,7 @@ describe("collectPermissionViolations — user entities", () => {
     // that refuses a relabel only because a permission is missing passes
     // there and fails here.
     const { client } = await mkClient([["g_1", ["todo.*", "invoice.*"]]]);
-    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(entityRow("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
@@ -283,7 +263,7 @@ describe("collectPermissionViolations — user entities", () => {
 
   it("passes a write that declares the entity's committed type", async () => {
     const { client } = await mkClient([["g_1", ["invoice.create"]]]);
-    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(entityRow("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
@@ -328,7 +308,7 @@ describe("collectPermissionViolations — user entities", () => {
 
   it("agrees with can() that a forged wire type is not a way in", async () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
-    await client.storage.entities.set(mkEntity("invoice_1", "invoice", { amount: 100 }));
+    await client.storage.entities.set(entityRow("invoice_1", "invoice", { amount: 100 }));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "invoice_1", group_id: "g_1" }),
     );
@@ -367,7 +347,7 @@ describe("collectPermissionViolations — component subjects", () => {
   /** A committed note row owned by `g_1`, where the actor holds `permissions`. */
   const mkNoteClient = async (permissions: string[]) => {
     const { client } = await mkClient([["g_1", permissions]]);
-    await client.storage.entities.set(mkEntity("note_1", "note", { title: "T", body: "B" }));
+    await client.storage.entities.set(entityRow("note_1", "note", { title: "T", body: "B" }));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "note_1", group_id: "g_1" }),
     );
@@ -528,7 +508,7 @@ describe("collectPermissionViolations — link edges", () => {
       ["g_source", ["list.*"]],
       ["g_target", ["todo.update"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -550,7 +530,7 @@ describe("collectPermissionViolations — link edges", () => {
       ["g_source", ["todo.update"]],
       ["g_target", ["list.*"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -565,7 +545,7 @@ describe("collectPermissionViolations — link edges", () => {
 
   it("ignores a forged wire type and checks the source's true type", async () => {
     const { client, calls } = await mkClient([["g_source", ["comment.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -581,7 +561,7 @@ describe("collectPermissionViolations — link edges", () => {
 
   it("accepts a custom wire type when the source's true type is permitted", async () => {
     const { client } = await mkClient([["g_source", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
@@ -594,7 +574,7 @@ describe("collectPermissionViolations — link edges", () => {
   it("passes a put that restates the row's own source", async () => {
     // The row already exists locally, so the write is an update of it.
     const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("rel_1", "link", {
         source_id: "todo_1",
@@ -697,7 +677,7 @@ describe("collectPermissionViolations — link edges", () => {
         "9",
       ),
     );
-    await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_new", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
     );
@@ -735,11 +715,11 @@ describe("collectPermissionViolations — link edges", () => {
         type: "todo",
       }),
     );
-    await client.storage.entities.set(mkEntity("todo_old", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_old", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_old", "membership", { entity_id: "todo_old", group_id: "g_old" }),
     );
-    await client.storage.entities.set(mkEntity("todo_new", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_new", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
     );
@@ -922,7 +902,7 @@ describe("collectPermissionViolations — immutable platform keys", () => {
       ["g_1", ["todo.*"]],
       ["g_2", ["todo.*"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
+    await client.storage.entities.set(entityRow("todo_1", "todo", { title: "Ship" }));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -952,7 +932,7 @@ describe("collectPermissionViolations — immutable platform keys", () => {
 describe("collectPermissionViolations — membership writes", () => {
   it("requires <type>.create in the target group for a put", async () => {
     const { client, calls } = await mkClient([["g_1", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
 
     await expect(
       client.write([
@@ -969,7 +949,7 @@ describe("collectPermissionViolations — membership writes", () => {
       ["g_1", []],
       ["g_2", ["todo.create"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -987,7 +967,7 @@ describe("collectPermissionViolations — membership writes", () => {
       ["g_1", ["todo.update"]],
       ["g_2", ["todo.create"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -1005,7 +985,7 @@ describe("collectPermissionViolations — membership writes", () => {
       ["g_2", ["todo.update"]],
       ["g_3", ["todo.create"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -1025,7 +1005,7 @@ describe("collectPermissionViolations — membership writes", () => {
     // store has never filed resolves no source group, so `create` stands
     // alone rather than the pass inventing a refusal it cannot support.
     const { client } = await mkClient([["g_1", ["todo.create"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
 
     await expect(
       client.write([
@@ -1048,7 +1028,7 @@ describe("collectPermissionViolations — membership writes", () => {
 
   it("requires <type>.update in the entity's current set for a delete", async () => {
     const { client, calls } = await mkClient([["g_1", []]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -1067,7 +1047,7 @@ describe("collectPermissionViolations — membership writes", () => {
       ["g_1", []],
       ["g_2", ["todo.update"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -1139,7 +1119,7 @@ describe("collectPermissionViolations — group bootstrap", () => {
 
   it("does not exempt a membership put for an entity that already exists", async () => {
     const { client } = await mkClient([["g_old", []]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
 
     const created = action(
       update("group", "g_new", "put", { id: "g_new" }),

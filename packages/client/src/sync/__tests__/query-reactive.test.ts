@@ -16,7 +16,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction, rowComponents } from "../test-utils";
+import { callApplyAction, flushTasks, rowComponents } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
 const note = defineModel("note", { body: e.string() });
@@ -85,8 +85,6 @@ const seed = async (client: Client, actions: readonly Action[]): Promise<void> =
   for (const next of actions) await callApplyAction(client, next);
 };
 
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe("query result cache at the client seam", () => {
   it("a remount reads the cached result with its status and does not re-run", async () => {
     const client = makeClient();
@@ -94,7 +92,7 @@ describe("query result cache at the client seam", () => {
 
     const first = client.issue.query().result();
     const detach = first.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(first.getSnapshot()).toMatchObject({
       status: "current",
       loading: false,
@@ -107,7 +105,7 @@ describe("query result cache at the client seam", () => {
     expect(remount.getSnapshot().data?.map((row) => row.id)).toEqual(["issue_1"]);
 
     const detachRemount = remount.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(iterate).not.toHaveBeenCalled();
     detachRemount();
   });
@@ -117,7 +115,7 @@ describe("query result cache at the client seam", () => {
     await seed(client, [put(1, "issue_1", "issue", { title: "Ship", status: "open" })]);
     const first = client.issue.query().result();
     const detach = first.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(first.getSnapshot().status).toBe("current");
     detach();
 
@@ -130,7 +128,7 @@ describe("query result cache at the client seam", () => {
     const remount = client.issue.query().result();
     expect(remount.getSnapshot().status).toBe("stale");
     const detachRemount = remount.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(remount.getSnapshot().status).toBe("current");
     expect(remount.getSnapshot().data?.map((row) => row.id)).toEqual(["issue_1", "issue_2"]);
     detachRemount();
@@ -145,12 +143,12 @@ describe("query result cache at the client seam", () => {
 
     const store = client.issue.query().result();
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot()).toMatchObject({ status: "failed", loading: false });
     expect(store.getSnapshot().error?.message).toBe("boom");
 
     await seed(client, [put(2, "issue_2", "issue", { title: "Test", status: "open" })]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot()).toMatchObject({ status: "current", error: null });
     expect(store.getSnapshot().data?.map((row) => row.id)).toEqual(["issue_1", "issue_2"]);
     iterate.mockRestore();
@@ -167,22 +165,22 @@ describe("subscribed query results", () => {
     });
 
     await seed(client, [put(1, "issue_1", "issue", { title: "Ship", status: "open" })]);
-    await flush();
+    await flushTasks();
     expect(seen).toEqual([["issue_1"]]);
 
     // A non-matching issue does not change the result.
     await seed(client, [put(2, "issue_2", "issue", { title: "Test", status: "done" })]);
-    await flush();
+    await flushTasks();
     expect(seen).toEqual([["issue_1"]]);
 
     // A matching row's filtered-out field changes the projection.
     await seed(client, [put(3, "issue_1", "issue", { title: "Ship it", status: "open" })]);
-    await flush();
+    await flushTasks();
     expect(seen).toEqual([["issue_1"], ["issue_1"]]);
 
     // A re-delivery with equal content is not a result change.
     await seed(client, [put(4, "issue_1", "issue", { title: "Ship it", status: "open" })]);
-    await flush();
+    await flushTasks();
     expect(seen).toHaveLength(2);
 
     unsubscribe();
@@ -197,13 +195,13 @@ describe("subscribed query results", () => {
       const [row] = query.result().getSnapshot().data ?? [];
       seen.push([...(row?.groupIds ?? [])]);
     });
-    await flush();
+    await flushTasks();
     expect(seen).toEqual([]);
 
     await seed(client, [
       put(2, "eg_1", "membership", { entity_id: "issue_1", group_id: "group_1" }),
     ]);
-    await flush();
+    await flushTasks();
     expect(seen).toEqual([["group_1"]]);
 
     unsubscribe();
@@ -222,11 +220,11 @@ describe("subscribed query results", () => {
     const unsubscribe = query.subscribe(() => {
       fires += 1;
     });
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().data?.[0]?.assignee?.name).toBe("Ada");
 
     await seed(client, [put(4, "user_1", "user", { name: "Ada Lovelace" })]);
-    await flush();
+    await flushTasks();
     expect(fires).toBe(1);
     expect(store.getSnapshot().data?.[0]?.assignee?.name).toBe("Ada Lovelace");
 

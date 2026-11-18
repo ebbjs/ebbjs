@@ -29,6 +29,7 @@ import {
 import {
   callApplyAction,
   closingSseResponse,
+  entityRow,
   jsonResponse,
   openSseResponse,
   platformEntity,
@@ -43,24 +44,9 @@ const asResponse = (entity: Entity): EntityResponse => {
   return { ...rest, created_hlc: rest.created_hlc ?? 0 };
 };
 
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([key, value]) => [
-        key,
-        { value, update_id: `u_${key}`, hlc: HLC },
-      ]),
-    ),
-  },
-  exists: true,
-  created_hlc: HLC,
-  updated_hlc: HLC,
-  deleted_hlc: null,
-  last_gsn: 1,
-});
-
+/** A row as the server knows it, stamped at this fixture's fixed HLC. */
+const serverRow = (id: string, model: string, fields: Record<string, unknown>): Entity =>
+  entityRow(id, model, fields, { hlc: HLC, createdHlc: HLC, lastGsn: 1 });
 /** A content `put` as the server would deliver it for a peer's write. */
 const putAction = (opts: {
   actionId: string;
@@ -206,10 +192,10 @@ describe("collectBackfillCandidates", () => {
     await storage.entities.set(
       platformEntity("eg_2", "membership", { entity_id: "post_2", group_id: "g_2" }),
     );
-    await storage.entities.set(mkEntity("post_2", "blog_post", { title: "known" }));
+    await storage.entities.set(serverRow("post_2", "blog_post", { title: "known" }));
     // A tombstone is a known entity, not a backfill candidate.
     await storage.entities.set({
-      ...mkEntity("post_3", "blog_post", {}),
+      ...serverRow("post_3", "blog_post", {}),
       deleted_hlc: HLC,
     });
 
@@ -223,7 +209,7 @@ describe("collectBackfillCandidates", () => {
     );
     // A later component write materialized the row without its base.
     await storage.entities.set({
-      ...mkEntity("post_1", "blog_post", { title: "late" }),
+      ...serverRow("post_1", "blog_post", { title: "late" }),
       exists: false,
     });
 
@@ -234,7 +220,7 @@ describe("collectBackfillCandidates", () => {
 describe("snapshotAction", () => {
   it("opens with the row's create, stamped with its own creation time", () => {
     const entity = {
-      ...mkEntity("post_1", "blog_post", { title: "Hello" }),
+      ...serverRow("post_1", "blog_post", { title: "Hello" }),
       created_hlc: makeHlc(1711036800001),
       updated_hlc: makeHlc(1711036800009),
       last_gsn: 7,
@@ -256,7 +242,7 @@ describe("snapshotAction", () => {
   });
 
   it("is one create for a row with no components", () => {
-    const action = snapshotAction(mkEntity("post_1", "blog_post", {}));
+    const action = snapshotAction(serverRow("post_1", "blog_post", {}));
 
     expect(action.updates).toHaveLength(1);
     expect(action.updates[0]).toMatchObject({
@@ -268,7 +254,7 @@ describe("snapshotAction", () => {
   });
 
   it("falls back to the row's updated time when it carries no creation time", () => {
-    const entity = { ...mkEntity("post_1", "blog_post", {}), created_hlc: null };
+    const entity = { ...serverRow("post_1", "blog_post", {}), created_hlc: null };
 
     expect(snapshotAction(entity).updates[0]).toMatchObject({
       method: "create",
@@ -276,7 +262,7 @@ describe("snapshotAction", () => {
     });
   });
   it("carries the canonical envelopes verbatim under the entity's true gsn", () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
+    const entity = serverRow("post_1", "blog_post", { title: "Hello" });
     const action = snapshotAction(entity);
 
     expect(action.gsn).toBe(entity.last_gsn);
@@ -302,7 +288,7 @@ describe("createBackfill", () => {
       storage,
       fetchEntity: async () => {
         fetches += 1;
-        return asResponse(mkEntity("post_1", "blog_post", {}));
+        return asResponse(serverRow("post_1", "blog_post", {}));
       },
     });
 
@@ -328,7 +314,7 @@ describe("createBackfill", () => {
       storage,
       fetchEntity: async () =>
         asResponse({
-          ...mkEntity("post_1", "blog_post", { title: "Hello" }),
+          ...serverRow("post_1", "blog_post", { title: "Hello" }),
           created_hlc: createdAt,
           updated_hlc: makeHlc(1711036800009),
           last_gsn: 9,
@@ -354,7 +340,7 @@ describe("createBackfill", () => {
       storage,
       fetchEntity: async (entityId) => {
         fetches.push(entityId);
-        return asResponse(mkEntity("post_1", "blog_post", { title: "Hello" }));
+        return asResponse(serverRow("post_1", "blog_post", { title: "Hello" }));
       },
     });
 
@@ -400,8 +386,8 @@ describe("createBackfill", () => {
 
     const run = backfill.run();
     await waitFor(() => backfill.pending.get().includes("post_1"));
-    await storage.entities.set(mkEntity("post_1", "blog_post", { title: "Local" }));
-    release?.(asResponse(mkEntity("post_1", "blog_post", { title: "Server" })));
+    await storage.entities.set(serverRow("post_1", "blog_post", { title: "Local" }));
+    release?.(asResponse(serverRow("post_1", "blog_post", { title: "Server" })));
     await run;
 
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Local");
@@ -416,7 +402,7 @@ describe("createBackfill", () => {
     const backfill = createBackfill({
       storage,
       fetchEntity: async () =>
-        asResponse({ ...mkEntity("post_1", "blog_post", {}), deleted_hlc: HLC }),
+        asResponse({ ...serverRow("post_1", "blog_post", {}), deleted_hlc: HLC }),
     });
 
     await backfill.run();
@@ -441,7 +427,7 @@ describe("createBackfill", () => {
 
     const run = backfill.run();
     await waitFor(() => backfill.pending.get().includes("post_1"));
-    release?.(asResponse(mkEntity("post_1", "blog_post", { title: "Hello" })));
+    release?.(asResponse(serverRow("post_1", "blog_post", { title: "Hello" })));
     await run;
 
     expect(backfill.pending.get()).toEqual([]);
@@ -470,7 +456,7 @@ describe("toRuntimeEntity", () => {
 
 describe("client backfill (#475)", () => {
   it("backfills an entity moved into a group the member can read", async () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Hello" });
+    const entity = serverRow("post_1", "blog_post", { title: "Hello" });
     const { client } = mkClient({ entities: { post_1: entity } });
     await callApplyAction(
       client,
@@ -486,8 +472,8 @@ describe("client backfill (#475)", () => {
 
   it("backfills after catch-up delivers membership rows for unknown entities", async () => {
     const entities = {
-      post_1: mkEntity("post_1", "blog_post", { title: "One" }),
-      post_2: mkEntity("post_2", "blog_post", { title: "Two" }),
+      post_1: serverRow("post_1", "blog_post", { title: "One" }),
+      post_2: serverRow("post_2", "blog_post", { title: "Two" }),
     };
     const { client } = mkClient({
       catchUp: [
@@ -507,7 +493,7 @@ describe("client backfill (#475)", () => {
   });
 
   it("backfills on a live membership put", async () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Live" });
+    const entity = serverRow("post_1", "blog_post", { title: "Live" });
     const { client } = mkClient({
       entities: { post_1: entity },
       live: [dataEvent(membershipPut({ membershipId: "eg_1", entityId: "post_1" }))],
@@ -521,7 +507,7 @@ describe("client backfill (#475)", () => {
   });
 
   it("survives a patch delivered before the backfill read", async () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Patched" });
+    const entity = serverRow("post_1", "blog_post", { title: "Patched" });
     const { client } = mkClient({ entities: { post_1: entity } });
     await callApplyAction(
       client,
@@ -560,7 +546,7 @@ describe("client backfill (#475)", () => {
   });
 
   it("does not re-fetch an entity that already has a local row", async () => {
-    const entity = mkEntity("post_1", "blog_post", { title: "Local" });
+    const entity = serverRow("post_1", "blog_post", { title: "Local" });
     const { client, calls } = mkClient({ entities: { post_1: entity } });
     await callApplyAction(
       client,
@@ -584,7 +570,7 @@ describe("snapshot content merges under later writes", () => {
     );
     const backfill = createBackfill({
       storage,
-      fetchEntity: async () => asResponse(mkEntity("post_1", "blog_post", { title: "Base" })),
+      fetchEntity: async () => asResponse(serverRow("post_1", "blog_post", { title: "Base" })),
     });
     await backfill.run();
 

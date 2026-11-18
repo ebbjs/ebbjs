@@ -9,34 +9,21 @@ import type { Entity } from "@ebbjs/core";
 import type { StorageAdapter } from "@ebbjs/storage/types";
 
 import { liveMembership, readMembership } from "./entity-group";
-import { platformEntity } from "./test-utils";
-
-const mkMembership = (
-  id: string,
-  entityId: string,
-  groupId: string | undefined,
-  deletedHlc: string | null = null,
-): Entity =>
-  platformEntity(
-    id,
-    "membership",
-    groupId === undefined ? { entity_id: entityId } : { entity_id: entityId, group_id: groupId },
-    deletedHlc,
-  );
+import { membershipRow } from "./test-utils";
 
 describe("liveMembership", () => {
   it("carries the row id alongside the entity and group ids", () => {
-    const row = mkMembership("eg_1", "t1", "g1");
+    const row = membershipRow("eg_1", "t1", "g1");
     expect(liveMembership(row)).toEqual({ membershipId: "eg_1", entityId: "t1", groupId: "g1" });
   });
 
   it("returns null for a tombstoned membership row", () => {
-    const row = mkMembership("eg_1", "t1", "g1", "9");
+    const row = membershipRow("eg_1", "t1", "g1", "9");
     expect(liveMembership(row)).toBeNull();
   });
 
   it("returns null when a required id is missing", () => {
-    const row = mkMembership("eg_1", "t1", undefined);
+    const row = membershipRow("eg_1", "t1", undefined);
     expect(liveMembership(row)).toBeNull();
   });
 });
@@ -50,7 +37,7 @@ describe("readMembership", () => {
     }) as unknown as StorageAdapter;
 
   it("resolves a live membership row by its id", async () => {
-    const row = mkMembership("eg_1", "t1", "g1");
+    const row = membershipRow("eg_1", "t1", "g1");
     await expect(readMembership(storageWith([row]), "eg_1")).resolves.toEqual({
       membershipId: "eg_1",
       entityId: "t1",
