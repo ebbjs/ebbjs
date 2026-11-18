@@ -5,13 +5,7 @@
  * surface can't be shadowed.
  */
 
-import {
-  EBB_COMPONENT_KINDS,
-  EBB_MODEL_NAME,
-  ebbComponent,
-  ebbComponentField,
-  GROUPS_ACCESSOR,
-} from "@ebbjs/core";
+import { EBB_MODEL_NAME, EBB_OVERLAY_KIND, ebbComponentField, GROUPS_ACCESSOR } from "@ebbjs/core";
 
 /**
  * The namespace the platform's own components live under. An app may not declare
@@ -27,16 +21,15 @@ export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
 export const RESERVED_MEMBERSHIP_NAMES = [GROUPS_ACCESSOR] as const;
 
 /**
- * The row fields the platform's own components occupy. An `ebb/*` component may
- * sit on a row of any model (that is how a link lives on its source), and it
- * is stored at the field its name ends in, so an app field of the same name
- * would share `data.fields.<name>` with the overlay and be unreadable. Reserved
- * rather than merged: a component per field name is the rule that keeps one
- * value per name.
+ * The row fields the platform's overlays occupy. `ebb/link` is the one platform
+ * component that sits on a row of another model (its source), and it is stored
+ * at the field its name ends in, so an app field of that name would share
+ * `data.fields.<field>` with the edge map and be unreadable. The other platform
+ * components are rows of their own, so their field names stay free on a user
+ * model. Reserved rather than merged: a component per field name is the rule
+ * that keeps one value per name.
  */
-export const RESERVED_PLATFORM_FIELDS = EBB_COMPONENT_KINDS.map((kind) =>
-  ebbComponentField(kind),
-) as readonly string[];
+export const RESERVED_OVERLAY_FIELDS = [ebbComponentField(EBB_OVERLAY_KIND)] as const;
 
 /**
  * Model names the SDK reserves. `group` and `membership` are what `client.group`
@@ -88,11 +81,11 @@ const fieldReservations = (): readonly (readonly [string, string])[] => [
   ...RESERVED_MEMBERSHIP_NAMES.map(
     (name) => [name, "the SDK's built-in membership accessor projects onto it"] as const,
   ),
-  ...RESERVED_PLATFORM_FIELDS.map(
+  ...RESERVED_OVERLAY_FIELDS.map(
     (name) =>
       [
         name,
-        `\`${PLATFORM_NAMESPACE}/${name}\` is a platform component that may sit on any row`,
+        `\`${PLATFORM_NAMESPACE}/${name}\` is a platform overlay that may sit on any row`,
       ] as const,
   ),
 ];

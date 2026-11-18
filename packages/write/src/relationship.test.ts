@@ -219,6 +219,7 @@ describe("the verb layer", () => {
         id: "e_issue",
         as: "labels",
         targets: ["e_l1", "e_l3"],
+        replace: true,
       },
       ["e_l1", "e_l2"],
     );
@@ -228,5 +229,52 @@ describe("the verb layer", () => {
     expect(written.map((leaves) => Object.keys(leaves)[0])).toEqual(["e_l3", "e_l2"]);
     expect(written[0]!["e_l3"]).toMatchObject({ value: true });
     expect(written[1]!["e_l2"]).toMatchObject({ value: null });
+  });
+
+  it("refuses a replace rather than leave the edges it cannot see", () => {
+    const registry = buildRegistry();
+
+    expect(() =>
+      planned(
+        registry,
+        {
+          verb: "relate",
+          entity: "issue",
+          id: "e_issue",
+          as: "labels",
+          targets: ["e_l1"],
+          replace: true,
+        },
+        undefined,
+      ),
+    ).toThrow(/cannot read the live "labels" edges/);
+  });
+
+  it("adds a target set without tombstoning the live edges it does not name", () => {
+    const registry = buildRegistry();
+
+    const updates = planned(
+      registry,
+      { verb: "relate", entity: "issue", id: "e_issue", as: "labels", targets: ["e_l3"] },
+      ["e_l1", "e_l2"],
+    );
+
+    const written = updates.map((update) => edgeLeaves(update, "labels", "issue"));
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ e_l3: { value: true } });
+  });
+
+  it("adds one target without tombstoning its sibling", () => {
+    const registry = buildRegistry();
+
+    const updates = planned(
+      registry,
+      { verb: "relate", entity: "issue", id: "e_issue", as: "labels", target: "e_l2" },
+      ["e_l1"],
+    );
+
+    const written = updates.map((update) => edgeLeaves(update, "labels", "issue"));
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ e_l2: { value: true } });
   });
 });

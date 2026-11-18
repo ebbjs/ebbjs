@@ -252,7 +252,9 @@ Draft verbs, per entity:
   otherwise. Returns the new handle.
 - `link(id, as, target)` / `unlink(id, as)` for a one-cardinality relationship;
   `setLinks(id, as, { replace })` or `setLinks(id, as, { add, remove })` for a
-  many-cardinality one.
+  many-cardinality one. `{ replace }` refuses when the source row is not locally
+  readable rather than writing a partial set — use `link` / `unlink` or
+  `{ add, remove }` to write keys individually.
 - `addToGroup(id, groupId)`, `removeFromGroup(id, groupId)`, and
   `setGroups(id, groupIds)` for membership. A membership row's id is derived
   from the `(entity, group)` pair, so a share is idempotent across devices and

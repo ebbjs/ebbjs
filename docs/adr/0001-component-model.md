@@ -139,7 +139,8 @@ derived id truthful.
 source, so an edge's key is its whole identity — field, then type, then target id — and the three
 nesting levels are the key, not three fields. That keeps two edges from one source to one target
 under different accessors (or under different `type` labels) distinct, makes two edges sharing one
-identity unrepresentable, and lets one Update write one edge. The leaf's value is presence
+identity unrepresentable, and lets one Update write an edge (a one-cardinality move carries the old
+key's tombstone and the new key's presence together). The leaf's value is presence
 (`true`); **removing one edge is a `merge` whose value tombstones that key** (`value: null`), so
 `drop` keeps its `(entity, component)` granularity and never names a key. The component name stays
 `ebb/link`: it is a wire fact and a permission subject, and the source keeps its committed model

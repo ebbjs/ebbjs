@@ -134,26 +134,35 @@ defmodule EbbServer.Storage.SystemComponent do
   @spec field(kind()) :: String.t()
   def field(kind), do: Atom.to_string(kind)
 
-  # The kind whose component occupies each platform field name.
-  @kinds_by_field Map.new(@declarations, fn {kind, _declaration} ->
-                    {Atom.to_string(kind), kind}
-                  end)
+  # The kind whose component occupies each **overlay** field name. Only an
+  # overlay can share a user row's field; the other platform kinds are rows of
+  # their own.
+  @overlay_fields Map.new(
+                    Enum.filter(@declarations, fn {_kind, declaration} ->
+                      declaration[:overlay] == true
+                    end),
+                    fn {kind, _declaration} -> {Atom.to_string(kind), kind} end
+                  )
 
   @doc """
   The component name a row field's value is stored under.
 
-  A platform component may sit on a row of any model and never takes that
-  row's model as its namespace (#820), so a platform field name is always
-  `ebb/<field>`; every other field is `<model>/<field>`. The server keeps this
-  rule here rather than reading a schema: the platform field names are static
-  facts about the platform, not declarations. It mirrors `@ebbjs/core`'s
+  An `ebb` row's field is `ebb/<field>`. The one overlay — `ebb/link` — may sit
+  on a row of any model and never takes that row's model as its namespace
+  (#820), so `link` is `ebb/link` wherever it lives. Every other field,
+  including a user model's `group`/`grant`/`membership`, is a component of the
+  row's own model: those platform kinds are rows of their own. The server keeps
+  this rule here rather than reading a schema: the platform field names are
+  static facts about the platform, not declarations. It mirrors `@ebbjs/core`'s
   `fieldComponent`, the same two-sided duplication the scope table carries.
   """
   @spec component_of_field(String.t(), String.t()) :: String.t()
   def component_of_field(model, field) do
-    case Map.fetch(@kinds_by_field, field) do
-      {:ok, kind} -> component(kind)
-      :error -> model <> "/" <> field
+    with true <- model != @model,
+         {:ok, kind} <- Map.fetch(@overlay_fields, field) do
+      component(kind)
+    else
+      _ -> model <> "/" <> field
     end
   end
 

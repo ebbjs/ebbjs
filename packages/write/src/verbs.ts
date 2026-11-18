@@ -98,9 +98,14 @@ export interface DropVerb {
 
 /**
  * Link a relationship. One-cardinality relationships take a single `target`;
- * a many-cardinality relationship takes the whole set the write carries (the
- * client's `setLinks({ replace })`). The edge lives on the source row, so every
- * target becomes a presence leaf on its `ebb/link` component.
+ * a many-cardinality relationship takes a set of targets. The edge lives on the
+ * source row, so every target becomes a presence leaf on its `ebb/link`
+ * component.
+ *
+ * A many-cardinality set is an **add** unless `replace` is set: it gives the
+ * named targets presence and never tombstones a sibling. A `replace` is the
+ * whole set, which is a diff against the live edges — the client's
+ * `setLinks({ replace })`.
  */
 export interface RelateVerb {
   readonly verb: "relate";
@@ -109,6 +114,12 @@ export interface RelateVerb {
   readonly as: string;
   readonly target?: PointerTarget;
   readonly targets?: readonly PointerTarget[];
+  /**
+   * Many-cardinality only: the named targets are the whole set; the verb
+   * refuses when the live set is unreadable rather than leaving stale edges.
+   * The default is add (presence only, no tombstones).
+   */
+  readonly replace?: boolean;
   readonly groups?: readonly string[];
 }
 
@@ -141,7 +152,7 @@ export interface VerbResolution {
    * The live targets of one `(source, as, type)` edge set, ascending:
    * - an array — the edges the caller can see, possibly none;
    * - `undefined` — the caller cannot see them, so a verb that must diff
-   *   against them refuses (or, for `relate`, writes presence alone).
+   *   against them refuses.
    */
   targetsOf(sourceId: string, as: string, type: string): readonly string[] | undefined;
 }
@@ -288,6 +299,22 @@ const unlinkTargetError = (verb: UnrelateVerb): EntityValidationError =>
     },
   ]);
 
+/**
+ * A set that must become the whole accessor cannot be written without the live
+ * edges: adding presence alone would leave the keys it means to drop behind.
+ */
+const replaceTargetError = (verb: RelateVerb): EntityValidationError =>
+  new EntityValidationError([
+    {
+      entityName: verb.entity,
+      field: verb.as,
+      message:
+        `relate: cannot read the live "${verb.as}" edges of "${verb.id}", so the set ` +
+        `cannot replace them. Sync the source row first, or relate each target ` +
+        `individually to add it.`,
+    },
+  ]);
+
 /** One write's delta: the keys it gives presence to and the keys it tombstones. */
 interface EdgeDelta {
   readonly present: readonly string[];
@@ -323,9 +350,10 @@ const edgeCall = (
  * edge that is already gone.
  *
  * Throws where the verb cannot be resolved faithfully: an undeclared
- * relationship, or an unlink with no target whose live edges the surface cannot
- * read. Emitting an Update that would drop links the caller never saw is worse
- * than refusing the call.
+ * relationship, an unlink with no target whose live edges the surface cannot
+ * read, or a many-cardinality `relate` that replaces the accessor without
+ * being able to read it. Emitting an Update that would drop links the caller
+ * never saw is worse than refusing the call.
  */
 export const operationCallFor = (
   registry: ModelRegistry,
@@ -364,19 +392,23 @@ export const operationCallFor = (
       if (rel.sourceCardinality === "many") {
         const targets = verb.targets ?? (verb.target === undefined ? [] : [verb.target]);
         const next = pointerIds(targets, `target for "${verb.entity}.${verb.as}"`);
-        // A set is a diff when the live set is readable; without it the write
-        // can only add presence, never tombstone what it would drop.
-        return edgeCall(
-          verb,
-          current === undefined
-            ? { present: next, removed: [], combined: false }
-            : {
-                present: next.filter((targetId) => !known.includes(targetId)),
-                removed: known.filter((targetId) => !next.includes(targetId)),
-                combined: false,
-              },
-          resolution,
-        );
+        if (verb.replace === true) {
+          // The set is the whole accessor, so it is a diff against the live
+          // edges. Without them the write would silently leave stale ones.
+          if (current === undefined) throw replaceTargetError(verb);
+          return edgeCall(
+            verb,
+            {
+              present: next.filter((targetId) => !known.includes(targetId)),
+              removed: known.filter((targetId) => !next.includes(targetId)),
+              combined: false,
+            },
+            resolution,
+          );
+        }
+        // An add names the keys it writes: presence only, never a sibling's
+        // tombstone.
+        return edgeCall(verb, { present: next, removed: [], combined: false }, resolution);
       }
       if (verb.targets !== undefined) {
         throw new EntityValidationError([

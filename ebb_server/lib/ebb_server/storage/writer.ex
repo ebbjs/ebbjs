@@ -1619,8 +1619,8 @@ defmodule EbbServer.Storage.Writer do
   # needs no "created earlier in this flush" bookkeeping. `flush_rows` is the
   # one fact the cache cannot supply: the fields an earlier Action of the same
   # flush wrote, so a system row's fan-out scope can still read the
-  # `group_id` / `source_id` its create carried when the by-id caches have not
-  # seen it yet (#813).
+  # `group_id` its create carried when the by-id caches have not seen it yet
+  # (#813).
   defp prepare(fresh, gsn_start, state, incoming_overlay) do
     resolve_opts =
       state
@@ -1711,8 +1711,8 @@ defmodule EbbServer.Storage.Writer do
   # rows while it is still unapplied. The batch keeps its own slice; the
   # cumulative overlay is only an intermediate for the next plan. The planner
   # takes the same folded rows the scopes were resolved from, not raw
-  # component Updates: a row's `group_id` or `source_id` may arrive in one
-  # component while its siblings carry none.
+  # component Updates: a system row's `group_id` may arrive in one component
+  # while its siblings carry none.
   defp plan_cache_mutations(mutations, state, incoming_overlay) do
     if ablate?(:cache, state) do
       {[], nil}

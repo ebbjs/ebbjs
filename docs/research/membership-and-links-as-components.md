@@ -111,11 +111,12 @@ not a slow query.
 
 **[judgment] The reverse index does not disappear on the server.** `cf_component_entities (ebb/link,
 sourceId)` tells you which sources carry any link; it cannot answer "who points at T" without
-reading them all. So the server needs `cf_link_targets (type, target_id) -> source ids` — built and
-then removed again in [#820](https://github.com/ebbjs/ebbjs/issues/820), because no wire query reads
-it yet; it comes back with the read path. The
-information is not deleted, it is moved from a row to an index — which is the whole point. The client
-already works this way: `ReverseIndex` is derived from materialized rows on every `resync`.
+reading them all. So the server needs a reverse index `(type, target_id) -> source ids`. An in-memory
+index of that shape was built and then removed again in
+[#820](https://github.com/ebbjs/ebbjs/issues/820), because no wire query reads it yet; the
+`cf_link_targets` column-family shape is what to price when the read path lands. The information is
+not deleted, it is moved from a row to an index — which is the whole point. The client already works
+this way: `ReverseIndex` is derived from materialized rows on every `resync`.
 
 ## 2. What the current representation actually costs
 

@@ -76,11 +76,15 @@ describe("defineModel reserved names", () => {
     expect(() => defineModel("todo", { groups: e.string() })).toThrow(/reserved/);
   });
 
-  it.each(["link", "group", "grant", "membership"])(
-    "rejects a field named %s — a platform component may sit on any row",
+  it("rejects a field named link — the platform's overlay may sit on any row", () => {
+    expect(() => defineModel("todo", { link: e.string() })).toThrow(ReservedNameError);
+    expect(() => defineModel("todo", { link: e.string() })).toThrow(/ebb\/link/);
+  });
+
+  it.each(["group", "grant", "membership"])(
+    "accepts a field named %s — only the overlay shares a row's field name",
     (name) => {
-      expect(() => defineModel("todo", { [name]: e.string() })).toThrow(ReservedNameError);
-      expect(() => defineModel("todo", { [name]: e.string() })).toThrow(new RegExp(`ebb/${name}`));
+      expect(defineModel("todo", { [name]: e.string() }).name).toBe("todo");
     },
   );
 

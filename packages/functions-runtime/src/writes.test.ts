@@ -209,6 +209,47 @@ describe("ctx.relate / ctx.unrelate", () => {
     ]);
   });
 
+  it("adds a many-cardinality set even when the source row's edges are readable", async () => {
+    const host = fakeHost({
+      e_issue1: hostRow("e_issue1", "issue", {
+        link: { labels: { issue: { e_l1: true, e_l2: true } } },
+      }),
+    });
+    const ctx = testContext(host);
+
+    ctx.relate("issue", "e_issue1", "labels", ["e_l3"]);
+    await ctx.commit();
+
+    const [action] = host.commits as { updates: Update[] }[];
+    // This surface's `relate` is an add: it gives presence to the targets it
+    // names and tombstones no edge, readable row or not.
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "labels", type: "issue", targetId: "e_l3", value: true },
+    ]);
+    expect(host.calls.filter((call) => call.op === "get")).toHaveLength(0);
+  });
+
+  it("adds a one-cardinality target without moving the readable edge", async () => {
+    const host = fakeHost({
+      e_issue1: hostRow("e_issue1", "issue", {
+        link: { project: { issue: { e_proj1: true } } },
+      }),
+    });
+    const ctx = testContext(host);
+
+    ctx.relate("issue", "e_issue1", "project", "e_proj2");
+    await ctx.commit();
+
+    const [action] = host.commits as { updates: Update[] }[];
+    // The documented v1 gap: this `relate` is synchronous, so it cannot read
+    // the source row and writes presence only — no tombstone for e_proj1.
+    // Closing the gap (a one-cardinality move as one Update) needs the async
+    // `ctx` port; until then a caller that must move an edge unrelates first.
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "project", type: "issue", targetId: "e_proj2", value: true },
+    ]);
+  });
+
   it("tombstones a named target without reading the row", async () => {
     const host = fakeHost();
     const ctx = testContext(host);
