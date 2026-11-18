@@ -10,6 +10,8 @@
  * the Elixir side, which hands the worker the whole decoded map.
  */
 
+import type { CallerKind } from "@ebbjs/write";
+
 /** Largest JSON payload one frame may carry. */
 export const MAX_FRAME_BYTES = 1_048_576;
 
@@ -31,6 +33,10 @@ export type FrameOp = "get" | "commit";
 
 /** Invocation limits the host hands the worker, mirroring the envelope. */
 export interface FunctionLimits {
+  /**
+   * The host's wall-clock deadline. Declared so the frame documents it; the
+   * runner does not enforce it, because the host owns the process group.
+   */
   readonly timeout_ms?: number;
   readonly max_host_calls?: number;
   readonly max_output_bytes?: number;
@@ -38,7 +44,6 @@ export interface FunctionLimits {
   readonly max_log_bytes?: number;
   readonly fetch_allowlist?: readonly string[];
   readonly max_fetch_response_bytes?: number;
-  readonly memory_bytes?: number;
   readonly [field: string]: unknown;
 }
 
@@ -58,20 +63,38 @@ export const DEFAULT_LIMITS = {
   max_fetch_response_bytes: 10 * 1024 * 1024,
 } as const satisfies FunctionLimits;
 
-/** Host → runner: run one function. Omitted fields stay omitted. */
-export interface InvokeFrame {
-  readonly type: "invoke";
+/**
+ * An invoke's fields, without the frame's `type`: what a caller may pass.
+ *
+ * The frame's open `[field: string]` index signature makes `keyof InvokeFrame`
+ * `string | number`, so `Omit<InvokeFrame, "type">` would collapse to the index
+ * signature and lose these names. The fields are therefore the base shape and
+ * the frame is what adds the type.
+ */
+export interface InvokeFields {
   readonly invocation_id?: string;
   readonly name?: string;
+  /**
+   * The stored version's name and code digest. The host verified the digest at
+   * upload (`bundle.ex`'s `verify_digest`) and evaluates the stored bundle
+   * without re-checking it, so these identify the code rather than guard it.
+   */
   readonly version?: string;
   readonly digest?: string;
   readonly bundle?: string;
   readonly entry?: string;
   readonly input?: unknown;
   readonly subject_actor_id?: string;
+  /** Who invoked the function: an actor's own call, or a service for it. */
+  readonly caller_kind?: CallerKind;
   readonly env?: Readonly<Record<string, string>>;
   readonly limits?: FunctionLimits;
   readonly [field: string]: unknown;
+}
+
+/** Host → runner: run one function. Omitted fields stay omitted. */
+export interface InvokeFrame extends InvokeFields {
+  readonly type: "invoke";
 }
 
 /** Host → runner: the answer to one host call, successful. */
@@ -115,8 +138,9 @@ export interface ResultOkFrame {
 /**
  * The result kinds the host's error taxonomy maps to a status.
  *
- * `kind` stays an open string on the frame: an unknown kind is a runner error,
- * not a decode failure. These are the kinds both peers know by name.
+ * These are the kinds both peers know by name; the constants fixture pins the
+ * set. A frame carrying an undeclared kind still decodes and the host maps it
+ * to a runner error rather than a decode failure.
  */
 export const RESULT_KIND_HANDLER_ERROR = "handler_error";
 export const RESULT_KIND_HOST_CALL_LIMIT = "host_call_limit";
@@ -136,7 +160,7 @@ export type ResultKind = (typeof RESULT_KINDS)[number];
 export interface ResultErrorFrame {
   readonly type: "result";
   readonly ok: false;
-  readonly kind: string;
+  readonly kind: ResultKind;
   readonly message: string;
   readonly [field: string]: unknown;
 }
@@ -156,11 +180,27 @@ export const LOG_LEVELS = ["debug", "info", "log", "warn", "error"] as const;
 /** A level a `log` frame carries. */
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
-/** Runner → host: one log line from the invocation. Fire-and-forget. */
-export interface LogFrame {
-  readonly type: "log";
+const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
+
+/**
+ * Whether `value` is one of the levels this peer emits.
+ *
+ * The host also accepts `warning`; a handler's level is checked against what
+ * this side has a name for, so `warning` falls back to `info` here.
+ */
+export function isLogLevel(value: unknown): value is LogLevel {
+  return typeof value === "string" && LOG_LEVEL_SET.has(value);
+}
+
+/** A log frame's fields, without the frame's `type`; see {@link InvokeFields}. */
+export interface LogFields {
   readonly level: LogLevel;
   readonly message: string;
+}
+
+/** Runner → host: one log line from the invocation. Fire-and-forget. */
+export interface LogFrame extends LogFields {
+  readonly type: "log";
   readonly [field: string]: unknown;
 }
 

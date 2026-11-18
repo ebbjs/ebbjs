@@ -12,6 +12,7 @@
  */
 
 import { type Frame, MAX_FRAME_BYTES } from "./frames.ts";
+import { messageOf } from "./text.ts";
 
 /** Bytes of the big-endian payload length that starts every frame. */
 const HEADER_BYTES = 4;
@@ -135,10 +136,6 @@ function parseJson(
   } catch (error) {
     return { ok: false, message: messageOf(error) };
   }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A frame is a JSON object carrying a string `type`; anything else is refused. */

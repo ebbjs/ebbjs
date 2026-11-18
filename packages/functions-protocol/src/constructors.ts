@@ -10,6 +10,7 @@ import {
   type CallFrame,
   type FetchAuditFrame,
   type FrameOp,
+  type InvokeFields,
   type InvokeFrame,
   type LogFrame,
   type LogLevel,
@@ -17,22 +18,8 @@ import {
   type ReadyFrame,
   type ReplyFrame,
   type ResultFrame,
+  type ResultKind,
 } from "./frames.ts";
-
-/** The invoke fields this version names. Extra fields pass through untouched. */
-export interface InvokeFields {
-  readonly invocation_id?: string;
-  readonly name?: string;
-  readonly version?: string;
-  readonly digest?: string;
-  readonly bundle?: string;
-  readonly entry?: string;
-  readonly input?: unknown;
-  readonly subject_actor_id?: string;
-  readonly env?: Readonly<Record<string, string>>;
-  readonly limits?: Readonly<Record<string, unknown>>;
-  readonly [field: string]: unknown;
-}
 
 /** The fields a `fetch_audit` frame reports, all measured by the shim. */
 export interface FetchAuditFields {
@@ -51,7 +38,7 @@ export type ReplyOutcome =
 /** The two outcomes a `result` can carry. */
 export type ResultOutcome =
   | { readonly ok: true; readonly value: unknown }
-  | { readonly ok: false; readonly kind: string; readonly message: string };
+  | { readonly ok: false; readonly kind: ResultKind; readonly message: string };
 
 /** The frame's own fields, with the omitted ones left out. */
 function definedFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {

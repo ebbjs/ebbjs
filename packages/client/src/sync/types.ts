@@ -5,6 +5,7 @@ type Action = import("@ebbjs/core").Action;
 import type { ModelDef } from "@ebbjs/schema";
 import type { RelationshipDef } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
+import { EntityResponseSchema, type EntityResponse } from "@ebbjs/write";
 import type { AnyActionDef } from "../schema/action";
 import type { TSchema } from "@sinclair/typebox/type";
 
@@ -107,18 +108,13 @@ export interface CatchUpResponse {
 
 export { RejectionSchema, type Rejection, type WriteResponse } from "@ebbjs/write";
 
-/** Response shape for `GET /entities/:id`. */
-export const EntityResponseSchema = Type.Object({
-  id: Type.String(),
-  /** The committed model. */
-  model: Type.String(),
-  data: Type.Object({ fields: Type.Record(Type.String(), Type.Unknown()) }),
-  created_hlc: Type.Union([Type.Number(), Type.String()]),
-  updated_hlc: Type.Union([Type.Number(), Type.String()]),
-  deleted_hlc: Type.Union([Type.Number(), Type.String(), Type.Null()]),
-  last_gsn: Type.Number(),
-});
-export type EntityResponse = Static<typeof EntityResponseSchema>;
+/**
+ * Response shape for `GET /entities/:id`.
+ *
+ * Typed by `@ebbjs/write`, which also needs it: it is what a handler's `ctx.get`
+ * resolves to.
+ */
+export { EntityResponseSchema, type EntityResponse };
 
 /**
  * Response shape for `GET /sync/groups/:group_id/entities`.

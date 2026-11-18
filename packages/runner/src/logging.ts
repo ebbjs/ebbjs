@@ -9,7 +9,7 @@
  */
 
 import type { LogEntry } from "@ebbjs/functions-runtime";
-import type { LogLevel } from "@ebbjs/functions-protocol";
+import { formatLogLine, LOG_LEVELS, type LogLevel } from "@ebbjs/functions-protocol";
 
 /** The single line that follows the first dropped log line. */
 export const LOG_TRUNCATION_NOTICE =
@@ -72,14 +72,15 @@ export function createLogSink(options: LogSinkOptions): LogSink {
   };
 }
 
-/** The `console` methods the runner captures, and the level each one logs at. */
-const CONSOLE_METHODS = [
-  ["debug", "debug"],
-  ["info", "info"],
-  ["log", "log"],
-  ["warn", "warn"],
-  ["error", "error"],
-] as const satisfies readonly (readonly [keyof Console, LogLevel])[];
+/**
+ * The `console` methods the runner captures, and the level each one logs at.
+ *
+ * Derived from the protocol's levels, one method per level, so the table cannot
+ * list a method the wire has no level for or miss one it does.
+ */
+const CONSOLE_METHODS = LOG_LEVELS.map(
+  (level) => [level, level] as const,
+) satisfies readonly (readonly [keyof Console, LogLevel])[];
 
 /**
  * Routes `console.debug/info/log/warn/error` to `onEntry` and returns a
@@ -100,7 +101,7 @@ export function captureConsole(onEntry: LogSinkSend): () => void {
   for (const [method, level] of CONSOLE_METHODS) {
     target[method] = (...args: readonly unknown[]): void => {
       try {
-        onEntry({ level, message: formatArgs(args) });
+        onEntry({ level, message: formatLogLine(args) });
       } catch {
         // Console capture must never fail the invocation.
       }
@@ -110,32 +111,4 @@ export function captureConsole(onEntry: LogSinkSend): () => void {
   return () => {
     for (const [method, original] of originals) target[method] = original;
   };
-}
-
-/** Joins console arguments the way a log line reads: space-separated. */
-export function formatArgs(args: readonly unknown[]): string {
-  return args.map(formatValue).join(" ");
-}
-
-/**
- * A safe string for anything a handler may print: circular objects, symbols,
- * bigints, and throwing `toString`s all resolve to text instead of throwing.
- */
-export function formatValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value instanceof Error) return `${value.name}: ${value.message}`;
-  if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
-  if (typeof value === "symbol") return String(value);
-  if (typeof value === "bigint") return `${String(value)}n`;
-
-  try {
-    const json = JSON.stringify(value);
-    return json === undefined ? String(value) : json;
-  } catch {
-    try {
-      return String(value);
-    } catch {
-      return "[unprintable]";
-    }
-  }
 }

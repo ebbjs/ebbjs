@@ -9,7 +9,6 @@ describe("resolveLimits", () => {
     const limits = resolveLimits(undefined);
 
     expect(limits).toEqual({
-      timeoutMs: DEFAULT_LIMITS.timeout_ms,
       maxHostCalls: DEFAULT_LIMITS.max_host_calls,
       maxOutputBytes: MAX_FRAME_BYTES,
       maxLogLines: DEFAULT_LIMITS.max_log_lines,
@@ -40,11 +39,9 @@ describe("resolveLimits", () => {
       max_log_bytes: 512,
       fetch_allowlist: ["api.example.com"],
       max_fetch_response_bytes: 2_048,
-      memory_bytes: 1,
     });
 
     expect(limits).toEqual({
-      timeoutMs: 1_500,
       maxHostCalls: 5,
       maxOutputBytes: 4_096,
       maxLogLines: 3,
@@ -63,7 +60,6 @@ describe("resolveLimits", () => {
       max_fetch_response_bytes: 0,
     });
 
-    expect(limits.timeoutMs).toBe(30_000);
     expect(limits.maxHostCalls).toBe(1_000);
     expect(limits.maxLogLines).toBe(200);
     expect(limits.maxLogBytes).toBe(65_536);

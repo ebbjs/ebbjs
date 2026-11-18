@@ -181,6 +181,20 @@ describe("context env and logging", () => {
     ]);
   });
 
+  it("renders a value the way console.log does, not as [object Object]", () => {
+    const { transport, entries } = withLog();
+    const ctx = createContext({
+      transport,
+      invocationId: "inv_log",
+      actor: { id: "a_test" },
+      caller: { kind: "actor", id: "a_test" },
+    });
+
+    ctx.log({ id: "e_1", n: 2 } as never);
+
+    expect(entries).toEqual([{ level: "info", message: '{"id":"e_1","n":2}' }]);
+  });
+
   it("never fails on a throwing transport or an unserializable message", () => {
     const transport: HostTransport = {
       call: async () => null,

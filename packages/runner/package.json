@@ -15,8 +15,7 @@
   },
   "dependencies": {
     "@ebbjs/functions-protocol": "workspace:*",
-    "@ebbjs/functions-runtime": "workspace:*",
-    "@ebbjs/server": "workspace:*"
+    "@ebbjs/functions-runtime": "workspace:*"
   },
   "devDependencies": {
     "@ebbjs/schema": "workspace:^",

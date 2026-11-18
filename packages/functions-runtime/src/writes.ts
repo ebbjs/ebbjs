@@ -41,9 +41,13 @@ import {
   type UnrelateVerb,
   type UpdateVerb,
   UNRESOLVED,
+  type CommitOutcome,
+  type CreateOptions,
+  type UnrelateOptions,
+  type WriteOptions,
 } from "@ebbjs/write";
 
-import { callFailure, commitAction, readCommitOutcome, type CommitOutcome } from "./commit.ts";
+import { callFailure, commitAction, readCommitOutcome } from "./commit.ts";
 import { MissingSchemaError, WritesCommittedError } from "./errors.ts";
 import { createOverlay } from "./overlay.ts";
 import {
@@ -53,31 +57,6 @@ import {
   type PreflightView,
 } from "./preflight.ts";
 import type { HostTransport } from "./transport.ts";
-
-/** Options for {@link WriteSurface.create}. */
-export interface CreateOptions {
-  /** The groups the new row is filed into. Required and non-empty, as in the client API. */
-  readonly groups: readonly PointerTarget[];
-  /** Explicit row id, for a caller that needs a deterministic batch. */
-  readonly id?: string;
-  /** Skip the local field-shape check; the server still validates. */
-  readonly validate?: boolean;
-}
-
-/** Options shared by the entity write verbs. */
-export interface WriteOptions {
-  readonly validate?: boolean;
-}
-
-/** Options for {@link WriteSurface.unrelate}. */
-export interface UnrelateOptions {
-  /**
-   * A one-cardinality edge's `relationship` row id. Required unless this
-   * invocation created the edge: `ctx.get` cannot read relationship rows in
-   * v1, so an edge that predates the call has no other way to be named.
-   */
-  readonly relationshipId?: string;
-}
 
 export interface WriteSurfaceOptions {
   readonly transport: HostTransport;

@@ -33,26 +33,27 @@ server hands that same table (minus `timeout_ms`, which the envelope owns) in
 its `invoke` frame. `fixtures/functions/frames/constants.json` pins it for both
 peers. The runner enforces, per invocation:
 
-| limit                      | default    | enforced by                                                                                   |
-| -------------------------- | ---------- | --------------------------------------------------------------------------------------------- |
-| `max_host_calls`           | 1000       | runner: past the cap `ctx.get`/`ctx.commit` reject with `HostCallLimitError`, nothing is sent |
-| `max_output_bytes`         | 1 MiB      | runner: the result frame, clamped to the protocol's frame bound                               |
-| `max_log_lines`            | 200        | runner: `ctx.log` and captured `console` share one sink                                       |
-| `max_log_bytes`            | 64 KiB     | runner: message bytes, same sink                                                              |
-| `fetch_allowlist`          | empty      | runner: the fetch shim; empty means unrestricted, an unreadable entry fails the invocation    |
-| `max_fetch_response_bytes` | 10 MiB     | runner: the fetch shim refuses a declared length over it, and errors a stream that passes it  |
-| `timeout_ms`               | 30000      | host: it kills the process group at the deadline                                              |
-| `memory_bytes`             | host-owned | host: it sets the process group's limit                                                       |
+| limit                      | default | enforced by                                                                                   |
+| -------------------------- | ------- | --------------------------------------------------------------------------------------------- |
+| `max_host_calls`           | 1000    | runner: past the cap `ctx.get`/`ctx.commit` reject with `HostCallLimitError`, nothing is sent |
+| `max_output_bytes`         | 1 MiB   | runner: the result frame, clamped to the protocol's frame bound                               |
+| `max_log_lines`            | 200     | runner: `ctx.log` and captured `console` share one sink                                       |
+| `max_log_bytes`            | 64 KiB  | runner: message bytes, same sink                                                              |
+| `fetch_allowlist`          | empty   | runner: the fetch shim; empty means unrestricted, an unreadable entry fails the invocation    |
+| `max_fetch_response_bytes` | 10 MiB  | runner: the fetch shim refuses a declared length over it, and errors a stream that passes it  |
+| `timeout_ms`               | 30000   | host: it kills the process group at the deadline                                              |
 
 An oversize result is not a transport failure: the runner sends a small
 `{ "ok": false, "kind": "output_too_large" }` result and stays alive for the
 next invocation. An oversize `commit` is refused at the call site by
 `FrameTooLargeError`, as before.
 
-`memory_bytes` and `timeout_ms` are carried in the frame but not enforced here:
-a synchronous handler cannot be preempted, and the host already tears the
-process group down. A log line past its budget is dropped; the first drop sends
-one truncation notice and everything after it is dropped silently.
+`timeout_ms` is carried in the frame but not resolved here: a synchronous
+handler cannot be preempted, and the host already tears the process group down
+at the deadline. `memory_bytes` is not a frame limit at all — the envelope's
+`memoryBytes` sizes the node's process group, which is the host's business. A
+log line past its budget is dropped; the first drop sends one truncation notice
+and everything after it is dropped silently.
 
 ## Globals during an invocation
 

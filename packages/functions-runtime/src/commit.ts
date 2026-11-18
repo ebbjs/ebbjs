@@ -11,12 +11,7 @@
 import { createHash } from "node:crypto";
 
 import type { Action, Update } from "@ebbjs/core";
-import { ActionRejectedError, type Rejection } from "@ebbjs/write";
-
-/** What `ctx.commit()` resolves to. */
-export interface CommitOutcome {
-  readonly replayed: boolean;
-}
+import { ActionRejectedError, type CommitOutcome, type Rejection } from "@ebbjs/write";
 
 /**
  * The Action id for one invocation, matching the server:

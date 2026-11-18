@@ -1,6 +1,7 @@
 export {
   compatibleVersion,
   DEFAULT_LIMITS,
+  isLogLevel,
   LOG_LEVELS,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -13,6 +14,8 @@ export {
   type Frame,
   type FrameOp,
   type FunctionLimits,
+  type InvokeFields,
+  type LogFields,
   type LogFrame,
   type LogLevel,
   type HostToRunnerFrame,
@@ -29,7 +32,12 @@ export {
   type UnrecognizedFrame,
 } from "./frames.ts";
 
+/** The caller kinds the invoke frame carries; declared in `@ebbjs/write`. */
+export type { CallerKind } from "@ebbjs/write";
+
 export { decodeFrames, encodeFrame, fits, type DecodeError, type DecodeResult } from "./codec.ts";
+
+export { formatLogLine, formatLogValue, messageOf } from "./text.ts";
 
 export {
   call,
@@ -40,7 +48,6 @@ export {
   reply,
   result,
   type FetchAuditFields,
-  type InvokeFields,
   type ReplyOutcome,
   type ResultOutcome,
 } from "./constructors.ts";
