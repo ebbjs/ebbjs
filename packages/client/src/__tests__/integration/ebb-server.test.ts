@@ -25,10 +25,10 @@
  *
  * ## Skip semantics
  *
- * Every `it` block calls `shouldRun()` and short-circuits when the
- * server isn't reachable — the test counts as passing in that case,
- * matching the convention that integration tests must never make a
- * plain `pnpm test` run fail because of a missing server.
+ * The reachability gate lives in `./server`: `itIfServer` reports a test as
+ * skipped when no server answered at load time, so a missing server never
+ * makes a plain `pnpm test` run fail. The three client-side validation tests
+ * below need no server, so they use a plain `it`.
  *
  * Each test run creates its own isolated group + actor (named with a
  * per-run random suffix), so the test is reentrant against the same
@@ -57,6 +57,7 @@ import {
   type UpdateInput,
 } from "@ebbjs/core";
 import { createClient, defineAction, type SyncClient } from "../..";
+import { itIfServer, runId, SERVER_URL, serverReachable } from "./server";
 import { CURRENT_TEXT_VERSION } from "@ebbjs/schema";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
@@ -64,8 +65,6 @@ import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { ebbModel } from "@ebbjs/schema";
 import { testActions } from "../../sync/test-utils";
-
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
 
 /** The model an Update commits under; `undefined` for a delete. */
 const modelOf = (update: Update): string | undefined => {
@@ -189,7 +188,7 @@ async function addMemberWithPerms(actorId: string, permissions: readonly string[
 }
 
 /** Unique per run so the test is reentrant against the same server. */
-const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const RUN_ID = runId();
 const TEST_GROUP_ID = `grp_it_${RUN_ID}`;
 /**
  * An actor's `ebb/grant` row id, unique per run: the server's bootstrap exemption
@@ -203,27 +202,6 @@ const grantRowId = (actorId: string): string => `gm_${RUN_ID}_${actorId}`;
  * the actor-perm lookup is by member id.
  */
 const testDocId = (suffix: string): string => `doc_it_${RUN_ID}_${suffix}`;
-
-let serverReachable: boolean | null = null;
-
-async function ping(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": TEST_SEEDER },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureServerReachable(): Promise<boolean> {
-  if (serverReachable !== null) return serverReachable;
-  serverReachable = await ping(SERVER_URL);
-  return serverReachable;
-}
 
 /**
  * Drive `client.catchUp` in a loop until the server reports
@@ -244,10 +222,7 @@ async function catchUpUntilCurrent(
 }
 
 beforeAll(async () => {
-  if (!(await ensureServerReachable())) {
-    console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
-    return;
-  }
+  if (!serverReachable) return;
 
   // Bootstrap the test group in ONE action so the server's bootstrap exemption
   // applies to the group put, the actor's grant, and the membership.
@@ -363,24 +338,11 @@ async function createTestDoc(docId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Test runner: skip if the server isn't reachable
-// ---------------------------------------------------------------------------
-
-/**
- * Returns true if the test should run. Resolved at the start of each
- * `it` so the suite is skipped as a whole when the server isn't up.
- */
-async function shouldRun(): Promise<boolean> {
-  return await ensureServerReachable();
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("integration: bootstrap", () => {
-  it("handshake returns the test group for an authorized actor", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("handshake returns the test group for an authorized actor", async () => {
     const client = await connectAs("bootstrap_actor");
     try {
       expect(client.state).toBe("live");
@@ -389,8 +351,7 @@ describe("integration: bootstrap", () => {
     }
   });
 
-  it("handshake returns zero groups for an actor that never joined", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("handshake returns zero groups for an actor that never joined", async () => {
     const client = createClient({ serverUrl: SERVER_URL, actorId: "stranger_actor" });
     try {
       const { groups } = await client.handshake();
@@ -400,8 +361,7 @@ describe("integration: bootstrap", () => {
     }
   });
 
-  it("write rejects actions from a non-member actor", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("write rejects actions from a non-member actor", async () => {
     const client = createClient({ serverUrl: SERVER_URL, actorId: "stranger_actor" });
     try {
       const doc = client.textDocument(testDocId("stranger"));
@@ -416,8 +376,7 @@ describe("integration: bootstrap", () => {
 });
 
 describe("integration: localInsert round-trip", () => {
-  it("text typed by A appears in B after write + catchUp + applyActions", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("text typed by A appears in B after write + catchUp + applyActions", async () => {
     const docId = testDocId("insert_roundtrip");
     await createTestDoc(docId);
 
@@ -486,23 +445,24 @@ describe("integration: same-run concurrency (#762 fixtures)", () => {
     docB.applyActions(actions);
   };
 
-  it("insert vs insert converges on the exact text through a real Action exchange", async () => {
-    if (!(await shouldRun())) return;
-    const pair = await openPair(testDocId("concurrent_insert"));
-    try {
-      pair.docA.localInsert("X", { afterRun: pair.runId, splitParentAt: 7 });
-      pair.docB.localInsert("Y", { afterRun: pair.runId, splitParentAt: 9 });
-      await exchange(pair);
-      expect(pair.docA.text).toBe("I thinkX IY can");
-      expect(pair.docB.text).toBe("I thinkX IY can");
-    } finally {
-      pair.a.close();
-      pair.b.close();
-    }
-  });
+  itIfServer(
+    "insert vs insert converges on the exact text through a real Action exchange",
+    async () => {
+      const pair = await openPair(testDocId("concurrent_insert"));
+      try {
+        pair.docA.localInsert("X", { afterRun: pair.runId, splitParentAt: 7 });
+        pair.docB.localInsert("Y", { afterRun: pair.runId, splitParentAt: 9 });
+        await exchange(pair);
+        expect(pair.docA.text).toBe("I thinkX IY can");
+        expect(pair.docB.text).toBe("I thinkX IY can");
+      } finally {
+        pair.a.close();
+        pair.b.close();
+      }
+    },
+  );
 
-  it("delete vs insert converges and keeps the deleted range deleted", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("delete vs insert converges and keeps the deleted range deleted", async () => {
     const pair = await openPair(testDocId("concurrent_delete"));
     try {
       pair.docA.localDelete({ runId: pair.runId, offset: 2, count: 5 });
@@ -518,8 +478,7 @@ describe("integration: same-run concurrency (#762 fixtures)", () => {
 });
 
 describe("integration: localExtend round-trip", () => {
-  it("extending a run in A appears as a full-text update in B (no run split)", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("extending a run in A appears as a full-text update in B (no run split)", async () => {
     const docId = testDocId("extend_roundtrip");
     await createTestDoc(docId);
 
@@ -568,8 +527,7 @@ describe("integration: localExtend round-trip", () => {
 });
 
 describe("integration: localDelete round-trip", () => {
-  it("tombstoning a run in A removes the text in B", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("tombstoning a run in A removes the text in B", async () => {
     const docId = testDocId("delete_roundtrip");
     await createTestDoc(docId);
 
@@ -642,8 +600,7 @@ async function connectAsTodoActor(actorId: string): Promise<SyncClient> {
 }
 
 describe("integration: defineModel + ModelRegistry (#143)", () => {
-  it("rejects a client-side unknown-field action before any fetch", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("rejects a client-side unknown-field action before any fetch", async () => {
     const actor = "todo_validation_actor";
     const client = await connectAsTodoActor(actor);
     try {
@@ -691,8 +648,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
     }
   });
 
-  it("accepts a valid client-side action and the server stores it", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("accepts a valid client-side action and the server stores it", async () => {
     const actor = "todo_valid_actor";
     // Seed the entity + relationship via a no-registry client so the
     // write path is unconstrained for the bootstrap (relationship is
@@ -770,8 +726,7 @@ describe("integration: defineModel + ModelRegistry (#143)", () => {
     }
   });
 
-  it("warn-and-logs on incoming catchUp that violates the local registry", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("warn-and-logs on incoming catchUp that violates the local registry", async () => {
     const seeder = "todo_incoming_seeder";
     const receiver = "todo_incoming_receiver";
 
@@ -908,8 +863,7 @@ const buildLinkTestSchema = () => {
 };
 
 describe("integration: draft create membership", () => {
-  it("writes one ebb/membership row per group in the same Action", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("writes one ebb/membership row per group in the same Action", async () => {
     const actor = `membership_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
     const todo = defineModel("todo", {
@@ -959,8 +913,7 @@ describe("integration: draft create membership", () => {
 });
 
 describe("integration: draft link / unlink", () => {
-  it("links a domain edge and resolves membership via doc.groups", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("links a domain edge and resolves membership via doc.groups", async () => {
     const actor = `rel_roundtrip_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
     const relSchema = buildLinkTestSchema();
@@ -1014,8 +967,7 @@ describe("integration: draft link / unlink", () => {
     }
   });
 
-  it("removes a domain edge via the public unlink() API over the wire", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("removes a domain edge via the public unlink() API over the wire", async () => {
     const actor = `rel_unlink_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
     const relSchema = buildLinkTestSchema();
@@ -1075,8 +1027,7 @@ describe("integration: draft link / unlink", () => {
 // ---------------------------------------------------------------------------
 
 describe("integration: defineSchema", () => {
-  it("round-trips a schema-bearing handshake through the live server", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("round-trips a schema-bearing handshake through the live server", async () => {
     const actor = "schema_handshake_actor";
     await addMemberWithTodoPerms(actor);
 
@@ -1250,8 +1201,7 @@ describe("integration: draft create() runtime validation (#172)", () => {
     }
   });
 
-  it("accepts a conforming create() and submits the wire Update", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("accepts a conforming create() and submits the wire Update", async () => {
     const actor = "validation_roundtrip";
     await addMemberWithTodoPerms(actor);
     const todo = defineModel("todo", {
@@ -1288,8 +1238,7 @@ describe("integration: draft create() runtime validation (#172)", () => {
 });
 
 describe("integration: draft delete", () => {
-  it("tombstones a todo over the wire via the public delete() API", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("tombstones a todo over the wire via the public delete() API", async () => {
     const actor = `delete_roundtrip_${RUN_ID}`;
     await addMemberWithTodoPerms(actor);
 
@@ -1374,8 +1323,7 @@ describe("integration: multi-entity Action", () => {
     version: 1,
   });
 
-  it("creates multiple entities + their group memberships in one Action", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("creates multiple entities + their group memberships in one Action", async () => {
     const actor = `atomic_${RUN_ID}`;
     await addMemberWithTodoAndListPerms(actor);
     const client = createClient({
@@ -1450,8 +1398,7 @@ describe("integration: client.actions (defineAction)", () => {
     return { todo: todo.create({ title: "Ship it" }, { groups: [TEST_GROUP_ID] }), list: today };
   });
 
-  it("composes one Action and round-trips both entities", async () => {
-    if (!(await shouldRun())) return;
+  itIfServer("composes one Action and round-trips both entities", async () => {
     const actor = `actions_${RUN_ID}`;
     await addMemberWithTodoAndListPerms(actor);
 

@@ -7,9 +7,9 @@
  * app uses: `resolveIdentity({ serverUrl, fetchImpl })` with the wrapper.
  *
  * `EBB_AUTH_MODE=tailscale` binds the server to loopback, so the default
- * `http://127.0.0.1:4000` is the right address. A bypass or external server
- * rejects the identity probe and every test short-circuits, matching the
- * skip-don't-fail convention of the other integration suites.
+ * `http://127.0.0.1:4000` (see `./server`) is the right address. A bypass or
+ * external server rejects the identity probe, and the suite reports its tests
+ * as skipped rather than passing them through an early return.
  *
  * Run it with:
  *
@@ -19,14 +19,14 @@
  * ```
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, vi } from "vitest";
 import { buildSeedAction } from "@ebbjs/core/seed";
 import { createClient, resolveIdentity, type SyncClient } from "../..";
+import { itIf, probe, runId, TAILSCALE_SERVER_URL } from "./server";
 
-const SERVER_URL =
-  process.env.EBB_TAILSCALE_TEST_URL ?? process.env.EBB_TEST_URL ?? "http://127.0.0.1:4000";
+const SERVER_URL = TAILSCALE_SERVER_URL;
 
-const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const RUN_ID = runId();
 const LOGIN = `ts_${RUN_ID}@example.com`;
 const DISPLAY_NAME = `Tailscale ${RUN_ID}`;
 const GROUP_ID = `grp_ts_${RUN_ID}`;
@@ -47,35 +47,32 @@ const gatewayFetch =
     return fetch(input, { ...init, headers });
   };
 
-let reachable: boolean | null = null;
-
-/** Probe once: only a tailscale-mode server answers the headerless read. */
+/**
+ * Probe once, at load time: only a tailscale-mode server answers the identity
+ * read, so the probe is also the gate the wrapper below is built from.
+ */
 async function tailscaleModeAvailable(): Promise<boolean> {
-  if (reachable !== null) return reachable;
-  try {
-    const response = await fetch(`${SERVER_URL}/sync/identity`, {
-      headers: {
-        "tailscale-user-login": LOGIN,
-        "tailscale-user-name": DISPLAY_NAME,
-      },
-    });
-    if (!response.ok) {
-      reachable = false;
-    } else {
-      const body = (await response.json()) as { provider?: unknown };
-      reachable = body.provider === "tailscale";
-    }
-  } catch {
-    reachable = false;
-  }
-  if (!reachable) {
-    console.warn(
-      `[skip] no tailscale-mode ebb server at ${SERVER_URL}; ` +
-        "boot one with EBB_AUTH_MODE=tailscale to run this suite",
-    );
-  }
-  return reachable;
+  const response = await probe(`${SERVER_URL}/sync/identity`, {
+    headers: {
+      "tailscale-user-login": LOGIN,
+      "tailscale-user-name": DISPLAY_NAME,
+    },
+  });
+  if (response === null || !response.ok) return false;
+  const body = (await response.json()) as { provider?: unknown };
+  return body.provider === "tailscale";
 }
+
+const reachable = await tailscaleModeAvailable();
+
+if (!reachable) {
+  console.warn(
+    `[skip] no tailscale-mode ebb server at ${SERVER_URL}; ` +
+      "boot one with EBB_AUTH_MODE=tailscale to run this suite",
+  );
+}
+
+const itIfTailscale = itIf(reachable);
 
 /** Seed this run's group, membership, entity, and its visibility row. */
 async function seedGroup(client: SyncClient): Promise<void> {
@@ -103,7 +100,7 @@ async function seedGroup(client: SyncClient): Promise<void> {
 let client: SyncClient | null = null;
 
 beforeAll(async () => {
-  if (!(await tailscaleModeAvailable())) return;
+  if (!reachable) return;
   client = createClient({
     serverUrl: SERVER_URL,
     actorId: LOGIN,
@@ -117,9 +114,7 @@ afterAll(() => {
 });
 
 describe("integration: server-derived identity", () => {
-  it("resolves the actor from the injected Tailscale headers", async () => {
-    if (!(await tailscaleModeAvailable())) return;
-
+  itIfTailscale("resolves the actor from the injected Tailscale headers", async () => {
     const identity = await resolveIdentity({
       serverUrl: SERVER_URL,
       fetchImpl: gatewayFetch(LOGIN),
@@ -132,9 +127,9 @@ describe("integration: server-derived identity", () => {
     });
   });
 
-  it("handshakes, writes, and streams with the resolved actor", async () => {
-    if (!(await tailscaleModeAvailable()) || client === null) return;
+  itIfTailscale("handshakes, writes, and streams with the resolved actor", async () => {
     const active = client;
+    if (active === null) throw new Error("beforeAll did not seed a client");
 
     const { groups } = await active.handshake();
     expect(groups.map((group) => group.id)).toContain(GROUP_ID);
@@ -180,9 +175,7 @@ describe("integration: server-derived identity", () => {
     }
   });
 
-  it("rejects a stale cached actor with actor_mismatch", async () => {
-    if (!(await tailscaleModeAvailable())) return;
-
+  itIfTailscale("rejects a stale cached actor with actor_mismatch", async () => {
     const staleActor = `stale_${RUN_ID}@example.com`;
     const stale = createClient({
       serverUrl: SERVER_URL,

@@ -20,15 +20,15 @@
  * to seed the demo fixtures locally.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { createClient, definePresence } from "@ebbjs/client";
 import type { CursorPresence, PeerPresence, SSEEvent } from "@ebbjs/client";
 
 import { waitFor } from "../../sync/test-utils";
+import { handshakeInit, itIf, probe, runId, SERVER_URL, serverReachable } from "./server";
 
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
-const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const RUN_ID = runId();
 const GROUP_ID = "grp_demo";
 /** The document `examples/collaborative-text-demo` seeds for `grp_demo`. */
 const DOC_ID = "doc_grp_demo";
@@ -61,19 +61,6 @@ interface ClientHandle {
   close: () => void;
 }
 
-async function ping(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": "presence-test-ping" },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Probe the demo fixture: this test requires a pre-seeded `grp_demo`
  * group with a `demo-seeder` member. The standard integration CI job
@@ -81,33 +68,22 @@ async function ping(url: string): Promise<boolean> {
  * when they're absent. Probe by handshaking as `demo-seeder`; if the
  * group isn't returned, the fixture is missing.
  */
-async function demoFixtureSeeded(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": "demo-seeder" },
-      body: "{}",
-    });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { groups?: Array<{ id: string }> };
-    return (body.groups ?? []).some((g) => g.id === GROUP_ID);
-  } catch {
-    return false;
-  }
+async function demoFixtureSeeded(): Promise<boolean> {
+  const res = await probe(`${SERVER_URL}/sync/handshake`, handshakeInit("demo-seeder"));
+  if (res === null || !res.ok) return false;
+  const body = (await res.json()) as { groups?: Array<{ id: string }> };
+  return (body.groups ?? []).some((g) => g.id === GROUP_ID);
 }
 
-const serverReachable = await ping(SERVER_URL);
-const fixtureSeeded = serverReachable && (await demoFixtureSeeded(SERVER_URL));
+const fixtureSeeded = serverReachable && (await demoFixtureSeeded());
 
-if (!serverReachable) {
-  console.warn(`[skip] presence integration tests — ebb server not reachable at ${SERVER_URL}`);
-} else if (!fixtureSeeded) {
+if (serverReachable && !fixtureSeeded) {
   console.warn(
     `[skip] presence integration tests — grp_demo with demo-seeder not seeded on ${SERVER_URL}`,
   );
 }
 
-const itIfReady = serverReachable && fixtureSeeded ? it : it.skip;
+const itIfReady = itIf(fixtureSeeded);
 
 const countCalls = (calls: readonly string[], needle: string): number =>
   calls.filter((url) => url.includes(needle)).length;
@@ -209,7 +185,7 @@ describe("integration: presence", () => {
   let alice: ClientHandle | null = null;
 
   beforeAll(async () => {
-    if (!serverReachable || !fixtureSeeded) return;
+    if (!fixtureSeeded) return;
     drew = await setupActor(`drew_presence_${RUN_ID}`);
     alice = await setupActor(`alice_presence_${RUN_ID}`);
   });

@@ -5,19 +5,18 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import {
-  createClient,
   defineModel,
   defineSchema,
   e,
   type NamespacedClient,
   type SyncClient,
 } from "@ebbjs/client";
-/** The `<model>/<field>` component name a write addresses. */
-const componentName = (model: string, field: string): `${string}/${string}` => `${model}/${field}`;
+import { componentName } from "@ebbjs/core";
 
-import { EbbProvider, createEbbHooks } from "../index";
+import { createEbbHooks } from "../index";
+import { makeClient, renderWithClient } from "./support";
 
 const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
 
@@ -27,9 +26,6 @@ type Schema = typeof schema;
 type Client = NamespacedClient<Schema>;
 
 type WireAction = Parameters<SyncClient["outbox"]["enqueue"]>[0];
-
-const makeClient = (): Client =>
-  createClient({ serverUrl: "http://localhost:4000", actorId: "alice", schema });
 
 /** Bound once, at module scope — the pattern the hook factory documents. */
 const {
@@ -130,14 +126,10 @@ function SyncStateProbe() {
 
 describe("createEbbHooks", () => {
   it("runs a query whose `q` and rows are typed with no annotation", async () => {
-    const client = makeClient();
+    const client = makeClient({ schema });
     await seedTodo(client, "todo_1", "Ship it");
 
-    render(
-      <EbbProvider client={client}>
-        <TodoList />
-      </EbbProvider>,
-    );
+    renderWithClient(client, <TodoList />);
     await flush();
 
     expect(screen.getByTestId("titles").textContent).toBe("Ship it");
@@ -145,12 +137,8 @@ describe("createEbbHooks", () => {
   });
 
   it("binds the sync-state hooks to the same observables", async () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <SyncStateProbe />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema });
+    renderWithClient(client, <SyncStateProbe />);
     expect(screen.getByTestId("pending").textContent).toBe("0");
     expect(screen.getByTestId("conflicts").textContent).toBe("0");
     expect(screen.getByTestId("connection").textContent).toBe("connecting");

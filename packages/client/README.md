@@ -393,11 +393,20 @@ Three scripts:
 
 ### Integration test layout
 
-`src/__tests__/integration/` contains three files:
+`src/__tests__/integration/` holds the suites below plus `server.ts`, the
+scaffold they share: `SERVER_URL`, `runId()`, `serverReachable` (probed once,
+when the file loads), and `itIfServer`. A test registered through
+`itIfServer` reports as **skipped** when no server answers, so a suite can
+never pass by returning early. `itIf(ready)` builds the same wrapper for a
+suite whose fixtures are a second gate.
 
 - `ebb-server.test.ts` — self-seeding. Creates a unique group + members
   per run and exercises the full client ↔ server round-trip (handshake,
   catchUp, write, presence, permission rejection).
+- `row-create.test.ts` — the row-scoped create (#817) end to end: a
+  zero-component row is a legal row on every delivery path.
+- `app-scope.test.ts` — two apps, one actor, one store (#732): scope is a
+  residency filter on the handshake, not authority.
 - `identity.test.ts` — requires `EBB_AUTH_MODE=tailscale`. Wraps `fetch` to
   inject the gateway's identity headers, then resolves the actor, handshakes,
   writes, and observes the write over the live stream. It also pins the stale

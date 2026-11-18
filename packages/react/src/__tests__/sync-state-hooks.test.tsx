@@ -8,18 +8,16 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { createClient, defineModel, defineSchema, e, type SyncClient } from "@ebbjs/client";
-import { EbbProvider, useConflicts, useEbbStatus, useOutbox } from "../index";
+import { act, cleanup, screen } from "@testing-library/react";
+import { defineModel, defineSchema, e, type SyncClient } from "@ebbjs/client";
+import { useConflicts, useEbbStatus, useOutbox } from "../index";
+import { makeClient, renderWithClient } from "./support";
 
 const todo = defineModel("todo", { title: e.string(), completed: e.boolean() });
 
 const schema = defineSchema({ models: { todo }, version: 1 });
 
 type WireAction = Parameters<SyncClient["outbox"]["enqueue"]>[0];
-
-const makeClient = (): SyncClient =>
-  createClient({ serverUrl: "http://localhost:4000", actorId: "alice", schema });
 
 /** One `todo_1` title write at an explicit HLC, so LWW is pinnable. */
 const writeTitle = (args: {
@@ -97,12 +95,8 @@ function StatusProbe() {
 
 describe("useOutbox", () => {
   it("renders the outbox depth and re-renders when the buffer changes", async () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <OutboxProbe />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema });
+    renderWithClient(client, <OutboxProbe />);
     expect(screen.getByTestId("depth").textContent).toBe("0/0/0/0");
     expect(screen.getByTestId("latency").textContent).toBe("none");
 
@@ -122,14 +116,10 @@ describe("useOutbox", () => {
 
 describe("useConflicts", () => {
   it("re-renders on a conflict hold without calling list() or rehydrate()", async () => {
-    const client = makeClient();
+    const client = makeClient({ schema });
     const listSpy = vi.spyOn(client.conflicts, "list");
     const rehydrateSpy = vi.spyOn(client.conflicts, "rehydrate");
-    render(
-      <EbbProvider client={client}>
-        <ConflictProbe />
-      </EbbProvider>,
-    );
+    renderWithClient(client, <ConflictProbe />);
     expect(screen.getByTestId("count").textContent).toBe("0");
 
     await enqueue(
@@ -148,12 +138,8 @@ describe("useConflicts", () => {
 
 describe("useEbbStatus", () => {
   it("composes connection, outbox, and conflicts and follows each change", async () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <StatusProbe />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema });
+    renderWithClient(client, <StatusProbe />);
     expect(screen.getByTestId("connection").textContent).toBe("connecting");
     expect(screen.getByTestId("last-synced").textContent).toBe("never");
     expect(screen.getByTestId("pending").textContent).toBe("0");

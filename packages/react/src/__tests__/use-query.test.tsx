@@ -12,10 +12,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { useEffect, type ReactNode } from "react";
+import { act, cleanup, screen } from "@testing-library/react";
+import { useEffect } from "react";
 import {
-  createClient,
   defineModel,
   defineRelationship,
   defineSchema,
@@ -23,10 +22,9 @@ import {
   type NamespacedClient,
   type QueryStatus,
 } from "@ebbjs/client";
-/** The `<model>/<field>` component name a write addresses. */
-const componentName = (model: string, field: string): `${string}/${string}` => `${model}/${field}`;
-
-import { EbbProvider, useQuery, type QueryRoot } from "../index";
+import { componentName } from "@ebbjs/core";
+import { useQuery, type QueryRoot } from "../index";
+import { makeClient, renderWithClient, withProvider } from "./support";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -53,9 +51,6 @@ const schema = defineSchema({
 type Schema = typeof schema;
 
 type Client = NamespacedClient<Schema>;
-
-const makeClient = (): Client =>
-  createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor", schema });
 
 /** A replica row: what the client's own writes fold into the replica. */
 type ReplicaRow = {
@@ -112,6 +107,12 @@ let seedPosition = 0;
  * Fold a row into the client's replica, then write it to the shim.
  * `useQuery` reads the replica, so a shim-only row is invisible; the fold uses
  * the same Action / Update path the client's writes do.
+ *
+ * `@ebbjs/client`'s sync tests have the same helper (`seedReplicaRow`), but the
+ * package exports only its root, and a react test that reached into
+ * `packages/client/src` would land outside this project's `rootDir`. The body
+ * below is the shape `seedReplicaRow` writes: pre-shaped `FieldValue`s as each
+ * Update's `data`.
  */
 const seedRow = async (
   client: Client,
@@ -161,10 +162,6 @@ const seedAssigned = async (client: Client, assigneeName: string): Promise<void>
 
 afterEach(cleanup);
 
-function renderWithClient(client: Client, ui: ReactNode) {
-  return render(<EbbProvider client={client}>{ui}</EbbProvider>);
-}
-
 const flush = () => act(async () => {});
 
 /** One render's state, so a test can assert a status transition. */
@@ -207,7 +204,7 @@ describe("useQuery", () => {
   let client: Client;
 
   beforeEach(() => {
-    client = makeClient();
+    client = makeClient({ schema });
   });
 
   it("renders the joined rows a `with({ assignee })` selection widens, typed from the schema", async () => {
@@ -453,11 +450,7 @@ describe("useQuery", () => {
     expect(screen.getByTestId("titles").textContent).toBe("Active");
 
     await act(async () => {
-      rerender(
-        <EbbProvider client={client}>
-          <TodoList completed={true} onRender={() => {}} />
-        </EbbProvider>,
-      );
+      rerender(withProvider(client, <TodoList completed={true} onRender={() => {}} />));
     });
 
     expect(screen.getByTestId("titles").textContent).toBe("Done");

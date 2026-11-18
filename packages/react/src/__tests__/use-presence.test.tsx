@@ -9,18 +9,12 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { Type } from "@sinclair/typebox";
-import {
-  createClient,
-  defineModel,
-  definePresence,
-  defineSchema,
-  e,
-  type NamespacedClient,
-} from "@ebbjs/client";
+import { defineModel, definePresence, defineSchema, e, type NamespacedClient } from "@ebbjs/client";
 
-import { EbbProvider, createEbbHooks, usePresence } from "../index";
+import { createEbbHooks, usePresence } from "../index";
+import { makeClient, renderWithClient, withProvider } from "./support";
 
 const todo = defineModel("todo", { title: e.string() });
 const schema = defineSchema({ models: { todo }, version: 1 });
@@ -41,9 +35,6 @@ type PresenceClient = NamespacedClient<
   Record<string, never>,
   typeof presence
 >;
-
-const makeClient = (): PresenceClient =>
-  createClient({ serverUrl: "http://localhost:4000", actorId: "alice", schema, presence });
 
 /** The client's private receive runtime; the live stream is the only public way in. */
 interface PresenceRuntimeSeam {
@@ -95,12 +86,8 @@ function CameraActors({ entityId }: { entityId: string }) {
 
 describe("usePresence", () => {
   it("renders the peers on one channel, typed from the declared schema", () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <Cameras planId="plan_1" />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema, presence });
+    renderWithClient(client, <Cameras planId="plan_1" />);
     expect(screen.getByTestId("cameras").textContent).toBe("");
 
     act(() =>
@@ -118,13 +105,9 @@ describe("usePresence", () => {
   });
 
   it("does not re-render for another entity or another channel", () => {
-    const client = makeClient();
+    const client = makeClient({ schema, presence });
     let renders = 0;
-    render(
-      <EbbProvider client={client}>
-        <CursorCount onRender={() => renders++} />
-      </EbbProvider>,
-    );
+    renderWithClient(client, <CursorCount onRender={() => renders++} />);
     const initial = renders;
 
     act(() =>
@@ -148,12 +131,8 @@ describe("usePresence", () => {
   });
 
   it("drops a peer when its channel's TTL elapses", async () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <Blinkers />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema, presence });
+    renderWithClient(client, <Blinkers />);
 
     act(() => runtimeOf(client).ingest(packet("a_bob", "plan_1", "blink", { n: 1 })));
     expect(screen.getByTestId("blinkers").textContent).toBe("1");
@@ -162,12 +141,8 @@ describe("usePresence", () => {
   });
 
   it("switches targets and resubscribes when the entity prop changes", () => {
-    const client = makeClient();
-    const { rerender } = render(
-      <EbbProvider client={client}>
-        <CameraActors entityId="plan_1" />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema, presence });
+    const { rerender } = renderWithClient(client, <CameraActors entityId="plan_1" />);
 
     act(() =>
       runtimeOf(client).ingest(packet("a_bob", "plan_1", "camera", { x: 1, y: 2, zoom: 3 })),
@@ -177,11 +152,7 @@ describe("usePresence", () => {
     );
     expect(screen.getByTestId("camera-actors").textContent).toBe("a_bob");
 
-    rerender(
-      <EbbProvider client={client}>
-        <CameraActors entityId="plan_2" />
-      </EbbProvider>,
-    );
+    rerender(withProvider(client, <CameraActors entityId="plan_2" />));
     expect(screen.getByTestId("camera-actors").textContent).toBe("a_carol");
 
     // The new target's subscription is live, and the old one is gone.
@@ -195,12 +166,8 @@ describe("usePresence", () => {
   });
 
   it("drops every peer when the live stream resets", () => {
-    const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <Blinkers />
-      </EbbProvider>,
-    );
+    const client = makeClient({ schema, presence });
+    renderWithClient(client, <Blinkers />);
 
     act(() => runtimeOf(client).ingest(packet("a_bob", "plan_1", "blink", { n: 1 })));
     expect(screen.getByTestId("blinkers").textContent).toBe("1");

@@ -65,12 +65,11 @@ export { server };
 ```typescript
 // test/e2e/sync.test.ts
 import { describe, test, expect, beforeAll } from "vitest";
-import { server } from "./setup";
+import { fixture, server } from "./setup";
 import { seed } from "@ebbjs/testing";
-import { buildSingleEntitySeed } from "./seeds";
 
 beforeAll(async () => {
-  await seed(server.url, "actor_test", buildSingleEntitySeed());
+  await seed(server.url, fixture.actorId, fixture.seed);
 });
 
 test("handshake returns group membership", async () => {
@@ -78,14 +77,14 @@ test("handshake returns group membership", async () => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-ebb-actor-id": "actor_test",
+      "x-ebb-actor-id": fixture.actorId,
     },
     body: JSON.stringify({ cursors: {} }),
   });
 
   const data = await response.json();
-  expect(data.actor_id).toBe("actor_test");
-  expect(data.groups).toContainEqual(expect.objectContaining({ id: "grp_001" }));
+  expect(data.actor_id).toBe(fixture.actorId);
+  expect(data.groups).toContainEqual(expect.objectContaining({ id: fixture.groupId }));
 });
 ```
 
@@ -93,47 +92,31 @@ test("handshake returns group membership", async () => {
 
 ```typescript
 // test/e2e/seeds/single-entity.ts
-import type { SeedData } from "@ebbjs/testing";
+import type { GroupSeed, SeedData } from "@ebbjs/testing";
 
-export const buildSingleEntitySeed = (): SeedData => ({
-  groups: [{ id: "grp_001", name: "Test Group" }],
-  grants: [
-    {
-      id: "gm_001",
-      actorId: "actor_test",
-      groupId: "grp_001",
-      permissions: ["read", "write"],
-    },
-  ],
-  entities: [
-    {
-      id: "ent_001",
-      type: "todo",
-      patches: [
-        {
-          fields: {
-            title: { value: "Test Todo", updateId: "upd_ent_001_1", hlc: "1700000000000001" },
-          },
-        },
-        {
-          fields: {
-            description: {
-              value: "A description",
-              updateId: "upd_ent_001_2",
-              hlc: "1700000000000002",
-            },
-          },
-        },
-        {
-          fields: {
-            status: { value: "open", updateId: "upd_ent_001_3", hlc: "1700000000000003" },
-          },
-        },
-      ],
-    },
-  ],
-});
+export interface SingleEntityFixtureOptions {
+  groups?: readonly GroupSeed[];
+  actorId?: string;
+  entityId?: string;
+  model?: string;
+}
+
+export interface SingleEntityFixture {
+  readonly seed: SeedData;
+  readonly groupId: string;
+  readonly actorId: string;
+  readonly entityId: string;
+  readonly model: string;
+}
+
+const buildSingleEntitySeed = (
+  options: SingleEntityFixtureOptions = {},
+): SingleEntityFixture => ({ ... });
 ```
+
+The builder returns the ids alongside the seed, so a test asserts on the ids the
+seed actually used instead of re-spelling `grp_001` / `actor_test` / `ent_001`.
+Pass `{ actorId, entityId, model, groups }` to move the whole fixture at once.
 
 ## Running Tests
 
