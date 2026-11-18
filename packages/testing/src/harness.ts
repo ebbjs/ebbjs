@@ -2,20 +2,38 @@ import { spawn } from "child_process";
 import { mkdirSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { ServerOptions, RunningServer } from "./types";
+import { ReadyCheck, ServerOptions, RunningServer } from "./types";
 
-// ESM-safe equivalent of `__dirname` for the source file.
+// ESM-safe equivalent of `__dirname` for the file this runs from. It resolves
+// the same path from `src/` and from the built `dist/`, so the constant is the
+// package's one answer to "where is the release".
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const RELEASE_BIN = join(__dirname, "../dist/ebb_server/bin/ebb_server");
-const DEFAULT_PORT = 4000;
-const READY_TIMEOUT_MS = 120_000;
-const SHUTDOWN_GRACE_MS = 5_000;
+/** Absolute path to the bundled `ebb_server` release binary. */
+export const RELEASE_BIN_PATH = join(__dirname, "../dist/ebb_server/bin/ebb_server");
 
-export type { ServerOptions, RunningServer };
+const DEFAULT_PORT = 4000;
+/** How long a server gets to start before `startServer` gives up. */
+export const DEFAULT_READY_TIMEOUT_MS = 120_000;
+const SHUTDOWN_GRACE_MS = 5_000;
+/** How long the probe waits between attempts. */
+const READY_POLL_INTERVAL_MS = 100;
+/** At most one "still not up" line per window, however many attempts fail. */
+const FAILURE_LOG_INTERVAL_MS = 5_000;
+
+/**
+ * The default readiness probe: a route the server routes but holds no entity
+ * for, so a 404 proves it is serving without touching the data directory.
+ */
+export const DEFAULT_READY_CHECK: ReadyCheck = {
+  path: "/entities/non-existent-readiness-check",
+  expectedStatus: 404,
+};
+
+export type { ServerOptions, ReadyCheck, RunningServer };
 
 export async function startServer(opts: ServerOptions): Promise<RunningServer> {
-  const { dataDir, port = DEFAULT_PORT, env = {} } = opts;
+  const { dataDir, port = DEFAULT_PORT, env = {}, readyCheck = DEFAULT_READY_CHECK } = opts;
 
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
@@ -23,11 +41,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const url = `http://localhost:${port}`;
 
-  console.error("[harness] spawning server:", RELEASE_BIN);
+  console.error("[harness] spawning server:", RELEASE_BIN_PATH);
   // This harness is a dev/test tool, so it defaults the release to bypass
   // auth; prod releases require real auth configuration. An explicit
   // EBB_AUTH_MODE in `env` still overrides the default.
-  const child = spawn(RELEASE_BIN, ["start"], {
+  const child = spawn(RELEASE_BIN_PATH, ["start"], {
     env: {
       ...process.env,
       EBB_AUTH_MODE: "bypass",
@@ -81,7 +99,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
     });
 
-    waitForReady(url, READY_TIMEOUT_MS)
+    waitForReady(url, DEFAULT_READY_TIMEOUT_MS, readyCheck)
       .then(() => {
         console.error("[harness] server ready!");
         resolve({
@@ -99,27 +117,35 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   });
 }
 
-export async function waitForReady(url: string, timeoutMs = 30_000): Promise<void> {
+/** Poll `url`'s `readyCheck` until it answers, or throw once `timeoutMs` passes. */
+export async function waitForReady(
+  url: string,
+  timeoutMs = DEFAULT_READY_TIMEOUT_MS,
+  readyCheck: ReadyCheck = DEFAULT_READY_CHECK,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   console.error("[harness] waitForReady starting, URL:", url, "timeout:", timeoutMs);
 
+  let lastFailureLogAt = 0;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${url}/entities/non-existent-readiness-check`, {
+      const res = await fetch(`${url}${readyCheck.path}`, {
         headers: { "x-ebb-actor-id": "readiness-check" },
       });
+      if (res.status === readyCheck.expectedStatus) return;
       console.error("[harness] got response status:", res.status);
-      if (res.status === 404) {
-        return;
-      }
     } catch (e) {
-      // connection refused, server not up yet
-      if (Date.now() % 5000 < 200) {
+      // Connection refused: the release has not bound its port yet. The first
+      // attempt logs, then at most one line per FAILURE_LOG_INTERVAL_MS, so a
+      // slow start cannot bury the harness's own output.
+      const now = Date.now();
+      if (now - lastFailureLogAt >= FAILURE_LOG_INTERVAL_MS) {
+        lastFailureLogAt = now;
         console.error("[harness] connection attempt failed:", (e as Error).message);
       }
     }
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, READY_POLL_INTERVAL_MS));
   }
 
   throw new Error(`Server did not become ready within ${timeoutMs}ms`);

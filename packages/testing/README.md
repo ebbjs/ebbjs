@@ -20,8 +20,11 @@ Everything below is re-exported from [`src/index.ts`](./src/index.ts):
 | -------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
 | `RELEASE_BIN_PATH`                                 | const    | Absolute path to the bundled `ebb_server` release binary under `dist/`.                        |
 | `startServer`                                      | function | Spawn the release and resolve a `RunningServer` once it is ready.                              |
-| `waitForReady`                                     | function | Poll a base URL until the server answers routed requests (or time out).                        |
-| `ServerOptions`                                    | type     | `{ dataDir, port?, env? }` accepted by `startServer`.                                          |
+| `waitForReady`                                     | function | Poll a base URL's readiness route until it answers (or time out).                              |
+| `DEFAULT_READY_TIMEOUT_MS`                         | const    | The 120 s a starting release gets, in `startServer` and `waitForReady` alike.                  |
+| `DEFAULT_READY_CHECK`                              | const    | `{ path, expectedStatus }` the probe waits for: a routed 404, so it writes nothing.            |
+| `ServerOptions`                                    | type     | `{ dataDir, port?, env?, readyCheck? }` accepted by `startServer`.                             |
+| `ReadyCheck`                                       | type     | `{ path, expectedStatus }` a readiness probe waits for.                                        |
 | `RunningServer`                                    | type     | `{ pid, port, url, dataDir, kill() }` returned by `startServer`.                               |
 | `seed`                                             | function | POST a `SeedData` fixture to `/sync/actions`.                                                  |
 | `buildSeedAction`                                  | function | Build the `Action` that `seed` sends, without doing HTTP. Re-exported from `@ebbjs/core/seed`. |

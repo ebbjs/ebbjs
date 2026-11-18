@@ -7,20 +7,19 @@
  * both replicas. Scope is a residency filter, not authority: both apps
  * write as the same actor, and the actor's grants decide what lands.
  *
- * Follows the directory's ping/skip convention: every `it` short-circuits
- * when no server answers at `EBB_TEST_URL` (default localhost:4000), so
- * `pnpm test` stays green without one.
+ * The reachability gate is `./server`'s: `itIfServer` reports the tests as
+ * skipped when no server answers at `EBB_TEST_URL` (default localhost:4000),
+ * so `pnpm test` stays green without one.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect } from "vitest";
 import { createAction, createClock, EBB_COMPONENTS, EBB_MODEL_NAME, localEvent } from "@ebbjs/core";
 import { defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createClient, defineAction, type SyncClient } from "../..";
-
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+import { itIfServer, runId, SERVER_URL, serverReachable } from "./server";
 
 /** Unique per run so the suite is reentrant against the same server. */
-const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const RUN_ID = runId();
 const ALICE = `app_scope_alice_${RUN_ID}`;
 const G_NOTES = `grp_notes_${RUN_ID}`;
 const G_ISSUES = `grp_issues_${RUN_ID}`;
@@ -63,20 +62,6 @@ let notes: ReturnType<typeof createAppScopeClient> | null = null;
 let issues: ReturnType<typeof createAppScopeClient> | null = null;
 let plain: SyncClient | null = null;
 let stopIssues: (() => void) | null = null;
-let reachable = false;
-
-const ping = async (): Promise<boolean> => {
-  try {
-    const res = await fetch(`${SERVER_URL}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": ALICE },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-};
 
 const leaf = (value: unknown, updateId: string, clock: ReturnType<typeof createClock>) => ({
   value,
@@ -142,11 +127,7 @@ const titleOf = (client: SyncClient): unknown => {
 };
 
 beforeAll(async () => {
-  reachable = await ping();
-  if (!reachable) {
-    console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
-    return;
-  }
+  if (!serverReachable) return;
 
   // A plain client creates an unscoped group: absent scope means every app.
   plain = createClient({ serverUrl: SERVER_URL, actorId: ALICE });
@@ -217,9 +198,7 @@ afterAll(() => {
 });
 
 describe("app scope integration", () => {
-  it("isolates each app's replica and keeps unscoped groups everywhere", async () => {
-    if (!reachable) return;
-
+  itIfServer("isolates each app's replica and keeps unscoped groups everywhere", async () => {
     const notesIds = await handshakeIds(notes!);
     expect(notesIds).toContain(G_NOTES);
     expect(notesIds).toContain(G_BRIDGE);
@@ -233,9 +212,7 @@ describe("app scope integration", () => {
     expect(issuesIds).not.toContain(G_NOTES);
   });
 
-  it("delivers a shared entity to both apps and converges edits both ways", async () => {
-    if (!reachable) return;
-
+  itIfServer("delivers a shared entity to both apps and converges edits both ways", async () => {
     await handshakeIds(notes!);
     await handshakeIds(issues!);
 
@@ -259,21 +236,22 @@ describe("app scope integration", () => {
     expect(titleOf(issues!)).toBe("Edited by notes");
   });
 
-  it("removes a group from the app on the next reconcile when its id leaves the scope", async () => {
-    if (!reachable) return;
+  itIfServer(
+    "removes a group from the app on the next reconcile when its id leaves the scope",
+    async () => {
+      await handshakeIds(notes!);
+      // The SDK path: a whole-value `group.update`, not a hand-rolled envelope.
+      await notes!.actions.setScope({ id: G_BRIDGE, apps: ["notes"] });
 
-    await handshakeIds(notes!);
-    // The SDK path: a whole-value `group.update`, not a hand-rolled envelope.
-    await notes!.actions.setScope({ id: G_BRIDGE, apps: ["notes"] });
+      const issuesIds = await handshakeIds(issues!);
+      expect(issuesIds).not.toContain(G_BRIDGE);
+      expect(issuesIds).toContain(G_ISSUES);
 
-    const issuesIds = await handshakeIds(issues!);
-    expect(issuesIds).not.toContain(G_BRIDGE);
-    expect(issuesIds).toContain(G_ISSUES);
+      // The bridge's note is evicted from the issues replica with the group.
+      await expect.poll(() => issues!.replica.get(NOTE), { timeout: 10_000 }).toBeUndefined();
 
-    // The bridge's note is evicted from the issues replica with the group.
-    await expect.poll(() => issues!.replica.get(NOTE), { timeout: 10_000 }).toBeUndefined();
-
-    // The notes app still sees the group; nothing was denied.
-    expect(await handshakeIds(notes!)).toContain(G_BRIDGE);
-  });
+      // The notes app still sees the group; nothing was denied.
+      expect(await handshakeIds(notes!)).toContain(G_BRIDGE);
+    },
+  );
 });

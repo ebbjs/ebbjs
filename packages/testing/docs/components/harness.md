@@ -37,6 +37,15 @@ interface ServerOptions {
   port?: number;
   /** Additional environment variables */
   env?: Record<string, string>;
+  /** Route and status the readiness probe waits for (default: a 404 route) */
+  readyCheck?: ReadyCheck;
+}
+
+interface ReadyCheck {
+  /** Path appended to the base URL */
+  path: string;
+  /** The status that answers "serving"; anything else is retried */
+  expectedStatus: number;
 }
 
 interface RunningServer {
@@ -55,8 +64,12 @@ interface RunningServer {
 /** Start the server and wait for it to be ready to accept connections */
 const startServer = async (opts: ServerOptions): Promise<RunningServer>;
 
-/** Poll a URL until it returns 200, or throw on timeout */
-const waitForReady = (url: string, timeoutMs?: number): Promise<void>;
+/**
+ * Poll a URL's ready check until it answers, or throw on timeout. Both defaults
+ * are the harness's own: `DEFAULT_READY_TIMEOUT_MS` (120 s) and
+ * `DEFAULT_READY_CHECK`.
+ */
+const waitForReady = (url: string, timeoutMs?: number, readyCheck?: ReadyCheck): Promise<void>;
 ```
 
 ## Factory Signature
@@ -72,10 +85,12 @@ const createServerHarness = (): ServerHarness => ({
 
 ### Server startup
 
-The release binary is resolved from the package bundle:
+The release binary is resolved from the package bundle. `RELEASE_BIN_PATH` is
+computed once, in `src/harness.ts`, and re-exported from the package index —
+`startServer` spawns exactly the path the package publishes:
 
 ```typescript
-const releaseBin = resolve(__dirname, "../ebb_server/bin/ebb_server");
+export const RELEASE_BIN_PATH = join(__dirname, "../dist/ebb_server/bin/ebb_server");
 ```
 
 The server is started in foreground mode via:

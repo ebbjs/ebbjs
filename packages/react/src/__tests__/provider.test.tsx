@@ -5,19 +5,10 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { createClient, type SyncClient } from "@ebbjs/client";
-import { EbbProvider, useClient } from "../index";
+import { useClient } from "../index";
+import { makeClient, renderWithClient } from "./support";
 
 afterEach(cleanup);
-
-function makeClient(): SyncClient {
-  return createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor" });
-}
-
-function renderWithClient(client: SyncClient, ui: ReactNode) {
-  return render(<EbbProvider client={client}>{ui}</EbbProvider>);
-}
 
 function ClientProbe() {
   const client = useClient();

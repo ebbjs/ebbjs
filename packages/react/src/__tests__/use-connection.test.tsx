@@ -4,15 +4,11 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { createClient, type SyncClient } from "@ebbjs/client";
-import { EbbProvider, useConnection } from "../index";
+import { act, cleanup, screen } from "@testing-library/react";
+import { useConnection } from "../index";
+import { makeClient, renderWithClient } from "./support";
 
 afterEach(cleanup);
-
-function makeClient(): SyncClient {
-  return createClient({ serverUrl: "http://localhost:4000", actorId: "test-actor" });
-}
 
 function ConnectionProbe() {
   const state = useConnection();
@@ -21,22 +17,14 @@ function ConnectionProbe() {
 
 describe("useConnection", () => {
   it("reports the client's current state", () => {
-    render(
-      <EbbProvider client={makeClient()}>
-        <ConnectionProbe />
-      </EbbProvider>,
-    );
+    renderWithClient(makeClient(), <ConnectionProbe />);
 
     expect(screen.getByTestId("connection-state").textContent).toBe("connecting");
   });
 
   it("re-renders on connect/disconnect transitions", () => {
     const client = makeClient();
-    render(
-      <EbbProvider client={client}>
-        <ConnectionProbe />
-      </EbbProvider>,
-    );
+    renderWithClient(client, <ConnectionProbe />);
 
     act(() => client.setState("live"));
     expect(screen.getByTestId("connection-state").textContent).toBe("live");

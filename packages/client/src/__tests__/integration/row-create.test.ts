@@ -13,9 +13,9 @@
  *
  * ## Skip semantics
  *
- * Every `it` fits the directory's convention: `shouldRun()` short-circuits
- * when no server answers at `EBB_TEST_URL` (default `localhost:4000`), so a
- * plain `pnpm test` stays green without a server.
+ * The reachability gate lives in `./server`: `itIfServer` reports a test as
+ * skipped when no server answers at `EBB_TEST_URL` (default
+ * `localhost:4000`), so a plain `pnpm test` stays green without a server.
  *
  * ## Isolation
  *
@@ -23,7 +23,7 @@
  * suffix, so the file is reentrant against the same server.
  */
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect } from "vitest";
 import {
   componentName,
   createAction,
@@ -39,11 +39,10 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { membershipRowId } from "@ebbjs/write";
 import { createClient, defineAction } from "../..";
 import { createGroupListing, LISTING_SEED_ACTOR_ID } from "../../sync/group-listing";
-
-const SERVER_URL = process.env.EBB_TEST_URL ?? "http://localhost:4000";
+import { itIfServer, runId, SERVER_URL, serverReachable } from "./server";
 
 /** Unique per run so the suite is reentrant against the same server. */
-const RUN_ID = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const RUN_ID = runId();
 const GROUP_ID = `grp_row_create_${RUN_ID}`;
 const SEEDER_ACTOR_ID = `rc_seeder_${RUN_ID}`;
 
@@ -98,38 +97,12 @@ const dropTitle = defineAction(schema, ({ note: notes }, params: { id: string })
 
 const noteActions = { createEmptyNote, createTitledNote, patchTitle, dropTitle };
 
-let serverReachable: boolean | null = null;
-
-async function ping(url: string): Promise<boolean> {
-  try {
-    const res = await fetch(`${url}/sync/handshake`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-ebb-actor-id": SEEDER_ACTOR_ID },
-      body: "{}",
-    });
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureServerReachable(): Promise<boolean> {
-  if (serverReachable !== null) return serverReachable;
-  serverReachable = await ping(SERVER_URL);
-  return serverReachable;
-}
-
-const shouldRun = async (): Promise<boolean> => await ensureServerReachable();
-
 /** A client with no schema: the fixture seeder only needs the public write path. */
 const createSeeder = () => createClient({ serverUrl: SERVER_URL, actorId: SEEDER_ACTOR_ID });
 
 /** The test group, its schema seeder, and one member per test. */
 beforeAll(async () => {
-  if (!(await shouldRun())) {
-    console.warn(`[skip] ebb server not reachable at ${SERVER_URL}`);
-    return;
-  }
+  if (!serverReachable) return;
 
   const seeder = createSeeder();
   try {
@@ -276,9 +249,7 @@ const componentWrite = (
 });
 
 describe("integration: the row-scoped create (#817)", () => {
-  it("client.create({}) round-trips as a live row with no fields", async () => {
-    if (!(await shouldRun())) return;
-
+  itIfServer("client.create({}) round-trips as a live row with no fields", async () => {
     // Record the wire Action so the assertions can name the create's own HLC.
     const written: Action[] = [];
     const recordingFetch: typeof fetch = async (input, init) => {
@@ -338,9 +309,7 @@ describe("integration: the row-scoped create (#817)", () => {
     }
   });
 
-  it("a zero-component row reaches a cold replica through catch-up", async () => {
-    if (!(await shouldRun())) return;
-
+  itIfServer("a zero-component row reaches a cold replica through catch-up", async () => {
     const writer = await connectAs(WRITER);
     let id: string;
     let createdHlc: number | null;
@@ -371,165 +340,166 @@ describe("integration: the row-scoped create (#817)", () => {
     }
   });
 
-  it("a cold replica's listing seed materializes the zero-component row when delivery missed the create", async () => {
-    if (!(await shouldRun())) return;
-
-    const writer = await connectAs(WRITER);
-    let id: string;
-    let createdHlc: number | null;
-    try {
-      const handle = await writer.actions.createEmptyNote();
-      id = handle.id;
-      await catchUpUntilCurrent(writer);
-      createdHlc = hlcValue((await serverRow(id))!.created_hlc);
-    } finally {
-      writer.close();
-    }
-
-    // The listener subscribes to a group it has never synced. The seed pins
-    // the group's cursor at the listing watermark, so the create (older than
-    // that watermark) never arrives through the tail: the base is the listing.
-    const listener = createClient({ serverUrl: SERVER_URL, actorId: LISTENER, schema });
-    const unsubscribe = listener.subscribe([GROUP_ID], () => undefined);
-    try {
-      await expect
-        .poll(async () => (await listener.readLocalEntity(id))?.exists ?? false, {
-          timeout: 20_000,
-        })
-        .toBe(true);
-
-      const seeded = (await listener.storage.actions.getAll()).find(
-        (action) =>
-          action.actor_id === LISTING_SEED_ACTOR_ID &&
-          action.updates.some((update) => update.subject_id === id),
-      );
-      expect(seeded).toBeDefined();
-      const seedCreate = createOf([seeded!], id);
-      expect(seedCreate).toMatchObject({ model: "note", method: "create", data: null });
-
-      const row = await listener.readLocalEntity(id);
-      expect(row!.data.fields).toEqual({});
-      expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
-    } finally {
-      unsubscribe();
-      listener.close();
-    }
-  });
-
-  it("dropping the last component leaves a live row with no fields on a fresh replica", async () => {
-    if (!(await shouldRun())) return;
-
-    const writer = await connectAs(DROPPER);
-    let id: string;
-    let createdHlc: number | null;
-    try {
-      const handle = await writer.actions.createTitledNote({ title: "only field" });
-      id = handle.id;
-      await catchUpUntilCurrent(writer);
-      createdHlc = hlcValue((await serverRow(id))!.created_hlc);
-
-      await writer.actions.dropTitle({ id });
-      await catchUpUntilCurrent(writer);
-
-      const afterDrop = await writer.readLocalEntity(id);
-      expect(afterDrop!.data.fields).toEqual({});
-      expect(afterDrop!.exists).toBe(true);
-    } finally {
-      writer.close();
-    }
-
-    // The server still holds the row, with no components.
-    const wire = await serverRow(id);
-    expect(wire).not.toBeNull();
-    expect(wire!.data.fields).toEqual({});
-    expect(hlcValue(wire!.created_hlc)).toBe(createdHlc);
-
-    // A fresh replica folds create → drop and returns the row, not `null`.
-    const fresh = createClient({ serverUrl: SERVER_URL, actorId: TAILER, schema });
-    try {
-      await fresh.catchUp(GROUP_ID);
-      const row = await fresh.readLocalEntity(id);
-      expect(row).not.toBeNull();
-      expect(row!.exists).toBe(true);
-      expect(row!.data.fields).toEqual({});
-      expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
-      expect(row!.deleted_hlc).toBeNull();
-    } finally {
-      fresh.close();
-    }
-  });
-
-  it("created_hlc is the create's HLC on a replica whose first delivered write was a component write and whose base came from backfill", async () => {
-    if (!(await shouldRun())) return;
-
-    const writer = await connectAs(BACKFILLER);
-    let id: string;
-    let createdHlc: number | null;
-    let createGsn: number;
-    try {
-      const handle = await writer.actions.createTitledNote({ title: "first" });
-      id = handle.id;
-      await catchUpUntilCurrent(writer);
-      createdHlc = hlcValue((await serverRow(id))!.created_hlc);
-
-      const createAction = (await fetchActions()).find((action) =>
-        action.updates.some((update) => update.method === "create" && update.subject_id === id),
-      );
-      expect(createAction).toBeDefined();
-      createGsn = createAction!.gsn;
-      expect(createGsn).toBeGreaterThan(0);
-
-      // The reference the backfill pass needs, re-put after the create: a
-      // replica whose cursor starts past the create still learns the row is
-      // in the group. The membership row's own create is a duplicate and is a
-      // no-op, which is exactly the row-create contract.
-      const seeder = createSeeder();
+  itIfServer(
+    "a cold replica's listing seed materializes the zero-component row when delivery missed the create",
+    async () => {
+      const writer = await connectAs(WRITER);
+      let id: string;
+      let createdHlc: number | null;
       try {
-        await seeder.seed({
-          groups: [],
-          grants: [],
-          entities: [],
-          memberships: [{ id: membershipRowId(id, GROUP_ID), entityId: id, groupId: GROUP_ID }],
-        });
+        const handle = await writer.actions.createEmptyNote();
+        id = handle.id;
+        await catchUpUntilCurrent(writer);
+        createdHlc = hlcValue((await serverRow(id))!.created_hlc);
       } finally {
-        seeder.close();
+        writer.close();
       }
 
-      // The component write that reaches the replica first.
-      await writer.actions.patchTitle({ id, title: "second" });
-      await catchUpUntilCurrent(writer);
-    } finally {
-      writer.close();
-    }
+      // The listener subscribes to a group it has never synced. The seed pins
+      // the group's cursor at the listing watermark, so the create (older than
+      // that watermark) never arrives through the tail: the base is the listing.
+      const listener = createClient({ serverUrl: SERVER_URL, actorId: LISTENER, schema });
+      const unsubscribe = listener.subscribe([GROUP_ID], () => undefined);
+      try {
+        await expect
+          .poll(async () => (await listener.readLocalEntity(id))?.exists ?? false, {
+            timeout: 20_000,
+          })
+          .toBe(true);
 
-    const replica = createClient({ serverUrl: SERVER_URL, actorId: BACKFILLER, schema });
-    try {
-      // Past the create: the first delivered write for the row is the title.
-      await replica.catchUp(GROUP_ID, createGsn);
+        const seeded = (await listener.storage.actions.getAll()).find(
+          (action) =>
+            action.actor_id === LISTING_SEED_ACTOR_ID &&
+            action.updates.some((update) => update.subject_id === id),
+        );
+        expect(seeded).toBeDefined();
+        const seedCreate = createOf([seeded!], id);
+        expect(seedCreate).toMatchObject({ model: "note", method: "create", data: null });
 
-      const placeholder = await replica.readLocalEntity(id);
-      expect(placeholder).not.toBeNull();
-      expect(placeholder!.exists).toBe(false);
-      expect(placeholder!.created_hlc).toBeNull();
-      expect(placeholder!.data.fields.title?.value).toBe("second");
+        const row = await listener.readLocalEntity(id);
+        expect(row!.data.fields).toEqual({});
+        expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
+      } finally {
+        unsubscribe();
+        listener.close();
+      }
+    },
+  );
 
-      await replica.backfill();
+  itIfServer(
+    "dropping the last component leaves a live row with no fields on a fresh replica",
+    async () => {
+      const writer = await connectAs(DROPPER);
+      let id: string;
+      let createdHlc: number | null;
+      try {
+        const handle = await writer.actions.createTitledNote({ title: "only field" });
+        id = handle.id;
+        await catchUpUntilCurrent(writer);
+        createdHlc = hlcValue((await serverRow(id))!.created_hlc);
 
-      const row = await replica.readLocalEntity(id);
-      expect(row).not.toBeNull();
-      expect(row!.exists).toBe(true);
-      // The base is stamped at the row's latest position; the creation time
-      // comes from the create the base carries, not from the snapshot.
-      expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
-      expect(row!.data.fields.title?.value).toBe("second");
-    } finally {
-      replica.close();
-    }
-  });
+        await writer.actions.dropTitle({ id });
+        await catchUpUntilCurrent(writer);
 
-  it("a duplicate create changes nothing", async () => {
-    if (!(await shouldRun())) return;
+        const afterDrop = await writer.readLocalEntity(id);
+        expect(afterDrop!.data.fields).toEqual({});
+        expect(afterDrop!.exists).toBe(true);
+      } finally {
+        writer.close();
+      }
 
+      // The server still holds the row, with no components.
+      const wire = await serverRow(id);
+      expect(wire).not.toBeNull();
+      expect(wire!.data.fields).toEqual({});
+      expect(hlcValue(wire!.created_hlc)).toBe(createdHlc);
+
+      // A fresh replica folds create → drop and returns the row, not `null`.
+      const fresh = createClient({ serverUrl: SERVER_URL, actorId: TAILER, schema });
+      try {
+        await fresh.catchUp(GROUP_ID);
+        const row = await fresh.readLocalEntity(id);
+        expect(row).not.toBeNull();
+        expect(row!.exists).toBe(true);
+        expect(row!.data.fields).toEqual({});
+        expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
+        expect(row!.deleted_hlc).toBeNull();
+      } finally {
+        fresh.close();
+      }
+    },
+  );
+
+  itIfServer(
+    "created_hlc is the create's HLC on a replica whose first delivered write was a component write and whose base came from backfill",
+    async () => {
+      const writer = await connectAs(BACKFILLER);
+      let id: string;
+      let createdHlc: number | null;
+      let createGsn: number;
+      try {
+        const handle = await writer.actions.createTitledNote({ title: "first" });
+        id = handle.id;
+        await catchUpUntilCurrent(writer);
+        createdHlc = hlcValue((await serverRow(id))!.created_hlc);
+
+        const createAction = (await fetchActions()).find((action) =>
+          action.updates.some((update) => update.method === "create" && update.subject_id === id),
+        );
+        expect(createAction).toBeDefined();
+        createGsn = createAction!.gsn;
+        expect(createGsn).toBeGreaterThan(0);
+
+        // The reference the backfill pass needs, re-put after the create: a
+        // replica whose cursor starts past the create still learns the row is
+        // in the group. The membership row's own create is a duplicate and is a
+        // no-op, which is exactly the row-create contract.
+        const seeder = createSeeder();
+        try {
+          await seeder.seed({
+            groups: [],
+            grants: [],
+            entities: [],
+            memberships: [{ id: membershipRowId(id, GROUP_ID), entityId: id, groupId: GROUP_ID }],
+          });
+        } finally {
+          seeder.close();
+        }
+
+        // The component write that reaches the replica first.
+        await writer.actions.patchTitle({ id, title: "second" });
+        await catchUpUntilCurrent(writer);
+      } finally {
+        writer.close();
+      }
+
+      const replica = createClient({ serverUrl: SERVER_URL, actorId: BACKFILLER, schema });
+      try {
+        // Past the create: the first delivered write for the row is the title.
+        await replica.catchUp(GROUP_ID, createGsn);
+
+        const placeholder = await replica.readLocalEntity(id);
+        expect(placeholder).not.toBeNull();
+        expect(placeholder!.exists).toBe(false);
+        expect(placeholder!.created_hlc).toBeNull();
+        expect(placeholder!.data.fields.title?.value).toBe("second");
+
+        await replica.backfill();
+
+        const row = await replica.readLocalEntity(id);
+        expect(row).not.toBeNull();
+        expect(row!.exists).toBe(true);
+        // The base is stamped at the row's latest position; the creation time
+        // comes from the create the base carries, not from the snapshot.
+        expect(hlcValue(row!.created_hlc)).toBe(createdHlc);
+        expect(row!.data.fields.title?.value).toBe("second");
+      } finally {
+        replica.close();
+      }
+    },
+  );
+
+  itIfServer("a duplicate create changes nothing", async () => {
     const writer = await connectAs(DUPLICATOR);
     let id: string;
     let createdHlc: number | null;
@@ -588,9 +558,7 @@ describe("integration: the row-scoped create (#817)", () => {
     expect(new Set(seedIds).size).toBe(1);
   });
 
-  it("the server refuses a component write for a row it has no create for", async () => {
-    if (!(await shouldRun())) return;
-
+  itIfServer("the server refuses a component write for a row it has no create for", async () => {
     const clock = createClock();
     const hlc = localEvent(clock);
     const orphanId = `note_orphan_${RUN_ID}`;
