@@ -292,10 +292,25 @@ defmodule EbbServer.Functions.Router do
     Admin.authorize(conn, admin_token: admin_token(conn)) == :ok
   end
 
+  # Identity first, then the deploy credential: a request with no actor is a
+  # 401 even when it also lacks the admin token. Upload stamps its row with the
+  # actor that authorized it; the other admin routes ignore the id.
+  defp with_admin(conn, fun) do
+    with_actor(conn, fn conn, actor_id ->
+      if admin_authorized?(conn) do
+        fun.(conn, actor_id)
+      else
+        admin_denied(conn)
+      end
+    end)
+  end
+
   defp send_json(conn, status, body), do: respond(conn, {status, body, []})
 
-  defp internal_error(conn) do
-    send_json(conn, 500, %{"error" => "internal_error", "details" => store_unavailable()})
+  defp internal_error(conn), do: respond(conn, internal_failure())
+
+  defp internal_failure do
+    {500, %{"error" => "internal_error", "details" => store_unavailable()}, []}
   end
 
   defp store_unavailable, do: "the functions store is unavailable"
@@ -427,13 +442,7 @@ defmodule EbbServer.Functions.Router do
   # The credential is checked before the body is read: an unauthorized caller
   # should not be able to make the server buffer eight megabytes first.
   defp upload_version(conn, name) do
-    with_actor(conn, fn conn, actor_id ->
-      if admin_authorized?(conn) do
-        read_and_upload(conn, name, actor_id)
-      else
-        admin_denied(conn)
-      end
-    end)
+    with_admin(conn, fn conn, actor_id -> read_and_upload(conn, name, actor_id) end)
   end
 
   defp read_and_upload(conn, name, actor_id) do
@@ -460,40 +469,39 @@ defmodule EbbServer.Functions.Router do
     end
   end
 
-  defp invalid_schema(conn, field, reason) do
-    send_json(conn, 422, %{
-      "error" => "invalid_schema",
-      "details" => "#{field} is not a valid JSON Schema: #{reason}"
-    })
-  end
-
   defp record_version(conn, %Bundle{} = bundle, pinned, actor_id, deployment_hash) do
-    case store_put_version(conn, version_attrs(bundle, pinned, actor_id, deployment_hash)) do
+    attrs = version_attrs(bundle, pinned, actor_id, deployment_hash)
+
+    failures = %{
+      already_exists:
+        {409, %{"error" => "already_exists", "details" => duplicate_details(bundle)}, []}
+    }
+
+    case store_call(conn, fn store -> Store.put_version(attrs, store) end, failures) do
       {:ok, %Version{} = version} ->
-        send_json(conn, 201, %{
-          "ok" => true,
-          "name" => version.name,
-          "version" => version.version,
-          "status" => version.status,
-          "pinned" => version.pinned
-        })
+        version_reply(conn, 201, version, %{"pinned" => version.pinned})
 
-      {:error, :already_exists} ->
-        send_json(conn, 409, %{
-          "error" => "already_exists",
-          "details" => duplicate_details(bundle)
-        })
-
-      {:error, {:invalid_schema, field, reason}} ->
-        invalid_schema(conn, field, reason)
-
-      {:error, _reason} ->
-        internal_error(conn)
+      {:error, response} ->
+        respond(conn, response)
     end
   end
 
-  defp store_put_version(conn, attrs) do
-    with_store(fn -> Store.put_version(attrs, store(conn)) end)
+  # The write routes answer with the row the store returned; upload adds the pin
+  # flag because it is the one route that sets it.
+  defp version_reply(conn, status, %Version{} = version, extra \\ %{}) do
+    send_json(
+      conn,
+      status,
+      Map.merge(
+        %{
+          "ok" => true,
+          "name" => version.name,
+          "version" => version.version,
+          "status" => version.status
+        },
+        extra
+      )
+    )
   end
 
   # The store is another process: a node being torn down makes it exit, which
@@ -503,6 +511,30 @@ defmodule EbbServer.Functions.Router do
   catch
     :exit, reason -> {:error, {:store_unavailable, reason}}
   end
+
+  # A store failure is an answer, not something each route re-derives: a row
+  # whose schema no longer resolves is a 422 naming the field, and anything else
+  # is a 500. `failures` names the tags a route answers itself, so only those
+  # have to be written down.
+  defp store_call(conn, fun, failures \\ %{}) do
+    case with_store(fn -> fun.(store(conn)) end) do
+      {:ok, value} ->
+        {:ok, value}
+
+      {:error, reason} ->
+        {:error, Map.get_lazy(failures, reason, fn -> store_failure(reason) end)}
+    end
+  end
+
+  defp store_failure({:invalid_schema, field, reason}) do
+    {422,
+     %{
+       "error" => "invalid_schema",
+       "details" => "#{field} is not a valid JSON Schema: #{reason}"
+     }, []}
+  end
+
+  defp store_failure(_reason), do: internal_failure()
 
   defp version_attrs(%Bundle{} = bundle, pinned, actor_id, deployment_hash) do
     %{
@@ -612,33 +644,14 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp decode_upload(body, conn) do
-    case Jason.decode(body) do
-      {:ok, %{} = payload} ->
-        {:ok, payload, conn}
-
-      {:ok, _other} ->
-        {:error,
-         {400,
-          %{
-            "error" => "invalid_json",
-            "details" => "request body must be a JSON object"
-          }, []}, conn}
-
-      {:error, _reason} ->
-        {:error,
-         {400, %{"error" => "invalid_json", "details" => "request body is not valid JSON"}, []},
-         conn}
+    case decode_object(body) do
+      {:ok, payload} -> {:ok, payload, conn}
+      {:error, reason} -> {:error, invalid_json(reason), conn}
     end
   end
 
   defp activate_version(conn, name) do
-    with_actor(conn, fn conn, _actor_id ->
-      if admin_authorized?(conn) do
-        read_and_activate(conn, name)
-      else
-        admin_denied(conn)
-      end
-    end)
+    with_admin(conn, fn conn, _actor_id -> read_and_activate(conn, name) end)
   end
 
   defp read_and_activate(conn, name) do
@@ -649,31 +662,20 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp activate(conn, name, version) do
-    case store_activate(conn, name, version) do
+    failures = %{
+      not_found:
+        {404,
+         %{"error" => "not_found", "details" => "no version #{version} of #{name} was uploaded"},
+         []}
+    }
+
+    case store_call(conn, fn store -> Store.activate(name, version, store) end, failures) do
       {:ok, %Version{} = activated} ->
-        send_json(conn, 200, %{
-          "ok" => true,
-          "name" => activated.name,
-          "version" => activated.version,
-          "status" => activated.status
-        })
+        version_reply(conn, 200, activated)
 
-      {:error, :not_found} ->
-        send_json(conn, 404, %{
-          "error" => "not_found",
-          "details" => "no version #{version} of #{name} was uploaded"
-        })
-
-      {:error, {:invalid_schema, field, reason}} ->
-        invalid_schema(conn, field, reason)
-
-      {:error, _reason} ->
-        internal_error(conn)
+      {:error, response} ->
+        respond(conn, response)
     end
-  end
-
-  defp store_activate(conn, name, version) do
-    with_store(fn -> Store.activate(name, version, store(conn)) end)
   end
 
   defp read_activation(conn) do
@@ -696,34 +698,37 @@ defmodule EbbServer.Functions.Router do
             "details" => "version must be a non-empty string"
           }, []}, conn}
 
-      {:error, details} ->
-        {:error, {400, %{"error" => "invalid_json", "details" => details}, []}, conn}
+      {:error, reason} ->
+        {:error, invalid_json(reason), conn}
     end
   end
 
+  # The three body readers differ in what a decoded object has to contain and
+  # in the envelope they answer with, so they share only the decode itself.
   defp decode_object(body) do
     case Jason.decode(body) do
-      {:ok, %{} = payload} -> {:ok, payload}
-      {:ok, _other} -> {:error, "request body must be a JSON object"}
-      {:error, _reason} -> {:error, "request body is not valid JSON"}
+      {:ok, %{} = object} -> {:ok, object}
+      {:ok, _other} -> {:error, :not_object}
+      {:error, _reason} -> {:error, :bad_json}
     end
   end
 
+  defp invalid_json(reason) do
+    {400, %{"error" => "invalid_json", "details" => invalid_json_details(reason)}, []}
+  end
+
+  defp invalid_json_details(:not_object), do: "request body must be a JSON object"
+  defp invalid_json_details(:bad_json), do: "request body is not valid JSON"
+
   defp list_function_versions(conn, name) do
-    with_actor(conn, fn conn, _actor_id ->
-      if admin_authorized?(conn) do
-        history(conn, name)
-      else
-        admin_denied(conn)
-      end
-    end)
+    with_admin(conn, fn conn, _actor_id -> history(conn, name) end)
   end
 
   # An unknown name and a name with no rows are the same answer: the history
   # endpoint names a function that does not exist. A disabled name still has
   # rows, so it remains visible and can be re-activated.
   defp history(conn, name) do
-    case with_store(fn -> Store.versions(name, store(conn)) end) do
+    case store_call(conn, fn store -> Store.versions(name, store) end) do
       {:ok, []} ->
         send_json(conn, 404, %{
           "error" => "not_found",
@@ -733,8 +738,8 @@ defmodule EbbServer.Functions.Router do
       {:ok, versions} ->
         send_json(conn, 200, %{"versions" => Enum.map(versions, &version_info/1)})
 
-      {:error, _reason} ->
-        internal_error(conn)
+      {:error, response} ->
+        respond(conn, response)
     end
   end
 
@@ -756,73 +761,51 @@ defmodule EbbServer.Functions.Router do
     do: Map.put(info, "deploymentHash", hash)
 
   defp rollback_version(conn, name) do
-    with_actor(conn, fn conn, _actor_id ->
-      if admin_authorized?(conn) do
-        rollback(conn, name)
-      else
-        admin_denied(conn)
-      end
-    end)
+    with_admin(conn, fn conn, _actor_id -> rollback(conn, name) end)
   end
 
   defp rollback(conn, name) do
-    case with_store(fn -> Store.rollback(name, store(conn)) end) do
+    failures = %{
+      not_found:
+        {404,
+         %{
+           "error" => "not_found",
+           "details" => "#{name} has no active version to roll back from"
+         }, []},
+      no_previous_version:
+        {409,
+         %{
+           "error" => "no_previous_version",
+           "details" => "#{name} has no earlier activation to roll back to"
+         }, []}
+    }
+
+    case store_call(conn, fn store -> Store.rollback(name, store) end, failures) do
       {:ok, %Version{} = active} ->
-        send_json(conn, 200, %{
-          "ok" => true,
-          "name" => active.name,
-          "version" => active.version,
-          "status" => active.status
-        })
+        version_reply(conn, 200, active)
 
-      {:error, :not_found} ->
-        send_json(conn, 404, %{
-          "error" => "not_found",
-          "details" => "#{name} has no active version to roll back from"
-        })
-
-      {:error, :no_previous_version} ->
-        send_json(conn, 409, %{
-          "error" => "no_previous_version",
-          "details" => "#{name} has no earlier activation to roll back to"
-        })
-
-      {:error, {:invalid_schema, field, reason}} ->
-        invalid_schema(conn, field, reason)
-
-      {:error, _reason} ->
-        internal_error(conn)
+      {:error, response} ->
+        respond(conn, response)
     end
   end
 
   defp disable_function(conn, name) do
-    with_actor(conn, fn conn, _actor_id ->
-      if admin_authorized?(conn) do
-        disable(conn, name)
-      else
-        admin_denied(conn)
-      end
-    end)
+    with_admin(conn, fn conn, _actor_id -> disable(conn, name) end)
   end
 
   defp disable(conn, name) do
-    case with_store(fn -> Store.disable(name, store(conn)) end) do
+    failures = %{
+      not_found:
+        {404, %{"error" => "not_found", "details" => "#{name} has no active version to disable"},
+         []}
+    }
+
+    case store_call(conn, fn store -> Store.disable(name, store) end, failures) do
       {:ok, %Version{} = disabled} ->
-        send_json(conn, 200, %{
-          "ok" => true,
-          "name" => disabled.name,
-          "version" => disabled.version,
-          "status" => disabled.status
-        })
+        version_reply(conn, 200, disabled)
 
-      {:error, :not_found} ->
-        send_json(conn, 404, %{
-          "error" => "not_found",
-          "details" => "#{name} has no active version to disable"
-        })
-
-      {:error, _reason} ->
-        internal_error(conn)
+      {:error, response} ->
+        respond(conn, response)
     end
   end
 
@@ -914,10 +897,9 @@ defmodule EbbServer.Functions.Router do
   end
 
   defp decode_input(body, conn) do
-    case Jason.decode(body) do
-      {:ok, %{} = input} -> {:ok, input, conn}
-      {:ok, _other} -> {:error, 400, "request body must be a JSON object", conn}
-      {:error, _reason} -> {:error, 400, "request body is not valid JSON", conn}
+    case decode_object(body) do
+      {:ok, input} -> {:ok, input, conn}
+      {:error, reason} -> {:error, 400, invalid_json_details(reason), conn}
     end
   end
 
