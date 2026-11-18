@@ -9,14 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import {
-  decodeSync,
-  isComponentUpdate,
-  makeHlc,
-  type Action,
-  type Entity,
-  type Update,
-} from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, makeHlc, type Action, type Entity } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { applyUpdate } from "@ebbjs/storage/replica";
 
@@ -30,7 +23,14 @@ import { ActionRejectedError } from "@ebbjs/write";
 import { ActionResolutionError, type ActionDrafts, type GroupRef } from "../drafts";
 import { createClient } from "../client";
 import type { Rejection } from "../types";
-import { platformEntity, rowFields, rowsByModel } from "../test-utils";
+import {
+  entityRow,
+  linkRow,
+  membershipRow,
+  platformEntity,
+  rowFields,
+  rowsByModel,
+} from "../test-utils";
 
 const list = defineModel("list", { name: e.string() });
 const label = defineModel("label", { name: e.string() });
@@ -296,45 +296,11 @@ const submittedActions = (seen: readonly RecordedRequest[]): readonly Action[] =
 const updatesOf = (seen: readonly RecordedRequest[]): Action["updates"] =>
   submittedActions(seen).flatMap((action) => action.updates);
 
-/** The Updates of one model, grouped into one list per subject row. */
-/** The rows of `model`; a platform name matches its component's rows. */
-const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] =>
-  rowsByModel(updates, model);
-
-/** A row's component values, keyed by field. */
-const fieldsOf = (row: readonly Update[]): Record<string, unknown> => rowFields(row);
-
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([key, value]) => [
-        key,
-        { value, update_id: "u_src", hlc: makeHlc(5) },
-      ]),
-    ),
-  },
-  exists: true,
-  created_hlc: makeHlc(1),
-  updated_hlc: makeHlc(1),
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
-const mkMembership = (id: string, entityId: string, groupId: string): Entity =>
-  platformEntity(id, "membership", { entity_id: entityId, group_id: groupId });
-
+/** A row as a peer's write left it: a field stamp older than the row's create. */
+const syncedRow = (id: string, model: string, fields: Record<string, unknown>): Entity =>
+  entityRow(id, model, fields, { updateId: "u_src", hlc: makeHlc(5), createdHlc: makeHlc(1) });
 const mkMember = (id: string, groupId: string, permissions: readonly string[]): Entity =>
   platformEntity(id, "grant", { group_id: groupId, actor_id: "actor_1", permissions });
-
-const mkRelationship = (id: string, sourceId: string, targetId: string): Entity =>
-  platformEntity(id, "link", {
-    source_id: sourceId,
-    target_id: targetId,
-    field: "list",
-    type: "todo",
-  });
 
 /** Seed a `todo` row plus its `membership` memberships. */
 const seedTodo = async (
@@ -343,9 +309,9 @@ const seedTodo = async (
   fields: Record<string, unknown>,
   groups: readonly string[] = ["g_1"],
 ): Promise<void> => {
-  await storage.entities.set(mkEntity(id, "todo", { tags: [], ...fields }));
+  await storage.entities.set(syncedRow(id, "todo", { tags: [], ...fields }));
   for (const [index, groupId] of groups.entries()) {
-    await storage.entities.set(mkMembership(`eg_${id}_${index}`, id, groupId));
+    await storage.entities.set(membershipRow(`eg_${id}_${index}`, id, groupId));
   }
 };
 
@@ -358,14 +324,14 @@ describe("drafts — update / delete", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "todo");
+    const [row] = rowsByModel(updates, "todo");
     expect(row).toHaveLength(1);
     expect(row![0]).toMatchObject({
       subject_id: "todo_1",
       component: "todo/title",
       method: "merge",
     });
-    expect(fieldsOf(row!)["title"]).toBe("Renamed");
+    expect(rowFields(row!)["title"]).toBe("Renamed");
   });
 
   it("delete emits one delete Update carrying no data", async () => {
@@ -383,8 +349,8 @@ describe("drafts — update / delete", () => {
 describe("drafts — drop", () => {
   it("emits one drop Update and leaves a row that lost its last component alive", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("note_1", "note", { draft: { text: "hello" } }));
-    await storage.entities.set(mkMembership("eg_note_1", "note_1", "g_1"));
+    await storage.entities.set(syncedRow("note_1", "note", { draft: { text: "hello" } }));
+    await storage.entities.set(membershipRow("eg_note_1", "note_1", "g_1"));
 
     await client.actions.dropNoteDraft({ id: "note_1" });
 
@@ -426,11 +392,11 @@ describe("drafts — duplicate", () => {
 
     expect(actionCalls(seen)).toHaveLength(1);
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "todo");
+    const [row] = rowsByModel(updates, "todo");
     expect(copy.id).toMatch(/^e_/);
     expect(row![0]).toMatchObject({ subject_id: copy.id, method: "create", model: "todo" });
     expect(row!.slice(1).every((update) => update.method === "replace")).toBe(true);
-    expect(fieldsOf(row!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
+    expect(rowFields(row!)).toMatchObject({ title: "Ship", completed: true, tags: [] });
     // Verbatim stamps: the copy is a snapshot of the source's merge state,
     // not a re-stamped write.
     const title = row!.find(
@@ -439,10 +405,10 @@ describe("drafts — duplicate", () => {
     expect(title.method).not.toBe("delete");
     expect((title.data as { update_id: string }).update_id).toBe("u_src");
 
-    const memberships = rowsOf(updates, "membership");
+    const memberships = rowsByModel(updates, "membership");
     expect(memberships).toHaveLength(2);
-    expect(memberships.every((row) => fieldsOf(row)["entity_id"] === copy.id)).toBe(true);
-    expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
+    expect(memberships.every((row) => rowFields(row)["entity_id"] === copy.id)).toBe(true);
+    expect(memberships.map((row) => rowFields(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("honors explicit groups over the source's live set", async () => {
@@ -451,8 +417,8 @@ describe("drafts — duplicate", () => {
 
     await client.actions.duplicateTodo({ id: "todo_1", groups: ["g_2"] });
 
-    const memberships = rowsOf(updatesOf(seen), "membership");
-    expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_2"]);
+    const memberships = rowsByModel(updatesOf(seen), "membership");
+    expect(memberships.map((row) => rowFields(row)["group_id"])).toEqual(["g_2"]);
   });
 });
 
@@ -464,22 +430,22 @@ describe("drafts — link / unlink / setLinks", () => {
     await client.actions.linkTodoList({ id: "todo_1", targetId: { id: "list_9" } });
 
     const updates = updatesOf(seen);
-    const relationships = rowsOf(updates, "link");
+    const relationships = rowsByModel(updates, "link");
     expect(relationships).toHaveLength(1);
-    expect(fieldsOf(relationships[0]!)).toMatchObject({
+    expect(rowFields(relationships[0]!)).toMatchObject({
       source_id: "todo_1",
       target_id: "list_9",
       field: "list",
       type: "todo",
     });
     // The source's memberships scope the edge; they are not membership writes.
-    expect(rowsOf(updates, "membership")).toEqual([]);
+    expect(rowsByModel(updates, "membership")).toEqual([]);
   });
 
   it("unlink deletes the live relationship row by its id", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "todo_1", { title: "Ship", completed: false });
-    await storage.entities.set(mkRelationship("rel_1", "todo_1", "list_1"));
+    await storage.entities.set(linkRow("rel_1", "todo_1", "list_1", "list", "todo"));
 
     await client.actions.unlinkTodoList({ id: "todo_1" });
 
@@ -504,12 +470,12 @@ describe("drafts — link / unlink / setLinks", () => {
     await client.actions.setTodoLabels({ id: "todo_1", labels: ["label_1", "label_2"] });
 
     const updates = updatesOf(seen);
-    const [entityRow] = rowsOf(updates, "todo");
-    expect(fieldsOf(entityRow!)["tags"]).toEqual(["label_1", "label_2"]);
+    const [entityRow] = rowsByModel(updates, "todo");
+    expect(rowFields(entityRow!)["tags"]).toEqual(["label_1", "label_2"]);
 
-    const relationships = rowsOf(updates, "link");
+    const relationships = rowsByModel(updates, "link");
     expect(relationships).toHaveLength(2);
-    expect(relationships.map((row) => fieldsOf(row)["target_id"]).sort()).toEqual([
+    expect(relationships.map((row) => rowFields(row)["target_id"]).sort()).toEqual([
       "label_1",
       "label_2",
     ]);
@@ -545,11 +511,11 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.setTodoGroups({ id: "todo_1", groupIds: ["g_2", "g_3"] });
 
     const updates = updatesOf(seen);
-    const rows = rowsOf(updates, "membership");
+    const rows = rowsByModel(updates, "membership");
     expect(rows).toHaveLength(1);
     const added = rows[0]!;
     expect(added[0]!.subject_id).toBe(membershipRowId("todo_1", "g_3"));
-    expect(fieldsOf(added)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
+    expect(rowFields(added)).toMatchObject({ entity_id: "todo_1", group_id: "g_3" });
     const deleted = updates.find((update) => update.method === "delete")!;
     // The row the local view knows, not the derived id: the delete names
     // the row to remove, and carries nothing else on the wire.
@@ -579,9 +545,9 @@ describe("drafts — addToGroup / removeFromGroup / setGroups", () => {
     await client.actions.shareBoth();
 
     expect(actionCalls(seen)).toHaveLength(1);
-    const memberships = rowsOf(updatesOf(seen), "membership");
+    const memberships = rowsByModel(updatesOf(seen), "membership");
     expect(new Set(memberships.map((row) => row[0]!.subject_id)).size).toBe(2);
-    expect(memberships.map((row) => fieldsOf(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
+    expect(memberships.map((row) => rowFields(row)["group_id"]).sort()).toEqual(["g_1", "g_2"]);
   });
 
   it("refuses removing the entity's last membership before any network call", async () => {
@@ -639,7 +605,7 @@ describe("drafts — membership.update / membership.delete", () => {
     await client.actions.demoteMember({ memberId: "gm_1" });
 
     const updates = updatesOf(seen);
-    const [row] = rowsOf(updates, "grant");
+    const [row] = rowsByModel(updates, "grant");
     expect(row).toHaveLength(1);
     // A grant is one atomic value, so a permission patch rewrites the value.
     expect(row![0]).toMatchObject({
@@ -647,15 +613,15 @@ describe("drafts — membership.update / membership.delete", () => {
       component: "ebb/grant",
       method: "replace",
     });
-    expect(fieldsOf(row!)["actor_id"]).toBe("actor_1");
-    expect(fieldsOf(row!)["permissions"]).toEqual([]);
+    expect(rowFields(row!)["actor_id"]).toBe("actor_1");
+    expect(rowFields(row!)["permissions"]).toEqual([]);
   });
 
   it("leaveWorkspace removes the profile membership and the member row in one Action", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(mkEntity("profile_1", "profile", { name: "Drew" }));
-    await storage.entities.set(mkMembership("eg_personal", "profile_1", "g_personal"));
-    await storage.entities.set(mkMembership("eg_workspace", "profile_1", "g_1"));
+    await storage.entities.set(syncedRow("profile_1", "profile", { name: "Drew" }));
+    await storage.entities.set(membershipRow("eg_personal", "profile_1", "g_personal"));
+    await storage.entities.set(membershipRow("eg_workspace", "profile_1", "g_1"));
     await storage.entities.set(mkMember("gm_1", "g_1", ["profile.*"]));
     await storage.entities.set(mkMember("gm_2", "g_1", ["ebb/grant.*"]));
 
@@ -744,8 +710,8 @@ describe("drafts — call order is wire order", () => {
     const updates = updatesOf(seen);
     expect(updates[0]).toMatchObject({ subject_id: created.id, method: "create", model: "todo" });
     expect(updates[1]).toMatchObject({ subject_id: created.id, component: "todo/title" });
-    const memberships = rowsOf(updates, "membership");
-    expect(memberships.map((row) => fieldsOf(row)["group_id"])).toEqual(["g_1", "g_2"]);
+    const memberships = rowsByModel(updates, "membership");
+    expect(memberships.map((row) => rowFields(row)["group_id"])).toEqual(["g_1", "g_2"]);
     expect(memberships[1]![0]!.subject_id).toBe(membershipRowId(created.id, "g_2"));
   });
 
@@ -755,7 +721,7 @@ describe("drafts — call order is wire order", () => {
     const created = await client.actions.createThenShare({ groupId: "g_1" });
 
     const updates = updatesOf(seen);
-    expect(rowsOf(updates, "membership")).toHaveLength(1);
+    expect(rowsByModel(updates, "membership")).toHaveLength(1);
     expect(
       updates.filter((update) => update.subject_id === created.id && update.method === "replace"),
     ).not.toHaveLength(0);

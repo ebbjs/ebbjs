@@ -13,7 +13,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
-import { isPlatformModel, rowComponents } from "../test-utils";
+import { flushTasks, isPlatformModel, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 
@@ -57,8 +57,6 @@ const ingest = (
     gsn,
   );
 };
-
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Write the named components in one action, so the journal reports exactly them. */
 const write = (
@@ -203,7 +201,7 @@ describe("query cache: status and subscription", () => {
 
     const seen: string[] = [];
     store.subscribe(() => seen.push(store.getSnapshot().status));
-    await flush();
+    await flushTasks();
 
     expect(store.getSnapshot()).toMatchObject({ status: "current", loading: false });
     expect(store.getSnapshot().data).toEqual([row("todo_1")]);
@@ -236,7 +234,7 @@ describe("query cache: status and subscription", () => {
 
     const store = cache.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(runs).toBe(1);
 
     // A second listener joins before the change lands, while the first run
@@ -245,7 +243,7 @@ describe("query cache: status and subscription", () => {
     store.subscribe(() => seen.push("late"), { initial: false });
     ingest(replica, "todo", "todo_1");
     finish([row("todo_1")]);
-    await flush();
+    await flushTasks();
     expect(seen).toContain("late");
   });
 
@@ -260,7 +258,7 @@ describe("query cache: status and subscription", () => {
     const seen: string[] = [];
     store.subscribe(() => seen.push("first"));
     store.subscribe(() => seen.push("second"));
-    await flush();
+    await flushTasks();
     expect(seen.sort()).toEqual(["first", "second"]);
   });
 
@@ -271,7 +269,7 @@ describe("query cache: status and subscription", () => {
 
     const first = cache.watch("rows", todoQuery(), source);
     first.subscribe(() => {});
-    await flush();
+    await flushTasks();
 
     const second = cache.watch(
       "rows",
@@ -290,7 +288,7 @@ describe("query cache: status and subscription", () => {
     const source = sourceWith(() => rows);
     const first = cache.watch("rows", todoQuery(), source);
     const detach = first.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
     detach();
 
@@ -303,7 +301,7 @@ describe("query cache: status and subscription", () => {
     const second = cache.watch("rows", todoQuery(), source);
     expect(second.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     const detachSecond = second.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(second.getSnapshot().status).toBe("current");
     expect(second.getSnapshot().data).toEqual([row("todo_1"), row("todo_2")]);
     detachSecond();
@@ -321,10 +319,10 @@ describe("query cache: invalidation", () => {
     store.subscribe(() => {
       notified += 1;
     });
-    await flush();
+    await flushTasks();
 
     source.resolve([row("todo_1")]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(notified).toBe(1);
 
@@ -334,11 +332,11 @@ describe("query cache: invalidation", () => {
     expect(source.runs).toBe(2);
     // The pending async refresh publishes `stale` so a mounted view can show
     // the still-usable result while the new one is in flight.
-    await flush();
+    await flushTasks();
     expect(notified).toBe(2);
 
     source.resolve([row("todo_1"), row("todo_2")]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(notified).toBe(3);
   });
@@ -353,20 +351,20 @@ describe("query cache: invalidation", () => {
     store.subscribe(() => {
       notified += 1;
     });
-    await flush();
+    await flushTasks();
     source.resolve([row("todo_1")]);
-    await flush();
+    await flushTasks();
     expect(notified).toBe(1);
 
     // The change re-runs to the same rows, but the pending refresh still
     // publishes `stale`; its settle must wake the view back to `current`.
     ingest(replica, "todo", "todo_1");
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
     expect(notified).toBe(2);
 
     source.resolve([row("todo_1")]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(store.getSnapshot().data).toEqual([row("todo_1")]);
     expect(notified).toBe(3);
@@ -382,7 +380,7 @@ describe("query cache: invalidation", () => {
     store.subscribe(() => {
       notified += 1;
     });
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     ingest(replica, "note", "note_1");
@@ -402,7 +400,7 @@ describe("query cache: invalidation", () => {
     };
     const store = cache.watch("rows", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     ingest(replica, "link", "rel_1");
@@ -419,12 +417,12 @@ describe("query cache: invalidation", () => {
     store.subscribe(() => {
       notified += 1;
     });
-    await flush();
+    await flushTasks();
     expect(notified).toBe(1);
     const beforeData = store.getSnapshot().data;
 
     ingest(replica, "todo", "todo_1", "todo_1");
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(2);
     expect(store.getSnapshot().data).toBe(beforeData);
     expect(store.getSnapshot().status).toBe("current");
@@ -447,7 +445,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => ["todo_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     // A collection result is the matching id set, so a title write is not a
@@ -469,7 +467,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "todo", { title: "Ship it" });
@@ -485,7 +483,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     // The cached result carries the title, so a title write must re-run it.
@@ -512,7 +510,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => ["todo_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "todo", { draft: "wip" });
@@ -531,7 +529,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => ["todo_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" });
@@ -550,11 +548,11 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => ["g_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: [] });
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "g_1", "group", { name: "Renamed" });
@@ -568,7 +566,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     // Detaching the last component leaves a row that exists with nothing
@@ -578,7 +576,7 @@ describe("query cache: component-granular invalidation", () => {
     const before = replica.revision;
     remove(replica, "todo_1");
     expect(replica.changesSince(before)).toMatchObject([{ components: [] }]);
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(3);
   });
 
@@ -592,7 +590,7 @@ describe("query cache: component-granular invalidation", () => {
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "ebb", { link: "x" });
@@ -619,7 +617,7 @@ describe("query cache: failure", () => {
     store.subscribe(() => {
       notified += 1;
     });
-    await flush();
+    await flushTasks();
 
     expect(store.getSnapshot()).toMatchObject({ status: "failed", loading: false });
     expect(store.getSnapshot().error?.message).toBe("boom");
@@ -627,7 +625,7 @@ describe("query cache: failure", () => {
 
     shouldFail = false;
     ingest(replica, "todo", "todo_2");
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot()).toMatchObject({ status: "current", error: null });
     expect(store.getSnapshot().data).toEqual([row("todo_1")]);
     expect(notified).toBe(2);
@@ -646,7 +644,7 @@ describe("query cache: inactive result TTL (#499)", () => {
       sourceWith(() => [row("todo_1")]),
     );
     const detach = first.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(first.getSnapshot().status).toBe("current");
     detach();
 
@@ -660,7 +658,7 @@ describe("query cache: inactive result TTL (#499)", () => {
       loading: true,
     });
     second.subscribe(() => {});
-    await flush();
+    await flushTasks();
     expect(remountSource.runs).toBe(1);
     expect(second.getSnapshot().data).toEqual([row("todo_2")]);
   });
@@ -670,7 +668,7 @@ describe("query cache: inactive result TTL (#499)", () => {
     const cache = createQueryCache(replica, undefined, { ttlMs: 1_000 });
     const source = sourceWith(() => [row("todo_1")]);
     const detach = cache.watch("rows", todoQuery(), source).subscribe(() => {});
-    await flush();
+    await flushTasks();
     detach();
 
     const remountSource = sourceWith(() => [row("todo_2")]);
@@ -686,7 +684,7 @@ describe("query cache: inactive result TTL (#499)", () => {
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
 
     await sleep(25);
 
@@ -708,11 +706,11 @@ describe("query cache: change-journal floor (#499)", () => {
     const source = deferredSource();
     const store = cache.watch("rows", todoQuery(), source);
     store.subscribe(() => {});
-    await flush();
+    await flushTasks();
 
     // Prime the cache at revision 1.
     source.resolve([row("todo_1")]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(replica.changeFloor).toBe(0);
 
@@ -728,11 +726,11 @@ describe("query cache: change-journal floor (#499)", () => {
     // floor the note-only window would not intersect the reads; the gap
     // forces the full re-run instead.
     source.resolve([row("todo_1", "todo_1 next")]);
-    await flush();
+    await flushTasks();
     expect(source.runs).toBe(3);
 
     source.resolve([row("todo_1", "todo_1 next")]);
-    await flush();
+    await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(store.getSnapshot().data).toEqual([row("todo_1", "todo_1 next")]);
   });

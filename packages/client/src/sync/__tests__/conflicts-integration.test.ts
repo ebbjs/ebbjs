@@ -16,8 +16,7 @@ import { decodeSync, isComponentUpdate, makeHlc, type Action } from "@ebbjs/core
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
-import { callApplyAction } from "../test-utils";
-import { testActions } from "./test-actions";
+import { callApplyAction, testActions } from "../test-utils";
 import { defineComponent, defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import type { Conflict, ConflictEntry } from "../conflicts";

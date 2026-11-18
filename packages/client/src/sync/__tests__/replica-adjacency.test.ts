@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { makeHlc, type Action, type Entity, type FieldValue, type Update } from "@ebbjs/core";
+import { makeHlc, type Action, type FieldValue, type Update } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -22,8 +22,13 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction, platformEntity, rowComponents } from "../test-utils";
-import { testActions } from "./test-actions";
+import {
+  callApplyAction,
+  entityRow,
+  platformEntity,
+  rowComponents,
+  testActions,
+} from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -120,22 +125,6 @@ const mkClient = (storage: ReturnType<typeof createMemoryAdapter>) =>
       new Response(JSON.stringify({ rejected: [] }), { status: 200 })) as unknown as typeof fetch,
   });
 
-/** A shim-only user row (no action-log entry, no replica adjacency). */
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
 /** Fold `actions` into a replica, as hydration would from the log. */
 const seedReplica = (actions: readonly Action[]) => {
   const replica = createReplica();
@@ -156,8 +145,8 @@ describe("replica adjacency accessors (#520)", () => {
     await storage.replica.save(replica.toRecord());
     // The shim holds the entity rows so `get` can project them; the
     // adjacency rows live only in the replica record.
-    await storage.entities.set(mkEntity("todo_1", "todo", { title: "Ship" }));
-    await storage.entities.set(mkEntity("user_1", "user", { name: "Ada" }));
+    await storage.entities.set(entityRow("todo_1", "todo", { title: "Ship" }));
+    await storage.entities.set(entityRow("user_1", "user", { name: "Ada" }));
     await storage.entities.set(platformEntity("group_1", "group", { name: "Work" }));
 
     const client = mkClient(storage);

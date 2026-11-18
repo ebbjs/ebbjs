@@ -30,31 +30,8 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
-import { platformEntity } from "../test-utils";
+import { entityRow, linkRow, platformEntity } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
-
-const mkEntity = (id: string, model: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
-const mkRel = (
-  id: string,
-  sourceId: string,
-  targetId: string,
-  field: string,
-  type: string,
-): Entity => platformEntity(id, "link", { source_id: sourceId, target_id: targetId, field, type });
 
 /** Fold one materialized row into the replica the way hydrate would. */
 const ingestRow = (replica: ReturnType<typeof createReplica>, entity: Entity, position: number) => {
@@ -87,17 +64,17 @@ type Backend = "storage" | "replica";
 const mkStore = async (unrelatedCount: number, backend: Backend) => {
   const adapter = createMemoryAdapter();
   const rows: Entity[] = [
-    mkEntity("t1", "todo", { title: "Ship" }),
-    mkEntity("l1", "list", { name: "Work" }),
-    mkRel("rel-1", "t1", "l1", "parentList", "todo"),
+    entityRow("t1", "todo", { title: "Ship" }),
+    entityRow("l1", "list", { name: "Work" }),
+    linkRow("rel-1", "t1", "l1", "parentList", "todo"),
     platformEntity("g1", "group", { name: "G" }),
     platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }),
   ];
   for (let i = 0; i < unrelatedCount; i += 1) {
     rows.push(
-      mkEntity(`other-${i}`, "todo", { title: `other ${i}` }),
-      mkRel(`unrelated-rel-${i}`, `other-${i}`, `unrelated-list-${i}`, "parentList", "todo"),
-      mkEntity(`unrelated-list-${i}`, "list", { name: `List ${i}` }),
+      entityRow(`other-${i}`, "todo", { title: `other ${i}` }),
+      linkRow(`unrelated-rel-${i}`, `other-${i}`, `unrelated-list-${i}`, "parentList", "todo"),
+      entityRow(`unrelated-list-${i}`, "list", { name: `List ${i}` }),
       platformEntity(`unrelated-eg-${i}`, "membership", {
         entity_id: `other-${i}`,
         group_id: `unrelated-group-${i}`,

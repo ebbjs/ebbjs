@@ -20,6 +20,7 @@ import type {
 
 import type { ConflictedOutboxEntry, OutboxCounts, OutboxEntry } from "./outbox";
 import { createConflicts, findPreSyncRow, type ConflictsDependencies } from "./conflicts";
+import { stampedRow } from "./test-utils";
 
 const LOCAL_HLC = makeHlc(1_711_036_800_000);
 const PEER_HLC = makeHlc(1_711_036_800_001);
@@ -47,17 +48,9 @@ const leaf = (value: unknown, updateId = "u_local", hlc = LOCAL_HLC): FieldValue
   hlc,
 });
 
-/** A materialized entity row for one subject. */
-const mkEntity = (id: string, fields: Record<string, FieldValue>, model = "todo"): Entity => ({
-  id,
-  model,
-  data: { fields },
-  exists: true,
-  created_hlc: LOCAL_HLC,
-  updated_hlc: LOCAL_HLC,
-  deleted_hlc: null,
-  last_gsn: 1,
-});
+/** A row whose fields `leaf()` has already stamped, at the local HLC. */
+const localRow = (id: string, fields: Record<string, FieldValue>, model = "todo"): Entity =>
+  stampedRow(id, model, fields, { createdHlc: LOCAL_HLC, lastGsn: 1 });
 
 /** The before/after rows for one losing subject. */
 const mkState = (
@@ -494,8 +487,8 @@ describe("Conflict scope and report", () => {
   });
 
   it("makes slots absent for an entity-scope conflict and keeps the diff", async () => {
-    const before = mkEntity("doc_1", { content: { map: { a: leaf("mine") } } }, "doc");
-    const after = mkEntity("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } }, "doc");
+    const before = localRow("doc_1", { content: { map: { a: leaf("mine") } } }, "doc");
+    const after = localRow("doc_1", { content: { map: { b: leaf("theirs", "u_peer") } } }, "doc");
     const harness = mkDeps([
       mkRow("act_local", "1", {
         scope: "entity",
@@ -560,9 +553,9 @@ describe("Conflict scope and report", () => {
 
 describe("Conflict.subjectStates", () => {
   it("dedupes a subject across losing entries, keeping the earliest before and latest after", async () => {
-    const first = mkEntity("todo_1", { title: leaf("first") });
-    const middle = mkEntity("todo_1", { title: leaf("middle") });
-    const last = mkEntity("todo_1", { title: leaf("last") });
+    const first = localRow("todo_1", { title: leaf("first") });
+    const middle = localRow("todo_1", { title: leaf("middle") });
+    const last = localRow("todo_1", { title: leaf("last") });
     const harness = mkDeps([
       mkRow("act_b", "2", {
         conflictId: "c_shared",
@@ -589,8 +582,8 @@ describe("Conflict.subjectStates", () => {
       mkRow("act_a", "1", {
         subjects: ["todo_2", "todo_1"],
         subjectStates: [
-          mkState("todo_2", mkEntity("todo_2", { title: leaf("a") }), null),
-          mkState("todo_1", mkEntity("todo_1", { title: leaf("b") }), null),
+          mkState("todo_2", localRow("todo_2", { title: leaf("a") }), null),
+          mkState("todo_1", localRow("todo_1", { title: leaf("b") }), null),
         ],
       }),
     ]);
@@ -612,13 +605,13 @@ describe("Conflict.subjectStates", () => {
         subjectStates: [
           mkState(
             "todo_1",
-            mkEntity("todo_1", { title: leaf("mine") }),
-            mkEntity("todo_1", { title: leaf("theirs", "u_peer") }),
+            localRow("todo_1", { title: leaf("mine") }),
+            localRow("todo_1", { title: leaf("theirs", "u_peer") }),
           ),
           mkState(
             "todo_2",
-            mkEntity("todo_2", { title: leaf("mine") }),
-            mkEntity("todo_2", { title: leaf("theirs", "u_peer") }),
+            localRow("todo_2", { title: leaf("mine") }),
+            localRow("todo_2", { title: leaf("theirs", "u_peer") }),
           ),
         ],
       }),
@@ -639,8 +632,8 @@ describe("Conflict.subjectStates", () => {
 
 describe("findPreSyncRow", () => {
   it("returns the before row of the earliest conflict referencing the entity", async () => {
-    const early = mkEntity("todo_1", { title: leaf("early") });
-    const late = mkEntity("todo_1", { title: leaf("late") });
+    const early = localRow("todo_1", { title: leaf("early") });
+    const late = localRow("todo_1", { title: leaf("late") });
     const harness = mkDeps([
       mkRow("act_late", "99", {
         conflictId: "c_late",
@@ -663,7 +656,7 @@ describe("findPreSyncRow", () => {
     const harness = mkDeps([
       mkRow("act_a", "1", {
         subjects: ["todo_2"],
-        subjectStates: [mkState("todo_2", mkEntity("todo_2", { title: leaf("x") }), null)],
+        subjectStates: [mkState("todo_2", localRow("todo_2", { title: leaf("x") }), null)],
       }),
     ]);
     const { conflicts } = createConflicts(harness.deps);
@@ -676,7 +669,7 @@ describe("findPreSyncRow", () => {
     const harness = mkDeps([
       mkRow("act_a", "1", {
         subjects: ["todo_1"],
-        subjectStates: [mkState("todo_1", null, mkEntity("todo_1", { title: leaf("merged") }))],
+        subjectStates: [mkState("todo_1", null, localRow("todo_1", { title: leaf("merged") }))],
       }),
     ]);
     const { conflicts } = createConflicts(harness.deps);

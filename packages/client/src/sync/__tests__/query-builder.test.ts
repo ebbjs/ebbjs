@@ -22,6 +22,7 @@ import {
   projectRow,
   projectRows,
 } from "../query-builder";
+import { entityRow } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -31,30 +32,15 @@ const todo = defineModel("todo", {
 
 type Todo = Static<typeof todo.shape>;
 
-const mkEntity = (id: string, fields: Record<string, unknown>): Entity => ({
-  id,
-  model: "todo",
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: null,
-  last_gsn: 0,
-});
-
 describe("projectEntity", () => {
   it("projects set fields to their value", () => {
-    const entity = mkEntity("1", { title: "Ship", completed: false });
+    const entity = entityRow("1", "todo", { title: "Ship", completed: false });
     const row = projectEntity(entity, todo.shape);
     expect(row).toEqual({ title: "Ship", completed: false, body: undefined });
   });
 
   it("projects a tombstoned leaf to undefined when it has no default", () => {
-    const entity = mkEntity("1", { title: "Ship", completed: false, body: null });
+    const entity = entityRow("1", "todo", { title: "Ship", completed: false, body: null });
     const row = projectEntity(entity, todo.shape);
     expect(row.body).toBeUndefined();
   });
@@ -105,7 +91,7 @@ describe("projectEntity — map fields", () => {
 
 describe("projected rows carry the entity id", () => {
   it("projectRow adds the entity id to the shape projection", () => {
-    const entity = mkEntity("t1", { title: "a", completed: false });
+    const entity = entityRow("t1", "todo", { title: "a", completed: false });
     expect(projectRow(entity, todo.shape)).toEqual({
       title: "a",
       completed: false,
@@ -116,7 +102,7 @@ describe("projected rows carry the entity id", () => {
   });
 
   it("projectQueryRow adds the entity id and its group ids", () => {
-    const entity = mkEntity("t1", { title: "a", completed: false });
+    const entity = entityRow("t1", "todo", { title: "a", completed: false });
     expect(projectQueryRow(entity, todo.shape, ["g1", "g2"])).toEqual({
       title: "a",
       completed: false,
@@ -131,22 +117,24 @@ describe("projected rows carry the entity id", () => {
       groupIds: e.string(),
       title: e.string(),
     });
-    const entity = mkEntity("t1", { groupIds: "field-value", title: "a" });
+    const entity = entityRow("t1", "todo", { groupIds: "field-value", title: "a" });
     expect(projectQueryRow(entity, withGroupIdsField.shape, ["g1"]).groupIds).toEqual(["g1"]);
   });
 
   it("the injected id wins over a same-named field, and reads as a string", () => {
     const withIdField = defineModel("withIdField", { id: e.string(), title: e.string() });
-    expect(projectRow(mkEntity("t1", { id: "field-value" }), withIdField.shape).id).toBe("t1");
+    expect(projectRow(entityRow("t1", "todo", { id: "field-value" }), withIdField.shape).id).toBe(
+      "t1",
+    );
 
     const withNumberId = defineModel("withNumberId", { id: e.number(), title: e.string() });
     // Compile-time proof: the row's `id` is the injected string, not the field's number.
-    const id: string = projectRow(mkEntity("t1", { id: 42 }), withNumberId.shape).id;
+    const id: string = projectRow(entityRow("t1", "todo", { id: 42 }), withNumberId.shape).id;
     expect(id).toBe("t1");
   });
 
   it("a candidate row carries no groupIds (no membership source)", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: false })];
     const [row] = await buildQueryBuilder(rows, todo.shape);
     expect(row).not.toHaveProperty("groupIds");
     if (row !== undefined) {
@@ -159,25 +147,25 @@ describe("projected rows carry the entity id", () => {
 describe("buildQueryBuilder — chain mutators", () => {
   it("where filters by field equality", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape).where("completed", false);
     expect(out.map((r) => r.title)).toEqual(["a", "c"]);
   });
 
   it("has / hasNot refuse a chain over already-materialized rows", () => {
-    const chain = buildQueryBuilder([mkEntity("1", { title: "a" })], todo.shape);
+    const chain = buildQueryBuilder([entityRow("1", "todo", { title: "a" })], todo.shape);
     expect(() => chain.has("title")).toThrow(/carries no component index/);
     expect(() => chain.hasNot("title")).toThrow(/carries no component index/);
   });
 
   it("orderBy sorts by field", async () => {
     const rows = [
-      mkEntity("1", { title: "banana", completed: false }),
-      mkEntity("2", { title: "apple", completed: false }),
-      mkEntity("3", { title: "cherry", completed: false }),
+      entityRow("1", "todo", { title: "banana", completed: false }),
+      entityRow("2", "todo", { title: "apple", completed: false }),
+      entityRow("3", "todo", { title: "cherry", completed: false }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape).orderBy("title", "asc");
     expect(out.map((r) => r.title)).toEqual(["apple", "banana", "cherry"]);
@@ -185,9 +173,9 @@ describe("buildQueryBuilder — chain mutators", () => {
 
   it("limit caps the result count", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: false }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape).limit(2);
     expect(out.map((r) => r.title)).toEqual(["a", "b"]);
@@ -195,10 +183,10 @@ describe("buildQueryBuilder — chain mutators", () => {
 
   it("chains where + orderBy + limit", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-      mkEntity("3", { title: "c", completed: true }),
-      mkEntity("4", { title: "d", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
+      entityRow("3", "todo", { title: "c", completed: true }),
+      entityRow("4", "todo", { title: "d", completed: true }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape)
       .where("completed", true)
@@ -209,8 +197,8 @@ describe("buildQueryBuilder — chain mutators", () => {
 
   it("returns a new builder on every chain call (no shared state)", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
     ];
     const base = buildQueryBuilder(rows, todo.shape);
     const a = base.where("completed", true);
@@ -224,9 +212,9 @@ describe("buildQueryBuilder — chain mutators", () => {
 describe("buildQueryBuilder — .or(...) disjunction", () => {
   it("unions two single-filter groups", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: true }),
-      mkEntity("2", { title: "b", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: true }),
+      entityRow("2", "todo", { title: "b", completed: false }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape).where("completed", true).or("title", "b");
     expect(out.map((r) => r.title)).toEqual(["a", "b"]);
@@ -234,10 +222,10 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
   it("(a AND b) OR (c AND d) truth table", async () => {
     const rows = [
-      mkEntity("r1", { title: "a", completed: false }), // a=true, b → match
-      mkEntity("r2", { title: "b", completed: true }), // c=true, d → match
-      mkEntity("r3", { title: "b", completed: false }), // d but not c
-      mkEntity("r4", { title: "a", completed: true }), // b but not a
+      entityRow("r1", "todo", { title: "a", completed: false }), // a=true, b → match
+      entityRow("r2", "todo", { title: "b", completed: true }), // c=true, d → match
+      entityRow("r3", "todo", { title: "b", completed: false }), // d but not c
+      entityRow("r4", "todo", { title: "a", completed: true }), // b but not a
     ];
     const out = await buildQueryBuilder(rows, todo.shape)
       .where("completed", false)
@@ -249,8 +237,8 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
   it("leading .or starts the first group, like .where", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: true }),
-      mkEntity("2", { title: "b", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: true }),
+      entityRow("2", "todo", { title: "b", completed: false }),
     ];
     const viaOr = await buildQueryBuilder(rows, todo.shape).or("completed", true);
     const viaWhere = await buildQueryBuilder(rows, todo.shape).where("completed", true);
@@ -260,8 +248,8 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
   it("an empty branch contributes nothing to the union", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
     ];
     // The leading group matches nothing, so only the `.or` branch survives.
     const out = await buildQueryBuilder(rows, todo.shape)
@@ -272,9 +260,9 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
   it("composes with orderBy, limit, first, count, exists and async iteration", async () => {
     const rows = [
-      mkEntity("1", { title: "banana", completed: false }),
-      mkEntity("2", { title: "apple", completed: false }),
-      mkEntity("3", { title: "cherry", completed: true }),
+      entityRow("1", "todo", { title: "banana", completed: false }),
+      entityRow("2", "todo", { title: "apple", completed: false }),
+      entityRow("3", "todo", { title: "cherry", completed: true }),
     ];
     const qb = buildQueryBuilder(rows, todo.shape).where("completed", false).or("title", "cherry");
     expect((await qb.orderBy("title", "asc")).map((r) => r.title)).toEqual([
@@ -296,7 +284,7 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
   });
 
   it("returns empty when every group matches nothing", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: false })];
     const out = await buildQueryBuilder(rows, todo.shape)
       .where("title", "nope")
       .or("completed", true);
@@ -346,8 +334,8 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
   it("returns a new builder on every .or call (no shared state)", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
     ];
     const base = buildQueryBuilder(rows, todo.shape).where("completed", false);
     const withOr = base.or("completed", true);
@@ -358,7 +346,7 @@ describe("buildQueryBuilder — .or(...) disjunction", () => {
 
 describe("buildQueryBuilder — thenable projection", () => {
   it("await qb resolves to readonly Static<typeof shape>[]", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: false, body: null })];
     const out: readonly Todo[] = await buildQueryBuilder(rows, todo.shape);
     expect(out[0]?.title).toBe("a");
     expect(out[0]?.completed).toBe(false);
@@ -366,9 +354,9 @@ describe("buildQueryBuilder — thenable projection", () => {
   });
 
   it("projection honors all three field states", async () => {
-    const setEntity = mkEntity("1", { title: "set", completed: true, body: "note" });
-    const nulledEntity = mkEntity("2", { title: "nulled", completed: false, body: null });
-    const absentEntity = mkEntity("3", { title: "absent", completed: false });
+    const setEntity = entityRow("1", "todo", { title: "set", completed: true, body: "note" });
+    const nulledEntity = entityRow("2", "todo", { title: "nulled", completed: false, body: null });
+    const absentEntity = entityRow("3", "todo", { title: "absent", completed: false });
     const out: readonly Todo[] = await buildQueryBuilder(
       [setEntity, nulledEntity, absentEntity],
       todo.shape,
@@ -392,15 +380,17 @@ describe("buildQueryBuilder — thenable projection", () => {
 describe("buildQueryBuilder — .toRaw() escape hatch", () => {
   it("await qb.toRaw() resolves through the chain's filters", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
     ];
     const out = await buildQueryBuilder(rows, todo.shape).where("completed", false).toRaw();
     expect(out.map((e) => e.id)).toEqual(["1"]);
   });
 
   it("returns the untyped wire rows, not the projected shape", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false, body: null })];
+    const rows = [
+      entityRow("1", "todo", { title: "a", completed: false, body: null }, { updateId: "u" }),
+    ];
     const out = await buildQueryBuilder(rows, todo.shape).toRaw();
     expect(out[0]?.id).toBe("1");
     // Wire envelope is intact: `data.fields.title.value` is "a", not the projected string.
@@ -413,8 +403,8 @@ describe("buildQueryBuilder — tombstone exclusion", () => {
   const tombstone = (entity: Entity): Entity => ({ ...entity, deleted_hlc: "9" });
 
   it("excludes a tombstoned candidate from every terminal", async () => {
-    const dead = tombstone(mkEntity("1", { title: "gone", completed: false }));
-    const live = mkEntity("2", { title: "here", completed: false });
+    const dead = tombstone(entityRow("1", "todo", { title: "gone", completed: false }));
+    const live = entityRow("2", "todo", { title: "here", completed: false });
     const builder = buildQueryBuilder([dead, live], todo.shape);
 
     expect((await builder).map((r) => r.title)).toEqual(["here"]);
@@ -425,7 +415,7 @@ describe("buildQueryBuilder — tombstone exclusion", () => {
 
   it("keeps a live row that carries the same fields as a tombstone", async () => {
     const fields = { title: "same", completed: false };
-    const rows = [tombstone(mkEntity("1", fields)), mkEntity("2", fields)];
+    const rows = [tombstone(entityRow("1", "todo", fields)), entityRow("2", "todo", fields)];
     const out = await buildQueryBuilder(rows, todo.shape);
     expect(out.map((r) => r.title)).toEqual(["same"]);
   });
@@ -510,7 +500,7 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
     // Field equality is structural (see `valuesEqual`), so a fresh array
     // with the same elements matches. The point here is that a schema-valid
     // array reaches the field filter rather than throwing.
-    const rows: Entity[] = [mkEntity("1", { title: "x", tags: ["a", "b"] })];
+    const rows: Entity[] = [entityRow("1", "todo", { title: "x", tags: ["a", "b"] })];
     const out = await buildQueryBuilder(rows, tagged.shape).where("tags", ["a", "b"]);
     expect(out.map((r) => r.title)).toEqual(["x"]);
   });
@@ -527,25 +517,25 @@ describe("buildQueryBuilder — value narrowing against the field map", () => {
 describe("buildQueryBuilder — .first()", () => {
   it("returns the first projected survivor", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const first = await buildQueryBuilder(rows, todo.shape).where("completed", false).first();
     expect(first?.title).toBe("a");
   });
 
   it("returns undefined when no rows match", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: true })];
     const first = await buildQueryBuilder(rows, todo.shape).where("completed", false).first();
     expect(first).toBeUndefined();
   });
 
   it("honors orderBy before picking the first", async () => {
     const rows = [
-      mkEntity("1", { title: "banana", completed: false }),
-      mkEntity("2", { title: "apple", completed: false }),
-      mkEntity("3", { title: "cherry", completed: false }),
+      entityRow("1", "todo", { title: "banana", completed: false }),
+      entityRow("2", "todo", { title: "apple", completed: false }),
+      entityRow("3", "todo", { title: "cherry", completed: false }),
     ];
     const first = await buildQueryBuilder(rows, todo.shape).orderBy("title", "asc").first();
     expect(first?.title).toBe("apple");
@@ -555,25 +545,25 @@ describe("buildQueryBuilder — .first()", () => {
 describe("buildQueryBuilder — .count()", () => {
   it("counts the surviving rows", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const n = await buildQueryBuilder(rows, todo.shape).where("completed", false).count();
     expect(n).toBe(2);
   });
 
   it("returns 0 when no rows match", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: true })];
     const n = await buildQueryBuilder(rows, todo.shape).where("completed", false).count();
     expect(n).toBe(0);
   });
 
   it("honors limit when counting", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: false }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: false }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const n = await buildQueryBuilder(rows, todo.shape).limit(2).count();
     expect(n).toBe(2);
@@ -583,21 +573,21 @@ describe("buildQueryBuilder — .count()", () => {
 describe("buildQueryBuilder — .exists()", () => {
   it("returns true when at least one row matches", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
     ];
     const exists = await buildQueryBuilder(rows, todo.shape).where("completed", false).exists();
     expect(exists).toBe(true);
   });
 
   it("returns false when no rows match", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: true })];
     const exists = await buildQueryBuilder(rows, todo.shape).where("completed", false).exists();
     expect(exists).toBe(false);
   });
 
   it("honors limit when checking existence", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: false })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: false })];
     const exists = await buildQueryBuilder(rows, todo.shape).limit(0).exists();
     expect(exists).toBe(false);
   });
@@ -606,9 +596,9 @@ describe("buildQueryBuilder — .exists()", () => {
 describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
   it("yields each projected survivor", async () => {
     const rows = [
-      mkEntity("1", { title: "a", completed: false }),
-      mkEntity("2", { title: "b", completed: true }),
-      mkEntity("3", { title: "c", completed: false }),
+      entityRow("1", "todo", { title: "a", completed: false }),
+      entityRow("2", "todo", { title: "b", completed: true }),
+      entityRow("3", "todo", { title: "c", completed: false }),
     ];
     const titles: string[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
@@ -618,7 +608,7 @@ describe("buildQueryBuilder — [Symbol.asyncIterator]", () => {
   });
 
   it("yields nothing when no rows match", async () => {
-    const rows = [mkEntity("1", { title: "a", completed: true })];
+    const rows = [entityRow("1", "todo", { title: "a", completed: true })];
     const out: Todo[] = [];
     for await (const row of buildQueryBuilder(rows, todo.shape).where("completed", false)) {
       out.push(row);
@@ -632,7 +622,7 @@ describe("buildLazyQueryBuilder", () => {
     let calls = 0;
     const loader = async () => {
       calls += 1;
-      return [mkEntity("1", { title: "a", completed: false })];
+      return [entityRow("1", "todo", { title: "a", completed: false })];
     };
     const builder = buildLazyQueryBuilder(loader, todo.shape).where("completed", false);
     expect(calls).toBe(0);
@@ -643,14 +633,14 @@ describe("buildLazyQueryBuilder", () => {
 
   it("re-loads on every await (reflects the latest snapshot)", async () => {
     let n = 0;
-    const loader = async () => [mkEntity("1", { title: String(n++), completed: false })];
+    const loader = async () => [entityRow("1", "todo", { title: String(n++), completed: false })];
     const builder = buildLazyQueryBuilder(loader, todo.shape);
     expect((await builder)[0]?.title).toBe("0");
     expect((await builder)[0]?.title).toBe("1");
   });
 
   it("toRaw() also re-loads candidates", async () => {
-    const loader = async () => [mkEntity("1", { title: "a", completed: false })];
+    const loader = async () => [entityRow("1", "todo", { title: "a", completed: false })];
     const out = await buildLazyQueryBuilder(loader, todo.shape).toRaw();
     expect(out).toHaveLength(1);
     expect(out[0]?.data?.fields?.title?.value).toBe("a");
@@ -673,21 +663,21 @@ describe("projectEntity — declarative defaults (non-optional)", () => {
   });
 
   it("fills an absent leaf with the declared default", () => {
-    const entity = mkEntity("1", { title: "Ship" });
+    const entity = entityRow("1", "todo", { title: "Ship" });
     const row = projectEntity(entity, task.shape);
     expect(row.priority).toBe("normal");
     expect(row.tags).toEqual({});
   });
 
   it("fills a tombstoned leaf with the declared default", () => {
-    const entity = mkEntity("1", { title: "Ship", priority: null, tags: null });
+    const entity = entityRow("1", "todo", { title: "Ship", priority: null, tags: null });
     const row = projectEntity(entity, task.shape);
     expect(row.priority).toBe("normal");
     expect(row.tags).toEqual({});
   });
 
   it("keeps a stored value over the default", () => {
-    const entity = mkEntity("1", { title: "Ship", priority: "urgent", tags: { a: "x" } });
+    const entity = entityRow("1", "todo", { title: "Ship", priority: "urgent", tags: { a: "x" } });
     const row = projectEntity(entity, task.shape);
     expect(row.priority).toBe("urgent");
     expect(row.tags).toEqual({ a: "x" });
@@ -701,9 +691,9 @@ describe("ordering — declarative defaults", () => {
   });
 
   const rows = [
-    mkEntity("a", { priority: "zzz", title: "b" }),
-    mkEntity("b", {}),
-    mkEntity("c", { priority: "aaa", title: "a" }),
+    entityRow("a", "todo", { priority: "zzz", title: "b" }),
+    entityRow("b", "todo", {}),
+    entityRow("c", "todo", { priority: "aaa", title: "a" }),
   ];
 
   it("compares a defaulted field as it reads", async () => {
@@ -730,18 +720,20 @@ describe("projectEntity — optional components", () => {
   });
 
   it("reads an absent component as undefined, with no default to resolve", () => {
-    expect(projectEntity(mkEntity("1", { title: "Ship" }), note.shape).draft).toBeUndefined();
+    expect(
+      projectEntity(entityRow("1", "todo", { title: "Ship" }), note.shape).draft,
+    ).toBeUndefined();
   });
 
   it("reads a cleared component as undefined too: only existence separates them", () => {
-    expect(projectEntity(mkEntity("1", { title: "Ship", draft: null }), note.shape).draft).toBe(
-      undefined,
-    );
+    expect(
+      projectEntity(entityRow("1", "todo", { title: "Ship", draft: null }), note.shape).draft,
+    ).toBe(undefined);
   });
 
   it("reads a present leaf as its stored value", () => {
-    expect(projectEntity(mkEntity("1", { title: "Ship", draft: "v1" }), note.shape).draft).toBe(
-      "v1",
-    );
+    expect(
+      projectEntity(entityRow("1", "todo", { title: "Ship", draft: "v1" }), note.shape).draft,
+    ).toBe("v1");
   });
 });

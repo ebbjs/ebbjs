@@ -1,21 +1,29 @@
 /**
- * Shared fetch-mock helpers for sync-client unit tests.
+ * Shared fixtures and fetch mocks for the sync client's tests.
  *
- * Two helpers live here:
+ * Fixtures — `entityRow` / `linkRow` / `membershipRow` build materialized rows,
+ * `stampedRow` takes field values the test stamped itself, and `platformEntity`
+ * stays the escape hatch for a platform row built field by field.
  *
- * - `makeFetchMock(responses)` — records every call and returns canned
- *   `Response` objects from a FIFO queue. Models the ebb server's
- *   non-streaming HTTP endpoints (`/sync/handshake`, `/sync/actions`,
- *   `/entities/...`).
+ * Assertions on written Updates — `rowsByModel` groups a write's Updates into
+ * one list per subject row, and `rowFields` reads a row's values back.
  *
- * - `makeStreamingFetch(chunks, options)` — returns the same streaming
- *   `Response` for every call, with the body built from pre-encoded SSE
- *   byte chunks. Models the `/sync/live` SSE endpoint.
+ * Timing — `flushTasks` yields one macrotask turn; `waitFor` polls.
  *
- * The mock functions are typed as `MockInstance<...>` rather than the
- * looser `vi.fn` default, so call sites can access `.mock.calls` without
- * an `as unknown as { mock: ... }` cast and IntelliJ navigates into the
- * mock object.
+ * Transport — `makeFetchMock(responses)` records every call and returns canned
+ * `Response` objects from a FIFO queue. Models the ebb server's non-streaming
+ * HTTP endpoints (`/sync/handshake`, `/sync/actions`, `/entities/...`).
+ * `makeStreamingFetch(chunks, options)` returns the same streaming `Response`
+ * for every call, with the body built from pre-encoded SSE byte chunks. Models
+ * the `/sync/live` SSE endpoint.
+ *
+ * Harness — `testActions(schema)` mounts a name-addressed actions map so a test
+ * writes through `client.actions.<name>` like application code does.
+ *
+ * The mock functions are typed as `MockInstance<...>` rather than the looser
+ * `vi.fn` default, so call sites can access `.mock.calls` without an
+ * `as unknown as { mock: ... }` cast and IntelliJ navigates into the mock
+ * object.
  */
 import { vi, type MockInstance } from "vitest";
 import {
@@ -32,10 +40,15 @@ import {
   type Action,
   type EbbComponentKind,
   type Entity,
+  type FieldValue,
   type Update,
 } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/types";
+import { defineAction } from "../schema/action";
 import type { createClient } from "./client";
+import type { ActionDrafts, DuplicateAt, GroupRef } from "./drafts";
+import type { PointerValue } from "./query-builder";
+import type { ManyPointerValue } from "./relationship";
 
 /** A non-streaming `Response` shape — body is a string or binary buffer. */
 export interface FetchMockResponse {
@@ -160,6 +173,97 @@ export const platformEntity = (
   deleted_hlc: deletedHlc,
   last_gsn: 0,
 });
+
+/** Stamps a hand-built row carries; every one is optional so a fixture names
+ * only the stamp the test asserts on. */
+export interface EntityRowOptions {
+  /** `update_id` written onto every field value. */
+  updateId?: string;
+  /**
+   * `hlc` written onto every field value. Left off by default: a field value
+   * without one carries no stamp, which is what a projection-only row needs.
+   */
+  hlc?: string;
+  createdHlc?: string;
+  /** A non-null value marks the row as a tombstone. */
+  deletedHlc?: string | null;
+  lastGsn?: number;
+}
+
+/**
+ * A materialized user row from field values the test has already stamped
+ * (`update_id`, `hlc`, nested `map`s). `entityRow` is the shorthand for a row
+ * whose fields are plain values.
+ */
+export const stampedRow = (
+  id: string,
+  model: string,
+  fields: Record<string, FieldValue>,
+  { createdHlc = "1", deletedHlc = null, lastGsn = 0 }: EntityRowOptions = {},
+): Entity => ({
+  id,
+  model,
+  data: { fields },
+  exists: true,
+  created_hlc: createdHlc,
+  updated_hlc: createdHlc,
+  deleted_hlc: deletedHlc,
+  last_gsn: lastGsn,
+});
+
+/**
+ * A materialized user row: the shape a read path sees once the row's
+ * components have landed. Platform rows use `platformEntity`, which carries
+ * one atomic component instead of one component per field.
+ */
+export const entityRow = (
+  id: string,
+  model: string,
+  fields: Record<string, unknown>,
+  { updateId = "u_1", hlc, ...stamps }: EntityRowOptions = {},
+): Entity =>
+  stampedRow(
+    id,
+    model,
+    Object.fromEntries(
+      Object.entries(fields).map(([field, value]) => [
+        field,
+        hlc === undefined ? { value, update_id: updateId } : { value, update_id: updateId, hlc },
+      ]),
+    ),
+    stamps,
+  );
+
+/**
+ * A materialized `ebb/link` row. `field` and `type` name the relationship the
+ * link realizes, so a traversal can tell two links on one row apart.
+ */
+export const linkRow = (
+  id: string,
+  sourceId: string,
+  targetId: string,
+  field: string,
+  type: string,
+  deletedHlc: string | null = null,
+): Entity =>
+  platformEntity(id, "link", { source_id: sourceId, target_id: targetId, field, type }, deletedHlc);
+
+/**
+ * A materialized `ebb/membership` row. An omitted `groupId` writes none, the
+ * shape of a membership filed before the group was assigned.
+ */
+export const membershipRow = (
+  id: string,
+  entityId: string,
+  groupId: string | undefined,
+  deletedHlc: string | null = null,
+): Entity =>
+  platformEntity(
+    id,
+    "membership",
+    groupId === undefined ? { entity_id: entityId } : { entity_id: entityId, group_id: groupId },
+    deletedHlc,
+  );
 
 /**
  * The Updates a platform row write implies: its create and one atomic
@@ -362,6 +466,13 @@ export function makeStreamingFetch(
 }
 
 /**
+ * Yield one macrotask turn, so every microtask (and zero-delay timer) queued
+ * before it has run. Reach for `waitFor` instead when the work being awaited
+ * is a promise chain whose length the test cannot pin.
+ */
+export const flushTasks = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
  * Poll `predicate` until it holds, or throw after `timeoutMs`. Waiting on
  * the durable store beats a fixed sleep, which couples a test to
  * scheduler timing.
@@ -377,3 +488,212 @@ export const waitFor = async (
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+// ---------------------------------------------------------------------------
+// The name-addressed action harness
+// ---------------------------------------------------------------------------
+
+/**
+ * TEST HARNESS — not public API, not shipped.
+ *
+ * `testActions(schema)` builds an actions map mounted on a client, so a test
+ * writes through `client.actions.<name>` exactly as application code does.
+ * Verbs are addressed by entity name (`{ entity: "todo", id, patch }`) for
+ * tests where the write is setup; `run` executes an arbitrary callback over the
+ * typed drafts. A test whose subject *is* the write should declare typed
+ * actions instead, so it pins the draft surface. The casts that keep call sites
+ * clean live here only.
+ */
+
+/** A draft `create` / `duplicate` handle, as seen by a name-addressed verb. */
+type LooseHandle = { readonly id: string } & Record<string, unknown>;
+
+/** A system draft namespace (`group` / `membership`): `create` takes the row only. */
+interface LooseSystemDraft {
+  create(input: Record<string, unknown>): LooseHandle;
+}
+
+/** Per-entity draft surface, erased to a name-addressed view. */
+interface LooseDraft {
+  create(
+    input: Record<string, unknown>,
+    opts: { groups: readonly GroupRef[] | undefined; validate?: boolean },
+  ): LooseHandle;
+  update(id: string, patch: Record<string, unknown>, opts?: { validate?: boolean }): void;
+  delete(id: string): void;
+  duplicate(
+    id: string,
+    opts?: {
+      at?: DuplicateAt;
+      groups?: readonly GroupRef[];
+      validate?: boolean;
+    },
+  ): LooseHandle;
+  link(id: string, as: string, target: PointerValue): void;
+  unlink(id: string, as: string): void;
+  setLinks(id: string, as: string, patch: ManyPointerValue): void;
+  addToGroup(id: string, groupId: GroupRef): void;
+  removeFromGroup(id: string, groupId: GroupRef): void;
+  setGroups(id: string, groupIds: readonly GroupRef[]): void;
+}
+
+/** The `grant` draft namespace: `create` plus the guarded patch/delete pair. */
+interface LooseMembershipDraft extends LooseSystemDraft {
+  update(id: string, patch: Record<string, unknown>, opts?: { validate?: boolean }): void;
+  delete(id: string): void;
+}
+
+/** The whole draft surface, keyed by entity name plus the system namespaces. */
+type LooseDrafts = Record<string, LooseDraft> & {
+  group: LooseSystemDraft;
+  membership: LooseMembershipDraft;
+};
+
+/** Erase the schema-typed drafts to the name-addressed view. */
+const loose = (drafts: unknown): LooseDrafts => drafts as LooseDrafts;
+
+/** The entity's draft namespace; an unknown name is the test's mistake. */
+const entityOf = (drafts: LooseDrafts, entity: string): LooseDraft => {
+  const namespace = drafts[entity];
+  if (namespace === undefined) {
+    throw new Error(`testActions: no entity "${entity}" on the schema`);
+  }
+  return namespace;
+};
+
+interface CreateParams {
+  readonly entity: string;
+  readonly input: Record<string, unknown>;
+  readonly groups?: readonly GroupRef[];
+  readonly validate?: boolean;
+}
+
+interface UpdateParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly patch: Record<string, unknown>;
+  readonly validate?: boolean;
+}
+
+interface DeleteParams {
+  readonly entity: string;
+  readonly id: string;
+}
+
+interface DuplicateParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly at?: DuplicateAt;
+  readonly groups?: readonly GroupRef[];
+  readonly validate?: boolean;
+}
+
+interface LinkParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly as: string;
+  readonly target: PointerValue;
+}
+
+interface UnlinkParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly as: string;
+}
+
+interface SetLinksParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly as: string;
+  readonly targets: ManyPointerValue;
+}
+
+interface GroupVerbParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly group: GroupRef;
+}
+
+interface SetGroupsParams {
+  readonly entity: string;
+  readonly id: string;
+  readonly groups: readonly GroupRef[];
+}
+
+interface CreateSystemParams {
+  readonly input: Record<string, unknown>;
+}
+
+interface UpdateMembershipParams {
+  readonly id: string;
+  readonly patch: Record<string, unknown>;
+  readonly validate?: boolean;
+}
+
+interface MembershipIdParams {
+  readonly id: string;
+}
+
+/**
+ * One mounted-ready action per draft verb, plus `run`. Every action takes
+ * its arguments as a single params object, so a test dispatches a write
+ * with one call and no per-test declaration.
+ */
+export const testActions = <S>(schema: S) => ({
+  create: defineAction(schema, (drafts, params: CreateParams) => {
+    const { entity, input, groups, validate } = params;
+    return entityOf(loose(drafts), entity).create(input, { groups, validate });
+  }),
+  update: defineAction(schema, (drafts, params: UpdateParams): void => {
+    const { entity, id, patch, validate } = params;
+    entityOf(loose(drafts), entity).update(id, patch, { validate });
+  }),
+  delete: defineAction(schema, (drafts, params: DeleteParams): void => {
+    entityOf(loose(drafts), params.entity).delete(params.id);
+  }),
+  duplicate: defineAction(schema, (drafts, params: DuplicateParams) => {
+    const { entity, id, at, groups, validate } = params;
+    return entityOf(loose(drafts), entity).duplicate(id, { at, groups, validate });
+  }),
+  link: defineAction(schema, (drafts, params: LinkParams): void => {
+    const { entity, id, as, target } = params;
+    entityOf(loose(drafts), entity).link(id, as, target);
+  }),
+  unlink: defineAction(schema, (drafts, params: UnlinkParams): void => {
+    entityOf(loose(drafts), params.entity).unlink(params.id, params.as);
+  }),
+  setLinks: defineAction(schema, (drafts, params: SetLinksParams): void => {
+    const { entity, id, as, targets } = params;
+    entityOf(loose(drafts), entity).setLinks(id, as, targets);
+  }),
+  addToGroup: defineAction(schema, (drafts, params: GroupVerbParams): void => {
+    const { entity, id, group } = params;
+    entityOf(loose(drafts), entity).addToGroup(id, group);
+  }),
+  removeFromGroup: defineAction(schema, (drafts, params: GroupVerbParams): void => {
+    const { entity, id, group } = params;
+    entityOf(loose(drafts), entity).removeFromGroup(id, group);
+  }),
+  setGroups: defineAction(schema, (drafts, params: SetGroupsParams): void => {
+    const { entity, id, groups } = params;
+    entityOf(loose(drafts), entity).setGroups(id, groups);
+  }),
+  createGroup: defineAction(schema, (drafts, params: CreateSystemParams) =>
+    loose(drafts).group.create(params.input),
+  ),
+  createMembership: defineAction(schema, (drafts, params: CreateSystemParams) =>
+    loose(drafts).membership.create(params.input),
+  ),
+  updateMembership: defineAction(schema, (drafts, params: UpdateMembershipParams): void => {
+    const { id, patch, validate } = params;
+    loose(drafts).membership.update(id, patch, { validate });
+  }),
+  deleteMembership: defineAction(schema, (drafts, params: MembershipIdParams): void => {
+    loose(drafts).membership.delete(params.id);
+  }),
+  // `any` rather than the callback's own type: a definition's Result is
+  // fixed when it is declared, while a test callback varies per call.
+  run: defineAction(schema, (drafts, build: (drafts: ActionDrafts<S>) => any) =>
+    build(drafts as ActionDrafts<S>),
+  ),
+});

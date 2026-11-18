@@ -39,8 +39,14 @@ import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
-import { callApplyAction, jsonResponse, rowComponents, waitFor } from "../test-utils";
-import { testActions } from "./test-actions";
+import {
+  callApplyAction,
+  flushTasks,
+  jsonResponse,
+  rowComponents,
+  testActions,
+  waitFor,
+} from "../test-utils";
 
 type AnyModelDef = ModelDef<Record<string, TSchema>>;
 type AnyRelationshipDef = RelationshipDef<AnyModelDef, AnyModelDef>;
@@ -51,8 +57,6 @@ type AnySchema = Schema<
 
 /** A client mounted with the harness's actions, so `client.actions` is typed. */
 type MountedClient<S extends AnySchema> = ReturnType<typeof harness<S>>["client"];
-
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -391,7 +395,7 @@ describe("querying on-demand types", () => {
 
     const store = client.page.query().result();
     const unsubscribe = store.subscribe(() => {});
-    await flush();
+    await flushTasks();
 
     expect(store.getSnapshot().status).toBe("current");
     expect(store.getSnapshot().data?.map((row) => row.title)).toEqual(["One"]);
@@ -466,7 +470,7 @@ describe("held source with an on-demand join", () => {
     // Closing the pin evicts the joined row, so the cached result re-runs and
     // must load it again. The load stays pending until the gate opens.
     client.replica.close("page_content_1", "page_content/text");
-    await flush();
+    await flushTasks();
 
     expect(store.getSnapshot().status).toBe("stale");
     // The stale result stays usable while the load is in flight.

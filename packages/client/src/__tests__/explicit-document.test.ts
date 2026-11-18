@@ -33,7 +33,7 @@ import {
 } from "@ebbjs/schema";
 import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
-import { callApplyAction, jsonResponse, waitFor } from "../sync/test-utils";
+import { callApplyAction, jsonResponse, rowsByModel, waitFor } from "../sync/test-utils";
 
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(
@@ -147,18 +147,6 @@ const cellPatch = (
   ],
 });
 
-/** The Updates of one model, grouped into one list per subject row. */
-const rowsOf = (updates: readonly Update[], model: string): readonly (readonly Update[])[] => {
-  const bySubject = new Map<string, Update[]>();
-  for (const update of updates) {
-    if (updateModel(update) !== model) continue;
-    const row = bySubject.get(update.subject_id);
-    if (row === undefined) bySubject.set(update.subject_id, [update]);
-    else row.push(update);
-  }
-  return [...bySubject.values()];
-};
-
 /** One component's value on a row, or a failure naming the field. */
 const componentOf = (row: readonly Update[], field: string): FieldValue => {
   const update = row.find(
@@ -197,7 +185,7 @@ describe("a document the app declares", () => {
       "text_document",
     ]);
 
-    const [documentRow] = rowsOf(updates, "text_document");
+    const [documentRow] = rowsByModel(updates, "text_document");
     expect(documentRow![0]!.subject_id).toBe(created.documentId);
     const content = componentOf(documentRow!, "content");
     if (!isFieldMap(content)) throw new Error("document content is not a map field");
@@ -248,7 +236,7 @@ describe("a document the app declares", () => {
 
     expect(document.text).toBe("Hello world!");
     expect(written).toHaveLength(before + 1);
-    const [editRow] = rowsOf(written[before]!.updates, "text_document");
+    const [editRow] = rowsByModel(written[before]!.updates, "text_document");
     const [[, appended]] = Object.entries(cellsOf(editRow!));
     expect(appended!.value).toMatchObject({ kind: "run", text: "!" });
   });
@@ -260,7 +248,7 @@ describe("a document the app declares", () => {
     const created = await client.actions.createNote();
     await callApplyAction(client, written[0]!, "g_1");
 
-    const [documentRow] = rowsOf(written[0]!.updates, "text_document");
+    const [documentRow] = rowsByModel(written[0]!.updates, "text_document");
     const content = cellsOf(documentRow!);
     const [cellId, entry] = Object.entries(content)[0]!;
     const rewriteHlc = (BigInt(entry.hlc) + 1_000n).toString();

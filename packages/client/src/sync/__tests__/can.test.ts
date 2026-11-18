@@ -10,34 +10,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { Entity } from "@ebbjs/core";
 
 import { createClient } from "../client";
-import { makeFetchMock, platformEntity } from "../test-utils";
+import { entityRow, makeFetchMock, platformEntity } from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
-
-/** A materialized user row. Platform rows use `platformEntity`. */
-const mkEntity = (
-  id: string,
-  model: string,
-  fields: Record<string, unknown>,
-  deletedHlc: string | null = null,
-): Entity => ({
-  id,
-  model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([k, v]) => [k, { value: v, update_id: "u_1" }]),
-    ),
-  },
-  exists: true,
-  created_hlc: "1",
-  updated_hlc: "1",
-  deleted_hlc: deletedHlc,
-  last_gsn: 0,
-});
 
 const handshakeBody = (groups: readonly (readonly [string, string[]])[]): unknown => ({
   actor_id: ACTOR_ID,
@@ -192,7 +170,7 @@ describe("client.can — per-entity form", () => {
       ["g_1", []],
       ["g_2", ["todo.update"]],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -208,7 +186,7 @@ describe("client.can — per-entity form", () => {
 
   it("denies with the missing permission and the consulted groups", async () => {
     const { client } = await mkClient([["g_1", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -227,7 +205,7 @@ describe("client.can — per-entity form", () => {
 
   it("accepts an entity-like subject carrying an id", async () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -246,7 +224,7 @@ describe("client.can — per-entity form", () => {
 
   it("reports unknown for an entity with no local owner", async () => {
     const { client } = await mkClient([["g_1", ["todo.*"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await expect(client.can("todo_1", "update")).resolves.toEqual({
       kind: "unknown",
       reason: "no-owner",
@@ -255,7 +233,7 @@ describe("client.can — per-entity form", () => {
 
   it("reports unknown — not denied — before handshake()", async () => {
     const { client } = mkPreHandshakeClient();
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await expect(client.can("todo_1", "update")).resolves.toEqual({
       kind: "unknown",
       reason: "no-handshake",
@@ -286,7 +264,7 @@ describe("client.can — platform model", () => {
 
   it("checks a membership delete against the entity's set", async () => {
     const { client } = await mkClient([["g_2", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("eg_1", "membership", { entity_id: "todo_1", group_id: "g_1" }),
     );
@@ -304,7 +282,7 @@ describe("client.can — platform model", () => {
       ["g_src", ["ebb/link.update"]],
       ["g_tgt", []],
     ]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("rel_1", "link", {
         source_id: "todo_1",
@@ -324,7 +302,7 @@ describe("client.can — platform model", () => {
 
   it("checks a relationship create against the source type's update permission", async () => {
     const { client } = await mkClient([["g_src", ["todo.update"]]]);
-    await client.storage.entities.set(mkEntity("todo_1", "todo", {}));
+    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
       platformEntity("rel_1", "link", {
         source_id: "todo_1",

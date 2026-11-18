@@ -16,10 +16,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { callApplyAction } from "../test-utils";
-
-/** Let the async subscribe hydration settle before mutating storage. */
-const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+import { callApplyAction, flushTasks } from "../test-utils";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -155,7 +152,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
         titles: snapshot.entities.map((e) => e.title ?? "").sort(),
       });
     });
-    await flush();
+    await flushTasks();
 
     await callApplyAction(client, mkDeleteAction(2, "todo_a"), "grp_1");
 
@@ -179,7 +176,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
       seen.push({ count: snapshot.count });
     });
-    await flush();
+    await flushTasks();
 
     await callApplyAction(client, mkDeleteAction(2, "todo_done"), "grp_1");
 
@@ -203,7 +200,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
       seen.push({ count: snapshot.count });
     });
-    await flush();
+    await flushTasks();
 
     // Same id, still matching; the collection result is the id set, so the
     // field edit is not a membership change.
@@ -228,7 +225,7 @@ describe("client.<entity>.subscribe(filter, cb)", () => {
     const unsub = client.todo.subscribe({ completed: false }, (snapshot) => {
       seen.push({ count: snapshot.count });
     });
-    await flush();
+    await flushTasks();
 
     const iterate = vi.spyOn(client.replica, "iterate");
     await callApplyAction(client, mkTitleAction(2, "todo_a", "Renamed"), "grp_1");
