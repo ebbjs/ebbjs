@@ -15,4 +15,8 @@ config :ebb_server, :functions,
 # code uses.
 config :logger, :default_formatter, metadata: [:function_name, :version, :invocation_id]
 
+# A proxy with an idle timeout under 15 s, or a mobile link that needs a
+# faster tick, can retune the SSE keepalive without a recompile.
+config :ebb_server, :sync_sse_keepalive_ms, 15_000
+
 import_config "#{config_env()}.exs"

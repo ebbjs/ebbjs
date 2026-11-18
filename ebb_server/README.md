@@ -751,6 +751,7 @@ All runtime configuration flows through `Application.get_env(:ebb_server, key)`:
 | `:sync_handshake_max_body_bytes` | `POST /sync/handshake` request-body cap in bytes (`413` over it)                                                                      | 1_048_576       |
 | `:entities_query_max_body_bytes` | `POST /entities/query` request-body cap in bytes (`413` over it)                                                                      | 1_048_576       |
 | `:presence_max_body_bytes`       | `POST /sync/presence` request-body cap in bytes (`413` over it)                                                                       | 32_768          |
+| `:sync_sse_keepalive_ms`         | Interval between SSE keepalive comments on `GET /sync/live`                                                                           | 15_000          |
 | `:auth_mode`                     | Auth mode (`:bypass` / `:external` / `:tailscale`); `EBB_AUTH_MODE` overrides it                                                      | (none)          |
 | `:auth_url`                      | Developer's auth endpoint URL; `EBB_AUTH_URL` overrides it; required for `:external`, unused by `:tailscale`                          | (required)      |
 | `:tailscale_proxy_secret`        | Secret a loopback gateway echoes in `x-ebb-tailscale-secret`; unset trusts any loopback peer, an empty or non-string value fails boot | (unset)         |
