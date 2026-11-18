@@ -16,6 +16,7 @@
 import {
   componentModel,
   isFieldMap,
+  structuralEqual,
   type EbbComponentKind,
   type Entity,
   type FieldValue,
@@ -128,44 +129,19 @@ export type FieldResolver = (entity: Entity, field: string) => unknown;
 const isNonScalar = (value: unknown): boolean => value !== null && typeof value === "object";
 
 /**
- * Structural equality for a leaf value: scalars compare by identity, arrays
- * element-wise, and plain objects by the same key set regardless of key
- * order. A compound leaf is one value on the wire, so a predicate object
- * asks for "this value", never "this reference".
- */
-const valuesEqual = (a: unknown, b: unknown): boolean => {
-  if (a === b) return true;
-  if (!isNonScalar(a) || !isNonScalar(b)) return false;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((value, index) => valuesEqual(value, b[index]));
-  }
-  const aRecord = a as Record<string, unknown>;
-  const bRecord = b as Record<string, unknown>;
-  const aKeys = Object.keys(aRecord);
-  const bKeys = Object.keys(bRecord);
-  return (
-    aKeys.length === bKeys.length &&
-    aKeys.every(
-      (key) =>
-        Object.prototype.hasOwnProperty.call(bRecord, key) &&
-        valuesEqual(aRecord[key], bRecord[key]),
-    )
-  );
-};
-
-/**
  * A `null` predicate asks for "no live value": an absent leaf and a
  * tombstoned one both answer yes. A map envelope is a live value even when
  * its keys are tombstoned (clearing the whole field writes a leaf
  * tombstone), so it never matches. Any non-null value matches only an equal
  * stored leaf — structurally, so an object or array leaf compares by value
- * — and a schema default never widens a filter.
+ * — and a schema default never widens a filter. A compound leaf is one value
+ * on the wire, so a predicate object asks for "this value", never "this
+ * reference".
  */
 const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
   if (field === undefined) return expected === null;
   if (isFieldMap(field)) return false;
-  return expected === null ? field.value === null : valuesEqual(field.value, expected);
+  return expected === null ? field.value === null : structuralEqual(field.value, expected);
 };
 
 /**

@@ -26,6 +26,7 @@
  * object.
  */
 import { vi, type MockInstance } from "vitest";
+
 import {
   componentName,
   ebbComponent,
@@ -47,6 +48,7 @@ import type { Replica } from "@ebbjs/storage/types";
 import { defineAction } from "../schema/action";
 import type { createClient } from "./client";
 import type { ActionDrafts, DuplicateAt, GroupRef } from "./drafts";
+import { isGroupListingUrl } from "./endpoints";
 import type { PointerValue } from "./query-builder";
 import type { ManyPointerValue } from "./relationship";
 
@@ -358,10 +360,11 @@ export const emptyCatchUpResponse = (): Response =>
 /**
  * Whether `url` is the group listing (`GET /sync/groups/:id/entities`). The
  * listing and the catch-up share a path prefix, so a path-dispatching mock
- * has to tell them apart before it branches on `/sync/groups/`.
+ * has to tell them apart before it branches on `/sync/groups/`. Answered by
+ * the same route module the client builds its URLs from, so a route change
+ * cannot leave this mock dispatching on a prefix that no longer exists.
  */
-export const isListingRequest = (url: string): boolean =>
-  url.includes("/sync/groups/") && url.includes("/entities");
+export const isListingRequest = (url: string): boolean => isGroupListingUrl(url);
 
 /**
  * A group listing page with no rows. Every cold bootstrap asks for one

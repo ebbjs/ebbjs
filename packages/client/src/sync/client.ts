@@ -24,6 +24,7 @@
  */
 
 import {
+  canonicalKey,
   encodeSync,
   type Action,
   componentField,
@@ -60,6 +61,23 @@ import {
 } from "../presence/presence";
 import { createComponentMigrations, type ComponentMigrations } from "./migrations";
 import { openSSEStream, type SSESubscription } from "./sse";
+import {
+  actions as actionsPath,
+  catchUp as catchUpPath,
+  entity as entityPath,
+  entityQuery as entityQueryPath,
+  handshake as handshakePath,
+  invokeFunction as invokeFunctionPath,
+} from "./endpoints";
+import {
+  actorHeaders,
+  exchange,
+  httpError,
+  normalizeBaseUrl,
+  parseJsonBody,
+  requestJson,
+  tryParseJson,
+} from "./http";
 import { createOutbox, type Outbox } from "./outbox";
 import {
   createConflicts,
@@ -431,7 +449,7 @@ export class SyncClient<
   private readonly replicaSaveIntervalMs: number;
 
   constructor(opts: SyncClientOptions<R>) {
-    this.serverUrl = opts.serverUrl.replace(/\/$/, "");
+    this.serverUrl = normalizeBaseUrl(opts.serverUrl);
     this.actorId = opts.actorId;
     this.appId = opts.appId;
     this.storage = opts.storage ?? createMemoryAdapter();
@@ -607,12 +625,12 @@ export class SyncClient<
   }
 
   /**
-   * Build an outbound HTTP header bag carrying the actor identity.
-   * All request paths funnel through this so the `x-ebb-actor-id`
-   * header (and any future shared headers) live in one place.
+   * Build an outbound HTTP header bag carrying the actor identity. Every
+   * request path funnels through the client's HTTP seam, so this stays a
+   * thin delegation.
    */
   private authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    return { "x-ebb-actor-id": this.actorId, ...extra };
+    return actorHeaders(this.actorId, extra);
   }
 
   /**
@@ -722,7 +740,7 @@ export class SyncClient<
    */
   async handshake(opts: HandshakeRequest = {}): Promise<HandshakeResult> {
     await this.hydrateReplica();
-    const url = `${this.serverUrl}/sync/handshake`;
+    const url = `${this.serverUrl}${handshakePath()}`;
     const body = JSON.stringify({
       // The server validates these against its watermark and answers
       // `cursor_valid: false` when it has lost state below them, so it must
@@ -733,18 +751,16 @@ export class SyncClient<
       schema_hash: opts.schema_hash ?? this.schemaHash,
     });
 
-    const response = await this.fetchImpl(url, {
-      method: "POST",
-      headers: this.authHeaders({ "Content-Type": "application/json" }),
-      body,
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`handshake failed: ${response.status} ${text}`);
-    }
-
-    const data = (await response.json()) as HandshakeResponse;
+    const data = await requestJson<HandshakeResponse>(
+      this.fetchImpl,
+      url,
+      {
+        method: "POST",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body,
+      },
+      "handshake",
+    );
     const result: HandshakeResult = {
       actorId: data.actor_id,
       groups: data.groups.map(toGroupInfo).filter((group) => isInAppScope(group.apps, this.appId)),
@@ -950,21 +966,20 @@ export class SyncClient<
     await this.hydrateReplica();
     const offset =
       fromGsn ?? (await this.storage.cursors.get(groupId)) ?? this.groupCursors.get(groupId) ?? 0;
-    const url = `${this.serverUrl}/sync/groups/${encodeURIComponent(groupId)}?offset=${offset}`;
-    const response = await this.fetchImpl(url, {
+    const url = `${this.serverUrl}${catchUpPath(groupId, offset)}`;
+    const { response, text } = await exchange(this.fetchImpl, url, {
       method: "GET",
       headers: this.authHeaders(),
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => "");
       if (response.status === 403) {
         throw new Error(`catchUp: not a member of group ${groupId}`);
       }
-      throw new Error(`catchUp failed: ${response.status} ${text}`);
+      throw httpError(response, "catchUp", text);
     }
 
-    const actions = (await response.json()) as CatchUpResponse["actions"];
+    const actions = parseJsonBody<CatchUpResponse["actions"]>(text, "catchUp");
     const nextOffsetHeader = response.headers.get("stream-next-offset");
     const upToDateHeader = response.headers.get("stream-up-to-date");
     const nextOffset = nextOffsetHeader !== null ? Number(nextOffsetHeader) : null;
@@ -1160,24 +1175,15 @@ export class SyncClient<
    */
   private async submitActions(actions: readonly Action[]): Promise<WriteResponse> {
     const body = encodeSync({ actions });
-    const response = await this.fetchImpl(`${this.serverUrl}/sync/actions`, {
+    const { response, text } = await exchange(this.fetchImpl, `${this.serverUrl}${actionsPath()}`, {
       method: "POST",
       headers: this.authHeaders({ "Content-Type": "application/msgpack" }),
       body: body as BodyInit,
     });
 
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`write failed: ${response.status} ${text}`);
-    }
+    if (!response.ok) throw httpError(response, "write", text);
 
-    let parsed: { rejected?: Rejection[] } = {};
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`write: server returned non-JSON response: ${text}`);
-    }
-
+    const parsed = parseJsonBody<{ rejected?: Rejection[] }>(text, "write");
     const rejected = parsed.rejected ?? [];
     return { rejected };
   }
@@ -1247,18 +1253,15 @@ export class SyncClient<
 
   /** `GET /entities/:id` — read a materialized entity. */
   async getEntity(id: string): Promise<EntityResponse | null> {
-    const url = `${this.serverUrl}/entities/${encodeURIComponent(id)}`;
-    const response = await this.fetchImpl(url, {
+    const url = `${this.serverUrl}${entityPath(id)}`;
+    const { response, text } = await exchange(this.fetchImpl, url, {
       method: "GET",
       headers: this.authHeaders(),
     });
 
     if (response.status === 404) return null;
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`getEntity failed: ${response.status} ${text}`);
-    }
-    return (await response.json()) as EntityResponse;
+    if (!response.ok) throw httpError(response, "getEntity", text);
+    return parseJsonBody<EntityResponse>(text, "getEntity");
   }
 
   /**
@@ -1281,22 +1284,21 @@ export class SyncClient<
         this.emitRegistryViolations(warnings, { direction: "outbound" });
       }
     }
-    const response = await this.fetchImpl(`${this.serverUrl}/entities/query`, {
-      method: "POST",
-      headers: this.authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        model,
-        filter: opts.filter,
-        limit: opts.limit,
-        offset: opts.offset,
-      }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`queryEntities failed: ${response.status} ${text}`);
-    }
-    return (await response.json()) as EntityQueryResponse;
+    return requestJson<EntityQueryResponse>(
+      this.fetchImpl,
+      `${this.serverUrl}${entityQueryPath()}`,
+      {
+        method: "POST",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          model,
+          filter: opts.filter,
+          limit: opts.limit,
+          offset: opts.offset,
+        }),
+      },
+      "queryEntities",
+    );
   }
 
   /**
@@ -1319,16 +1321,18 @@ export class SyncClient<
     if (typeof options.idempotencyKey === "string") {
       headers["idempotency-key"] = options.idempotencyKey;
     }
-    const response = await this.fetchImpl(
-      `${this.serverUrl}/functions/${encodeURIComponent(name)}`,
+    const { response, text } = await exchange(
+      this.fetchImpl,
+      `${this.serverUrl}${invokeFunctionPath(name)}`,
       { method: "POST", headers, body: JSON.stringify(input ?? {}) },
     );
-    const body = (await response.json().catch(() => ({}))) as {
+    type FunctionBody = {
       result?: O;
       replayed?: unknown;
       error?: string;
       rejected?: readonly ActionRejection[];
     };
+    const body: FunctionBody = tryParseJson<FunctionBody>(text) ?? {};
     if (response.status === 422 && body.error === "rejected") {
       throw new ActionRejectedError(body.rejected ?? []);
     }
@@ -2397,26 +2401,14 @@ const residencyFromRegistry = (registry: ModelRegistry): MaterializationPolicy =
  * a security primitive.
  *
  * Entity and relationship records are walked by value. The builder's
- * `.default()` chain method is non-enumerable, so `stableStringify` sees
+ * `.default()` chain method is non-enumerable, so the canonical form sees
  * only a declared default annotation (which is part of the hash), not
- * the chain helper itself.
+ * the chain helper itself. An `undefined` annotation spells as `null`,
+ * which is the spelling this hash was minted with: a schema that declares
+ * one keeps the hash the server already accepted.
  */
-const computeSchemaHash = (schema: AnySchema): string => fnv1a64(stableStringify(schema));
-
-/** JSON.stringify with object keys sorted at every level. Arrays keep insertion order. */
-const stableStringify = (value: unknown): string => {
-  if (value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
-  if (typeof value === "undefined" || typeof value === "function") return "null";
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
-  }
-  return "null";
-};
+const computeSchemaHash = (schema: AnySchema): string =>
+  fnv1a64(canonicalKey(schema, { undefinedAs: "null" }));
 
 const FNV_OFFSET_64 = 0xcbf29ce484222325n;
 const FNV_PRIME_64 = 0x100000001b3n;
