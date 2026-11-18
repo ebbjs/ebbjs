@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   componentName,
+  ebbComponent,
   isFieldMap,
   makeHlc,
   type Action,
+  type ComponentName,
   type Entity,
   type FieldValue,
   type Update,
@@ -30,17 +32,24 @@ interface WriteSpec {
   readonly gsn?: number;
   readonly ms?: number;
   readonly fields: Record<string, FieldValue>;
+  /** The component a keyed (map) field is written under; `ebb/link` for edges. */
+  readonly keyedComponent?: ComponentName;
 }
 
 /** One component Update per fixture field; a keyed component always merges. */
 const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[] =>
-  Object.entries(spec.fields).map(([field, value]) => ({
-    id: `${spec.updateId}_${field}`,
-    subject_id: spec.entityId ?? "e_1",
-    component: componentName(spec.model ?? "todo", field),
-    method: isFieldMap(value) ? "merge" : method,
-    data: value,
-  }));
+  Object.entries(spec.fields).map(([field, value]) => {
+    const keyed = isFieldMap(value);
+    return {
+      id: `${spec.updateId}_${field}`,
+      subject_id: spec.entityId ?? "e_1",
+      component: keyed
+        ? (spec.keyedComponent ?? componentName(spec.model ?? "todo", field))
+        : componentName(spec.model ?? "todo", field),
+      method: keyed ? "merge" : method,
+      data: value,
+    };
+  });
 
 /** A row put: the row's create, then one `replace` (or keyed `merge`) per field. */
 const put = (spec: WriteSpec): Action => {
@@ -123,10 +132,9 @@ const drop = (spec: WriteSpec): Action => ({
   })),
 });
 
-/** A materialized `ebb/link` row: `sourceId` —author/wrote→ `targetId`. */
+/** A `page` row carrying one live edge: `sourceId` —author/wrote→ `targetId`. */
 const relationship = (
   actionId: string,
-  rowId: string,
   sourceId: string,
   targetId: string,
   gsn: number,
@@ -134,18 +142,23 @@ const relationship = (
 ): Action =>
   put({
     actionId,
-    updateId: `u_${rowId}`,
-    entityId: rowId,
-    model: "ebb",
+    updateId: `u_${sourceId}`,
+    entityId: sourceId,
+    model: "page",
     gsn,
     ms,
     fields: {
-      link: leaf(
-        { source_id: sourceId, target_id: targetId, type: "wrote", field: "author" },
-        `u_${rowId}`,
-        ms,
-      ),
+      link: {
+        map: {
+          author: {
+            map: {
+              wrote: { map: { [targetId]: leaf(true, `u_${sourceId}`, ms) } },
+            },
+          },
+        },
+      },
     },
+    keyedComponent: ebbComponent("link"),
   });
 
 /** A materialized `ebb/membership` row putting `entityId` in `groupId`. */
@@ -1113,31 +1126,29 @@ describe("replica: change signal", () => {
 describe("replica: evict (#499)", () => {
   it("drops rows and their adjacency, journaling each removal and ignoring absent ids", () => {
     const replica = createReplica();
-    ingest(replica, relationship("a_r", "r_1", "src_1", "tgt_1", 1, 1), 1);
+    ingest(replica, relationship("a_r", "src_1", "tgt_1", 1, 1), 1);
     ingest(replica, membership("a_m", "m_1", "grp_1", "e_1", 2, 2), 2);
     let fired = 0;
     replica.subscribe(() => {
       fired += 1;
     });
 
-    expect(replica.evict(["r_1", "m_1", "missing", "r_1"])).toBe(4);
+    expect(replica.evict(["src_1", "m_1", "missing", "src_1"])).toBe(4);
 
-    expect(replica.get("r_1")).toBeUndefined();
+    expect(replica.get("src_1")).toBeUndefined();
     expect(replica.get("m_1")).toBeUndefined();
+    expect(replica.iterate("page")).toEqual([]);
     expect(replica.iterate("ebb")).toEqual([]);
     expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([]);
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([]);
     expect(replica.memberships({ groupId: "grp_1" })).toEqual([]);
     expect(replica.memberships({ entityId: "e_1" })).toEqual([]);
-    expect(replica.relationshipLinks({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual(
-      [],
-    );
     expect(replica.membershipLinks("e_1")).toEqual([]);
     expect(fired).toBe(1);
     expect(replica.changesSince(2)).toEqual([
       {
         revision: 3,
-        id: "r_1",
+        id: "src_1",
         deleted: true,
         components: ["ebb/link"],
       },

@@ -1,6 +1,6 @@
 # 0001 — Components are the unit of identity
 
-**Status:** accepted, 2026-11-09; amended 2026-11-11 for the system-component contract ([#805](https://github.com/ebbjs/ebbjs/issues/805)); amended 2026-11-16 for the component-subject permission rule ([#803](https://github.com/ebbjs/ebbjs/issues/803))
+**Status:** accepted, 2026-11-09; amended 2026-11-11 for the system-component contract ([#805](https://github.com/ebbjs/ebbjs/issues/805)); amended 2026-11-16 for the component-subject permission rule ([#803](https://github.com/ebbjs/ebbjs/issues/803)); amended 2026-11-18 for the link pair ([#820](https://github.com/ebbjs/ebbjs/issues/820))
 **Epic:** [#793](https://github.com/ebbjs/ebbjs/issues/793) · **Rationale:** [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md) · **Plan:** [`docs/plan/components-epic.md`](../plan/components-epic.md)
 **Amends:** `CONTEXT.md` — adds a Components section; revises Entity, Field, Committed model, and Materialization.
 
@@ -87,7 +87,8 @@ becomes the name of a declared component set.**
 11. **Scope is declared per `ebb/*` component.** Every system component names how its write's group
     set resolves: `scope: "self"` (the entity's own id), `scope: "<field>"` (the entity named by
     that value), or the default, inherit the entity's membership. `ebb/group` is `self`;
-    `ebb/grant` and `ebb/membership` are `group_id`; `ebb/link` is `source_id`. Resolution becomes
+    `ebb/grant` and `ebb/membership` are `group_id`; `ebb/link` declares no owner at all, because
+    it lives on its source and its scope is that row's membership ([#820](https://github.com/ebbjs/ebbjs/issues/820)). Resolution becomes
     one table read instead of `EntityIndex.resolve_groups_cached/3`'s five clauses. The declaration
     is restricted to the `ebb/` namespace: a user component that could name a group could mint its
     own delivery scope.
@@ -117,23 +118,39 @@ becomes the name of a declared component set.**
     components one rule instead of two. The flag and the registry lookup that read it are deleted,
     not deprecated.
 
-13. **System components are atomic and their key is immutable.** One Update replaces the whole
-    value, so a torn edge, membership, or grant is unrepresentable; the key is fixed after create,
-    so moving a membership or an edge is a delete plus a create.
+13. **System components are atomic and their key is immutable.** One Update writes the whole
+    value, so a torn edge, membership, or grant is unrepresentable; the key is fixed once written,
+    so moving a membership is a delete plus a create, and moving an edge is two keys.
 
 ### The system components
 
-| Component        | Value                                 | Immutable key           |
-| ---------------- | ------------------------------------- | ----------------------- |
-| `ebb/group`      | `{name, apps}`                        | —                       |
-| `ebb/grant`      | `{actor_id, group_id, permissions}`   | `group_id`              |
-| `ebb/membership` | `{entity_id, group_id}`               | `(entity_id, group_id)` |
-| `ebb/link`       | `{source_id, target_id, field, type}` | `source_id`             |
+| Component        | Value                                      | Key                     |
+| ---------------- | ------------------------------------------ | ----------------------- |
+| `ebb/group`      | `{name, apps}`                             | the row id              |
+| `ebb/grant`      | `{actor_id, group_id, permissions}`        | `group_id`              |
+| `ebb/membership` | `{entity_id, group_id}`                    | `(entity_id, group_id)` |
+| `ebb/link`       | `{<field>: {<type>: {<target_id>: true}}}` | the source row          |
 
 `ebb/membership`'s row id stays `entityGroupId(entity, group)`; immutability is what keeps the
-derived id truthful. Where `ebb/link` lives — its own row, or a keyed pair on its source — is
-[#790](https://github.com/ebbjs/ebbjs/issues/790) and its follow-on slice's decision; the atomic
-form above is the row form.
+derived id truthful.
+
+**`ebb/link` is a keyed component of its source**
+([#820](https://github.com/ebbjs/ebbjs/issues/820)). The row carrying the component _is_ the
+source, so an edge's key is its whole identity — field, then type, then target id — and the three
+nesting levels are the key, not three fields. That keeps two edges from one source to one target
+under different accessors (or under different `type` labels) distinct, makes two edges sharing one
+identity unrepresentable, and lets one Update write one edge. The leaf's value is presence
+(`true`); **removing one edge is a `merge` whose value tombstones that key** (`value: null`), so
+`drop` keeps its `(entity, component)` granularity and never names a key. The component name stays
+`ebb/link`: it is a wire fact and a permission subject, and the source keeps its committed model
+because an `ebb/*` overlay adds a component entry and no model entry.
+
+Naming the component rather than reusing the declared pointer field `<source>/<as>` is what keeps
+the server schema-free: whether `<source>/<as>` is an edge at all is a client declaration, so an
+index over it would be a declared-set lookup the server is forbidden to make. It also settles the
+permission subject — a link write is authorized as `ebb/link.<verb>` in the source's group set, and
+`ebb.*` covers it — where `<source>/<as>` would have let a model-level grant for a row's _data_
+authorize an _edge_.
 
 **Storage consequence.** A row's model entry in the existence index is its committed model, never
 the prefix of the component being written. An `ebb/*` write to a user row adds a component entry and
@@ -153,7 +170,9 @@ Update { subject_id, method: "delete", data: nil }        # entity delete; names
   is still one Update; across three components it is three.
 - `merge` is the existing rule, unchanged. `replace` is refused for a keyed component, because a
   wholesale replace would discard a concurrent writer's siblings. `drop` detaches a component and
-  leaves the row. `delete` tombstones the row.
+  leaves the row. `delete` tombstones the row. One entry of a keyed component is not a `drop`: it
+  is a `merge` whose value tombstones that key, which is how `unlink` removes one edge and leaves
+  the source's other edges alone.
 - `data` carries the component's _value_, so `data.fields` leaves the wire entirely.
 
 ### The questions that are expensive to reverse
@@ -179,9 +198,9 @@ is reified rather than a key on the member, and why a link may still be a compon
 
 That rule decides more than it looks like:
 
-- An edge's visibility belongs to its source either way ([#790](https://github.com/ebbjs/ebbjs/issues/790)):
-  an entity row carrying `ebb/link`, or a keyed pair on the source. What the rule forbids is an edge
-  with its own group set.
+- An edge's visibility belongs to its source ([#790](https://github.com/ebbjs/ebbjs/issues/790)),
+  and since [#820](https://github.com/ebbjs/ebbjs/issues/820) the representation says so: a keyed
+  pair on the source, never a row with its own group set.
 - A document body is a component because it is visible exactly where its note is. An app that needed
   a body readable by people who cannot read the note would declare the body as an entity — the
   mechanism allows it, the platform does not invent it.
@@ -197,6 +216,8 @@ That rule decides more than it looks like:
 - Once [#805](https://github.com/ebbjs/ebbjs/issues/805) lands, an edge, membership, or grant whose
   values disagree with each other, or whose key disagrees with the row's identity.
 - An `ebb/*` component with no declared scope owner.
+- Since [#820](https://github.com/ebbjs/ebbjs/issues/820): an edge with no field or type, two edges
+  sharing one `(source, field, type, target)`, and an edge delivered anywhere its source is not.
 
 ### What gets harder
 
@@ -234,10 +255,12 @@ model**.
   that a scope edit writes the whole value, so concurrent edits converge last-writer-wins on the
   value instead of merging per app id (#732's per-key merge is not preserved) — and because `name`
   rides the same value, a rename and a concurrent scope edit clobber each other.
-- **Decision 13's immutable keys are enforced for three of the four.** `ebb/membership`'s
-  `(entity_id, group_id)`, `ebb/link`'s `source_id` and `ebb/grant`'s `group_id` are refused a
-  re-point, so moving an actor or a membership between groups is a delete plus a create — which
-  replaces the earlier "needs the permission in both groups" rule rather than keeping it as well.
+- **Decision 13's immutable keys are enforced for the two that are stored in a value.**
+  `ebb/membership`'s `(entity_id, group_id)` and `ebb/grant`'s `group_id` are refused a re-point,
+  so moving an actor or a membership between groups is a delete plus a create — which replaces the
+  earlier "needs the permission in both groups" rule rather than keeping it as well. `ebb/link`
+  left this list in [#820](https://github.com/ebbjs/ebbjs/issues/820): an edge keyed on its source
+  has no `source_id` field to re-point, so the refusal and the rule it guarded are gone.
 - **`ebb/membership` is a subject under `ebb`, but not the subject a membership write is checked
   against.** A membership write authorizes as the _entity's_ `<model>.create` / `.update`, which is
   what `entityGroup.*` did before #805 and what #121's "Add Entity to Group" row settles. Under
@@ -290,10 +313,6 @@ model**.
 
 ### What this does not decide
 
-- **Where `ebb/link` lives** — its own row carrying an atomic `ebb/link`, or a keyed pair on its
-  source. [#790](https://github.com/ebbjs/ebbjs/issues/790) and the follow-on slice decide;
-  `docs/research/membership-and-links-as-components.md` argues for the pair, and the choice changes
-  the value shape but not the scope rule.
 - **Whether membership becomes a pair component on the member.** No — anything you paginate must
   have rows, and group listing is keyset pagination. Recorded so it is not re-derived.
 - Whether per-component residency pays for itself. [#802](https://github.com/ebbjs/ebbjs/issues/802)

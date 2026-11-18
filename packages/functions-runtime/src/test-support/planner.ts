@@ -100,7 +100,6 @@ export const applyVerb = async (ctx: Context, verb: WriteVerb): Promise<void> =>
         verb.id,
         verb.as,
         verb.target === undefined ? undefined : pointerOf(verb.target),
-        { relationshipId: verb.relationshipId },
       );
       return;
   }

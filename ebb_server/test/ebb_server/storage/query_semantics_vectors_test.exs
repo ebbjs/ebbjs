@@ -28,9 +28,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
       grants_by_id: gm_by_id_table,
       memberships: eg_table,
       memberships_by_id: eg_by_id_table,
-      memberships_by_group: eg_by_group_table,
-      relationships: rel_table,
-      relationships_by_id: rbi_table
+      memberships_by_group: eg_by_group_table
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -45,9 +43,7 @@ defmodule EbbServer.Storage.QuerySemanticsVectorsTest do
         grants_by_id: gm_by_id_table,
         memberships: eg_table,
         memberships_by_id: eg_by_id_table,
-        memberships_by_group: eg_by_group_table,
-        relationships: rel_table,
-        relationships_by_id: rbi_table
+        memberships_by_group: eg_by_group_table
       })
 
     %{

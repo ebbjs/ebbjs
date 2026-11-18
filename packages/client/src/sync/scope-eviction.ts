@@ -2,8 +2,8 @@
  * Group-scope eviction for the materialized replica (#499).
  *
  * Residency follows the subscription: rows of a group no longer
- * subscribed stop being materialized, so its page/relationship/membership
- * metadata and indices are released. An entity held by several groups
+ * subscribed stop being materialized, so their metadata and indices are
+ * released. An entity held by several groups
  * stays while any one of them is subscribed. A row with no membership at
  * all is not attributable to a group, so it is never evicted here.
  *
@@ -37,8 +37,9 @@ const platformRows = (replica: Replica, kind: EbbComponentKind): readonly Entity
 
 /**
  * The ids to evict so only `groupIds` remain resident. Group, grant, and
- * membership rows follow their own `group_id`; content rows follow their live
- * `ebb/membership` rows; a link row follows an evicted endpoint.
+ * membership rows follow their own `group_id`; every other row follows its
+ * live `ebb/membership` rows. An edge needs no rule of its own: it is a keyed
+ * component of its source, so evicting the source takes it along (#820).
  */
 export const evictableRowIds = (
   replica: Replica,
@@ -73,14 +74,6 @@ export const evictableRowIds = (
       const groups = memberGroups.get(row.id);
       if (groups === undefined) continue;
       if (![...groups].some((groupId) => subscribed.has(groupId))) evicted.add(row.id);
-    }
-  }
-
-  for (const row of platformRows(replica, "link")) {
-    const source = systemValueString(row, "link", "source_id");
-    const target = systemValueString(row, "link", "target_id");
-    if ((source !== null && evicted.has(source)) || (target !== null && evicted.has(target))) {
-      evicted.add(row.id);
     }
   }
 

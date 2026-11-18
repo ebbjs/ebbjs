@@ -62,7 +62,11 @@ describe("relationship accessor reactivity", () => {
     const unsubSnapshot = before.subscribe((snapshot) => {
       snapshots.push(snapshot.id);
     });
-    await seedRow(storage, client.replica, linkRow("rel_1", "t1", "u1", "owner", "todo"));
+    await seedRow(
+      storage,
+      client.replica,
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1" }], { title: "T" }),
+    );
     expect(accessorFires).toBe(1);
     // `row.subscribe` re-reads the row and fires too, so a direct
     // subscriber (not just useEntity) is woken by the accessor change.
@@ -72,9 +76,13 @@ describe("relationship accessor reactivity", () => {
     const owner = await linked!.owner;
     expect(owner?.id).toBe("u1");
 
-    const rel = await storage.entities.get("rel_1");
-    if (rel === null) throw new Error("expected relationship row");
-    await seedRow(storage, client.replica, { ...rel, deleted_hlc: "2" }, "delete");
+    await seedRow(
+      storage,
+      client.replica,
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1", present: false }], {
+        title: "T",
+      }),
+    );
     expect(accessorFires).toBe(2);
 
     const unlinked = await client.todo.get("t1");
@@ -95,13 +103,21 @@ describe("relationship accessor reactivity", () => {
       fires += 1;
     });
 
-    await seedRow(storage, client.replica, linkRow("rel_1", "t1", "u1", "owner", "todo"));
+    await seedRow(
+      storage,
+      client.replica,
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1" }], { title: "T" }),
+    );
     expect(fires).toBe(1);
     expect((await query).map((row) => row.id)).toEqual(["t1"]);
 
-    const rel = await storage.entities.get("rel_1");
-    if (rel === null) throw new Error("expected relationship row");
-    await seedRow(storage, client.replica, { ...rel, deleted_hlc: "2" }, "delete");
+    await seedRow(
+      storage,
+      client.replica,
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1", present: false }], {
+        title: "T",
+      }),
+    );
     expect(fires).toBe(2);
     expect((await query).map((row) => row.id)).toEqual([]);
 

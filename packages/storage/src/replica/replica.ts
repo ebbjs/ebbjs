@@ -1,10 +1,11 @@
 import {
   componentField,
   componentModel,
-  componentName,
   EBB_MODEL_NAME,
+  fieldComponent,
   isComponentUpdate,
   isRowCreate,
+  linkTargets,
   type Action,
   type Entity,
   type FieldValue,
@@ -30,11 +31,9 @@ import {
   applyIndexDelta,
   forwardIndexDelta,
   forwardIndexEntriesFor,
-  forwardIndexKey,
   forwardMembershipIndexKey,
   indexEntriesFor,
   liveMembershipLinks,
-  liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
   reverseIndexDelta,
@@ -42,11 +41,7 @@ import {
   type IndexEntry,
   type ReverseIndex,
 } from "../internal/reverse-index";
-import type {
-  MembershipLink,
-  RelationshipLink,
-  RelationshipSourceQuery,
-} from "../types/entity-store";
+import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
@@ -185,9 +180,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   // splice folds the dead prefix away once it dominates the array.
   let journalStart = 0;
 
-  // Adjacency over the composed view, not the base map: traversal must see
-  // optimistic edges. Both directions share the index module's entry
-  // derivation, so the replica cannot drift from the adapters.
+  // Adjacency over the composed view, not the base map: the reverse index must
+  // see optimistic edges. It shares the index module's entry derivation, so the
+  // replica cannot drift from the adapters. The forward index is the
+  // entity-keyed membership direction only: a source's own edges are a read of
+  // its row's `ebb/link` component.
   let reverseIndex: ReverseIndex = {};
   let forwardIndex: ReverseIndex = {};
 
@@ -221,9 +218,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (ids.size === 0) modelIndex.delete(model);
   };
 
-  /** Present components of a row's field map, under the row's own model. */
+  /** Present components of a row's field map, an `ebb/*` overlay under `ebb`. */
   const fieldComponentsOf = (row: Entity): readonly string[] =>
-    Object.keys(row.data.fields).map((field) => componentName(row.model, field));
+    Object.keys(row.data.fields).map((field) => fieldComponent(row.model, field));
 
   /**
    * Every component a resident row is known to carry: held values plus the
@@ -390,7 +387,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     let changed = false;
     const fields: Record<string, FieldValue> = {};
     for (const [field, value] of Object.entries(row.data.fields)) {
-      const component = componentName(row.model, field);
+      const component = fieldComponent(row.model, field);
       if (holds(component) || pins.has(pinKey(id, component))) {
         fields[field] = value;
       } else {
@@ -741,16 +738,16 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     for (const key of pins.keys()) dropPin(key);
     journal.length = 0;
     journalStart = 0;
-    // One linear pass rebuilds the base, both adjacency directions, and
-    // component existence; the derived indices are not persisted. Mutating the local
-    // row maps keeps the rebuild linear where folding `applyIndexDelta` per
-    // row would copy the whole key space each time.
+    // One linear pass rebuilds the base, the adjacency index, and component
+    // existence; the derived indices are not persisted. Mutating the local row
+    // maps keeps the rebuild linear where folding `applyIndexDelta` per row
+    // would copy the whole key space each time.
     const reverse: Record<string, Record<string, string>> = {};
     const forward: Record<string, Record<string, string>> = {};
     const add = (index: Record<string, Record<string, string>>, entry: IndexEntry): void => {
       const rows = index[entry.key];
-      if (rows === undefined) index[entry.key] = { [entry.rowId]: entry.value };
-      else rows[entry.rowId] = entry.value;
+      if (rows === undefined) index[entry.key] = { [entry.id]: entry.value };
+      else rows[entry.id] = entry.value;
     };
     const presence: { id: string; components: readonly string[] }[] = [];
     const notResident = record.notResident ?? {};
@@ -758,7 +755,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       const fields: Record<string, FieldValue> = {};
       const offloaded = new Set<string>();
       for (const [field, value] of Object.entries(entity.data.fields)) {
-        const component = componentName(entity.model, field);
+        const component = fieldComponent(entity.model, field);
         if (holds(component)) fields[field] = value;
         else offloaded.add(component);
       }
@@ -770,7 +767,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       const carried = Object.keys(entity.data.fields).length > 0 || offloaded.size > 0;
       const carriedComponents = [
-        ...Object.keys(entity.data.fields).map((field) => componentName(entity.model, field)),
+        ...Object.keys(entity.data.fields).map((field) => fieldComponent(entity.model, field)),
         ...offloaded,
       ];
       const stamps = new Map<string, number>();
@@ -795,7 +792,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       addToModel(row.model, row.id);
       if (offloaded.size > 0) dormant.set(row.id, offloaded);
       const components = [
-        ...Object.keys(fields).map((field) => componentName(row.model, field)),
+        ...Object.keys(fields).map((field) => fieldComponent(row.model, field)),
         ...offloaded,
       ];
       if (stamps.size > 0) componentVersions.set(row.id, stamps);
@@ -843,7 +840,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (components.length > 0 && held.length === 0) continue;
       const fields: Record<string, FieldValue> = {};
       for (const [field, value] of Object.entries(row.data.fields)) {
-        if (holds(componentName(row.model, field))) fields[field] = value;
+        if (holds(fieldComponent(row.model, field))) fields[field] = value;
       }
       persisted.push(withWireMapFields({ ...row, data: { fields } }));
       const offloaded = components.filter((component) => !holds(component));
@@ -1151,7 +1148,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     stats,
     relationships: (query: RelationshipQuery): readonly string[] => {
       if (query.sourceId !== undefined) {
-        return liveSourceIds(forwardIndex[forwardIndexKey(query.as, query.type, query.sourceId)]);
+        const row = get(query.sourceId);
+        // A tombstoned row keeps its fields, so it is asked separately whether
+        // it is still a live source of anything.
+        if (row === undefined || row.deleted_hlc !== null) return [];
+        return linkTargets(row, query.as, query.type);
       }
       if (query.targetId !== undefined) {
         return liveSourceIds(reverseIndex[reverseIndexKey(query.as, query.type, query.targetId)]);
@@ -1168,8 +1169,6 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       }
       return [];
     },
-    relationshipLinks: (query: RelationshipSourceQuery): readonly RelationshipLink[] =>
-      liveRelationshipLinks(forwardIndex[forwardIndexKey(query.as, query.type, query.sourceId)]),
     membershipLinks: (entityId: string): readonly MembershipLink[] =>
       liveMembershipLinks(forwardIndex[forwardMembershipIndexKey(entityId)]),
     ingest,

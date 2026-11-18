@@ -5,39 +5,44 @@ defmodule EbbServer.Storage.SystemComponent do
   `ebb/` is the platform namespace. A row that carries only platform
   components is committed under the model `ebb`; the **component** is what
   names its kind, so every module asks `kind/1` about a component rather
-  than a model, and reads `source_id` and friends through the component's
-  value here.
+  than a model, and reads a value path through the component here.
 
-  | kind          | component        | value                                 | scope owner | by-id cache           |
-  | ------------- | ---------------- | ------------------------------------- | ----------- | --------------------- |
-  | `:grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`   | `group_id`  | `:grants_by_id` |
-  | `:membership` | `ebb/membership` | `{entity_id, group_id}`               | `group_id`  | `:memberships_by_id` |
-  | `:link`       | `ebb/link`       | `{source_id, target_id, type, field}` | `source_id` | `:relationships_by_id` |
-  | `:group`      | `ebb/group`      | `{name, apps}`                        | `self`      | `:group_apps`          |
+  | kind          | component        | value                                       | scope owner |
+  | ------------- | ---------------- | ------------------------------------------- | ----------- |
+  | `:grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`         | `group_id`  |
+  | `:membership` | `ebb/membership` | `{entity_id, group_id}`                     | `group_id`  |
+  | `:link`       | `ebb/link`       | `{<field>: {<type>: {<target_id>: true}}}`  | none        |
+  | `:group`      | `ebb/group`      | `{name, apps}`                              | `self`      |
 
   The **scope owner** is how a row's write finds its group set, and
   `EbbServer.Storage.EntityScope` reads it here rather than dispatching on
-  a kind. There are three shapes: `:self` means the row's own id is its
+  a kind. There are two shapes: `:self` means the row's own id is its
   group set; `{:field, name, :group}` means the value at `name` is a group
-  id and a group owns itself; `{:field, name, :entity}` means the value at
-  `name` is an entity id and the scope is that entity's membership set.
-  A component with no declaration is a user component, whose scope is its
-  own membership set.
+  id and a group owns itself. A component with no declaration is a
+  component whose scope is its own membership set — `ebb/link` is one:
+  it is keyed on its source, so the row carrying it *is* the source and
+  the default path is already the right scope.
 
   The **by-id cache** is the `opts` key of the one cache that can answer
-  "which row has this id?" for the kind. All four store `{id, row}` rows,
+  "which row has this id?" for the kind. Each of the three declares one,
   so a reader needs one generic lookup rather than a per-kind module call.
   `:group_apps` stays optional: a caller that only resolves user entities
-  need not pass it.
+  need not pass it. `ebb/link` declares none: it is a component of its
+  source, so no row id resolves to a link and nothing can ask which row
+  carries one.
 
-  Each value is **atomic**: one Update carries the whole object, so a torn
-  edge, membership, or grant is unrepresentable and there is no "wire value
-  wins, cache supplies the rest" merge to get wrong.
+  `:grant`, `:membership` and `:group` are **atomic**: one Update carries
+  the whole object, so a torn membership or grant is unrepresentable and
+  there is no "wire value wins, cache supplies the rest" merge to get
+  wrong. `:link` is **keyed** instead: its value nests one presence per
+  edge, and one Update writes one edge, so two edges of one source merge
+  without clobbering each other.
 
-  `:membership` and `:link` have an immutable key after create
-  (`(entity_id, group_id)` and `source_id`); the authorizer refuses a
-  re-point and says so. Which of the four a *stored* id carries cannot be
-  read off an Update — a delete names no component — so that question is
+  `:membership` has an immutable key after create (`(entity_id, group_id)`)
+  and `:grant`'s `group_id` is immutable; the authorizer refuses a re-point
+  and says so. `:link` left that list: an edge keyed on its source has no
+  source field to re-point. Which kind a *stored* id carries cannot be read
+  off an Update — a delete names no component — so that question is
   `EbbServer.Storage.EntityScope.kind/2`, which scans the by-id caches in
   `kinds/0` order.
   """
@@ -58,8 +63,7 @@ defmodule EbbServer.Storage.SystemComponent do
     },
     link: %{
       name: "ebb/link",
-      scope: {:field, :source_id, :entity},
-      by_id: :relationships_by_id
+      overlay: true
     },
     group: %{
       name: "ebb/group",
@@ -75,7 +79,7 @@ defmodule EbbServer.Storage.SystemComponent do
                       end)
 
   @type kind :: :group | :grant | :membership | :link
-  @type scope :: :self | {:field, atom(), :group | :entity}
+  @type scope :: :self | {:field, atom(), :group}
 
   @spec model() :: String.t()
   def model, do: @model
@@ -86,18 +90,28 @@ defmodule EbbServer.Storage.SystemComponent do
   @spec component(kind()) :: String.t()
   def component(kind), do: Map.fetch!(@components, kind).name
 
+  @doc """
+  Whether a kind is an **overlay**: a component the platform adds to a row it
+  does not model.
+
+  `ebb/link` is the one: it is keyed on its source, so the row carrying it
+  *is* the source and keeps whatever model committed it. Every other platform
+  component is a row of its own, committed under `ebb`. That distinction is
+  what lets an overlay write skip the row's model without letting a
+  platform-only row be committed under a user model.
+  """
+  @spec overlay?(term()) :: boolean()
+  def overlay?(kind), do: declaration(kind, :overlay) == true
+
   @spec scope(term()) :: scope() | nil
-  def scope(kind) do
-    case Map.fetch(@components, kind) do
-      {:ok, %{scope: scope}} -> scope
-      :error -> nil
-    end
-  end
+  def scope(kind), do: declaration(kind, :scope)
 
   @spec by_id(term()) :: atom() | nil
-  def by_id(kind) do
+  def by_id(kind), do: declaration(kind, :by_id)
+
+  defp declaration(kind, key) do
     case Map.fetch(@components, kind) do
-      {:ok, %{by_id: cache}} -> cache
+      {:ok, declaration} -> Map.get(declaration, key)
       :error -> nil
     end
   end
@@ -112,11 +126,36 @@ defmodule EbbServer.Storage.SystemComponent do
   @doc """
   The row field a kind's value is stored at: the leaf after the `/`.
 
-  A row carries at most one platform component, so this is also the field
-  whose presence makes it a platform row.
+  A platform row carries one component, so this is also the field whose
+  presence makes it a platform row. A user row may carry an `ebb/*` overlay
+  at the same field, which is what keeps the value's key — not the row's
+  model — the thing that names the component.
   """
   @spec field(kind()) :: String.t()
   def field(kind), do: Atom.to_string(kind)
+
+  # The kind whose component occupies each platform field name.
+  @kinds_by_field Map.new(@declarations, fn {kind, _declaration} ->
+                    {Atom.to_string(kind), kind}
+                  end)
+
+  @doc """
+  The component name a row field's value is stored under.
+
+  A platform component may sit on a row of any model and never takes that
+  row's model as its namespace (#820), so a platform field name is always
+  `ebb/<field>`; every other field is `<model>/<field>`. The server keeps this
+  rule here rather than reading a schema: the platform field names are static
+  facts about the platform, not declarations. It mirrors `@ebbjs/core`'s
+  `fieldComponent`, the same two-sided duplication the scope table carries.
+  """
+  @spec component_of_field(String.t(), String.t()) :: String.t()
+  def component_of_field(model, field) do
+    case Map.fetch(@kinds_by_field, field) do
+      {:ok, kind} -> component(kind)
+      :error -> model <> "/" <> field
+    end
+  end
 
   @spec value(map() | nil, kind()) :: map() | nil
   def value(data, kind) do

@@ -1,11 +1,5 @@
-import { componentModel, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
-import type {
-  EntityStore,
-  MembershipLink,
-  RelationshipIndexQuery,
-  RelationshipLink,
-  RelationshipSourceQuery,
-} from "../types/entity-store";
+import { componentModel, EBB_MODEL_NAME, isEbbComponent, type Entity } from "@ebbjs/core";
+import type { EntityStore, MembershipLink, RelationshipIndexQuery } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import {
@@ -18,10 +12,8 @@ import { foldEntityActions } from "../internal/materialize";
 import {
   applyIndexDelta,
   forwardIndexDelta,
-  forwardIndexKey,
   forwardMembershipIndexKey,
   liveMembershipLinks,
-  liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
   reverseIndexDelta,
@@ -37,11 +29,11 @@ import {
  * - `modelIndex` — Record<model, Set<entityId>> — O(1) query by model
  * - `components` — component → member ids — O(1) component existence reads,
  *   derived from the rows like the adjacency index
- * - `index` — Record<indexKey, rowId → yieldedId> — O(1) adjacency lookup
- *   for `ebb/link` edges (both the `(field, type, target_id)` reverse key
- *   and the `(field, type, source_id)` forward key) and `ebb/membership`
- *   rows (the synthetic `groups` accessor, keyed by group or by member
- *   entity).
+ * - `index` — Record<indexKey, entryId → yieldedId> — O(1) adjacency lookup
+ *   for the reverse direction of `ebb/link` edges (the
+ *   `(field, type, target_id)` key, each entry the source row that carries
+ *   the edge) and `ebb/membership` rows (the synthetic `groups` accessor,
+ *   keyed by group or by member entity).
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -108,8 +100,9 @@ const updateComponentIndex = (
  * Rebuild the adjacency index around a single entity write. The deltas
  * come from the previous and next versions of the row, so a patch that
  * re-points or re-keys a row, or a tombstone that hides one, leaves no
- * stale row behind. Both directions (reverse and forward) are covered,
- * as are relationship edges and membership rows.
+ * stale entry behind. Both directions are covered: a row's live edges and
+ * its membership contribute to the reverse index, and its membership to the
+ * forward one.
  */
 const updateIndex = (
   index: ReverseIndex,
@@ -161,6 +154,16 @@ export const createMemoryEntityStore = (
     }
   };
 
+  /**
+   * Materialize every dirty row, whatever model it belongs to, before a read
+   * whose rows may carry the component under any model.
+   */
+  const materializeDirty = async (): Promise<void> => {
+    for (const id of await dirtyTracker.getDirty()) {
+      await replay(id);
+    }
+  };
+
   const readIndex = (key: string): readonly string[] => liveSourceIds(state.index[key]);
 
   const store: EntityStore = {
@@ -189,7 +192,10 @@ export const createMemoryEntityStore = (
     },
 
     async queryByComponent(component: string): Promise<readonly string[]> {
-      await materializeDirtyModel(componentModel(component));
+      // An `ebb/*` overlay sits on a row of any model, so its read cannot
+      // narrow to one.
+      if (isEbbComponent(component)) await materializeDirty();
+      else await materializeDirtyModel(componentModel(component));
 
       // A tombstoned row keeps its fields, so it stays in the index; existence
       // is only ever a question about live rows.
@@ -203,17 +209,9 @@ export const createMemoryEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyModel(EBB_MODEL_NAME);
+      // The source row carrying the edge may be any model's.
+      await materializeDirty();
       return readIndex(reverseIndexKey(as, type, targetId));
-    },
-
-    async queryByRelationshipSource({
-      as,
-      type,
-      sourceId,
-    }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyModel(EBB_MODEL_NAME);
-      return liveRelationshipLinks(state.index[forwardIndexKey(as, type, sourceId)]);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {

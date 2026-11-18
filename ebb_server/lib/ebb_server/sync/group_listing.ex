@@ -10,20 +10,21 @@ defmodule EbbServer.Sync.GroupListing do
 
   The row set is the group's state, not just its contents: the `ebb/group`
   row, its live `ebb/grant` rows, every live `ebb/membership` row in the
-  group, the live entities those rows name, and the live `ebb/link` rows
-  whose source one of those entities is. A group row and a grant row carry
-  no membership row of their own, so a membership join alone would miss them.
+  group, and the live entities those rows name. A group row and a grant row
+  carry no membership row of their own, so a membership join alone would miss
+  them.
 
-  A link row is scoped by its source and never gets a membership row of its
-  own, so enumerating memberships alone never named one. A link row rides the
-  page its source appears on, scoped by that source: it is shipped only when
-  its source is one of the page's live membership rows.
+  An edge is not part of the row set: since
+  [#820](https://github.com/ebbjs/ebbjs/issues/820) `ebb/link` is a keyed
+  component of its source, so a source's edges ship inside the row they
+  belong to, exactly as its fields do. A replica that missed an edge obtains
+  it by seeding its source, and one that missed the source obtains both.
 
   A membership row deleted between the page's two reads is the one window
-  this leaves: the source still ships, its rows do not, because the page's
-  window is a membership keyset and a tombstoned row is not in it. That
-  delete is above `W`, so the tail delivers it and the group stops naming the
-  source; a group that still names it seeds those rows from its own listing.
+  this leaves: the entity still ships, the membership row does not, because
+  the page's window is a membership keyset and a tombstoned row is not in it.
+  That delete is above `W`, so the tail delivers it and the group stops naming
+  the entity; a group that still names it re-seeds it from its own listing.
 
   ## Materialization
 
@@ -244,62 +245,10 @@ defmodule EbbServer.Sync.GroupListing do
 
     {taken, rest} = Enum.split(entries, limit)
 
-    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts),
-         {:ok, relationship_rows} <-
-           page_relationship_rows(group_id, after_id, taken, by_id, opts) do
-      {:ok, prefix ++ membership_rows(taken, by_id) ++ relationship_rows,
-       next_membership_key(rest, List.last(taken)), rest != []}
+    with {:ok, by_id} <- load_live_rows(page_ids(taken), opts) do
+      {:ok, prefix ++ membership_rows(taken, by_id), next_membership_key(rest, List.last(taken)),
+       rest != []}
     end
-  end
-
-  # A page's relationship rows come from its own membership window, which ends
-  # at the last membership row the page read — `limit + 1` only probes for a
-  # next page, and that row's rows belong to it.
-  #
-  # The window is pinned by the membership rows already read rather than
-  # re-derived from a count. Membership row ids are opaque, so a row committed
-  # between the two reads can land inside the window; re-cutting the window to
-  # a count would then drop the highest id it holds, which is the page's own
-  # last source, and that source's rows would sit below the watermark where the
-  # tail never repairs them. A source whose membership row this page did not
-  # ship is discarded instead, in `live_relationship_rows/4`.
-  defp page_relationship_rows(_group_id, _after_id, [], _by_id, _opts), do: {:ok, []}
-
-  defp page_relationship_rows(group_id, after_id, taken, by_id, opts) do
-    {window_end, _entity_id} = List.last(taken)
-
-    case SQLite.list_page_relationship_ids(group_id, after_id, window_end, sqlite_name(opts)) do
-      {:ok, ids} -> live_relationship_rows(ids, taken, by_id, opts)
-      {:error, _reason} -> {:error, :materialization_failed}
-    end
-  end
-
-  # A relationship row ships only when its source is one the page actually
-  # carries: `load_live_rows/2` omits a tombstoned source, and a row must not
-  # outlive the visibility of the entity it hangs off. Two membership rows can
-  # name one source, so the page dedupes the rows its window finds.
-  defp live_relationship_rows(ids, taken, by_id, opts) do
-    ids = Enum.uniq(ids)
-    page_sources = page_sources(taken, by_id)
-
-    with {:ok, rows_by_id} <- load_live_rows(ids, opts) do
-      {:ok,
-       ids
-       |> Enum.flat_map(&typed_row(rows_by_id, &1, :link))
-       |> Enum.filter(
-         &MapSet.member?(page_sources, SystemComponent.path(&1.data, :link, "source_id"))
-       )}
-    end
-  end
-
-  defp page_sources(taken, by_id) do
-    taken
-    |> Enum.flat_map(&page_source(&1, by_id))
-    |> MapSet.new()
-  end
-
-  defp page_source({_membership_id, entity_id}, by_id) do
-    if Map.has_key?(by_id, entity_id), do: [entity_id], else: []
   end
 
   defp page_ids(taken) do
@@ -391,7 +340,8 @@ defmodule EbbServer.Sync.GroupListing do
     end
   end
 
-  # A row is the kind it carries; a model test would accept a link for a grant.
+  # A row is the kind it carries; a model test would accept a grant row for a
+  # membership.
   defp typed_row(by_id, id, kind) do
     case Map.fetch(by_id, id) do
       {:ok, row} -> if SystemComponent.carries?(row.data, kind), do: [row], else: []

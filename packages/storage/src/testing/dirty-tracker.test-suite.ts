@@ -60,6 +60,22 @@ export const defineDirtyTrackerTests = ({ name, factory }: DirtyTrackerTestSuite
       });
     });
 
+    describe("getDirty", () => {
+      it("returns every dirty entity whatever its model", async () => {
+        const tracker = await factory();
+        await tracker.mark("todo_1", "todo");
+        await tracker.mark("page_1", "page");
+        await tracker.mark("eg_1", "ebb");
+
+        expect([...(await tracker.getDirty())].sort()).toEqual(["eg_1", "page_1", "todo_1"]);
+      });
+
+      it("returns empty when nothing is dirty", async () => {
+        const tracker = await factory();
+        expect(await tracker.getDirty()).toEqual([]);
+      });
+    });
+
     describe("clear", () => {
       it("clears dirty flag for entity", async () => {
         const tracker = await factory();

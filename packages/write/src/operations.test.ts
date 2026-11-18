@@ -192,7 +192,7 @@ describe("platform rows", () => {
     expect(() =>
       dropEntity(mkCtx(platformRegistry()), {
         entity: "ebb",
-        id: "rel_1",
+        id: "x_1",
         fields: ["link"],
         groups: ["g_1"],
       }),

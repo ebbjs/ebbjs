@@ -5,7 +5,13 @@
  * surface can't be shadowed.
  */
 
-import { EBB_MODEL_NAME, GROUPS_ACCESSOR } from "@ebbjs/core";
+import {
+  EBB_COMPONENT_KINDS,
+  EBB_MODEL_NAME,
+  ebbComponent,
+  ebbComponentField,
+  GROUPS_ACCESSOR,
+} from "@ebbjs/core";
 
 /**
  * The namespace the platform's own components live under. An app may not declare
@@ -19,6 +25,18 @@ export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
  * name: the row accessor would otherwise shadow the projected field.
  */
 export const RESERVED_MEMBERSHIP_NAMES = [GROUPS_ACCESSOR] as const;
+
+/**
+ * The row fields the platform's own components occupy. An `ebb/*` component may
+ * sit on a row of any model (that is how a link lives on its source), and it
+ * is stored at the field its name ends in, so an app field of the same name
+ * would share `data.fields.<name>` with the overlay and be unreadable. Reserved
+ * rather than merged: a component per field name is the rule that keeps one
+ * value per name.
+ */
+export const RESERVED_PLATFORM_FIELDS = EBB_COMPONENT_KINDS.map((kind) =>
+  ebbComponentField(kind),
+) as readonly string[];
 
 /**
  * Model names the SDK reserves. `group` and `membership` are what `client.group`
@@ -51,20 +69,33 @@ export const assertEntityNameAvailable = (name: string): void => {
   throw new ReservedNameError(name, `Entity name "${name}" is reserved: ${why}.`);
 };
 
-/** Reject a `defineModel` field name that collides with the membership accessor. */
+/** Reject a `defineModel` field name the platform's own components occupy. */
 export const assertFieldNamesAvailable = (
   entityName: string,
   fields: Record<string, unknown>,
 ): void => {
-  for (const name of RESERVED_MEMBERSHIP_NAMES) {
-    if (Object.prototype.hasOwnProperty.call(fields, name)) {
-      throw new ReservedNameError(
-        name,
-        `Field "${name}" on entity "${entityName}" is reserved by the SDK`,
-      );
-    }
+  for (const [name, reason] of fieldReservations()) {
+    if (!Object.prototype.hasOwnProperty.call(fields, name)) continue;
+    throw new ReservedNameError(
+      name,
+      `Field "${name}" on entity "${entityName}" is reserved: ${reason}`,
+    );
   }
 };
+
+/** Every reserved field name, with why claiming it fails. */
+const fieldReservations = (): readonly (readonly [string, string])[] => [
+  ...RESERVED_MEMBERSHIP_NAMES.map(
+    (name) => [name, "the SDK's built-in membership accessor projects onto it"] as const,
+  ),
+  ...RESERVED_PLATFORM_FIELDS.map(
+    (name) =>
+      [
+        name,
+        `\`${PLATFORM_NAMESPACE}/${name}\` is a platform component that may sit on any row`,
+      ] as const,
+  ),
+];
 
 /** Reject a `defineRelationship` accessor that collides with the membership accessor. */
 export const assertAccessorNameAvailable = (sourceName: string, as: string): void => {

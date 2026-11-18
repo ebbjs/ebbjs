@@ -84,7 +84,7 @@ export const replicaRowReader =
  * accessor helpers stay unchanged.
  */
 export const replicaAdjacency = (replica: Replica): AdjacencyReader => ({
-  forwardLinks: async (query) => replica.relationshipLinks(query),
+  forwardTargets: async (sourceId, as, type) => replica.relationships({ as, type, sourceId }),
   reverseSourceIds: async (query) =>
     replica.relationships({ as: query.as, type: query.type, targetId: query.targetId }),
   membershipsOf: async (entityId) => replica.membershipLinks(entityId),
@@ -103,10 +103,10 @@ export const createIndexCounter = (): IndexCounter => {
   let rows = 0;
   return {
     adjacency: (inner) => ({
-      forwardLinks: async (query) => {
-        const links = await inner.forwardLinks(query);
-        rows += links.length;
-        return links;
+      forwardTargets: async (sourceId, as, type) => {
+        const targets = await inner.forwardTargets(sourceId, as, type);
+        rows += targets.length;
+        return targets;
       },
       reverseSourceIds: async (query) => {
         const ids = await inner.reverseSourceIds(query);

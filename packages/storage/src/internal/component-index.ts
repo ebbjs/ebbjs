@@ -1,4 +1,4 @@
-import { componentName, type Entity } from "@ebbjs/core";
+import { fieldComponent, type Entity } from "@ebbjs/core";
 
 import { sortSourceIds } from "./reverse-index";
 
@@ -6,10 +6,10 @@ import { sortSourceIds } from "./reverse-index";
  * Component existence over the composed view: which components
  * (`<type>/<field>`) each materialized row currently carries.
  *
- * A row's component set is the set of keys in `data.fields`, each named
- * `<model>/<field>`: exact for a user row and for an `ebb` row, while an overlay
- * `ebb/*` component on a user row needs the field's own component name, which
- * #820 owns. A dropped component is a missing key, which is what makes existence
+ * A row's component set is the set of keys in `data.fields`, each named by
+ * {@link fieldComponent}: `<model>/<field>` for a user field, `ebb/<field>` for
+ * a platform component, which an `ebb/*` overlay puts on a row of any model
+ * (#820). A dropped component is a missing key, which is what makes existence
  * a fact about the row rather than a value stored in it.
  *
  * In memory only: the replica rebuilds it from the rows on load, like the
@@ -21,7 +21,7 @@ export type ComponentIndex = ReadonlyMap<string, ReadonlySet<string>>;
 
 /** The component names a row carries, one per present field of its type. */
 export const componentsOf = (entity: Entity): readonly string[] =>
-  Object.keys(entity.data?.fields ?? {}).map((field) => componentName(entity.model, field));
+  Object.keys(entity.data?.fields ?? {}).map((field) => fieldComponent(entity.model, field));
 
 /** The existence change one row's previous→next write implies. */
 export interface ComponentDelta {

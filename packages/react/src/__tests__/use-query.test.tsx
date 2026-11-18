@@ -22,7 +22,7 @@ import {
   type NamespacedClient,
   type QueryStatus,
 } from "@ebbjs/client";
-import { componentName } from "@ebbjs/core";
+import { componentName, type FieldValue } from "@ebbjs/core";
 import { useQuery, type QueryRoot } from "../index";
 import { makeClient, renderWithClient, withProvider } from "./support";
 
@@ -57,10 +57,8 @@ type ReplicaRow = {
   readonly id: string;
   readonly model: string;
   readonly data: {
-    readonly fields: Record<
-      string,
-      { readonly value: unknown; readonly update_id: string; readonly hlc: string }
-    >;
+    /** A field value: a leaf, or the `map` a keyed component carries. */
+    readonly fields: Record<string, FieldValue>;
   };
   readonly exists: boolean;
   readonly created_hlc: string;
@@ -87,19 +85,23 @@ const mkRow = (id: string, model: string, fields: Record<string, unknown>): Repl
   last_gsn: 1,
 });
 
-const mkTodo = (id: string, title: string, completed: boolean): ReplicaRow =>
-  mkRow(id, "todo", { title, completed });
+/** The `ebb/link` value a todo carries: its `assignee` key, present. */
+const assigneeLink = (userId: string): FieldValue => ({
+  map: {
+    assignee: {
+      map: { todo: { map: { [userId]: { value: true, update_id: "u_link", hlc: "1" } } } },
+    },
+  },
+});
+
+const mkTodo = (id: string, title: string, completed: boolean, assignee?: string): ReplicaRow => {
+  const row = mkRow(id, "todo", { title, completed });
+  if (assignee === undefined) return row;
+  // A link is a key of the source row's own `ebb/link` component.
+  return { ...row, data: { fields: { ...row.data.fields, link: assigneeLink(assignee) } } };
+};
 
 const mkUser = (id: string, name: string): ReplicaRow => mkRow(id, "user", { name });
-
-/**
- * The forward-one edge a `with({ assignee: true })` join reads. A link is one
- * atomic `ebb/link` component on a row committed as `ebb`.
- */
-const mkAssigneeLink = (id: string, todoId: string, userId: string): ReplicaRow =>
-  mkRow(id, "ebb", {
-    link: { source_id: todoId, target_id: userId, type: "todo", field: "assignee" },
-  });
 
 let seedPosition = 0;
 
@@ -133,7 +135,8 @@ const seedRow = async (
       ? Object.entries(row.data.fields).map(([field, value]) => ({
           id: `u_seed_${seedPosition}_${field}`,
           subject_id: row.id,
-          component: componentName(row.model, field),
+          // An `ebb/*` overlay never takes the row's model as its namespace.
+          component: field === "link" ? "ebb/link" : componentName(row.model, field),
           method: "replace" as const,
           data: value,
         }))
@@ -156,8 +159,7 @@ const seed = (client: Client, id: string, title: string, completed: boolean) =>
 /** A todo with `assignee` linked to a user, as a real write would leave it. */
 const seedAssigned = async (client: Client, assigneeName: string): Promise<void> => {
   await seedRow(client, mkUser("user_1", assigneeName));
-  await seed(client, "todo_1", "Ship it", false);
-  await seedRow(client, mkAssigneeLink("rel_1", "todo_1", "user_1"));
+  await seedRow(client, mkTodo("todo_1", "Ship it", false, "user_1"));
 };
 
 afterEach(cleanup);

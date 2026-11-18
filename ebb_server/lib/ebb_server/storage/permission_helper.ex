@@ -10,9 +10,11 @@ defmodule EbbServer.Storage.PermissionHelper do
   `model`, `kind`, `created?`, `deleted?`, and `data` a
   `%{"fields" => %{field => value}}` map — never a raw Update.
 
-  A platform row's fields live in one atomic component value, so a row read
-  is `EbbServer.Storage.SystemComponent.path/3` and the row's kind is the
-  folded mutation's `kind`, never its model: all four commit under `ebb`.
+  A platform row's fields live in one component value, so a row read is
+  `EbbServer.Storage.SystemComponent.path/3` and the row's kind is the folded
+  mutation's `kind`, never its model. Three of the four commit under `ebb`;
+  `ebb/link` is a component of its source row, and the fold reports the same
+  kind for it.
 
   ## Permission subjects
 
@@ -269,40 +271,11 @@ defmodule EbbServer.Storage.PermissionHelper do
   end
 
   @doc """
-  Maps each `ebb/link` row this Action writes to the source entity id its
-  atomic value carries.
+  The group a membership write adds, keyed by entity.
 
-  Read from the raw Updates rather than the folded row: a delete collapses
-  the row in the fold and drops its `data`, while the write's source is the
-  delete's only scope when the edge was not stored yet. A handler that
-  links an edge and unlinks it again — or a client that creates and then
-  removes one — sends the write and the delete in the same Action, and the
-  write's `source_id` is the same scope the write was authorized against.
-  """
-  @spec build_intra_relationship_sources([map()]) :: %{String.t() => String.t()}
-  def build_intra_relationship_sources(updates) do
-    updates
-    |> Enum.filter(&link_source_update?/1)
-    |> Enum.reduce(%{}, fn update, acc ->
-      # A raw Update carries its own field and the component's value, so the
-      # accessor is handed the Update, not a folded row's data.
-      case {update.subject_id, SystemComponent.path(update, :link, "source_id")} do
-        {rel_id, source_id} when is_binary(rel_id) and is_binary(source_id) ->
-          Map.put(acc, rel_id, source_id)
-
-        _ ->
-          acc
-      end
-    end)
-  end
-
-  defp link_source_update?(update) do
-    update.method in [:merge, :replace] and
-      SystemComponent.kind(Map.get(update, :component)) == :link
-  end
-
-  @doc """
-  Link rows do not move an entity into a group.
+  A membership row moved inside one Action is visible to its entity's later
+  resolutions, so the intra-Action context carries what the fold cannot: the
+  groups this Action's own membership writes grant.
   """
   @spec build_intra_action_context([map()]) :: %{String.t() => [String.t()]}
   def build_intra_action_context(mutations) do

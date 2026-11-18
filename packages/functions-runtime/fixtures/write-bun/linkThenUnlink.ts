@@ -11,8 +11,8 @@ interface Params {
 
 /**
  * Links a one-cardinality edge and removes it again before returning. The
- * runtime resolves the edge it created from its own buffer, so no committed
- * relationship row is needed to name it.
+ * edge's key is the source row, the accessor, and the target, so removing it
+ * names the key rather than a row.
  */
 export const linkThenUnlink = async (ctx: Context, params: Params) => {
   const todo = ctx.create("todo", { title: "linked" }, { groups: [params.group_id] });

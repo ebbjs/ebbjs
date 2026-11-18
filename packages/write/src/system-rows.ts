@@ -1,10 +1,13 @@
 /**
- * The platform row emitters: every `ebb/*` row's Updates.
+ * The platform **row** emitters: `ebb/group`, `ebb/grant`, and
+ * `ebb/membership` Updates.
  *
- * Each row is one atomic component, so a builder here emits the row's create
- * followed by exactly **one** Update carrying the whole value: there is no
- * per-field Update to tear. The component names come from `@ebbjs/core`; this
- * module is the only place that knows how a platform value is wrapped into a
+ * Each of the three is one atomic component on a row of its own, so a builder
+ * here emits the row's create followed by exactly **one** Update carrying the
+ * whole value: there is no per-field Update to tear. `ebb/link` is not a row
+ * kind — it is a keyed component of its source — and its Updates are built in
+ * `relationship.ts`. The component names come from `@ebbjs/core`; this module
+ * is the only place that knows how an atomic platform value is wrapped into a
  * `FieldValue`.
  */
 
@@ -114,28 +117,5 @@ export const membershipRowUpdates = (
     "membership",
     args.membershipId,
     { entity_id: args.entityId, group_id: args.groupId },
-    ids,
-  );
-
-/** `ebb/link`: one edge from its source. Moving an edge is a delete plus a create. */
-export const linkRowUpdates = (
-  args: {
-    linkId: string;
-    sourceId: string;
-    targetId: string;
-    field: string;
-    type: string;
-  },
-  ids: SystemRowIds,
-): Update[] =>
-  platformRowUpdates(
-    "link",
-    args.linkId,
-    {
-      source_id: args.sourceId,
-      target_id: args.targetId,
-      type: args.type,
-      field: args.field,
-    },
     ids,
   );

@@ -4,7 +4,7 @@
  * regardless of how many verbs ran.
  */
 
-import { isComponentUpdate, isRowCreate } from "@ebbjs/core";
+import { isComponentUpdate, isFieldMap, isRowCreate, type Update } from "@ebbjs/core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -27,6 +27,27 @@ import {
 } from "./test-support/host.ts";
 
 const ISSUE = { title: "Ship", done: false, labels: [] };
+
+/** Every `ebb/link` key a batch writes, flattening the three key levels. */
+const linkLeaves = (
+  updates: readonly Update[],
+): Array<{ as: string; type: string; targetId: string; value: unknown }> => {
+  const leaves: Array<{ as: string; type: string; targetId: string; value: unknown }> = [];
+  for (const update of updates) {
+    if (!isComponentUpdate(update) || update.component !== "ebb/link") continue;
+    if (update.method === "drop" || !isFieldMap(update.data)) continue;
+    for (const [as, byType] of Object.entries(update.data.map)) {
+      if (!isFieldMap(byType)) continue;
+      for (const [type, byTarget] of Object.entries(byType.map)) {
+        if (!isFieldMap(byTarget)) continue;
+        for (const [targetId, leaf] of Object.entries(byTarget.map)) {
+          leaves.push({ as, type, targetId, value: isFieldMap(leaf) ? undefined : leaf.value });
+        }
+      }
+    }
+  }
+  return leaves;
+};
 
 describe("ctx.create", () => {
   it("buffers the entity put and its membership rows and returns a handle", async () => {
@@ -52,9 +73,10 @@ describe("ctx.create", () => {
       ["e_issue1", "issue"],
       ["eg_8_e_issue1g_1", "ebb"],
     ]);
+    // The row's create, its two leaves, the membership row's create and
+    // component; `labels` is an accessor, so an empty set writes no edge.
     expect(action!.updates.map((update) => update.method)).toEqual([
       "create",
-      "replace",
       "replace",
       "replace",
       "create",
@@ -75,15 +97,16 @@ describe("ctx.create", () => {
     const [copiedRow] = rowsOf(action!.updates, "project").filter(
       (row) => row[0]!.subject_id === "e_proj2",
     );
-    const [link] = rowsOf(action!.updates, "ebb").filter((row) =>
-      row.some((update) => isComponentUpdate(update) && update.component === "ebb/link"),
+    const links = action!.updates.filter(
+      (update) => isComponentUpdate(update) && update.component === "ebb/link",
     );
 
     expect(valueOf(copiedRow!, "name")).toBe(project.id);
-    expect(valueOf(link!, "link")).toMatchObject({
-      target_id: project.id,
-      field: "project",
-    });
+    // The edge is a key on its source row, not a row of its own.
+    expect(links.every((link) => link.subject_id === "e_issue1")).toBe(true);
+    expect(linkLeaves(links)).toEqual([
+      { as: "project", type: "issue", targetId: project.id, value: true },
+    ]);
   });
 
   it("requires a non-empty groups option", () => {
@@ -149,7 +172,7 @@ describe("ctx.update / ctx.delete", () => {
 });
 
 describe("ctx.relate / ctx.unrelate", () => {
-  it("links a one-cardinality relationship and unlinks it by the row id it minted", async () => {
+  it("links a one-cardinality edge on its source, then clears it through the overlay", async () => {
     const host = fakeHost();
     const ctx = testContext(host);
 
@@ -157,21 +180,19 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.unrelate("issue", "e_issue1", "project");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
-    const linkRows = rowsOf(action!.updates, "ebb").filter((row) =>
-      row.some((update) => isComponentUpdate(update) && update.component === "ebb/link"),
-    );
-    const deleted = action!.updates.filter((update) => update.method === "delete");
+    const [action] = host.commits as { updates: Update[] }[];
 
-    // One link row — its create and one atomic component — and its delete.
-    expect(linkRows).toHaveLength(1);
-    expect(linkRows[0]).toHaveLength(2);
-    expect(linkRows[0]![0]!.method).toBe("create");
-    expect(deleted).toHaveLength(1);
-    expect(deleted[0]!.subject_id).toBe(linkRows[0]![0]!.subject_id);
+    // Two Updates on the source — the presence, then the tombstone — and no
+    // edge row anywhere.
+    expect(action!.updates).toHaveLength(2);
+    expect(action!.updates.every((update) => update.subject_id === "e_issue1")).toBe(true);
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "project", type: "issue", targetId: "e_proj1", value: true },
+      { as: "project", type: "issue", targetId: "e_proj1", value: null },
+    ]);
   });
 
-  it("sets a many-cardinality FK list and clears it", async () => {
+  it("sets a many-cardinality target list and clears it", async () => {
     const host = fakeHost();
     const ctx = testContext(host);
 
@@ -179,55 +200,52 @@ describe("ctx.relate / ctx.unrelate", () => {
     await ctx.unrelate("issue", "e_issue1", "labels");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
-    const labels = action!.updates
-      .filter((update) => isComponentUpdate(update) && update.component === "issue/labels")
-      .map((update) => (update.data as { value: unknown }).value);
-
-    expect(labels).toEqual([["e_l1", "e_l2"], []]);
+    const [action] = host.commits as { updates: Update[] }[];
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "labels", type: "issue", targetId: "e_l1", value: true },
+      { as: "labels", type: "issue", targetId: "e_l2", value: true },
+      { as: "labels", type: "issue", targetId: "e_l1", value: null },
+      { as: "labels", type: "issue", targetId: "e_l2", value: null },
+    ]);
   });
 
-  it("drops one target from the current FK set read through the overlay", async () => {
-    const host = fakeHost({
-      e_issue1: hostRow("e_issue1", "issue", { labels: ["e_l1", "e_l2"] }),
-    });
+  it("tombstones a named target without reading the row", async () => {
+    const host = fakeHost();
     const ctx = testContext(host);
 
     await ctx.unrelate("issue", "e_issue1", "labels", "e_l1");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: Parameters<typeof modelsOf>[0] }[];
-    const labels = action!.updates.find(
-      (update) => isComponentUpdate(update) && update.component === "issue/labels",
-    )!;
-    expect(labels.data).toMatchObject({ value: ["e_l2"] });
+    const [action] = host.commits as { updates: Update[] }[];
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "labels", type: "issue", targetId: "e_l1", value: null },
+    ]);
+    expect(host.calls.filter((call) => call.op === "get")).toHaveLength(0);
   });
 
-  it("refuses to unlink one target of an FK set it cannot read", async () => {
-    const ctx = testContext(fakeHost());
-
-    await expect(ctx.unrelate("issue", "e_issue1", "labels", "e_l1")).rejects.toThrow(
-      EntityValidationError,
-    );
-  });
-
-  it("refuses a one-cardinality unlink whose row id it cannot see", async () => {
-    const ctx = testContext(fakeHost());
-
-    await expect(ctx.unrelate("issue", "e_issue1", "project")).rejects.toThrow(/relationshipId/);
-  });
-
-  it("deletes a stored one-cardinality edge when the caller names its row id", async () => {
-    const host = fakeHost();
+  it("clears a stored edge it reads through ctx.get", async () => {
+    const host = fakeHost({
+      e_issue1: hostRow("e_issue1", "issue", {
+        link: { project: { issue: { e_proj1: true } } },
+      }),
+    });
     const ctx = testContext(host);
 
-    await ctx.unrelate("issue", "e_issue1", "project", undefined, { relationshipId: "rel_known" });
+    await ctx.unrelate("issue", "e_issue1", "project");
     await ctx.commit();
 
-    const [action] = host.commits as { updates: unknown[] }[];
-    expect(action?.updates).toMatchObject([
-      { subject_id: "rel_known", method: "delete", data: null },
+    const [action] = host.commits as { updates: Update[] }[];
+    expect(linkLeaves(action!.updates)).toEqual([
+      { as: "project", type: "issue", targetId: "e_proj1", value: null },
     ]);
+  });
+
+  it("refuses to clear an accessor whose row it cannot read", async () => {
+    const ctx = testContext(fakeHost());
+
+    await expect(ctx.unrelate("issue", "e_issue1", "project")).rejects.toThrow(
+      /cannot read the live "project" edges/,
+    );
   });
 
   it("refuses an undeclared relationship and the built-in membership accessor", () => {

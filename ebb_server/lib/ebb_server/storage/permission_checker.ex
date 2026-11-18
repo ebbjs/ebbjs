@@ -33,7 +33,7 @@ defmodule EbbServer.Storage.PermissionChecker do
   ## Stateless by design
 
   All state comes from ETS lookups via the cache modules (`GrantCache`,
-  `RelationshipCache`, `EbbServer.Storage.AuthorizationContext`). The
+  `MembershipCache`, `EbbServer.Storage.AuthorizationContext`). The
   permission decision for an Action is a pure function of the Action
   + the actor's current group memberships. Keeping this stateless means
   no supervision coordination on the write path.

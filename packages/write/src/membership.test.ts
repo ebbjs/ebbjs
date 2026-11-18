@@ -102,12 +102,13 @@ describe("membership checker — fan-out scope", () => {
     expect(scope).toEqual(["g_4"]);
   });
 
-  it("resolves a link through its source's groups", () => {
+  it("resolves a link through the groups of the row that carries it", () => {
+    // The edge is a component of its source, so the subject *is* the source.
     const scope = membershipScope(
       update({
-        subject_id: "rel_1",
+        subject_id: "todo_1",
         kind: "link",
-        value: { source_id: "todo_1", target_id: "list_1", type: "todo", field: "list" },
+        value: { list: { todo: { list_1: true } } },
       }),
       view({ groupsOf: (id) => (id === "todo_1" ? ["g_5", "g_6"] : []) }),
     );
@@ -118,7 +119,7 @@ describe("membership checker — fan-out scope", () => {
     expect(
       membershipScope(update({ subject_id: "eg_1", kind: "membership", method: "delete" }), view()),
     ).toEqual([]);
-    expect(membershipScope(update({ subject_id: "rel_1", kind: "link" }), view())).toEqual([]);
+    expect(membershipScope(update({ subject_id: "todo_1", kind: "link" }), view())).toEqual([]);
     expect(membershipScope(update({ subject_id: "todo_1", kind: "todo" }), view())).toEqual([]);
   });
 
@@ -171,6 +172,20 @@ describe("membership checker — folding a batch's row facts", () => {
     expect(foldSubjects([...component, create("todo_1", "todo")]).get("todo_1")?.model).toBe(
       "todo",
     );
+  });
+
+  it("does not let an overlay name the row's model", () => {
+    const edge = update({ subject_id: "todo_1", kind: "link", value: { map: {} } });
+
+    // The overlay never supplies a model, so an unknown row stays unknown and
+    // a row another component named keeps that name.
+    expect(foldSubjects(edge).get("todo_1")?.model).toBeUndefined();
+    expect(
+      foldSubjects([
+        ...update({ subject_id: "todo_1", kind: "note", value: { title: "x" } }),
+        ...edge,
+      ]).get("todo_1")?.model,
+    ).toBe("note");
   });
 });
 

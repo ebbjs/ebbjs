@@ -33,16 +33,6 @@ export interface WriteOptions {
   readonly validate?: boolean;
 }
 
-/** Options for {@link ContextBase.unrelate}. */
-export interface UnrelateOptions {
-  /**
-   * A one-cardinality edge's `relationship` row id. Required unless this
-   * invocation created the edge: `ctx.get` cannot read relationship rows, so an
-   * edge that predates the call has no other way to be named.
-   */
-  readonly relationshipId?: string;
-}
-
 /** What {@link ContextBase.commit} resolves to. */
 export interface CommitOutcome {
   readonly replayed: boolean;
@@ -80,8 +70,8 @@ export interface ContextBase<Entity extends string = string> {
   delete(entity: Entity, id: string): void;
   /**
    * Link a relationship. One-cardinality relationships take a single target;
-   * a many-cardinality relationship's canonical FK set lives on the source
-   * row, so passing a list sets the whole set.
+   * a many-cardinality relationship takes the whole set the call carries. The
+   * edge is a key on the source row, so each target is one `ebb/link` key.
    */
   relate(
     entity: Entity,
@@ -90,17 +80,15 @@ export interface ContextBase<Entity extends string = string> {
     target: RelationshipTarget | readonly RelationshipTarget[],
   ): void;
   /**
-   * Remove a relationship. A one-cardinality edge is deleted by its
-   * `relationship` row id (taken explicitly unless this invocation created
-   * the edge); a many-cardinality edge drops `target` from the current FK set,
-   * or clears the set when no target is given.
+   * Remove a relationship. `target` names the edge's key, for either
+   * cardinality. With no target the call clears the accessor, which reads the
+   * source row through `get` to learn the live targets.
    */
   unrelate(
     entity: Entity,
     sourceId: string,
     as: string,
     target?: RelationshipTarget,
-    options?: UnrelateOptions,
   ): Promise<void>;
 
   /**

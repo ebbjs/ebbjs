@@ -6,10 +6,15 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   are projections of whole rows: a row's delivered scope and its cache row
   are properties of the row.
 
-  Each platform component is **atomic**, so a plan projects its value
+  Each cached platform component is **atomic**, so a plan projects its value
   directly; there is no "wire value wins, cached row supplies the rest"
   merge to get wrong. A folded row that does not carry the component (a
   `drop`, or a row delete) deletes that kind's cache row.
+
+  `ebb/link` has no cache row here: since
+  [#820](https://github.com/ebbjs/ebbjs/issues/820) it is a keyed component
+  of its source, so there is no link row to project and nothing to project it
+  onto.
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`
@@ -43,7 +48,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   @type tables :: %{
           grants_by_id: :ets.tab(),
           memberships_by_id: :ets.tab(),
-          relationships_by_id: :ets.tab(),
           group_apps: :ets.tab()
         }
 
@@ -53,8 +57,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
           | {:grant_delete, String.t()}
           | {:membership_put, map()}
           | {:membership_delete, String.t()}
-          | {:relationship_put, map()}
-          | {:relationship_delete, String.t()}
           | {:group_apps_put, String.t(), map() | nil}
           | {:group_apps_delete, String.t()}
 
@@ -212,31 +214,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     end
   end
 
-  defp plan_system_mutation(%{kind: :link} = update, _tables, mutations, overlay) do
-    key = {:relationships_by_id, update.subject_id}
-
-    case SystemComponent.value(update.data, :link) do
-      %{} = value ->
-        row = %{
-          id: update.subject_id,
-          source_id: Map.get(value, "source_id"),
-          target_id: Map.get(value, "target_id"),
-          type: Map.get(value, "type"),
-          field: Map.get(value, "field")
-        }
-
-        if is_nil(row.source_id) or is_nil(row.target_id) do
-          {mutations, overlay}
-        else
-          {[{:relationship_put, row} | mutations], Overlay.put(overlay, key, row)}
-        end
-
-      nil ->
-        {[{:relationship_delete, update.subject_id} | mutations],
-         Overlay.put(overlay, key, :deleted)}
-    end
-  end
-
   defp plan_system_mutation(_update, _tables, mutations, overlay), do: {mutations, overlay}
 
   # A delete's wire form carries only the membership id, so the projection
@@ -269,14 +246,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
     Overlay.delete_membership(slice, id, Overlay.entity_for_membership(cumulative, id))
   end
 
-  defp slice_mutation(slice, _cumulative, {:relationship_put, %{id: id} = row}) do
-    Overlay.put(slice, {:relationships_by_id, id}, row)
-  end
-
-  defp slice_mutation(slice, _cumulative, {:relationship_delete, id}) do
-    Overlay.put(slice, {:relationships_by_id, id}, :deleted)
-  end
-
   defp slice_mutation(slice, _cumulative, {:group_apps_put, id, field}) do
     Overlay.put(slice, {:group_apps, id}, field)
   end
@@ -290,8 +259,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp mutation_value({:grant_delete, _id}), do: :deleted
   defp mutation_value({:membership_put, row}), do: row
   defp mutation_value({:membership_delete, _id}), do: :deleted
-  defp mutation_value({:relationship_put, row}), do: row
-  defp mutation_value({:relationship_delete, _id}), do: :deleted
   defp mutation_value({:group_apps_put, _id, field}), do: field
   defp mutation_value({:group_apps_delete, _id}), do: :deleted
 
@@ -300,8 +267,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
   defp mutation_key({:grant_delete, id}), do: {:grants_by_id, id}
   defp mutation_key({:membership_put, %{id: id}}), do: {:memberships_by_id, id}
   defp mutation_key({:membership_delete, id}), do: {:memberships_by_id, id}
-  defp mutation_key({:relationship_put, %{id: id}}), do: {:relationships_by_id, id}
-  defp mutation_key({:relationship_delete, id}), do: {:relationships_by_id, id}
   defp mutation_key({:group_apps_put, id, _field}), do: {:group_apps, id}
   defp mutation_key({:group_apps_delete, id}), do: {:group_apps, id}
 end

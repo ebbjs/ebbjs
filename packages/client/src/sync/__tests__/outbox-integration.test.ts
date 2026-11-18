@@ -20,6 +20,7 @@ import { describe, it, expect } from "vitest";
 import {
   componentName,
   decodeSync,
+  linkTargets,
   makeHlc,
   type Action,
   type FieldValue,
@@ -28,9 +29,11 @@ import {
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
-import { callApplyAction, jsonResponse, testActions, waitFor } from "../test-utils";
+import { callApplyAction, jsonResponse, linkValue, testActions, waitFor } from "../test-utils";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
+
+const HLC = makeHlc(1_711_036_800_000);
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -467,18 +470,21 @@ describe("client.outbox", () => {
     const { fn, calls } = mkStubFetch();
     const client = mkClient(fn);
     const update: Update = {
-      id: "u_rel_1",
-      subject_id: "rel_1",
-      component: "relationship/source_id",
-      method: "replace",
-      data: { value: "todo_1", update_id: "u_rel_1" },
+      id: "u_link_1",
+      subject_id: "todo_1",
+      component: "ebb/link",
+      method: "merge",
+      data: linkValue([{ as: "list", type: "todo", targetId: "list_1" }], "u_link_1", HLC),
     };
 
     await client.submitRelationshipUpdates([update]);
 
     expect(client.outbox.size()).toBe(0);
     expect(actionCalls(calls)).toBe(1);
-    expect(await client.readLocalEntity("rel_1")).not.toBeNull();
+    // The edge landed on the source row, which is all local materialization of
+    // a link write produces.
+    const row = await client.readLocalEntity("todo_1");
+    expect(linkTargets(row!, "list", "todo")).toEqual(["list_1"]);
   });
 });
 
@@ -826,19 +832,15 @@ describe("catch-up conflict detection (#308, #390)", () => {
     const mkRelationship = (id: string, gsn: number, target: string): Action => ({
       id,
       actor_id: ACTOR_ID,
-      hlc: makeHlc(1_711_036_800_000),
+      hlc: HLC,
       gsn,
       updates: [
         {
           id: `u_${id}`,
-          subject_id: "rel_1",
+          subject_id: "todo_1",
           component: "ebb/link",
-          method: "replace",
-          data: {
-            value: { source_id: "todo_1", target_id: target, type: "link", field: "target" },
-            update_id: `u_${id}`,
-            hlc: makeHlc(1_711_036_800_000),
-          },
+          method: "merge",
+          data: linkValue([{ as: "target", type: "link", targetId: target }], `u_${id}`, HLC),
         },
       ],
     });

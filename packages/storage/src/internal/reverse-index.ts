@@ -1,5 +1,11 @@
-import { EBB_COMPONENTS, GROUPS_ACCESSOR, systemValueString, type Entity } from "@ebbjs/core";
-import type { MembershipLink, RelationshipLink } from "../types/entity-store";
+import {
+  EBB_COMPONENTS,
+  GROUPS_ACCESSOR,
+  linkEdges,
+  systemValueString,
+  type Entity,
+} from "@ebbjs/core";
+import type { MembershipLink } from "../types/entity-store";
 
 /**
  * Derivation of the adjacency indices shared by every EntityStore
@@ -12,40 +18,40 @@ import type { MembershipLink, RelationshipLink } from "../types/entity-store";
  * - the **reverse** index answers "which sources point at this target
  *   through this accessor?", the read behind a relationship-aware
  *   `.where` predicate AND the read behind built-in group membership;
- * - the **forward** index answers "what does this source point at?",
- *   the read behind `forwardOne` / `forwardMany` and the entity-keyed
- *   membership read.
+ * - the **forward** index answers "which groups is this entity filed
+ *   into?", the entity-keyed membership read.
  *
- * Two components contribute: `ebb/link` keys on its `(field, type, target_id)` /
- * `(field, type, source_id)` pair, and `ebb/membership` on its `group_id` (group
- * side) or `entity_id` (member side) under a synthetic membership accessor. A
- * row carrying both yields both entries, which is what the overlay case (#820)
- * needs.
+ * Two components contribute: a row's `ebb/link` component keys one entry per
+ * live edge on `(field, type, target_id)` and yields its own id, and
+ * `ebb/membership` keys on its `group_id` (group side) or `entity_id` (member
+ * side) under a synthetic membership accessor.
  *
- * It keys on the row, not the source: two rows may share a natural key
- * (same source, field, type, target), and dropping one must not erase a
- * source the other still supplies. The distinct ids are derived from
- * the live rows at read time.
+ * A link is a key of the source row's component, so one source holds at most
+ * one entry per `(field, type, target)` and the entry's identity is the source
+ * id. A membership is a row, and two rows may name the same `(entity, group)`
+ * pair, so a membership entry keeps the row id and yields the id it is filed
+ * with; the distinct ids are derived from the live rows at read time.
  */
 
+/**
+ * One live entry under one composite key.
+ *
+ * `id` is the entry's identity within the key: the source row id for a link,
+ * the membership row id for a membership. `value` is the id the key yields: a
+ * link yields its source, a membership yields the member (group side) or the
+ * group (member side).
+ */
 export interface IndexEntry {
   readonly key: string;
-  readonly rowId: string;
-  /**
-   * The id the entry yields for its key: the source of a reverse entry,
-   * the target of a forward one.
-   */
+  readonly id: string;
   readonly value: string;
 }
 
-/** Live rows under one composite key: rowId → yielded id. */
+/** Live entries under one composite key: entry id → yielded id. */
 export type IndexRows = Readonly<Record<string, string>>;
 
-/** Live rows per composite key — the shape both adapters persist. */
+/** Live entries per composite key — the shape both adapters persist. */
 export type ReverseIndex = Readonly<Record<string, IndexRows>>;
-
-/** The component a link row carries; its value derives the adjacency keys. */
-export const LINK_COMPONENT = EBB_COMPONENTS.link;
 
 export const MEMBERSHIP_COMPONENT = EBB_COMPONENTS.membership;
 
@@ -66,15 +72,14 @@ export const reverseIndexKey = (field: string, type: string, targetId: string): 
   `${field}\u0000${type}\u0000${targetId}`;
 
 /**
- * The forward (source-keyed) counterpart of {@link reverseIndexKey}.
- * The leading `\u0001` keeps it out of the reverse key space — the two
- * directions share one index map and one IndexedDB store, and a
- * `(field, type, id)` triple can name a source in one row and a target
- * in another. NUL and the control chars around it are outside the
- * nanoid alphabet and accessor names, so neither separator can occur in
- * a key component.
+ * The entity-keyed counterpart of {@link reverseIndexKey}. The leading
+ * `\u0001` keeps it out of the reverse key space — the two directions share one
+ * index map and one IndexedDB store, and a `(field, type, id)` triple can name
+ * a source in one row and a target in another. NUL and the control chars
+ * around it are outside the nanoid alphabet and accessor names, so neither
+ * separator can occur in a key component.
  */
-export const forwardIndexKey = (field: string, type: string, sourceId: string): string =>
+const forwardIndexKey = (field: string, type: string, sourceId: string): string =>
   `\u0001${reverseIndexKey(field, type, sourceId)}`;
 
 /** The reverse-index key a membership row with this group id contributes. */
@@ -86,33 +91,17 @@ export const forwardMembershipIndexKey = (entityId: string): string =>
   forwardIndexKey(MEMBERSHIP_ACCESSOR, MEMBERSHIP_COMPONENT, entityId);
 
 /**
- * The index entry a row carrying `ebb/link` contributes, or `null`. A row whose
- * value is missing part of its key indexes nothing, so a malformed row cannot
- * poison the index with a partial key.
+ * The reverse index entries a row's `ebb/link` component contributes: one per
+ * live edge, keyed on the edge and yielding the row that carries it. A
+ * tombstoned key is not an edge, so it indexes nothing.
  */
-export const relationshipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.deleted_hlc !== null) return null;
-
-  const field = systemValueString(entity, "link", "field");
-  const type = systemValueString(entity, "link", "type");
-  const targetId = systemValueString(entity, "link", "target_id");
-  const sourceId = systemValueString(entity, "link", "source_id");
-  if (field === null || type === null || targetId === null || sourceId === null) return null;
-
-  return { key: reverseIndexKey(field, type, targetId), rowId: entity.id, value: sourceId };
-};
-
-/** The forward (source-keyed) entry an `ebb/link` row contributes, or `null`. */
-export const forwardRelationshipEntryFor = (entity: Entity): IndexEntry | null => {
-  if (entity.deleted_hlc !== null) return null;
-
-  const field = systemValueString(entity, "link", "field");
-  const type = systemValueString(entity, "link", "type");
-  const sourceId = systemValueString(entity, "link", "source_id");
-  const targetId = systemValueString(entity, "link", "target_id");
-  if (field === null || type === null || sourceId === null || targetId === null) return null;
-
-  return { key: forwardIndexKey(field, type, sourceId), rowId: entity.id, value: targetId };
+export const relationshipEntriesFor = (entity: Entity): readonly IndexEntry[] => {
+  if (entity.deleted_hlc !== null) return [];
+  return linkEdges(entity).map((edge) => ({
+    key: reverseIndexKey(edge.as, edge.type, edge.targetId),
+    id: entity.id,
+    value: entity.id,
+  }));
 };
 
 /**
@@ -127,10 +116,10 @@ export const membershipEntryFor = (entity: Entity): IndexEntry | null => {
   const entityId = systemValueString(entity, "membership", "entity_id");
   if (groupId === null || entityId === null) return null;
 
-  return { key: membershipIndexKey(groupId), rowId: entity.id, value: entityId };
+  return { key: membershipIndexKey(groupId), id: entity.id, value: entityId };
 };
 
-/** The forward (member-keyed) entry an `ebb/membership` row contributes, or `null`. */
+/** The entity-keyed entry an `ebb/membership` row contributes, or `null`. */
 export const forwardMembershipEntryFor = (entity: Entity): IndexEntry | null => {
   if (entity.deleted_hlc !== null) return null;
 
@@ -138,18 +127,22 @@ export const forwardMembershipEntryFor = (entity: Entity): IndexEntry | null => 
   const entityId = systemValueString(entity, "membership", "entity_id");
   if (groupId === null || entityId === null) return null;
 
-  return { key: forwardMembershipIndexKey(entityId), rowId: entity.id, value: groupId };
+  return { key: forwardMembershipIndexKey(entityId), id: entity.id, value: groupId };
 };
 
-const isEntry = (entry: IndexEntry | null): entry is IndexEntry => entry !== null;
+/** Every reverse index entry a row contributes: its live edges, then membership. */
+export const indexEntriesFor = (entity: Entity): readonly IndexEntry[] => {
+  const membership = membershipEntryFor(entity);
+  return membership === null
+    ? relationshipEntriesFor(entity)
+    : [...relationshipEntriesFor(entity), membership];
+};
 
-/** Every reverse index entry a row contributes: one per component kind it carries. */
-export const indexEntriesFor = (entity: Entity): readonly IndexEntry[] =>
-  [relationshipEntryFor(entity), membershipEntryFor(entity)].filter(isEntry);
-
-/** Every forward index entry a materialized row contributes. */
-export const forwardIndexEntriesFor = (entity: Entity): readonly IndexEntry[] =>
-  [forwardRelationshipEntryFor(entity), forwardMembershipEntryFor(entity)].filter(isEntry);
+/** Every forward index entry a row contributes. Only membership has one. */
+export const forwardIndexEntriesFor = (entity: Entity): readonly IndexEntry[] => {
+  const entry = forwardMembershipEntryFor(entity);
+  return entry === null ? [] : [entry];
+};
 
 /**
  * Ascending id order, so both adapters return the same sequence for
@@ -158,34 +151,29 @@ export const forwardIndexEntriesFor = (entity: Entity): readonly IndexEntry[] =>
 export const sortSourceIds = (ids: Iterable<string>): string[] => [...ids].sort();
 
 /**
- * Distinct source ids of the live rows under one key, ascending.
- * Deduplicated because several rows may carry the same source.
+ * Distinct ids one key yields, ascending. Deduplicated because several
+ * membership rows may carry the same member.
  */
 export const liveSourceIds = (rows: IndexRows | undefined): string[] =>
   sortSourceIds(new Set(Object.values(rows ?? {})));
 
 /**
- * Live rows under one key as `{ rowId, value }`, ascending by value then
- * row id. Deterministic regardless of insertion order, so both adapters
- * return the same sequence for the same rows and a source's duplicate
- * edges keep a stable first row.
+ * Live entries under one key as `{ id, value }`, ascending by value then id.
+ * Deterministic regardless of insertion order, so both adapters return the
+ * same sequence for the same rows.
  */
-export const liveIndexRows = (
+const liveIndexRows = (
   rows: IndexRows | undefined,
-): readonly { readonly rowId: string; readonly value: string }[] =>
+): readonly { readonly id: string; readonly value: string }[] =>
   Object.entries(rows ?? {})
-    .map(([rowId, value]) => ({ rowId, value }))
+    .map(([id, value]) => ({ id, value }))
     .sort((a, b) =>
-      a.value === b.value ? a.rowId.localeCompare(b.rowId) : a.value.localeCompare(b.value),
+      a.value === b.value ? a.id.localeCompare(b.id) : a.value.localeCompare(b.value),
     );
-
-/** Live forward relationship edges under one key. */
-export const liveRelationshipLinks = (rows: IndexRows | undefined): readonly RelationshipLink[] =>
-  liveIndexRows(rows).map(({ rowId, value }) => ({ relationshipId: rowId, targetId: value }));
 
 /** Live entity-keyed membership rows under one key. */
 export const liveMembershipLinks = (rows: IndexRows | undefined): readonly MembershipLink[] =>
-  liveIndexRows(rows).map(({ rowId, value }) => ({ membershipId: rowId, groupId: value }));
+  liveIndexRows(rows).map(({ id, value }) => ({ membershipId: id, groupId: value }));
 
 const applyRow = (
   rows: IndexRows | undefined,
@@ -193,21 +181,21 @@ const applyRow = (
   present: boolean,
 ): Record<string, string> => {
   const next: Record<string, string> = { ...rows };
-  if (present) next[entry.rowId] = entry.value;
-  else delete next[entry.rowId];
+  if (present) next[entry.id] = entry.value;
+  else delete next[entry.id];
   return next;
 };
 
 /**
- * Record one live row under its key. Never empty: the added row is
+ * Record one live entry under its key. Never empty: the added entry is
  * always present.
  */
 export const addIndexRow = (rows: IndexRows | undefined, entry: IndexEntry): IndexRows =>
   applyRow(rows, entry, true);
 
 /**
- * Drop one row from its key, returning the next map. A `null` return
- * means no live rows remain, so the caller drops the key.
+ * Drop one entry from its key, returning the next map. A `null` return
+ * means no live entries remain, so the caller drops the key.
  */
 export const removeIndexRow = (
   rows: IndexRows | undefined,
@@ -223,7 +211,7 @@ export interface IndexDelta {
 }
 
 const sameEntry = (a: IndexEntry, b: IndexEntry): boolean =>
-  a.key === b.key && a.rowId === b.rowId && a.value === b.value;
+  a.key === b.key && a.id === b.id && a.value === b.value;
 
 /** The entries `next` adds and `previous` removes; an unchanged one yields nothing. */
 const entryDelta = (previous: readonly IndexEntry[], next: readonly IndexEntry[]): IndexDelta => ({
@@ -250,7 +238,7 @@ const indexDeltaFor =
 /** The reverse index change a previous→next write implies, for both entry kinds. */
 export const reverseIndexDelta = indexDeltaFor(indexEntriesFor);
 
-/** The forward index change a previous→next write implies, from the same two rows. */
+/** The forward (entity-keyed membership) index change a previous→next write implies. */
 export const forwardIndexDelta = indexDeltaFor(forwardIndexEntriesFor);
 
 const withEntry = (

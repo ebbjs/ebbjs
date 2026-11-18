@@ -2373,6 +2373,76 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert Jason.decode!(cached.data)["components"] == ["todo/title"]
     end
 
+    # `ebb/link` is a component of a row it does not model (decision 13), so a
+    # field key alone cannot name it. The name its writing Update carried is
+    # kept with the row, and a later write to a sibling field does not re-name
+    # it from the row's model.
+    test "an overlay keeps the component name its write carried", ctx do
+      entity_id = "todo_overlay_link"
+      opts = store_opts(ctx)
+      hlc = hlc_from(1_000)
+
+      create = put_action("act_create", entity_id, %{"title" => leaf("Overlay", hlc)}, hlc)
+      assert {:ok, {1, 1}, []} = Writer.write_actions([create], ctx.writer_name)
+      assert {:ok, _row} = EntityStore.get(entity_id, "a_test", opts)
+
+      edge_leaf = %{"value" => true, "hlc" => hlc, "update_id" => "upd_link"}
+
+      link =
+        validated_action(%{
+          "id" => "act_link",
+          "hlc" => hlc_from(2_000),
+          "updates" => [
+            validated_component(entity_id, "ebb/link", %{
+              "map" => %{
+                "assignee" => %{"map" => %{"todo" => %{"map" => %{"todo_2" => edge_leaf}}}}
+              }
+            })
+          ]
+        })
+
+      assert {:ok, {2, 2}, []} = Writer.write_actions([link], ctx.writer_name)
+
+      assert {:ok, linked} = EntityStore.get(entity_id, "a_test", opts)
+      assert linked.model == "todo"
+      assert linked.data["components"] == ["ebb/link", "todo/title"]
+
+      # The patch wrote one key three levels deep, not the whole field.
+      assert %{
+               "map" => %{
+                 "assignee" => %{"map" => %{"todo" => %{"map" => %{"todo_2" => stored_leaf}}}}
+               }
+             } = linked.data["fields"]["link"]
+
+      assert stored_leaf["value"] == true
+
+      patch =
+        patch_action(
+          "act_patch",
+          entity_id,
+          %{"completed" => leaf(true, hlc_from(3_000))},
+          hlc_from(3_000)
+        )
+
+      assert {:ok, {3, 3}, []} = Writer.write_actions([patch], ctx.writer_name)
+
+      assert {:ok, patched} = EntityStore.get(entity_id, "a_test", opts)
+      assert patched.data["components"] == ["todo/completed", "ebb/link", "todo/title"]
+
+      assert {:ok, [^entity_id]} =
+               SQLite.query_component_ids("ebb/link", 10, ctx.sqlite_name)
+
+      assert {:ok, []} = SQLite.query_component_ids("todo/link", 10, ctx.sqlite_name)
+
+      assert {:ok, cached} = SQLite.get_entity(entity_id, ctx.sqlite_name)
+
+      assert Jason.decode!(cached.data)["components"] == [
+               "todo/completed",
+               "ebb/link",
+               "todo/title"
+             ]
+    end
+
     test "a patch that adds a component updates the list and the mirror together", ctx do
       entity_id = "todo_components_patch"
       opts = store_opts(ctx)
@@ -2501,15 +2571,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_component(
               note_id,
               "ebb/link",
-              leaf(
-                %{
-                  "source_id" => note_id,
-                  "target_id" => "doc_1",
-                  "type" => "owns",
-                  "field" => "body"
-                },
-                hlc
-              ),
+              %{
+                "map" => %{
+                  "body" => %{"map" => %{"owns" => %{"map" => %{"doc_1" => leaf(true, hlc)}}}}
+                }
+              },
               id: "upd_link"
             )
           ]

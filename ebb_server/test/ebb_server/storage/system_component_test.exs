@@ -3,16 +3,22 @@ defmodule EbbServer.Storage.SystemComponentTest do
 
   alias EbbServer.Storage.SystemComponent
 
-  test "every kind declares its component, scope owner, and by-id cache" do
+  test "every kind declares its component, scope owner, by-id cache and overlay" do
     assert [
-             {:grant, {:field, :group_id, :group}, :grants_by_id},
-             {:membership, {:field, :group_id, :group}, :memberships_by_id},
-             {:link, {:field, :source_id, :entity}, :relationships_by_id},
-             {:group, :self, :group_apps}
+             {:grant, {:field, :group_id, :group}, :grants_by_id, false},
+             {:membership, {:field, :group_id, :group}, :memberships_by_id, false},
+             {:link, nil, nil, true},
+             {:group, :self, :group_apps, false}
            ] ==
              Enum.map(SystemComponent.kinds(), fn kind ->
-               {kind, SystemComponent.scope(kind), SystemComponent.by_id(kind)}
+               {kind, SystemComponent.scope(kind), SystemComponent.by_id(kind),
+                SystemComponent.overlay?(kind)}
              end)
+  end
+
+  test "a link declares no scope owner and no by-id cache" do
+    assert SystemComponent.scope(:link) == nil
+    assert SystemComponent.by_id(:link) == nil
   end
 
   test "a non-platform value declares no scope" do
@@ -20,6 +26,15 @@ defmodule EbbServer.Storage.SystemComponentTest do
     assert SystemComponent.scope(nil) == nil
     assert SystemComponent.by_id("todo") == nil
     assert SystemComponent.by_id(nil) == nil
+    assert SystemComponent.overlay?("todo") == false
+    assert SystemComponent.overlay?(nil) == false
+  end
+
+  test "a platform field name is named under `ebb` on a row of any model" do
+    assert SystemComponent.component_of_field("note", "link") == "ebb/link"
+    assert SystemComponent.component_of_field("ebb", "link") == "ebb/link"
+    assert SystemComponent.component_of_field("ebb", "group") == "ebb/group"
+    assert SystemComponent.component_of_field("note", "title") == "note/title"
   end
 
   test "component names round-trip through kind/1" do

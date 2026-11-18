@@ -16,8 +16,8 @@ defmodule EbbServer.Storage.ActionScope do
   list is delivered to every group the Action is indexed under: the shape says
   nothing about whether the list covers every subject, and the delivery filter
   must not drop an Update the Action committed. Resolving the record from the
-  caches instead is not possible this late — a `relationship`/`membership`
-  delete's by-id entry is already gone.
+  caches instead is not possible this late — a membership delete's by-id entry
+  is already gone.
   """
 
   @spec updates_for_group(map(), String.t()) :: [map()]

@@ -6,7 +6,6 @@
   "actor_id": "a_golden",
   "ids": {
     "u": ["u_gdelete1"],
-    "rel": [],
     "hlc": ["111690000000000021"]
   },
   "calls": [

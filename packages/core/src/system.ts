@@ -2,21 +2,34 @@
  * The platform's own components.
  *
  * `ebb/` is the platform namespace, and a row that carries only platform
- * components is committed under the model `ebb`. The *component* names the
- * row's kind; four kinds, one atomic value each:
+ * components is committed under the model `ebb`. Three kinds are an atomic
+ * value on a row of their own:
  *
- * | kind         | component        | value                                 |
- * | ------------ | ---------------- | ------------------------------------- |
- * | `group`      | `ebb/group`      | `{name, apps}`                        |
- * | `grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}`   |
- * | `membership` | `ebb/membership` | `{entity_id, group_id}`               |
- * | `link`       | `ebb/link`       | `{source_id, target_id, type, field}` |
+ * | kind         | component        | value                               |
+ * | ------------ | ---------------- | ----------------------------------- |
+ * | `group`      | `ebb/group`      | `{name, apps}`                      |
+ * | `grant`      | `ebb/grant`      | `{actor_id, group_id, permissions}` |
+ * | `membership` | `ebb/membership` | `{entity_id, group_id}`             |
  *
  * Atomic means one Update carries the whole object, stored as one leaf at
- * `data.fields.<kind>`: a torn edge, membership, or grant is unrepresentable.
+ * `data.fields.<kind>`: a torn membership or grant is unrepresentable.
+ *
+ * `ebb/link` is the fourth kind and not a row kind: it is a **keyed component
+ * of its source row**, whose value is `{<as>: {<type>: {<target_id>: true}}}`.
+ * The three nesting levels are the edge's key, so two edges under different
+ * accessors or type labels are distinct and one Update writes one edge. A
+ * present edge's leaf is `{value: true}`; removing one edge tombstones that key
+ * with `{value: null}`. Read it with {@link linkEdges} / {@link linkTargets},
+ * never with {@link systemValue}, which speaks only for the atomic kinds.
  */
 
-import { componentName, type ComponentName, type Entity, type FieldValue } from "./types";
+import {
+  componentName,
+  isFieldMap,
+  type ComponentName,
+  type Entity,
+  type FieldValue,
+} from "./types";
 
 export const EBB_MODEL_NAME = "ebb";
 
@@ -73,13 +86,18 @@ export const componentValue = (leaf: FieldValue | null | undefined): SystemValue
   return value as SystemValue;
 };
 
-/** The value a row carries for `kind`, or `null` for a missing field or another kind. */
+/**
+ * The value a row carries for an atomic `kind`, or `null` for a missing field
+ * or another kind. A keyed component has no whole value: `ebb/link` answers
+ * `null` here by construction, and is read with {@link linkEdges}.
+ */
 export const systemValue = (
   row: Pick<Entity, "data"> | null | undefined,
   kind: EbbComponentKind,
 ): SystemValue | null =>
   componentValue(row?.data?.fields?.[ebbComponentField(kind)] as FieldValue | undefined);
 
+/** Whether the row carries an atomic `kind`. Keyed components answer `false`; see {@link carriesLink}. */
 export const carriesComponent = (
   row: Pick<Entity, "data"> | null | undefined,
   kind: EbbComponentKind,
@@ -100,4 +118,109 @@ export const systemValueString = (
 ): string | null => {
   const value = systemValueField(row, kind, field);
   return typeof value === "string" ? value : null;
+};
+
+/**
+ * Any row carrying wire field values: a committed `Entity` and a `GET
+ * /entities/:id` response both are one, which is why the link readers speak
+ * this shape rather than the store's.
+ */
+export interface WireRow {
+  readonly data: { readonly fields: Record<string, unknown> };
+}
+
+/** One live edge: the accessor, the wire type label, and the target row id. */
+export interface LinkEdge {
+  readonly as: string;
+  readonly type: string;
+  readonly targetId: string;
+}
+
+/** The `ebb/link` component's raw value, or `undefined` when the row carries none. */
+const linkValue = (row: WireRow | null | undefined): FieldValue | undefined =>
+  row?.data?.fields?.[ebbComponentField("link")] as FieldValue | undefined;
+
+/** The nested map at `keys`, or `null` when the path is missing or is a leaf. */
+const linkMapAt = (
+  value: FieldValue | undefined,
+  keys: readonly string[],
+): Record<string, FieldValue> | null => {
+  let current: FieldValue | undefined = value;
+  for (const key of keys) {
+    if (current === undefined || !isFieldMap(current)) return null;
+    current = current.map[key];
+  }
+  return current !== undefined && isFieldMap(current) ? current.map : null;
+};
+
+/**
+ * Whether a link leaf names a present edge. Presence is `true`; a tombstone is
+ * `null`, and anything else is not an edge this reader can name.
+ */
+const isPresentLinkLeaf = (leaf: FieldValue | undefined): boolean =>
+  leaf !== undefined && !isFieldMap(leaf) && leaf.value === true;
+
+/** Ascending by as, then type, then target id: the order every replica reads. */
+const compareLinks = (left: LinkEdge, right: LinkEdge): number => {
+  if (left.as !== right.as) return left.as < right.as ? -1 : 1;
+  if (left.type !== right.type) return left.type < right.type ? -1 : 1;
+  if (left.targetId === right.targetId) return 0;
+  return left.targetId < right.targetId ? -1 : 1;
+};
+
+/**
+ * Every live edge the row's `ebb/link` component carries, in a stable order.
+ * Tombstoned keys are absent, so a removal leaves nothing to read.
+ */
+export const linkEdges = (row: WireRow | null | undefined): readonly LinkEdge[] => {
+  const edges: LinkEdge[] = [];
+  const byAs = linkMapAt(linkValue(row), []);
+  if (byAs === null) return edges;
+  for (const [as, byType] of Object.entries(byAs)) {
+    if (!isFieldMap(byType)) continue;
+    for (const [type, byTarget] of Object.entries(byType.map)) {
+      if (!isFieldMap(byTarget)) continue;
+      for (const [targetId, leaf] of Object.entries(byTarget.map)) {
+        if (isPresentLinkLeaf(leaf)) edges.push({ as, type, targetId });
+      }
+    }
+  }
+  return edges.sort(compareLinks);
+};
+
+/** Whether the row carries an `ebb/link` component at all, even a tombstoned one. */
+export const carriesLink = (row: WireRow | null | undefined): boolean =>
+  linkValue(row) !== undefined;
+
+/** The live target ids of one `(as, type)`, ascending. */
+export const linkTargets = (
+  row: WireRow | null | undefined,
+  as: string,
+  type: string,
+): readonly string[] => {
+  const targets = linkMapAt(linkValue(row), [as, type]);
+  if (targets === null) return [];
+  return Object.entries(targets)
+    .filter(([, leaf]) => isPresentLinkLeaf(leaf))
+    .map(([targetId]) => targetId)
+    .sort();
+};
+
+/** The platform kind whose value lives at each platform field name. */
+const KIND_BY_FIELD: ReadonlyMap<string, EbbComponentKind> = new Map(
+  EBB_COMPONENT_KINDS.map((kind) => [ebbComponentField(kind), kind]),
+);
+
+/**
+ * The component a row's `field` is named under.
+ *
+ * `ebb/` is the platform's namespace, not the row's: an `ebb/*` component may
+ * sit on a row of any model and never takes that row's model as its namespace,
+ * so a platform field name is always `ebb/<field>`. Every other field is a
+ * component of the row's own model. The one way to name a component, so a
+ * reader and an index cannot disagree about where an overlay lives.
+ */
+export const fieldComponent = (model: string, field: string): ComponentName => {
+  const kind = model === EBB_MODEL_NAME ? undefined : KIND_BY_FIELD.get(field);
+  return kind === undefined ? componentName(model, field) : ebbComponent(kind);
 };

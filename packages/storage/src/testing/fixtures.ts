@@ -108,16 +108,6 @@ export const buildPatchAction = (counter = 1): Action => {
   };
 };
 
-export interface RelationshipRowFixture {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  /** Accessor name — the `as` of the relationship. */
-  field: string;
-  /** Relationship type string. */
-  type: string;
-}
-
 /** One atomic component Update: the whole value at one leaf. */
 const systemRowUpdate = (
   kind: EbbComponentKind,
@@ -133,52 +123,76 @@ const systemRowUpdate = (
   data: { value, update_id: updateId, hlc },
 });
 
-/**
- * Build a create Action for one `ebb/link` row: the row's create, then one
- * `replace` carrying the whole value, the shape the wire writes when a source
- * points at a target.
- */
-export const buildRelationshipPutAction = (row: RelationshipRowFixture, gsn = 1): Action => {
-  const hlc = makeHlc(HLC_BASE, gsn);
-  const updateId = `u_${row.id}`;
+/** One edge a link write carries: its accessor, its type label, and its target. */
+export interface LinkEdgeFixture {
+  /** Accessor name — the `as` of the relationship. */
+  readonly as: string;
+  /** Relationship type string. */
+  readonly type: string;
+  readonly targetId: string;
+}
 
-  return {
-    id: `a_${row.id}_${gsn}`,
-    actor_id: "a_user1",
-    hlc,
-    gsn,
-    updates: [
-      rowCreate(row.id, "ebb", hlc, `${updateId}_create`),
-      systemRowUpdate(
-        "link",
-        row.id,
-        {
-          source_id: row.sourceId,
-          target_id: row.targetId,
-          type: row.type,
-          field: row.field,
-        },
-        updateId,
-        hlc,
-      ),
-    ],
-  };
-};
+/** The accessor → type → target nesting that is one edge's key. */
+type LinkLeaves = Record<string, Record<string, Record<string, FieldValue>>>;
 
-export const buildRelationshipDeleteAction = (args: { id: string }, gsn: number): Action => {
-  const hlc = makeHlc(HLC_BASE, gsn);
-
-  return {
-    id: `a_${args.id}_delete`,
-    actor_id: "a_user1",
-    hlc,
-    gsn,
-    updates: [
+/** Wrap the nesting as the `ebb/link` component's map value. */
+const linkComponentValue = (leaves: LinkLeaves): FieldValue => ({
+  map: Object.fromEntries(
+    Object.entries(leaves).map(([as, byType]) => [
+      as,
       {
-        id: `u_${args.id}_delete`,
-        subject_id: args.id,
-        method: "delete",
-        data: null,
+        map: Object.fromEntries(
+          Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+        ),
+      },
+    ]),
+  ),
+});
+
+/**
+ * Build a link write for one source row: one `ebb/link` merge carrying a
+ * presence leaf per added edge and a tombstone (`value: null`) per removed one.
+ * The create is optional, so a caller can write edges onto a row it already
+ * holds.
+ */
+export const buildLinkAction = (
+  args: {
+    sourceId: string;
+    /** The source row's committed model. */
+    model: string;
+    present?: readonly LinkEdgeFixture[];
+    removed?: readonly LinkEdgeFixture[];
+    /** Carry the row's create with the edges. */
+    create?: boolean;
+  },
+  gsn = 1,
+): Action => {
+  const hlc = makeHlc(HLC_BASE, gsn);
+  const updateId = `u_link_${args.sourceId}_${gsn}`;
+  const leaves: LinkLeaves = {};
+  const leaf = (edge: LinkEdgeFixture, value: boolean | null): void => {
+    const byType = (leaves[edge.as] ??= {});
+    const byTarget = (byType[edge.type] ??= {});
+    byTarget[edge.targetId] = { value, update_id: updateId, hlc };
+  };
+  for (const edge of args.present ?? []) leaf(edge, true);
+  for (const edge of args.removed ?? []) leaf(edge, null);
+
+  return {
+    id: `a_link_${args.sourceId}_${gsn}`,
+    actor_id: "a_user1",
+    hlc,
+    gsn,
+    updates: [
+      ...(args.create === false
+        ? []
+        : [rowCreate(args.sourceId, args.model, hlc, `${updateId}_create`)]),
+      {
+        id: updateId,
+        subject_id: args.sourceId,
+        component: ebbComponent("link"),
+        method: "merge",
+        data: linkComponentValue(leaves),
       },
     ],
   };

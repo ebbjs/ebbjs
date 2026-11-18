@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { makeHlc, type Action } from "@ebbjs/core";
-import { ModelRegistry, EntityValidationError, defineComponent, defineModel, e } from "./index";
+import {
+  EBB_MODEL_NAME,
+  ModelRegistry,
+  EntityValidationError,
+  defineComponent,
+  defineModel,
+  e,
+  ebbModel,
+} from "./index";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -77,13 +85,13 @@ describe("ModelRegistry.isLwwField", () => {
 
 describe("ModelRegistry.isStructural", () => {
   const structural = defineModel("edge", {
-    link: defineComponent("edge/link", e.string(), { structural: true }),
+    contains: defineComponent("edge/contains", e.string(), { structural: true }),
   });
   const r = new ModelRegistry();
   r.register(structural);
 
   it("reports a component that opted out of detection", () => {
-    expect(r.isStructural("edge", "link")).toBe(true);
+    expect(r.isStructural("edge", "contains")).toBe(true);
   });
 
   it("defaults an ordinary, unknown, and undeclared component to detectable", () => {
@@ -169,6 +177,79 @@ describe("ModelRegistry.validateAction", () => {
     );
     expect(v).toHaveLength(1);
     expect(v[0]?.updateIndex).toBe(0);
+  });
+
+  it("accepts an ebb/* component on a row another model created", () => {
+    const r = buildRegistry();
+    r.register(ebbModel);
+    const v = r.validateAction(
+      buildAction([
+        createUpdate,
+        {
+          id: "u_link",
+          subject_id: "todo_1",
+          component: "ebb/link",
+          method: "merge" as const,
+          data: {
+            map: {
+              dependsOn: {
+                map: { todo: { map: { todo_2: { value: true, update_id: "u_link" } } } },
+              },
+            },
+          },
+        },
+      ]),
+    );
+    expect(v).toEqual([]);
+  });
+
+  it("accepts an ebb/* component whose row is committed under ebb", () => {
+    const r = buildRegistry();
+    r.register(ebbModel);
+    const v = r.validateAction(
+      buildAction([
+        { ...createUpdate, model: EBB_MODEL_NAME },
+        {
+          id: "u_link",
+          subject_id: "todo_1",
+          component: "ebb/link",
+          method: "merge" as const,
+          data: {
+            map: {
+              dependsOn: {
+                map: { todo: { map: { todo_2: { value: true, update_id: "u_link" } } } },
+              },
+            },
+          },
+        },
+      ]),
+    );
+    expect(v).toEqual([]);
+  });
+
+  it("refuses a wholesale replace of a keyed component", () => {
+    const r = buildRegistry();
+    r.register(ebbModel);
+    const v = r.validateAction(
+      buildAction([
+        createUpdate,
+        {
+          id: "u_link",
+          subject_id: "todo_1",
+          component: "ebb/link",
+          method: "replace" as const,
+          data: {
+            map: {
+              dependsOn: {
+                map: { todo: { map: { todo_2: { value: true, update_id: "u_link" } } } },
+              },
+            },
+          },
+        },
+      ]),
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toMatch(/keyed component; replace is refused/);
   });
 
   it("skips fields check for delete updates (data === null)", () => {

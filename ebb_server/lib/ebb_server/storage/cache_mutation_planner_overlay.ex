@@ -16,7 +16,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
   @type cache ::
           :grants_by_id
           | :memberships_by_id
-          | :relationships_by_id
           | :entity_models
           | :group_apps
 
@@ -82,7 +81,6 @@ defmodule EbbServer.Storage.CacheMutationPlanner.Overlay do
     Enum.any?(Map.keys(rows), fn
       {:grants_by_id, _id} -> true
       {:memberships_by_id, _id} -> true
-      {:relationships_by_id, _id} -> true
       _ -> false
     end)
   end

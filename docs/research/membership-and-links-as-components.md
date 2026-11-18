@@ -12,6 +12,12 @@ Evidence labels: **[source]** = `file:line` or a quoted design decision; **[deri
 or inference over sourced facts; **[judgment]** = mine, and contestable; **[open]** = not
 established, with what would settle it.
 
+**Shipped in [#820](https://github.com/ebbjs/ebbjs/issues/820), with one part of this note dropped:**
+the link is a keyed component of its source and the membership and grant halves were not taken. The
+containment argument below (a resolution-time `source ∪ target` union) is **void**: nothing ever
+implemented a containment option, and the shipped link carries no membership of its own to union.
+Read §4 and §6 with that removed.
+
 ---
 
 ## TL;DR
@@ -29,8 +35,8 @@ established, with what would settle it.
 - **Links-as-component deletes three real things**: duplicate edges become unrepresentable, a missed
   link arrives with its source (backfill today only fetches `entityGroup`-referenced ids
   **[source]**), and five eviction branches in `scope-eviction.ts` collapse.
-- **It also kills #789's whole bug class** — but it makes #790's `contained: true` a resolution-time
-  rule instead of a stored one, which costs a hop.
+- **It also kills #789's whole bug class** — the edge's scope is its source's membership, with no
+  target-side union to pay for.
 - **Client memory is the one place with a large number attached**, and it is relationship-heavy
   fixture arithmetic, not a measurement. Re-run
   `packages/client/src/benchmark/replica-read-model.ts` before believing it.
@@ -71,17 +77,16 @@ verdict for all three without appealing to performance.
 This is the strongest form of the argument, and it only became visible after #790's decisions were
 written down.
 
-A link's delivery scope is, by #790's decision 1, **always** a function of its endpoints: the
-source's groups, unioned with the target's when `contained: true`. #790 rejected intersection-owned
-visibility on the grounds that it "changes the meaning of the primitive rather than fixing its
-bookkeeping" **[source]**. So there is no case where a link's scope is independent of the two rows
-it joins.
+A link's delivery scope is, by #790's decision 1, **always** a function of its source: the source's
+groups. #790 rejected intersection-owned visibility on the grounds that it "changes the meaning of
+the primitive rather than fixing its bookkeeping" **[source]**. So there is no case where a link's
+scope is independent of the row it belongs to.
 
-Which means every `entityGroup` row a link owns is **a cached value of a function of two other
-rows**. And the cache has to be maintained: when the source moves, re-derive; when the target moves,
-re-derive. #790 says the mechanism for this — `changeGroups` re-emitting the edge (#777) — "is
-deleted: membership rows replace it" **[source]**. So the repository has already built one
-maintenance mechanism for this denormalization and then deleted it in favour of another.
+Which means every `entityGroup` row a link owns is **a cached value of a function of another row**.
+And the cache has to be maintained: when the source moves, re-derive. #790 says the mechanism for
+this — `changeGroups` re-emitting the edge (#777) — "is deleted: membership rows replace it"
+**[source]**. So the repository has already built one maintenance mechanism for this
+denormalization and then deleted it in favour of another.
 
 **#789 is not a bug in the mechanism; it is the denormalization.** "A relationship's group scope is
 frozen at write time" is what a cached derivation does when its input changes and nobody
@@ -106,7 +111,9 @@ not a slow query.
 
 **[judgment] The reverse index does not disappear on the server.** `cf_component_entities (ebb/link,
 sourceId)` tells you which sources carry any link; it cannot answer "who points at T" without
-reading them all. So the server needs `cf_link_targets (type, target_id) -> source ids`. The
+reading them all. So the server needs `cf_link_targets (type, target_id) -> source ids` — built and
+then removed again in [#820](https://github.com/ebbjs/ebbjs/issues/820), because no wire query reads
+it yet; it comes back with the read path. The
 information is not deleted, it is moved from a row to an index — which is the whole point. The client
 already works this way: `ReverseIndex` is derived from materialized rows on every `resync`.
 
@@ -212,24 +219,20 @@ comparable work to reading the equivalent rows **[derived]**. Not a blocker in e
 
 ### What it costs on the server
 
-**`contained: true` stops being storable.** #790 decision 2 mirrors the _target's_ memberships into
-the link's own `entityGroup` rows, so a contained target moves with its source. A link with no
-membership rows cannot mirror anything. Containment would have to become a **resolution-time** rule:
-when resolving a link's groups, union the source's and the target's. That is simpler in one way (no
-mirrored rows to keep in sync — which is precisely what produced #789) and more expensive in another
-(the resolution now walks one hop, on the authorize path, per update). **[open]** Whether that hop
-is affordable is measurable against the ~21k Actions/sec write budget, and it is the single number
-that decides this half of the question.
+Nothing on the authorize path. A link write addresses its source, so its group scope is the source's
+membership — the default resolution — and no hop to the target is taken. The version of this note
+that priced a containment union is void: the option was never implemented, and a link that carried
+no membership rows would have had to union `source ∪ target` at resolution time to keep the feature. Dropping the feature is what makes the link pair free on the write path.
 
 ---
 
 ## 5. Verdict
 
-| Candidate                                    | Verdict                     | Because                                                                                                                                                                                                                                                        |
-| -------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ebb/link` as a keyspace on the source       | **Yes — worth prototyping** | Source-owned visibility is already decided; forward traversal becomes free; duplicate edges become unrepresentable; missed links become backfillable; #789's class disappears. Costs one resolution hop for `contained`.                                       |
-| `ebb/membership` as a keyspace on the entity | **No**                      | Group-owned scope; the group → entity index survives regardless; you would trade a row for payload-derived delivery scope.                                                                                                                                     |
-| `ebb/grant` as a keyspace on the group       | **Not yet**                 | Group-owned and bounded in cardinality (dozens to hundreds per the README), so it _would_ fit. But it is the authorization primitive, the payoff is two ETS tables, and the blast radius is every permission check. Defer until links have proven the pattern. |
+| Candidate                                    | Verdict            | Because                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ebb/link` as a keyspace on the source       | **Shipped (#820)** | Source-owned visibility is already decided; forward traversal becomes free; duplicate edges become unrepresentable; missed links become backfillable; #789's class disappears.                                                                                 |
+| `ebb/membership` as a keyspace on the entity | **No**             | Group-owned scope; the group → entity index survives regardless; you would trade a row for payload-derived delivery scope.                                                                                                                                     |
+| `ebb/grant` as a keyspace on the group       | **Not yet**        | Group-owned and bounded in cardinality (dozens to hundreds per the README), so it _would_ fit. But it is the authorization primitive, the payoff is two ETS tables, and the blast radius is every permission check. Defer until links have proven the pattern. |
 
 **[judgment] The asymmetry is the finding.** "Make the relations components" sounds like one change
 and is three, and only the one whose visibility is owned by the entity holding it is a clear win.
@@ -241,9 +244,7 @@ and is three, and only the one whose visibility is owned by the entity holding i
 1. **Re-run `packages/client/src/benchmark/replica-read-model.ts` with links folded into the source**
    — resident bytes, forward-traversal cost, reverse-index size. This is the only large number in
    play, and the harness exists.
-2. **Price the containment hop.** Resolve a link's groups as `source ∪ target` for a `contained`
-   link and measure it inside the authorizer against the ~21k Actions/sec budget.
-3. **Count the duplicate edges in the fixtures.** If the test tree and the doc fixture contain none,
+2. **Count the duplicate edges in the fixtures.** If the test tree and the doc fixture contain none,
    the "duplicates become unrepresentable" argument is theoretical, and should be priced as such.
 
 ## 7. Relationship to the plan
@@ -251,12 +252,9 @@ and is three, and only the one whose visibility is owned by the entity holding i
 This note does **not** change
 [#805 `refactor(storage)`: the four system types become `ebb/*` components](https://github.com/ebbjs/ebbjs/issues/805),
 which keeps every row, renames the type, and makes the values atomic and key-immutable. It is the
-**follow-on** to it (slice 13 of #793), and it makes
-[#790 epic(relationships): relationships are first-class entities — they own their group membership](https://github.com/ebbjs/ebbjs/issues/790)
-the place to decide, since #790 currently specifies the opposite for links (own `entityGroup` rows).
+**follow-on** to it (slice 13 of #793).
 
-Sequencing: #790 must land first either way, because it fixes the derivation bug. Whether links then
-_keep_ their own membership rows or lose them entirely is a decision #790 should record rather than
-discover later. Slice 10's row-preserving `ebb/link` is recorded as intermediate, not as the
-endpoint. Doing links-as-components before #793's component plumbing exists would mean writing the
-keyspace merge twice.
+Sequencing: #790 had to land first either way, because it fixes the derivation bug. It settled
+links on their source; slice 13 is the representation that says so. Slice 10's row-preserving
+`ebb/link` was intermediate, not the endpoint. Doing links-as-components before #793's component
+plumbing existed would have meant writing the keyspace merge twice.

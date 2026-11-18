@@ -9,9 +9,10 @@ This is the contract behind #775 and its sub-issues, plus the relationship
 model it depends on (#790). It is written before the engine packages exist so
 the boundary can be tested rather than argued.
 
-Status: `e.log`, the opener, and the presets are planned in #775. `contained`
-and first-class link membership are #790; until that lands, a relationship
-keeps the group it was written under (#789).
+Status: `e.log`, the opener, and the presets are planned in #775. Link membership
+is source-owned and shipped in [#820](https://github.com/ebbjs/ebbjs/issues/820):
+an `ebb/link` is a keyed component of its source row, so it is delivered wherever
+that row is and a source that moves needs no re-derivation.
 
 ## The boundary
 
@@ -64,7 +65,6 @@ const schema = defineSchema({
       target: body,
       as: "body",
       sourceCardinality: "one",
-      contained: true,
     }),
   },
 });
@@ -226,20 +226,24 @@ waits for the optional lifecycle hook in #156.
 
 ## Relationships
 
-A note's body and versions are links. Two separate ideas:
+A note's body and versions are links.
 
-- **Containment** (`contained: true`) means the target is part of the source's
-  access scope, so a group change on the source files the target into the same
-  groups, in the same Action. It is declarative and one hop: no transitivity.
-- **Link membership** is **source-owned**: a relationship is visible wherever
-  its source is. It is not intersection-scoped, so a group can see a link to a
-  target it cannot read.
+- **Link membership is source-owned**: a relationship is visible wherever its
+  source is. It is not intersection-scoped, so a group can see a link to a
+  target it cannot read. Since [#820](https://github.com/ebbjs/ebbjs/issues/820)
+  the representation says so: the edge is an `ebb/link` keyed component of the
+  source row, keyed `(field, type, target_id)`, written as one Update per edge.
+  Its group scope is the source's membership by construction, so a source that
+  moves takes its links with it and a peer that missed a link obtains it by
+  backfilling the source.
+- **There is no containment option.** An earlier draft made the target part of
+  the source's access scope by mirroring the target's memberships into the
+  link's own rows. Nothing implemented it, and a link that owns memberships is
+  what produced the frozen-scope bug (#789). A target is visible where its own
+  memberships put it; moving one is an explicit write.
 
-Link membership becomes a property of the relationship row itself in #790:
-relationships own their `entityGroup` rows like any other entity, and backfill
-covers them. Until then a link keeps the group it was written under (#789).
-Containment and link membership are separate jobs; #790 changes the second
-without changing the first.
+Removing one edge is a `merge` whose value tombstones that key, so an unlink
+leaves the source's other edges alone and needs no minted row id.
 
 ## Non-goals
 

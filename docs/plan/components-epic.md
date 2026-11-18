@@ -1,7 +1,7 @@
 # epic(components): components are the unit of identity
 
 Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
-Slices 1–7 and 9–11 landed (#794–#800, #802, #805, #819); 8 and 12–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Slices 1–12 and 14 have landed; **13 is the last one and lands with #820**. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -191,8 +191,10 @@ scrutiny, and it is recorded here so it is not re-derived.
 
 The original split was a **performance** decision: keep the body out of the held row so a 10k
 workspace holds 41 MB of metadata instead of 323 MB (`docs/research/503-replica-read-model.md`). It
-was never a permission decision, and with #790's `contained: true` a child entity mirrors its
-parent's groups, so **membership is not a differentiator in either direction.**
+was never a permission decision, and it is not one now: a body component is visible exactly where
+its note is, and a body declared as its own entity would be filed into the note's groups when it is
+created. **Membership is not a differentiator in either direction** — nothing in this epic makes a
+body reachable by anyone who cannot reach the note.
 
 Each of the four reasons a body "needs its own id" fails on inspection:
 
@@ -246,8 +248,8 @@ are permission subjects, and membership attaches to _entities_. Slice 10 therefo
 row and makes its value atomic, which kills tearing with today's semantics. Slice 13 then moves the
 edge onto its source as a keyed pair, which kills the mirrored `entityGroup` rows (#789's cause) and
 the duplicate-edge tolerance layer — an edge then inherits its source's scope by construction.
-Steps, not a contradiction: 10 is the row form, 13 is the pair form, and #790 decides whether 13
-proceeds.
+Steps, not a contradiction: 10 was the row form and 13 is the pair form; #790 decided it and
+[#820](https://github.com/ebbjs/ebbjs/issues/820) shipped it.
 
 ---
 
@@ -743,9 +745,10 @@ one atomic component value, written by one Update: `Relationship` became `ebb/li
 carries the row's components and kind, and every dispatch that was on a model string now reads that
 kind (`EntityIndex.kind/2` answers it for a delete, which names no component). Atomicity deleted
 machinery rather than moving it: the cache planner projects the whole value with no "wire wins, cache
-supplies the rest" merge, and decision 13 makes the membership pair, a grant's `group_id` and a
-link's `source_id` immutable, so a move is a delete plus a create (the old "needs the permission in
-both groups" rule is gone). Permission subjects are `ebb/<leaf>.<verb>`, which preserves the four
+supplies the rest" merge, and decision 13 makes the membership pair and a grant's `group_id`
+immutable, so a move is a delete plus a create (the old "needs the permission in both groups" rule
+is gone). Slice 13 then moved `ebb/link` off its own row onto its source, which is what retired the
+`source_id` immutability with the field. Permission subjects are `ebb/<leaf>.<verb>`, which preserves the four
 distinct grants. SQLite follows the value into the component and guards each listing on the
 generated column's non-nullness — the component-existence guard, and indexable; `EXPLAIN QUERY PLAN`
 tests pin all four listings, and the read model now carries a schema version so an upgraded database
@@ -778,11 +781,16 @@ plus this Action's own prefix).
 | `ebb/group`      | `self`                  |
 | `ebb/grant`      | `group_id`              |
 | `ebb/membership` | `group_id`              |
-| `ebb/link`       | `source_id`             |
 | anything else    | the entity's membership |
 
 Groups and grants carry no membership row: a group's scope is itself and a grant's is the group it
 names. `ebb/membership` is never written for either.
+
+`ebb/link` left this table in [#820](https://github.com/ebbjs/ebbjs/issues/820). The table was
+written while a link was still a row naming its `source_id`; a link is now a keyed component of its
+source, so its write's subject **is** the source and the default path — the entity's membership — is
+already the answer. The `{:field, name, :entity}` scope shape went with the last declaration that
+used it.
 
 **Work.**
 
@@ -912,30 +920,65 @@ construction, forward traversal becomes a component read, duplicate edges become
 and a link a replica missed arrives with its source during backfill — which today it never does.
 
 **Scope.** `ebb/link` moves from an atomic value on its own row to a keyed component of its source;
-the edge row and the `entityGroup` rows it mirrors are deleted; the forward half of
-`RelationshipCache` and the `rowId → yieldedId` layer of `reverse-index.ts` go; the server keeps an
-**in-memory** reverse index `(type, target_id) → source ids`, with no column family. `contained: true` becomes a resolution-time rule
-(`source ∪ target`).
+the edge row and `RelationshipCache` go; forward traversal becomes a component read and the
+`rowId → yieldedId` layer of `reverse-index.ts` goes with it; the server keeps an **in-memory**
+reverse index `(type, target_id) → source ids`, with no column family.
 
-**The gate.** Price the containment hop inside the authorizer against the ~21k Actions/s budget
-before committing; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+**The gate.** The epic priced a containment hop here — a resolution-time `source ∪ target` union.
+There is no such feature and this slice does not add one: a link's scope is its source's membership,
+so the write path pays nothing. The docs are corrected rather than implemented against.
 
 **Work.**
 
-- [ ] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
-- [ ] Delete the edge row, the mirrored `entityGroup` rows, `RelationshipCache`'s forward direction,
-      and `reverse-index.ts`'s row layer.
-- [ ] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
+- [x] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
+- [x] Delete the edge row and `RelationshipCache`; `reverse-index.ts`'s relationship row layer.
+- [x] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
       component index (#849).
-- [ ] `contained: true` as a resolution-time union; measure the hop.
-- [ ] Backfill: a missed link arrives with its source; assert it.
-- [ ] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a
+- [x] Delete the containment option from `docs/documents.md` and its argument from
+      `docs/research/membership-and-links-as-components.md` §4/§6.
+- [x] Backfill: a missed link arrives with its source; assert it.
+- [x] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a
       component entry and leaves the source's model entry alone (slice 10's rule).
 
 **Acceptance.** Duplicate `(source, field, type, target)` edges are unrepresentable. Moving a source
-never leaves a link in a stale group (#789). The containment hop is measured and recorded.
+never leaves a link in a stale group (#789). A missed link arrives with its source on backfill, and
+incoming traversal is answered by the reverse index at parity with the other caches.
 
-**Depends on.** 11. **Blocked by** #790.
+**Depends on.** 11, #790.
+
+**Current state.** Shipped in [#820](https://github.com/ebbjs/ebbjs/issues/820). `ebb/link` is a
+keyed component of its source — value `{<field>: {<type>: {<target_id>: true}}}`, so the key is the
+whole edge — and one Update writes one edge: a presence leaf to add it, a `merge` whose leaf
+tombstones the key to remove it. The edge row, its `rel_*` id, `RelationshipCache`'s two tables,
+and the `<source>/<as>` mirror are gone. Forward traversal is a component read (`linkTargets`); the
+client's reverse index is keyed `(field, type, target)` → source ids with the `rowId → yieldedId`
+layer deleted, while membership keeps its row-keyed index untouched. Incoming traversal has no
+server read path yet — the client's replica answers it — so the reverse index it would answer from
+was built and then **taken back out** before merge: it was derived state nothing read, paying one op
+per edge per Action and a second op list through every boot replay, which is the speculative cost
+this epic's own non-goals warn against. It returns with its reader; the follow-up issue carries the
+intended shape (`(type, target_id) → source ids` in memory, applied after the range is durable, rebuilt at
+boot from `cf_actions` through the same op function, entries are candidates with the row tombstone
+the liveness filter). `SystemComponent` keeps the component's name and kind, drops its scope and
+by-id declarations, and marks it an `overlay`: an `ebb/link` write on a user row adds a component
+entry and leaves the model entry alone, and a link write authorizes as `ebb/link.<verb>` in the
+source's group set. `GroupListing`'s relationship branch, the SQLite generated columns and index
+that existed only for it, and `PermissionHelper`'s intra-Action source lookup are deleted. Edges
+ship inside the source row, which is what makes a link a replica missed arrive with a backfill of
+its source (#789).
+
+Six things are recorded rather than resolved. The functions runtime's `ctx.relate` is synchronous,
+so a one-cardinality relate there writes presence only; a client or planner write is one Update
+carrying the old key's tombstone and the new key's presence, and closing the runtime gap needs an
+async `ctx` port. `client.can(row, "update")` answers the row's model rule, so it is coarser than
+the `ebb/link.<verb>` check the write path makes. A model that declares a field with the same name
+as one of its relationship accessors used to have both copies kept in step by the
+many-cardinality writer; the field and the edges are now independent, and the schema does not
+refuse the pair. The client's read of the live set behind a `{replace}` or a one-cardinality move
+goes through the storage row rather than the replica, so it does not refuse on a fresh client. A
+platform field name is named under `ebb` by the server's own static table, the same two-sided
+duplication the scope table carries. And the four platform field names are reserved on a user
+model, because an overlay shares `data.fields.<name>` with the row it rides.
 
 ---
 
@@ -1014,7 +1057,8 @@ cheapest win in the epic, shipped once 6 landed.
 **The system-component contract is 10 → 11 → 12.** Naming and atomicity (10) is a pure rename plus
 immutability with today's semantics, so it lands first and unblocks the table (11); authz (12)
 consumes the table instead of re-deriving it, which is why it moved behind them. Slice 13 is the
-follow-on the research note argues for and is gated on #790 and the containment hop.
+follow-on the research note argues for; it shipped once #790 landed, and the containment hop it was
+gated on turned out to have no feature behind it.
 
 ## What it buys, and what it costs
 
@@ -1174,11 +1218,12 @@ out.
    optional" default)? Decided in [#798](https://github.com/ebbjs/ebbjs/issues/798): on the
    component, and `optional` refuses a declared default.
 5. How does per-component residency interact with #123's compaction low-water mark?
-6. What does the containment hop cost when `ebb/link` moves onto its source? Slice 13 is gated on
-   it; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+6. ~~What does the containment hop cost when `ebb/link` moves onto its source?~~ **No hop, no
+   feature.** A containment option was never implemented; the shipped link's scope is its source's
+   membership, resolved by the default path, so slice 13 pays nothing on the authorize path.
 7. Does the group → members index survive the `ebb/*` rename, or does it collapse into the
    component index? **Still open, and unowned.** Slice 11's scope table reads the by-id caches
    (`group_members_by_id`), not the by-group index, so it neither replaces nor prices
-   `group_members_by_group`; a k = 2/4/8 measurement needs a group-listing workload, and belongs
-   with the next slice that touches those tables (slice 13's forward-index deletion, or the
-   indexing follow-on that supersedes #815).
+   `group_members_by_group`; slice 13 deleted the relationship caches, not this one.
+   A k = 2/4/8 measurement needs a group-listing workload, and belongs with the next slice that
+   touches those tables (the indexing follow-on that supersedes #815).

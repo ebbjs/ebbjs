@@ -15,9 +15,10 @@
  */
 
 import {
-  componentName,
   EBB_COMPONENTS,
   EBB_MODEL_NAME,
+  fieldComponent,
+  linkTargets,
   type EbbComponentKind,
   type Entity,
   type Unset,
@@ -494,7 +495,8 @@ export interface ReplicaAccess {
  */
 function replicaAdjacency(access: ReplicaAccess): AdjacencyReader {
   return {
-    forwardLinks: async (query) => access.replica.relationshipLinks(query),
+    forwardTargets: async (sourceId, as, type) =>
+      access.replica.relationships({ as, type, sourceId }),
     reverseSourceIds: async (query) =>
       access.replica.relationships({ as: query.as, type: query.type, targetId: query.targetId }),
     membershipsOf: async (entityId) => access.replica.membershipLinks(entityId),
@@ -507,10 +509,10 @@ function replicaAdjacency(access: ReplicaAccess): AdjacencyReader {
  * or the target (reverse) and dispatches per cardinality:
  *
  * - forward-many → `QueryBuilder<TargetFields>` (thenable to
- *   `readonly TargetShape[]`). The FK set lives on the materialized
- *   `Relationship` entities, not the source's data fields.
+ *   `readonly TargetShape[]`). The edge set is keyed on the source row's
+ *   `ebb/link` component, not on the source's data fields.
  * - forward-one → `Promise<Entity | null | undefined>`. Distinguishes
- *   "no Relationship edge" (null), "edge exists but target missing"
+ *   "no live edge" (null), "edge exists but target missing"
  *   (undefined), and "edge + target both resolve" (Entity).
  * - reverse → `QueryBuilder<SourceFields>` (thenable).
  *
@@ -541,7 +543,10 @@ function buildRowAccessors(
     replica !== undefined
       ? replicaAdjacency(replica)
       : {
-          forwardLinks: (query) => storage.entities.queryByRelationshipSource(query),
+          forwardTargets: async (sourceId, as, type) => {
+            const row = await storage.entities.get(sourceId);
+            return row === null || row.deleted_hlc !== null ? [] : linkTargets(row, as, type);
+          },
           reverseSourceIds: (query) => storage.entities.queryByRelationship(query),
           membershipsOf: (entityId) => storage.entities.queryByMembershipEntity(entityId),
         };
@@ -821,7 +826,7 @@ export function createEntityNamespace<
       // opened here, including one the replica has never seen and one whose
       // current value is only an unacknowledged overlay write.
       for (const field of Object.keys(entity.data.fields)) {
-        const component = componentName(entity.model, field);
+        const component = fieldComponent(entity.model, field);
         if (!replica.replica.isHeld(component)) await replica.replica.open(id, component);
       }
       return buildRow(replica.replica.get(id) ?? entity);

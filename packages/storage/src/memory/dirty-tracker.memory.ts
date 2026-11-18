@@ -11,6 +11,7 @@ import type { DirtyTracker } from "../types/dirty-tracker";
  * - `mark()` — idempotent, skips if already marked
  * - `isDirty()` — O(1) property lookup
  * - `getDirtyForModel()` — O(1) Set lookup + spread
+ * - `getDirty()` — O(n) over the dirty ids
  * - `clear()` — O(1) destructure + Set delete
  * - `clearAll()` — O(1) reassign
  */
@@ -44,6 +45,10 @@ export const createMemoryDirtyTracker = (): DirtyTracker => {
     async getDirtyForModel(model: string): Promise<readonly string[]> {
       const set = state.modelIndex[model];
       return set ? [...set] : [];
+    },
+
+    async getDirty(): Promise<readonly string[]> {
+      return Object.keys(state.entities);
     },
 
     async clear(entityId: string): Promise<void> {

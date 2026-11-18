@@ -7,13 +7,7 @@
  */
 export type { ActionLog, LoggedAction } from "./action-log";
 export type { DirtyTracker } from "./dirty-tracker";
-export type {
-  EntityStore,
-  RelationshipIndexQuery,
-  RelationshipSourceQuery,
-  RelationshipLink,
-  MembershipLink,
-} from "./entity-store";
+export type { EntityStore, RelationshipIndexQuery, MembershipLink } from "./entity-store";
 export type { CursorRecord, CursorStore, SeedMarker } from "./cursor-store";
 export type { ReplicaRecord, ReplicaStore } from "./replica-store";
 export type {

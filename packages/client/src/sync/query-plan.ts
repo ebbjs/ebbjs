@@ -162,8 +162,8 @@ export const readComponentsFor = (query: Query): readonly string[] => {
         ? sourceComponentsFor(query)
         : [modelComponents(query.source)]),
   );
-  // Exact components: an edge read depends on link rows only, a membership read
-  // on membership rows only.
+  // Exact components: an edge read depends on the source's link component only,
+  // a membership read on membership rows only.
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
     reads.add(EBB_COMPONENTS.link);
   }

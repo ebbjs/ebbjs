@@ -85,7 +85,10 @@ pinned, so a later GC cannot reclaim an earlier rep's account. The JSON total an
 are different units.
 
 **Traversal.** `relationships`/`memberships` (ids) and `relationshipLinks`/`membershipLinks` (link
-objects) read one index key: O(1) lookup plus O(degree) projection. The accessor layer wraps the same
+objects) read one index key: O(1) lookup plus O(degree) projection. The `relationshipLinks` entry is
+historical: [#820](https://github.com/ebbjs/ebbjs/issues/820) made an edge a keyed component of its
+source, so forward traversal is a component read of that row and the forward index is gone. The
+`relationshipLinks` rows below measure the build this note was written against. The accessor layer wraps the same
 four in `replicaAdjacency` (`client/src/sync/namespace.ts`) for `forwardOne`/`forwardMany`/`reverse`/
 `membershipGroups` (`client/src/sync/relationship.ts`). It is timed three ways: with resident rows
 (`replica.get`), with direct replica index reads, and with store-backed by-id rows (how

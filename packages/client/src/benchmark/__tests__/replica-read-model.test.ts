@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { carriesComponent, isFieldMap } from "@ebbjs/core";
+import { carriesComponent, isFieldMap, linkEdges } from "@ebbjs/core";
 import type { Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
@@ -109,19 +109,16 @@ const tallyWorkspace = (rows: readonly Entity[]): Tally => {
   const groups = new Map<string, string[]>();
 
   for (const entity of rows) {
-    if (carriesComponent(entity, "link")) {
-      const source = stringField(entity, "source_id");
-      const target = stringField(entity, "target_id");
-      const field = stringField(entity, "field");
-      if (source === undefined || target === undefined) continue;
-      if (field === "parent") {
-        parent.set(source, target);
-        append(children, target, source);
-      } else if (field === "references") {
-        append(references, source, target);
-        append(backlinks, target, source);
+    // A link is a key of its source row, so the edges a page carries are read
+    // off the page itself.
+    for (const edge of linkEdges(entity)) {
+      if (edge.as === "parent") {
+        parent.set(entity.id, edge.targetId);
+        append(children, edge.targetId, entity.id);
+      } else if (edge.as === "references") {
+        append(references, entity.id, edge.targetId);
+        append(backlinks, edge.targetId, entity.id);
       }
-      continue;
     }
     if (carriesComponent(entity, "membership")) {
       const member = stringField(entity, "entity_id");
@@ -153,23 +150,24 @@ describe("replica read-model workspace", () => {
     const { replica, workspace } = setup(N);
     const stats = replica.stats();
 
-    // The link, membership, and group rows are all platform rows, so they share
-    // the `ebb` model; the component is what distinguishes them.
+    // The membership and group rows are the platform rows; a page's edges are
+    // keys of the page row, so they add none.
     expect(stats.byModel).toEqual({
       page: N,
-      ebb: N - 1 + N * REFS_PER_PAGE + N + 1,
+      ebb: N + 1,
     });
     expect(stats.heldByModel).toEqual(stats.byModel);
     expect(stats.held).toBe(workspace.counts.heldRows);
     expect(stats.entities).toBe(workspace.counts.heldRows);
 
-    // One derived index row per indexable row and direction: the parent edges,
-    // the references edges, and the membership rows. The `group` row indexes
-    // nothing.
+    // One reverse entry per live edge plus one per membership row; only a
+    // membership keeps a forward entry, because a source's own edges are a
+    // component read of its row. The `group` row indexes nothing.
     const indexShape = summariseIndexKeys(workspace.record.entities);
-    const indexable = N - 1 + N * REFS_PER_PAGE + N;
+    const edges = N - 1 + N * REFS_PER_PAGE;
+    const indexable = edges + N;
     expect(indexShape.reverseRows).toBe(indexable);
-    expect(indexShape.forwardRows).toBe(indexable);
+    expect(indexShape.forwardRows).toBe(N);
     expect(indexShape.reverseKeys).toBeGreaterThan(0);
     expect(indexShape.reverseKeys).toBeLessThanOrEqual(indexable);
   });
@@ -352,9 +350,7 @@ describe("replica read-model workspace", () => {
 
     expect(replica.get(missing)).toBeUndefined();
     expect(replica.relationships({ as: "parent", type: "page", targetId: missing })).toEqual([]);
-    expect(replica.relationshipLinks({ as: "parent", type: "page", sourceId: missing })).toEqual(
-      [],
-    );
+    expect(replica.relationships({ as: "parent", type: "page", sourceId: missing })).toEqual([]);
     expect(replica.memberships({ entityId: missing })).toEqual([]);
     expect(replica.membershipLinks(missing)).toEqual([]);
 

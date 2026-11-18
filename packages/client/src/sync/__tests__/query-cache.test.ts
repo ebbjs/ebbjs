@@ -13,7 +13,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
-import { flushTasks, isPlatformModel, rowComponents } from "../test-utils";
+import { flushTasks, isPlatformModel, linkAction, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 
@@ -82,6 +82,25 @@ const write = (
 };
 
 /** Detach one component; the row survives with its siblings. */
+/** Merge one edge key onto its source row. */
+const writeLink = (
+  replica: ReturnType<typeof createReplica>,
+  sourceId: string,
+  as: string,
+  type: string,
+  targetId: string,
+): void => {
+  gsn += 1;
+  const action = linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
+  });
+  replica.ingest(action, action.updates, gsn);
+};
+
 const detach = (
   replica: ReturnType<typeof createReplica>,
   id: string,
@@ -403,7 +422,8 @@ describe("query cache: invalidation", () => {
     await flushTasks();
     expect(source.runs).toBe(1);
 
-    ingest(replica, "link", "rel_1");
+    // An edge lands on its source row as the `ebb/link` component.
+    writeLink(replica, "todo_1", "owner", "todo", "user_1");
     expect(source.runs).toBe(2);
   });
 
@@ -580,13 +600,13 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(3);
   });
 
-  it("matches a whole-model read when a cross-model write renames the row", async () => {
+  it("does not re-run a model read when an ebb/* overlay lands on its row", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
     const cache = createQueryCache(replica);
-    // Writing an `ebb/*` component moves the row's model, so the change reports
-    // every field under both prefixes; the `todo/*` read still sees its old
-    // components.
+    // An `ebb/*` component may sit on a row of any model and never determines
+    // the row's model (ADR 0001, decision 1), so a `todo/*` read's components
+    // are untouched by an edge write.
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
@@ -594,7 +614,7 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "ebb", { link: "x" });
-    expect(source.runs).toBe(2);
+    expect(source.runs).toBe(1);
   });
 });
 

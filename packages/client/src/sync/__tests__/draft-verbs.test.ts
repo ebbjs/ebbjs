@@ -9,7 +9,14 @@
 
 import { describe, expect, it } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, isComponentUpdate, makeHlc, type Action, type Entity } from "@ebbjs/core";
+import {
+  decodeSync,
+  isComponentUpdate,
+  makeHlc,
+  type Action,
+  type Entity,
+  type Update,
+} from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import { applyUpdate } from "@ebbjs/storage/replica";
 
@@ -422,36 +429,60 @@ describe("drafts — duplicate", () => {
   });
 });
 
+/** The `ebb/link` Update a draft relationship verb submits. */
+const linkUpdate = (updates: Action["updates"]): Update => {
+  const update = updates.find(
+    (entry) => isComponentUpdate(entry) && entry.component === "ebb/link",
+  );
+  if (update === undefined) throw new Error("expected an ebb/link update");
+  return update;
+};
+
+/** The target leaves one link Update carries at `(as, type)`. */
+const linkLeaves = (
+  update: Update,
+  as: string,
+  type: string,
+): Readonly<Record<string, { readonly value: unknown }>> => {
+  const data = update.data as {
+    map: Record<string, { map: Record<string, { map: Record<string, { value: unknown }> }> }>;
+  };
+  return data.map[as]?.map[type]?.map ?? {};
+};
+
 describe("drafts — link / unlink / setLinks", () => {
-  it("link emits one relationship put naming the source's field and the target's id", async () => {
+  it("link merges one presence key on the source row", async () => {
     const { client, storage, seen } = await mkClient();
     await seedTodo(storage, "todo_1", { title: "Ship", completed: false }, ["g_1", "g_2"]);
 
     await client.actions.linkTodoList({ id: "todo_1", targetId: { id: "list_9" } });
 
     const updates = updatesOf(seen);
-    const relationships = rowsByModel(updates, "link");
-    expect(relationships).toHaveLength(1);
-    expect(rowFields(relationships[0]!)).toMatchObject({
-      source_id: "todo_1",
-      target_id: "list_9",
-      field: "list",
-      type: "todo",
-    });
+    expect(updates).toHaveLength(1);
+    const link = linkUpdate(updates);
+    expect(link).toMatchObject({ subject_id: "todo_1", component: "ebb/link", method: "merge" });
+    expect(linkLeaves(link, "list", "todo")).toMatchObject({ list_9: { value: true } });
     // The source's memberships scope the edge; they are not membership writes.
     expect(rowsByModel(updates, "membership")).toEqual([]);
   });
 
-  it("unlink deletes the live relationship row by its id", async () => {
+  it("unlink tombstones the live key on the source row", async () => {
     const { client, storage, seen } = await mkClient();
-    await seedTodo(storage, "todo_1", { title: "Ship", completed: false });
-    await storage.entities.set(linkRow("rel_1", "todo_1", "list_1", "list", "todo"));
+    await storage.entities.set(
+      linkRow("todo_1", "todo", [{ as: "list", type: "todo", targetId: "list_1" }], {
+        title: "Ship",
+        completed: false,
+        tags: [],
+      }),
+    );
 
     await client.actions.unlinkTodoList({ id: "todo_1" });
 
     const updates = updatesOf(seen);
     expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({ subject_id: "rel_1", method: "delete", data: null });
+    const link = linkUpdate(updates);
+    expect(link).toMatchObject({ subject_id: "todo_1", method: "merge" });
+    expect(linkLeaves(link, "list", "todo")).toMatchObject({ list_1: { value: null } });
   });
 
   it("unlink with no live edge is a no-op with no submitted Action", async () => {
@@ -463,22 +494,75 @@ describe("drafts — link / unlink / setLinks", () => {
     expect(actionCalls(seen)).toHaveLength(0);
   });
 
-  it("setLinks replaces the canonical FK set and emits one relationship put per target", async () => {
+  it("a one-cardinality move is one Update carrying the tombstone and the presence", async () => {
     const { client, storage, seen } = await mkClient();
-    await seedTodo(storage, "todo_1", { title: "Ship", completed: false });
+    await storage.entities.set(
+      linkRow("todo_1", "todo", [{ as: "list", type: "todo", targetId: "list_1" }], {
+        title: "Ship",
+        completed: false,
+        tags: [],
+      }),
+    );
+
+    await client.actions.linkTodoList({ id: "todo_1", targetId: { id: "list_2" } });
+
+    const updates = updatesOf(seen);
+    expect(updates).toHaveLength(1);
+    expect(linkLeaves(linkUpdate(updates), "list", "todo")).toMatchObject({
+      list_1: { value: null },
+      list_2: { value: true },
+    });
+  });
+
+  it("setLinks diffs the set against the live targets, one Update per changed key", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(
+      linkRow("todo_1", "todo", [{ as: "tags", type: "todo", targetId: "label_1" }], {
+        title: "Ship",
+        completed: false,
+        tags: [],
+      }),
+    );
 
     await client.actions.setTodoLabels({ id: "todo_1", labels: ["label_1", "label_2"] });
 
     const updates = updatesOf(seen);
-    const [entityRow] = rowsByModel(updates, "todo");
-    expect(rowFields(entityRow!)["tags"]).toEqual(["label_1", "label_2"]);
+    // The live target stays untouched; only the added key is written.
+    expect(updates).toHaveLength(1);
+    expect(linkLeaves(linkUpdate(updates), "tags", "todo")).toMatchObject({
+      label_2: { value: true },
+    });
+  });
 
-    const relationships = rowsByModel(updates, "link");
-    expect(relationships).toHaveLength(2);
-    expect(relationships.map((row) => rowFields(row)["target_id"]).sort()).toEqual([
-      "label_1",
-      "label_2",
-    ]);
+  it("setLinks tombstones the keys the new set drops", async () => {
+    const { client, storage, seen } = await mkClient();
+    await storage.entities.set(
+      linkRow(
+        "todo_1",
+        "todo",
+        [
+          { as: "tags", type: "todo", targetId: "label_1" },
+          { as: "tags", type: "todo", targetId: "label_2" },
+        ],
+        { title: "Ship", completed: false, tags: [] },
+      ),
+    );
+
+    await client.actions.setTodoLabels({ id: "todo_1", labels: ["label_3"] });
+
+    const written = updatesOf(seen).map((update) => linkLeaves(update, "tags", "todo"));
+    const added = written.flatMap((leaves) =>
+      Object.entries(leaves)
+        .filter(([, leaf]) => leaf.value === true)
+        .map(([targetId]) => targetId),
+    );
+    const removed = written.flatMap((leaves) =>
+      Object.entries(leaves)
+        .filter(([, leaf]) => leaf.value === null)
+        .map(([targetId]) => targetId),
+    );
+    expect(added).toEqual(["label_3"]);
+    expect(removed.sort()).toEqual(["label_1", "label_2"]);
   });
 });
 

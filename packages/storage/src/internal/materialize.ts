@@ -2,6 +2,7 @@ import type { Action, Entity, FieldValue, HLCTimestamp, RowCreate, Update } from
 import {
   componentField,
   componentModel,
+  EBB_COMPONENTS,
   isComponentUpdate,
   latestHlc,
   mergeFieldValue,
@@ -107,6 +108,15 @@ export const withWireMapFields = (entity: Entity): Entity =>
   withTransformedFields(entity, toWireMapFields);
 
 /**
+ * The model a component write supplies a row it reaches before the row's
+ * create: the component's prefix, except for the one **overlay** — `ebb/link`
+ * rides a row it does not model, so it supplies none and the row keeps its
+ * model unknown until the create arrives (ADR 0001, decision 1).
+ */
+const placeholderModel = (component: string): string =>
+  component === EBB_COMPONENTS.link ? "" : componentModel(component);
+
+/**
  * The row a component write lands on when its create has not been seen: it
  * carries the write but not the row's existence, so the base backfill fetches
  * it. Existence is never inferred from a component write.
@@ -121,7 +131,7 @@ const createPlaceholderRow = (
   const fields: Record<string, FieldValue> = { [write.field]: write.value };
   return {
     id: update.subject_id,
-    model: componentModel(update.component),
+    model: placeholderModel(update.component),
     data: { fields: options?.residentMapFields ? adoptMapFields(fields) : fields },
     exists: false,
     created_hlc: null,
@@ -232,9 +242,13 @@ export const applyUpdate = (
 
   return {
     ...entity,
-    // The create fixes the row's model; only a placeholder — a row whose create
-    // has not arrived — takes the prefix from the write that reached it first.
-    model: entity.exists ? entity.model : componentModel(update.component),
+    // The create fixes the row's model, and an overlay never supplies one, so a
+    // placeholder keeps whatever it has (a user component's prefix, or nothing)
+    // until a row component names it.
+    model:
+      entity.exists || update.component === EBB_COMPONENTS.link
+        ? entity.model
+        : componentModel(update.component),
     // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
     // rule: an out-of-order base snapshot must not clobber a newer write.
     data: mergeFields(entity.data, write, options),

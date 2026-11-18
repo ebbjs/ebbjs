@@ -10,8 +10,8 @@ interface Params {
 }
 
 /**
- * Drops one target from a many-cardinality FK set that was stored before the
- * invocation, so the verb has to read the source row through `ctx.get`.
+ * Removes one edge that was stored before the invocation. The target names the
+ * key, so nothing has to be read first.
  */
 export const unlinkStoredLabel = async (ctx: Context, params: Params) => {
   await ctx.unrelate("todo", params.todo_id, "labels", params.label_id);

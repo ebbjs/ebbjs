@@ -429,13 +429,12 @@ defmodule EbbServer.Sync.FanOutRouter do
   defp push_gsn_range(from_gsn, to_gsn, groups_by_gsn, actor_connections, meta) do
     decode_started_at = System.monotonic_time()
 
-    # All registered caches, so a delete naming no component still resolves
-    # its row's kind, and so its scope.
+    # All registered by-id caches, so a delete naming no component still
+    # resolves its row's kind, and so its scope.
     resolve_opts = [
       memberships: CacheTables.memberships(),
       memberships_by_id: CacheTables.memberships_by_id(),
       entity_models: CacheTables.entity_models(),
-      relationships_by_id: CacheTables.relationships_by_id(),
       grants_by_id: CacheTables.grants_by_id(),
       group_apps: CacheTables.group_apps()
     ]

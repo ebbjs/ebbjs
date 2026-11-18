@@ -32,13 +32,12 @@
  * There is no deny: narrowing a member who holds `note.*` means
  * rewriting that grant to enumerate what they keep.
  *
- * Three refusals mirror the server structurally, so no grant can make them
- * pass: a user write naming a model other than the id's committed one (#624),
- * an `ebb/link` write that re-points the source, and a re-pointed immutable
- * key on `ebb/grant` or `ebb/membership` (decision 13). A delete earlier in
- * the same `write()` batch releases the row, which is how delete plus create
- * moves an edge; a delete still sitting in the Outbox releases nothing, so
- * batch the two.
+ * Two refusals mirror the server structurally, so no grant can make them pass:
+ * a user write naming a model other than the id's committed one (#624), and a
+ * re-pointed immutable key on `ebb/grant` or `ebb/membership` (decision 13). An
+ * `ebb/link` write needs no re-point rule: an edge is a key of its source row,
+ * so there is no source field to contradict, and moving one is a tombstone plus
+ * a presence in the same Update.
  */
 
 import {
@@ -67,7 +66,6 @@ export type PermissionVerb = "create" | "update" | "delete";
 export type PermissionViolation =
   | MissingPermissionViolation
   | TypeMismatchViolation
-  | SourceMismatchViolation
   | KeyMismatchViolation;
 
 /**
@@ -127,25 +125,6 @@ export interface KeyMismatchViolation {
 }
 
 /**
- * The write cannot be authorized at any permission: an `ebb/link` write
- * declared a source other than the row's committed one (#624). A row's source
- * is its identity, so moving an edge is delete plus create. There is
- * deliberately no `required`.
- */
-export interface SourceMismatchViolation {
-  readonly kind: "source-mismatch";
-  /** The component the write named, always `ebb/link`. */
-  readonly component: string;
-  readonly subjectId: string;
-  /** The source the write declared, i.e. the `source_id` component value. */
-  readonly declaredSourceId: string;
-  /** The source the link row is committed with locally. */
-  readonly committedSourceId: string;
-  /** The committed source's group set. */
-  readonly groupIds: readonly string[];
-}
-
-/**
  * Aggregated refusal of a locally-authored batch. Mirrors
  * `EntityValidationError` / `ActionRejectedError`: a named `Error`
  * subclass with structured readonly reasons and a message formatted
@@ -182,13 +161,6 @@ const describeViolation = (violation: PermissionViolation): string => {
         `${violation.model} ${violation.subjectId}: declared model "${violation.model}"` +
         ` but the entity is committed as "${violation.committedModel}"; an entity's model cannot` +
         ` change (checked: ${groups})`
-      );
-    case "source-mismatch":
-      return (
-        `${violation.component} ${violation.subjectId}: declared source` +
-        ` "${violation.declaredSourceId}" but the row is committed with source` +
-        ` "${violation.committedSourceId}"; an ebb/link row cannot be re-pointed at another` +
-        ` source (checked: ${groups})`
       );
     case "key-mismatch":
       return (
@@ -279,12 +251,6 @@ type RefusalDetail =
       /** The write named a model other than the committed one. */
       readonly reason: "type-mismatch";
       readonly committedModel: string;
-    }
-  | {
-      /** The write declared a relationship source other than the row's own. */
-      readonly reason: "source-mismatch";
-      readonly declaredSourceId: string;
-      readonly committedSourceId: string;
     }
   | {
       /** The write re-pointed a platform row's immutable key. */
@@ -414,15 +380,6 @@ const committedSystemField = async (
 ): Promise<string | null> => rowSystemField(await inputs.exists(subjectId), kind, field);
 
 /**
- * The source an `ebb/link` row is committed with, or `null` when the local
- * store knows no such row.
- */
-const committedRelationshipSource = (
-  subjectId: string,
-  inputs: RuleInputs,
-): Promise<string | null> => committedSystemField(subjectId, "link", "source_id", inputs);
-
-/**
  * The rule table: for a write `(kind, model, id, verb, components)`, the
  * permissions it requires and the groups to union-match. Returns
  * `unresolved` when the inputs the rule needs are not locally available —
@@ -439,10 +396,8 @@ const committedRelationshipSource = (
  * - `ebb/membership` create → `<entityModel>.create` in the target group
  *   **and** `.update` over the entity's current set, because filing an entity
  *   the store already places in a group is a write to it (#623).
- * - `ebb/link` create → `<sourceModel>.update` over the source's set;
- *   update/delete → `ebb/link.<verb>` over the source's set, which comes from
- *   the stored row. A declared `source_id` that differs is refused (#624); a
- *   binding this batch released reads as a new edge.
+ * - `ebb/link` → `ebb/link.<verb>` over the subject row's own set: the edge is
+ *   a key of that row's `ebb/link` component, so the row is the source.
  */
 async function resolveRule(
   kind: EbbComponentKind | null,
@@ -451,18 +406,17 @@ async function resolveRule(
   verb: PermissionVerb,
   written: ReadonlySet<string>,
   inputs: RuleInputs,
-  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
   if (kind === null) return resolveUserRule(model, subjectId, verb, written, inputs);
   switch (kind) {
     case "group":
       return componentRule("group", verb, [subjectId], false);
     case "grant":
-      return resolveGrantRule(subjectId, verb, inputs, released);
+      return resolveGrantRule(subjectId, verb, inputs);
     case "membership":
-      return resolveMembershipRule(subjectId, verb, inputs, released);
+      return resolveMembershipRule(subjectId, verb, inputs);
     case "link":
-      return resolveLinkRule(subjectId, verb, inputs, released);
+      return resolveLinkRule(subjectId, verb, inputs);
     default:
       return assertNever(kind);
   }
@@ -553,12 +507,9 @@ async function resolveGrantRule(
   subjectId: string,
   verb: PermissionVerb,
   inputs: RuleInputs,
-  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
   const declaredGroupId = asString(inputs.fieldValue("group_id"));
-  const committedGroupId = released.has(subjectId)
-    ? null
-    : await committedSystemField(subjectId, "grant", "group_id", inputs);
+  const committedGroupId = await committedSystemField(subjectId, "grant", "group_id", inputs);
   if (verb !== "delete") {
     const refused = await keyMismatch(
       "grant",
@@ -584,7 +535,6 @@ async function resolveMembershipRule(
   subjectId: string,
   verb: PermissionVerb,
   inputs: RuleInputs,
-  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
   const declaredGroupId = asString(inputs.fieldValue("group_id"));
   const declaredEntityId = asString(inputs.fieldValue("entity_id"));
@@ -606,17 +556,16 @@ async function resolveMembershipRule(
   }
 
   // The pair is immutable: a re-put of the same pair is the idempotent write a
-  // retried Action sends, but a write naming another pair is a move, which is
-  // a delete plus a create.
-  if (!released.has(subjectId)) {
-    for (const [field, declared] of [
-      ["entity_id", declaredEntityId],
-      ["group_id", declaredGroupId],
-    ] as const) {
-      const committed = await committedSystemField(subjectId, "membership", field, inputs);
-      const refused = await keyMismatch("membership", field, subjectId, declared, committed);
-      if (refused !== null) return refused;
-    }
+  // retried Action sends, but a write naming another pair is a move, and a move
+  // is a delete of this row plus a create of another — the row id is derived
+  // from the pair, so the same id cannot name a different one.
+  for (const [field, declared] of [
+    ["entity_id", declaredEntityId],
+    ["group_id", declaredGroupId],
+  ] as const) {
+    const committed = await committedSystemField(subjectId, "membership", field, inputs);
+    const refused = await keyMismatch("membership", field, subjectId, declared, committed);
+    if (refused !== null) return refused;
   }
 
   if (declaredGroupId === null || declaredEntityId === null) {
@@ -647,64 +596,17 @@ async function resolveMembershipRule(
   return { kind: "rules", rules };
 }
 
-/** `ebb/link`: its source is its identity (#624). */
+/**
+ * `ebb/link`: the write names a key of the subject row's own edge set, so it is
+ * authorized as `ebb/link.<verb>` in that row's group set. The row is the
+ * source, which is why there is no source to resolve and no re-point to refuse.
+ */
 async function resolveLinkRule(
   subjectId: string,
   verb: PermissionVerb,
   inputs: RuleInputs,
-  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
-  const declaredSourceId = asString(inputs.fieldValue("source_id"));
-  const committedSourceId = await committedRelationshipSource(subjectId, inputs);
-  // A delete in this batch releases the binding, so the re-point check
-  // has nothing left to contradict and the row reads as a new edge.
-  const boundSourceId = released.has(subjectId) ? null : committedSourceId;
-  // A row's source is its identity, so a declared source other than the
-  // committed one is refused. A delete's wire source is never read (the server
-  // resolves the stored row), so a stale one is ignored there.
-  if (
-    verb !== "delete" &&
-    declaredSourceId !== null &&
-    boundSourceId !== null &&
-    declaredSourceId !== boundSourceId
-  ) {
-    return {
-      kind: "refused",
-      reason: "source-mismatch",
-      declaredSourceId,
-      committedSourceId: boundSourceId,
-      groupIds: await inputs.groupSetFor(boundSourceId),
-    };
-  }
-
-  // A create states the source it is made with, so it is authorized as a
-  // write to that source entity. An update to an existing edge is an
-  // `ebb/link` write, scoped by the source it keeps.
-  if (verb === "create") {
-    if (declaredSourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
-    // The permission model follows the source entity's true model,
-    // never the wire `type` label, which is forgeable (#323).
-    const model = await inputs.resolveModel(declaredSourceId);
-    if (model === null) return { kind: "unresolved", reason: "entity-unknown" };
-    const groupIds = await inputs.groupSetFor(declaredSourceId);
-    if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
-    return {
-      kind: "rule",
-      rule: {
-        subject: model,
-        verb: "update",
-        required: `${model}.update`,
-        groupIds,
-        cachedOnly: false,
-      },
-    };
-  }
-  // A delete's groups come from the stored row; an update may restate
-  // the source it keeps. Neither reads the batch release: the stored
-  // row scopes both.
-  const sourceId = verb === "delete" ? committedSourceId : (declaredSourceId ?? committedSourceId);
-  if (sourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
-  const groupIds = await inputs.groupSetFor(sourceId);
+  const groupIds = await inputs.groupSetFor(subjectId);
   if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
   return componentRule("link", verb, groupIds, false);
 }
@@ -772,7 +674,7 @@ const missingPermission = (subjectId: string, rule: ResolvedRule): MissingPermis
 const refusedViolation = (
   resolution: Extract<RuleResolution, { kind: "refused" }>,
   subject: DecisionSubject,
-): TypeMismatchViolation | SourceMismatchViolation | KeyMismatchViolation => {
+): TypeMismatchViolation | KeyMismatchViolation => {
   switch (resolution.reason) {
     case "type-mismatch":
       return {
@@ -780,15 +682,6 @@ const refusedViolation = (
         model: subject.rowSubject,
         subjectId: subject.subjectId,
         committedModel: resolution.committedModel,
-        groupIds: resolution.groupIds,
-      };
-    case "source-mismatch":
-      return {
-        kind: "source-mismatch",
-        component: subject.rowSubject,
-        subjectId: subject.subjectId,
-        declaredSourceId: resolution.declaredSourceId,
-        committedSourceId: resolution.committedSourceId,
         groupIds: resolution.groupIds,
       };
     case "key-mismatch":
@@ -857,41 +750,9 @@ const resolveMembershipGroupIds = async (
   return groupId === null ? [] : [groupId];
 };
 
-/** No relationship id is released: the query path sees committed state only. */
-const NO_RELEASED: ReadonlySet<string> = new Set();
-
-/**
- * The relationship ids whose deletes ride in this Action. A delete names no
- * component, so its model comes from the local row. The union is taken before
- * any subject is checked, so inside one Action the delete's position does not
- * matter — the server's simulation is built the same way.
- */
-const releasedByDeletes = async (
-  released: ReadonlySet<string>,
-  subjects: ReadonlyMap<string, SubjectWrites>,
-  rowOf: (id: string) => Promise<Entity | null>,
-): Promise<ReadonlySet<string>> => {
-  const ids: string[] = [];
-  for (const [id, writes] of subjects) {
-    if (!writes.deleted) continue;
-    // A delete names no component, so the stored row is the only place its
-    // kind can come from.
-    const kind = writes.kind ?? platformKindOf(await rowOf(id));
-    if (kind === "link") ids.push(id);
-  }
-  if (ids.length === 0) return released;
-  return new Set([...released, ...ids]);
-};
-
 /** What one Action contributes to the batch. */
 interface ActionViolations {
   readonly violations: readonly PermissionViolation[];
-  /**
-   * The relationship ids this Action's deletes release. The caller adopts
-   * them only when the Action is accepted, so a refused Action releases
-   * nothing for the Actions after it.
-   */
-  readonly released: ReadonlySet<string>;
 }
 
 /**
@@ -906,11 +767,9 @@ export async function collectPermissionViolations(
   if (ctx.actorGroups.length === 0) return [];
 
   const violations: PermissionViolation[] = [];
-  let released: ReadonlySet<string> = NO_RELEASED;
   for (const action of actions) {
-    const result = await collectActionViolations(action, ctx, released);
+    const result = await collectActionViolations(action, ctx);
     violations.push(...result.violations);
-    if (result.violations.length === 0) released = result.released;
   }
   return violations;
 }
@@ -918,14 +777,12 @@ export async function collectPermissionViolations(
 const collectActionViolations = async (
   action: Action,
   ctx: PermissionContext,
-  releasedBefore: ReadonlySet<string>,
 ): Promise<ActionViolations> => {
   const subjects = foldSubjects(action.updates);
   const cached = new Map(ctx.actorGroups.map((g) => [g.id, g.permissions]));
   await mergeLocalMemberships(cached, ctx);
 
   const exists = async (id: string): Promise<Entity | null> => ctx.storage.entities.get(id);
-  const released = await releasedByDeletes(releasedBefore, subjects, exists);
 
   // A row exists because the batch carries its create, and a write to a row
   // that exists is an update. The batch has not materialized anything, so a
@@ -1021,31 +878,22 @@ const collectActionViolations = async (
     // A delete of a row the store does not know names no model: the server
     // resolves it from its own index, and this pass has nothing to say.
     if (model === undefined) return null;
-    const kind = writtenKind ?? platformKindOf(row);
-    const verb: PermissionVerb = writes.deleted
-      ? "delete"
-      : kind === null
-        ? writes.created
-          ? "create"
-          : "update"
-        : row !== null && carriesComponent(row, kind)
-          ? "update"
-          : "create";
-    const resolution = await resolveRule(
-      kind,
-      model,
-      subjectId,
-      verb,
-      writes.written,
-      {
-        ...storageInputs(ctx.storage, (name) => subjectField(writes, name)),
-        resolveModel,
-        groupSetFor,
-        committedGroupSetFor: async (entityId) =>
-          (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
-      },
-      released,
-    );
+    // A delete names the row, so its subject is the row's model whatever
+    // components ride in the same Action — the server folds it the same way.
+    const kind = writes.deleted ? platformKindOf(row) : (writtenKind ?? platformKindOf(row));
+    // The verb follows the Action, not the store: a create is the Action that
+    // carries the row's create, everything else is an update (#817). Asking
+    // existence answers a different question — a row an earlier Action created
+    // is not created by this one — and it is wrong for any component whose
+    // absence is not the same as the row's (`ebb/link` is one).
+    const verb: PermissionVerb = writes.deleted ? "delete" : writes.created ? "create" : "update";
+    const resolution = await resolveRule(kind, model, subjectId, verb, writes.written, {
+      ...storageInputs(ctx.storage, (name) => subjectField(writes, name)),
+      resolveModel,
+      groupSetFor,
+      committedGroupSetFor: async (entityId) =>
+        (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
+    });
     const decision = decideRule(
       resolution,
       { rowSubject: rowSubject(kind, model), subjectId },
@@ -1068,7 +916,7 @@ const collectActionViolations = async (
     const violation = await check(subjectId, writes);
     if (violation !== null) violations.push(violation);
   }
-  return { violations, released };
+  return { violations };
 };
 
 /**
@@ -1196,23 +1044,15 @@ export async function queryEntityPermission(
       ? row.data?.fields?.[name]?.value
       : (systemValueField(row, kind, name) ?? undefined),
   );
-  const resolution = await resolveRule(
-    kind,
-    row.model,
-    id,
-    verb,
-    NO_WRITTEN,
-    {
-      ...inputs,
-      resolveModel: async (entityId) => (await inputs.exists(entityId))?.model ?? null,
-      // The query path sees committed state only, so both reads agree.
-      groupSetFor: async (entityId) =>
-        (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
-      committedGroupSetFor: async (entityId) =>
-        (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
-    },
-    NO_RELEASED,
-  );
+  const resolution = await resolveRule(kind, row.model, id, verb, NO_WRITTEN, {
+    ...inputs,
+    resolveModel: async (entityId) => (await inputs.exists(entityId))?.model ?? null,
+    // The query path sees committed state only, so both reads agree.
+    groupSetFor: async (entityId) =>
+      (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
+    committedGroupSetFor: async (entityId) =>
+      (await readEntityMemberships(ctx.storage, entityId)).map((m) => m.groupId),
+  });
   const decision = decideRule(
     resolution,
     { rowSubject: rowSubject(kind, row.model), subjectId: id },

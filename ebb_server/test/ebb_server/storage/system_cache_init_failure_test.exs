@@ -22,8 +22,7 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
     DirtyTracker,
     EbbServer.Storage.GrantCache,
     EbbServer.Storage.MembershipCache,
-    EbbServer.Storage.EntityModelCache,
-    EbbServer.Storage.RelationshipCache
+    EbbServer.Storage.EntityModelCache
   ]
 
   setup do

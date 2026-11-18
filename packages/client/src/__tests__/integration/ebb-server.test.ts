@@ -46,10 +46,10 @@ import {
   EBB_MODEL_NAME,
   encodeSync,
   isComponentUpdate,
+  linkTargets,
   localEvent,
   makeHlc,
   systemValue,
-  systemValueString,
   type Action,
   type EbbComponentKind,
   type Entity,
@@ -147,14 +147,6 @@ async function postAction(actorId: string, action: Action, what: string): Promis
 const platformRows = async (client: SyncClient, kind: EbbComponentKind): Promise<Entity[]> =>
   (await client.storage.entities.query(EBB_MODEL_NAME)).filter((row) =>
     carriesComponent(row, kind),
-  );
-
-/** The `ebb/link` row leaving `sourceId` under `field`, if materialized. */
-const linkFrom = (rows: readonly Entity[], sourceId: string, field: string): Entity | undefined =>
-  rows.find(
-    (row) =>
-      systemValueString(row, "link", "source_id") === sourceId &&
-      systemValueString(row, "link", "field") === field,
   );
 
 /** The permissions a regular test member holds in the test group. */
@@ -945,7 +937,7 @@ describe("integration: draft link / unlink", () => {
       const membership = await row.groups.toRaw();
       expect(membership.map((g) => g.id)).toContain(TEST_GROUP_ID);
 
-      // `link` records a Relationship put and returns nothing; the edge is
+      // `link` merges one key on the todo row and returns nothing; the edge is
       // proven by the materialized row below, not by the resolved value.
       await expect(
         client.actions.link({
@@ -957,11 +949,11 @@ describe("integration: draft link / unlink", () => {
       ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
-      const links = await platformRows(client, "link");
-      const materializedLink = linkFrom(links, todoId, "list");
-      expect(materializedLink).toBeDefined();
-      expect(systemValueString(materializedLink, "link", "target_id")).toBe("list_target_1");
-      expect(systemValueString(materializedLink, "link", "type")).toBe("todo");
+      // The edge is a key of the todo row's own `ebb/link` component, so it is
+      // materialized with the row and nowhere else.
+      const linked = await client.readLocalEntity(todoId);
+      expect(linked).not.toBeNull();
+      expect(linkTargets(linked!, "list", "todo")).toEqual(["list_target_1"]);
     } finally {
       client.close();
     }
@@ -997,25 +989,19 @@ describe("integration: draft link / unlink", () => {
       });
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
 
-      let links = await platformRows(client, "link");
-      const materializedLink = linkFrom(links, todoId, "list");
-      expect(materializedLink).toBeDefined();
-      const linkRowId = materializedLink!.id;
+      const before = await client.readLocalEntity(todoId);
+      expect(before).not.toBeNull();
+      expect(linkTargets(before!, "list", "todo")).toEqual(["list_target_2"]);
 
       await expect(
         client.actions.unlink({ entity: "todo", id: todoId, as: "list" }),
       ).resolves.toBeUndefined();
 
       await catchUpUntilCurrent(client, TEST_GROUP_ID);
-      links = await platformRows(client, "link");
-      const stillMaterialized = links.find((row) => row.id === linkRowId);
-      const isTombstoned =
-        stillMaterialized?.deleted_hlc !== null && stillMaterialized?.deleted_hlc !== undefined;
-      const isGone = stillMaterialized === undefined;
-      expect(
-        isGone || isTombstoned,
-        `expected the ebb/link row ${linkRowId} to be removed or tombstoned after unlink(); got ${JSON.stringify(stillMaterialized)}`,
-      ).toBe(true);
+      // The removal tombstones the key; the row survives with no live edge.
+      const after = await client.readLocalEntity(todoId);
+      expect(after).not.toBeNull();
+      expect(linkTargets(after!, "list", "todo")).toEqual([]);
     } finally {
       client.close();
     }

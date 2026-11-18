@@ -16,7 +16,7 @@ import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { callApplyAction, flushTasks, rowComponents } from "../test-utils";
+import { callApplyAction, linkAction, flushTasks, rowComponents } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
 const note = defineModel("note", { body: e.string() });
@@ -74,11 +74,12 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
-  put(gsn, `rel_${gsn}`, "link", {
-    source_id: sourceId,
-    target_id: targetId,
-    field: as,
-    type,
+  linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(1_711_036_800_000, gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
   });
 
 const seed = async (client: Client, actions: readonly Action[]): Promise<void> => {

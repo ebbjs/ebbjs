@@ -120,6 +120,10 @@ export const createMemoryAdapter = (): StorageAdapter => {
         return dirtyTracker.getDirtyForModel(model);
       },
 
+      async getDirty(): Promise<readonly string[]> {
+        return dirtyTracker.getDirty();
+      },
+
       async clear(entityId: string): Promise<void> {
         await dirtyTracker.clear(entityId);
       },

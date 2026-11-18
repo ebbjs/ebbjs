@@ -1,21 +1,20 @@
 /**
  * Tests for the relationship accessors in `relationship.ts`.
  *
- * Forward accessors (`forwardOne`, `forwardMany`) and the reverse / membership
- * walkers read through an `AdjacencyReader` — the storage layer's adjacency
- * index, or the replica's synchronous one when the client binds it (#520) — not
- * a scan of the whole model. The fake here is a small in-memory reader, so the
- * tests pin the traversal contract.
+ * Forward accessors read the source row's own `ebb/link` component, and the
+ * reverse / membership walkers read the adjacency index — the storage layer's,
+ * or the replica's synchronous one when the client binds it (#520). The fake
+ * here is a small in-memory reader, so the tests pin the traversal contract.
  *
- * A link and a membership are `ebb` rows carrying one atomic component each, so
- * the fake reader gates on the component rather than on `row.type`.
+ * A link is a keyed component of its source row and a membership is an `ebb`
+ * row carrying one atomic component, so the fake reader gates on the component.
  */
 
 import { describe, it, expect } from "vitest";
 import type { Entity } from "@ebbjs/core";
-import type { MembershipLink, RelationshipLink } from "@ebbjs/storage/types";
+import type { MembershipLink } from "@ebbjs/storage/types";
 
-import { carriesComponent, EBB_MODEL_NAME, systemValue } from "@ebbjs/core";
+import { carriesComponent, EBB_MODEL_NAME, linkEdges, linkTargets, systemValue } from "@ebbjs/core";
 
 import {
   type AdjacencyReader,
@@ -32,45 +31,27 @@ const readLocalEntity =
     store.get(id) ?? null;
 
 /**
- * An in-memory `AdjacencyReader` over the same Map the store holds.
- * Live `relationship` rows are indexed by `(field, type, source_id)`
- * forward and `(field, type, target_id)` reverse; live `membership`
- * rows by `entity_id`.
+ * An in-memory `AdjacencyReader` over the same Map the store holds. Forward
+ * targets come from the source row's `ebb/link` component, as the replica's
+ * is a component read; the reverse direction indexes the live edges of every
+ * row. Memberships are `ebb/membership` rows keyed by `entity_id`.
  */
 const mkAdjacency = (store: Map<string, Entity>): AdjacencyReader => {
   const live = [...store.values()].filter((e) => e.deleted_hlc === null);
   const reader: AdjacencyReader = {
-    async forwardLinks({ as, type, sourceId }): Promise<readonly RelationshipLink[]> {
-      return live
-        .filter(
-          (e) =>
-            carriesComponent(e, "link") &&
-            systemValue(e, "link")?.["field"] === as &&
-            systemValue(e, "link")?.["type"] === type &&
-            systemValue(e, "link")?.["source_id"] === sourceId,
-        )
-        .map((e) => ({
-          relationshipId: e.id,
-          targetId: String(systemValue(e, "link")?.["target_id"]),
-        }))
-        .sort((a, b) =>
-          a.targetId === b.targetId
-            ? a.relationshipId.localeCompare(b.relationshipId)
-            : a.targetId.localeCompare(b.targetId),
-        );
+    async forwardTargets(sourceId, as, type): Promise<readonly string[]> {
+      return linkTargets(store.get(sourceId), as, type);
     },
     async reverseSourceIds({ as, type, targetId }): Promise<readonly string[]> {
       return [
         ...new Set(
           live
-            .filter(
-              (e) =>
-                carriesComponent(e, "link") &&
-                systemValue(e, "link")?.["field"] === as &&
-                systemValue(e, "link")?.["type"] === type &&
-                systemValue(e, "link")?.["target_id"] === targetId,
+            .filter((e) =>
+              linkEdges(e).some(
+                (edge) => edge.as === as && edge.type === type && edge.targetId === targetId,
+              ),
             )
-            .map((e) => String(systemValue(e, "link")?.["source_id"])),
+            .map((e) => e.id),
         ),
       ].sort();
     },
@@ -98,9 +79,8 @@ const shape = (props: Record<string, unknown>): never =>
 describe("forwardOne", () => {
   it("resolves the target entity when a Relationship edge exists", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", entityRow("t1", "todo", {}));
+    store.set("t1", linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }]));
     store.set("l1", entityRow("l1", "list", { name: "Work" }));
-    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -130,9 +110,8 @@ describe("forwardOne", () => {
 
   it("returns undefined when the source row exists but has the wrong type", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", entityRow("t1", "user", {}));
+    store.set("t1", linkRow("t1", "user", [{ as: "parentList", type: "todo", targetId: "l1" }]));
     store.set("l1", entityRow("l1", "list", { name: "Work" }));
-    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -163,8 +142,7 @@ describe("forwardOne", () => {
 
   it("returns undefined when the edge exists but the target is missing (dangling)", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", entityRow("t1", "todo", {}));
-    store.set("rel-1", linkRow("rel-1", "t1", "ghost", "parentList", "todo"));
+    store.set("t1", linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "ghost" }]));
     const reader = mkAdjacency(store);
     const got = await forwardOne(
       readLocalEntity(store),
@@ -181,13 +159,17 @@ describe("forwardOne", () => {
 describe("forwardMany", () => {
   it("projects the targets whose Relationship edges point at this source", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", entityRow("t1", "tag", {}));
+    store.set(
+      "t1",
+      linkRow("t1", "tag", [
+        { as: "tags", type: "tag", targetId: "label-a" },
+        { as: "tags", type: "tag", targetId: "label-b" },
+        { as: "tags", type: "tag", targetId: "label-c" },
+      ]),
+    );
     store.set("label-a", entityRow("label-a", "label", { name: "a" }));
     store.set("label-b", entityRow("label-b", "label", { name: "b" }));
     store.set("label-c", entityRow("label-c", "label", { name: "c" }));
-    store.set("rel-a", linkRow("rel-a", "t1", "label-a", "tags", "tag"));
-    store.set("rel-b", linkRow("rel-b", "t1", "label-b", "tags", "tag"));
-    store.set("rel-c", linkRow("rel-c", "t1", "label-c", "tags", "tag"));
     const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
@@ -205,15 +187,17 @@ describe("forwardMany", () => {
 
   it("dedupes repeated targets and drops wrong-type entities", async () => {
     const store = new Map<string, Entity>();
-    store.set("t1", entityRow("t1", "tag", {}));
-    store.set("label-a", entityRow("label-a", "label", { name: "a" }));
-    // Same target reached through two distinct relationship rows.
-    store.set("rel-a1", linkRow("rel-a1", "t1", "label-a", "tags", "tag"));
-    store.set("rel-a2", linkRow("rel-a2", "t1", "label-a", "tags", "tag"));
     // A dangling edge and an entity whose type is not the declared target.
-    store.set("rel-ghost", linkRow("rel-ghost", "t1", "ghost", "tags", "tag"));
+    store.set(
+      "t1",
+      linkRow("t1", "tag", [
+        { as: "tags", type: "tag", targetId: "label-a" },
+        { as: "tags", type: "tag", targetId: "ghost" },
+        { as: "tags", type: "tag", targetId: "other" },
+      ]),
+    );
+    store.set("label-a", entityRow("label-a", "label", { name: "a" }));
     store.set("other", entityRow("other", "list", { name: "nope" }));
-    store.set("rel-other", linkRow("rel-other", "t1", "other", "tags", "tag"));
     const reader = mkAdjacency(store);
     const qb = forwardMany(
       readLocalEntity(store),
@@ -268,12 +252,24 @@ describe("reverse", () => {
   it("projects sources that point at the target through the reverse index", async () => {
     const store = new Map<string, Entity>();
     store.set("l1", entityRow("l1", "list", { name: "Work" }));
-    store.set("t1", entityRow("t1", "todo", { title: "Ship" }));
-    store.set("t2", entityRow("t2", "todo", { title: "Other" }));
-    store.set("t3", entityRow("t3", "todo", { title: "Off-list" }));
-    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
-    store.set("rel-2", linkRow("rel-2", "t2", "l1", "parentList", "todo"));
-    store.set("rel-3", linkRow("rel-3", "t3", "l2", "parentList", "todo"));
+    store.set(
+      "t1",
+      linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        title: "Ship",
+      }),
+    );
+    store.set(
+      "t2",
+      linkRow("t2", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        title: "Other",
+      }),
+    );
+    store.set(
+      "t3",
+      linkRow("t3", "todo", [{ as: "parentList", type: "todo", targetId: "l2" }], {
+        title: "Off-list",
+      }),
+    );
     const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),
@@ -288,14 +284,22 @@ describe("reverse", () => {
     expect(rows.map((r) => (r as unknown as { title: string }).title)).toEqual(["Ship", "Other"]);
   });
 
-  it("drops dangling sources and wrong-type entities", async () => {
+  it("drops a source of another model", async () => {
     const store = new Map<string, Entity>();
     store.set("l1", entityRow("l1", "list", {}));
-    store.set("t1", entityRow("t1", "todo", { title: "Ship" }));
-    store.set("other", entityRow("other", "user", { name: "not-a-todo" }));
-    store.set("rel-1", linkRow("rel-1", "t1", "l1", "parentList", "todo"));
-    store.set("rel-2", linkRow("rel-2", "other", "l1", "parentList", "todo"));
-    store.set("rel-3", linkRow("rel-3", "ghost", "l1", "parentList", "todo"));
+    store.set(
+      "t1",
+      linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        title: "Ship",
+      }),
+    );
+    store.set(
+      "other",
+      linkRow("other", "user", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        name: "not-a-todo",
+      }),
+    );
+
     const reader = mkAdjacency(store);
     const qb = reverse(
       readLocalEntity(store),

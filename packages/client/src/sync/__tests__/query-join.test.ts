@@ -22,7 +22,7 @@ import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";
 import { planQuery, rowReadComponentsFor } from "../query-plan";
 import type { ProjectedRow, QueryRow } from "../query-builder";
-import { callApplyAction, rowComponents } from "../test-utils";
+import { callApplyAction, linkAction, rowComponents } from "../test-utils";
 
 const issue = defineModel("issue", { title: e.string(), status: e.string() });
 const user = defineModel("user", { name: e.string() });
@@ -125,11 +125,12 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
   );
 
 const link = (gsn: number, sourceId: string, targetId: string, as: string, type: string): Action =>
-  put(gsn, `rel_${gsn}`, "link", {
-    source_id: sourceId,
-    target_id: targetId,
-    field: as,
-    type,
+  linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(1_711_036_800_000, gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
   });
 
 const seed = async (client: Client, actions: readonly Action[]): Promise<void> => {

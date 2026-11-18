@@ -1,24 +1,20 @@
 import { describe, expect, it } from "vitest";
-import type { Entity } from "@ebbjs/core";
+import type { Entity, FieldValue } from "@ebbjs/core";
 import {
   forwardIndexEntriesFor,
   forwardMembershipEntryFor,
-  forwardRelationshipEntryFor,
   indexEntriesFor,
   liveMembershipLinks,
-  liveRelationshipLinks,
   membershipEntryFor,
-  relationshipEntryFor,
+  relationshipEntriesFor,
 } from "./reverse-index";
 
-const entity = (fields: Record<string, unknown>, model = "ebb"): Entity => ({
+const leaf = (value: unknown): FieldValue => ({ value, update_id: "u", hlc: "1-0" });
+
+const entity = (fields: Record<string, FieldValue>, model = "ebb"): Entity => ({
   id: "row_1",
   model,
-  data: {
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([key, value]) => [key, { value, update_id: "u", hlc: "1-0" }]),
-    ),
-  },
+  data: { fields },
   exists: true,
   created_hlc: "1-0",
   updated_hlc: "1-0",
@@ -26,48 +22,110 @@ const entity = (fields: Record<string, unknown>, model = "ebb"): Entity => ({
   last_gsn: 0,
 });
 
-const linkValue = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-  source_id: "s",
-  target_id: "x",
-  type: "t",
-  field: "list",
-  ...overrides,
-});
+/**
+ * The `ebb/link` value carrying one edge per `(as, type, target)`. A target of
+ * `null` is a tombstone, which is a removed edge rather than a live one.
+ */
+const linkValue = (
+  edges: readonly { as: string; type: string; targetId: string; present?: boolean }[],
+): FieldValue => {
+  const byAs: Record<string, Record<string, Record<string, FieldValue>>> = {};
+  for (const edge of edges) {
+    const byType = (byAs[edge.as] ??= {});
+    const byTarget = (byType[edge.type] ??= {});
+    byTarget[edge.targetId] = leaf(edge.present === false ? null : true);
+  }
+  return {
+    map: Object.fromEntries(
+      Object.entries(byAs).map(([as, byType]) => [
+        as,
+        {
+          map: Object.fromEntries(
+            Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+          ),
+        },
+      ]),
+    ),
+  };
+};
 
-const membershipValue = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-  entity_id: "todo_1",
-  group_id: "group_1",
-  ...overrides,
-});
+const membershipValue = (overrides: Record<string, unknown> = {}): FieldValue =>
+  leaf({ entity_id: "todo_1", group_id: "group_1", ...overrides });
 
-describe("forward index entries", () => {
-  it("indexes nothing for a tombstone or a row missing part of its key", () => {
-    const tombstoned = {
-      ...entity({ link: linkValue() }),
-      deleted_hlc: "2-0",
-    };
-    expect(forwardRelationshipEntryFor(tombstoned)).toBeNull();
-
-    // A partial key must not leave a half-built entry in the index.
-    expect(forwardRelationshipEntryFor(entity({ link: linkValue({ target_id: undefined }) }))).toBe(
-      null,
-    );
-    expect(forwardRelationshipEntryFor(entity({ link: linkValue({ source_id: 7 }) }))).toBeNull();
+describe("reverse index entries", () => {
+  it("keys one entry per live edge on the row that carries it", () => {
     expect(
-      forwardMembershipEntryFor(entity({ membership: membershipValue({ entity_id: undefined }) })),
-    ).toBeNull();
-    // A user row carrying no platform component indexes nothing.
-    expect(forwardRelationshipEntryFor(entity({ list: linkValue() }, "todo"))).toBeNull();
+      relationshipEntriesFor(
+        entity(
+          {
+            link: linkValue([
+              { as: "list", type: "todo_list", targetId: "x" },
+              { as: "list", type: "todo_list", targetId: "y" },
+            ]),
+          },
+          "todo",
+        ),
+      ),
+    ).toEqual([
+      { key: "list\u0000todo_list\u0000x", id: "row_1", value: "row_1" },
+      { key: "list\u0000todo_list\u0000y", id: "row_1", value: "row_1" },
+    ]);
   });
 
-  it("orders live links by yielded id then row id", () => {
-    // Inserted out of row-id order, so a stable sort by value alone would
-    // leave `rel_c` before `rel_b`.
-    expect(liveRelationshipLinks({ rel_c: "list_b", rel_a: "list_a", rel_b: "list_b" })).toEqual([
-      { relationshipId: "rel_a", targetId: "list_a" },
-      { relationshipId: "rel_b", targetId: "list_b" },
-      { relationshipId: "rel_c", targetId: "list_b" },
+  it("indexes nothing for a tombstone or a tombstoned key", () => {
+    const tombstoned = {
+      ...entity({ link: linkValue([{ as: "list", type: "t", targetId: "x" }]) }),
+      deleted_hlc: "2-0",
+    };
+    expect(relationshipEntriesFor(tombstoned)).toEqual([]);
+
+    expect(
+      relationshipEntriesFor(
+        entity({
+          link: linkValue([{ as: "list", type: "t", targetId: "x", present: false }]),
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("indexes nothing for a row carrying no link component", () => {
+    expect(relationshipEntriesFor(entity({ list: linkValue([]) }, "todo"))).toEqual([]);
+    expect(relationshipEntriesFor(entity({ link: leaf(true) }, "todo"))).toEqual([]);
+  });
+
+  it("keys a membership row under the membership component's key space", () => {
+    expect(membershipEntryFor(entity({ membership: membershipValue() }))).toEqual({
+      key: "groups\u0000ebb/membership\u0000group_1",
+      id: "row_1",
+      value: "todo_1",
+    });
+  });
+
+  it("derives one entry per component a row carries", () => {
+    // A row carrying both kinds is the overlay case (#820): an `ebb/link`
+    // component on a row that is also a membership.
+    const both = entity({
+      link: linkValue([{ as: "list", type: "t", targetId: "x" }]),
+      membership: membershipValue(),
+    });
+    expect(indexEntriesFor(both).map((entry) => entry.key)).toEqual([
+      "list\u0000t\u0000x",
+      "groups\u0000ebb/membership\u0000group_1",
     ]);
+    expect(forwardIndexEntriesFor(both).map((entry) => entry.key)).toEqual([
+      "\u0001groups\u0000ebb/membership\u0000todo_1",
+    ]);
+  });
+
+  it("derives no entry for a row carrying neither platform component", () => {
+    const todo = entity({ title: leaf("Hello") }, "todo");
+    expect(indexEntriesFor(todo)).toEqual([]);
+    expect(forwardIndexEntriesFor(todo)).toEqual([]);
+  });
+});
+
+describe("live index reads", () => {
+  it("orders live membership links by yielded id then row id", () => {
     expect(liveMembershipLinks({ eg_c: "group_b", eg_a: "group_a", eg_b: "group_b" })).toEqual([
       { membershipId: "eg_a", groupId: "group_a" },
       { membershipId: "eg_b", groupId: "group_b" },
@@ -75,39 +133,8 @@ describe("forward index entries", () => {
     ]);
   });
 
-  it("keys a link on its value, not on the row model", () => {
-    expect(relationshipEntryFor(entity({ link: linkValue() }))).toEqual({
-      key: "list\u0000t\u0000x",
-      rowId: "row_1",
-      value: "s",
-    });
-  });
-
-  it("keys a membership row under the membership component's key space", () => {
-    expect(membershipEntryFor(entity({ membership: membershipValue() }))).toEqual({
-      key: "groups\u0000ebb/membership\u0000group_1",
-      rowId: "row_1",
-      value: "todo_1",
-    });
-  });
-
-  it("derives one entry per component a row carries", () => {
-    // One row carrying both kinds is impossible in slice 10, but a row is not
-    // assumed to carry only one: the overlay case (#820) puts both on one row.
-    const both = entity({ link: linkValue(), membership: membershipValue() });
-    expect(indexEntriesFor(both).map((entry) => entry.key)).toEqual([
-      "list\u0000t\u0000x",
-      "groups\u0000ebb/membership\u0000group_1",
-    ]);
-    expect(forwardIndexEntriesFor(both).map((entry) => entry.key)).toEqual([
-      "\u0001list\u0000t\u0000s",
-      "\u0001groups\u0000ebb/membership\u0000todo_1",
-    ]);
-  });
-
-  it("derives no entry for a row carrying neither platform component", () => {
-    const todo = entity({ title: "Hello" }, "todo");
-    expect(indexEntriesFor(todo)).toEqual([]);
-    expect(forwardIndexEntriesFor(todo)).toEqual([]);
+  it("keys a membership entry on its row, not on its member", () => {
+    const duplicate = entity({ membership: membershipValue() });
+    expect(forwardMembershipEntryFor(duplicate)?.id).toBe("row_1");
   });
 });

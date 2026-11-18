@@ -27,7 +27,7 @@ import { membershipRowId } from "@ebbjs/write";
 import { ActionRejectedError, ActionResolutionError, resolveReferences } from "../drafts";
 import type { Rejection } from "../types";
 import { createClient } from "../client";
-import { rowFields, rowsByModel, testActions } from "../test-utils";
+import { linkTargetsOf, rowFields, rowsByModel, testActions } from "../test-utils";
 
 /** The Updates of one model, grouped into one list per subject row. */
 /** A field's value on a row, or `undefined` when absent or dropped. */
@@ -65,7 +65,8 @@ const mkRecordingFetch = (seen: RecordedRequest[], opts: StubWriteOptions = {}):
           : undefined;
     seen.push({ url, body });
     if (url.endsWith("/sync/handshake")) {
-      const permissions = ["todo.*", "list.*", "label.*", "a.*", "b.*", "c.*"];
+      // `ebb/link.*` covers the edge a create may carry on the new row.
+      const permissions = ["todo.*", "list.*", "label.*", "a.*", "b.*", "c.*", "ebb/link.*"];
       return new Response(
         JSON.stringify({
           actor_id: "actor_1",
@@ -151,7 +152,7 @@ describe("drafts — one Action, forward references", () => {
     const actions = decodeActions(calls[0]!);
     expect(actions).toHaveLength(1);
     const updates = actions[0]!.updates;
-    // 2 entity rows + 2 membership rows + 1 domain relationship row.
+    // 2 entity rows + 2 membership rows; the edge is a key of the source row.
     expect(rowsByModel(updates, "todo")).toHaveLength(1);
     expect(rowsByModel(updates, "list")).toHaveLength(1);
     expect(rowsByModel(updates, "membership")).toHaveLength(2);
@@ -176,9 +177,8 @@ describe("drafts — one Action, forward references", () => {
     expect(listRow![0]!.subject_id).toBe(created.list.id);
     expect(valueOf(listRow!, "name")).toBe("Today");
 
-    expect(valueOf(domainRel!, "source_id")).toBe(created.todo.id);
-    expect(valueOf(domainRel!, "target_id")).toBe(created.list.id);
-    expect(valueOf(domainRel!, "type")).toBe("todo");
+    expect(domainRel![0]!.subject_id).toBe(created.todo.id);
+    expect(linkTargetsOf(domainRel![0]!, "list", "todo")).toEqual([created.list.id]);
 
     for (const row of membershipRows) {
       // A membership row is a row of its own, so it carries its own create.
@@ -273,11 +273,14 @@ describe("drafts — one Action, forward references", () => {
     const calls = actionCalls(seen);
     expect(calls).toHaveLength(1);
     const updates = decodeActions(calls[0]!)[0]!.updates;
-    // 3 entity rows + 3 membership rows + 2 domain relationship rows.
+    // 3 entity rows + 3 membership rows; each edge is a key of its source row.
     expect(rowsByModel(updates, "membership")).toHaveLength(3);
-    const relTargets = rowsByModel(updates, "link").map((row) => valueOf(row, "target_id"));
-    expect(relTargets).toContain(created.a.id);
-    expect(relTargets).toContain(created.b.id);
+    const linkTargets = rowsByModel(updates, "link").flatMap((row) => [
+      ...linkTargetsOf(row[0]!, "a", "b"),
+      ...linkTargetsOf(row[0]!, "b", "c"),
+    ]);
+    expect(linkTargets).toContain(created.a.id);
+    expect(linkTargets).toContain(created.b.id);
   });
 
   it("accepts a pre-existing string id without creating a target", async () => {
@@ -290,12 +293,11 @@ describe("drafts — one Action, forward references", () => {
 
     expect(created.todo.list).toBe("list_existing");
     const updates = decodeActions(actionCalls(seen)[0]!)[0]!.updates;
-    // 1 entity row + 1 membership row + 1 domain relationship row.
+    // 1 entity row + 1 membership row; the edge rides on the entity row.
     expect(rowsByModel(updates, "membership")).toHaveLength(1);
     expect(rowsByModel(updates, "todo")).toHaveLength(1);
     const [relRow] = rowsByModel(updates, "link");
-    expect(valueOf(relRow!, "field")).toBe("list");
-    expect(valueOf(relRow!, "target_id")).toBe("list_existing");
+    expect(linkTargetsOf(relRow![0]!, "list", "todo")).toEqual(["list_existing"]);
   });
 
   it("emits N Relationship Updates for a many-cardinality pointer and carries the FK set", async () => {

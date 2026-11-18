@@ -134,7 +134,6 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
     MembershipCache,
     EntityModelCache,
     GrantCache,
-    RelationshipCache,
     SystemCache
   }
 
@@ -144,7 +143,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
 
     children_before =
       Enum.map(
-        [DirtyTracker, GrantCache, MembershipCache, EntityModelCache, RelationshipCache],
+        [DirtyTracker, GrantCache, MembershipCache, EntityModelCache],
         &Process.whereis/1
       )
 
@@ -327,8 +326,7 @@ defmodule EbbServer.Sync.WriterFailureEndToEndTest do
   @system_components %{
     "group" => "ebb/group",
     "grant" => "ebb/grant",
-    "membership" => "ebb/membership",
-    "relationship" => "ebb/link"
+    "membership" => "ebb/membership"
   }
 
   defp updates(model, subject_id, method, fields) do

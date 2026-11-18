@@ -60,7 +60,6 @@ defmodule EbbServer.Storage.Writer do
     PreparedAction,
     PreparePool,
     Preparer,
-    RelationshipCache,
     RocksDB,
     RowMutations
   }
@@ -108,8 +107,6 @@ defmodule EbbServer.Storage.Writer do
           component_index: atom(),
           component_entity_labels: atom(),
           group_apps: atom(),
-          relationships: atom(),
-          relationships_by_id: atom(),
           prepare: prepare(),
           next_call_seq: non_neg_integer(),
           next_enqueue_seq: non_neg_integer(),
@@ -152,8 +149,6 @@ defmodule EbbServer.Storage.Writer do
     :component_index,
     :component_entity_labels,
     :group_apps,
-    :relationships,
-    :relationships_by_id,
     :prepare,
     :next_call_seq,
     :next_enqueue_seq,
@@ -356,20 +351,6 @@ defmodule EbbServer.Storage.Writer do
         CacheTables.group_apps()
       )
 
-    relationships =
-      Keyword.get(
-        opts,
-        :relationships,
-        CacheTables.relationships()
-      )
-
-    relationships_by_id =
-      Keyword.get(
-        opts,
-        :relationships_by_id,
-        CacheTables.relationships_by_id()
-      )
-
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
     after_commit = Keyword.get(opts, :after_commit)
 
@@ -525,8 +506,6 @@ defmodule EbbServer.Storage.Writer do
       component_index: component_index,
       component_entity_labels: component_entity_labels,
       group_apps: group_apps,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id,
       prepare: %{
         pool: prepare_pool,
         fn: prepare_fn,
@@ -1388,7 +1367,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   # A prepared batch may commit while an earlier range is still in flight
-  # only when that range planned no membership or relationship move: then
+  # only when that range planned no membership move: then
   # its eventual abandon cannot invalidate the successor's scopes. A
   # resolution-affecting predecessor holds the gate until it is durable.
   defp ready_batch(pipeline) do
@@ -1761,10 +1740,6 @@ defmodule EbbServer.Storage.Writer do
       resolve_opts
       |> Keyword.put(:flush_rows, flush_rows)
       |> Keyword.put(:intra_action, intra_action_context)
-      |> Keyword.put(
-        :intra_relationship_sources,
-        PermissionHelper.build_intra_relationship_sources(action.updates)
-      )
 
     {scopes, memo} =
       Enum.map_reduce(mutations, memo, fn mutation, memo ->
@@ -1781,8 +1756,7 @@ defmodule EbbServer.Storage.Writer do
     # One entry per folded subject, in first-appearance order: the durable
     # record of which groups each subject's Updates are delivered to. Computed
     # here, from the same snapshot `cf_group_actions` is built from, because
-    # the by-id caches for an `ebb/link`/`ebb/membership` delete are gone by
-    # fan-out time.
+    # a membership delete's by-id row is gone by fan-out time.
     prepared = %PreparedAction{
       id: action.id,
       actor_id: action.actor_id,
@@ -1918,7 +1892,6 @@ defmodule EbbServer.Storage.Writer do
     %{
       grants_by_id: state.grants_by_id,
       memberships_by_id: state.memberships_by_id,
-      relationships_by_id: state.relationships_by_id,
       group_apps: state.group_apps
     }
   end
@@ -1949,20 +1922,6 @@ defmodule EbbServer.Storage.Writer do
       memberships: state.memberships,
       memberships_by_id: state.memberships_by_id,
       memberships_by_group: state.memberships_by_group
-    )
-  end
-
-  defp apply_cache_mutation({:relationship_put, row}, state) do
-    RelationshipCache.put_relationship(row,
-      relationships: state.relationships,
-      relationships_by_id: state.relationships_by_id
-    )
-  end
-
-  defp apply_cache_mutation({:relationship_delete, id}, state) do
-    RelationshipCache.delete_relationship(id,
-      relationships: state.relationships,
-      relationships_by_id: state.relationships_by_id
     )
   end
 
@@ -2180,7 +2139,6 @@ defmodule EbbServer.Storage.Writer do
       memberships: state.memberships,
       memberships_by_id: state.memberships_by_id,
       entity_models: state.entity_models,
-      relationships_by_id: state.relationships_by_id,
       grants_by_id: state.grants_by_id,
       group_apps: state.group_apps
     ]

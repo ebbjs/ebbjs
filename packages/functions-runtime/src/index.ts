@@ -28,7 +28,6 @@ export type {
   CreateOptions,
   OperationIds,
   RelationshipTarget,
-  UnrelateOptions,
   WriteOptions,
 } from "@ebbjs/write";
 export type { ModelRegistry } from "@ebbjs/schema";

@@ -10,7 +10,7 @@ defmodule EbbServer.Storage.WriterTest do
   - GSN assignment: monotonic, gap-free sequence numbers
   - Column family population: all 5 RocksDB CFs written correctly
   - Dirty tracking: marks entities dirty for later materialization
-  - System cache updates: GrantCache, RelationshipCache, and MembershipCache
+  - System cache updates: GrantCache, MembershipCache, and the derived indexes
     kept in sync
   - ETF serialization: actions encoded/decoded correctly
   - Durability: data survives restarts
@@ -34,7 +34,6 @@ defmodule EbbServer.Storage.WriterTest do
     MembershipCache,
     EntityModelCache,
     GrantCache,
-    RelationshipCache,
     RocksDB,
     Writer
   }
@@ -52,9 +51,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships_by_group: memberships_by_group,
       entity_models: entity_models,
       component_index: component_index,
-      component_entity_labels: component_entity_labels,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
+      component_entity_labels: component_entity_labels
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -70,9 +67,7 @@ defmodule EbbServer.Storage.WriterTest do
         memberships_by_id: memberships_by_id,
         memberships_by_group: memberships_by_group,
         component_index: component_index,
-        component_entity_labels: component_entity_labels,
-        relationships: relationships,
-        relationships_by_id: relationships_by_id
+        component_entity_labels: component_entity_labels
       })
 
     %{
@@ -88,9 +83,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships_by_group: memberships_by_group,
       entity_models: entity_models,
       component_index: component_index,
-      component_entity_labels: component_entity_labels,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
+      component_entity_labels: component_entity_labels
     }
   end
 
@@ -628,9 +621,7 @@ defmodule EbbServer.Storage.WriterTest do
       grants_by_id: grants_by_id,
       memberships: memberships,
       memberships_by_id: memberships_by_id,
-      memberships_by_group: memberships_by_group,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
+      memberships_by_group: memberships_by_group
     } do
       dir =
         tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
@@ -652,9 +643,7 @@ defmodule EbbServer.Storage.WriterTest do
           grants_by_id: grants_by_id,
           memberships: memberships,
           memberships_by_id: memberships_by_id,
-          memberships_by_group: memberships_by_group,
-          relationships: relationships,
-          relationships_by_id: relationships_by_id
+          memberships_by_group: memberships_by_group
         )
 
       Writer.write_actions([action], writer_name1)
@@ -677,9 +666,7 @@ defmodule EbbServer.Storage.WriterTest do
           grants_by_id: grants_by_id,
           memberships: memberships,
           memberships_by_id: memberships_by_id,
-          memberships_by_group: memberships_by_group,
-          relationships: relationships,
-          relationships_by_id: relationships_by_id
+          memberships_by_group: memberships_by_group
         )
 
       on_exit(fn ->
@@ -920,28 +907,6 @@ defmodule EbbServer.Storage.WriterTest do
       assert GrantCache.get_grant(gm_id, gm_by_id) == nil
     end
 
-    test "relationship PUT updates the domain edge indexes",
-         %{
-           writer_name: writer_name,
-           relationships: rel_table,
-           relationships_by_id: rbi_table
-         } do
-      hlc = generate_hlc()
-      rel_id = "rel_" <> Nanoid.generate()
-
-      action = %{
-        id: "act_" <> Nanoid.generate(),
-        actor_id: "actor_1",
-        hlc: hlc,
-        updates: relationship_updates(rel_id, "todo_1", "col_1", hlc)
-      }
-
-      assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
-
-      assert RelationshipCache.get_relationship(rel_id, rbi_table).target_id == "col_1"
-      assert [{"todo_1", _entry}] = :ets.lookup(rel_table, "todo_1")
-    end
-
     test "grant DELETE removes from ETS",
          %{
            writer_name: writer_name,
@@ -1001,37 +966,6 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
       assert MembershipCache.memberships("todo_1", eg_table) == []
       assert MembershipCache.get_membership(eg_id, eg_by_id) == nil
-    end
-
-    test "relationship DELETE removes from ETS",
-         %{
-           writer_name: writer_name,
-           relationships: rel_table,
-           relationships_by_id: rbi_table
-         } do
-      hlc = generate_hlc()
-      rel_id = "rel_" <> Nanoid.generate()
-
-      put_action = %{
-        id: "act_" <> Nanoid.generate(),
-        actor_id: "actor_1",
-        hlc: hlc,
-        updates: relationship_updates(rel_id, "todo_1", "col_1", hlc)
-      }
-
-      assert {:ok, {1, 1}, []} = Writer.write_actions([put_action], writer_name)
-      assert RelationshipCache.get_relationship(rel_id, rbi_table) != nil
-
-      delete_action = %{
-        id: "act_" <> Nanoid.generate(),
-        actor_id: "actor_1",
-        hlc: generate_hlc(),
-        updates: [system_delete_update(rel_id)]
-      }
-
-      assert {:ok, {2, 2}, []} = Writer.write_actions([delete_action], writer_name)
-      assert RelationshipCache.get_relationship(rel_id, rbi_table) == nil
-      assert :ets.lookup(rel_table, "todo_1") == []
     end
 
     test "non-system component updates do not affect ETS",
@@ -1284,7 +1218,7 @@ defmodule EbbServer.Storage.WriterTest do
       assert {:ok, "act_same_group"} = RocksDB.get(cf, key, name: ctx.rocks_name)
     end
 
-    test "a domain link to a non-group target adds no group index", %{
+    test "an edge adds no group index beyond its source's", %{
       writer_name: writer_name,
       rocks_name: rocks_name
     } do
@@ -1297,7 +1231,7 @@ defmodule EbbServer.Storage.WriterTest do
         updates:
           [todo_update("upd_todo", "todo_link", "x", hlc)] ++
             membership_updates("eg_member", "todo_link", "g_1", hlc) ++
-            relationship_updates("rel_domain", "todo_link", "doc_1", hlc)
+            link_updates("upd_link", "owns", "doc", "doc_1", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -1436,8 +1370,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          relationships: ctx.relationships,
-          relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
         })
 
@@ -1467,8 +1399,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          relationships: ctx.relationships,
-          relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
         })
 
@@ -1500,9 +1430,7 @@ defmodule EbbServer.Storage.WriterTest do
       grants_by_id: grants_by_id,
       memberships: memberships,
       memberships_by_id: memberships_by_id,
-      memberships_by_group: memberships_by_group,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
+      memberships_by_group: memberships_by_group
     } do
       router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
       true = Process.register(self(), router_name)
@@ -1517,8 +1445,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: memberships,
           memberships_by_id: memberships_by_id,
           memberships_by_group: memberships_by_group,
-          relationships: relationships,
-          relationships_by_id: relationships_by_id,
           fan_out_router: router_name
         })
 
@@ -1563,9 +1489,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships: memberships,
       memberships_by_id: memberships_by_id,
       memberships_by_group: memberships_by_group,
-      entity_models: entity_models,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id
+      entity_models: entity_models
     } do
       router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
       true = Process.register(self(), router_name)
@@ -1581,8 +1505,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships_by_id: memberships_by_id,
           memberships_by_group: memberships_by_group,
           entity_models: entity_models,
-          relationships: relationships,
-          relationships_by_id: relationships_by_id,
           fan_out_router: router_name
         })
 
@@ -1643,8 +1565,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          relationships: ctx.relationships,
-          relationships_by_id: ctx.relationships_by_id,
           fan_out_router: router_name
         })
 
@@ -1730,16 +1650,16 @@ defmodule EbbServer.Storage.WriterTest do
     })
   end
 
-  defp relationship_updates(id, source_id, target_id, hlc) do
+  # One edge: `field → type → target → leaf`, where only the leaf carries
+  # presence.
+  defp link_updates(id, field, type, target_id, hlc) do
     [
       validated_component(id, "ebb/link", %{
-        "value" => %{
-          "source_id" => source_id,
-          "target_id" => target_id,
-          "type" => "todo",
-          "field" => "owns"
-        },
-        "hlc" => hlc
+        "map" => %{
+          field => %{
+            "map" => %{type => %{"map" => %{target_id => %{"value" => true, "hlc" => hlc}}}}
+          }
+        }
       })
     ]
   end

@@ -18,6 +18,8 @@ import { PermissionError } from "../permission";
 import {
   entityRow,
   isPlatformModel,
+  linkRow,
+  linkValue,
   makeFetchMock,
   platformEntity,
   platformUpdate,
@@ -495,366 +497,171 @@ describe("collectPermissionViolations — component subjects", () => {
 });
 
 describe("collectPermissionViolations — link edges", () => {
-  const relUpdate = (sourceId: string, targetId: string, type: string): Update[] =>
-    update("link", "rel_1", "put", {
-      source_id: sourceId,
-      target_id: targetId,
-      field: "list",
-      type,
-    });
-
-  it("checks the source entity's group set, not the target's", async () => {
-    const { client, calls } = await mkClient([
-      ["g_source", ["list.*"]],
-      ["g_target", ["todo.update"]],
-    ]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
-    );
-
-    await expect(
-      client.write([action(relUpdate("todo_1", "list_1", "todo"))]),
-    ).rejects.toBeInstanceOf(PermissionError);
-    expect(client.outbox.size()).toBe(0);
-    expect(actionRequests(calls)).toHaveLength(0);
+  /** One `ebb/link` merge on `sourceId`: a presence key, or its tombstone. */
+  const linkUpdate = (sourceId: string, targetId = "list_1", present = true): Update => ({
+    id: `u_link_${sourceId}`,
+    subject_id: sourceId,
+    component: "ebb/link",
+    method: "merge",
+    data: linkValue([{ as: "list", type: "todo", targetId, present }]),
   });
 
-  it("authorizes a new edge by the wire source over the source's group set", async () => {
-    // No local row means no committed source to contradict: the wire
-    // source names the edge being created.
-    const { client } = await mkClient([
-      ["g_source", ["todo.update"]],
-      ["g_target", ["list.*"]],
-    ]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
+  /** A `todo` row filed into `group`, optionally already carrying one edge. */
+  const seedSource = async (
+    client: Awaited<ReturnType<typeof mkClient>>["client"],
+    groupId: string,
+    withEdge = false,
+  ): Promise<void> => {
     await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
+      withEdge
+        ? linkRow("todo_1", "todo", [{ as: "list", type: "todo", targetId: "list_9" }])
+        : entityRow("todo_1", "todo", {}),
     );
     await client.storage.entities.set(
-      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: groupId }),
     );
-
-    await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
-      rejected: [],
-    });
-  });
-
-  it("ignores a forged wire type and checks the source's true type", async () => {
-    const { client, calls } = await mkClient([["g_source", ["comment.update"]]]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
-    );
-
-    // The wire claims `comment`, which the actor holds; the source is
-    // really a `todo`, which the actor may not update (#323).
-    await expect(
-      client.write([action(relUpdate("todo_1", "list_1", "comment"))]),
-    ).rejects.toBeInstanceOf(PermissionError);
-    expect(client.outbox.size()).toBe(0);
-    expect(actionRequests(calls)).toHaveLength(0);
-  });
-
-  it("accepts a custom wire type when the source's true type is permitted", async () => {
-    const { client } = await mkClient([["g_source", ["todo.update"]]]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
-    );
-
-    await expect(
-      client.write([action(relUpdate("todo_1", "list_1", "todo.belongsTo.list"))]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("passes a put that restates the row's own source", async () => {
-    // The row already exists locally, so the write is an update of it.
-    const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
-    );
-
-    await expect(client.write([action(relUpdate("todo_1", "list_1", "todo"))])).resolves.toEqual({
-      rejected: [],
-    });
-  });
-
-  it("passes a patch that restates the row's own source", async () => {
-    const { client } = await mkClient([["g_src", ["ebb/link.update"]]]);
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
-    );
-
-    await expect(
-      client.write([
-        action(update("link", "rel_1", "patch", { source_id: "todo_1", target_id: "list_2" })),
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("skips a put that does not carry its source id", async () => {
-    const { client } = await mkClient([["g_1", []]]);
-
-    await expect(
-      client.write([action(update("link", "rel_1", "put", { target_id: "list_1" }))]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  it("refuses a patch that re-points the edge at another source", async () => {
-    // A link row's source is row identity: the server refuses a
-    // declared source other than the row's own, so no permission can
-    // re-point the edge here either. Moving an edge is delete + put.
-    const { client, calls } = await mkClient([
-      ["g_grant", ["ebb/link.update"]],
-      ["g_plain", []],
-    ]);
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_old",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_old", "membership", { entity_id: "todo_old", group_id: "g_plain" }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_grant" }),
-    );
-
-    const error = await client
-      .write([action(update("link", "rel_1", "patch", { source_id: "todo_new" }))])
-      .then(() => null)
-      .catch((err: unknown) => err);
-
-    expect(error).toBeInstanceOf(PermissionError);
-    expect((error as PermissionError).violations).toEqual([
-      {
-        kind: "source-mismatch",
-        component: "ebb/link",
-        subjectId: "rel_1",
-        declaredSourceId: "todo_new",
-        committedSourceId: "todo_old",
-        groupIds: ["g_plain"],
-      },
-    ]);
-    expect(client.outbox.size()).toBe(0);
-    expect(actionRequests(calls)).toHaveLength(0);
-  });
-
-  it("accepts a re-put of a locally tombstoned edge that declares another source", async () => {
-    // The server's by-id row is gone, so it sees a new edge and authorizes
-    // the put by the declared source; a tombstoned local row is not a
-    // committed source either.
-    const { client } = await mkClient([["g_new", ["todo.update", "ebb/link.update"]]]);
-    await client.storage.entities.set(
-      platformEntity(
-        "rel_1",
-        "link",
-        { source_id: "todo_old", target_id: "list_1", field: "list", type: "todo" },
-        "9",
-      ),
-    );
-    await client.storage.entities.set(entityRow("todo_new", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
-    );
-
-    await expect(
-      client.write([
-        action(
-          update("link", "rel_1", "put", {
-            source_id: "todo_new",
-            target_id: "list_2",
-            field: "list",
-            type: "todo",
-          }),
-        ),
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-  });
-
-  // A source binding is released by a delete in the same request, exactly
-  // as the server's request simulation does; the actor holds
-  // `ebb/link.delete` over the stored source and `todo.update` over
-  // the new one, so delete + put is the move that re-points the edge.
-  const mkMovingEdgeClient = async () => {
-    const { client, calls } = await mkClient([
-      ["g_old", ["ebb/link.delete"]],
-      // A re-put of the tombstoned row is an update of it, and creating a
-      // fresh edge is a write to its source; the tests grant both.
-      ["g_new", ["todo.update", "ebb/link.update"]],
-    ]);
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_old",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(entityRow("todo_old", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_old", "membership", { entity_id: "todo_old", group_id: "g_old" }),
-    );
-    await client.storage.entities.set(entityRow("todo_new", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("eg_new", "membership", { entity_id: "todo_new", group_id: "g_new" }),
-    );
-    return { client, calls };
   };
 
-  it("accepts a delete and a re-put to another source in one Action", async () => {
-    const { client, calls } = await mkMovingEdgeClient();
-
-    await expect(
-      client.write([
-        action(update("link", "rel_1", "delete"), relUpdate("todo_new", "list_2", "todo")),
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-    expect(client.outbox.size("acknowledged")).toBe(1);
-    expect(actionRequests(calls)).toHaveLength(1);
-  });
-
-  it("accepts a delete and a re-put to another source split across Actions", async () => {
-    const { client, calls } = await mkMovingEdgeClient();
-
-    await expect(
-      client.write([
-        action(update("link", "rel_1", "delete")),
-        { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
-      ]),
-    ).resolves.toEqual({ rejected: [] });
-    expect(actionRequests(calls)).toHaveLength(1);
-  });
-
-  it("refuses a put that re-points a committed edge with no delete in the batch", async () => {
-    const { client, calls } = await mkMovingEdgeClient();
-
-    const error = await client
-      .write([action(relUpdate("todo_new", "list_2", "todo"))])
-      .then(() => null)
-      .catch((err: unknown) => err);
-
-    expect((error as PermissionError).violations).toEqual([
-      {
-        kind: "source-mismatch",
-        component: "ebb/link",
-        subjectId: "rel_1",
-        declaredSourceId: "todo_new",
-        committedSourceId: "todo_old",
-        groupIds: ["g_old"],
-      },
+  it("checks the source row's group set, not the target's", async () => {
+    const { client, calls } = await mkClient([
+      ["g_source", []],
+      ["g_target", ["ebb/link.*"]],
     ]);
-    expect(client.outbox.size()).toBe(0);
-    expect(actionRequests(calls)).toHaveLength(0);
-  });
-
-  it("refuses a put whose delete comes in a later Action of the same write()", async () => {
-    // The server advances its simulation only for Actions it has already
-    // accepted, so a delete that follows the put cannot release it.
-    const { client, calls } = await mkMovingEdgeClient();
-
-    const error = await client
-      .write([
-        action(relUpdate("todo_new", "list_2", "todo")),
-        { ...action(update("link", "rel_1", "delete")), id: "a_2" },
-      ])
-      .then(() => null)
-      .catch((err: unknown) => err);
-
-    expect((error as PermissionError).violations).toEqual([
-      {
-        kind: "source-mismatch",
-        component: "ebb/link",
-        subjectId: "rel_1",
-        declaredSourceId: "todo_new",
-        committedSourceId: "todo_old",
-        groupIds: ["g_old"],
-      },
-    ]);
-    expect(actionRequests(calls)).toHaveLength(0);
-  });
-
-  it("does not release a delete carried by an Action that is refused", async () => {
-    // Only an accepted Action advances the request simulation, so a
-    // sibling violation in the same Action must keep its delete from
-    // releasing the binding for the next Action.
-    const { client } = await mkMovingEdgeClient();
+    await seedSource(client, "g_source");
     await client.storage.entities.set(
-      platformEntity("eg_denied", "membership", { entity_id: "todo_1", group_id: "g_old" }),
+      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
     );
 
     const error = await client
-      .write([
-        action(
-          update("link", "rel_1", "delete"),
-          update("todo", "todo_1", "put", { title: "Ship" }),
-        ),
-        { ...action(relUpdate("todo_new", "list_2", "todo")), id: "a_2" },
-      ])
+      .write([action([linkUpdate("todo_1")])])
       .then(() => null)
       .catch((err: unknown) => err);
 
     expect((error as PermissionError).violations).toEqual([
       {
         kind: "missing-permission",
-        permissionSubject: "todo",
+        permissionSubject: "ebb/link",
         subjectId: "todo_1",
-        required: "todo.create",
-        groupIds: ["g_old"],
-      },
-      {
-        kind: "source-mismatch",
-        component: "ebb/link",
-        subjectId: "rel_1",
-        declaredSourceId: "todo_new",
-        committedSourceId: "todo_old",
-        groupIds: ["g_old"],
+        required: "ebb/link.update",
+        groupIds: ["g_source"],
       },
     ]);
+    expect(client.outbox.size()).toBe(0);
+    expect(actionRequests(calls)).toHaveLength(0);
   });
 
-  it("resolves a delete's source from the local link row", async () => {
-    const { client } = await mkClient([
-      ["g_1", ["ebb/link.delete"]],
-      ["g_2", []],
-    ]);
+  it("authorizes an edge on an existing row as ebb/link.update over its group set", async () => {
+    const { client } = await mkClient([["g_source", ["ebb/link.update"]]]);
+    await seedSource(client, "g_source");
+
+    await expect(client.write([action([linkUpdate("todo_1")])])).resolves.toEqual({
+      rejected: [],
+    });
+  });
+
+  it("authorizes an edge in the Action that creates its source as ebb/link.create", async () => {
+    // The verb follows the Action, not the store: the source row does not
+    // exist yet, but the create rides in this Action, so the write is a
+    // create — the same rule the server applies.
+    const { client } = await mkClient([["g_source", ["todo.create", "ebb/link.create"]]]);
     await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_1" }),
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
     );
 
-    await expect(client.write([action(update("link", "rel_1", "delete"))])).resolves.toEqual({
+    await expect(
+      client.write([action([create("todo", "todo_1"), linkUpdate("todo_1")])]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const updated = await mkClient([["g_source", ["todo.create", "ebb/link.update"]]]);
+    await updated.client.storage.entities.set(
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+
+    await expect(
+      updated.client.write([action([create("todo", "todo_1"), linkUpdate("todo_1")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("authorizes a row that already carries ebb/link as an update", async () => {
+    const { client } = await mkClient([["g_source", ["ebb/link.update"]]]);
+    await seedSource(client, "g_source", true);
+
+    await expect(client.write([action([linkUpdate("todo_1", "list_2")])])).resolves.toEqual({
+      rejected: [],
+    });
+
+    // A grant of only `create` does not cover a second edge on the row.
+    const created = await mkClient([["g_source", ["ebb/link.create"]]]);
+    await seedSource(created.client, "g_source", true);
+    await expect(
+      created.client.write([action([linkUpdate("todo_1", "list_2")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("treats a tombstone-only write to a link-carrying row as an update", async () => {
+    const { client } = await mkClient([["g_source", ["ebb/link.update"]]]);
+    await seedSource(client, "g_source", true);
+
+    await expect(client.write([action([linkUpdate("todo_1", "list_9", false)])])).resolves.toEqual({
+      rejected: [],
+    });
+
+    const created = await mkClient([["g_source", ["ebb/link.create"]]]);
+    await seedSource(created.client, "g_source", true);
+    await expect(
+      created.client.write([action([linkUpdate("todo_1", "list_9", false)])]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("checks a delete that carries an edge write as the row's model delete", async () => {
+    // A delete names the row, so the batch's subject is the model whatever
+    // components ride with it — the rule the server applies to the same fold.
+    const { client } = await mkClient([["g_source", ["todo.delete"]]]);
+    await seedSource(client, "g_source");
+
+    await expect(
+      client.write([
+        action([
+          { id: "u_delete", subject_id: "todo_1", method: "delete", data: null },
+          linkUpdate("todo_1"),
+        ]),
+      ]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const edgeDelete = await mkClient([["g_source", ["ebb/link.delete"]]]);
+    await seedSource(edgeDelete.client, "g_source");
+
+    await expect(
+      edgeDelete.client.write([
+        action([
+          { id: "u_delete", subject_id: "todo_1", method: "delete", data: null },
+          linkUpdate("todo_1"),
+        ]),
+      ]),
+    ).rejects.toBeInstanceOf(PermissionError);
+  });
+
+  it("defers a link write on a row the local store cannot see", async () => {
+    // No membership rows for the row means no group set to check, so the
+    // server decides.
+    const { client } = await mkClient([["g_1", []]]);
+
+    await expect(client.write([action([linkUpdate("todo_missing")])])).resolves.toEqual({
+      rejected: [],
+    });
+  });
+
+  it("needs no grant in the target row's group", async () => {
+    const { client } = await mkClient([
+      ["g_source", ["ebb/link.update"]],
+      ["g_target", []],
+    ]);
+    await seedSource(client, "g_source");
+    await client.storage.entities.set(
+      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_target" }),
+    );
+
+    await expect(client.write([action([linkUpdate("todo_1")])])).resolves.toEqual({
       rejected: [],
     });
   });
@@ -1247,25 +1054,6 @@ describe("collectPermissionViolations — platform model", () => {
       PermissionError,
     );
   });
-
-  it("requires ebb/link.update in the edge's source group set for a patch", async () => {
-    const { client } = await mkClient([["g_1", []]]);
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_1" }),
-    );
-
-    await expect(
-      client.write([action(update("link", "rel_1", "patch", { target_id: "list_2" }))]),
-    ).rejects.toBeInstanceOf(PermissionError);
-  });
 });
 
 describe("PermissionError", () => {
@@ -1286,26 +1074,6 @@ describe("PermissionError", () => {
     expect(error.message).toContain("todo todo_1");
     expect(error.message).toContain("todo.create");
     expect(error.message).toContain("g_1");
-  });
-
-  it("names both sources for a re-point and no missing permission", () => {
-    const error = new PermissionError([
-      {
-        kind: "source-mismatch",
-        component: "ebb/link",
-        subjectId: "rel_1",
-        declaredSourceId: "todo_new",
-        committedSourceId: "todo_old",
-        groupIds: ["g_plain"],
-      },
-    ]);
-
-    expect(error.message).toContain(
-      'ebb/link rel_1: declared source "todo_new" but the row is committed with source "todo_old"',
-    );
-    expect(error.message).toContain("an ebb/link row cannot be re-pointed at another source");
-    expect(error.message).not.toContain("missing");
-    expect(error.message).not.toContain("ebb/link.update");
   });
 
   it("names both types for a mismatch and no missing permission", () => {

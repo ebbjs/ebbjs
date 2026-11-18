@@ -9,8 +9,9 @@
  * seeded row exists whether or not it carries any component: an entity seed
  * with `patches: []` is a complete row. A platform row is one atomic
  * component, so it seeds as its create plus one Update carrying its whole
- * value. Both submit paths apply the same rejection-tolerance policy via
- * {@link assertSeedAccepted}.
+ * value; an edge is a keyed component of its source, so it seeds as one
+ * `ebb/link` merge on that row. Both submit paths apply the same
+ * rejection-tolerance policy via {@link assertSeedAccepted}.
  *
  * The only runtime dependencies are sibling `@ebbjs/core` modules, so
  * this subpath stays usable from a browser.
@@ -52,8 +53,8 @@ export interface EntitySeed {
   patches: Array<{ fields: Record<string, unknown> }>;
 }
 
+/** One edge: a key on its source row's `ebb/link` component, not a row of its own. */
 export interface RelationshipSeed {
-  id: string;
   sourceId: string;
   targetId: string;
   type: string;
@@ -122,6 +123,19 @@ const componentUpdate = (
   method: "merge" | "replace" = "replace",
 ): UpdateInput => ({ subject_id: subjectId, component: `${model}/${field}`, method, data });
 
+/**
+ * One `ebb/link` edge: the three key levels, then the presence leaf. The edge
+ * is a key of the source row's keyed component, so a seed adds a key rather
+ * than creating a row.
+ */
+const linkEdgeValue = (edge: RelationshipSeed, clock: HLCState): FieldValue => ({
+  map: {
+    [edge.field]: {
+      map: { [edge.type]: { map: { [edge.targetId]: stamp(true, clock) } } },
+    },
+  },
+});
+
 /** One platform row: its create, then its one atomic component's whole value. */
 const platformRow = (
   kind: EbbComponentKind,
@@ -180,20 +194,13 @@ export function buildSeedAction(actorId: string, data: SeedData): Action {
     }
   }
 
-  for (const rel of data.relationships ?? []) {
-    updates.push(
-      ...platformRow(
-        "link",
-        rel.id,
-        {
-          source_id: rel.sourceId,
-          target_id: rel.targetId,
-          type: rel.type,
-          field: rel.field,
-        },
-        clock,
-      ),
-    );
+  for (const edge of data.relationships ?? []) {
+    updates.push({
+      subject_id: edge.sourceId,
+      component: EBB_COMPONENTS.link,
+      method: "merge",
+      data: linkEdgeValue(edge, clock),
+    });
   }
 
   for (const membership of data.memberships ?? []) {

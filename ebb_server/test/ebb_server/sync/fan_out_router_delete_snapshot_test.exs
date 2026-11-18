@@ -258,8 +258,7 @@ defmodule EbbServer.Sync.FanOutRouterDeleteSnapshotTest do
   @system_components %{
     "group" => "ebb/group",
     "grant" => "ebb/grant",
-    "membership" => "ebb/membership",
-    "relationship" => "ebb/link"
+    "membership" => "ebb/membership"
   }
 
   defp component_updates(id_prefix, subject_id, model, method, fields, hlc) do

@@ -31,6 +31,8 @@ import {
   closingSseResponse,
   entityRow,
   jsonResponse,
+  linkRow,
+  linkValue,
   openSseResponse,
   platformEntity,
   waitFor,
@@ -585,5 +587,94 @@ describe("snapshot content merges under later writes", () => {
     await storage.actions.append(newer);
 
     expect((await storage.entities.get("post_1"))?.data.fields.title?.value).toBe("Newer");
+  });
+});
+
+/**
+ * #789: a link is delivered exactly where its source row is. A source that
+ * moves G1 → G2 therefore carries its edges into G2, and a peer that missed one
+ * recovers it by backfilling the source — never by fetching an edge of its own,
+ * because an edge has no row to fetch.
+ */
+describe("#789 — a link arrives with its source", () => {
+  const bodyEdge = [{ as: "body", type: "blog_post", targetId: "doc_1" }] as const;
+
+  /** The source row as the server holds it: its fields and its edge keys. */
+  const sourceRow = (): Entity => linkRow("post_1", "blog_post", bodyEdge, { title: "Parent" });
+
+  /** A catch-up write carrying a row's `ebb/link` component, as its scope does. */
+  const linkCatchUp = (gsn: number): Action => {
+    const updateId = "u_catchup_link";
+    return {
+      id: "a_catchup_link",
+      actor_id: "a_peer",
+      hlc: HLC,
+      gsn,
+      updates: [
+        {
+          id: updateId,
+          subject_id: "post_1",
+          component: "ebb/link",
+          method: "merge",
+          data: linkValue(bodyEdge, updateId, HLC),
+        },
+      ],
+    };
+  };
+
+  it("backfills the edge with the source row a peer missed", async () => {
+    const { client } = mkClient({ entities: { post_1: sourceRow() } });
+    // The source moved into g_2: the peer holds its membership row, not the row.
+    await callApplyAction(
+      client,
+      membershipPut({ membershipId: "eg_1", entityId: "post_1" }),
+      "g_2",
+    );
+    expect(await client.readLocalEntity("post_1")).toBeNull();
+    expect(
+      client.replica.relationships({ as: "body", type: "blog_post", targetId: "doc_1" }),
+    ).toEqual([]);
+
+    await client.backfill();
+
+    // The fetched base carries the edge as the source's own `ebb/link` key, so
+    // the replica answers incoming traversal from it.
+    expect(await client.readLocalEntity("post_1")).not.toBeNull();
+    expect(
+      client.replica.relationships({ as: "body", type: "blog_post", targetId: "doc_1" }),
+    ).toEqual(["post_1"]);
+    expect(
+      client.replica.relationships({ as: "body", type: "blog_post", sourceId: "post_1" }),
+    ).toEqual(["doc_1"]);
+  });
+
+  it("receives the edge by catch-up when the source lands in the new group", async () => {
+    // The move's delivery: the membership row for the new group and the source
+    // row's edge keys, both scoped by the source's current membership.
+    const { client } = mkClient({
+      catchUp: [
+        membershipPut({ membershipId: "eg_1", entityId: "post_1", gsn: 1 }),
+        linkCatchUp(2),
+      ],
+    });
+
+    const unsubscribe = client.subscribe(["g_2"], 0, () => undefined);
+    await waitFor(
+      () =>
+        client.replica.relationships({
+          as: "body",
+          type: "blog_post",
+          targetId: "doc_1",
+        }).length > 0,
+    );
+
+    // No entity read was needed: the edge arrived with its source's scope.
+    expect(
+      client.replica.relationships({ as: "body", type: "blog_post", targetId: "doc_1" }),
+    ).toEqual(["post_1"]);
+    // The row is still a placeholder until its base arrives, which is a
+    // backfill candidate rather than a blind create.
+    expect(await collectBackfillCandidates(client.storage)).toEqual(["post_1"]);
+    unsubscribe();
   });
 });

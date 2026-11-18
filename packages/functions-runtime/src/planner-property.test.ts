@@ -102,18 +102,23 @@ const generateBatch = (rng: () => number): WriteVerb[] => {
       continue;
     }
     if (roll < 0.94) {
+      // A target names the edge's key, so neither cardinality needs a read.
       verbs.push({
         verb: "unrelate",
         entity: "issue",
         id: target(),
         as: "project",
-        // A stored edge has no row id the invocation can read, so the caller
-        // names it — the documented v1 path.
-        relationshipId: `rel_stored${i}`,
+        target: pick(rng, PROJECTS),
       });
       continue;
     }
-    verbs.push({ verb: "unrelate", entity: "issue", id: target(), as: "labels" });
+    verbs.push({
+      verb: "unrelate",
+      entity: "issue",
+      id: target(),
+      as: "labels",
+      target: pick(rng, LABELS),
+    });
   }
 
   return verbs;

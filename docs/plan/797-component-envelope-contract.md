@@ -131,8 +131,10 @@ the existing internal vocabulary, one per subject, in first-appearance order:
 
 This is **not** a compatibility layer: nothing stored, returned, or delivered carries the
 folded shape. It is the internal input the rule engine was already written against, so the
-authorizer's rules (bootstrap exemption, relationship row identity, last-membership,
-last-group-member) keep their meaning. Deriving `:put` from "new row" is also what makes
+authorizer's rules (bootstrap exemption, membership row identity, last-membership,
+last-group-member) keep their meaning. An edge's row identity left that list in
+[#820](https://github.com/ebbjs/ebbjs/issues/820): a link is a keyed component of its source, so no
+write can name another row as the edge. Deriving `:put` from "new row" is also what makes
 `<model>.create` mean "first write to a row" and `<model>.update` mean "a write to an
 existing row", which is the epic's verb rule.
 

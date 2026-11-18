@@ -16,12 +16,11 @@ defmodule EbbServer.Storage.EntityScope do
   that declaration: one table read plus one recursion, so a fifth `ebb/*`
   component is one registration and no edit here.
 
-  A link resolves through its **source**, never its own `target_id`: an
-  app may hold a domain link to a `group` entity, and that link must not
-  grant membership. The source is read as an entity, never through
-  `kind/2`, so an id that happens to collide with another kind's row
-  cannot lend the edge a foreign scope. Which source a mutation is scoped
-  by — the wire's or the stored row's — is `fan_out_preference/2`'s rule.
+  An edge is not a row: `ebb/link` is a keyed component of its source, so
+  a link write's subject *is* the source and the default path — the
+  subject's own membership set — is the scope decision. An edge may point
+  at a `group` entity, and that target never lends the write a foreign
+  scope because nothing reads it here.
 
   Each caller supplies its own table names; the module never falls
   back to globals, so a stale `:persistent_term` cannot reach a later
@@ -31,7 +30,6 @@ defmodule EbbServer.Storage.EntityScope do
   alias EbbServer.Storage.CacheMutationPlanner.Overlay
   alias EbbServer.Storage.EntityModelCache
   alias EbbServer.Storage.MembershipCache
-  alias EbbServer.Storage.RowMutations
   alias EbbServer.Storage.SystemComponent
 
   @model SystemComponent.model()
@@ -68,6 +66,13 @@ defmodule EbbServer.Storage.EntityScope do
     resolve_groups_cached(kind(subject_id, opts) || :unknown, subject_id, opts)
   end
 
+  # `kind/2` answers `nil` for a row that carries no platform component, and
+  # such a row's scope is its own membership set. Stated explicitly because
+  # `nil` is an atom and would otherwise match the scope-table clause below and
+  # take the default path only by accident.
+  def resolve_groups_cached(nil, subject_id, opts),
+    do: {source_groups_cached(subject_id, opts), subject_id}
+
   def resolve_groups_cached(key, subject_id, opts) when is_atom(key) do
     case SystemComponent.scope(key) do
       :self -> {[subject_id], nil}
@@ -79,9 +84,12 @@ defmodule EbbServer.Storage.EntityScope do
   def resolve_groups_cached(_user_model, source_id, opts),
     do: {source_groups_cached(source_id, opts), source_id}
 
+  # A row the Action itself wrote has no stored row yet, and its `group_id`
+  # travels on the mutation's fan-out preference, so a resolution with no
+  # stored row has nothing to read.
   defp resolve_owner(kind, subject_id, field, owner, opts) do
     case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
-      nil -> resolve_uncached(subject_id, owner, opts)
+      nil -> {[], nil}
       row -> resolve_owner_value(Map.get(row, field), owner, opts)
     end
   end
@@ -89,22 +97,6 @@ defmodule EbbServer.Storage.EntityScope do
   defp resolve_owner_value(nil, _owner, _opts), do: {[], nil}
 
   defp resolve_owner_value(value, :group, opts), do: resolve_groups_cached(:group, value, opts)
-
-  defp resolve_owner_value(value, :entity, opts),
-    do: {source_groups_cached(value, opts), value}
-
-  # A row the Action itself wrote has no stored row yet. The value that write
-  # carried is the scope it was authorized and fanned out against — the
-  # Action's own prefix in the read rule. Only an entity-owned scope needs
-  # it: a group value travels on the row's fan-out preference, and a resolve
-  # without one has no earlier write of its own to read.
-  defp resolve_uncached(subject_id, :entity, opts) do
-    %{} = sources = Keyword.get(opts, :intra_relationship_sources, %{})
-
-    resolve_owner_value(Map.get(sources, subject_id), :entity, opts)
-  end
-
-  defp resolve_uncached(_subject_id, _owner, _opts), do: {[], nil}
 
   @spec apply_intra_action([String.t()], subject_id() | nil, keyword()) :: [String.t()]
   def apply_intra_action(groups, nil, _opts), do: groups
@@ -145,7 +137,10 @@ defmodule EbbServer.Storage.EntityScope do
   @spec kind(subject_id(), keyword()) :: SystemComponent.kind() | nil
   def kind(entity_id, opts) do
     Enum.find(SystemComponent.kinds(), fn kind ->
-      by_id_carries?(SystemComponent.by_id(kind), entity_id, opts)
+      case SystemComponent.by_id(kind) do
+        nil -> false
+        cache -> by_id_carries?(cache, entity_id, opts)
+      end
     end)
   end
 
@@ -212,32 +207,17 @@ defmodule EbbServer.Storage.EntityScope do
   end
 
   @doc """
-  A link row's source is its identity: the row fans out to the
-  source's group set, so every scope decision follows the stored row
-  rather than the wire `source_id` (#624).
-  """
-  @spec relationship_source(subject_id(), keyword()) :: subject_id() | nil
-  def relationship_source(rel_id, opts) do
-    case by_id_row!(:relationships_by_id, rel_id, opts) do
-      nil -> nil
-      row -> Map.get(row, :source_id)
-    end
-  end
-
-  @doc """
   The Writer's `cf_group_actions` index and `fan_out_groups/2` both
   consume this decision, so the "wire value wins for a not-yet-cached
   row" rule lives here once. The row is the unit: a platform row's
-  `group_id` or `source_id` lives in its one atomic component value, so
-  the folded row is what names the scope.
+  `group_id` lives in its one atomic component value, so the folded row is
+  what names the scope.
 
-  Returns `{:wire, group_ids}` when the row carries the group on the
-  wire, `{:source, entity_id}` when its scope follows a resolved link
-  source, and `{:by_id, kind | model}` when the subject has to be
-  resolved from the caches. A link's source follows whether the row
-  mutation is a write — the wire for a write and the stored row for a
-  delete, #624 — so fan-out cannot scope a delete more widely than its
-  authorization did.
+  Returns `{:wire, group_ids}` when the row carries the group on the wire,
+  `{:by_id, kind | model}` when the subject's scope has to be resolved from
+  the caches, and `{:source, entity_id}` when the row's scope *is* its own
+  membership set — a component that declares no scope owner borrows the
+  subject's, which is `ebb/link`: an edge is scoped by the row it leaves.
   """
   @spec fan_out_preference(map(), keyword()) ::
           {:wire, [String.t()]} | {:source, subject_id()} | {:by_id, scope_key()}
@@ -252,29 +232,12 @@ defmodule EbbServer.Storage.EntityScope do
           group_id -> {:wire, [group_id]}
         end
 
-      {:field, field, :entity} ->
-        case scope_owner(update, kind, field, opts) do
-          nil -> {:by_id, kind}
-          source_id -> {:source, source_id}
-        end
+      nil ->
+        {:source, update.subject_id}
     end
   end
 
   def fan_out_preference(update, _opts), do: {:by_id, update.model}
-
-  # A write is already bound to its stored source by the authorizer's
-  # row-identity check, so its wire source is the identity to resolve. A
-  # delete has no such check and must not be able to pick its scope.
-  defp scope_owner(update, kind, field, opts) do
-    wire = scope_field(update, kind, field, opts)
-    stored = stored_field(update.subject_id, kind, field, opts)
-
-    if RowMutations.write?(update) do
-      wire || stored
-    else
-      stored || wire
-    end
-  end
 
   # The current Action's value wins: that is the value the authorizer bound
   # (#624). The flush row supplies what an earlier Action of the same commit
@@ -282,13 +245,6 @@ defmodule EbbServer.Storage.EntityScope do
   defp scope_field(update, kind, field, opts) do
     SystemComponent.path(update.data, kind, Atom.to_string(field)) ||
       flush_field(update.subject_id, kind, field, opts)
-  end
-
-  defp stored_field(subject_id, kind, field, opts) do
-    case by_id_row!(SystemComponent.by_id(kind), subject_id, opts) do
-      nil -> nil
-      row -> Map.get(row, field)
-    end
   end
 
   @doc """

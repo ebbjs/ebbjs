@@ -2,15 +2,16 @@
  * The platform row emitters: a create plus one Update per row, the single
  * Update carrying the component's whole value.
  *
- * These pin the property the slice exists for — a torn edge, membership, or
- * grant cannot be emitted, because there is no Update that carries half of
- * one — and that a platform row is created before anything is written to it.
+ * These pin the property the slice exists for — a torn membership or grant
+ * cannot be emitted, because there is no Update that carries half of one — and
+ * that a platform row is created before anything is written to it. `ebb/link`
+ * is a keyed component of its source, so its Updates are pinned in
+ * `relationship.test.ts`.
  */
 
 import { describe, expect, it } from "vitest";
 import {
   EBB_COMPONENTS,
-  EBB_COMPONENT_KINDS,
   isComponentUpdate,
   isRowCreate,
   type ComponentUpdate,
@@ -20,7 +21,6 @@ import {
 import {
   grantRowUpdates,
   groupRowUpdates,
-  linkRowUpdates,
   membershipRowUpdates,
   systemRowDelete,
   systemRowUpdate,
@@ -54,50 +54,14 @@ const createOf = (updates: readonly Update[]): Update => {
 /** The value a component Update carries. */
 const valueOf = (updates: readonly Update[]): Record<string, unknown> =>
   valueUpdate(updates).data.value as Record<string, unknown>;
+/** The three platform kinds that are one atomic value on a row of their own. */
+const ROW_KINDS = ["group", "grant", "membership"] as const;
+
 describe("system row emitters", () => {
-  it.each(EBB_COMPONENT_KINDS)("names the %s component from the platform vocabulary", (kind) => {
+  it.each(ROW_KINDS)("names the %s component from the platform vocabulary", (kind) => {
     const update = systemRowUpdate(kind, "e_1", {}, ids());
 
     expect(valueUpdate([update]).component).toBe(EBB_COMPONENTS[kind]);
-  });
-
-  it("writes ebb/link as one Update carrying all four fields", () => {
-    const updates = linkRowUpdates(
-      {
-        linkId: "rel_1",
-        sourceId: "e_issue",
-        targetId: "e_project",
-        field: "project",
-        type: "issue",
-      },
-      ids(),
-    );
-
-    expect(updates).toHaveLength(2);
-    expect(createOf(updates)).toEqual({
-      id: "u_1",
-      subject_id: "rel_1",
-      model: "ebb",
-      method: "create",
-      hlc: "hlc_1",
-      data: null,
-    });
-    expect(valueUpdate(updates)).toEqual({
-      id: "u_2",
-      subject_id: "rel_1",
-      component: EBB_COMPONENTS.link,
-      method: "replace",
-      data: {
-        value: {
-          source_id: "e_issue",
-          target_id: "e_project",
-          type: "issue",
-          field: "project",
-        },
-        update_id: "u_2",
-        hlc: "hlc_1",
-      },
-    });
   });
 
   it("writes ebb/membership as one Update, so a mismatched pair is unrepresentable", () => {

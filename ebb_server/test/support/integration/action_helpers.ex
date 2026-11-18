@@ -16,6 +16,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   import Plug.Test
   import Plug.Conn
 
+  alias EbbServer.Storage.SystemComponent
   alias EbbServer.Sync.Router
   alias EbbServer.TestHelpers
 
@@ -25,8 +26,7 @@ defmodule EbbServer.Integration.ActionHelpers do
   @system_components %{
     "group" => "ebb/group",
     "grant" => "ebb/grant",
-    "membership" => "ebb/membership",
-    "relationship" => "ebb/link"
+    "membership" => "ebb/membership"
   }
 
   def post_actions(body, actor_id \\ "a_test") do
@@ -162,9 +162,11 @@ defmodule EbbServer.Integration.ActionHelpers do
   Prepends the row-scoped create a fixture row needs.
 
   A component write no longer invents a row, so every fixture that opens one
-  carries its create. The create's model is the first component's prefix and
-  its HLC is a fresh clock value; a subject that already has a create, or
-  that only carries a row-scoped method (`delete`), is left alone.
+  carries its create. The create's model is the first non-overlay component's
+  prefix and its HLC is a fresh clock value; a subject that already has a
+  create, that only carries a row-scoped method (`delete`), or whose only
+  writes are `ebb/*` overlays — which name no model of the row's — is left
+  alone.
   """
   def with_creates(updates) do
     updates = List.flatten(updates)
@@ -177,16 +179,25 @@ defmodule EbbServer.Integration.ActionHelpers do
     creates =
       updates
       |> Enum.reject(&(&1["method"] in ["create", "delete"]))
-      |> Enum.uniq_by(& &1["subject_id"])
-      |> Enum.reject(&MapSet.member?(created, &1["subject_id"]))
-      |> Enum.map(fn update ->
-        [model, _field] = :binary.split(update["component"], "/")
-
-        create_update("upd_create_" <> update["subject_id"], update["subject_id"], model)
+      |> Enum.group_by(& &1["subject_id"])
+      |> Enum.flat_map(fn {subject_id, given} ->
+        with false <- MapSet.member?(created, subject_id),
+             %{"component" => component} <-
+               Enum.find(given, &(not overlay_component?(&1["component"]))) do
+          [model, _field] = :binary.split(component, "/")
+          [create_update("upd_create_" <> subject_id, subject_id, model)]
+        else
+          _ -> []
+        end
       end)
 
     creates ++ updates
   end
+
+  defp overlay_component?(component) when is_binary(component),
+    do: SystemComponent.overlay?(SystemComponent.kind(component))
+
+  defp overlay_component?(_component), do: false
 
   @doc """
   Builds one component Update with the wire's string keys.

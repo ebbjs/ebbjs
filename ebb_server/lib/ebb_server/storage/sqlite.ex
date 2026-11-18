@@ -21,11 +21,14 @@ defmodule EbbServer.Storage.SQLite do
   Generated columns extract field values from the per-entity JSON `data`
   so that `WHERE` clauses can reference them via `json_extract` without
   parsing JSON at read time. A user field's value lives at
-  `data.fields.X.value`; a platform component (`ebb/link`, `ebb/grant`, …)
-  carries one atomic value at `data.fields.<kind>.value`. Each semantic
-  column binds to the one component that owns it, which is what makes its
-  non-nullness mean "the row carries this component" (see
-  `EbbServer.Storage.SystemComponent`).
+  `data.fields.X.value`; an atomic platform component (`ebb/grant`,
+  `ebb/membership`, `ebb/group`) carries it at
+  `data.fields.<kind>.value`. Each semantic column binds to the one
+  component that owns it, which is what makes its non-nullness mean "the row
+  carries this component" (see `EbbServer.Storage.SystemComponent`).
+
+  `ebb/link` has no column here: it is a keyed component of its source and
+  an edge is reached by reading the source's state, never by a listing join.
   A separate `cursors` table holds durable named consumer cursors (Action
   export today, peer replication later).
 
@@ -33,9 +36,9 @@ defmodule EbbServer.Storage.SQLite do
 
   A materialized row's `data.components` is the canonical, sorted list of
   component names derived from `data.fields`: a user field names its row's
-  model (`todo/title`), a platform field names its component (`ebb/link`). It
-  is written by `EbbServer.Storage.EntityStore` and projected away from the
-  wire shape by `EbbServer.Storage.EntityView`.
+  model (`todo/title`), a platform field names its component (`ebb/grant`,
+  `ebb/link`). It is written by `EbbServer.Storage.EntityStore` and projected
+  away from the wire shape by `EbbServer.Storage.EntityView`.
 
   `entity_components` mirrors that list one row per `(entity, component)` so
   "which live rows hold component X" is an index lookup rather than a JSON
@@ -74,7 +77,7 @@ defmodule EbbServer.Storage.SQLite do
   # is therefore a reset, not a migration. The cache rebuilds from
   # `cf_actions` plus `cf_group_actions` (#793 decision 9), and `cursors` is
   # not part of the shape and survives.
-  @schema_version 3
+  @schema_version 4
 
   @pragmas """
   PRAGMA journal_mode = WAL;
@@ -84,9 +87,8 @@ defmodule EbbServer.Storage.SQLite do
   PRAGMA foreign_keys = ON;
   """
 
-  # A user field's value lives at `data.fields.X.value`; a platform
+  # A user field's value lives at `data.fields.X.value`; an atomic platform
   # component's is the whole object at `data.fields.<kind>.value`.
-  # `rel_type`/`rel_field` name the *link's* type and field.
   @create_entities_table """
   CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
@@ -97,10 +99,6 @@ defmodule EbbServer.Storage.SQLite do
     deleted_hlc INTEGER,
     deleted_by TEXT,
     last_gsn INTEGER NOT NULL,
-    source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.source_id')) STORED,
-    target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.target_id')) STORED,
-    rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.type')) STORED,
-    rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.link.value.field')) STORED,
     actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.grant.value.actor_id')) STORED,
     entity_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.membership.value.entity_id')) STORED,
     group_id TEXT GENERATED ALWAYS AS (COALESCE(json_extract(data, '$.fields.grant.value.group_id'), json_extract(data, '$.fields.membership.value.group_id'))) STORED,
@@ -119,7 +117,6 @@ defmodule EbbServer.Storage.SQLite do
   @create_indexes """
   CREATE INDEX IF NOT EXISTS idx_entities_model ON entities(model) WHERE deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_model_gsn ON entities(model, last_gsn);
-  CREATE INDEX IF NOT EXISTS idx_entities_source_id ON entities(source_id) WHERE source_id IS NOT NULL AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_grant ON entities(group_id, actor_id) WHERE actor_id IS NOT NULL AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_membership ON entities(entity_id, group_id) WHERE entity_id IS NOT NULL AND deleted_hlc IS NULL;
   CREATE INDEX IF NOT EXISTS idx_entities_membership_page ON entities(group_id, id) WHERE entity_id IS NOT NULL AND deleted_hlc IS NULL;
@@ -204,48 +201,6 @@ defmodule EbbServer.Storage.SQLite do
   SELECT id, entity_id FROM entities
   WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL AND id > ?
   ORDER BY id LIMIT ?
-  """
-
-  # Per-page link ids (#744). A link is scoped by its source and never gets a
-  # membership row of its own, so the membership keyset above cannot name it;
-  # the page finds its rows by joining its own window to `source_id`.
-  #
-  # The fence and the index hint are both load-bearing, and nothing in this
-  # application runs `ANALYZE`. `AS MATERIALIZED` keeps the window on the
-  # membership rows: left to flatten the subquery, SQLite applies it to the
-  # joined rows, so one source with a large outgoing degree would fill the page
-  # and drop every later source in the window. `INDEXED BY` makes the plan a
-  # seek per window row; without it the shape is a scan of the whole live
-  # link set on a database that has no statistics.
-  #
-  # The window is bounded by the membership rows the caller already read —
-  # `id <=` the page's own last row — and there is deliberately no `LIMIT`.
-  # Membership row ids are opaque, so a row committed between the caller's two
-  # statements can land inside the window; a limit would then re-cut it and
-  # drop the highest id, which is the page's own last source, leaving that
-  # source's rows below the watermark where the tail never repairs them. A
-  # source the page did not ship is discarded by the caller instead.
-  @list_page_relationship_ids_sql """
-  WITH page AS MATERIALIZED (
-    SELECT entity_id FROM entities
-    WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL AND id <= ?
-  )
-  SELECT r.id
-  FROM page m
-  JOIN entities r INDEXED BY idx_entities_source_id
-    ON r.source_id = m.entity_id AND r.source_id IS NOT NULL AND r.deleted_hlc IS NULL
-  """
-
-  @list_page_relationship_ids_after_sql """
-  WITH page AS MATERIALIZED (
-    SELECT entity_id FROM entities
-    WHERE entity_id IS NOT NULL AND group_id = ? AND deleted_hlc IS NULL
-      AND id > ? AND id <= ?
-  )
-  SELECT r.id
-  FROM page m
-  JOIN entities r INDEXED BY idx_entities_source_id
-    ON r.source_id = m.entity_id AND r.source_id IS NOT NULL AND r.deleted_hlc IS NULL
   """
 
   @create_cursors_table """
@@ -353,40 +308,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  The window is `(after_key, window_end]` over the membership keyset
-  `list_memberships/4` pages. It is bounded by the membership
-  rows the caller already read rather than recomputed, so a row committed
-  between the two calls cannot slide it, and it is not cut to a count: two
-  membership rows can name one source, so an id can repeat and the caller
-  dedupes. Rows are ids only: every row the listing ships is materialized and
-  read through `get_entities/2`, and reading `data` twice would double that.
-  """
-  @spec list_page_relationship_ids(
-          String.t(),
-          String.t() | nil,
-          String.t(),
-          GenServer.server()
-        ) :: {:ok, [String.t()]} | {:error, term()}
-  def list_page_relationship_ids(group_id, after_key, window_end, server \\ __MODULE__) do
-    GenServer.call(
-      server,
-      {:list_page_relationship_ids, group_id, after_key, window_end}
-    )
-  end
-
-  @doc """
-  The statement names `idx_entities_source_id` on purpose, so a renamed or
-  dropped index fails at prepare instead of quietly becoming a scan on a
-  database that has never been `ANALYZE`d. This seam lets a test assert the
-  plan itself rather than the SQL text.
-  """
-  @spec explain_page_relationship_ids(String.t() | nil, GenServer.server()) ::
-          {:ok, [String.t()]} | {:error, term()}
-  def explain_page_relationship_ids(after_key, server \\ __MODULE__) do
-    GenServer.call(server, {:explain_page_relationship_ids, after_key})
-  end
-
-  @doc """
   The plan rests on the component guard matching the partial index's
   predicate, which a re-typed guard silently breaks; this seam lets a test
   assert the plan rather than the SQL text.
@@ -417,8 +338,8 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @doc """
-  Like `explain_page_relationship_ids/2`, this seam lets a test assert the
-  plan, rather than the SQL text, names `idx_entity_components_component`.
+  Like `explain_list_memberships/2`, this seam lets a test assert the plan,
+  rather than the SQL text, names `idx_entity_components_component`.
   """
   @spec explain_component_ids(String.t(), GenServer.server()) ::
           {:ok, [String.t()]} | {:error, term()}
@@ -766,23 +687,6 @@ defmodule EbbServer.Storage.SQLite do
   end
 
   @impl true
-  def handle_call({:list_page_relationship_ids, group_id, after_key, window_end}, _from, state) do
-    {sql, params} = page_relationship_statement(group_id, after_key, window_end)
-
-    {:reply, collect_ids(state, sql, params), state}
-  end
-
-  @impl true
-  def handle_call({:explain_page_relationship_ids, after_key}, _from, state) do
-    %{db: db} = state
-    # An explain never runs the statement, so the window it is given only has
-    # to bind: the plan is the answer.
-    {sql, params} = page_relationship_statement(nil, after_key, nil)
-
-    {:reply, explain(db, sql, params), state}
-  end
-
-  @impl true
   def handle_call({:get_entities, ids}, _from, state) do
     %{db: db} = state
 
@@ -1000,14 +904,6 @@ defmodule EbbServer.Storage.SQLite do
 
   defp membership_statement(group_id, id, limit) do
     {@list_memberships_after_sql, [group_id, id, limit]}
-  end
-
-  defp page_relationship_statement(group_id, nil, window_end) do
-    {@list_page_relationship_ids_sql, [group_id, window_end]}
-  end
-
-  defp page_relationship_statement(group_id, after_key, window_end) do
-    {@list_page_relationship_ids_after_sql, [group_id, after_key, window_end]}
   end
 
   # Statements that name an index are explained rather than run, so a renamed
