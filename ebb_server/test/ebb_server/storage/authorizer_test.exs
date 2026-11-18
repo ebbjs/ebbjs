@@ -1051,6 +1051,23 @@ defmodule EbbServer.Storage.AuthorizerTest do
       assert_accepted(Authorizer.authorize([action], "a_1", ctx))
     end
 
+    test "a row delete bundled with an edge write still needs the model delete" do
+      tables = create_isolated_tables()
+      ctx = auth_context(tables)
+
+      put_grant(tables, "g_source", ["ebb/link.*"])
+      put_membership(tables, "todo_1", "g_source", "eg_1")
+      put_entity_model(tables, "todo_1", "todo")
+
+      action =
+        build_action([
+          delete_update("upd_delete", "todo_1"),
+          link_update("upd_link", "todo_1", "blocked_by", "todo", "col_1")
+        ])
+
+      assert_rejected(Authorizer.authorize([action], "a_1", ctx), "not_authorized")
+    end
+
     test "a grant on the source's model does not authorize the edge" do
       tables = create_isolated_tables()
       ctx = auth_context(tables)

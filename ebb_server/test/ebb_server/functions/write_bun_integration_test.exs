@@ -134,7 +134,8 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "function." <> name,
       "todo.create",
       "todo.update",
-      "project.create"
+      "project.create",
+      "ebb/link.*"
     ])
 
     BunSupport.deploy_fixture!(dir, name)
@@ -165,15 +166,17 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
 
     assert length(membership_updates) == 2
 
-    [patch] = Enum.filter(updates, &(&1["method"] == "merge"))
+    [patch] = Enum.filter(updates, &(&1["component"] == "todo/done"))
     assert patch["subject_id"] == todo_id
-    assert patch["component"] == "todo/done"
     assert patch["data"]["value"] == true
 
+    # The edge is a keyed component of the todo the same Action created:
+    # `project` → `todo` (the source model is the default `type`) → the
+    # target, with presence as the leaf.
     assert [link] = Enum.filter(updates, &(&1["component"] == "ebb/link"))
-    assert link["method"] == "replace"
-    assert link["data"]["value"]["source_id"] == todo_id
-    assert link["data"]["value"]["target_id"] == project_id
+    assert link["method"] == "merge"
+    assert link["subject_id"] == todo_id
+    assert [{"project", "todo", ^project_id, %{"value" => true}}] = link_edges(link["data"])
   end
 
   test "a handler that throws after a create leaves nothing", %{dir: dir} do
@@ -355,7 +358,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
           {field, _type, _target, leaf} <- link_edges(update["data"]),
           do: {field, leaf["value"]}
 
-    assert Enum.sort(leaves) == [{"assignee", nil}, {"assignee", true}]
+    assert Enum.sort(leaves) == [{"project", nil}, {"project", true}]
 
     # And both were scoped to the source's group, so a live subscriber
     # receives them rather than a link that silently survives delivery.
@@ -370,6 +373,33 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
            ) == 2
 
     Task.shutdown(stream, :brutal_kill)
+  end
+
+  # Two edges stored on the todo the function will unlink one of.
+  defp seed_edges(actor_id, todo_id, target_ids) do
+    hlc = generate_hlc()
+
+    leaves =
+      Map.new(target_ids, fn target_id ->
+        {target_id, %{"value" => true, "update_id" => unique("u_seed_edge"), "hlc" => hlc}}
+      end)
+
+    action = %{
+      "id" => unique("act_seed_edges"),
+      "actor_id" => actor_id,
+      "hlc" => hlc,
+      "updates" => [
+        component_update(
+          unique("upd_seed_edges"),
+          todo_id,
+          "ebb/link",
+          "merge",
+          %{"map" => %{"labels" => %{"map" => %{"todo" => %{"map" => leaves}}}}}
+        )
+      ]
+    }
+
+    post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
   end
 
   # An edge's key levels: field, then type, then target id, then its leaf.
@@ -436,7 +466,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
            }
   end
 
-  test "drops one target from a stored FK set read through ctx.get", %{dir: dir} do
+  test "removes one stored edge and leaves the source's other edges", %{dir: dir} do
     name = "unlinkStoredLabel"
     actor_id = unique("a")
     group_id = unique("g")
@@ -446,17 +476,18 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "function." <> name,
       "todo.create",
       "todo.update",
-      "ebb/link.delete"
+      "ebb/link.create",
+      "ebb/link.update"
     ])
 
     hlc = generate_hlc()
 
-    stored_fields = %{
-      "title" => %{"type" => "lww", "value" => "linked", "hlc" => hlc},
-      "labels" => %{"type" => "lww", "value" => ["e_l1", "e_l2"], "hlc" => hlc}
-    }
+    assert write_entity_in_group(actor_id, todo_id, "todo", group_id, %{
+             "title" => %{"value" => "linked", "hlc" => hlc}
+           }).status == 200
 
-    assert write_entity_in_group(actor_id, todo_id, "todo", group_id, stored_fields).status == 200
+    # Two edges stored before the invocation, as the client writes them.
+    assert seed_edges(actor_id, todo_id, ["e_l1", "e_l2"]).status == 200
 
     BunSupport.deploy_fixture!(dir, name)
     configure_bun(dir)
@@ -476,16 +507,21 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
 
     [todo_update] = Enum.filter(action["updates"], &(&1["subject_id"] == todo_id))
     assert todo_update["method"] == "merge"
-    assert todo_update["component"] == "todo/labels"
-    assert todo_update["data"]["value"] == ["e_l2"]
+    assert todo_update["component"] == "ebb/link"
+    assert [{"labels", "todo", "e_l1", %{"value" => nil}}] = link_edges(todo_update["data"])
 
-    # The FK update must not replace the row's other fields: a partial put
-    # would drop the title entirely.
+    # The row keeps its title, and only the named edge is tombstoned: the
+    # source's other edges are untouched, which is what a per-key removal buys.
     read = get_entity(todo_id, actor_id)
     assert read.status == 200
-    read_fields = Jason.decode!(read.resp_body)["data"]["fields"]
-    assert read_fields["title"]["value"] == "linked"
-    assert read_fields["labels"]["value"] == ["e_l2"]
+    read_entity = Jason.decode!(read.resp_body)
+    assert read_entity["data"]["fields"]["title"]["value"] == "linked"
+
+    edges =
+      for {field, type, target, leaf} <- link_edges(read_entity["data"]["fields"]["link"]),
+          do: {field, type, target, leaf["value"]}
+
+    assert Enum.sort(edges) == [{"labels", "todo", "e_l1", nil}, {"labels", "todo", "e_l2", true}]
   end
 
   # --- setup helpers -------------------------------------------------------
