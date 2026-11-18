@@ -334,7 +334,7 @@ concurrently.
 | `EbbServer.Storage.CacheMutationPlanner`                                         | Pure cache-write planner: per-flush dedup and the row overlay chained plans share       |
 | `EbbServer.Storage.Committer`                                                    | Durable half of a flush: wrapper encode, op assembly, `write_batch`                     |
 | `EbbServer.Storage.CommitterPool`                                                | Supervised Committer workers, one job per worker, crash-to-failed-range reporting       |
-| `EbbServer.Storage.WorkerPool`                                                   | Pool skeleton shared by both: slots, `ref`-keyed jobs, dispatch, worker-death failure    |
+| `EbbServer.Storage.WorkerPool`                                                   | Pool skeleton shared by both: slots, `ref`-keyed jobs, dispatch, worker-death failure   |
 | `EbbServer.Storage.PreparedAction`                                               | Immutable sequencer → committer boundary payload                                        |
 | `EbbServer.Storage.ActionLog`                                                    | Committed-log reader: decodes an inclusive GSN range in order                           |
 | `EbbServer.Storage.ActionFormat`                                                 | `cf_actions` value shape: GSN-free payload, scopes wrapper, dual-shape decode           |
