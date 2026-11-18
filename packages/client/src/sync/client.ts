@@ -133,13 +133,8 @@ import {
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { grantsOf } from "@ebbjs/write";
-import { createBackfill, type Backfill, warnBackfillReadFailed } from "./backfill";
-import {
-  createGroupListing,
-  LISTING_SEED_ACTOR_ID,
-  type GroupListing,
-  warnGroupListingSeedFailed,
-} from "./group-listing";
+import { createBackfill, type Backfill } from "./backfill";
+import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
 import {
   ActionRejectedError,
   createActionRuntime,
@@ -242,6 +237,18 @@ export interface SyncObservables {
    * one while the read is in flight.
    */
   readonly backfill: ReadonlyObservable<readonly string[]>;
+}
+
+/**
+ * A request refused because {@link SyncClient.close} already ran. Every write
+ * path reports a closed client this way rather than as whatever the transport
+ * or the scheduler happened to throw.
+ */
+export class ClientClosedError extends Error {
+  constructor(cause?: unknown) {
+    super("SyncClient is closed: the request was aborted by close()", { cause });
+    this.name = "ClientClosedError";
+  }
 }
 
 /**
@@ -563,10 +570,7 @@ export class SyncClient<
       storage: this.storage,
       fetchEntity: (entityId) => this.getEntity(entityId),
       // After teardown every read failure is a consequence of it, not news.
-      onError: (error, entityId) => {
-        if (this.abortController.signal.aborted) return;
-        warnBackfillReadFailed(error, entityId);
-      },
+      isCancelled: () => this.abortController.signal.aborted,
       onAppended: (entry) => {
         this.replica.ingest(entry.action, entry.added, entry.position);
         this.noteReplicaMutation();
@@ -578,10 +582,7 @@ export class SyncClient<
       fetchImpl: this.fetchImpl,
       storage: this.storage,
       // Same rule as backfill: nothing a closed client reports is news.
-      onError: (error, groupId) => {
-        if (this.abortController.signal.aborted) return;
-        warnGroupListingSeedFailed(error, groupId);
-      },
+      isCancelled: () => this.abortController.signal.aborted,
       onAppended: (entries) => {
         for (const entry of entries) {
           this.noteSeededAction(entry.action);
@@ -1060,6 +1061,7 @@ export class SyncClient<
    * enqueue) once `handshake()` has populated the actor's groups.
    */
   async write(actions: readonly Action[]): Promise<WriteResponse> {
+    if (this.abortController.signal.aborted) throw new ClientClosedError();
     if (actions.length === 0) {
       return { rejected: [] };
     }
@@ -1085,7 +1087,12 @@ export class SyncClient<
     // flush happens and retries an unreachable submit in the background,
     // so a throw here is the first attempt's failure, not a give-up.
     const outcome = await this.flushScheduler.schedule();
-    if (outcome.kind === "unreachable") throw outcome.error;
+    if (outcome.kind === "unreachable") {
+      // A submit the teardown aborted is not an unreachable server.
+      throw this.abortController.signal.aborted
+        ? new ClientClosedError(outcome.error)
+        : outcome.error;
+    }
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
   }
@@ -1660,14 +1667,7 @@ export class SyncClient<
    * request this method leaves on the wire.
    */
   close(): void {
-    // Order matters. `abort()` rejects an in-flight fetch on a microtask while
-    // the rest of this method runs synchronously, so `sub.cancelled` (set below
-    // by `cancelSubscription`) is already true when `connectAndDrain`'s catch
-    // resumes: `runSubscriptionLoop` returns instead of arming a reconnect
-    // against a torn-down client. An `await` added above that call would let
-    // the aborted pass resume as one belonging to a live client.
-    this.abortController.abort();
-    // Stop timers and in-flight retries next: no flush should start while
+    // Stop timers and in-flight retries first: no flush should start while
     // the rest of the client is tearing down.
     this.flushScheduler.stop();
     this.clearReplicaSaveTimer();
@@ -1682,6 +1682,9 @@ export class SyncClient<
     if (this.activeSub) {
       this.cancelSubscription(this.activeSub);
     }
+    // Abort last, so `sub.cancelled` is already set: the reconnect loop's catch
+    // then returns instead of arming a reconnect against a torn-down client.
+    this.abortController.abort();
     this.stateMachine.transition("offline");
     this.presenceRuntime.reset();
     this.presenceRuntime.close();

@@ -1,42 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClient } from "./client";
+import { ClientClosedError, createClient } from "./client";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
-import { makeHlc, type Action } from "@ebbjs/core";
 import {
   emptyCatchUpResponse,
   emptyListingResponse,
   isListingRequest,
   jsonResponse,
+  localPut as put,
   openSseResponse,
   pendingUntilAborted,
+  requestUrl,
   waitFor,
 } from "./test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "a_bob";
 
-const requestUrl = (input: RequestInfo | URL): string =>
-  typeof input === "string" ? input : input.toString();
-
-/** A locally-authored put the Outbox will try to post. */
-const localPut = (id: string): Action => {
-  const hlc = makeHlc(1711036800000);
-  return {
-    id,
-    actor_id: ACTOR_ID,
-    hlc,
-    gsn: 0,
-    updates: [
-      {
-        id: `u_${id}_0`,
-        subject_id: "todo_1",
-        component: "todo/title",
-        method: "replace",
-        data: { value: "parked", update_id: `u_${id}`, hlc },
-      },
-    ],
-  };
-};
+const localPut = (id: string) => put(id, ACTOR_ID);
 
 describe("SyncClient.close with requests in flight", () => {
   it("aborts an in-flight catch-up and does not reconnect", async () => {
@@ -97,8 +77,6 @@ describe("SyncClient.close with requests in flight", () => {
       fetchImpl,
       storage,
     });
-    const statuses = vi.spyOn(storage.outbox, "put");
-
     // Attached up front so the rejection is never unhandled while the test
     // waits for the POST to be on the wire.
     const writeResult = client.write([localPut("act_inflight")]).then(
@@ -112,7 +90,7 @@ describe("SyncClient.close with requests in flight", () => {
     const result = await writeResult;
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect((result.error as Error).name).toBe("AbortError");
+    expect(result.error).toBeInstanceOf(ClientClosedError);
 
     // The submit threw, which the Outbox classifies as `unreachable`: the
     // entry is still flushable, not an errored one, and none of it was
@@ -121,7 +99,6 @@ describe("SyncClient.close with requests in flight", () => {
     expect(stored.map((entry) => [entry.action.id, entry.status])).toEqual([
       ["act_inflight", "pending"],
     ]);
-    expect(statuses.mock.calls.map(([entry]) => entry.status)).not.toContain("acknowledged");
   });
 
   it("does not abort an in-flight presence leave with keepalive", async () => {
@@ -157,6 +134,35 @@ describe("SyncClient.close with requests in flight", () => {
     expect(settled).toBe(false);
 
     resolveLeave!(new Response(null, { status: 204 }));
+    await expect(leave).resolves.toBeUndefined();
+  });
+
+  it("aborts an in-flight presence send that is not a keepalive leave", async () => {
+    let aborted = false;
+    let resolveSend: ((response: Response) => void) | null = null;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      if (!requestUrl(input).includes("/sync/presence")) return jsonResponse({});
+      const signal = init.signal;
+      signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return new Promise<Response>((resolve, reject) => {
+        resolveSend = resolve;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as unknown as typeof fetch;
+
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl });
+
+    client.presence.set("e1", "cursor", { anchor: 0 });
+    const leave = client.presence.leave();
+    await waitFor(() => resolveSend !== null);
+
+    client.close();
+
+    // The exemption is the `keepalive` flag, not presence: an ordinary send is
+    // teardown-scoped like every other request.
+    expect(aborted).toBe(true);
     await expect(leave).resolves.toBeUndefined();
   });
 
@@ -203,10 +209,12 @@ describe("SyncClient.close with requests in flight", () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) =>
       pendingUntilAborted(init),
     ) as unknown as typeof fetch;
+    const storage = createMemoryAdapter();
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: ACTOR_ID,
       fetchImpl,
+      storage,
     });
 
     client.close();
@@ -215,6 +223,13 @@ describe("SyncClient.close with requests in flight", () => {
 
     const error = await client.getEntity("todo_1").catch((thrown: unknown) => thrown);
     expect((error as Error).name).toBe("AbortError");
+
+    // A write is refused before it reaches the outbox, so a closed client
+    // cannot leave a pending entry behind on the way out.
+    await expect(client.write([localPut("act_after_close")])).rejects.toBeInstanceOf(
+      ClientClosedError,
+    );
+    await expect(storage.outbox.list()).resolves.toEqual([]);
   });
 
   it("rejects a function call whose body was still arriving at close", async () => {

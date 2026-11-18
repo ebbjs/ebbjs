@@ -200,6 +200,11 @@ export interface BackfillOptions {
   readonly onAppended?: (entry: LoggedAction) => void;
   /** Called when a read throws. Defaults to `console.warn`. */
   readonly onError?: (error: unknown, entityId?: string) => void;
+  /**
+   * Whether the caller has torn down. A pass that a teardown interrupted has
+   * nothing to report: every read it issues fails for that one reason.
+   */
+  readonly isCancelled?: () => boolean;
 }
 
 export interface Backfill {
@@ -218,14 +223,18 @@ export interface Backfill {
 }
 
 /** The default read-failure report: one line per entity, with the error. */
-export const warnBackfillReadFailed = (error: unknown, entityId?: string): void => {
+const warnReadFailed = (error: unknown, entityId?: string): void => {
   // eslint-disable-next-line no-console
   console.warn("[backfill] entity read failed:", entityId, error);
 };
 
 export function createBackfill(opts: BackfillOptions): Backfill {
   const { storage, fetchEntity, onAppended } = opts;
-  const onError = opts.onError ?? warnBackfillReadFailed;
+  const onError = opts.onError ?? warnReadFailed;
+  const report = (error: unknown, entityId?: string): void => {
+    if (opts.isCancelled?.() === true) return;
+    onError(error, entityId);
+  };
 
   const pending = createObservable<readonly string[]>([]);
   const waiters: (() => void)[] = [];
@@ -242,7 +251,7 @@ export function createBackfill(opts: BackfillOptions): Backfill {
       if (entity.deleted_hlc !== null) return null;
       return entity;
     } catch (error) {
-      onError(error, entityId);
+      report(error, entityId);
       return null;
     }
   };
@@ -279,7 +288,7 @@ export function createBackfill(opts: BackfillOptions): Backfill {
         await reconcile();
       } while (queued);
     } catch (error) {
-      onError(error);
+      report(error);
     } finally {
       running = false;
       publish([]);

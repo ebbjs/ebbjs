@@ -175,9 +175,11 @@ export const withAbortSignal =
     const merged = new AbortController();
     const abortFromClient = (): void => merged.abort(clientSignal.reason);
     const abortFromCaller = (): void => merged.abort(callerSignal.reason);
-    const detach = (): void => {
+    // Only the client's listener is dropped on settle. The caller's stays: a
+    // stream's fetch settles at its headers, and the caller's abort is what is
+    // left to end the body. It dies with the request's own signal.
+    const forgetClient = (): void => {
       clientSignal.removeEventListener("abort", abortFromClient);
-      callerSignal.removeEventListener("abort", abortFromCaller);
     };
     clientSignal.addEventListener("abort", abortFromClient, { once: true });
     callerSignal.addEventListener("abort", abortFromCaller, { once: true });
@@ -189,10 +191,9 @@ export const withAbortSignal =
       request = base(input, { ...init, signal: merged.signal });
     } catch (error) {
       // A malformed request throws before a promise exists to settle.
-      detach();
+      forgetClient();
+      callerSignal.removeEventListener("abort", abortFromCaller);
       throw error;
     }
-    return request.finally(() => {
-      clientSignal.removeEventListener("abort", abortFromClient);
-    });
+    return request.finally(forgetClient);
   };
