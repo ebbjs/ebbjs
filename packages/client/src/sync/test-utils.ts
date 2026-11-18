@@ -441,6 +441,51 @@ export const rowFields = (row: readonly Update[]): Record<string, unknown> => {
   return out;
 };
 
+/**
+ * A request that stays in flight until its signal aborts, the way a real fetch
+ * behaves against a server that has not answered yet. Rejecting with the
+ * signal's own reason keeps the error shape undici produces. Answering a
+ * request that carried no signal with an error rather than a hang makes a
+ * broken wiring fail the test instead of timing out.
+ */
+export const pendingUntilAborted = (init: RequestInit | undefined): Promise<Response> =>
+  new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    if (signal === undefined || signal === null) {
+      reject(new Error("test fetch: request carried no abort signal"));
+      return;
+    }
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+
+/** The URL a fetch mock was called with, as a string. */
+export const requestUrl = (input: RequestInfo | URL): string =>
+  typeof input === "string" ? input : input.toString();
+
+/** A locally-authored put the Outbox will try to post. */
+export const localPut = (id: string, actorId: string, subjectId = "todo_1"): Action => {
+  const hlc = makeHlc(1711036800000);
+  return {
+    id,
+    actor_id: actorId,
+    hlc,
+    gsn: 0,
+    updates: [
+      {
+        id: `u_${id}_0`,
+        subject_id: subjectId,
+        component: "todo/title",
+        method: "replace",
+        data: { value: "parked", update_id: `u_${id}`, hlc },
+      },
+    ],
+  };
+};
+
 /** A JSON `Response` carrying `body` and optional extra headers. */
 export const jsonResponse = (body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), {

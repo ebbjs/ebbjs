@@ -280,6 +280,37 @@ describe("snapshotAction", () => {
 });
 
 describe("createBackfill", () => {
+  it("reports a read failure only while the caller is still there", async () => {
+    const storage = createMemoryAdapter();
+    await storage.entities.set(
+      platformEntity("eg_1", "membership", { entity_id: "post_1", group_id: "g_2" }),
+    );
+    const reported: unknown[] = [];
+    let attempts = 0;
+    let cancelled = false;
+    const backfill = createBackfill({
+      storage,
+      fetchEntity: async () => {
+        attempts += 1;
+        throw new Error("connection reset");
+      },
+      onError: (error) => reported.push(error),
+      isCancelled: () => cancelled,
+    });
+
+    await backfill.run();
+    expect(reported).toHaveLength(1);
+
+    // A pass a teardown interrupted has nothing to report: the read failed for
+    // the one reason the caller already knows. The read still happens, so this
+    // is the reporting that changed, not the work.
+    reported.length = 0;
+    cancelled = true;
+    await backfill.run();
+    expect(attempts).toBe(2);
+    expect(reported).toEqual([]);
+  });
+
   it("materializes a fetched zero-component base as a live row, once", async () => {
     const storage = createMemoryAdapter();
     await storage.entities.set(

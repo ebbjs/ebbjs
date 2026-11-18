@@ -216,7 +216,12 @@ export interface SyncClientOptions<
   appId?: string;
   /** Storage adapter for received actions. Defaults to in-memory adapter. */
   storage?: import("@ebbjs/storage/types").StorageAdapter;
-  /** Custom fetch implementation (for tests / non-Node runtimes). */
+  /**
+   * Custom fetch implementation (for tests / non-Node runtimes). The client
+   * merges its own abort signal into every request that goes through it, so an
+   * in-flight request is cancelled by `close()` — except a `keepalive` one,
+   * which the caller has declared must outlive the document.
+   */
   fetchImpl?: typeof fetch;
   /** Initial reconnect backoff in ms. Defaults to 1000. */
   reconnectInitialMs?: number;

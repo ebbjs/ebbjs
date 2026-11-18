@@ -16,6 +16,7 @@
  */
 
 export {
+  ClientClosedError,
   SyncClient,
   createClient,
   type HandshakeResult,

@@ -78,6 +78,7 @@ import {
   parseJsonBody,
   requestJson,
   tryParseJson,
+  withAbortSignal,
 } from "./http";
 import { createOutbox, type Outbox } from "./outbox";
 import {
@@ -240,6 +241,18 @@ export interface SyncObservables {
 }
 
 /**
+ * A request refused because {@link SyncClient.close} already ran. Every write
+ * path reports a closed client this way rather than as whatever the transport
+ * or the scheduler happened to throw.
+ */
+export class ClientClosedError extends Error {
+  constructor(cause?: unknown) {
+    super("SyncClient is closed: the request was aborted by close()", { cause });
+    this.name = "ClientClosedError";
+  }
+}
+
+/**
  * The sync client. `R` is the presence channel registry the client was built
  * with (`definePresence(...)`); it defaults to `undefined`, which leaves
  * `client.presence` on dynamic, unvalidated channels.
@@ -331,6 +344,13 @@ export class SyncClient<
   readonly status: ReadonlyObservable<ClientStatus>;
   /** The status observable's write side (`markSynced`), private to the client. */
   private readonly statusController: ClientStatusController;
+  /**
+   * Fired only by {@link close()}: one teardown point for every request the
+   * client has in flight, so none of them resolves into a closed storage
+   * adapter.
+   */
+  private readonly abortController = new AbortController();
+  /** The caller's fetch, carrying the abort signal above. */
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -480,7 +500,8 @@ export class SyncClient<
     this.queries = createQueryCache(this.replica, this.replicaSignal, {
       ttlMs: opts.queryTtlMs,
     });
-    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.fetchImpl = withAbortSignal(rawFetch, this.abortController.signal);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
@@ -492,6 +513,8 @@ export class SyncClient<
     this.presenceRuntime = createPresence({
       serverUrl: this.serverUrl,
       actorId: this.actorId,
+      // The wrapper withholds the client signal from a `keepalive` post, so an
+      // unload handler's leave is the one presence request that outlives this.
       fetchImpl: this.fetchImpl,
       registry: opts.presence,
     });
@@ -547,6 +570,8 @@ export class SyncClient<
     this.backfillRunner = createBackfill({
       storage: this.storage,
       fetchEntity: (entityId) => this.getEntity(entityId),
+      // After teardown every read failure is a consequence of it, not news.
+      isCancelled: () => this.abortController.signal.aborted,
       onAppended: (entry) => {
         this.replica.ingest(entry.action, entry.added, entry.position);
         this.noteReplicaMutation();
@@ -557,6 +582,8 @@ export class SyncClient<
       actorId: this.actorId,
       fetchImpl: this.fetchImpl,
       storage: this.storage,
+      // Same rule as backfill: nothing a closed client reports is news.
+      isCancelled: () => this.abortController.signal.aborted,
       onAppended: (entries) => {
         for (const entry of entries) {
           this.noteSeededAction(entry.action);
@@ -1035,6 +1062,7 @@ export class SyncClient<
    * enqueue) once `handshake()` has populated the actor's groups.
    */
   async write(actions: readonly Action[]): Promise<WriteResponse> {
+    if (this.abortController.signal.aborted) throw new ClientClosedError();
     if (actions.length === 0) {
       return { rejected: [] };
     }
@@ -1060,7 +1088,12 @@ export class SyncClient<
     // flush happens and retries an unreachable submit in the background,
     // so a throw here is the first attempt's failure, not a give-up.
     const outcome = await this.flushScheduler.schedule();
-    if (outcome.kind === "unreachable") throw outcome.error;
+    if (outcome.kind === "unreachable") {
+      // A submit the teardown aborted is not an unreachable server.
+      throw this.abortController.signal.aborted
+        ? new ClientClosedError(outcome.error)
+        : outcome.error;
+    }
     if (outcome.kind === "partial") return { rejected: outcome.rejected };
     return { rejected: [] };
   }
@@ -1394,7 +1427,11 @@ export class SyncClient<
    */
   async backfill(): Promise<void> {
     await this.hydrateReplica();
+    // `close()` aborts every read this pass would issue, and a pass entered
+    // after it can only write through an adapter that is already closed.
+    if (this.abortController.signal.aborted) return;
     await this.backfillRunner.run();
+    if (this.abortController.signal.aborted) return;
     await this.persistReplica();
   }
 
@@ -1616,11 +1653,19 @@ export class SyncClient<
    * Tear down all subscriptions and timers. After `close()` the client is
    * unusable; create a new one with `createClient`.
    *
+   * Requests still in flight are aborted rather than left to finish: one whose
+   * response has not arrived applies no rows and marks no outbox entry
+   * acknowledged, and the `AbortError` reaches the caller — a `write()` rejects
+   * with it and its outbox entry stays `pending`. Abort cannot retract work
+   * already past the fetch, and the final replica save below still runs, so a
+   * clean teardown does not lose local writes.
+   *
    * Local teardown only: it cancels pending presence writes and drops the
    * observed peers, and deliberately sends no presence leave, because a
    * transient remount must not broadcast an absence. An app that knows the tab
-   * is going away can call `client.presence.leave({ keepalive: true })` from
-   * its own unload handler.
+   * is going away calls `client.presence.leave({ keepalive: true })` from its
+   * own unload handler before closing, and a `keepalive` post is the one
+   * request this method leaves on the wire.
    */
   close(): void {
     // Stop timers and in-flight retries first: no flush should start while
@@ -1638,6 +1683,9 @@ export class SyncClient<
     if (this.activeSub) {
       this.cancelSubscription(this.activeSub);
     }
+    // Abort last, so `sub.cancelled` is already set: the reconnect loop's catch
+    // then returns instead of arming a reconnect against a torn-down client.
+    this.abortController.abort();
     this.stateMachine.transition("offline");
     this.presenceRuntime.reset();
     this.presenceRuntime.close();

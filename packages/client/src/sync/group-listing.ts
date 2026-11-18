@@ -123,6 +123,11 @@ export interface GroupListingOptions {
   readonly onAppended?: (entries: readonly LoggedAction[]) => void;
   /** Called when a page read fails in a way the caller should see. */
   readonly onError?: (error: unknown, groupId: string) => void;
+  /**
+   * Whether the caller has torn down. A seed a teardown interrupted has
+   * nothing to report: every read it issues fails for that one reason.
+   */
+  readonly isCancelled?: () => boolean;
 }
 
 export interface GroupListing {
@@ -154,15 +159,16 @@ const isListingEnvelope = (body: unknown): body is GroupListingResponse => {
 /** A row the seed can represent: a snapshot cannot carry a tombstone. */
 const isLive = (entity: Entity): boolean => entity.deleted_hlc === null;
 
+/** The default seed-failure report: one line per group, with the error. */
+const warnSeedFailed = (error: unknown, groupId: string): void => {
+  // eslint-disable-next-line no-console
+  console.warn("[group-listing] seed failed:", groupId, error);
+};
+
 export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
   const { storage, actorId, fetchImpl } = opts;
   const serverUrl = normalizeBaseUrl(opts.serverUrl);
-  const onError =
-    opts.onError ??
-    ((error: unknown, groupId: string) => {
-      // eslint-disable-next-line no-console
-      console.warn("[group-listing] seed failed:", groupId, error);
-    });
+  const onError = opts.onError ?? warnSeedFailed;
 
   const readPage = async (groupId: string, token: string | undefined): Promise<PageRead> => {
     const url = `${serverUrl}${groupListing(groupId, token, opts.pageLimit)}`;
@@ -294,7 +300,7 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
       try {
         return await seed(groupId);
       } catch (error) {
-        onError(error, groupId);
+        if (opts.isCancelled?.() !== true) onError(error, groupId);
         throw error;
       }
     },

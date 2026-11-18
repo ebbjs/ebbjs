@@ -185,6 +185,32 @@ describe("needsGroupListing", () => {
 });
 
 describe("bootstrapGroupListing", () => {
+  it("reports a seed failure only while the caller is still there", async () => {
+    const storage = createMemoryAdapter();
+    const reported: unknown[] = [];
+    let cancelled = false;
+    const listing = createGroupListing({
+      serverUrl: "http://localhost:4000",
+      actorId: "a_self",
+      fetchImpl: async () => {
+        throw new Error("connection reset");
+      },
+      storage,
+      onError: (error) => reported.push(error),
+      isCancelled: () => cancelled,
+    });
+
+    await expect(listing.bootstrap("g_1")).rejects.toThrow("connection reset");
+    expect(reported).toHaveLength(1);
+
+    // The failure still surfaces — the caller is the one deciding whether to
+    // hear about it, and a torn-down caller already knows.
+    reported.length = 0;
+    cancelled = true;
+    await expect(listing.bootstrap("g_1")).rejects.toThrow("connection reset");
+    expect(reported).toEqual([]);
+  });
+
   it("seeds a page as one batch and completes the view at the watermark", async () => {
     const storage = createMemoryAdapter();
     const { fetchImpl } = listingFetch([
