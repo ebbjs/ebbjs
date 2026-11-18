@@ -21,23 +21,17 @@ defmodule EbbServer.Sync.SSEConnection do
   alias EbbServer.Sync.Timing
   alias EbbServer.Telemetry
 
-  @type t :: %__MODULE__{
-          parent_pid: pid(),
-          group_ids: [String.t()],
-          cursors: %{String.t() => non_neg_integer()},
-          parent_monitor: reference() | nil
-        }
+  @type t :: %__MODULE__{parent_pid: pid()}
 
-  defstruct [:parent_pid, :group_ids, :cursors, :parent_monitor]
+  defstruct [:parent_pid]
 
-  @spec start_link(pid(), [String.t()], %{String.t() => non_neg_integer()}, keyword()) ::
+  @spec start_link(pid(), [String.t()], %{String.t() => non_neg_integer()}) ::
           {:ok, pid()} | {:error, term()}
-  def start_link(parent_pid, group_ids, cursors, opts \\ []) do
+  def start_link(parent_pid, group_ids, cursors) do
     # No global name registration: connections are referenced only by pid.
     # Registering the module name caused every SSE attempt after the first
     # to fail with :already_started, which silently turned the stream into
     # a no-op (HTTP 200 + headers went out, then no chunks ever followed).
-    _ = opts
     GenServer.start_link(__MODULE__, {parent_pid, group_ids, cursors})
   end
 
@@ -61,19 +55,13 @@ defmodule EbbServer.Sync.SSEConnection do
   def push_presence(pid, presence), do: GenServer.cast(pid, {:push_presence, presence})
 
   @impl true
-  def init({parent_pid, group_ids, cursors}) do
+  def init({parent_pid, _group_ids, _cursors}) do
     # Monitor the request process so we exit when the HTTP connection is
     # gone. This is how the FanOutRouter / GroupServers learn the
     # subscription ended: they see our DOWN message.
-    ref = Process.monitor(parent_pid)
+    Process.monitor(parent_pid)
 
-    {:ok,
-     %__MODULE__{
-       parent_pid: parent_pid,
-       group_ids: group_ids,
-       cursors: cursors,
-       parent_monitor: ref
-     }}
+    {:ok, %__MODULE__{parent_pid: parent_pid}}
   end
 
   @impl true

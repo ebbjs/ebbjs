@@ -196,26 +196,11 @@ defmodule EbbServer.Sync.SSEConnectionTest do
   end
 
   describe "state structure" do
-    test "SSEConnection state has correct fields" do
-      state = %SSEConnection{
-        parent_pid: self(),
-        group_ids: ["g1", "g2"],
-        cursors: %{"g1" => 100, "g2" => 200},
-        parent_monitor: make_ref()
-      }
+    test "a started connection tracks only its parent" do
+      {:ok, pid} = SSEConnection.start_link(self(), ["g1"], %{"g1" => 0})
 
-      assert state.group_ids == ["g1", "g2"]
-      assert state.cursors == %{"g1" => 100, "g2" => 200}
-      assert %SSEConnection{parent_monitor: ref} = state
-      assert is_reference(ref)
-    end
-
-    test "cursors map can track multiple groups" do
-      cursors = %{"group_a" => 501, "group_b" => 1002, "group_c" => 50}
-
-      assert Map.get(cursors, "group_a") == 501
-      assert Map.get(cursors, "group_b") == 1002
-      assert Map.get(cursors, "group_c") == 50
+      assert %SSEConnection{parent_pid: parent_pid} = :sys.get_state(pid)
+      assert parent_pid == self()
     end
   end
 end
