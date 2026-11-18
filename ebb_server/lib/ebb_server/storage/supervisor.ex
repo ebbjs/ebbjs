@@ -29,6 +29,8 @@ defmodule EbbServer.Storage.Supervisor do
   use Supervisor
   require Logger
 
+  alias EbbServer.Config
+
   @writer_defaults [
     watermark_tracker: EbbServer.Storage.WatermarkTracker,
     in_flight_actions: EbbServer.Storage.InFlightActions,
@@ -45,7 +47,7 @@ defmodule EbbServer.Storage.Supervisor do
   end
 
   def init(opts) do
-    data_dir = Keyword.get(opts, :data_dir, Application.get_env(:ebb_server, :data_dir, "./data"))
+    data_dir = Keyword.get_lazy(opts, :data_dir, &Config.data_dir/0)
     writer_opts = Keyword.merge(@writer_defaults, Keyword.get(opts, :writer_opts, []))
 
     children = [

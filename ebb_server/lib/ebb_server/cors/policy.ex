@@ -26,6 +26,7 @@ defmodule EbbServer.CORS.Policy do
   require Logger
 
   alias EbbServer.Apps.Origin
+  alias EbbServer.Config
 
   @origins_env "EBB_CORS_ORIGINS"
   @allow_any_env "EBB_CORS_ALLOW_ANY"
@@ -69,26 +70,14 @@ defmodule EbbServer.CORS.Policy do
   # `bypass` is a dev mode with no credential in the browser, so `*` is its
   # default; every authenticated mode defaults to deny and needs registration.
   defp allow_any!(auth_mode) do
-    case env_value(@allow_any_env) do
-      nil ->
-        auth_mode == :bypass
-
-      raw ->
-        case String.downcase(raw) do
-          value when value in ["1", "true"] ->
-            true
-
-          value when value in ["0", "false"] ->
-            false
-
-          _other ->
-            raise "#{@allow_any_env} must be one of: 1, true, 0, false; got #{inspect(raw)}"
-        end
+    case Config.env(@allow_any_env) do
+      nil -> auth_mode == :bypass
+      raw -> Config.boolean!(raw, @allow_any_env)
     end
   end
 
   defp origins! do
-    case env_value(@origins_env) do
+    case Config.env(@origins_env) do
       nil ->
         []
 
@@ -111,19 +100,6 @@ defmodule EbbServer.CORS.Policy do
         raise "#{@origins_env} contains an invalid origin: #{inspect(origin)}. " <>
                 "Use an http(s) origin with no path, query, or fragment; " <>
                 "`*` is set with #{@allow_any_env}, not here."
-    end
-  end
-
-  defp env_value(name) do
-    case System.get_env(name) do
-      nil ->
-        nil
-
-      raw ->
-        case String.trim(raw) do
-          "" -> nil
-          value -> value
-        end
     end
   end
 

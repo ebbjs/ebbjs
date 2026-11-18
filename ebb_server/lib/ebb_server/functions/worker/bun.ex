@@ -36,6 +36,7 @@ defmodule EbbServer.Functions.Worker.Bun do
 
   @behaviour EbbServer.Functions.Worker
 
+  alias EbbServer.Config
   alias EbbServer.Functions.Protocol
 
   @default_accept_timeout_ms 5_000
@@ -193,14 +194,7 @@ defmodule EbbServer.Functions.Worker.Bun do
   @spec socket_path(handle()) :: String.t()
   def socket_path(%{socket_path: socket_path}), do: socket_path
 
-  defp default_socket_dir do
-    data_dir =
-      Application.get_env(:ebb_server, :data_dir) ||
-        System.get_env("EBB_DATA_DIR") ||
-        "./data"
-
-    Path.join(data_dir, "function_sockets")
-  end
+  defp default_socket_dir, do: Path.join(Config.data_dir(), "function_sockets")
 
   defp check_bun(nil), do: {:error, :bun_not_found}
 

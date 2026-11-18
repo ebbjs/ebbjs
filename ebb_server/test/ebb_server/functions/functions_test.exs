@@ -105,11 +105,11 @@ defmodule EbbServer.FunctionsTest do
 
     test "an unrecognized environment value raises instead of disabling" do
       configure(enabled: false)
-      System.put_env(@env_key, "yes")
+      System.put_env(@env_key, "maybe")
 
       error = assert_raise(RuntimeError, fn -> Functions.resolve() end)
-      assert error.message =~ "EBB_FUNCTIONS_ENABLED must be true or false"
-      assert error.message =~ ~s("yes")
+      assert error.message =~ "EBB_FUNCTIONS_ENABLED must be one of"
+      assert error.message =~ ~s("maybe")
     end
   end
 
