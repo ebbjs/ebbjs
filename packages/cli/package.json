@@ -7,17 +7,6 @@
     "ebb": "./dist/bin.js"
   },
   "type": "module",
-  "exports": {
-    "./bundle": "./src/bundle.ts",
-    "./envelope": "./src/envelope.ts",
-    "./config": "./src/config.ts",
-    "./deploy": "./src/deploy.ts",
-    "./deployment-hash": "./src/deployment-hash.ts",
-    "./contract-map": "./src/contract-map.ts",
-    "./api": "./src/api.ts",
-    "./apps": "./src/apps.ts",
-    "./commands": "./src/commands.ts"
-  },
   "scripts": {
     "test": "vitest --run",
     "typecheck": "tsc --noEmit",

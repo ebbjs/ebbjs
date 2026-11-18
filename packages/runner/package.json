@@ -4,9 +4,6 @@
   "private": true,
   "description": "Bun process that runs one ebb function invocation",
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
   "scripts": {
     "start": "bun src/main.ts",
     "test": "vitest --run",
