@@ -1,7 +1,7 @@
 # epic(components): components are the unit of identity
 
 Status: accepted, 2026-11-09; renumbered 2026-11-11 and amended for the system-component contract.
-Slices 1–7 and 9–11 landed (#794–#800, #802, #805, #819); 8 and 12–14 open. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
+Slices 1–12 and 14 have landed; **13 is the last one and lands with #820**. **Redirects** #775 (a document preset becomes a `ComponentDef`, not
 an `EntityDef`, and the body becomes a component of the owning row) and folds in #760, #124, #195,
 and the scope half of #781. Does not supersede #790. Rationale and the ECS readings:
 [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md).
@@ -191,8 +191,10 @@ scrutiny, and it is recorded here so it is not re-derived.
 
 The original split was a **performance** decision: keep the body out of the held row so a 10k
 workspace holds 41 MB of metadata instead of 323 MB (`docs/research/503-replica-read-model.md`). It
-was never a permission decision, and with #790's `contained: true` a child entity mirrors its
-parent's groups, so **membership is not a differentiator in either direction.**
+was never a permission decision, and it is not one now: a body component is visible exactly where
+its note is, and a body declared as its own entity would be filed into the note's groups when it is
+created. **Membership is not a differentiator in either direction** — nothing in this epic makes a
+body reachable by anyone who cannot reach the note.
 
 Each of the four reasons a body "needs its own id" fails on inspection:
 
@@ -912,30 +914,31 @@ construction, forward traversal becomes a component read, duplicate edges become
 and a link a replica missed arrives with its source during backfill — which today it never does.
 
 **Scope.** `ebb/link` moves from an atomic value on its own row to a keyed component of its source;
-the edge row and the `entityGroup` rows it mirrors are deleted; the forward half of
-`RelationshipCache` and the `rowId → yieldedId` layer of `reverse-index.ts` go; the server keeps an
-**in-memory** reverse index `(type, target_id) → source ids`, with no column family. `contained: true` becomes a resolution-time rule
-(`source ∪ target`).
+the edge row and `RelationshipCache` go; forward traversal becomes a component read and the
+`rowId → yieldedId` layer of `reverse-index.ts` goes with it; the server keeps an **in-memory**
+reverse index `(type, target_id) → source ids`, with no column family.
 
-**The gate.** Price the containment hop inside the authorizer against the ~21k Actions/s budget
-before committing; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+**The gate.** The epic priced a containment hop here — a resolution-time `source ∪ target` union.
+There is no such feature and this slice does not add one: a link's scope is its source's membership,
+so the write path pays nothing. The docs are corrected rather than implemented against.
 
 **Work.**
 
-- [ ] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
-- [ ] Delete the edge row, the mirrored `entityGroup` rows, `RelationshipCache`'s forward direction,
-      and `reverse-index.ts`'s row layer.
-- [ ] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
+- [x] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
+- [x] Delete the edge row and `RelationshipCache`; `reverse-index.ts`'s relationship row layer.
+- [x] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
       component index (#849).
-- [ ] `contained: true` as a resolution-time union; measure the hop.
-- [ ] Backfill: a missed link arrives with its source; assert it.
-- [ ] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a
+- [x] Delete the containment option from `docs/documents.md` and its argument from
+      `docs/research/membership-and-links-as-components.md` §4/§6.
+- [x] Backfill: a missed link arrives with its source; assert it.
+- [x] The source keeps its committed model: `ebb/link` is an overlay component, so it adds a
       component entry and leaves the source's model entry alone (slice 10's rule).
 
 **Acceptance.** Duplicate `(source, field, type, target)` edges are unrepresentable. Moving a source
-never leaves a link in a stale group (#789). The containment hop is measured and recorded.
+never leaves a link in a stale group (#789). A missed link arrives with its source on backfill, and
+incoming traversal is answered by the reverse index at parity with the other caches.
 
-**Depends on.** 11. **Blocked by** #790.
+**Depends on.** 11, #790.
 
 ---
 
@@ -1014,7 +1017,8 @@ cheapest win in the epic, shipped once 6 landed.
 **The system-component contract is 10 → 11 → 12.** Naming and atomicity (10) is a pure rename plus
 immutability with today's semantics, so it lands first and unblocks the table (11); authz (12)
 consumes the table instead of re-deriving it, which is why it moved behind them. Slice 13 is the
-follow-on the research note argues for and is gated on #790 and the containment hop.
+follow-on the research note argues for; it shipped once #790 landed, and the containment hop it was
+gated on turned out to have no feature behind it.
 
 ## What it buys, and what it costs
 
@@ -1174,11 +1178,12 @@ out.
    optional" default)? Decided in [#798](https://github.com/ebbjs/ebbjs/issues/798): on the
    component, and `optional` refuses a declared default.
 5. How does per-component residency interact with #123's compaction low-water mark?
-6. What does the containment hop cost when `ebb/link` moves onto its source? Slice 13 is gated on
-   it; `docs/research/membership-and-links-as-components.md` §6 is the measurement.
+6. ~~What does the containment hop cost when `ebb/link` moves onto its source?~~ **No hop, no
+   feature.** A containment option was never implemented; the shipped link's scope is its source's
+   membership, resolved by the default path, so slice 13 pays nothing on the authorize path.
 7. Does the group → members index survive the `ebb/*` rename, or does it collapse into the
    component index? **Still open, and unowned.** Slice 11's scope table reads the by-id caches
    (`group_members_by_id`), not the by-group index, so it neither replaces nor prices
-   `group_members_by_group`; a k = 2/4/8 measurement needs a group-listing workload, and belongs
-   with the next slice that touches those tables (slice 13's forward-index deletion, or the
-   indexing follow-on that supersedes #815).
+   `group_members_by_group`; slice 13 deleted the relationship caches, not this one.
+   A k = 2/4/8 measurement needs a group-listing workload, and belongs with the next slice that
+   touches those tables (the indexing follow-on that supersedes #815).
