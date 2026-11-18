@@ -15,6 +15,7 @@ import { defineRelationship } from "@ebbjs/schema";
 import { defineSchema } from "@ebbjs/schema";
 import { defineAction, type AnyActionDef } from "../../schema/action";
 import { createClient } from "../client";
+import { linkTargetsOf } from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -38,7 +39,9 @@ const mkRecordingFetch = (seen: RecordedRequest[]): typeof fetch => {
           groups: [
             {
               id: "g_1",
-              permissions: ["todo.*", "list.*"],
+              // A create may carry a link pointer, which is the `ebb/link`
+              // component written on the new row.
+              permissions: ["todo.*", "list.*", "ebb/link.*"],
               cursor_valid: true,
               reason: null,
               cursor: 0,
@@ -257,9 +260,11 @@ describe("client.actions composition", () => {
       "ebb/membership",
       "ebb/link",
     ]);
+    // The edge is a key of the new todo's own `ebb/link` component.
     const target = action!.updates.find(
       (update) => isComponentUpdate(update) && update.component === "ebb/link",
     )!;
-    expect(target.data).toMatchObject({ value: { target_id: created.list.id } });
+    expect(target).toMatchObject({ subject_id: created.todo.id, method: "merge" });
+    expect(linkTargetsOf(target, "list", "todo")).toEqual([created.list.id]);
   });
 });

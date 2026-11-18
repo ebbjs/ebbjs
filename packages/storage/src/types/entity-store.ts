@@ -10,24 +10,6 @@ export interface RelationshipIndexQuery {
   readonly targetId: string;
 }
 
-/**
- * Lookup key for the source-keyed forward relationship index: the
- * accessor name (`as`), the relationship type string, and the source
- * entity id.
- */
-export interface RelationshipSourceQuery {
-  readonly as: string;
-  readonly type: string;
-  readonly sourceId: string;
-}
-
-/** One live `ebb/link` edge read from the source side. */
-export interface RelationshipLink {
-  /** The link row id — the `subject_id` an unlink names. */
-  readonly relationshipId: string;
-  readonly targetId: string;
-}
-
 /** One live `ebb/membership` row read from the member entity side. */
 export interface MembershipLink {
   /** The membership row id — the `subject_id` a delete names. */
@@ -68,13 +50,9 @@ export interface MembershipLink {
  * - `query(model)` — returns all materialized entities of a model
  * - `queryByComponent(component)` — returns the live ids carrying that
  *   `<model>/<field>` component in ascending order, materializing dirty rows
- *   of the component's model first
  * - `queryByRelationship({ as, type, targetId })` — returns the distinct
  *   source ids indexed under that triple in ascending order,
- *   materializing dirty `ebb` rows first
- * - `queryByRelationshipSource({ as, type, sourceId })` — returns the
- *   live edges out of that source, ascending by target id,
- *   materializing dirty `ebb` rows first
+ *   materializing dirty rows
  * - `queryByMembership(groupId)` — returns the distinct live member
  *   entity ids whose `ebb/membership` row points at the group, ascending,
  *   materializing dirty `ebb` rows first
@@ -82,6 +60,10 @@ export interface MembershipLink {
  *   rows of that member entity, ascending by group id, materializing
  *   dirty `ebb` rows first
  * - `reset()` — clears all cached entities
+ *
+ * Forward relationship traversal is not a store read: an edge is a key of its
+ * source row's `ebb/link` component, so the caller reads the source row and
+ * derives its targets with `linkTargets`.
  */
 export interface EntityStore {
   get(id: string): Promise<Entity | null>;
@@ -93,13 +75,17 @@ export interface EntityStore {
    * read rather than a row filter; a tombstoned row's components are not
    * existence.
    *
-   * The dirty rows materialized first are the component prefix's model: `ebb`
-   * for a platform component, which is the row's committed model. An overlay
-   * component on a user row (#820) is where this step has to change.
+   * A platform component (`ebb/link`) may sit on a row of any model (#820), so
+   * its read materializes every dirty row; a user component materializes the
+   * dirty rows of its own model.
    */
   queryByComponent(component: string): Promise<readonly string[]>;
+  /**
+   * The distinct live sources of the edges under `(as, type, targetId)`,
+   * ascending. The reverse adjacency direction; a source's own edges are a
+   * component read of its row.
+   */
   queryByRelationship(query: RelationshipIndexQuery): Promise<readonly string[]>;
-  queryByRelationshipSource(query: RelationshipSourceQuery): Promise<readonly RelationshipLink[]>;
   queryByMembership(groupId: string): Promise<readonly string[]>;
   queryByMembershipEntity(entityId: string): Promise<readonly MembershipLink[]>;
   reset(): Promise<void>;

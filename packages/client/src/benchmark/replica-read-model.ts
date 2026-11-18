@@ -23,11 +23,12 @@
 
 import { arch, cpus, platform, release } from "node:os";
 import { Type } from "@sinclair/typebox";
-import { carriesComponent, componentName, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
+import { carriesComponent, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
+import { fieldComponent } from "../sync/component-name";
 import { emptyQuery, type Query } from "../sync/query";
 import { createReplicaExecutor, executePlan } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
@@ -109,11 +110,11 @@ const bytes = (value: number): string => grouped(Math.round(value));
 // ---------------------------------------------------------------------------
 
 log(
-  `generating ${config.n.toLocaleString()} pages, ${(
+  `generating ${config.n.toLocaleString()} pages carrying ${(
     config.n -
     1 +
     config.n * config.refsPerPage
-  ).toLocaleString()} relationship rows, ${config.n.toLocaleString()} membership rows, ` +
+  ).toLocaleString()} edge keys, ${config.n.toLocaleString()} membership rows, ` +
     `${config.bodyBlocks}x${config.bodyChars}-char bodies`,
 );
 const generateStart = performance.now();
@@ -133,16 +134,14 @@ const rowsOfModel = (type: string): readonly Entity[] =>
 
 const pageJson = jsonBytes(rowsOfModel("page"));
 // Every platform row is an `ebb` row, so the component is what splits them out.
+// A link is not one of them: it is a key of its source page.
 const platformRows = heldRows.filter((entity) => entity.model === EBB_MODEL_NAME);
-const relationshipJson = jsonBytes(
-  platformRows.filter((entity) => carriesComponent(entity, "link")),
-);
 const groupJson = jsonBytes(
   platformRows.filter(
     (entity) => carriesComponent(entity, "membership") || carriesComponent(entity, "group"),
   ),
 );
-const metadataJson = pageJson + relationshipJson + groupJson;
+const metadataJson = pageJson + groupJson;
 const bodyJson = workspace.bodyBytes * config.n;
 const workspaceJson = metadataJson + bodyJson;
 const recordBodyJson = jsonBytes(
@@ -453,15 +452,15 @@ const directCases: readonly ReadCase[] = [
     degreeOf: arrayLength,
   },
   {
-    label: "`relationshipLinks` — parent links (`sourceId`)",
+    label: "`relationships` — parent targets (`sourceId`, the row's link component)",
     read: async (id) =>
-      countIndexRows(replica.relationshipLinks({ as: "parent", type: "page", sourceId: id })),
+      countIndexRows(replica.relationships({ as: "parent", type: "page", sourceId: id })),
     degreeOf: arrayLength,
   },
   {
-    label: "`relationshipLinks` — references links (`sourceId`)",
+    label: "`relationships` — reference targets (`sourceId`, the row's link component)",
     read: async (id) =>
-      countIndexRows(replica.relationshipLinks({ as: "references", type: "page", sourceId: id })),
+      countIndexRows(replica.relationships({ as: "references", type: "page", sourceId: id })),
     degreeOf: arrayLength,
   },
   {
@@ -627,8 +626,7 @@ push(
 
 // 1. Footprint
 const footprintRows: readonly (readonly [string, number, number])[] = [
-  ["`page` (title, icon, updated_at)", workspace.counts.pages, pageJson],
-  ["`relationship` (parent + references)", workspace.counts.relationships, relationshipJson],
+  ["`page` (title, icon, updated_at, `ebb/link` edge keys)", workspace.counts.pages, pageJson],
   ["`membership` + `group`", workspace.counts.memberships + workspace.counts.groups, groupJson],
   ["**held metadata subtotal**", workspace.counts.heldRows, metadataJson],
   [
@@ -670,7 +668,7 @@ push(
 const componentBytes = new Map<string, { rows: number; bytes: number }>();
 for (const row of heldRows) {
   for (const [field, value] of Object.entries(row.data.fields)) {
-    const component = componentName(row.model, field);
+    const component = fieldComponent(row.model, field);
     if (!heldMetadata.holds(component)) continue;
     const bucket = componentBytes.get(component) ?? { rows: 0, bytes: 0 };
     bucket.rows += 1;
@@ -784,8 +782,9 @@ push(
   "",
   "`reverse` / `forwardOne` / `forwardMany` / `membershipGroups` from",
   "`packages/client/src/sync/relationship.ts`, with the `replicaAdjacency`-shaped async",
-  "reader `namespace.ts:620` wires (`replica.relationshipLinks` / `.relationships` /",
-  "`.membershipLinks`) and `replica.get` as the by-id row read.",
+  "reader `namespace.ts` wires (`replica.relationships` for both the source row's link",
+  "component and the reverse index, `.membershipLinks`) and `replica.get` as the by-id",
+  "row read.",
   "",
   "| read | µs/call (median) | degree median (min–max) | store reads/call | store rows/call | index rows/call | rows examined/call |",
   "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",

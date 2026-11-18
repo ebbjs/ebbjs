@@ -35,6 +35,7 @@ import {
   type FieldValue,
   type HLCState,
   isComponentUpdate,
+  linkTargets,
   localEvent,
   receiveRemoteHLC,
   type Update,
@@ -1221,15 +1222,15 @@ export class SyncClient<
   }
 
   /**
-   * Advance the client's HLC clock for a local event and return
-   * the freshly-minted HLC string. Used by the namespace's
-   * `setLinks` path to stamp the entity Update it constructs.
+   * Advance the client's HLC clock for a local event and return the
+   * freshly-minted HLC string. The draft planner stamps every leaf it builds
+   * from it.
    */
   freshHlc(): string {
     return localEvent(this.clock);
   }
 
-  /** Mint a fresh Update id. Used by the namespace's `setLinks` path. */
+  /** Mint a fresh Update id: the id seam the committer's operations consume. */
   generateUpdateId(): string {
     return generateId("u");
   }
@@ -1691,28 +1692,21 @@ export class SyncClient<
   }
 
   /**
-   * Build the wire Update(s) for a single relationship write.
-   *
-   * One-cardinality: a single Relationship Update. The caller
-   * supplies `sourceId` and `targetId` (string id or entity-shape;
-   * `null` for unlink). The source's data fields don't carry the FK.
-   *
-   * Many-cardinality: the source's FK component merge + N Relationship
-   * rows. The caller supplies `entityUpdate` (carrying the canonical FK
-   * set in the declared component) and a `targetIds` patch.
+   * Build the wire Update(s) for a single relationship write: an `ebb/link`
+   * merge on the source row, one presence leaf per added edge and one
+   * tombstone per removed one, with a one-cardinality move carried as one
+   * Update. `currentTargets` is the live set a `replace` or a move diffs
+   * against.
    *
    * Pointer values may be a string id or an entity-shape object
    * (anything with a string `.id`); both are normalized to the id at
    * write time. Anything else is rejected with `EntityValidationError`.
    *
-   * Permission enforcement does not happen here: `write()` runs the
-   * shared local permission pass ({@link collectPermissionViolations})
-   * over every Update before enqueuing, and the server remains the
-   * trust boundary.
-   */
-  /**
-   * Build a link write. The client owns the clock and the id space, so the
-   * caller supplies only the row it is writing.
+   * The client owns the clock and the id space, so the caller supplies only
+   * the row it is writing. Permission enforcement does not happen here:
+   * `write()` runs the shared local permission pass
+   * ({@link collectPermissionViolations}) over every Update before enqueuing,
+   * and the server remains the trust boundary.
    */
   buildRelationshipWrite(
     opts: Omit<BuildRelationshipWriteOptions, "hlc">,
@@ -2667,14 +2661,13 @@ export function createClient<
         const row = await client.storage.entities.get(entityId);
         return row === null || row.model !== model ? null : row;
       },
-      // A one-cardinality unlink must name the live edge's row id.
-      relationshipLink: async (as: string, type: string, sourceId: string) => {
-        const [link] = await client.storage.entities.queryByRelationshipSource({
-          as,
-          type,
-          sourceId,
-        });
-        return link === undefined ? undefined : { relationshipId: link.relationshipId };
+      // A link write diffs its keys against the source row's live edges, which
+      // are the `ebb/link` keys on the row itself. A row the local store cannot
+      // see reads as unknown, so a verb that must diff refuses.
+      relationshipTargets: async (as: string, type: string, sourceId: string) => {
+        const row = await client.storage.entities.get(sourceId);
+        if (row === null) return undefined;
+        return linkTargets(row, as, type);
       },
       // The `last_grant` guard reads the group's local member view.
       grants: async (groupId: string) => {

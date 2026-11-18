@@ -580,13 +580,13 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(3);
   });
 
-  it("matches a whole-model read when a cross-model write renames the row", async () => {
+  it("does not re-run a model read when an ebb/* overlay lands on its row", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
     const cache = createQueryCache(replica);
-    // Writing an `ebb/*` component moves the row's model, so the change reports
-    // every field under both prefixes; the `todo/*` read still sees its old
-    // components.
+    // An `ebb/*` component may sit on a row of any model and never determines
+    // the row's model (ADR 0001, decision 1), so a `todo/*` read's components
+    // are untouched by an edge write.
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", emptyQuery("todo"), source);
     store.subscribe(() => {});
@@ -594,7 +594,7 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "ebb", { link: "x" });
-    expect(source.runs).toBe(2);
+    expect(source.runs).toBe(1);
   });
 });
 

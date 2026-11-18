@@ -16,7 +16,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 import { emptyQuery, type Predicate, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { createReplicaExecutor, createRowsExecutor, executePlan } from "../query-execute";
-import { rowComponents } from "../test-utils";
+import { linkAction, rowComponents } from "../test-utils";
 
 const field = (value: unknown, updateId: string): FieldValue => ({
   value,
@@ -39,6 +39,16 @@ const put = (gsn: number, id: string, type: string, fields: Record<string, unkno
     }),
   ),
 });
+
+/** A link merge on its source row: one presence key at `(as, type)`. */
+const link = (gsn: number, sourceId: string, as: string, targetId: string): Action =>
+  linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(1_711_036_800_000, gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type: "todo", targetId }],
+  });
 
 const remove = (gsn: number, id: string, _type: string): Action => ({
   id: `a_${gsn}`,
@@ -99,24 +109,9 @@ describe("executePlan", () => {
       put(3, "todo_3", "todo", { title: "Elsewhere" }),
       put(4, "user_1", "user", { name: "Ada" }),
       put(5, "user_2", "user", { name: "Grace" }),
-      put(6, "rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
-      put(7, "rel_2", "link", {
-        source_id: "todo_2",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
-      put(8, "rel_3", "link", {
-        source_id: "todo_3",
-        target_id: "user_2",
-        field: "owner",
-        type: "todo",
-      }),
+      link(6, "todo_1", "owner", "user_1"),
+      link(7, "todo_2", "owner", "user_1"),
+      link(8, "todo_3", "owner", "user_2"),
     ]);
     const relationships = vi.spyOn(replica, "relationships");
     const get = vi.spyOn(replica, "get");
@@ -159,18 +154,8 @@ describe("executePlan", () => {
       put(1, "todo_1", "todo", { title: "Ship", completed: true }),
       put(2, "todo_2", "todo", { title: "Test", completed: false }),
       put(3, "todo_3", "todo", { title: "Docs", completed: true }),
-      put(4, "rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
-      put(5, "rel_2", "link", {
-        source_id: "todo_2",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
+      link(4, "todo_1", "owner", "user_1"),
+      link(5, "todo_2", "owner", "user_1"),
     ]);
     const iterate = vi.spyOn(replica, "iterate");
 
@@ -195,18 +180,8 @@ describe("executePlan", () => {
   it("drops index hits whose row is missing from the replica", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
-      put(3, "rel_2", "link", {
-        source_id: "todo_missing",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
+      link(2, "todo_1", "owner", "user_1"),
+      link(3, "todo_missing", "owner", "user_1"),
     ]);
 
     const rows = executePlan(
@@ -280,12 +255,7 @@ describe("executePlan", () => {
   it("matches nothing for an anyOf that names no live edge or group", () => {
     const replica = seed([
       put(1, "todo_1", "todo", { title: "Ship" }),
-      put(2, "rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
+      link(2, "todo_1", "owner", "user_1"),
       put(3, "eg_1", "membership", { entity_id: "todo_1", group_id: "group_1" }),
     ]);
     const executor = createReplicaExecutor(replica);
@@ -310,18 +280,8 @@ describe("executePlan", () => {
       put(1, "todo_1", "todo", { title: "Ship" }),
       put(2, "todo_2", "todo", { title: "Test" }),
       put(3, "todo_3", "todo", { title: "Elsewhere" }),
-      put(4, "rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "user_1",
-        field: "owner",
-        type: "todo",
-      }),
-      put(5, "rel_2", "link", {
-        source_id: "todo_2",
-        target_id: "user_2",
-        field: "owner",
-        type: "todo",
-      }),
+      link(4, "todo_1", "owner", "user_1"),
+      link(5, "todo_2", "owner", "user_2"),
     ]);
 
     const rows = executePlan(

@@ -1,12 +1,6 @@
 import type { IDBPDatabase } from "idb";
-import { componentModel, EBB_MODEL_NAME, type Entity } from "@ebbjs/core";
-import type {
-  EntityStore,
-  MembershipLink,
-  RelationshipIndexQuery,
-  RelationshipLink,
-  RelationshipSourceQuery,
-} from "../types/entity-store";
+import { componentModel, EBB_MODEL_NAME, isEbbComponent, type Entity } from "@ebbjs/core";
+import type { EntityStore, MembershipLink, RelationshipIndexQuery } from "../types/entity-store";
 import type { ActionLog } from "../types/action-log";
 import type { DirtyTracker } from "../types/dirty-tracker";
 import { componentsOf } from "../internal/component-index";
@@ -14,10 +8,8 @@ import { foldEntityActions } from "../internal/materialize";
 import {
   addIndexRow,
   forwardIndexDelta,
-  forwardIndexKey,
   forwardMembershipIndexKey,
   liveMembershipLinks,
-  liveRelationshipLinks,
   liveSourceIds,
   membershipIndexKey,
   removeIndexRow,
@@ -39,16 +31,13 @@ import type { EbbDBSchema, StoredEntity } from "./schema";
  * driven by the same DirtyTracker that drives the in-memory adapter.
  *
  * The `relationships` object store is the shared adjacency index: one
- * record per composite key mapping each live row id to its yielded id.
- * It serves `ebb/link` edges in both directions — keyed by
- * `(field, type, target_id)` for the reverse read and
- * `(field, type, source_id)` for the forward read — and `ebb/membership`
- * rows keyed by the synthetic `groups` accessor (by group or by member
- * entity). The store name and schema version are unchanged; the
- * index is derived and, following #248, is not backfilled, so a
- * database predating membership keys must be cleared rather than
- * reused. It is rewritten alongside the entity store on every
- * materialization.
+ * record per composite key mapping each live entry to its yielded id.
+ * It serves the reverse direction of `ebb/link` edges — keyed by
+ * `(field, type, target_id)`, each entry the source row carrying the edge —
+ * and `ebb/membership` rows in both directions, keyed by the synthetic
+ * `groups` accessor (by group or by member entity). The index is derived and,
+ * following #248, is not backfilled, so it is rewritten alongside the entity
+ * store on every materialization.
  *
  * ## Materialization Flow
  * 1. Caller invokes `append()` on ActionLog
@@ -93,9 +82,9 @@ export const createIndexedDBEntityStore = (
   };
 
   /**
-   * Read-modify-write one row into the `relationships` store. A row is
-   * keyed by its id, so a tombstone or re-key drops only that row and
-   * leaves sibling rows on the same natural key intact.
+   * Read-modify-write one entry into the `relationships` store. An entry is
+   * keyed by its own id, so a tombstone or a dropped key removes only that
+   * entry and leaves its siblings on the same index key intact.
    */
   const addIndexEntry = async (entry: IndexEntry): Promise<void> => {
     const record = await db.get("relationships", entry.key);
@@ -145,6 +134,16 @@ export const createIndexedDBEntityStore = (
     }
   };
 
+  /**
+   * Materialize every dirty row, whatever model it belongs to, before a read
+   * whose rows may carry the component under any model.
+   */
+  const materializeDirty = async (): Promise<void> => {
+    for (const id of await dirtyTracker.getDirty()) {
+      await replay(id);
+    }
+  };
+
   const readIndex = async (key: string): Promise<readonly string[]> => {
     const record = await db.get("relationships", key);
     return liveSourceIds(record?.rows);
@@ -173,7 +172,10 @@ export const createIndexedDBEntityStore = (
     },
 
     async queryByComponent(component: string): Promise<readonly string[]> {
-      await materializeDirtyModel(componentModel(component));
+      // An `ebb/*` overlay sits on a row of any model, so its read cannot
+      // narrow to one.
+      if (isEbbComponent(component)) await materializeDirty();
+      else await materializeDirtyModel(componentModel(component));
 
       const rows = await db.getAllFromIndex("entities", "components", component);
 
@@ -190,18 +192,9 @@ export const createIndexedDBEntityStore = (
       type,
       targetId,
     }: RelationshipIndexQuery): Promise<readonly string[]> {
-      await materializeDirtyModel(EBB_MODEL_NAME);
+      // The source row carrying the edge may be any model's.
+      await materializeDirty();
       return readIndex(reverseIndexKey(as, type, targetId));
-    },
-
-    async queryByRelationshipSource({
-      as,
-      type,
-      sourceId,
-    }: RelationshipSourceQuery): Promise<readonly RelationshipLink[]> {
-      await materializeDirtyModel(EBB_MODEL_NAME);
-      const record = await db.get("relationships", forwardIndexKey(as, type, sourceId));
-      return liveRelationshipLinks(record?.rows);
     },
 
     async queryByMembership(groupId: string): Promise<readonly string[]> {

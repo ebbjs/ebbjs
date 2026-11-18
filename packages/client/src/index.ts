@@ -73,7 +73,6 @@ export {
   type PermissionViolation,
   type PermissionVerb,
   type PermissionQuery,
-  type SourceMismatchViolation,
   type TypeMismatchViolation,
   type CanResult,
   type CanSubject,

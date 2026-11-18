@@ -62,12 +62,15 @@ import type { IndexRows } from "../internal/reverse-index";
  * 16 makes row existence a persisted row fact carried by the row's create
  * (issue #817): a stored row's `exists` / `created_hlc` may come from the
  * deleted "`replace` implies create" inference, and a stored Action may carry
- * only component writes, so the pair cannot be read as the new shape. None of
+ * only component writes, so the pair cannot be read as the new shape. Version
+ * 17 makes a link a keyed component of its source row (issue #820): a database
+ * below it carries `rel_*` link rows and reverse entries keyed on them, which
+ * is not the shape a reader derives from a row count. None of
  * these shapes can be read out of the previous one, so a database below any of
  * them is discarded at open. Bump this when adding or changing object stores,
  * or when a persisted row shape changes.
  */
-export const EBB_SCHEMA_VERSION = 16;
+export const EBB_SCHEMA_VERSION = 17;
 
 /**
  * The IndexedDB database name an adapter opens when the caller passes none.
@@ -129,6 +132,12 @@ export const RESET_VERSIONS: readonly ResetGate[] = Object.freeze([
       "row existence became the create's persisted fact: a row written before it may carry " +
       "the existence the old inference gave it, and its Actions may carry only component " +
       "writes (issue #817)",
+  },
+  {
+    version: 17,
+    reason:
+      "a link became a keyed component of its source row, so a stored `ebb/link` row and the " +
+      "reverse entries keyed on it are not the shape this version reads (issue #820)",
   },
 ]);
 
@@ -193,16 +202,15 @@ export interface EbbDBSchema extends DBSchema {
   };
   /**
    * Shared adjacency index: one record per composite key, mapping each
-   * live row id to its yielded id. Serves `ebb/link` edges in both
-   * directions — keyed by `(field, type, target_id)` for the reverse
-   * read and `(field, type, source_id)` for the forward read — and
-   * `ebb/membership` rows keyed by the synthetic `groups` accessor
-   * (by group or by member entity). Keying on the row (not the source)
-   * keeps a duplicate-natural-key row from erasing a source its sibling
-   * still supplies. The name and the schema version are unchanged: the
-   * index is derived, and following #248 it is not backfilled, so a
-   * database written before membership keys existed must be cleared (or
-   * `reset()`) rather than reused. This store is maintained alongside
+   * live entry to its yielded id. Serves the reverse direction of
+   * `ebb/link` edges — keyed by `(field, type, target_id)`, each entry the
+   * source row that carries the edge — and `ebb/membership` rows in both
+   * directions, keyed by the synthetic `groups` accessor (by group or by
+   * member entity). A membership entry keeps its row id, so a duplicate
+   * membership row cannot erase a member its sibling still supplies; a link
+   * entry is the source id itself. The index is derived, and following #248
+   * it is not backfilled, so it is rebuilt rather than reused across the
+   * versions {@link RESET_VERSIONS} discards. It is maintained alongside
    * `entities` on every materialization.
    */
   relationships: {

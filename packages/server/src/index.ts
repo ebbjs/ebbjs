@@ -16,6 +16,5 @@ export type {
   CreateOptions,
   EntityName,
   RelationshipTarget,
-  UnrelateOptions,
   WriteOptions,
 } from "./context";

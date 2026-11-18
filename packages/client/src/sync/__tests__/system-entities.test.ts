@@ -26,7 +26,15 @@ import { ActionRejectedError } from "@ebbjs/write";
 import type { ActionDrafts } from "../drafts";
 
 import { createClient } from "../client";
-import { platformEntity, rowFields, rowsByModel, seedReplicaRow } from "../test-utils";
+import {
+  linkLeavesOf,
+  linkTargetsOf,
+  linkValue,
+  platformEntity,
+  rowFields,
+  rowsByModel,
+  seedReplicaRow,
+} from "../test-utils";
 
 interface RecordedRequest {
   readonly url: string;
@@ -473,39 +481,38 @@ describe("draft system — shared verbs", () => {
     });
   });
 
-  it("group.link emits one relationship put naming the group as source", async () => {
+  it("group.link merges one presence key on the group row", async () => {
     const { client, seen } = await mkClient();
 
     await client.actions.linkGroupLead({ id: "g_1", profileId: "profile_1" });
 
-    const relationships = rowsByModel(updatesOf(seen), "link");
-    expect(relationships).toHaveLength(1);
+    const [relationships] = rowsByModel(updatesOf(seen), "link");
+    expect(relationships![0]).toMatchObject({ subject_id: "g_1", method: "merge" });
     // The link's `type` is the source model the declaration names (`ebb`), not
     // the logical kind.
-    expect(rowFields(relationships[0]!)).toMatchObject({
-      source_id: "g_1",
-      target_id: "profile_1",
-      field: "lead",
-      type: "ebb",
-    });
+    expect(linkTargetsOf(relationships![0]!, "lead", "ebb")).toEqual(["profile_1"]);
   });
 
-  it("group.unlink deletes the live edge by its row id", async () => {
+  it("group.unlink tombstones the live key on the group row", async () => {
     const { client, storage, seen } = await mkClient();
-    await storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "g_1",
-        target_id: "profile_1",
-        field: "lead",
-        type: "ebb",
-      }),
-    );
+    const group = platformEntity("g_1", "group", { name: "Team" });
+    await storage.entities.set({
+      ...group,
+      data: {
+        fields: {
+          ...group.data.fields,
+          link: linkValue([{ as: "lead", type: "ebb", targetId: "profile_1" }]),
+        },
+      },
+    });
 
     await client.actions.unlinkGroupLead({ id: "g_1" });
 
-    const updates = updatesOf(seen);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({ subject_id: "rel_1", method: "delete", data: null });
+    const [relationships] = rowsByModel(updatesOf(seen), "link");
+    expect(relationships![0]).toMatchObject({ subject_id: "g_1", method: "merge" });
+    expect(linkLeavesOf(relationships![0]!, "lead", "ebb")).toMatchObject({
+      profile_1: { value: null },
+    });
   });
 });
 

@@ -21,9 +21,11 @@ describe("Context types", () => {
       ctx.delete("comment", "e_1");
       ctx.relate("ticket", created.id, "comments", "e_2");
       ctx.relate("ticket", created.id, "comments", ["e_2", "e_3"]);
-      expectTypeOf(
-        ctx.unrelate("ticket", created.id, "comments", "e_2", { relationshipId: "r_1" }),
-      ).toEqualTypeOf<Promise<void>>();
+      // A target names the edge's key; no target clears the accessor, which
+      // reads the source row through `get`.
+      expectTypeOf(ctx.unrelate("ticket", created.id, "comments", "e_2")).toEqualTypeOf<
+        Promise<void>
+      >();
       await ctx.unrelate("ticket", created.id, "comments");
 
       expectTypeOf(await ctx.commit()).toEqualTypeOf<CommitOutcome>();

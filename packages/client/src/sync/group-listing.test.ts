@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { ebbComponent, makeHlc, type Action } from "@ebbjs/core";
 import { defineModel, defineRelationship, defineSchema, e, TextCellSchema } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { StorageAdapter } from "@ebbjs/storage/types";
@@ -27,9 +27,11 @@ import {
   emptyCatchUpResponse,
   isListingRequest,
   jsonResponse,
+  linkValue,
   openSseResponse,
   rowComponents,
   waitFor,
+  type FixtureEdge,
 } from "./test-utils";
 import type { EntityResponse, GroupListingResponse } from "./types";
 import type { Update } from "@ebbjs/core";
@@ -78,29 +80,39 @@ const membership = (
   });
 
 /**
- * A relationship row as the listing ships it: scoped by its source, which is
- * what the local adjacency index keys on.
+ * A listing row carrying one link edge: a link is a keyed component of its
+ * source, so the row a listing ships is the source and the edge rides on it.
  */
-const relationshipRow = (
-  id: string,
-  sourceId: string,
-  targetId: string,
-  lastGsn: number,
-  fields: { readonly field?: string; readonly type?: string } = {},
-): EntityResponse =>
-  wire({
-    id,
-    type: "ebb",
-    fields: {
-      link: {
-        field: fields.field ?? "assignee",
-        type: fields.type ?? "blog_post",
-        source_id: sourceId,
-        target_id: targetId,
+const withLink = (row: EntityResponse, edges: readonly FixtureEdge[]): EntityResponse => ({
+  ...row,
+  data: { fields: { ...row.data.fields, link: linkValue(edges, `u_${row.id}_link`, HLC) } },
+});
+
+/** A log action that merges link keys onto a source row. */
+const linkAction = (opts: {
+  id: string;
+  gsn: number;
+  sourceId: string;
+  edges: readonly FixtureEdge[];
+  hlc?: string;
+}): Action => {
+  const hlc = opts.hlc ?? HLC;
+  return {
+    id: opts.id,
+    actor_id: "a_peer",
+    hlc,
+    gsn: opts.gsn,
+    updates: [
+      {
+        id: `u_${opts.id}`,
+        subject_id: opts.sourceId,
+        component: ebbComponent("link"),
+        method: "merge",
+        data: linkValue(opts.edges, `u_${opts.id}`, hlc),
       },
-    },
-    lastGsn,
-  });
+    ],
+  };
+};
 
 /** One listing page, served by token (page 1 has no token). */
 interface Page {
@@ -620,17 +632,12 @@ describe("SyncClient group listing", () => {
     const ahead: Action[] = [
       // A relationship row the log carries too: both paths must end with it,
       // and with the same adjacency answer.
-      putAction({
+      linkAction({
         id: "act_link",
         gsn: 35,
-        entityId: "rel_1",
-        model: "link",
-        fields: {
-          source_id: "post_2",
-          target_id: "post_1",
-          type: "blog_post",
-          field: "parent",
-        },
+        sourceId: "post_2",
+        edges: [{ as: "parent", type: "blog_post", targetId: "post_1" }],
+        hlc: NEWER,
       }),
       putAction({ id: "act_put", gsn: 45, entityId: "post_2", fields: { title: "V1" } }),
       {
@@ -654,10 +661,10 @@ describe("SyncClient group listing", () => {
             // Content predating membership: in the seed, never in the log.
             wire({ id: "post_1", type: "blog_post", fields: { title: "Old" }, lastGsn: 3 }),
             membership("eg_2", "post_2", "g_1", 4),
-            relationshipRow("rel_1", "post_2", "post_1", 35, {
-              field: "parent",
-              type: "blog_post",
-            }),
+            withLink(
+              wire({ id: "post_2", type: "blog_post", fields: { title: "V0" }, lastGsn: 35 }),
+              [{ as: "parent", type: "blog_post", targetId: "post_1" }],
+            ),
           ],
         }),
       catchUp: () => catchUpActions(ahead),
@@ -676,12 +683,15 @@ describe("SyncClient group listing", () => {
 
     // Seed at W + tail equals the full replay for everything the group's
     // history carries; the seed adds only the pre-membership content.
-    expect(seeded.replica.get("post_2")).toEqual(replayed.replica.get("post_2"));
+    // The seed ships post_2's base — its create predates the tail this mock
+    // serves — so the row's content and its edge must agree, not its base facts.
+    expect(seeded.replica.get("post_2")?.data).toEqual(replayed.replica.get("post_2")?.data);
     expect(titleOf(seeded.replica.get("post_1"))).toBe("Old");
     expect(replayed.replica.get("post_1")).toBeUndefined();
 
-    // The relationship row is the other half of the row set: the seed ships
-    // it, the log carries it, and both paths answer the same adjacency.
+    // The link is the other half of the row's component set: the seed ships it
+    // on its source, the log carries it, and both paths answer the same
+    // adjacency.
     for (const client of [seeded, replayed]) {
       expect(
         client.replica.relationships({ as: "parent", type: "blog_post", sourceId: "post_2" }),
@@ -1097,17 +1107,16 @@ describe("SyncClient group listing", () => {
           watermark: 40,
           entities: [
             membership("eg_1", "post_1", "g_1", 4),
-            wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
             wire({
               id: documentId,
               type: "text_document",
               fields: { content: {}, version: 1 },
               lastGsn: 5,
             }),
-            relationshipRow("rel_body_1", "post_1", documentId, 6, {
-              field: "body",
-              type: body.type,
-            }),
+            withLink(
+              wire({ id: "post_1", type: "blog_post", fields: { title: "Parent" }, lastGsn: 3 }),
+              [{ as: "body", type: body.type, targetId: documentId }],
+            ),
           ],
         }),
     });
@@ -1122,15 +1131,16 @@ describe("SyncClient group listing", () => {
     await waitFor(async () => (await client.readLocalEntity("post_1")) !== null);
     await tick();
 
-    // The reads a missing relationship row breaks on a cold replica: the
-    // join the accessor plans, the adjacency index it traverses, and the
-    // document row it resolves the link to.
-    const links = await client.storage.entities.queryByRelationshipSource({
-      as: "body",
-      type: body.type,
-      sourceId: "post_1",
-    });
-    expect(links.map((link) => link.targetId)).toEqual([documentId]);
+    // The reads a missing link breaks on a cold replica: the join the accessor
+    // plans, the reverse index it traverses, and the document row it resolves
+    // the link to.
+    expect(
+      await client.storage.entities.queryByRelationship({
+        as: "body",
+        type: body.type,
+        targetId: documentId,
+      }),
+    ).toEqual(["post_1"]);
 
     expect(
       client.replica.relationships({ as: "body", type: body.type, sourceId: "post_1" }),

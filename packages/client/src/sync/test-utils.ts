@@ -28,7 +28,6 @@
 import { vi, type MockInstance } from "vitest";
 
 import {
-  componentName,
   ebbComponent,
   EBB_COMPONENT_KINDS,
   EBB_MODEL_NAME,
@@ -46,6 +45,7 @@ import {
 } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/types";
 import { defineAction } from "../schema/action";
+import { fieldComponent } from "./component-name";
 import type { createClient } from "./client";
 import type { ActionDrafts, DuplicateAt, GroupRef } from "./drafts";
 import { isGroupListingUrl } from "./endpoints";
@@ -116,7 +116,7 @@ export const seedReplicaRow = (
           ...Object.entries(row.data.fields).map(([field, value], index) => ({
             id: `u_seed_${seedPosition}_${index}`,
             subject_id: row.id,
-            component: componentName(row.model, field),
+            component: fieldComponent(row.model, field),
             method: isFieldMap(value) ? ("merge" as const) : ("replace" as const),
             data: value,
           })),
@@ -153,7 +153,7 @@ export const rowComponents = (
 ): readonly (readonly [`${string}/${string}`, unknown])[] =>
   isPlatformModel(model)
     ? [[ebbComponent(model), fields] as const]
-    : Object.entries(fields).map(([key, value]) => [componentName(model, key), value] as const);
+    : Object.entries(fields).map(([key, value]) => [fieldComponent(model, key), value] as const);
 
 /** A materialized platform row: an `ebb` row carrying one atomic component. */
 export const platformEntity = (
@@ -236,19 +236,114 @@ export const entityRow = (
     stamps,
   );
 
+/** One edge a link fixture carries: the accessor, its type label, and the target. */
+export interface FixtureEdge {
+  readonly as: string;
+  readonly type: string;
+  readonly targetId: string;
+  /** A key the fixture tombstones instead of setting. */
+  readonly present?: boolean;
+}
+
+/** The `ebb/link` value carrying one leaf per edge: presence, or its tombstone. */
+export const linkValue = (
+  edges: readonly FixtureEdge[],
+  updateId = "u_1",
+  hlc = makeHlc(1),
+): FieldValue => {
+  const byAs: Record<string, Record<string, Record<string, FieldValue>>> = {};
+  for (const edge of edges) {
+    const byType = (byAs[edge.as] ??= {});
+    const byTarget = (byType[edge.type] ??= {});
+    byTarget[edge.targetId] = {
+      value: edge.present === false ? null : true,
+      update_id: updateId,
+      hlc,
+    };
+  }
+  return {
+    map: Object.fromEntries(
+      Object.entries(byAs).map(([as, byType]) => [
+        as,
+        {
+          map: Object.fromEntries(
+            Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+          ),
+        },
+      ]),
+    ),
+  };
+};
+
+/** The target leaves one `ebb/link` Update carries at `(as, type)`. */
+export const linkLeavesOf = (
+  update: Update,
+  as: string,
+  type: string,
+): Readonly<Record<string, { readonly value: unknown }>> => {
+  const data = update.data as {
+    map: Record<string, { map: Record<string, { map: Record<string, { value: unknown }> }> }>;
+  };
+  return data.map[as]?.map[type]?.map ?? {};
+};
+
+/** The live target ids one `ebb/link` Update carries at `(as, type)`, ascending. */
+export const linkTargetsOf = (update: Update, as: string, type: string): readonly string[] =>
+  Object.entries(linkLeavesOf(update, as, type))
+    .filter(([, leaf]) => leaf.value === true)
+    .map(([targetId]) => targetId)
+    .sort();
+
 /**
- * A materialized `ebb/link` row. `field` and `type` name the relationship the
- * link realizes, so a traversal can tell two links on one row apart.
+ * A link write as an Action: one `ebb/link` merge on the source row, one
+ * presence key per edge. It creates no row — the edge is a key of the source's
+ * own component.
+ */
+export const linkAction = (args: {
+  readonly id: string;
+  readonly hlc: string;
+  readonly gsn: number;
+  readonly sourceId: string;
+  readonly edges: readonly FixtureEdge[];
+}): Action => ({
+  id: args.id,
+  actor_id: "a_peer",
+  hlc: args.hlc,
+  gsn: args.gsn,
+  updates: [
+    {
+      id: `${args.id}_link`,
+      subject_id: args.sourceId,
+      component: ebbComponent("link"),
+      method: "merge",
+      data: linkValue(args.edges, `${args.id}_link`, args.hlc),
+    },
+  ],
+});
+
+/**
+ * A source row carrying `edges`: a link is a keyed component of its source, so
+ * the row the fixture names is the source and its model is the row's own.
+ * `fields` are the row's own plain field values, stamped like any other.
  */
 export const linkRow = (
-  id: string,
   sourceId: string,
-  targetId: string,
-  field: string,
-  type: string,
+  model: string,
+  edges: readonly FixtureEdge[],
+  fields: Record<string, unknown> = {},
   deletedHlc: string | null = null,
 ): Entity =>
-  platformEntity(id, "link", { source_id: sourceId, target_id: targetId, field, type }, deletedHlc);
+  stampedRow(
+    sourceId,
+    model,
+    {
+      ...Object.fromEntries(
+        Object.entries(fields).map(([key, value]) => [key, { value, update_id: "u_1" }]),
+      ),
+      link: linkValue(edges),
+    },
+    deletedHlc === null ? {} : { deletedHlc },
+  );
 
 /**
  * A materialized `ebb/membership` row. An omitted `groupId` writes none, the

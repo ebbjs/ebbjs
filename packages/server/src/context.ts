@@ -4,13 +4,7 @@ import type { ContextBase } from "@ebbjs/write";
  * The port's value types are `@ebbjs/write`'s; re-exported so a handler author
  * keeps importing them from the SDK that typed the handler.
  */
-export type {
-  CommitOutcome,
-  CreateOptions,
-  RelationshipTarget,
-  UnrelateOptions,
-  WriteOptions,
-} from "@ebbjs/write";
+export type { CommitOutcome, CreateOptions, RelationshipTarget, WriteOptions } from "@ebbjs/write";
 
 /**
  * The entity names the application schema declares.

@@ -12,12 +12,7 @@
  */
 
 import { carriesComponent, type EbbComponentKind, type Entity } from "@ebbjs/core";
-import type {
-  MembershipLink,
-  RelationshipIndexQuery,
-  RelationshipLink,
-  RelationshipSourceQuery,
-} from "@ebbjs/storage/types";
+import type { MembershipLink, RelationshipIndexQuery } from "@ebbjs/storage/types";
 import type { TObject, TSchema } from "@sinclair/typebox/type";
 
 import type { ComponentMigrations } from "./migrations";
@@ -29,10 +24,7 @@ export {
   buildMembershipDelete,
   buildMembershipUpdate,
   buildMembershipUpdates,
-  buildManyEntityUpdate,
-  buildRelationshipUpdate,
   buildRelationshipWrite,
-  collectManyTargetIds,
   normalizeManyPointers,
   resolveCardinality,
   type BuildRelationshipWriteOptions,
@@ -50,8 +42,12 @@ export type { PointerValue } from "./query-builder";
  * to the storage layer's adjacency index in `buildRowAccessors`.
  */
 export interface AdjacencyReader {
-  /** Live edges out of the query's source under `(as, type)`, ascending by target id. */
-  forwardLinks(query: RelationshipSourceQuery): Promise<readonly RelationshipLink[]>;
+  /**
+   * Live target ids of `(as, type)` on the source row's own `ebb/link`
+   * component, ascending. A component read, not an index read: the source row
+   * carries its edges.
+   */
+  forwardTargets(sourceId: string, as: string, type: string): Promise<readonly string[]>;
   /** Distinct live source ids pointing at the query's target, ascending. */
   reverseSourceIds(query: RelationshipIndexQuery): Promise<readonly string[]>;
   /** Live membership rows of the member entity, ascending by group id. */
@@ -60,17 +56,16 @@ export interface AdjacencyReader {
 
 /**
  * Build a forward-singular accessor result. For
- * `sourceCardinality: "one"` the canonical FK lives on a materialized
- * `ebb/link` row, read through the forward index by `source_id + field +
- * type`; it is not a field on the source entity, so users don't have to
- * declare one — `defineRelationship({source, target, as})` alone wires the
- * link.
+ * `sourceCardinality: "one"` the edge is a key of the source row's
+ * `ebb/link` component, read as `linkTargets(row, as, type)`; it is not a
+ * field on the source's model, so users don't have to declare one —
+ * `defineRelationship({source, target, as})` alone wires the link.
  *
  * Returns:
- * - `null` when no link row exists for `(sourceId, field, type)` — the link
- *   was cleared or never set
- * - `undefined` when an edge exists in metadata but the target id is
- *   dangling (target missing from the cache)
+ * - `null` when the source carries no live edge for `(field, type)` — the
+ *   link was cleared or never set, or the source row is tombstoned
+ * - `undefined` when the target id is dangling (target missing from the
+ *   cache)
  * - `Entity` when both the edge and target resolve
  *
  * Source-mismatch (`source.model !== sourceName`) and missing-source
@@ -88,19 +83,20 @@ export async function forwardOne(
   const source = await loadEntity(readLocalEntity, sourceId);
   if (source === null) return undefined;
   if (source.model !== sourceName) return undefined;
-  const links = await adjacency.forwardLinks({ as: field, type, sourceId });
-  recordTraversalRows(links.length);
-  const first = links[0];
+  // A tombstoned row keeps its fields, so its edges are asked for separately.
+  if (source.deleted_hlc !== null) return null;
+  const targets = await adjacency.forwardTargets(sourceId, field, type);
+  recordTraversalRows(targets.length);
+  const first = targets[0];
   if (first === undefined) return null;
-  const target = await loadEntity(readLocalEntity, first.targetId);
+  const target = await loadEntity(readLocalEntity, first);
   return target ?? undefined;
 }
 
 /**
- * Build a forward-many accessor result. The canonical FK set lives on
- * materialized `ebb/link` rows, read through the forward index by
- * `source_id + field + type`; it is not a field on the source entity. The
- * distinct target ids the index returns are the link's set of targets.
+ * Build a forward-many accessor result. The target set is the live edges
+ * keyed on the source row's `ebb/link` component, read as
+ * `linkTargets(row, as, type)`; it is not a field on the source entity.
  *
  * `targetShape` drives the projection on `await qb` — the chain is
  * generic over the target entity's field map.
@@ -123,9 +119,9 @@ export function forwardMany<TFields extends Record<string, TSchema>>(
     const source = await loadEntity(readLocalEntity, sourceId);
     if (source === null) return [];
     if (source.model !== sourceName) return [];
-    const links = await adjacency.forwardLinks({ as: field, type, sourceId });
-    recordTraversalRows(links.length);
-    const targetIds = [...new Set(links.map((link) => link.targetId))];
+    if (source.deleted_hlc !== null) return [];
+    const targetIds = await adjacency.forwardTargets(sourceId, field, type);
+    recordTraversalRows(targetIds.length);
     return loadRows(readLocalEntity, targetIds, targetName);
   };
   return buildLazyQueryBuilder(loader, targetShape, migrations);

@@ -3,6 +3,7 @@ import {
   componentField,
   componentModel,
   isComponentUpdate,
+  isEbbComponent,
   latestHlc,
   mergeFieldValue,
   updateModel as baseUpdateModel,
@@ -233,8 +234,13 @@ export const applyUpdate = (
   return {
     ...entity,
     // The create fixes the row's model; only a placeholder — a row whose create
-    // has not arrived — takes the prefix from the write that reached it first.
-    model: entity.exists ? entity.model : componentModel(update.component),
+    // has not arrived — takes the prefix from the write that reached it first,
+    // and an `ebb/*` overlay never supplies one: it may sit on a row of any
+    // model (ADR 0001, decision 1).
+    model:
+      entity.exists || isEbbComponent(update.component)
+        ? entity.model
+        : componentModel(update.component),
     // A leaf `replace` is the leaf-level LWW compare, so it shares the merge
     // rule: an out-of-order base snapshot must not clobber a newer write.
     data: mergeFields(entity.data, write, options),

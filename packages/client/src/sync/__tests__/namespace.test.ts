@@ -370,14 +370,27 @@ const seedQueryRow = async (
   row: Entity,
 ): Promise<void> => {
   seedReplicaRow(replica, row);
-  await storage.entities.set(row);
+  // A write carries components, not whole rows: a later seed of the same row
+  // adds its fields to the ones already there.
+  const existing = await storage.entities.get(row.id);
+  await storage.entities.set(
+    existing === null
+      ? row
+      : {
+          ...existing,
+          data: { fields: { ...existing.data.fields, ...row.data.fields } },
+          updated_hlc: row.updated_hlc,
+          deleted_hlc: row.deleted_hlc,
+          last_gsn: row.last_gsn,
+        },
+  );
 };
 
 /**
- * The row accessors read the replica's adjacency (#520), so mirror the
- * shim's live link / membership rows into it. Entity rows stay on the shim —
- * only the adjacency indices feed traversal. Both kinds are `ebb` rows, so the
- * component index names them.
+ * The row accessors read the replica (#520): a source's edges are a component
+ * read of its own row and the reverse index is replica state, so mirror the
+ * shim's link-carrying and membership rows into it. Entity rows that carry
+ * neither stay on the shim.
  */
 const syncAdjacency = async (storage: StorageAdapter, replica: Replica): Promise<void> => {
   for (const component of ["ebb/link", "ebb/membership"]) {
@@ -448,8 +461,8 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { client, seed } = await buildClient();
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
-    await seed(linkRow("r2", "t2", "l2", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "list", type: "todo", targetId: "l2" }]));
     const out = await client.todo.query().where("list", "l1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
@@ -582,7 +595,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t2", "b"));
     await seed(membershipRow("eg1", "t1", "g1"));
     await seed(membershipRow("eg2", "t2", "g1"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     const out = await client.todo.query().where("groups", "g1").where("list", "l1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
@@ -632,7 +645,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a", false, "u1"));
     // t2's field says u2, but it has no edge at all.
     await seed(todo("t2", "b", false, "u2"));
-    await seed(linkRow("r1", "t1", "u2", "owner", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u2" }]));
     const out = await client.todo.query().where("owner", "u2");
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
@@ -642,9 +655,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
     await seed(todo("t3", "c"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
-    await seed(linkRow("r2", "t2", "l2", "list", "todo"));
-    await seed(linkRow("r3", "t3", "l3", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "list", type: "todo", targetId: "l2" }]));
+    await seed(linkRow("t3", "todo", [{ as: "list", type: "todo", targetId: "l3" }]));
     const out = await client.todo.query().where("list", ["l1", "l3"]);
     expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
   });
@@ -654,11 +667,11 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
     await seed(todo("t3", "c"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
-    await seed(linkRow("r2", "t2", "l1", "list", "todo"));
-    await seed(linkRow("r3", "t3", "l2", "list", "todo"));
-    await seed(linkRow("o1", "t1", "u1", "owner", "todo"));
-    await seed(linkRow("o2", "t2", "u2", "owner", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t3", "todo", [{ as: "list", type: "todo", targetId: "l2" }]));
+    await seed(linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "owner", type: "todo", targetId: "u2" }]));
     const out = await client.todo.query().where("list", "l1").where("owner", "u1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
@@ -668,7 +681,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a", false));
     await seed(todo("t2", "b", false));
     await seed(todo("t3", "c", true));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     const out = await client.todo.query().where("list", "l1").or("completed", true);
     expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
   });
@@ -678,7 +691,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
     await seed(todo("t3", "c"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     await seed(membershipRow("eg1", "t2", "g1"));
     const out = await client.todo.query().where("list", "l1").or("groups", "g1");
     expect(out.map((r) => r.title).sort()).toEqual(["a", "b"]);
@@ -713,9 +726,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a"));
     await seed(todo("t2", "b"));
     await seed(todo("t3", "c"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
-    await seed(linkRow("r2", "t2", "l2", "list", "todo"));
-    await seed(linkRow("r3", "t3", "l3", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "list", type: "todo", targetId: "l2" }]));
+    await seed(linkRow("t3", "todo", [{ as: "list", type: "todo", targetId: "l3" }]));
     const out = await client.todo.query().where("completed", true).or("list", ["l1", "l3"]);
     expect(out.map((r) => r.title).sort()).toEqual(["a", "c"]);
   });
@@ -741,9 +754,9 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     await seed(todo("t1", "a", false));
     await seed(todo("t2", "b", false));
     await seed(todo("t3", "c", true));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
-    await seed(linkRow("r2", "t2", "l2", "list", "todo"));
-    await seed(linkRow("r3", "t3", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
+    await seed(linkRow("t2", "todo", [{ as: "list", type: "todo", targetId: "l2" }]));
+    await seed(linkRow("t3", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     const out = await client.todo.query().where("completed", false).where("list", "l1");
     expect(out.map((r) => r.title)).toEqual(["a"]);
   });
@@ -751,10 +764,10 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
   it("excludes a source whose relationship row is tombstoned", async () => {
     const { client, seed } = await buildClient();
     await seed(todo("t1", "a"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     expect(await client.todo.query().where("list", "l1")).toHaveLength(1);
     await seed({
-      ...linkRow("r1", "t1", "l1", "list", "todo"),
+      ...linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]),
       deleted_hlc: "2",
     });
     expect(await client.todo.query().where("list", "l1")).toEqual([]);
@@ -764,7 +777,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
     const { storage, client, seed } = await buildClient();
     await seed(todo("t1", "a"));
     await seed(entityRow("l1", "list", { name: "inbox" }));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     const byHandle = await client.todo.query().where("list", { id: "l1" });
     expect(byHandle.map((r) => r.title)).toEqual(["a"]);
     const handle = await storage.entities.get("l1");
@@ -776,7 +789,7 @@ describe("client.<entity>.query().where() — registry-aware predicate", () => {
   it("a null / undefined / empty target names no live edge and matches nothing", async () => {
     const { client, seed } = await buildClient();
     await seed(todo("t1", "a"));
-    await seed(linkRow("r1", "t1", "l1", "list", "todo"));
+    await seed(linkRow("t1", "todo", [{ as: "list", type: "todo", targetId: "l1" }]));
     expect(await client.todo.query().where("list", null)).toEqual([]);
     expect(await client.todo.query().where("list", undefined)).toEqual([]);
     expect(await client.todo.query().where("list", [])).toEqual([]);
@@ -808,13 +821,21 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   it("forward-many accessor awaits to readonly TargetShape[]", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    await storage.entities.set(entityRow("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(
+      linkRow(
+        "t1",
+        "todo",
+        [
+          { as: "tags", type: "todo", targetId: "lbl-a" },
+          { as: "tags", type: "todo", targetId: "lbl-b" },
+          { as: "tags", type: "todo", targetId: "lbl-c" },
+        ],
+        { title: "Ship", completed: false },
+      ),
+    );
     await storage.entities.set(entityRow("lbl-a", "label", { name: "a" }));
     await storage.entities.set(entityRow("lbl-b", "label", { name: "b" }));
     await storage.entities.set(entityRow("lbl-c", "label", { name: "c" }));
-    await storage.entities.set(linkRow("rel-a", "t1", "lbl-a", "tags", "todo"));
-    await storage.entities.set(linkRow("rel-b", "t1", "lbl-b", "tags", "todo"));
-    await storage.entities.set(linkRow("rel-c", "t1", "lbl-c", "tags", "todo"));
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
@@ -832,12 +853,20 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   it("routes traversal through the replica's adjacency index, not the storage scan", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    await storage.entities.set(entityRow("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(
+      linkRow(
+        "t1",
+        "todo",
+        [
+          { as: "tags", type: "todo", targetId: "lbl-a" },
+          { as: "parentList", type: "todo", targetId: "l1" },
+        ],
+        { title: "Ship", completed: false },
+      ),
+    );
     await storage.entities.set(entityRow("lbl-a", "label", { name: "a" }));
     await storage.entities.set(entityRow("l1", "list", { name: "Work" }));
     await storage.entities.set(entityRow("g1", "group", { name: "G" }));
-    await storage.entities.set(linkRow("rel-a", "t1", "lbl-a", "tags", "todo"));
-    await storage.entities.set(linkRow("rel-parent", "t1", "l1", "parentList", "todo"));
     await storage.entities.set(membershipRow("eg-1", "t1", "g1"));
 
     const client = createClient({
@@ -849,11 +878,9 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     await syncAdjacency(storage, client.replica);
 
     const query = vi.spyOn(storage.entities, "query");
-    const storageForward = vi.spyOn(storage.entities, "queryByRelationshipSource");
     const storageReverse = vi.spyOn(storage.entities, "queryByRelationship");
     const storageMemberships = vi.spyOn(storage.entities, "queryByMembershipEntity");
-    const forward = vi.spyOn(client.replica, "relationshipLinks");
-    const reverse = vi.spyOn(client.replica, "relationships");
+    const adjacency = vi.spyOn(client.replica, "relationships");
     const memberships = vi.spyOn(client.replica, "membershipLinks");
 
     const todo = await client.todo.get("t1");
@@ -867,22 +894,25 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
 
     const scannedTypes = query.mock.calls.map(([type]) => type);
     expect(scannedTypes).not.toContain(EBB_MODEL_NAME);
-    // The storage adapter's async indices are bypassed; the replica's
-    // synchronous ones carry the traversal (#520).
-    expect(storageForward).not.toHaveBeenCalled();
+    // The storage adapter's async indices are bypassed; the replica's own
+    // reads carry the traversal (#520). Forward targets are a component read of
+    // the source row, reverse targets and memberships are index reads.
     expect(storageReverse).not.toHaveBeenCalled();
     expect(storageMemberships).not.toHaveBeenCalled();
-    expect(forward).toHaveBeenCalled();
-    expect(reverse).toHaveBeenCalled();
+    expect(adjacency).toHaveBeenCalled();
     expect(memberships).toHaveBeenCalled();
   });
 
   it("forward-one accessor returns the target entity when the edge exists", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    await storage.entities.set(entityRow("t1", "todo", { title: "Ship", completed: false }));
+    await storage.entities.set(
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "u1" }], {
+        title: "Ship",
+        completed: false,
+      }),
+    );
     await storage.entities.set(entityRow("u1", "user", { name: "Ada" }));
-    await storage.entities.set(linkRow("rel-owner", "t1", "u1", "owner", "todo"));
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
@@ -921,8 +951,12 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
   it("forward-one accessor returns undefined when the edge target is missing (dangling)", async () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    await storage.entities.set(entityRow("t1", "todo", { title: "Ship", completed: false }));
-    await storage.entities.set(linkRow("rel-ghost", "t1", "ghost", "owner", "todo"));
+    await storage.entities.set(
+      linkRow("t1", "todo", [{ as: "owner", type: "todo", targetId: "ghost" }], {
+        title: "Ship",
+        completed: false,
+      }),
+    );
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
@@ -941,12 +975,24 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(entityRow("l1", "list", { name: "Work" }));
-    await storage.entities.set(entityRow("t1", "todo", { title: "Ship", completed: false }));
-    await storage.entities.set(entityRow("t2", "todo", { title: "Other", completed: false }));
-    await storage.entities.set(entityRow("t3", "todo", { title: "Off-list", completed: false }));
-    await storage.entities.set(linkRow("rel-1", "t1", "l1", "parentList", "todo"));
-    await storage.entities.set(linkRow("rel-2", "t2", "l1", "parentList", "todo"));
-    await storage.entities.set(linkRow("rel-3", "t3", "l2", "parentList", "todo"));
+    await storage.entities.set(
+      linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        title: "Ship",
+        completed: false,
+      }),
+    );
+    await storage.entities.set(
+      linkRow("t2", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], {
+        title: "Other",
+        completed: false,
+      }),
+    );
+    await storage.entities.set(
+      linkRow("t3", "todo", [{ as: "parentList", type: "todo", targetId: "l2" }], {
+        title: "Off-list",
+        completed: false,
+      }),
+    );
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
@@ -984,9 +1030,13 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     });
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
-    await storage.entities.set(entityRow("c1", "card", { title: "C", tags: ["stale"] }));
+    await storage.entities.set(
+      linkRow("c1", "card", [{ as: "tags", type: "card", targetId: "g1" }], {
+        title: "C",
+        tags: ["stale"],
+      }),
+    );
     await storage.entities.set(entityRow("g1", "tag", { name: "a" }));
-    await storage.entities.set(linkRow("rel-1", "c1", "g1", "tags", "card"));
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",
@@ -1018,8 +1068,9 @@ describe("client.<entity>.get(id) — row with relationship accessors", () => {
     const { createMemoryAdapter } = await import("@ebbjs/storage/memory");
     const storage = createMemoryAdapter();
     await storage.entities.set(entityRow("n1", "node", { label: "root" }));
-    await storage.entities.set(entityRow("n2", "node", { label: "child" }));
-    await storage.entities.set(linkRow("rel-1", "n2", "n1", "parent", "node"));
+    await storage.entities.set(
+      linkRow("n2", "node", [{ as: "parent", type: "node", targetId: "n1" }], { label: "child" }),
+    );
     const client = createClient({
       serverUrl: "http://x",
       actorId: "a",

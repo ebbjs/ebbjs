@@ -33,7 +33,13 @@ import {
 } from "@ebbjs/schema";
 import { defineAction } from "../schema/action";
 import { createClient } from "../sync/client";
-import { callApplyAction, jsonResponse, rowsByModel, waitFor } from "../sync/test-utils";
+import {
+  callApplyAction,
+  jsonResponse,
+  linkTargetsOf,
+  rowsByModel,
+  waitFor,
+} from "../sync/test-utils";
 
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(
@@ -78,7 +84,8 @@ const HANDSHAKE = {
   actor_id: "actor_1",
   groups: ["g_1"].map((id) => ({
     id,
-    permissions: ["note.*", "text_document.*", "relationship.*", "membership.*"],
+    // `ebb/link.*` covers the edge the note carries to its document.
+    permissions: ["note.*", "text_document.*", "ebb/link.*", "membership.*"],
     cursor_valid: true,
     reason: null,
     cursor: 0,
@@ -178,7 +185,7 @@ describe("a document the app declares", () => {
     expect(written).toHaveLength(1);
     const updates = written[0]!.updates;
 
-    // The membership and the link are `ebb` rows; their components name them.
+    // The membership is an `ebb` row; the link is a key of the note row.
     expect([...new Set(updates.map((update) => updateModel(update)))].sort()).toEqual([
       "ebb",
       "note",
@@ -193,13 +200,13 @@ describe("a document the app declares", () => {
     expect(content.map[initialRun.id]!.value).toEqual(initialRun);
     expect(componentOf(documentRow!, "version").value).toBe(CURRENT_TEXT_VERSION);
 
-    // The link is one atomic value: one Update carries the whole edge.
+    // The edge is a key of the note's own `ebb/link` component: one Update
+    // carries one presence key.
     const [linkUpdate] = updates.filter(
       (update) => isComponentUpdate(update) && update.component === "ebb/link",
     );
-    expect(
-      (linkUpdate!.data as { value: { source_id: string; target_id: string } }).value,
-    ).toMatchObject({ source_id: created.noteId, target_id: created.documentId });
+    expect(linkUpdate!.subject_id).toBe(created.noteId);
+    expect(linkTargetsOf(linkUpdate!, "body", "note")).toEqual([created.documentId]);
 
     const row = await client.note.get(created.noteId);
     expect(row!.title).toBe("Greeting");

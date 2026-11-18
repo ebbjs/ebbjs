@@ -25,6 +25,7 @@ import { createClient } from "../client";
 import {
   callApplyAction,
   entityRow,
+  linkAction,
   platformEntity,
   rowComponents,
   testActions,
@@ -97,15 +98,42 @@ const remove = (
     { id: `u_${opts.actionId}`, subject_id: id, method: "delete", data: null },
   ]);
 
+/**
+ * A link merge on its source row: one presence key at `(as, type)`. The `rowId`
+ * is the id the old edge row would have had; an edge has no row of its own, so
+ * the fixture keeps the slot to keep call sites readable.
+ */
 const putRel = (
-  relId: string,
+  _rowId: string,
   sourceId: string,
   targetId: string,
   as: string,
   type: string,
   opts: { actionId: string; gsn: number; ms: number },
 ): Action =>
-  put(relId, "link", { source_id: sourceId, target_id: targetId, field: as, type }, opts);
+  linkAction({
+    id: opts.actionId,
+    hlc: makeHlc(opts.ms),
+    gsn: opts.gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
+  });
+
+/** The same write with the key tombstoned, which removes the edge. */
+const clearRel = (
+  sourceId: string,
+  targetId: string,
+  as: string,
+  type: string,
+  opts: { actionId: string; gsn: number; ms: number },
+): Action =>
+  linkAction({
+    id: opts.actionId,
+    hlc: makeHlc(opts.ms),
+    gsn: opts.gsn,
+    sourceId,
+    edges: [{ as, type, targetId, present: false }],
+  });
 
 const putMembership = (
   rowId: string,
@@ -219,7 +247,10 @@ describe("replica adjacency accessors (#520)", () => {
       client,
       putRel("rel_1", "todo_1", "user_1", "owner", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),
     );
-    await callApplyAction(client, remove("rel_1", "link", { actionId: "a_4", gsn: 4, ms: 40 }));
+    await callApplyAction(
+      client,
+      clearRel("todo_1", "user_1", "owner", "todo", { actionId: "a_4", gsn: 4, ms: 40 }),
+    );
 
     const row = await client.todo.get("todo_1");
     if (row === null) throw new Error("expected row");
@@ -256,7 +287,7 @@ describe("replica adjacency accessors (#520)", () => {
     expect(await after.groups).toEqual([]);
   });
 
-  it("projects a shared natural key once forward and once reverse", async () => {
+  it("keeps one edge for a repeated natural key in both directions", async () => {
     const storage = createMemoryAdapter();
     const client = mkClient(storage);
     await callApplyAction(
@@ -267,7 +298,7 @@ describe("replica adjacency accessors (#520)", () => {
       client,
       put("label_1", "label", { name: "urgent" }, { actionId: "a_2", gsn: 2, ms: 20 }),
     );
-    // Two rows name the same natural key; the reads stay distinct.
+    // The same key written twice is one edge: it is a key of its source row.
     await callApplyAction(
       client,
       putRel("rel_a", "todo_1", "label_1", "tags", "todo", { actionId: "a_3", gsn: 3, ms: 30 }),

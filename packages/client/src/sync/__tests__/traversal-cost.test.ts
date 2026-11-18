@@ -1,20 +1,20 @@
 /**
  * The traversal counter is the acceptance proof that reads route
- * through the adjacency index: a traversal's examined rows are bounded
+ * through the adjacency seam: a traversal's examined rows are bounded
  * by the degree of the row it starts from, not by the number of
- * unrelated relationship / membership rows in the store.
+ * unrelated link / membership rows in the store.
  *
  * Each case runs the same degree-two traversal against two stores that
  * differ only in how many unrelated rows they hold, and against both
- * adjacency backends — the storage adapter's async index and the
- * replica's synchronous one (#520). The replica must examine the same
- * rows as the adapter, so the backend swap cannot reintroduce a scan.
+ * backends — the storage adapter and the replica (#520). The replica must
+ * examine the same rows as the adapter, so the backend swap cannot
+ * reintroduce a scan.
  */
 
 import { describe, it, expect } from "vitest";
 import {
-  componentName,
   isFieldMap,
+  linkTargets,
   makeHlc,
   type Action,
   type Entity,
@@ -30,6 +30,7 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
+import { fieldComponent } from "../component-name";
 import { entityRow, linkRow, platformEntity } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
 
@@ -46,7 +47,7 @@ const ingestRow = (replica: ReturnType<typeof createReplica>, entity: Entity, po
   const updates: Update[] = Object.entries(entity.data.fields).map(([field, value]) => ({
     id: `u_${entity.id}_${field}`,
     subject_id: entity.id,
-    component: componentName(entity.model, field),
+    component: fieldComponent(entity.model, field),
     method: isFieldMap(value) ? "merge" : "replace",
     data: value,
   }));
@@ -64,16 +65,19 @@ type Backend = "storage" | "replica";
 const mkStore = async (unrelatedCount: number, backend: Backend) => {
   const adapter = createMemoryAdapter();
   const rows: Entity[] = [
-    entityRow("t1", "todo", { title: "Ship" }),
+    linkRow("t1", "todo", [{ as: "parentList", type: "todo", targetId: "l1" }], { title: "Ship" }),
     entityRow("l1", "list", { name: "Work" }),
-    linkRow("rel-1", "t1", "l1", "parentList", "todo"),
     platformEntity("g1", "group", { name: "G" }),
     platformEntity("eg-1", "membership", { entity_id: "t1", group_id: "g1" }),
   ];
   for (let i = 0; i < unrelatedCount; i += 1) {
     rows.push(
-      entityRow(`other-${i}`, "todo", { title: `other ${i}` }),
-      linkRow(`unrelated-rel-${i}`, `other-${i}`, `unrelated-list-${i}`, "parentList", "todo"),
+      linkRow(
+        `other-${i}`,
+        "todo",
+        [{ as: "parentList", type: "todo", targetId: `unrelated-list-${i}` }],
+        { title: `other ${i}` },
+      ),
       entityRow(`unrelated-list-${i}`, "list", { name: `List ${i}` }),
       platformEntity(`unrelated-eg-${i}`, "membership", {
         entity_id: `other-${i}`,
@@ -89,12 +93,16 @@ const mkStore = async (unrelatedCount: number, backend: Backend) => {
   const reader: AdjacencyReader =
     backend === "storage"
       ? {
-          forwardLinks: (query) => adapter.entities.queryByRelationshipSource(query),
+          forwardTargets: async (sourceId, as, type) => {
+            const row = await adapter.entities.get(sourceId);
+            return row === null || row.deleted_hlc !== null ? [] : linkTargets(row, as, type);
+          },
           reverseSourceIds: (query) => adapter.entities.queryByRelationship(query),
           membershipsOf: (entityId) => adapter.entities.queryByMembershipEntity(entityId),
         }
       : {
-          forwardLinks: async (query) => replica.relationshipLinks(query),
+          forwardTargets: async (sourceId, as, type) =>
+            replica.relationships({ as, type, sourceId }),
           reverseSourceIds: async (query) =>
             replica.relationships({ as: query.as, type: query.type, targetId: query.targetId }),
           membershipsOf: async (entityId) => replica.membershipLinks(entityId),

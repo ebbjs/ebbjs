@@ -27,7 +27,6 @@
  */
 
 import {
-  componentName,
   EBB_COMPONENTS,
   generateId,
   isFieldMap,
@@ -38,6 +37,7 @@ import {
 } from "@ebbjs/core";
 import type { LoggedAction, StorageAdapter } from "@ebbjs/storage/types";
 
+import { fieldComponent } from "./component-name";
 import { liveMemberships } from "./entity-group";
 import { createObservable, type ReadonlyObservable } from "./observable";
 import type { EntityResponse } from "./types";
@@ -57,8 +57,8 @@ export const BACKFILL_ACTOR_ID = "a_backfill";
  * on top by HLC. The create carries the row's own `created_hlc`, which a
  * snapshot's position cannot restate. The field envelopes come through
  * verbatim so later merges are by HLC, not by arrival. A `replace` is a
- * leaf-level LWW compare, and a keyed component can only merge, so the
- * snapshot never discards a sibling.
+ * leaf-level LWW compare, and a keyed component (`ebb/link`) can only merge, so
+ * the snapshot never discards a sibling edge.
  */
 export const snapshotAction = (entity: Entity): Action =>
   snapshotActionWithIds(entity, { actionId: generateId("a"), updateId: generateId("u") });
@@ -97,7 +97,7 @@ export const snapshotActionWithIds = (
         ([field, value]): Update => ({
           id: `${ids.updateId}_${field}`,
           subject_id: entity.id,
-          component: componentName(entity.model, field),
+          component: fieldComponent(entity.model, field),
           method: isFieldMap(value) ? "merge" : "replace",
           data: value,
         }),

@@ -32,17 +32,17 @@
  * There is no deny: narrowing a member who holds `note.*` means
  * rewriting that grant to enumerate what they keep.
  *
- * Three refusals mirror the server structurally, so no grant can make them
- * pass: a user write naming a model other than the id's committed one (#624),
- * an `ebb/link` write that re-points the source, and a re-pointed immutable
- * key on `ebb/grant` or `ebb/membership` (decision 13). A delete earlier in
- * the same `write()` batch releases the row, which is how delete plus create
- * moves an edge; a delete still sitting in the Outbox releases nothing, so
- * batch the two.
+ * Two refusals mirror the server structurally, so no grant can make them pass:
+ * a user write naming a model other than the id's committed one (#624), and a
+ * re-pointed immutable key on `ebb/grant` or `ebb/membership` (decision 13). An
+ * `ebb/link` write needs no re-point rule: an edge is a key of its source row,
+ * so there is no source field to contradict, and moving one is a tombstone plus
+ * a presence in the same Update.
  */
 
 import {
   carriesComponent,
+  carriesLink,
   componentName,
   componentValue,
   EBB_COMPONENT_KINDS,
@@ -67,7 +67,6 @@ export type PermissionVerb = "create" | "update" | "delete";
 export type PermissionViolation =
   | MissingPermissionViolation
   | TypeMismatchViolation
-  | SourceMismatchViolation
   | KeyMismatchViolation;
 
 /**
@@ -127,25 +126,6 @@ export interface KeyMismatchViolation {
 }
 
 /**
- * The write cannot be authorized at any permission: an `ebb/link` write
- * declared a source other than the row's committed one (#624). A row's source
- * is its identity, so moving an edge is delete plus create. There is
- * deliberately no `required`.
- */
-export interface SourceMismatchViolation {
-  readonly kind: "source-mismatch";
-  /** The component the write named, always `ebb/link`. */
-  readonly component: string;
-  readonly subjectId: string;
-  /** The source the write declared, i.e. the `source_id` component value. */
-  readonly declaredSourceId: string;
-  /** The source the link row is committed with locally. */
-  readonly committedSourceId: string;
-  /** The committed source's group set. */
-  readonly groupIds: readonly string[];
-}
-
-/**
  * Aggregated refusal of a locally-authored batch. Mirrors
  * `EntityValidationError` / `ActionRejectedError`: a named `Error`
  * subclass with structured readonly reasons and a message formatted
@@ -182,13 +162,6 @@ const describeViolation = (violation: PermissionViolation): string => {
         `${violation.model} ${violation.subjectId}: declared model "${violation.model}"` +
         ` but the entity is committed as "${violation.committedModel}"; an entity's model cannot` +
         ` change (checked: ${groups})`
-      );
-    case "source-mismatch":
-      return (
-        `${violation.component} ${violation.subjectId}: declared source` +
-        ` "${violation.declaredSourceId}" but the row is committed with source` +
-        ` "${violation.committedSourceId}"; an ebb/link row cannot be re-pointed at another` +
-        ` source (checked: ${groups})`
       );
     case "key-mismatch":
       return (
@@ -279,12 +252,6 @@ type RefusalDetail =
       /** The write named a model other than the committed one. */
       readonly reason: "type-mismatch";
       readonly committedModel: string;
-    }
-  | {
-      /** The write declared a relationship source other than the row's own. */
-      readonly reason: "source-mismatch";
-      readonly declaredSourceId: string;
-      readonly committedSourceId: string;
     }
   | {
       /** The write re-pointed a platform row's immutable key. */
@@ -414,15 +381,6 @@ const committedSystemField = async (
 ): Promise<string | null> => rowSystemField(await inputs.exists(subjectId), kind, field);
 
 /**
- * The source an `ebb/link` row is committed with, or `null` when the local
- * store knows no such row.
- */
-const committedRelationshipSource = (
-  subjectId: string,
-  inputs: RuleInputs,
-): Promise<string | null> => committedSystemField(subjectId, "link", "source_id", inputs);
-
-/**
  * The rule table: for a write `(kind, model, id, verb, components)`, the
  * permissions it requires and the groups to union-match. Returns
  * `unresolved` when the inputs the rule needs are not locally available —
@@ -439,10 +397,8 @@ const committedRelationshipSource = (
  * - `ebb/membership` create → `<entityModel>.create` in the target group
  *   **and** `.update` over the entity's current set, because filing an entity
  *   the store already places in a group is a write to it (#623).
- * - `ebb/link` create → `<sourceModel>.update` over the source's set;
- *   update/delete → `ebb/link.<verb>` over the source's set, which comes from
- *   the stored row. A declared `source_id` that differs is refused (#624); a
- *   binding this batch released reads as a new edge.
+ * - `ebb/link` → `ebb/link.<verb>` over the subject row's own set: the edge is
+ *   a key of that row's `ebb/link` component, so the row is the source.
  */
 async function resolveRule(
   kind: EbbComponentKind | null,
@@ -462,7 +418,7 @@ async function resolveRule(
     case "membership":
       return resolveMembershipRule(subjectId, verb, inputs, released);
     case "link":
-      return resolveLinkRule(subjectId, verb, inputs, released);
+      return resolveLinkRule(subjectId, verb, inputs);
     default:
       return assertNever(kind);
   }
@@ -647,64 +603,17 @@ async function resolveMembershipRule(
   return { kind: "rules", rules };
 }
 
-/** `ebb/link`: its source is its identity (#624). */
+/**
+ * `ebb/link`: the write names a key of the subject row's own edge set, so it is
+ * authorized as `ebb/link.<verb>` in that row's group set. The row is the
+ * source, which is why there is no source to resolve and no re-point to refuse.
+ */
 async function resolveLinkRule(
   subjectId: string,
   verb: PermissionVerb,
   inputs: RuleInputs,
-  released: ReadonlySet<string>,
 ): Promise<RuleResolution> {
-  const declaredSourceId = asString(inputs.fieldValue("source_id"));
-  const committedSourceId = await committedRelationshipSource(subjectId, inputs);
-  // A delete in this batch releases the binding, so the re-point check
-  // has nothing left to contradict and the row reads as a new edge.
-  const boundSourceId = released.has(subjectId) ? null : committedSourceId;
-  // A row's source is its identity, so a declared source other than the
-  // committed one is refused. A delete's wire source is never read (the server
-  // resolves the stored row), so a stale one is ignored there.
-  if (
-    verb !== "delete" &&
-    declaredSourceId !== null &&
-    boundSourceId !== null &&
-    declaredSourceId !== boundSourceId
-  ) {
-    return {
-      kind: "refused",
-      reason: "source-mismatch",
-      declaredSourceId,
-      committedSourceId: boundSourceId,
-      groupIds: await inputs.groupSetFor(boundSourceId),
-    };
-  }
-
-  // A create states the source it is made with, so it is authorized as a
-  // write to that source entity. An update to an existing edge is an
-  // `ebb/link` write, scoped by the source it keeps.
-  if (verb === "create") {
-    if (declaredSourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
-    // The permission model follows the source entity's true model,
-    // never the wire `type` label, which is forgeable (#323).
-    const model = await inputs.resolveModel(declaredSourceId);
-    if (model === null) return { kind: "unresolved", reason: "entity-unknown" };
-    const groupIds = await inputs.groupSetFor(declaredSourceId);
-    if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
-    return {
-      kind: "rule",
-      rule: {
-        subject: model,
-        verb: "update",
-        required: `${model}.update`,
-        groupIds,
-        cachedOnly: false,
-      },
-    };
-  }
-  // A delete's groups come from the stored row; an update may restate
-  // the source it keeps. Neither reads the batch release: the stored
-  // row scopes both.
-  const sourceId = verb === "delete" ? committedSourceId : (declaredSourceId ?? committedSourceId);
-  if (sourceId === null) return { kind: "unresolved", reason: "entity-unknown" };
-  const groupIds = await inputs.groupSetFor(sourceId);
+  const groupIds = await inputs.groupSetFor(subjectId);
   if (groupIds.length === 0) return { kind: "unresolved", reason: "no-owner" };
   return componentRule("link", verb, groupIds, false);
 }
@@ -772,7 +681,7 @@ const missingPermission = (subjectId: string, rule: ResolvedRule): MissingPermis
 const refusedViolation = (
   resolution: Extract<RuleResolution, { kind: "refused" }>,
   subject: DecisionSubject,
-): TypeMismatchViolation | SourceMismatchViolation | KeyMismatchViolation => {
+): TypeMismatchViolation | KeyMismatchViolation => {
   switch (resolution.reason) {
     case "type-mismatch":
       return {
@@ -780,15 +689,6 @@ const refusedViolation = (
         model: subject.rowSubject,
         subjectId: subject.subjectId,
         committedModel: resolution.committedModel,
-        groupIds: resolution.groupIds,
-      };
-    case "source-mismatch":
-      return {
-        kind: "source-mismatch",
-        component: subject.rowSubject,
-        subjectId: subject.subjectId,
-        declaredSourceId: resolution.declaredSourceId,
-        committedSourceId: resolution.committedSourceId,
         groupIds: resolution.groupIds,
       };
     case "key-mismatch":
@@ -857,27 +757,23 @@ const resolveMembershipGroupIds = async (
   return groupId === null ? [] : [groupId];
 };
 
-/** No relationship id is released: the query path sees committed state only. */
+/** Nothing is released yet: the query path sees committed state only. */
 const NO_RELEASED: ReadonlySet<string> = new Set();
 
 /**
- * The relationship ids whose deletes ride in this Action. A delete names no
- * component, so its model comes from the local row. The union is taken before
- * any subject is checked, so inside one Action the delete's position does not
- * matter — the server's simulation is built the same way.
+ * The subject ids whose deletes ride in this Action. A row a batch deletes has
+ * no committed key left to contradict, which is what makes delete-plus-create
+ * the way a grant or a membership moves. The union is taken before any subject
+ * is checked, so inside one Action the delete's position does not matter — the
+ * server's simulation is built the same way.
  */
-const releasedByDeletes = async (
+const releasedByDeletes = (
   released: ReadonlySet<string>,
   subjects: ReadonlyMap<string, SubjectWrites>,
-  rowOf: (id: string) => Promise<Entity | null>,
-): Promise<ReadonlySet<string>> => {
+): ReadonlySet<string> => {
   const ids: string[] = [];
   for (const [id, writes] of subjects) {
-    if (!writes.deleted) continue;
-    // A delete names no component, so the stored row is the only place its
-    // kind can come from.
-    const kind = writes.kind ?? platformKindOf(await rowOf(id));
-    if (kind === "link") ids.push(id);
+    if (writes.deleted) ids.push(id);
   }
   if (ids.length === 0) return released;
   return new Set([...released, ...ids]);
@@ -887,9 +783,9 @@ const releasedByDeletes = async (
 interface ActionViolations {
   readonly violations: readonly PermissionViolation[];
   /**
-   * The relationship ids this Action's deletes release. The caller adopts
-   * them only when the Action is accepted, so a refused Action releases
-   * nothing for the Actions after it.
+   * The subject ids this Action's deletes release. The caller adopts them only
+   * when the Action is accepted, so a refused Action releases nothing for the
+   * Actions after it.
    */
   readonly released: ReadonlySet<string>;
 }
@@ -925,7 +821,7 @@ const collectActionViolations = async (
   await mergeLocalMemberships(cached, ctx);
 
   const exists = async (id: string): Promise<Entity | null> => ctx.storage.entities.get(id);
-  const released = await releasedByDeletes(releasedBefore, subjects, exists);
+  const released = releasedByDeletes(releasedBefore, subjects);
 
   // A row exists because the batch carries its create, and a write to a row
   // that exists is an update. The batch has not materialized anything, so a
@@ -1022,13 +918,20 @@ const collectActionViolations = async (
     // resolves it from its own index, and this pass has nothing to say.
     if (model === undefined) return null;
     const kind = writtenKind ?? platformKindOf(row);
+    // A keyed component has no whole value, so `carriesComponent` answers
+    // `false` for `ebb/link` by construction: an edge set is present when the
+    // row carries the link component at all.
+    const carries =
+      kind === "link"
+        ? carriesLink(row)
+        : kind !== null && row !== null && carriesComponent(row, kind);
     const verb: PermissionVerb = writes.deleted
       ? "delete"
       : kind === null
         ? writes.created
           ? "create"
           : "update"
-        : row !== null && carriesComponent(row, kind)
+        : carries
           ? "update"
           : "create";
     const resolution = await resolveRule(

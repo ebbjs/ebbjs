@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   componentName,
+  ebbComponent,
   isFieldMap,
   makeHlc,
   type Action,
+  type ComponentName,
   type Entity,
   type FieldValue,
   type Update,
@@ -15,10 +17,11 @@ import { createReplica } from "./replica";
 import type { Replica } from "./types";
 
 /**
- * Fixtures for the replica's adjacency reads: materialized `ebb/link` and
- * `ebb/membership` rows pushed through the same `put` / `patch` / `remove`
- * path the other replica suites use. A platform row carries its whole value
- * in one atomic component.
+ * Fixtures for the replica's adjacency reads: source rows carrying `ebb/link`
+ * edges and `ebb/membership` rows, pushed through the same `put` / `remove`
+ * path the other replica suites use. A link is a keyed component of its source,
+ * so an edge write merges keys on the row that owns the edge; a membership is
+ * an atomic value on a row of its own.
  */
 
 const leaf = (value: unknown, updateId: string, ms: number): FieldValue => ({
@@ -35,17 +38,24 @@ interface WriteSpec {
   readonly gsn?: number;
   readonly ms?: number;
   readonly fields: Record<string, FieldValue>;
+  /** The component a keyed (map) field is written under; `ebb/link` for edges. */
+  readonly keyedComponent?: ComponentName;
 }
 
 /** One component Update per fixture field; a keyed component always merges. */
 const componentUpdates = (spec: WriteSpec, method: "merge" | "replace"): Update[] =>
-  Object.entries(spec.fields).map(([field, value]) => ({
-    id: `${spec.updateId}_${field}`,
-    subject_id: spec.entityId,
-    component: componentName(spec.model, field),
-    method: isFieldMap(value) ? "merge" : method,
-    data: value,
-  }));
+  Object.entries(spec.fields).map(([field, value]) => {
+    const keyed = isFieldMap(value);
+    return {
+      id: `${spec.updateId}_${field}`,
+      subject_id: spec.entityId,
+      component: keyed
+        ? (spec.keyedComponent ?? componentName(spec.model, field))
+        : componentName(spec.model, field),
+      method: keyed ? "merge" : method,
+      data: value,
+    };
+  });
 
 /** A row put: the row's create, then one `replace` (or keyed `merge`) per field. */
 const put = (spec: WriteSpec): Action => {
@@ -84,28 +94,84 @@ const remove = (spec: Omit<WriteSpec, "fields">): Action => ({
   ],
 });
 
-/** A materialized `ebb/link` row: `source_id` —as/type→ `target_id`. */
-const edge = (
+/** One edge of a link fixture: the accessor, its type label, and the target. */
+interface EdgeSpec {
+  readonly as: string;
+  readonly type: string;
+  readonly targetId: string;
+}
+
+/** The `ebb/link` value holding one leaf per edge: presence, or its tombstone. */
+const linkValue = (
+  edges: readonly EdgeSpec[],
+  updateId: string,
+  ms: number,
+  present = true,
+): FieldValue => {
+  const byAs: Record<string, Record<string, Record<string, FieldValue>>> = {};
+  for (const edge of edges) {
+    const byType = (byAs[edge.as] ??= {});
+    const byTarget = (byType[edge.type] ??= {});
+    byTarget[edge.targetId] = leaf(present ? true : null, updateId, ms);
+  }
+  return {
+    map: Object.fromEntries(
+      Object.entries(byAs).map(([as, byType]) => [
+        as,
+        {
+          map: Object.fromEntries(
+            Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+          ),
+        },
+      ]),
+    ),
+  };
+};
+
+/** A source row carrying the given edges: its own `ebb/link` component. */
+const edges = (
   actionId: string,
-  rowId: string,
-  field: string,
-  type: string,
   sourceId: string,
-  targetId: string,
+  edges_: readonly EdgeSpec[],
   gsn: number,
   ms: number,
+  model = "page",
 ): Action =>
   put({
     actionId,
-    updateId: `u_${rowId}`,
-    entityId: rowId,
-    model: "ebb",
+    updateId: `u_${sourceId}`,
+    entityId: sourceId,
+    model,
     gsn,
     ms,
-    fields: {
-      link: leaf({ source_id: sourceId, target_id: targetId, type, field }, `u_${rowId}`, ms),
-    },
+    fields: { link: linkValue(edges_, `u_${sourceId}`, ms) },
+    keyedComponent: ebbComponent("link"),
   });
+
+/** A link write that tombstones the named keys of one existing source row. */
+const tombstone = (
+  sourceId: string,
+  removed: readonly EdgeSpec[],
+  gsn: number,
+  ms: number,
+): Action => {
+  const updateId = `u_tomb_${sourceId}_${gsn}`;
+  return {
+    id: `a_tomb_${sourceId}_${gsn}`,
+    actor_id: "user_1",
+    hlc: makeHlc(ms),
+    gsn,
+    updates: [
+      {
+        id: updateId,
+        subject_id: sourceId,
+        component: ebbComponent("link"),
+        method: "merge",
+        data: linkValue(removed, updateId, ms, false),
+      },
+    ],
+  };
+};
 
 /** A materialized `ebb/membership` row: member `entityId` in `groupId`. */
 const member = (
@@ -131,14 +197,23 @@ const member = (
 const ingest = (replica: Replica, write: Action, position: number): number =>
   replica.ingest(write, write.updates, position);
 
+const edge = (as: string, type: string, targetId: string): EdgeSpec => ({ as, type, targetId });
+
 describe("replica adjacency: relationship reads", () => {
-  it("reads distinct live sources reverse and targets forward, ascending", () => {
+  it("reads distinct live sources reverse and the source's targets forward", () => {
     const replica = createReplica();
-    ingest(replica, edge("a_1", "r_1", "author", "wrote", "src_2", "tgt_1", 1, 1), 1);
-    ingest(replica, edge("a_2", "r_2", "author", "wrote", "src_1", "tgt_1", 2, 2), 2);
-    ingest(replica, edge("a_3", "r_3", "author", "wrote", "src_1", "tgt_2", 3, 3), 3);
-    // A second row repeats src_1 → tgt_1; the read stays distinct.
-    ingest(replica, edge("a_4", "r_4", "author", "wrote", "src_1", "tgt_1", 4, 4), 4);
+    ingest(replica, edges("a_1", "src_2", [edge("author", "wrote", "tgt_1")], 1, 1), 1);
+    ingest(
+      replica,
+      edges(
+        "a_2",
+        "src_1",
+        [edge("author", "wrote", "tgt_1"), edge("author", "wrote", "tgt_2")],
+        2,
+        2,
+      ),
+      2,
+    );
 
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([
       "src_1",
@@ -156,7 +231,7 @@ describe("replica adjacency: relationship reads", () => {
 
   it("prefers sourceId over targetId when both are set", () => {
     const replica = createReplica();
-    ingest(replica, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_1", 1, 1), 1);
+    ingest(replica, edges("a_1", "src_1", [edge("author", "wrote", "tgt_1")], 1, 1), 1);
     expect(
       replica.relationships({
         as: "author",
@@ -165,6 +240,30 @@ describe("replica adjacency: relationship reads", () => {
         targetId: "tgt_other",
       }),
     ).toEqual(["tgt_1"]);
+  });
+
+  it("tombstones one edge's key and keeps the source's siblings", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      edges(
+        "a_1",
+        "src_1",
+        [edge("author", "wrote", "tgt_1"), edge("author", "wrote", "tgt_2")],
+        1,
+        1,
+      ),
+      1,
+    );
+    ingest(replica, tombstone("src_1", [edge("author", "wrote", "tgt_1")], 2, 2), 2);
+
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([]);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_2" })).toEqual([
+      "src_1",
+    ]);
+    expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([
+      "tgt_2",
+    ]);
   });
 });
 
@@ -211,18 +310,18 @@ describe("replica adjacency: membership reads", () => {
 });
 
 describe("replica adjacency: row removal", () => {
-  it("does not erase a shared natural key when one row is removed", () => {
+  it("drops only the tombstoned source when two share a target", () => {
     const replica = createReplica();
-    ingest(replica, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_1", 1, 1), 1);
-    ingest(replica, edge("a_2", "r_2", "author", "wrote", "src_2", "tgt_1", 2, 2), 2);
+    ingest(replica, edges("a_1", "src_1", [edge("author", "wrote", "tgt_1")], 1, 1), 1);
+    ingest(replica, edges("a_2", "src_2", [edge("author", "wrote", "tgt_1")], 2, 2), 2);
 
     ingest(
       replica,
       remove({
         actionId: "a_3",
         updateId: "u_del",
-        entityId: "r_1",
-        model: "ebb",
+        entityId: "src_1",
+        model: "page",
         gsn: 3,
         ms: 3,
       }),
@@ -236,34 +335,12 @@ describe("replica adjacency: row removal", () => {
       "tgt_1",
     ]);
   });
-
-  it("drops a tombstoned relationship from both directions", () => {
-    const replica = createReplica();
-    ingest(replica, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_1", 1, 1), 1);
-    ingest(
-      replica,
-      remove({
-        actionId: "a_2",
-        updateId: "u_del",
-        entityId: "r_1",
-        model: "ebb",
-        gsn: 2,
-        ms: 2,
-      }),
-      2,
-    );
-    expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([]);
-    expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([]);
-    expect(replica.relationshipLinks({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual(
-      [],
-    );
-  });
 });
 
 describe("replica adjacency: optimistic overlay", () => {
   it("shows an optimistic edge and removes it on discard", () => {
     const replica = createReplica();
-    const optimisticEdge = edge("a_local", "r_local", "author", "wrote", "src_1", "tgt_1", 1, 1);
+    const optimisticEdge = edges("a_local", "src_1", [edge("author", "wrote", "tgt_1")], 1, 1);
 
     replica.optimistic(optimisticEdge);
     expect(replica.relationships({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([
@@ -279,44 +356,10 @@ describe("replica adjacency: optimistic overlay", () => {
   });
 });
 
-describe("replica adjacency: links", () => {
-  it("carries live row ids ascending by value then row id", () => {
-    const replica = createReplica();
-    ingest(replica, edge("a_1", "r_b", "author", "wrote", "src_1", "tgt_2", 1, 1), 1);
-    ingest(replica, edge("a_2", "r_a", "author", "wrote", "src_1", "tgt_1", 2, 2), 2);
-    // Same target from a second row: ordered by row id after the target.
-    ingest(replica, edge("a_3", "r_c", "author", "wrote", "src_1", "tgt_2", 3, 3), 3);
-
-    expect(replica.relationshipLinks({ as: "author", type: "wrote", sourceId: "src_1" })).toEqual([
-      { relationshipId: "r_a", targetId: "tgt_1" },
-      { relationshipId: "r_b", targetId: "tgt_2" },
-      { relationshipId: "r_c", targetId: "tgt_2" },
-    ]);
-
-    ingest(replica, member("a_4", "m_b", "grp_2", "e_1", 4, 4), 4);
-    ingest(replica, member("a_5", "m_a", "grp_1", "e_1", 5, 5), 5);
-    expect(replica.membershipLinks("e_1")).toEqual([
-      { membershipId: "m_a", groupId: "grp_1" },
-      { membershipId: "m_b", groupId: "grp_2" },
-    ]);
-    expect(replica.membershipLinks("e_missing")).toEqual([]);
-  });
-});
-
-const relationshipRow = (
-  id: string,
-  field: string,
-  type: string,
-  sourceId: string,
-  targetId: string,
-): Entity => ({
+const sourceRow = (id: string, edges_: readonly EdgeSpec[], model = "page"): Entity => ({
   id,
-  model: "ebb",
-  data: {
-    fields: {
-      link: leaf({ source_id: sourceId, target_id: targetId, type, field }, `u_${id}`, 1),
-    },
-  },
+  model,
+  data: { fields: { link: linkValue(edges_, `u_${id}`, 1) } },
   exists: true,
   created_hlc: makeHlc(1),
   updated_hlc: makeHlc(1),
@@ -348,8 +391,8 @@ const record = (entities: readonly Entity[]): ReplicaRecord => ({
 describe("replica adjacency: load rebuilds", () => {
   it("reads the same adjacency after a toRecord()/load() cycle", () => {
     const replica = createReplica();
-    ingest(replica, edge("a_1", "r_1", "author", "wrote", "src_1", "tgt_1", 1, 1), 1);
-    ingest(replica, edge("a_2", "r_2", "author", "wrote", "src_2", "tgt_1", 2, 2), 2);
+    ingest(replica, edges("a_1", "src_1", [edge("author", "wrote", "tgt_1")], 1, 1), 1);
+    ingest(replica, edges("a_2", "src_2", [edge("author", "wrote", "tgt_1")], 2, 2), 2);
     ingest(replica, member("a_3", "m_1", "grp_1", "e_1", 3, 3), 3);
 
     const hydrated = createReplica();
@@ -361,21 +404,30 @@ describe("replica adjacency: load rebuilds", () => {
     expect(hydrated.memberships({ groupId: "grp_1" })).toEqual(["e_1"]);
   });
 
+  it("indexes a link a record carries on a row of a user model", () => {
+    const replica = createReplica();
+    replica.load(record([sourceRow("note_1", [edge("author", "wrote", "tgt_1")], "note")]));
+
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([
+      "note_1",
+    ]);
+    expect(replica.relationships({ as: "author", type: "wrote", sourceId: "note_1" })).toEqual([
+      "tgt_1",
+    ]);
+  });
+
   it("excludes tombstoned rows supplied in the record", () => {
     const replica = createReplica();
     replica.load(
       record([
-        relationshipRow("r_live", "author", "wrote", "src_1", "tgt_1"),
-        {
-          ...relationshipRow("r_dead", "author", "wrote", "src_9", "tgt_1"),
-          deleted_hlc: makeHlc(9),
-        },
+        sourceRow("src_live", [edge("author", "wrote", "tgt_1")]),
+        { ...sourceRow("src_dead", [edge("author", "wrote", "tgt_1")]), deleted_hlc: makeHlc(9) },
         membershipRow("m_live", "grp_1", "e_1"),
         { ...membershipRow("m_dead", "grp_1", "e_9"), deleted_hlc: makeHlc(9) },
       ]),
     );
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "tgt_1" })).toEqual([
-      "src_1",
+      "src_live",
     ]);
     expect(replica.memberships({ groupId: "grp_1" })).toEqual(["e_1"]);
   });

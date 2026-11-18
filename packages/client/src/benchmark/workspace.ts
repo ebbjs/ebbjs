@@ -20,6 +20,7 @@
 import {
   carriesComponent,
   isFieldLeaf,
+  linkEdges,
   systemValue,
   type Entity,
   type FieldValue,
@@ -101,6 +102,7 @@ export const configWith = (overrides: Partial<BenchConfig>): BenchConfig => ({
 
 export interface WorkspaceCounts {
   readonly pages: number;
+  /** Edge keys the pages carry: `parent` plus `references`. */
   readonly relationships: number;
   readonly memberships: number;
   readonly groups: number;
@@ -181,34 +183,49 @@ const bodyContent = (config: BenchConfig): FieldValue => {
   };
 };
 
-const pageRow = (index: number): Entity =>
+/** The nesting that is one edge's key: accessor, type label, target. */
+type LinkLeaves = Record<string, Record<string, Record<string, FieldValue>>>;
+
+/** Wrap the nesting as the `ebb/link` component's map value. */
+const linkValue = (leaves: LinkLeaves): FieldValue => ({
+  map: Object.fromEntries(
+    Object.entries(leaves).map(([as, byType]) => [
+      as,
+      {
+        map: Object.fromEntries(
+          Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+        ),
+      },
+    ]),
+  ),
+});
+
+/**
+ * The edges one page carries: its `parent` key (except the root's) and its
+ * `references`. A link is a key of its source row, so a page's edges live on
+ * the page.
+ */
+const pageLink = (config: BenchConfig, index: number): FieldValue => {
+  const leaves: LinkLeaves = {};
+  const add = (as: string, targetId: string, updateId: string): void => {
+    const byType = (leaves[as] ??= {});
+    const byTarget = (byType.page ??= {});
+    byTarget[targetId] = leaf(updateId, true);
+  };
+  if (index > 0) add("parent", pageId(parentIndexOf(index, config.branch)), `u_parent_${index}`);
+  for (let ref = 0; ref < config.refsPerPage; ref += 1) {
+    add("references", pageId(referenceTargetIndex(index, ref, config.n)), `u_ref_${index}_${ref}`);
+  }
+  return linkValue(leaves);
+};
+
+const pageRow = (config: BenchConfig, index: number): Entity =>
   row(pageId(index), "page", {
     title: leaf(`u_page_${index}_title`, `Document ${index} — a page in a very large workspace`),
     icon: leaf(`u_page_${index}_icon`, "📄"),
     updated_at: leaf(`u_page_${index}_updated_at`, UPDATED_AT_BASE + index),
+    link: pageLink(config, index),
   });
-
-const parentRow = (index: number, branch: number): Entity =>
-  row(`rel_parent_${index}`, "ebb", {
-    link: leaf(`u_rel_parent_${index}`, {
-      source_id: pageId(index),
-      target_id: pageId(parentIndexOf(index, branch)),
-      type: "page",
-      field: "parent",
-    }),
-  });
-
-const referenceRow = (index: number, ref: number, n: number): Entity => {
-  const id = `rel_ref_${index}_${ref}`;
-  return row(id, "ebb", {
-    link: leaf(`u_${id}`, {
-      source_id: pageId(index),
-      target_id: pageId(referenceTargetIndex(index, ref, n)),
-      type: "page",
-      field: "references",
-    }),
-  });
-};
 
 const membershipRow = (index: number): Entity =>
   row(membershipRowId(index), "ebb", {
@@ -228,32 +245,25 @@ const bodyRow = (index: number, content: FieldValue): Entity =>
 // Workspace
 // ---------------------------------------------------------------------------
 
-const referenceRows = (config: BenchConfig): readonly Entity[] =>
-  config.refsPerPage === 0
-    ? []
-    : Array.from({ length: config.n * config.refsPerPage }, (_, k) =>
-        referenceRow(Math.floor(k / config.refsPerPage), k % config.refsPerPage, config.n),
-      );
+/** The edges every page carries, which is what the traversal reads. */
+const edgeCount = (config: BenchConfig): number =>
+  Math.max(0, config.n - 1) + config.n * config.refsPerPage;
 
 /**
- * The four held buckets, in load order: pages, memberships, the workspace
- * group, then the relationship rows. `createHeldRows` and `createWorkspace`
- * both build from here so their id sets cannot drift apart.
+ * The held buckets, in load order: pages (each carrying its edge keys),
+ * memberships, then the workspace group. `createHeldRows` and
+ * `createWorkspace` both build from here so their id sets cannot drift apart.
  */
 const heldRowSet = (config: BenchConfig) => {
-  const pages = Array.from({ length: config.n }, (_, index) => pageRow(index));
+  const pages = Array.from({ length: config.n }, (_, index) => pageRow(config, index));
   const memberships = Array.from({ length: config.n }, (_, index) => membershipRow(index));
-  const parents = Array.from({ length: Math.max(0, config.n - 1) }, (_, k) =>
-    parentRow(k + 1, config.branch),
-  );
-  const relationships = [...parents, ...referenceRows(config)];
   const groups = [groupRow()];
   return {
     pages,
     memberships,
-    relationships,
+    relationships: edgeCount(config),
     groups,
-    rows: [...pages, ...memberships, ...groups, ...relationships],
+    rows: [...pages, ...memberships, ...groups],
   };
 };
 
@@ -291,7 +301,7 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
     bodyIds,
     counts: {
       pages: pages.length,
-      relationships: relationships.length,
+      relationships,
       memberships: memberships.length,
       groups: groups.length,
       heldRows: metadata.length,
@@ -342,16 +352,12 @@ export const summariseIndexKeys = (rows: readonly Entity[]): IndexKeyCounts => {
 
   for (const entity of rows) {
     if (entity.deleted_hlc !== null) continue;
-    const source = stringField(entity, "source_id");
-    const target = stringField(entity, "target_id");
-    const field = stringField(entity, "field");
-    const type = stringField(entity, "type");
-    if (carriesComponent(entity, "link") && source && target && field && type) {
-      reverse.add(JSON.stringify([field, type, target]));
-      forward.add(JSON.stringify([field, type, source]));
+    // A link contributes one reverse entry per live edge, keyed on the edge and
+    // yielding the row that carries it; forward traversal is a component read
+    // of that row, so it adds no index entry.
+    for (const edge of linkEdges(entity)) {
+      reverse.add(JSON.stringify([edge.as, edge.type, edge.targetId]));
       reverseRows += 1;
-      forwardRows += 1;
-      continue;
     }
     const member = stringField(entity, "entity_id");
     const group = stringField(entity, "group_id");

@@ -29,7 +29,6 @@ import type { ModelDef, ShapeFields } from "@ebbjs/schema";
 import { EntityValidationError } from "@ebbjs/schema";
 import type { ModelRegistry } from "@ebbjs/schema";
 import type { Schema } from "@ebbjs/schema";
-import { GROUPS_ACCESSOR } from "@ebbjs/schema";
 import { commit, type CommitCapability } from "@ebbjs/write";
 import {
   type AccessorKeyOf,
@@ -53,11 +52,14 @@ import {
   groupBootstrap,
   lastGrantError,
   patchEntity,
+  operationCallFor,
   writeRelationship,
   type MembershipRemoval,
   type OperationCall,
-  type RelationshipPointer,
+  type RelateVerb,
   type ResolvedPointer,
+  type UnrelateVerb,
+  type VerbResolution,
 } from "@ebbjs/write";
 import { normalizePointer, type PointerValue } from "./query-builder";
 import type { ManyPointerValue } from "./relationship";
@@ -123,14 +125,10 @@ export type GroupRef = string | { readonly id: string };
 /** Point in time a draft `duplicate` copies from. */
 export type DuplicateAt = "current" | "preSync";
 
-/**
- * What a one-cardinality unlink's delete must name: the live edge's row id, or
- * the reason there is none.
- */
-type UnlinkTarget =
-  | { readonly kind: "not-applicable" }
-  | { readonly kind: "unlinked" }
-  | { readonly kind: "existing"; readonly relationshipId: string };
+/** The edge delta a draft relationship verb records, in the draft's pointer shape. */
+type RelationshipPointer =
+  | { readonly targetId: PointerValue }
+  | { readonly targetIds: ManyPointerValue };
 
 /**
  * Normalize the `{ groups }` option into a de-duplicated, non-empty
@@ -200,33 +198,6 @@ const resolveSingleGroupId = (group: GroupRef, entityName: string, operation: st
 };
 
 /**
- * Resolve an unlink's target before the planner emits `writeRelationship`.
- * The operation owns the accessor and declared-relationship refusals; this only
- * supplies the row id, or reports that there is nothing to delete.
- */
-async function resolveUnlinkTarget(
-  registry: ModelRegistry,
-  entityName: string,
-  sourceId: string,
-  as: string,
-  pointer: RelationshipPointer,
-  readLink: ActionReads["relationshipLink"],
-): Promise<UnlinkTarget> {
-  if (pointer.targetId !== null || pointer.targetIds !== undefined) {
-    return { kind: "not-applicable" };
-  }
-  if (as === GROUPS_ACCESSOR) return { kind: "not-applicable" };
-  const rel = registry.getRelationship(entityName, as);
-  if (rel === undefined || rel.sourceCardinality !== "one") {
-    return { kind: "not-applicable" };
-  }
-  const link = await readLink(as, rel.type ?? entityName, sourceId);
-  return link === undefined
-    ? { kind: "unlinked" }
-    : { kind: "existing", relationshipId: link.relationshipId };
-}
-
-/**
  * Options for a draft namespace's `create`. Mirrors the entity
  * namespace's create signature: `groups` is required and non-empty,
  * and one `membership` row per group lands in the same Action.
@@ -260,12 +231,17 @@ export interface ActionReads {
   entity(model: string, entityId: string): Promise<Entity | null>;
   /** The `before` row of the entity's earliest unresolved conflict. */
   preSyncRow(entityId: string): Promise<Entity | null>;
-  /** The live edge a one-cardinality unlink's delete must name. */
-  relationshipLink(
+  /**
+   * The live targets of `(sourceId, as, type)` on the source row, or
+   * `undefined` when the local view cannot see the row at all. A verb that
+   * must diff its write against them refuses on `undefined` rather than
+   * dropping edges the caller never saw.
+   */
+  relationshipTargets(
     as: string,
     type: string,
     sourceId: string,
-  ): Promise<{ readonly relationshipId: string } | undefined>;
+  ): Promise<readonly string[] | undefined>;
   /** Live `grant` rows of a group, for the `last_grant` guard. */
   grants(groupId: string): Promise<readonly LiveGrant[]>;
 }
@@ -978,35 +954,92 @@ const resolveDuplicate = async (
   ];
 };
 
+/** The cardinality the registry declares for an accessor; `one` is the default. */
+const cardinalityOf = (registry: ModelRegistry, entity: string, as: string): "one" | "many" =>
+  registry.getRelationship(entity, as)?.sourceCardinality ?? "one";
+
+/** The wire type label the registry declares for an accessor. */
+const typeOf = (registry: ModelRegistry, entity: string, as: string): string =>
+  registry.getRelationship(entity, as)?.type ?? entity;
+
+/** A pointer's target ids; `null` and `undefined` name no target. */
+const pointerIds = (values: readonly PointerValue[], label: string): string[] =>
+  values.flatMap((value) => {
+    const id = normalizePointer(value, label);
+    return id === null ? [] : [id];
+  });
+
+/** The verb one target names: a move for `one`, an added edge for `many`. */
+const singleTargetVerb = (
+  base: { readonly entity: string; readonly id: string; readonly as: string },
+  targetId: PointerValue,
+  known: readonly string[] | undefined,
+  registry: ModelRegistry,
+): RelateVerb | UnrelateVerb => {
+  const id = normalizePointer(targetId, `target for "${base.entity}.${base.as}"`);
+  if (id === null) return { verb: "unrelate", ...base };
+  if (cardinalityOf(registry, base.entity, base.as) === "one") {
+    return { verb: "relate", ...base, target: id };
+  }
+  // A many-cardinality `link` adds one edge, so its verb carries the whole set
+  // the write should leave: the live targets plus the new one, which is what
+  // the verb's set diff reads.
+  return {
+    verb: "relate",
+    ...base,
+    targets: known === undefined ? [id] : [...new Set([...known, id])],
+  };
+};
+
 /**
- * `link` / `unlink` / `setLinks`: a one-cardinality unlink resolves the
- * live edge's row id first, and an unlink with no live edge emits
- * nothing. The operation itself owns the built-in-accessor and
- * undeclared-relationship refusals.
+ * `link` / `unlink` / `setLinks`: every one is an `ebb/link` write on the
+ * source row, so each resolves through the shared verb table against the
+ * accessor's live target set. A one-cardinality move and a `replace` diff
+ * against it — one Update carrying the old key's tombstone and the new key's
+ * presence — and a verb that must diff refuses when the caller cannot see the
+ * set. A `{ add, remove }` patch reads nothing: it writes the keys it names.
  */
 const resolveRelationship = async (
   intent: Extract<DraftIntent, { kind: "relationship" }>,
   ctx: ResolveContext,
 ): Promise<readonly OperationCall[]> => {
-  const target = await resolveUnlinkTarget(
-    ctx.cap.registry,
-    intent.entity,
-    intent.sourceId,
-    intent.as,
-    intent.pointer,
-    ctx.cap.read.relationshipLink,
-  );
-  if (target.kind === "unlinked") return [];
-  return [
-    call(writeRelationship, {
-      entity: intent.entity,
-      sourceId: intent.sourceId,
-      as: intent.as,
-      pointer: intent.pointer,
-      relationshipSubjectId: target.kind === "existing" ? target.relationshipId : undefined,
-      groups: await readGroups(ctx, intent.sourceId),
-    }),
-  ];
+  const { entity, sourceId, as, pointer } = intent;
+  const registry = ctx.cap.registry;
+  const base = { entity, id: sourceId, as } as const;
+  const groups = await readGroups(ctx, sourceId);
+
+  /** Resolve one verb against the accessor's live target set. */
+  const resolve = async (
+    verbFor: (known: readonly string[] | undefined) => RelateVerb | UnrelateVerb,
+  ): Promise<readonly OperationCall[]> => {
+    const known = await ctx.cap.read.relationshipTargets(
+      as,
+      typeOf(registry, entity, as),
+      sourceId,
+    );
+    const resolution: VerbResolution = { groupsOf: () => groups, targetsOf: () => known };
+    const operationCall = operationCallFor(registry, verbFor(known), resolution);
+    return operationCall === undefined ? [] : [operationCall];
+  };
+
+  if ("targetIds" in pointer) {
+    const patch = pointer.targetIds;
+    if (!("replace" in patch)) {
+      return [
+        call(writeRelationship, {
+          entity,
+          sourceId,
+          as,
+          present: patch.add,
+          removed: patch.remove,
+          groups,
+        }),
+      ];
+    }
+    const targets = pointerIds(patch.replace, `target for "${entity}.${as}"`);
+    return resolve(() => ({ verb: "relate", ...base, targets }));
+  }
+  return resolve((known) => singleTargetVerb(base, pointer.targetId, known, registry));
 };
 
 const resolveGroupVerb = async (

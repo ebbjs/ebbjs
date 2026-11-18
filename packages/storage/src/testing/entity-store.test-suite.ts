@@ -14,12 +14,11 @@ import type { DirtyTracker } from "../types/dirty-tracker";
 import type { EntityStore } from "../types/entity-store";
 import {
   buildCreateAction,
+  buildLinkAction,
   buildMembershipDeleteAction,
   buildMembershipPutAction,
   buildPatchAction,
   buildPutAction,
-  buildRelationshipDeleteAction,
-  buildRelationshipPutAction,
 } from "./fixtures";
 
 export interface EntityStoreTestSuiteHarness {
@@ -121,34 +120,49 @@ const buildRowPutAction = (
   ],
 });
 
-/** A materialized `ebb/link` row, for direct `set()` writes. */
-const makeRelationshipEntity = (
+/**
+ * The link nesting a fixture builds, exported through the same helper the
+ * fixtures use so an entity's `ebb/link` value stays one shape in the suite.
+ */
+const linkComponentValue = (leaves: LinkLeaves): FieldValue => ({
+  map: Object.fromEntries(
+    Object.entries(leaves).map(([as, byType]) => [
+      as,
+      {
+        map: Object.fromEntries(
+          Object.entries(byType).map(([type, byTarget]) => [type, { map: byTarget }]),
+        ),
+      },
+    ]),
+  ),
+});
+
+type LinkLeaves = Record<string, Record<string, Record<string, FieldValue>>>;
+
+/** A materialized row carrying one live `ebb/link` edge, for `set()` writes. */
+const makeLinkEntity = (
   overrides: {
     id?: string;
-    sourceId?: string;
-    targetId?: string;
-    field?: string;
+    model?: string;
+    as?: string;
     type?: string;
+    targetId?: string;
     deleted?: string | null;
   } = {},
 ): Entity => {
-  const id = overrides.id ?? "rel_2";
+  const id = overrides.id ?? "todo_2";
+  const as = overrides.as ?? "list";
+  const type = overrides.type ?? "todo_list";
+  const targetId = overrides.targetId ?? "list_1";
 
   return {
     id,
-    model: "ebb",
+    model: overrides.model ?? "todo",
     data: {
       fields: {
-        link: {
-          value: {
-            source_id: overrides.sourceId ?? "todo_1",
-            target_id: overrides.targetId ?? "list_1",
-            type: overrides.type ?? "todo_list",
-            field: overrides.field ?? "list",
-          },
-          update_id: `u_${id}`,
-          hlc: makeHlc(1),
-        },
+        link: linkComponentValue({
+          [as]: { [type]: { [targetId]: leaf(true, `u_${id}`, makeHlc(1)) } },
+        }),
       },
     },
     exists: true,
@@ -193,28 +207,39 @@ const makeMembershipEntity = (
   };
 };
 
-/** Append a Relationship put and mark its row dirty. */
-const seedListEdge = async (
+/** Append a link write for one source row and mark that row dirty. */
+const seedLink = async (
   actionLog: ActionLog,
   dirtyTracker: DirtyTracker,
   row: {
-    id: string;
     sourceId: string;
+    model?: string;
     targetId?: string;
-    field?: string;
+    as?: string;
     type?: string;
+    present?: boolean;
+    /** Orders writes to the same source: the action id and the leaf stamps. */
+    gsn?: number;
   },
 ): Promise<void> => {
+  const model = row.model ?? "todo";
+  const edge = {
+    as: row.as ?? "list",
+    type: row.type ?? "todo_list",
+    targetId: row.targetId ?? "list_1",
+  };
   await actionLog.append(
-    buildRelationshipPutAction({
-      id: row.id,
-      sourceId: row.sourceId,
-      targetId: row.targetId ?? "list_1",
-      field: row.field ?? "list",
-      type: row.type ?? "todo_list",
-    }),
+    buildLinkAction(
+      {
+        sourceId: row.sourceId,
+        model,
+        present: row.present === false ? [] : [edge],
+        removed: row.present === false ? [edge] : [],
+      },
+      row.gsn ?? 1,
+    ),
   );
-  await dirtyTracker.mark(row.id, "ebb");
+  await dirtyTracker.mark(row.sourceId, model);
 };
 
 /** Append an `ebb/membership` put and mark its row dirty. */
@@ -371,6 +396,40 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect((entity!.data.fields.title as { value: unknown }).value).toBe("Updated");
         expect(entity!.exists).toBe(true);
         expect(entity!.created_hlc).toBe(buildCreateAction().hlc);
+      });
+
+      it("keeps a placeholder's model when an ebb/* overlay lands on it", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        // A link write can arrive before the row's create (#789). It adds a
+        // component and never names a model: a placeholder that a user write
+        // already typed stays that model, and one carrying only the overlay is
+        // committed under `ebb`.
+        await actionLog.append(
+          buildFieldsPatch("u_1", { title: leaf("Ship", "u_1_title", makeHlc(1)) }, makeHlc(1), 1),
+        );
+        await actionLog.append(
+          buildLinkAction(
+            {
+              sourceId: "todo_1",
+              model: "todo",
+              present: [{ as: "list", type: "todo_list", targetId: "list_1" }],
+              create: false,
+            },
+            2,
+          ),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const row = await entityStore.get("todo_1");
+        expect(row!.model).toBe("todo");
+        expect(row!.exists).toBe(false);
+        expect(
+          await entityStore.queryByRelationship({
+            as: "list",
+            type: "todo_list",
+            targetId: "list_1",
+          }),
+        ).toEqual(["todo_1"]);
       });
 
       it("materializes a create's row with no components", async () => {
@@ -706,6 +765,39 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         expect(await dirtyTracker.isDirty("todo_1")).toBe(false);
       });
 
+      it("materializes a user row carrying a platform component", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        // An `ebb/*` overlay leaves the row's committed model alone, so a
+        // component read cannot materialize one model's dirty rows and find it.
+        await actionLog.append(
+          buildLinkAction({
+            sourceId: "note_1",
+            model: "note",
+            present: [{ as: "list", type: "note_list", targetId: "list_1" }],
+          }),
+        );
+        await dirtyTracker.mark("note_1", "note");
+        expect(await dirtyTracker.isDirty("note_1")).toBe(true);
+
+        expect(await entityStore.queryByComponent("ebb/link")).toEqual(["note_1"]);
+        expect(await dirtyTracker.isDirty("note_1")).toBe(false);
+      });
+
+      it("does not index a platform component under the row's model", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await actionLog.append(
+          buildLinkAction({
+            sourceId: "note_1",
+            model: "note",
+            present: [{ as: "list", type: "note_list", targetId: "list_1" }],
+          }),
+        );
+        await dirtyTracker.mark("note_1", "note");
+
+        expect(await entityStore.queryByComponent("ebb/link")).toEqual(["note_1"]);
+        expect(await entityStore.queryByComponent("note/link")).toEqual([]);
+      });
+
       it("returns empty for a component nothing carries", async () => {
         const { entityStore } = await factory();
         expect(await entityStore.queryByComponent("todo/missing")).toEqual([]);
@@ -790,27 +882,30 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("returns source ids for a (field, type, target_id) triple", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1" });
 
         expect(await listQuery(entityStore)).toEqual(["todo_1"]);
       });
 
-      it("materializes dirty ebb/link rows on query", async () => {
+      it("materializes dirty source rows of any model on query", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await dirtyTracker.isDirty("rel_1")).toBe(true);
+        // A link is a key of its source row's component, so the row carrying
+        // it is a `note`, not an `ebb` row: the reverse read cannot narrow to
+        // one model without missing it.
+        await seedLink(actionLog, dirtyTracker, { sourceId: "note_1", model: "note" });
+        expect(await dirtyTracker.isDirty("note_1")).toBe(true);
 
-        await listQuery(entityStore);
-        expect(await dirtyTracker.isDirty("rel_1")).toBe(false);
+        expect(await listQuery(entityStore)).toEqual(["note_1"]);
+        expect(await dirtyTracker.isDirty("note_1")).toBe(false);
       });
 
       it("returns every distinct source targeting the same id in ascending order", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_b", sourceId: "todo_b" });
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_a", sourceId: "todo_a" });
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_b2", sourceId: "todo_b" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_b" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_a" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "note_c", model: "note" });
 
-        expect(await listQuery(entityStore)).toEqual(["todo_a", "todo_b"]);
+        expect(await listQuery(entityStore)).toEqual(["note_c", "todo_a", "todo_b"]);
       });
 
       it("returns empty for an unknown triple", async () => {
@@ -820,7 +915,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("does not match a different accessor, type, or target", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1" });
 
         expect(
           await entityStore.queryByRelationship({
@@ -845,142 +940,78 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ).toEqual([]);
       });
 
-      it("drops the source when the row is tombstoned", async () => {
+      it("drops the source when the edge's key is tombstoned", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1" });
         expect(await listQuery(entityStore)).toEqual(["todo_1"]);
 
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "ebb");
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1", present: false, gsn: 2 });
 
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
-      it("keeps a source while any row with the same natural key is live", async () => {
+      it("drops one edge's key and keeps its siblings", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_b", sourceId: "todo_b" });
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_b2", sourceId: "todo_b" });
-        expect(await listQuery(entityStore)).toEqual(["todo_b"]);
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1", targetId: "list_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1", targetId: "list_2" });
 
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_b" }, 2));
-        await dirtyTracker.mark("rel_b", "ebb");
-        expect(await listQuery(entityStore)).toEqual(["todo_b"]);
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1", present: false, gsn: 2 });
 
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_b2" }, 3));
-        await dirtyTracker.mark("rel_b2", "ebb");
+        expect(await listQuery(entityStore)).toEqual([]);
+        expect(
+          await entityStore.queryByRelationship({
+            as: "list",
+            type: "todo_list",
+            targetId: "list_2",
+          }),
+        ).toEqual(["todo_1"]);
+      });
+
+      it("drops the source when the row carrying the edge is tombstoned", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1" });
+        expect(await listQuery(entityStore)).toEqual(["todo_1"]);
+
+        await actionLog.append(buildRowDeleteAction("todo_1", makeHlc(200), 2));
+        await dirtyTracker.mark("todo_1", "todo");
+
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
-      it("moves the source when a patch changes the source id", async () => {
+      it("moves the edge when a re-put moves the source row", async () => {
+        // A source row is its own identity, so the same row id cannot move:
+        // a second source naming the same target is what a move looks like.
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_1" });
+        await seedLink(actionLog, dirtyTracker, { sourceId: "todo_2" });
 
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_2",
-              targetId: "list_1",
-              field: "list",
-              type: "todo_list",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await listQuery(entityStore)).toEqual(["todo_2"]);
-      });
-
-      it("drops the source from its new key when a mutated row is tombstoned", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_2",
-              targetId: "list_1",
-              field: "owner",
-              type: "todo_user",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        const newKey = { as: "owner", type: "todo_user", targetId: "list_1" };
-        expect(await entityStore.queryByRelationship(newKey)).toEqual(["todo_2"]);
-
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 3));
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await entityStore.queryByRelationship(newKey)).toEqual([]);
-        expect(await listQuery(entityStore)).toEqual([]);
+        expect(await listQuery(entityStore)).toEqual(["todo_1", "todo_2"]);
       });
 
       it("indexes rows written through set()", async () => {
         const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
+        await entityStore.set(makeLinkEntity({ id: "todo_2" }));
 
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
       });
 
       it("drops the source when set() tombstones the row", async () => {
         const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
+        await entityStore.set(makeLinkEntity({ id: "todo_2" }));
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
 
-        await entityStore.set(
-          makeRelationshipEntity({
-            id: "rel_2",
-            sourceId: "todo_2",
-            targetId: "list_1",
-            deleted: makeHlc(2),
-          }),
-        );
+        await entityStore.set(makeLinkEntity({ id: "todo_2", deleted: makeHlc(2) }));
 
         expect(await listQuery(entityStore)).toEqual([]);
       });
 
-      it("drops the source from its new key when a mutated set() row is tombstoned", async () => {
+      it("does not index a user field that happens to be named link", async () => {
         const { entityStore } = await factory();
-        const mutated = {
-          id: "rel_2",
-          sourceId: "todo_2",
-          targetId: "list_1",
-          field: "owner",
-          type: "todo_user",
-        };
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
-        await entityStore.set(makeRelationshipEntity(mutated));
-
-        const newKey = { as: "owner", type: "todo_user", targetId: "list_1" };
-        expect(await entityStore.queryByRelationship(newKey)).toEqual(["todo_2"]);
-
-        await entityStore.set(makeRelationshipEntity({ ...mutated, deleted: makeHlc(2) }));
-
-        expect(await entityStore.queryByRelationship(newKey)).toEqual([]);
-      });
-
-      it("does not index non-relationship entities that carry the same field names", async () => {
-        const { entityStore } = await factory();
+        // A leaf under `link` is a user value, not the keyed component: only
+        // presence leaves at `(<as>, <type>, <target>)` are edges.
         await entityStore.set({
           ...makeEntity({ id: "todo_9", model: "todo" }),
-          data: {
-            fields: {
-              source_id: { value: "todo_9", update_id: "u_9" },
-              target_id: { value: "list_1", update_id: "u_9" },
-              type: { value: "todo_list", update_id: "u_9" },
-              field: { value: "list", update_id: "u_9" },
-            },
-          },
+          data: { fields: { link: leaf("https://example.test", "u_9", makeHlc(1)) } },
         });
 
         expect(await listQuery(entityStore)).toEqual([]);
@@ -988,239 +1019,12 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("clears the index on reset", async () => {
         const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_2", targetId: "list_1" }),
-        );
+        await entityStore.set(makeLinkEntity({ id: "todo_2" }));
         expect(await listQuery(entityStore)).toEqual(["todo_2"]);
 
         await entityStore.reset();
 
         expect(await listQuery(entityStore)).toEqual([]);
-      });
-    });
-
-    describe("queryByRelationshipSource", () => {
-      const sourceQuery = (entityStore: EntityStore) =>
-        entityStore.queryByRelationshipSource({
-          as: "list",
-          type: "todo_list",
-          sourceId: "todo_1",
-        });
-
-      it("returns the target id and row id for a (field, type, source_id) triple", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-
-        expect(await sourceQuery(entityStore)).toEqual([
-          { relationshipId: "rel_1", targetId: "list_1" },
-        ]);
-      });
-
-      it("materializes dirty ebb/link rows on query", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        expect(await dirtyTracker.isDirty("rel_1")).toBe(true);
-
-        await sourceQuery(entityStore);
-        expect(await dirtyTracker.isDirty("rel_1")).toBe(false);
-      });
-
-      it("returns every edge in ascending target order, deduped by row", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, {
-          id: "rel_b",
-          sourceId: "todo_1",
-          targetId: "list_b",
-        });
-        await seedListEdge(actionLog, dirtyTracker, {
-          id: "rel_a",
-          sourceId: "todo_1",
-          targetId: "list_a",
-        });
-
-        expect((await sourceQuery(entityStore)).map((l) => l.targetId)).toEqual([
-          "list_a",
-          "list_b",
-        ]);
-      });
-
-      it("keeps two rows that share a natural key and drops only the tombstoned one", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_2", sourceId: "todo_1" });
-        expect((await sourceQuery(entityStore)).map((l) => l.relationshipId)).toEqual([
-          "rel_1",
-          "rel_2",
-        ]);
-
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "ebb");
-        expect((await sourceQuery(entityStore)).map((l) => l.relationshipId)).toEqual(["rel_2"]);
-
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_2" }, 3));
-        await dirtyTracker.mark("rel_2", "ebb");
-        expect(await sourceQuery(entityStore)).toEqual([]);
-      });
-
-      it("moves the edge when a patch re-targets the row", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_1",
-              targetId: "list_2",
-              field: "list",
-              type: "todo_list",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await sourceQuery(entityStore)).toEqual([
-          { relationshipId: "rel_1", targetId: "list_2" },
-        ]);
-      });
-
-      it("moves the edge when a patch changes the accessor field", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_1",
-              targetId: "list_1",
-              field: "owner",
-              type: "todo_list",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await sourceQuery(entityStore)).toEqual([]);
-        expect(
-          await entityStore.queryByRelationshipSource({
-            as: "owner",
-            type: "todo_list",
-            sourceId: "todo_1",
-          }),
-        ).toEqual([{ relationshipId: "rel_1", targetId: "list_1" }]);
-      });
-
-      it("re-keys the edge when a patch changes the source id", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-
-        await actionLog.append(
-          buildRelationshipPutAction(
-            {
-              id: "rel_1",
-              sourceId: "todo_2",
-              targetId: "list_1",
-              field: "list",
-              type: "todo_list",
-            },
-            2,
-          ),
-        );
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await sourceQuery(entityStore)).toEqual([]);
-        expect(
-          (
-            await entityStore.queryByRelationshipSource({
-              as: "list",
-              type: "todo_list",
-              sourceId: "todo_2",
-            })
-          ).map((l) => l.targetId),
-        ).toEqual(["list_1"]);
-      });
-
-      it("drops the edge when the row is tombstoned", async () => {
-        const { actionLog, dirtyTracker, entityStore } = await factory();
-        await seedListEdge(actionLog, dirtyTracker, { id: "rel_1", sourceId: "todo_1" });
-
-        await actionLog.append(buildRelationshipDeleteAction({ id: "rel_1" }, 2));
-        await dirtyTracker.mark("rel_1", "ebb");
-
-        expect(await sourceQuery(entityStore)).toEqual([]);
-      });
-
-      it("indexes rows written through set()", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_1", targetId: "list_1" }),
-        );
-
-        expect(await sourceQuery(entityStore)).toEqual([
-          { relationshipId: "rel_2", targetId: "list_1" },
-        ]);
-      });
-
-      it("does not index non-relationship entities that carry the same field names", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set({
-          ...makeEntity({ id: "todo_9", model: "todo" }),
-          data: {
-            fields: {
-              source_id: { value: "todo_1", update_id: "u_9" },
-              target_id: { value: "list_1", update_id: "u_9" },
-              type: { value: "todo_list", update_id: "u_9" },
-              field: { value: "list", update_id: "u_9" },
-            },
-          },
-        });
-
-        expect(await sourceQuery(entityStore)).toEqual([]);
-      });
-
-      it("keeps the forward key out of the reverse key space when a source equals a target", async () => {
-        const { entityStore } = await factory();
-        // `todo_shared` is the target of rel_a and the source of rel_b.
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_a", sourceId: "todo_1", targetId: "todo_shared" }),
-        );
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_b", sourceId: "todo_shared", targetId: "list_1" }),
-        );
-
-        expect(
-          await entityStore.queryByRelationship({
-            as: "list",
-            type: "todo_list",
-            targetId: "todo_shared",
-          }),
-        ).toEqual(["todo_1"]);
-        expect(
-          (
-            await entityStore.queryByRelationshipSource({
-              as: "list",
-              type: "todo_list",
-              sourceId: "todo_shared",
-            })
-          ).map((l) => l.targetId),
-        ).toEqual(["list_1"]);
-      });
-
-      it("clears the index on reset", async () => {
-        const { entityStore } = await factory();
-        await entityStore.set(
-          makeRelationshipEntity({ id: "rel_2", sourceId: "todo_1", targetId: "list_1" }),
-        );
-        expect(await sourceQuery(entityStore)).toEqual([
-          { relationshipId: "rel_2", targetId: "list_1" },
-        ]);
-
-        await entityStore.reset();
-
-        expect(await sourceQuery(entityStore)).toEqual([]);
       });
     });
 

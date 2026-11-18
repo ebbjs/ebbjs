@@ -1,10 +1,6 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
-import type {
-  MembershipLink,
-  RelationshipLink,
-  RelationshipSourceQuery,
-} from "../types/entity-store";
+import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 /**
@@ -122,10 +118,11 @@ export interface ReplicaStats {
 }
 
 /**
- * Adjacency read key for the replica's relationship index. `sourceId`
- * reads forward — the targets out of the source; `targetId` reads
- * reverse — the sources pointing at the target. `sourceId` wins when
- * both are set, and neither yields no ids.
+ * Adjacency read key for the replica's relationship reads. `sourceId`
+ * reads forward — the live targets on the source row's `ebb/link`
+ * component; `targetId` reads reverse — the sources the reverse index files
+ * under the target. `sourceId` wins when both are set, and neither yields no
+ * ids.
  */
 export interface RelationshipQuery {
   readonly as: string;
@@ -216,8 +213,9 @@ export interface Replica {
   stats(): ReplicaStats;
 
   /**
-   * Distinct live targets out of `(as, type, sourceId)`, or distinct
-   * live sources pointing at `(as, type, targetId)`, ascending.
+   * Distinct live targets out of `(as, type, sourceId)` — a read of the
+   * source row's `ebb/link` component — or distinct live sources pointing at
+   * `(as, type, targetId)` from the reverse index, ascending.
    */
   relationships(query: RelationshipQuery): readonly string[];
   /**
@@ -232,8 +230,6 @@ export interface Replica {
    * ids of an entity, ascending.
    */
   memberships(query: MembershipQuery): readonly string[];
-  /** Live forward relationship edges out of a source, ascending by target then row id. */
-  relationshipLinks(query: RelationshipSourceQuery): readonly RelationshipLink[];
   /** Live member-keyed membership rows of an entity, ascending by group then row id. */
   membershipLinks(entityId: string): readonly MembershipLink[];
 

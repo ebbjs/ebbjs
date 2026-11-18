@@ -8,7 +8,7 @@
  * and the reader treats it as "everything may have changed".
  */
 
-import { carriesComponent, systemValueString, type Entity } from "@ebbjs/core";
+import { carriesComponent, carriesLink, systemValueString, type Entity } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 /** One derived reader's view of the replica's change stream. */
@@ -44,20 +44,15 @@ export interface EntityWatcher {
 }
 
 /**
- * The id an accessor change belongs to: a link row names its source, a
- * membership row names its member entity. Every platform row is an `ebb` row, so
- * the component says which.
+ * The id an accessor change belongs to. A link is a key of its source row, so a
+ * row carrying `ebb/link` is its own subject; a membership row names the member
+ * entity it files.
  */
 const accessorSubjectId = (entity: Entity): string | null => {
-  for (const [kind, field] of [
-    ["link", "source_id"],
-    ["membership", "entity_id"],
-  ] as const) {
-    if (!carriesComponent(entity, kind)) continue;
-    const id = systemValueString(entity, kind, field);
-    return id !== null && id.length > 0 ? id : null;
-  }
-  return null;
+  if (carriesLink(entity)) return entity.id;
+  if (!carriesComponent(entity, "membership")) return null;
+  const id = systemValueString(entity, "membership", "entity_id");
+  return id !== null && id.length > 0 ? id : null;
 };
 
 const addListener = <T>(map: Map<string, Set<T>>, id: string, listener: T): void => {
@@ -84,23 +79,25 @@ export const createEntityWatcher = (replica: Replica, signal: ReplicaSignal): En
   let detach: (() => void) | null = null;
 
   const dispatch = (changes: readonly ReplicaChange[]): void => {
-    const touched = new Set<string>();
+    // The ids a batch settles: every changed row, plus the accessor subject a
+    // platform row names. A link's subject is the row that changed, so the two
+    // sets overlap and one listener is notified once per id.
+    const subjects = new Set<string>();
     for (const change of changes) {
-      touched.add(change.id);
+      subjects.add(change.id);
       const row = replica.get(change.id);
       if (row === undefined) continue;
       const subject = accessorSubjectId(row);
-      if (subject === null) continue;
-      const subjectRow = replica.get(subject);
-      const accessorBucket = Array.from(accessorListeners.get(subject) ?? []);
-      for (const listener of accessorBucket) listener(subjectRow);
+      if (subject !== null) subjects.add(subject);
     }
-    for (const id of touched) {
-      const listeners = entityListeners.get(id);
-      if (listeners === undefined) continue;
+    for (const id of subjects) {
+      const listeners = new Set([
+        ...(accessorListeners.get(id) ?? []),
+        ...(entityListeners.get(id) ?? []),
+      ]);
+      if (listeners.size === 0) continue;
       const row = replica.get(id);
-      const bucket = Array.from(listeners);
-      for (const listener of bucket) listener(row);
+      for (const listener of listeners) listener(row);
     }
   };
 

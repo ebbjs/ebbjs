@@ -5,7 +5,7 @@ import { ReservedNameError } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
 import { normalizeManyPointers, normalizePointer } from "../sync/relationship";
 import { createClient } from "../sync/client";
-import { isComponentUpdate, isRowCreate, type Update } from "@ebbjs/core";
+import type { Update } from "@ebbjs/core";
 
 const todo = defineModel("todo", {
   title: e.string(),
@@ -188,33 +188,50 @@ describe("normalizeManyPointers", () => {
   });
 });
 
-describe("buildRelationshipWrite (SyncClient)", () => {
-  const buildEntityUpdate = (id: string, fields: Record<string, unknown> = {}): Update => {
-    const [field, value] = Object.entries({ title: "Ship it", ...fields })[0]!;
-    return {
-      id: "u_e",
-      subject_id: id,
-      component: `todo/${field}`,
-      method: "replace",
-      data: { value, update_id: "u_e" },
-    };
+/** One edge's presence leaf, as the `ebb/link` value nests it. */
+const edgeLeaf = (
+  update: Update,
+  as: string,
+  type: string,
+  targetId: string,
+): { readonly value: unknown } | undefined => {
+  const data = update.data as {
+    map: Record<string, { map: Record<string, { map: Record<string, { value: unknown }> }> }>;
   };
+  return data.map[as]?.map[type]?.map[targetId];
+};
 
-  it("produces a put relationship update for one-cardinality with a string id", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
+/** The target ids one Update's `(as, type)` level carries, with their leaves. */
+const leavesOf = (
+  update: Update,
+  as: string,
+  type: string,
+): Readonly<Record<string, { readonly value: unknown }>> => {
+  const data = update.data as {
+    map: Record<string, { map: Record<string, { map: Record<string, { value: unknown }> }> }>;
+  };
+  return data.map[as]?.map[type]?.map ?? {};
+};
 
-    // One-cardinality: no entityUpdate; the FK lives on the
-    // Relationship Update, not the source's data fields.
+const registryFor = (many: boolean): ModelRegistry => {
+  const r = new ModelRegistry();
+  r.register(todo);
+  r.register(list);
+  r.registerRelationship(
+    many
+      ? defineRelationship({ source: todo, target: list, as: "tags", sourceCardinality: "many" })
+      : defineRelationship({ source: todo, target: list, as: "list" }),
+  );
+  return r;
+};
+
+const mkClient = (registry: ModelRegistry) =>
+  createClient({ serverUrl: "http://localhost:4000", actorId: "actor_1", registry });
+
+describe("buildRelationshipWrite (SyncClient)", () => {
+  it("merges one presence key on the source for a one-cardinality link", () => {
+    const client = mkClient(registryFor(false));
+
     const result = client.buildRelationshipWrite({
       source: todo,
       target: list,
@@ -223,32 +240,53 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       targetId: "list_1",
     });
 
-    expect(result.entityUpdate).toBeUndefined();
-    // The edge is a row, so its create comes first…
-    expect(result.relationshipUpdates).toHaveLength(2);
-    expect(result.relationshipUpdates[0]).toMatchObject({ method: "create", model: "ebb" });
-    // …then one atomic `ebb/link` value, not four per-field Updates.
-    const link = result.relationshipUpdates.find(isComponentUpdate)!;
-    const value = (field: string): unknown =>
-      (link.data as { value: Record<string, unknown> }).value[field];
-    expect(value("source_id")).toBe("todo_1");
-    expect(value("target_id")).toBe("list_1");
-    expect(value("field")).toBe("list");
-    expect(value("type")).toBe("todo");
+    // One Update writes one edge: no link row, no create.
+    expect(result.relationshipUpdates).toHaveLength(1);
+    const [link] = result.relationshipUpdates;
+    expect(link).toMatchObject({ subject_id: "todo_1", component: "ebb/link", method: "merge" });
+    expect(leavesOf(link!, "list", "todo")).toEqual({
+      list_1: { value: true, update_id: expect.any(String), hlc: expect.any(String) },
+    });
   });
 
-  it("produces a delete relationship update for one-cardinality with null targetId", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
+  it("carries the old key's tombstone and the new key's presence in one move", () => {
+    const client = mkClient(registryFor(false));
+
+    const result = client.buildRelationshipWrite({
+      source: todo,
+      target: list,
+      as: "list",
+      sourceId: "todo_1",
+      targetId: "list_2",
+      currentTargets: ["list_1"],
     });
+
+    expect(result.relationshipUpdates).toHaveLength(1);
+    const leaves = leavesOf(result.relationshipUpdates[0]!, "list", "todo");
+    expect(leaves).toEqual({
+      list_1: { value: null, update_id: expect.any(String), hlc: expect.any(String) },
+      list_2: { value: true, update_id: expect.any(String), hlc: expect.any(String) },
+    });
+  });
+
+  it("refuses a clear it cannot diff against the live set", () => {
+    const client = mkClient(registryFor(false));
+
+    // The caller cannot see the live edges, so the builder cannot tombstone
+    // the keys a clear drops.
+    expect(() =>
+      client.buildRelationshipWrite({
+        source: todo,
+        target: list,
+        as: "list",
+        sourceId: "todo_1",
+        targetId: null,
+      }),
+    ).toThrow(/needs its live targets/);
+  });
+
+  it("emits one tombstone Update per live key a clear drops", () => {
+    const client = mkClient(registryFor(false));
 
     const result = client.buildRelationshipWrite({
       source: todo,
@@ -256,25 +294,17 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       as: "list",
       sourceId: "todo_1",
       targetId: null,
+      currentTargets: ["list_1"],
     });
 
-    expect(result.entityUpdate).toBeUndefined();
     expect(result.relationshipUpdates).toHaveLength(1);
-    expect(result.relationshipUpdates[0]!.method).toBe("delete");
+    expect(leavesOf(result.relationshipUpdates[0]!, "list", "todo")).toEqual({
+      list_1: { value: null, update_id: expect.any(String), hlc: expect.any(String) },
+    });
   });
 
   it("normalizes an entity-shape pointer to its .id", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
+    const client = mkClient(registryFor(false));
 
     const result = client.buildRelationshipWrite({
       source: todo,
@@ -283,22 +313,18 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       sourceId: "todo_1",
       targetId: { id: "list_99" },
     });
-    const link = result.relationshipUpdates.find(isComponentUpdate)!;
-    expect((link.data as { value: { target_id: string } }).value.target_id).toBe("list_99");
+
+    expect(edgeLeaf(result.relationshipUpdates[0]!, "list", "todo", "list_99")).toMatchObject({
+      value: true,
+    });
   });
 
   it("throws EntityValidationError when the source entity is not registered", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        // Only `list` is registered — `todo` is not.
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
+    const r = new ModelRegistry();
+    // Only `list` is registered — `todo` is not.
+    r.register(list);
+    r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
+    const client = mkClient(r);
 
     let caught: unknown;
     try {
@@ -322,20 +348,12 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     // The target is a wire-level id reference; the server validates
     // its existence at write time. The ownedBy pattern (a source
     // pointing at a group) doesn't have a registered target.
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        // `list` not registered on purpose.
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
-    });
+    const r = new ModelRegistry();
+    r.register(todo);
+    r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
 
     expect(() =>
-      client.buildRelationshipWrite({
+      mkClient(r).buildRelationshipWrite({
         source: todo,
         target: list,
         as: "list",
@@ -345,53 +363,43 @@ describe("buildRelationshipWrite (SyncClient)", () => {
     ).not.toThrow();
   });
 
-  it("produces multiple put relationship updates for many-cardinality replace", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(
-          defineRelationship({
-            source: todo,
-            target: list,
-            as: "tags",
-            sourceCardinality: "many",
-          }),
-        );
-        return r;
-      })(),
-    });
+  it("diffs a many-cardinality replace against the live set, one Update per key", () => {
+    const client = mkClient(registryFor(true));
 
     const result = client.buildRelationshipWrite({
       source: todo,
       target: list,
       as: "tags",
-      entityUpdate: buildEntityUpdate("todo_1"),
+      sourceId: "todo_1",
       targetIds: { replace: ["list_1", "list_2", { id: "list_3" }] },
+      currentTargets: ["list_1", "list_dropped"],
     });
 
-    const rows = new Map<string, readonly Update[]>();
-    for (const update of result.relationshipUpdates) {
-      rows.set(update.subject_id, [...(rows.get(update.subject_id) ?? []), update]);
-    }
-    expect(rows.size).toBe(3);
-    for (const row of rows.values()) {
-      expect(isRowCreate(row[0]!)).toBe(true);
-      expect(row[0]).toMatchObject({ model: "ebb" });
-    }
-    const targets = [...rows.values()]
-      .map((row) => row.find(isComponentUpdate)!)
-      .map((update) => (update.data as { value: { target_id: string } }).value.target_id)
+    // One presence leaf per added key, one tombstone for the key the set drops,
+    // each in its own Update.
+    const written = result.relationshipUpdates.map((update) => leavesOf(update, "tags", "todo"));
+    expect(written).toHaveLength(3);
+    const present = written
+      .flatMap((leaves) =>
+        Object.entries(leaves)
+          .filter(([, leaf]) => leaf.value === true)
+          .map(([targetId]) => targetId),
+      )
       .sort();
-    expect(targets).toEqual(["list_1", "list_2", "list_3"]);
+    const removed = written
+      .flatMap((leaves) =>
+        Object.entries(leaves)
+          .filter(([, leaf]) => leaf.value === null)
+          .map(([targetId]) => targetId),
+      )
+      .sort();
+    expect(present).toEqual(["list_2", "list_3"]);
+    expect(removed).toEqual(["list_dropped"]);
   });
 
   it("defers the permission check to write() rather than throwing in the builder", async () => {
     // The builder only shapes the wire Update; an actor without
-    // `<source_type>.update` gets a `PermissionError` from `write()`.
+    // `ebb/link.update` gets a `PermissionError` from `write()`.
     const fetchImpl = (async (): Promise<Response> => {
       return new Response(
         JSON.stringify({
@@ -414,13 +422,7 @@ describe("buildRelationshipWrite (SyncClient)", () => {
       serverUrl: "http://localhost:4000",
       actorId: "actor_1",
       fetchImpl,
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(defineRelationship({ source: todo, target: list, as: "list" }));
-        return r;
-      })(),
+      registry: registryFor(false),
     });
 
     await client.handshake();
@@ -438,40 +440,14 @@ describe("buildRelationshipWrite (SyncClient)", () => {
 
 describe("buildRelationshipWrite: registry cardinality lookup", () => {
   it("infers cardinality from the registry when sourceCardinality is omitted", () => {
-    const client = createClient({
-      serverUrl: "http://localhost:4000",
-      actorId: "actor_1",
-      registry: (() => {
-        const r = new ModelRegistry();
-        r.register(todo);
-        r.register(list);
-        r.registerRelationship(
-          defineRelationship({
-            source: todo,
-            target: list,
-            as: "tags",
-            sourceCardinality: "many",
-          }),
-        );
-        return r;
-      })(),
-    });
+    const client = mkClient(registryFor(true));
 
-    // Registry says "many"; no targetIds passed -> empty
-    // relationship-update array (no-op, the developer can still
-    // write the entity update alone).
+    // Registry says "many"; no targetIds passed -> nothing to write.
     const result = client.buildRelationshipWrite({
       source: todo,
       target: list,
       as: "tags",
-      entityUpdate: {
-        id: "u_e",
-        subject_id: "todo_1",
-        component: "todo/tags",
-        method: "merge",
-        data: { value: [], update_id: "u_e" },
-      },
-    });
+    } as never);
 
     expect(result.relationshipUpdates).toEqual([]);
   });

@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createClient } from "../client";
-import { entityRow, makeFetchMock, platformEntity } from "../test-utils";
+import { entityRow, linkRow, makeFetchMock, platformEntity } from "../test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "actor_1";
@@ -277,44 +277,25 @@ describe("client.can — platform model", () => {
     });
   });
 
-  it("checks a relationship patch against the source's set, not the target's", async () => {
+  it("answers a link write's subject as the source row's own update", async () => {
+    // A link is a key of its source row, so the row the edge lives on is the
+    // write's subject: `can()` answers its model rule, and the `ebb/link`
+    // component subject is what the write path checks against it.
     const { client } = await mkClient([
-      ["g_src", ["ebb/link.update"]],
+      ["g_src", ["todo.update"]],
       ["g_tgt", []],
     ]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
     await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
+      linkRow("todo_1", "todo", [{ as: "list", type: "todo", targetId: "list_1" }]),
     );
     await client.storage.entities.set(
       platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
     );
-    await expect(client.can("rel_1", "update")).resolves.toEqual({
-      kind: "allowed",
-      groupIds: ["g_src"],
-    });
-  });
+    await client.storage.entities.set(
+      platformEntity("eg_tgt", "membership", { entity_id: "list_1", group_id: "g_tgt" }),
+    );
 
-  it("checks a relationship create against the source type's update permission", async () => {
-    const { client } = await mkClient([["g_src", ["todo.update"]]]);
-    await client.storage.entities.set(entityRow("todo_1", "todo", {}));
-    await client.storage.entities.set(
-      platformEntity("rel_1", "link", {
-        source_id: "todo_1",
-        target_id: "list_1",
-        field: "list",
-        type: "todo",
-      }),
-    );
-    await client.storage.entities.set(
-      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_src" }),
-    );
-    await expect(client.can("rel_1", "create")).resolves.toEqual({
+    await expect(client.can("todo_1", "update")).resolves.toEqual({
       kind: "allowed",
       groupIds: ["g_src"],
     });

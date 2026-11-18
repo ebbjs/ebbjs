@@ -43,6 +43,7 @@ import {
   callApplyAction,
   flushTasks,
   jsonResponse,
+  linkAction,
   rowComponents,
   testActions,
   waitFor,
@@ -186,6 +187,16 @@ const seedAction = (gsn: number, updates: Update[]): Action => ({
   updates,
 });
 
+/** A link merge on its source row: one presence key at `(as, type)`. */
+const link = (gsn: number, sourceId: string, as: string, type: string, targetId: string): Action =>
+  linkAction({
+    id: `a_${gsn}`,
+    hlc: makeHlc(10 + gsn),
+    gsn,
+    sourceId,
+    edges: [{ as, type, targetId }],
+  });
+
 const put = (gsn: number, id: string, type: string, fields: Record<string, unknown>): Action =>
   seedAction(
     gsn,
@@ -216,10 +227,12 @@ describe("on-demand document residency", () => {
 
     // The link and the two memberships are platform rows, so they share the
     // `ebb` model and the component is what distinguishes them.
-    expect(client.replicaStats.byModel).toMatchObject({ page: 1, ebb: 3 });
+    // The two memberships are platform rows; the page's edge is a key of the
+    // page row itself, so it adds no row.
+    expect(client.replicaStats.byModel).toMatchObject({ page: 1, ebb: 2 });
     expect(client.replica.get(pageId)?.data.fields.title.value).toBe("One");
     expect(client.replica.components("ebb/membership")).toHaveLength(2);
-    expect(client.replica.components("ebb/link")).toHaveLength(1);
+    expect(client.replica.components("ebb/link")).toEqual([pageId]);
 
     // A create makes the body row present with the create's facts and no
     // fields; which components the replica holds is residency, not existence.
@@ -304,8 +317,9 @@ describe("on-demand document residency", () => {
     const types = (record?.entities ?? []).map((row) => row.model);
     expect(types).not.toContain(bodyDocModel);
     expect(types).toContain("page");
-    // The link row and the two membership rows are all `ebb` rows.
-    expect(types.filter((type) => type === "ebb")).toHaveLength(3);
+    // The two membership rows are the `ebb` rows; the page's edge rides on the
+    // page row.
+    expect(types.filter((type) => type === "ebb")).toHaveLength(2);
   });
 });
 
@@ -430,15 +444,7 @@ describe("held source with an on-demand join", () => {
   const seed = async (client: MountedClient<typeof joinSchema>) => {
     await callApplyAction(client, put(1, "page_content_1", "page_content", { text: "body" }));
     await callApplyAction(client, put(2, "page_1", "page", { title: "One" }));
-    await callApplyAction(
-      client,
-      put(3, "rel_1", "link", {
-        source_id: "page_1",
-        target_id: "page_content_1",
-        field: "content",
-        type: "page",
-      }),
-    );
+    await callApplyAction(client, link(3, "page_1", "content", "page", "page_content_1"));
   };
 
   it("loads the joined row before projecting and shows stale then current on a re-run", async () => {
