@@ -24,39 +24,23 @@ defmodule EbbServer.Storage.PreparePool do
   takes the old pool and its workers with it. Shutdown is best-effort: a
   worker already encoding a payload can finish after its owner exits, and
   the result is simply sent to a dead process.
+
+  The scheduling skeleton it shares with `EbbServer.Storage.CommitterPool`
+  lives in `EbbServer.Storage.WorkerPool`.
   """
 
   use GenServer
 
   require Logger
 
-  alias EbbServer.Storage.Preparer
+  alias EbbServer.Storage.{Preparer, WorkerPool}
 
   @type job :: %{actions: [Preparer.action()], worker: pid() | nil}
 
-  @type t :: %__MODULE__{
-          owner: pid(),
-          owner_ref: reference(),
-          supervisor: pid(),
-          ablate: [atom()],
-          prepare_fn: (Preparer.action() -> binary()) | nil,
-          workers: %{pid() => reference() | nil},
-          idle: [pid()],
-          jobs: %{reference() => job()},
-          waiting: [reference()]
-        }
+  @typedoc "This pool's state; the scheduling fields are typed in `WorkerPool.t/0`."
+  @type t :: %__MODULE__{}
 
-  defstruct [
-    :owner,
-    :owner_ref,
-    :supervisor,
-    :ablate,
-    :prepare_fn,
-    workers: %{},
-    idle: [],
-    jobs: %{},
-    waiting: []
-  ]
+  defstruct WorkerPool.shared_fields() ++ [prepare_fn: nil]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -83,13 +67,7 @@ defmodule EbbServer.Storage.PreparePool do
 
   @impl true
   def init(opts) do
-    owner = Keyword.fetch!(opts, :owner)
-    size = Keyword.get(opts, :size, 2)
-
-    unless is_integer(size) and size > 0 do
-      raise ArgumentError, "PreparePool size must be a positive integer, got: #{inspect(size)}"
-    end
-
+    size = WorkerPool.size!(opts, 2, "PreparePool")
     prepare_fn = Keyword.get(opts, :prepare_fn)
 
     unless is_nil(prepare_fn) or is_function(prepare_fn, 1) do
@@ -97,28 +75,21 @@ defmodule EbbServer.Storage.PreparePool do
             "PreparePool prepare_fn must be a one-argument function, got: #{inspect(prepare_fn)}"
     end
 
-    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    state =
+      %__MODULE__{ablate: Keyword.get(opts, :ablate, []), prepare_fn: prepare_fn}
+      |> WorkerPool.start(Keyword.fetch!(opts, :owner))
+      |> WorkerPool.fill(size, &start_worker/1)
 
-    state = %__MODULE__{
-      owner: owner,
-      owner_ref: Process.monitor(owner),
-      supervisor: supervisor,
-      ablate: Keyword.get(opts, :ablate, []),
-      prepare_fn: prepare_fn
-    }
-
-    {:ok, Enum.reduce(1..size, state, fn _, state -> start_worker(state) end)}
+    {:ok, state}
   end
 
   @impl true
   def handle_cast({:prepare, ref, actions}, state) do
     job = %{actions: actions, worker: nil}
-    state = %{state | jobs: Map.put(state.jobs, ref, job), waiting: state.waiting ++ [ref]}
 
-    {:noreply, dispatch(state)}
+    {:noreply, WorkerPool.submit(state, ref, job, spec())}
   end
 
-  @impl true
   def handle_cast({:abandon, ref}, state) do
     case Map.pop(state.jobs, ref) do
       {nil, _jobs} ->
@@ -137,27 +108,18 @@ defmodule EbbServer.Storage.PreparePool do
 
   @impl true
   def handle_info({:prepare_result, ref, result}, state) do
-    case Map.fetch(state.jobs, ref) do
-      {:ok, %{worker: worker}} when is_pid(worker) ->
-        send(state.owner, {:prepare_result, ref, result})
+    case WorkerPool.finish_job(state, ref, result, spec()) do
+      {:ok, state} ->
+        {:noreply, state}
 
-        state = %{
-          state
-          | jobs: Map.delete(state.jobs, ref),
-            workers: Map.put(state.workers, worker, nil),
-            idle: [worker | state.idle]
-        }
-
-        {:noreply, dispatch(state)}
-
-      _ ->
+      :unknown ->
         Logger.warning("PreparePool received a result for unknown ref #{inspect(ref)}")
         {:noreply, state}
     end
   end
 
   def handle_info({:DOWN, owner_ref, :process, _owner, _reason}, %{owner_ref: owner_ref} = state) do
-    {:stop, :normal, state}
+    WorkerPool.owner_down(state)
   end
 
   def handle_info({:DOWN, _monitor_ref, :process, pid, reason}, state) do
@@ -167,86 +129,50 @@ defmodule EbbServer.Storage.PreparePool do
         {:noreply, state}
 
       {:ok, job_ref} ->
-        state = %{
+        state =
           state
-          | workers: Map.delete(state.workers, pid),
-            idle: List.delete(state.idle, pid)
-        }
+          |> WorkerPool.forget_worker(pid)
+          |> WorkerPool.fail_job(job_ref, reason, spec())
+          |> start_worker()
 
-        state = fail_job(state, job_ref, reason)
-        {:noreply, state |> start_worker() |> dispatch()}
+        {:noreply, dispatch(state)}
     end
   end
 
   @impl true
   def terminate(_reason, state) do
-    if Process.alive?(state.supervisor) do
-      DynamicSupervisor.stop(state.supervisor, :normal, 5_000)
-    end
-
-    :ok
-  catch
-    :exit, _ -> :ok
-  end
-
-  defp fail_job(state, nil, _reason), do: state
-
-  defp fail_job(state, ref, reason) do
-    case Map.pop(state.jobs, ref) do
-      {nil, _jobs} ->
-        state
-
-      {_job, jobs} ->
-        send(state.owner, {:prepare_result, ref, {:error, {:crashed, reason}}})
-        %{state | jobs: jobs, waiting: List.delete(state.waiting, ref)}
-    end
-  end
-
-  defp dispatch(%{waiting: []} = state), do: state
-  defp dispatch(%{idle: []} = state), do: state
-
-  defp dispatch(state) do
-    [worker | idle] = state.idle
-    [ref | waiting] = state.waiting
-    job = Map.fetch!(state.jobs, ref)
-
-    Preparer.prepare(worker, ref, job.actions)
-
-    state = %{
-      state
-      | idle: idle,
-        waiting: waiting,
-        workers: Map.put(state.workers, worker, ref),
-        jobs: Map.put(state.jobs, ref, %{job | worker: worker})
-    }
-
-    dispatch(state)
+    WorkerPool.shutdown(state)
   end
 
   defp start_worker(state) do
-    spec = %{
-      id: {Preparer, make_ref()},
-      start:
-        {Preparer, :start_link,
-         [
-           [
-             owner: self(),
-             ablate: state.ablate,
-             prepare_fn: state.prepare_fn
-           ]
-         ]},
-      restart: :temporary,
-      type: :worker
-    }
-
-    case DynamicSupervisor.start_child(state.supervisor, spec) do
-      {:ok, pid} ->
-        Process.monitor(pid)
-        %{state | workers: Map.put(state.workers, pid, nil), idle: [pid | state.idle]}
+    case WorkerPool.start_worker(state, spec()) do
+      {:ok, state} ->
+        state
 
       {:error, reason} ->
-        raise RuntimeError,
-              "PreparePool could not start a Preparer: #{inspect(reason)}"
+        raise RuntimeError, "PreparePool could not start a Preparer: #{inspect(reason)}"
     end
+  end
+
+  defp dispatch(state), do: WorkerPool.dispatch(state, spec())
+
+  defp spec do
+    %{
+      worker: Preparer,
+      worker_opts: &worker_opts/1,
+      assign: &assign/4,
+      result_tag: :prepare_result,
+      crash_result: fn reason -> {:error, {:crashed, reason}} end
+    }
+  end
+
+  defp worker_opts(state) do
+    [owner: self(), ablate: state.ablate, prepare_fn: state.prepare_fn]
+  end
+
+  defp assign(_state, worker, ref, job) do
+    Preparer.prepare(worker, ref, job.actions)
+
+    %{job | worker: worker}
   end
 end
