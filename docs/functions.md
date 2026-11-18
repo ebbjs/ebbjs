@@ -141,9 +141,12 @@ export const proofreadDocument = defineFunction(
 
 `ctx.get` sees the invocation's own buffered writes (read-your-writes) but is
 **the only read in v1**: there is no `ctx.query` or `ctx.getMany`, so a handler
-that needs a set reads rows one at a time. A one-cardinality unlink of an edge
-that predates the invocation needs its `relationship` row id, because
-`ctx.get` cannot read relationship rows.
+that needs a set reads rows one at a time. `ctx.unrelate` names one edge by its
+target and needs no read at all; without a target it clears the accessor, and
+that read happens inside `ctx.unrelate` rather than at the call site. A
+one-cardinality `ctx.relate` cannot tombstone a previous target on its own —
+`ctx.relate` is synchronous and the row it would have to read is not in the
+buffer — so a surface that can read writes the move as one Update.
 
 `ctx.create` requires a non-empty `groups` list, exactly as the client does: an
 entity with no owning group is not representable. The writes are validated

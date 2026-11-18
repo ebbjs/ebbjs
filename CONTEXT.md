@@ -217,10 +217,12 @@ _Avoid_: hydrate, denormalize, resolve
 
 **System component**:
 A component in the `ebb/` namespace the platform owns and interprets:
-`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is atomic,
-declares a scope owner, and is a permission subject under `ebb`. The edge,
-membership, and grant components are also structural: they are never surfaced
-as a conflict.
+`ebb/group`, `ebb/grant`, `ebb/membership`, `ebb/link`. Each is a permission
+subject under `ebb`. Group, grant, and membership are atomic rows and declare a
+scope owner; `ebb/link` is a **keyed** component of the row it sits on — the
+edge's source — keyed `(field, type, target)`, so it names no scope owner and
+inherits that row's membership. All four are structural: they are never
+surfaced as a conflict.
 _Avoid_: system entity type, built-in type
 
 **Kind**:

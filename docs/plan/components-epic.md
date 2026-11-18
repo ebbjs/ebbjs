@@ -248,8 +248,8 @@ are permission subjects, and membership attaches to _entities_. Slice 10 therefo
 row and makes its value atomic, which kills tearing with today's semantics. Slice 13 then moves the
 edge onto its source as a keyed pair, which kills the mirrored `entityGroup` rows (#789's cause) and
 the duplicate-edge tolerance layer — an edge then inherits its source's scope by construction.
-Steps, not a contradiction: 10 is the row form, 13 is the pair form, and #790 decides whether 13
-proceeds.
+Steps, not a contradiction: 10 was the row form and 13 is the pair form; #790 decided it and
+[#820](https://github.com/ebbjs/ebbjs/issues/820) shipped it.
 
 ---
 
