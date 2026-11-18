@@ -163,6 +163,44 @@ watermark lag of 0, and both passed the #577 guardrails. Run 1's p50 sits
 canonical-budget rule above, that is a candidate for a rotated A/B, not a
 regression.
 
+## Component envelope: payload and commit cost (#797)
+
+`mix bench.components` builds one logical five-field `update()` in both shapes, so the
+cost of one component per Update is a number rather than a guess. `mix bench.actions`
+then holds the logical Action constant through the real `Writer` (no HTTP, `sync: true`):
+one `todo` row write (3 components) plus its `entityGroup` row (2 components). Before the
+envelope that Action is 2 Updates carrying 5 field leaves; after it is 5 Updates carrying
+one component value each.
+
+Measured **2026-11-10** on `recsy-vps`, Elixir 1.17.3 / OTP 27. Full tables, both
+reproducible from the tree.
+
+| Measure                           | Row record (before) | Components (after) |  Delta |
+| --------------------------------- | ------------------: | -----------------: | -----: |
+| Updates per edit                  |                   1 |                  5 |     +4 |
+| Stored `cf_actions` payload (ETF) |               764 B |            1,148 B | +50.3% |
+| Request body (JSON)               |               630 B |              948 B | +50.5% |
+
+Commit throughput, three runs per side, paired on an otherwise idle machine; median with
+the range in brackets.
+
+| Measure                            | Before (2 Updates)    | After (5 Updates)   | Delta |
+| ---------------------------------- | --------------------- | ------------------- | ----: |
+| Accepted Actions/s (logical edits) | 10,030 (9,665–10,600) | 7,200 (7,200–7,255) |  −28% |
+| Updates/s committed                | 20,060                | 36,000              |  +79% |
+| Client p50 per Action              | 89.7 ms               | 101.5 ms            |  +13% |
+| Client p95 per Action              | 103.1 ms              | 175.2 ms            |  +70% |
+
+The cost is per Update, not per byte: Updates/s rises by half while logical edits/s falls
+by a third, and the payload grows only 50% for five components because each Update's fixed
+envelope is paid once per component. A single-field write is one Update in both envelopes,
+so the common edit is free; the cost is paid exactly by writes that touch many components
+at once — creates and multi-field edits. At 8 callers and a 400-Action flush, roughly a
+quarter of the accepted write rate moves from doing useful edits to carrying per-Update
+overhead. The latency figures are the same effect at flush granularity, not a second cost.
+Slice 4 also removed the Writer's per-flush quadratic list build, which recovered ~17% of
+this path on its own; the remaining gap is the envelope's fixed cost per component.
+
 ## Component existence index: write cost and resident set (#799, #849)
 
 `mix bench.component_index` prices the component existence index at
@@ -212,7 +250,9 @@ p50**, with and without the index. The flush's `apply` phase p50 is **95 vs
 of the pre-6b **0.65 ms/flush** durable marginal. This run is `hot`, so its
 last-wins reduction collapses ~400 ops to a handful of inserts; the k = 2/4/8
 table above prices a spread flush, where each Action's entries are distinct.
-`--ablate component_entities` now prices only this apply.
+`--ablate component_entities` now prices only this apply. A model that puts many
+components on one row pays the share in proportion, which is what the
+declaration-driven indexing candidate in #815 exists for.
 
 ## Environment
 

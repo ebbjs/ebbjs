@@ -1,7 +1,7 @@
 # 0001 — Components are the unit of identity
 
 **Status:** accepted, 2026-11-09; amended 2026-11-11 for the system-component contract ([#805](https://github.com/ebbjs/ebbjs/issues/805)); amended 2026-11-16 for the component-subject permission rule ([#803](https://github.com/ebbjs/ebbjs/issues/803)); amended 2026-11-18 for the link pair ([#820](https://github.com/ebbjs/ebbjs/issues/820))
-**Epic:** [#793](https://github.com/ebbjs/ebbjs/issues/793) · **Rationale:** [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md) · **Plan:** [`docs/plan/components-epic.md`](../plan/components-epic.md)
+**Epic:** [#793](https://github.com/ebbjs/ebbjs/issues/793) · **Rationale:** [`docs/research/ecs-rearchitecture.md`](../research/ecs-rearchitecture.md) · **Measurements:** [`ebb_server/bench/RESULTS.md`](../../ebb_server/bench/RESULTS.md)
 **Amends:** `CONTEXT.md` — adds a Components section; revises Entity, Field, Committed model, and Materialization.
 
 ADRs live in `docs/adr/`, numbered, one decision each. The location is decided here, because [#787](https://github.com/ebbjs/ebbjs/issues/787) leaves it to be decided and #794 lands first; the boundary ADR takes the next number.
