@@ -368,14 +368,15 @@ injected choke point (the `SyncClient` constructor wraps it once) and all six
 client request call sites go through `exchange` / `requestJson`. Five sharp edges
 keep it from being a 20-minute patch:
 
-- **`presence/transport.ts` must be excluded.** A page leaving calls
-  `leave({ keepalive: true })` from an unload handler, where nobody can
-  `await` it; a client-wide abort would kill exactly the request that has to
-  survive teardown. Give the presence transport the unwrapped `fetch`.
-- **Fire the controller only in `close()`.** `cancelSubscription` is also
+- **`presence/transport.ts` must be excluded — for its `keepalive` sends.** A
+  page leaving calls `leave({ keepalive: true })` from an unload handler, where
+  nobody can `await` it; a client-wide abort would kill exactly the request that
+  has to survive teardown. A `keepalive` presence post therefore gets the
+  unwrapped `fetch`; an ordinary presence send is teardown-scoped like every
+  other request, and its loss is already silent.
+- **Fire the controller only from `close()`.** `cancelSubscription` is also
   called when `subscribe()` replaces a session, on plain unsubscribe, and when
-  the group set empties (`client.ts:707`, `730`, `858`) — none of which should
-  kill the client.
+  the live group set empties — none of which may kill the client.
 - **Ordering inside `close()` is load-bearing.** `abort()` rejects the in-flight
   fetch on a microtask, and `close()` sets `sub.cancelled` synchronously
   afterwards, so `connectAndDrain`'s `catch` lands on the clean path. Add a
