@@ -505,11 +505,9 @@ export class SyncClient<
     this.presenceRuntime = createPresence({
       serverUrl: this.serverUrl,
       actorId: this.actorId,
-      // A `keepalive` post is sent from an unload handler, where nobody can
-      // await it, so it has to outlive the `close()` that normally follows.
-      // Every other presence request is teardown-scoped like the rest.
-      fetchImpl: (input, init) =>
-        init?.keepalive === true ? rawFetch(input, init) : this.fetchImpl(input, init),
+      // The wrapper withholds the client signal from a `keepalive` post, so an
+      // unload handler's leave is the one presence request that outlives this.
+      fetchImpl: this.fetchImpl,
       registry: opts.presence,
     });
     // The runtime's untyped methods are the same call shape the typed surface
@@ -564,7 +562,7 @@ export class SyncClient<
     this.backfillRunner = createBackfill({
       storage: this.storage,
       fetchEntity: (entityId) => this.getEntity(entityId),
-      // A read `close()` aborted is a teardown, not a failure to report.
+      // After teardown every read failure is a consequence of it, not news.
       onError: (error, entityId) => {
         if (this.abortController.signal.aborted) return;
         warnBackfillReadFailed(error, entityId);
@@ -579,7 +577,7 @@ export class SyncClient<
       actorId: this.actorId,
       fetchImpl: this.fetchImpl,
       storage: this.storage,
-      // Same teardown rule as backfill: an aborted seed is not a failure.
+      // Same rule as backfill: nothing a closed client reports is news.
       onError: (error, groupId) => {
         if (this.abortController.signal.aborted) return;
         warnGroupListingSeedFailed(error, groupId);
@@ -1649,29 +1647,25 @@ export class SyncClient<
    *
    * Requests still in flight are aborted rather than left to finish: one whose
    * response has not arrived applies no rows and marks no outbox entry
-   * acknowledged. The `AbortError` reaches the caller — a `write()` rejects
-   * with it and its outbox entry stays `pending` — with one exception: a
-   * request aborted after its headers but mid-body hits the HTTP layer's
-   * unreadable-body rule and surfaces as that endpoint's own error. Abort
-   * cannot retract work already past the fetch, and the final replica save
-   * below still runs, so a clean teardown does not lose local writes.
+   * acknowledged, and the `AbortError` reaches the caller — a `write()` rejects
+   * with it and its outbox entry stays `pending`. Abort cannot retract work
+   * already past the fetch, and the final replica save below still runs, so a
+   * clean teardown does not lose local writes.
    *
    * Local teardown only: it cancels pending presence writes and drops the
    * observed peers, and deliberately sends no presence leave, because a
    * transient remount must not broadcast an absence. An app that knows the tab
-   * is going away can call `client.presence.leave({ keepalive: true })` from
-   * its own unload handler, and a `keepalive` post is the one request this
-   * method leaves on the wire.
+   * is going away calls `client.presence.leave({ keepalive: true })` from its
+   * own unload handler before closing, and a `keepalive` post is the one
+   * request this method leaves on the wire.
    */
   close(): void {
     // Order matters. `abort()` rejects an in-flight fetch on a microtask while
-    // the rest of this method runs synchronously, so `sub.cancelled` (set
-    // below by `cancelSubscription`) is already true when `connectAndDrain`'s
-    // catch resumes: `runSubscriptionLoop` returns instead of arming a
-    // reconnect against a torn-down client. Nothing between here and
-    // `cancelSubscription` awaits today, so this is a guard rail rather than a
-    // live constraint: an `await` added above that call would let the aborted
-    // pass resume as one belonging to a live client.
+    // the rest of this method runs synchronously, so `sub.cancelled` (set below
+    // by `cancelSubscription`) is already true when `connectAndDrain`'s catch
+    // resumes: `runSubscriptionLoop` returns instead of arming a reconnect
+    // against a torn-down client. An `await` added above that call would let
+    // the aborted pass resume as one belonging to a live client.
     this.abortController.abort();
     // Stop timers and in-flight retries next: no flush should start while
     // the rest of the client is tearing down.

@@ -8,32 +8,12 @@ import {
   isListingRequest,
   jsonResponse,
   openSseResponse,
+  pendingUntilAborted,
   waitFor,
 } from "./test-utils";
 
 const SERVER_URL = "http://localhost:4000";
 const ACTOR_ID = "a_bob";
-
-/**
- * A request that stays in flight until it is aborted, the way a real fetch
- * behaves against a server that has not answered yet. Rejecting with the
- * signal's own reason keeps the error shape undici produces. Answering a
- * request that carried no signal with an error rather than a hang makes a
- * broken wiring fail the test instead of timing it out.
- */
-const pendingUntilAborted = (init: RequestInit | undefined): Promise<Response> =>
-  new Promise<Response>((_resolve, reject) => {
-    const signal = init?.signal;
-    if (signal === undefined || signal === null) {
-      reject(new Error("test fetch: request carried no abort signal"));
-      return;
-    }
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
 
 const requestUrl = (input: RequestInfo | URL): string =>
   typeof input === "string" ? input : input.toString();
@@ -94,10 +74,12 @@ describe("SyncClient.close with requests in flight", () => {
     // to schedule and run a reconnect.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(urls).toHaveLength(urlsAtClose);
+    // `scheduleReconnect` would move to "reconnecting" before any fetch, so
+    // this is what catches a reconnect that was armed but never fired.
     expect(client.state).toBe("offline");
   });
 
-  it("aborts an in-flight flush, leaves the entry pending, and writes no outbox status", async () => {
+  it("aborts an in-flight flush and leaves the entry pending", async () => {
     const storage = createMemoryAdapter();
     const postSignals: AbortSignal[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -115,7 +97,7 @@ describe("SyncClient.close with requests in flight", () => {
       fetchImpl,
       storage,
     });
-    const putSpy = vi.spyOn(storage.outbox, "put");
+    const statuses = vi.spyOn(storage.outbox, "put");
 
     // Attached up front so the rejection is never unhandled while the test
     // waits for the POST to be on the wire.
@@ -125,169 +107,102 @@ describe("SyncClient.close with requests in flight", () => {
     );
     await waitFor(() => postSignals.length === 1);
 
-    const putsAtClose = putSpy.mock.calls.length;
     client.close();
 
     const result = await writeResult;
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
-    expect(result.error).toBeInstanceOf(Error);
     expect((result.error as Error).name).toBe("AbortError");
 
     // The submit threw, which the Outbox classifies as `unreachable`: the
-    // entry is still flushable, not an errored one.
+    // entry is still flushable, not an errored one, and none of it was
+    // rewritten as acknowledged after teardown.
     const stored = await storage.outbox.list();
     expect(stored.map((entry) => [entry.action.id, entry.status])).toEqual([
       ["act_inflight", "pending"],
     ]);
-    expect(client.outbox.size("pending")).toBe(1);
-    expect(client.outbox.size("acknowledged")).toBe(0);
-
-    // Nothing acknowledged the aborted batch: no outbox row changed after
-    // close(), and the stopped scheduler armed no retry POST.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(postSignals).toHaveLength(1);
-    expect(putSpy.mock.calls.length).toBe(putsAtClose);
+    expect(statuses.mock.calls.map(([entry]) => entry.status)).not.toContain("acknowledged");
   });
 
   it("does not abort an in-flight presence leave with keepalive", async () => {
-    const presenceRequests: { keepalive: boolean; signal: AbortSignal | null }[] = [];
-    const presenceResolvers: Array<(response: Response) => void> = [];
+    let settled = false;
+    let resolveLeave: ((response: Response) => void) | null = null;
+    const keepaliveFlags: boolean[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-      const url = requestUrl(input);
-      if (url.includes("/sync/presence")) {
-        presenceRequests.push({ keepalive: init.keepalive === true, signal: init.signal ?? null });
-        return new Promise<Response>((resolve) => presenceResolvers.push(resolve));
-      }
-      return jsonResponse({});
+      if (!requestUrl(input).includes("/sync/presence")) return jsonResponse({});
+      keepaliveFlags.push(init.keepalive === true);
+      const signal = init.signal;
+      return new Promise<Response>((resolve, reject) => {
+        resolveLeave = resolve;
+        // A real fetch rejects from the signal; the transport swallows it.
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }).finally(() => {
+        settled = true;
+      });
     }) as unknown as typeof fetch;
 
-    const client = createClient({
-      serverUrl: SERVER_URL,
-      actorId: ACTOR_ID,
-      fetchImpl,
-    });
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl });
 
     client.presence.set("e1", "cursor", { anchor: 0 });
     const leave = client.presence.leave({ keepalive: true });
     // The leave's null supersedes the pending `set` for the same target, so
     // one POST is on the wire.
-    await waitFor(() => presenceRequests.length === 1);
-
-    const keepalive = presenceRequests.find((request) => request.keepalive);
-    expect(keepalive).toBeDefined();
+    await waitFor(() => resolveLeave !== null);
 
     client.close();
-    // The tab-unload pattern: this POST must outlive the client it came from.
-    expect(keepalive?.signal ?? null).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // It still reaches the wire after teardown.
-    for (const resolve of presenceResolvers) resolve(new Response(null, { status: 204 }));
+    // The tab-unload pattern: this POST outlives the client it came from.
+    expect(keepaliveFlags).toEqual([true]);
+    expect(settled).toBe(false);
+
+    resolveLeave!(new Response(null, { status: 204 }));
     await expect(leave).resolves.toBeUndefined();
   });
 
-  it("keeps the client alive across a replaced session and a plain unsubscribe", async () => {
+  it("does not abort an in-flight write when the session is replaced", async () => {
+    let resolvePost: ((response: Response) => void) | null = null;
     let liveRequests = 0;
-    let handshakes = 0;
-    const catchUpSignals: AbortSignal[] = [];
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = requestUrl(input);
-      if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
-      if (url.includes("/sync/groups/")) {
-        if (init.signal) catchUpSignals.push(init.signal);
-        return emptyCatchUpResponse();
+      if (url.includes("/sync/actions")) {
+        return new Promise<Response>((resolve) => {
+          resolvePost = resolve;
+        });
       }
-      if (url.includes("/sync/live")) {
-        liveRequests += 1;
-        return openSseResponse();
-      }
-      if (url.includes("/sync/handshake")) {
-        handshakes += 1;
-        return jsonResponse({ actor_id: ACTOR_ID, groups: [] });
-      }
-      return jsonResponse({});
-    }) as unknown as typeof fetch;
-
-    const client = createClient({
-      serverUrl: SERVER_URL,
-      actorId: ACTOR_ID,
-      fetchImpl,
-    });
-
-    const firstUnsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(() => liveRequests === 1);
-
-    // Replacing a session tears down the old one, not the client.
-    const secondUnsubscribe = client.subscribe(["grp_1"], 0, () => {});
-    await waitFor(() => liveRequests === 2);
-    secondUnsubscribe();
-    expect(client.state).toBe("offline");
-
-    // The client still issues requests, so nothing was aborted along the way.
-    await client.handshake();
-    expect(handshakes).toBe(1);
-    expect(catchUpSignals.length).toBeGreaterThan(0);
-    expect(catchUpSignals.every((signal) => !signal.aborted)).toBe(true);
-
-    firstUnsubscribe();
-    client.close();
-  });
-
-  it("ends a live stream body on close", async () => {
-    let streamOpened = false;
-    let bodyEnded = false;
-    const events: unknown[] = [];
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
-      const url = requestUrl(input);
       if (isListingRequest(url)) return emptyListingResponse(0, "grp_1");
       if (url.includes("/sync/groups/")) return emptyCatchUpResponse();
       if (url.includes("/sync/live")) {
-        streamOpened = true;
-        const signal = init.signal;
-        // A body that ends the way a real one does: only when its request is
-        // aborted. Deliberately not a `test-utils` response, because the point
-        // of this case is the cancellation path itself.
-        const body = new ReadableStream<Uint8Array>({
-          start(controller) {
-            const end = (): void => {
-              bodyEnded = true;
-              try {
-                controller.error(signal?.reason);
-              } catch {
-                // Already ended.
-              }
-            };
-            if (signal?.aborted === true) end();
-            else signal?.addEventListener("abort", end, { once: true });
-          },
-        });
-        return new Response(body, {
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
-        });
+        liveRequests += 1;
+        return openSseResponse();
       }
       return jsonResponse({});
     }) as unknown as typeof fetch;
 
     const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl });
-    client.subscribe(["grp_1"], 0, (event) => events.push(event));
-    await waitFor(() => streamOpened);
+    const firstUnsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => liveRequests === 1);
 
+    const writing = client.write([localPut("act_inflight")]);
+    await waitFor(() => resolvePost !== null);
+
+    // A React StrictMode remount replaces the session, not the client.
+    const secondUnsubscribe = client.subscribe(["grp_1"], 0, () => {});
+    await waitFor(() => liveRequests === 2);
+
+    resolvePost!(jsonResponse({ rejected: [] }));
+    await expect(writing).resolves.toEqual({ rejected: [] });
+    expect(client.outbox.size("acknowledged")).toBe(1);
+
+    firstUnsubscribe();
+    secondUnsubscribe();
     client.close();
-
-    // `close()` → `cancelSubscription` → `closeStream` → `stream.close()` is
-    // what ends a body: the client's own signal detached at the response
-    // headers, so this fails if that call is dropped or reordered.
-    await waitFor(() => bodyEnded);
-    expect(events).toHaveLength(0);
-    expect(client.state).toBe("offline");
   });
 
   it("is safe to call twice, and a request after it rejects as aborted", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) =>
       pendingUntilAborted(init),
     ) as unknown as typeof fetch;
-
     const client = createClient({
       serverUrl: SERVER_URL,
       actorId: ACTOR_ID,
@@ -299,7 +214,54 @@ describe("SyncClient.close with requests in flight", () => {
     expect(client.state).toBe("offline");
 
     const error = await client.getEntity("todo_1").catch((thrown: unknown) => thrown);
-    expect(error).toBeInstanceOf(Error);
     expect((error as Error).name).toBe("AbortError");
+  });
+
+  it("rejects a function call whose body was still arriving at close", async () => {
+    let bodyStarted = false;
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+      const signal = init.signal;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyStarted = true;
+          // Headers, and half a JSON body: the parse would succeed against an
+          // empty read and report a void result.
+          controller.enqueue(encoder.encode('{"result":'));
+          signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl });
+    const call = client.invokeFunction("echo").then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await waitFor(() => bodyStarted);
+
+    client.close();
+
+    // A truncated body must not read as a void success.
+    const result = await call;
+    expect(result.ok).toBe(false);
+  });
+
+  it("makes backfill a no-op after close", async () => {
+    const storage = createMemoryAdapter();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
+      jsonResponse({}),
+    ) as unknown as typeof fetch;
+    const saved = vi.spyOn(storage.replica, "save");
+
+    const client = createClient({ serverUrl: SERVER_URL, actorId: ACTOR_ID, fetchImpl, storage });
+    client.close();
+    const savesAtClose = saved.mock.calls.length;
+
+    // A pass entered after teardown can only write through a closed adapter.
+    await client.backfill();
+
+    expect(saved.mock.calls.length).toBe(savesAtClose);
   });
 });

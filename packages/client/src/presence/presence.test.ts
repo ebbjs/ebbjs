@@ -998,6 +998,8 @@ describe("client presence on the live stream", () => {
     client.close();
 
     expect(client.presence.forEntity("doc_demo", "cursor").size).toBe(0);
+    // Teardown ends the stream body, not just the stream handle.
+    expect(h.openStreams()).toBe(0);
   });
 
   it("does not carry stale peers across a reconnect", async () => {

@@ -12,10 +12,13 @@
  * ## The body-read policy
  *
  * A response body is read exactly once, as text, guarded: a body that
- * cannot be read is `""` rather than a thrown error. JSON stays in the
- * caller's hands by parsing that text, which means the failure text a
- * thrown error carries is the same bytes the success path would have
- * parsed — no second read that could throw "body already consumed".
+ * cannot be read is `""` rather than a thrown error — unless the request was
+ * cancelled, in which case the cancellation is rethrown. Degrading a cancelled
+ * read to `""` would report it as the endpoint's own bad response, or, at a
+ * call site that tolerates a missing body, as a success. JSON stays in the
+ * caller's hands by parsing that text, which means the failure text a thrown
+ * error carries is the same bytes the success path would have parsed — no
+ * second read that could throw "body already consumed".
  *
  * A non-2xx response is an error naming the endpoint; a 2xx response whose
  * body is not JSON is an error naming the endpoint and echoing the body,
@@ -48,15 +51,34 @@ export const normalizeBaseUrl = (url: string): string => url.replace(/\/$/, "");
 export interface HttpExchange {
   readonly response: Response;
   /**
-   * The response body, `""` when it could not be read. The only read of it:
-   * `response.json()` would fail on a consumed body.
+   * The response body, `""` when it could not be read and the request was not
+   * cancelled. The only read of it: `response.json()` would fail on a consumed
+   * body.
    */
   readonly text: string;
 }
 
-/** Read a body as text, degrading an unreadable one to `""`. */
-export const readBody = async (response: Response): Promise<string> =>
-  response.text().catch(() => "");
+/**
+ * Read a body as text, degrading an unreadable one to `""` — unless the read
+ * failed because its request was cancelled, in which case the cancellation is
+ * rethrown. Reporting an abort as an empty body would present a teardown as the
+ * endpoint's own bad response, or, at a call site that tolerates a missing
+ * body, as a success.
+ */
+export const readBody = async (response: Response): Promise<string> => {
+  try {
+    return await response.text();
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return "";
+  }
+};
+
+/** Whether a failure is a cancellation, by the name every runtime gives it. */
+const isAbortError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  (error as { name?: unknown }).name === "AbortError";
 
 /**
  * The error for a failed request: the endpoint label, the status, and the
@@ -126,9 +148,10 @@ export const requestJson = async <T>(
  * handshake, catch-up, writes, entity reads, function calls, and the group
  * listing all inherit teardown from the constructor.
  *
- * `AbortSignal.any` would express the merge in one call, but it is Node 20.3+
- * while `sse.ts` documents Node 18 for consumers, so the listeners are managed
- * here. Two things follow from `clientSignal` being the one long-lived signal:
+ * `AbortSignal.any` would express the merge in one call, but it needs Safari
+ * 17.4 and Firefox 124, and this package declares no browser baseline: the
+ * hand-rolled merge keeps the client working on older ones. Two things follow
+ * from `clientSignal` being the one long-lived signal:
  *
  * - With no caller signal it is passed through unchanged, which keeps the
  *   whole response — body included — cancellable and registers no listener.
@@ -136,10 +159,15 @@ export const requestJson = async <T>(
  *   fetch settles (at the response headers, for a stream), so a request cannot
  *   leave a listener behind on the session-long signal. From there the caller
  *   owns the body, which is how `eventsource-client` tears a stream down.
+ *
+ * A `keepalive` request is never given the client signal at all: the flag is
+ * the caller declaring that the request must outlive the document (an unload
+ * handler's presence leave), so teardown is not a reason for it to die.
  */
 export const withAbortSignal =
   (base: typeof fetch, clientSignal: AbortSignal): typeof fetch =>
   (input, init) => {
+    if (init?.keepalive === true) return base(input, init);
     const callerSignal = init?.signal;
     if (callerSignal === undefined || callerSignal === null) {
       return base(input, { ...init, signal: clientSignal });
@@ -147,8 +175,9 @@ export const withAbortSignal =
     const merged = new AbortController();
     const abortFromClient = (): void => merged.abort(clientSignal.reason);
     const abortFromCaller = (): void => merged.abort(callerSignal.reason);
-    const detachClient = (): void => {
+    const detach = (): void => {
       clientSignal.removeEventListener("abort", abortFromClient);
+      callerSignal.removeEventListener("abort", abortFromCaller);
     };
     clientSignal.addEventListener("abort", abortFromClient, { once: true });
     callerSignal.addEventListener("abort", abortFromCaller, { once: true });
@@ -160,8 +189,10 @@ export const withAbortSignal =
       request = base(input, { ...init, signal: merged.signal });
     } catch (error) {
       // A malformed request throws before a promise exists to settle.
-      detachClient();
+      detach();
       throw error;
     }
-    return request.finally(detachClient);
+    return request.finally(() => {
+      clientSignal.removeEventListener("abort", abortFromClient);
+    });
   };

@@ -219,8 +219,7 @@ export interface SyncClientOptions<
   /**
    * Custom fetch implementation (for tests / non-Node runtimes). The client
    * merges its own abort signal into every request that goes through it, so an
-   * in-flight request is cancelled by `close()`; presence is handed this
-   * function unwrapped, because its `keepalive` leave must outlive teardown.
+   * in-flight request is cancelled by `close()`.
    */
   fetchImpl?: typeof fetch;
   /** Initial reconnect backoff in ms. Defaults to 1000. */
