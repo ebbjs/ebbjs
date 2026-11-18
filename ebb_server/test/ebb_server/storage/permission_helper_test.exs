@@ -3,8 +3,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
 
   alias EbbServer.Storage.PermissionHelper
 
-  import EbbServer.TestHelpers, only: [validated_component: 3, validated_component: 4]
-
   describe "check_permission/3" do
     test "exact match returns true" do
       assert PermissionHelper.check_permission(["todo.create"], "todo", "create") == true
@@ -315,13 +313,12 @@ defmodule EbbServer.Storage.PermissionHelperTest do
              ) == false
     end
 
-    test "does not exempt a relationship create", %{
+    test "does not exempt a link write", %{
       bootstrap: bootstrap,
       created: created,
       grant_rows: grant_rows
     } do
-      row =
-        mutation("rel_1", "relationship", true, %{"source_id" => "todo_1"})
+      row = mutation("todo_1", "link", true, %{"blocked_by" => %{}})
 
       assert PermissionHelper.bootstrap_update?(
                row,
@@ -380,15 +377,8 @@ defmodule EbbServer.Storage.PermissionHelperTest do
              }
     end
 
-    test "ignores domain relationship edges" do
-      mutations = [
-        mutation("rel_link", "relationship", true, %{
-          "source_id" => "todo_1",
-          "target_id" => "g_1",
-          "type" => "todo",
-          "field" => "owns"
-        })
-      ]
+    test "ignores an edge, which adds no membership" do
+      mutations = [mutation("todo_1", "link", true, %{"blocked_by" => %{}})]
 
       assert PermissionHelper.build_intra_action_context(mutations) == %{}
     end
@@ -425,49 +415,6 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     end
   end
 
-  describe "build_intra_relationship_sources/1" do
-    test "reads the source from the link's atomic value" do
-      updates = [
-        validated_component("rel_1", "ebb/link", %{
-          "value" => %{
-            "source_id" => "todo_1",
-            "target_id" => "project_1",
-            "type" => "project",
-            "field" => "project"
-          }
-        })
-      ]
-
-      assert PermissionHelper.build_intra_relationship_sources(updates) == %{
-               "rel_1" => "todo_1"
-             }
-    end
-
-    test "a user component does not stand in for the source" do
-      updates = [validated_component("rel_1", "todo/source_id", %{"value" => "project_1"})]
-
-      assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
-    end
-
-    test "maps one source per link row" do
-      updates = [
-        validated_component("rel_1", "ebb/link", %{"value" => %{"source_id" => "todo_1"}}),
-        validated_component("rel_2", "ebb/link", %{"value" => %{"source_id" => "todo_2"}})
-      ]
-
-      assert PermissionHelper.build_intra_relationship_sources(updates) == %{
-               "rel_1" => "todo_1",
-               "rel_2" => "todo_2"
-             }
-    end
-
-    test "ignores a delete, which names no component" do
-      updates = [validated_component("rel_1", nil, nil, method: :delete)]
-
-      assert PermissionHelper.build_intra_relationship_sources(updates) == %{}
-    end
-  end
-
   # A folded platform row carries a `kind` and one object value. Callers keep
   # the model-style label and `field => value` shape; this builds what the
   # engine now sees.
@@ -475,7 +422,7 @@ defmodule EbbServer.Storage.PermissionHelperTest do
     "group" => {:group, "group"},
     "grant" => {:grant, "grant"},
     "membership" => {:membership, "membership"},
-    "relationship" => {:link, "link"}
+    "link" => {:link, "link"}
   }
 
   defp mutation(subject_id, model, created?, fields \\ %{}) do

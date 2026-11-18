@@ -31,6 +31,7 @@ defmodule EbbServer.Storage.PreparedAction do
     :subject_scopes,
     groups: [],
     component_entity_ops: [],
+    link_target_ops: [],
     affected_entities: []
   ]
 
@@ -45,6 +46,7 @@ defmodule EbbServer.Storage.PreparedAction do
           subject_scopes: [EbbServer.Storage.ActionFormat.subject_scope()],
           groups: [String.t()],
           component_entity_ops: [EbbServer.Storage.ComponentEntityIndex.op()],
+          link_target_ops: [EbbServer.Storage.LinkTargetIndex.op()],
           affected_entities: [entity_mark()]
         }
 end

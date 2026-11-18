@@ -10,7 +10,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
             memberships_table: :ebb_memberships,
             memberships_by_id_table: :ebb_memberships_by_id,
             entity_models_table: :ebb_entity_models,
-            relationships_by_id_table: :ebb_relationships_by_id,
             group_apps_table: :ebb_group_apps
 
   @type t :: %__MODULE__{
@@ -20,7 +19,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
           memberships_table: atom(),
           memberships_by_id_table: atom(),
           entity_models_table: atom(),
-          relationships_by_id_table: atom(),
           group_apps_table: atom()
         }
 
@@ -30,7 +28,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
   @default_memberships :ebb_memberships
   @default_memberships_by_id :ebb_memberships_by_id
   @default_entity_models :ebb_entity_models
-  @default_relationships_by_id :ebb_relationships_by_id
   @default_group_apps :ebb_group_apps
 
   @spec build(keyword()) :: t()
@@ -43,8 +40,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
       memberships_by_id_table:
         resolve_table(opts, :memberships_by_id, @default_memberships_by_id),
       entity_models_table: resolve_table(opts, :entity_models, @default_entity_models),
-      relationships_by_id_table:
-        resolve_table(opts, :relationships_by_id, @default_relationships_by_id),
       group_apps_table: resolve_table(opts, :group_apps, @default_group_apps)
     }
   end
@@ -61,7 +56,6 @@ defmodule EbbServer.Storage.AuthorizationContext do
       memberships: ctx.memberships_table,
       memberships_by_id: ctx.memberships_by_id_table,
       entity_models: ctx.entity_models_table,
-      relationships_by_id: ctx.relationships_by_id_table,
       grants_by_id: ctx.grants_by_id_table,
       grants_by_group: ctx.grants_by_group_table,
       group_apps: ctx.group_apps_table

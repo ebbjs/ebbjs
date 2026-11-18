@@ -56,11 +56,11 @@ defmodule EbbServer.Storage.Writer do
     GroupAppsCache,
     GsnCounter,
     InFlightActions,
+    LinkTargetIndex,
     MembershipCache,
     PreparedAction,
     PreparePool,
     Preparer,
-    RelationshipCache,
     RocksDB,
     RowMutations
   }
@@ -107,9 +107,9 @@ defmodule EbbServer.Storage.Writer do
           entity_models: atom(),
           component_index: atom(),
           component_entity_labels: atom(),
+          link_targets: atom(),
+          link_target_labels: atom(),
           group_apps: atom(),
-          relationships: atom(),
-          relationships_by_id: atom(),
           prepare: prepare(),
           next_call_seq: non_neg_integer(),
           next_enqueue_seq: non_neg_integer(),
@@ -151,9 +151,9 @@ defmodule EbbServer.Storage.Writer do
     :entity_models,
     :component_index,
     :component_entity_labels,
+    :link_targets,
+    :link_target_labels,
     :group_apps,
-    :relationships,
-    :relationships_by_id,
     :prepare,
     :next_call_seq,
     :next_enqueue_seq,
@@ -288,6 +288,13 @@ defmodule EbbServer.Storage.Writer do
      Keyword.get(opts, :component_entity_labels) || labels}
   end
 
+  defp link_target_tables(opts) do
+    {entries, labels} = LinkTargetIndex.tables()
+
+    {Keyword.get(opts, :link_targets) || entries,
+     Keyword.get(opts, :link_target_labels) || labels}
+  end
+
   @impl true
   @spec init(keyword()) :: {:ok, t()}
   def init(opts) do
@@ -348,26 +355,13 @@ defmodule EbbServer.Storage.Writer do
       )
 
     {component_index, component_entity_labels} = component_index_tables(opts)
+    {link_targets, link_target_labels} = link_target_tables(opts)
 
     group_apps =
       Keyword.get(
         opts,
         :group_apps,
         CacheTables.group_apps()
-      )
-
-    relationships =
-      Keyword.get(
-        opts,
-        :relationships,
-        CacheTables.relationships()
-      )
-
-    relationships_by_id =
-      Keyword.get(
-        opts,
-        :relationships_by_id,
-        CacheTables.relationships_by_id()
       )
 
     commit_fn = Keyword.get(opts, :commit_fn) || (&RocksDB.write_batch/2)
@@ -524,9 +518,9 @@ defmodule EbbServer.Storage.Writer do
       entity_models: entity_models,
       component_index: component_index,
       component_entity_labels: component_entity_labels,
+      link_targets: link_targets,
+      link_target_labels: link_target_labels,
       group_apps: group_apps,
-      relationships: relationships,
-      relationships_by_id: relationships_by_id,
       prepare: %{
         pool: prepare_pool,
         fn: prepare_fn,
@@ -1388,7 +1382,7 @@ defmodule EbbServer.Storage.Writer do
   end
 
   # A prepared batch may commit while an earlier range is still in flight
-  # only when that range planned no membership or relationship move: then
+  # only when that range planned no membership move: then
   # its eventual abandon cannot invalidate the successor's scopes. A
   # resolution-affecting predecessor holds the gate until it is durable.
   defp ready_batch(pipeline) do
@@ -1761,10 +1755,6 @@ defmodule EbbServer.Storage.Writer do
       resolve_opts
       |> Keyword.put(:flush_rows, flush_rows)
       |> Keyword.put(:intra_action, intra_action_context)
-      |> Keyword.put(
-        :intra_relationship_sources,
-        PermissionHelper.build_intra_relationship_sources(action.updates)
-      )
 
     {scopes, memo} =
       Enum.map_reduce(mutations, memo, fn mutation, memo ->
@@ -1781,8 +1771,7 @@ defmodule EbbServer.Storage.Writer do
     # One entry per folded subject, in first-appearance order: the durable
     # record of which groups each subject's Updates are delivered to. Computed
     # here, from the same snapshot `cf_group_actions` is built from, because
-    # the by-id caches for an `ebb/link`/`ebb/membership` delete are gone by
-    # fan-out time.
+    # a membership delete's by-id row is gone by fan-out time.
     prepared = %PreparedAction{
       id: action.id,
       actor_id: action.actor_id,
@@ -1795,6 +1784,7 @@ defmodule EbbServer.Storage.Writer do
       # `{group_id, gsn}` row twice.
       groups: scopes |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq(),
       component_entity_ops: component_entity_ops(action.updates, mutations, state),
+      link_target_ops: link_target_ops(action.updates),
       affected_entities: affected_entities(mutations)
     }
 
@@ -1816,6 +1806,10 @@ defmodule EbbServer.Storage.Writer do
       )
     end
   end
+
+  # Incoming-edge entries come from the component's *value*, not its name: one
+  # Update writes one edge, so its patch is exactly the keys that changed.
+  defp link_target_ops(updates), do: LinkTargetIndex.update_ops(updates)
 
   # The provisional marks are placed before the batch leaves for the
   # Committer so that no read can observe the entity clean between the
@@ -1858,6 +1852,7 @@ defmodule EbbServer.Storage.Writer do
       end
 
     apply_component_index(batch, state)
+    apply_link_target_index(batch, state)
 
     {:ok, affected_actors}
   rescue
@@ -1878,6 +1873,19 @@ defmodule EbbServer.Storage.Writer do
         component_entity_labels: state.component_entity_labels
       )
     end
+  end
+
+  # The incoming-edge index is derived state like the component index and is
+  # applied only once the range is durable, so a failed commit never leaves an
+  # entry a restart would have to undo.
+  defp apply_link_target_index(%Batch{prepared: prepared}, state) do
+    prepared
+    |> Enum.map(& &1.link_target_ops)
+    |> LinkTargetIndex.reduce_batch_ops()
+    |> LinkTargetIndex.apply_ops(
+      link_targets: state.link_targets,
+      link_target_labels: state.link_target_labels
+    )
   end
 
   defp apply_cache_mutations(mutations, state) do
@@ -1918,7 +1926,6 @@ defmodule EbbServer.Storage.Writer do
     %{
       grants_by_id: state.grants_by_id,
       memberships_by_id: state.memberships_by_id,
-      relationships_by_id: state.relationships_by_id,
       group_apps: state.group_apps
     }
   end
@@ -1949,20 +1956,6 @@ defmodule EbbServer.Storage.Writer do
       memberships: state.memberships,
       memberships_by_id: state.memberships_by_id,
       memberships_by_group: state.memberships_by_group
-    )
-  end
-
-  defp apply_cache_mutation({:relationship_put, row}, state) do
-    RelationshipCache.put_relationship(row,
-      relationships: state.relationships,
-      relationships_by_id: state.relationships_by_id
-    )
-  end
-
-  defp apply_cache_mutation({:relationship_delete, id}, state) do
-    RelationshipCache.delete_relationship(id,
-      relationships: state.relationships,
-      relationships_by_id: state.relationships_by_id
     )
   end
 
@@ -2180,7 +2173,6 @@ defmodule EbbServer.Storage.Writer do
       memberships: state.memberships,
       memberships_by_id: state.memberships_by_id,
       entity_models: state.entity_models,
-      relationships_by_id: state.relationships_by_id,
       grants_by_id: state.grants_by_id,
       group_apps: state.group_apps
     ]

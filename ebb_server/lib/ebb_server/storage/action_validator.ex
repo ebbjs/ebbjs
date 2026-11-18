@@ -39,6 +39,13 @@ defmodule EbbServer.Storage.ActionValidator do
   Action, and a platform (`ebb`) create must carry exactly one `ebb/*`
   component in the same Action, because a platform row is one kind.
 
+  An **overlay** component is the exception: `ebb/link` is a component of a
+  row it does not model, so it is exempt from the one-model rule and may
+  ride a row committed under any model (decision 13's storage consequence).
+  The other `ebb/*` components still are the row's model — a `note` create
+  cannot carry an `ebb/grant` — so the exemption is asked of
+  `SystemComponent.overlay?/1` rather than of the namespace.
+
   The pre-component wire — a per-Update type name, `put`/`patch` methods,
   and `data.fields` — is rejected here rather than read through: there is
   no alias and no deprecation path.
@@ -228,9 +235,11 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp platform_create_without_component?(_update, _updates), do: false
 
+  # An overlay is not a kind of platform row: `ebb/link` rides a row it does
+  # not model, so it cannot be the component that makes an `ebb` create legal.
   defp platform_component_of?(%{"component" => component, "subject_id" => subject_id}, subject_id)
        when is_binary(component) do
-    SystemComponent.component?(component)
+    SystemComponent.component?(component) and not overlay?(component)
   end
 
   defp platform_component_of?(_update, _subject_id), do: false
@@ -238,7 +247,8 @@ defmodule EbbServer.Storage.ActionValidator do
   # A row has one model. Every component Update for one subject in an Action
   # must name the same prefix, and the create (when there is one) decides it,
   # or the fold could materialize, say, a `note` row carrying a `group_id`
-  # field. A delete names no component, so it constrains nothing.
+  # field. A delete names no component, so it constrains nothing, and an
+  # overlay component names no model of the row's: it may sit on any of them.
   #
   # Runs after the per-Update checks, so each component here is well formed
   # and `Component.split/1` cannot raise.
@@ -277,7 +287,11 @@ defmodule EbbServer.Storage.ActionValidator do
     Enum.reduce(updates, %{}, fn
       %{"component" => component, "subject_id" => subject_id}, models
       when is_binary(component) ->
-        Map.put_new(models, subject_id, Component.model(component))
+        if overlay?(component) do
+          models
+        else
+          Map.put_new(models, subject_id, Component.model(component))
+        end
 
       _update, models ->
         models
@@ -291,8 +305,14 @@ defmodule EbbServer.Storage.ActionValidator do
        inspect(component_model)}
   end
 
-  defp check_subject_model(%{"component" => component, "subject_id" => subject_id}, models)
+  defp check_subject_model(%{"component" => component} = update, models)
        when is_binary(component) do
+    if overlay?(component), do: {:cont, models}, else: check_committed_model(update, models)
+  end
+
+  defp check_subject_model(_update, models), do: {:cont, models}
+
+  defp check_committed_model(%{"component" => component, "subject_id" => subject_id}, models) do
     model = Component.model(component)
 
     case Map.fetch(models, subject_id) do
@@ -310,7 +330,7 @@ defmodule EbbServer.Storage.ActionValidator do
     end
   end
 
-  defp check_subject_model(_update, models), do: {:cont, models}
+  defp overlay?(component), do: SystemComponent.overlay?(SystemComponent.kind(component))
 
   # A row carries at most one platform component (decision 13), so a second
   # one would make its kind — and its cache projection — a guess.

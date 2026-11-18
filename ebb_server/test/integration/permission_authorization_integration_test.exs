@@ -1057,16 +1057,17 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
-  # A relationship row fans out to its source's group set, so the wire
-  # `source_id` may not move an existing row to another source.
-  describe "relationship row identity (#624)" do
-    test "an outsider cannot re-point a victim's edge" do
+  # An edge is a keyed component of its source (decision 13), so a write to
+  # it is a write to that row: it is authorized and delivered in the source's
+  # group set, and an outsider's own `ebb/link.*` grant reaches nothing.
+  describe "an edge is scoped by its source (#820)" do
+    test "an outsider cannot write or remove an edge on a victim's row" do
       bootstrap_group("victim", "g_victim", ["todo.*", "ebb/link.*"])
       bootstrap_group("attacker", "g_attacker", ["todo.*", "ebb/link.*"])
 
       hlc = generate_hlc()
       victim_id = "todo_victim_#{Nanoid.generate()}"
-      victim_edge = "rel_victim_#{Nanoid.generate()}"
+      target_id = "todo_target_#{Nanoid.generate()}"
 
       victim_create = %{
         "id" => "act_victim_#{Nanoid.generate()}",
@@ -1076,19 +1077,28 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
           List.flatten([
             todo_put(victim_id, hlc),
             membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
-            relationship_put(victim_edge, victim_id, "col_x", hlc)
+            edge_add(victim_id, target_id, hlc)
           ])
       }
 
       assert %{"rejected" => []} = submit(victim_create, "victim")
-      assert victim_edge in action_ids("g_victim", "victim")
-      refute victim_edge in action_ids("g_attacker", "attacker")
 
+      # The edge rides its source's Action, so the victim's group sees it and
+      # the attacker's does not.
+      assert Enum.any?(
+               action_updates("g_victim", "victim", victim_create["id"]),
+               &(&1["component"] == "ebb/link")
+             )
+
+      refute Enum.any?(
+               action_updates("g_attacker", "attacker", victim_create["id"]),
+               &(&1["component"] == "ebb/link")
+             )
+
+      # Positive control: the attacker may write their own row's edge.
       attacker_hlc = generate_hlc()
       attacker_id = "todo_attacker_#{Nanoid.generate()}"
-      attacker_edge = "rel_attacker_#{Nanoid.generate()}"
 
-      # Positive control: the attacker can create their own edge.
       attacker_create = %{
         "id" => "act_attacker_#{Nanoid.generate()}",
         "actor_id" => "attacker",
@@ -1097,114 +1107,48 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
           List.flatten([
             todo_put(attacker_id, attacker_hlc),
             membership_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc),
-            relationship_put(attacker_edge, attacker_id, "col_x", attacker_hlc)
+            edge_add(attacker_id, target_id, attacker_hlc)
           ])
       }
 
       assert %{"rejected" => []} = submit(attacker_create, "attacker")
-      assert attacker_edge in action_ids("g_attacker", "attacker")
 
-      repoint = %{
-        "id" => "act_repoint_#{Nanoid.generate()}",
-        "actor_id" => "attacker",
-        "hlc" => hlc,
-        "updates" => List.flatten([relationship_put(victim_edge, attacker_id, "col_x", hlc)])
-      }
+      for updates <- [
+            edge_add(victim_id, "col_other", hlc),
+            edge_remove(victim_id, target_id, hlc)
+          ] do
+        attack = %{
+          "id" => "act_attack_#{Nanoid.generate()}",
+          "actor_id" => "attacker",
+          "hlc" => hlc,
+          "updates" => [updates]
+        }
 
-      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(repoint, "attacker")
+        assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "attacker")
+      end
 
-      # Nothing moved: the edge still fans out to the victim's group only,
-      # and the victim can still write it.
-      assert victim_edge in action_ids("g_victim", "victim")
-      refute victim_edge in action_ids("g_attacker", "attacker")
-
+      # Nothing moved: the victim can still add and remove its own edges.
       victim_write = %{
         "id" => "act_victim_write_#{Nanoid.generate()}",
         "actor_id" => "victim",
         "hlc" => hlc,
-        "updates" => List.flatten([relationship_patch(victim_edge, victim_id, "col_y", hlc)])
+        "updates" => [edge_add(victim_id, "col_y", hlc)]
       }
 
       assert %{"rejected" => []} = submit(victim_write, "victim")
     end
 
-    # A delete names the row and carries no component, so the scope can only
-    # come from the stored row's source: naming a row is not authority.
-    test "an outsider cannot delete a victim's edge" do
-      bootstrap_group("victim", "g_victim", ["todo.*", "ebb/link.*"])
-      bootstrap_group("attacker", "g_attacker", ["todo.*", "ebb/link.*"])
-
-      hlc = generate_hlc()
-      victim_id = "todo_victim_#{Nanoid.generate()}"
-      victim_edge = "rel_victim_#{Nanoid.generate()}"
-
-      victim_create = %{
-        "id" => "act_victim_#{Nanoid.generate()}",
-        "actor_id" => "victim",
-        "hlc" => hlc,
-        "updates" =>
-          List.flatten([
-            todo_put(victim_id, hlc),
-            membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
-            relationship_put(victim_edge, victim_id, "col_x", hlc)
-          ])
-      }
-
-      assert %{"rejected" => []} = submit(victim_create, "victim")
-      assert victim_edge in action_ids("g_victim", "victim")
-
-      attacker_hlc = generate_hlc()
-      attacker_id = "todo_attacker_#{Nanoid.generate()}"
-
-      attacker_create = %{
-        "id" => "act_attacker_#{Nanoid.generate()}",
-        "actor_id" => "attacker",
-        "hlc" => attacker_hlc,
-        "updates" =>
-          List.flatten([
-            todo_put(attacker_id, attacker_hlc),
-            membership_put("eg_#{Nanoid.generate()}", attacker_id, "g_attacker", attacker_hlc)
-          ])
-      }
-
-      assert %{"rejected" => []} = submit(attacker_create, "attacker")
-
-      attack = %{
-        "id" => "act_attack_#{Nanoid.generate()}",
-        "actor_id" => "attacker",
-        "hlc" => hlc,
-        "updates" => List.flatten([relationship_delete(victim_edge, attacker_id, hlc)])
-      }
-
-      assert %{"rejected" => [%{"reason" => "not_authorized"}]} = submit(attack, "attacker")
-
-      # The edge survives and still belongs to the victim's group only.
-      assert victim_edge in action_ids("g_victim", "victim")
-      refute victim_edge in action_ids("g_attacker", "attacker")
-
-      victim_delete = %{
-        "id" => "act_victim_delete_#{Nanoid.generate()}",
-        "actor_id" => "victim",
-        "hlc" => hlc,
-        "updates" => List.flatten([relationship_delete(victim_edge, nil, hlc)])
-      }
-
-      assert %{"rejected" => []} = submit(victim_delete, "victim")
-    end
-
-    # Moving an edge is a delete plus a put (#624). A row's scope is a
-    # per-subject decision in this slice, so the move is two Actions: the
-    # delete is delivered to the groups the stored row belonged to, the put
-    # to the new source's, and neither group receives an Update it should
-    # not see.
-    test "delete plus put moves an edge to another source, one scope per group" do
+    # Moving an edge is two keys, not one row with two identities: a removal
+    # under the old source and an addition under the new one, each scoped to
+    # its own source's groups.
+    test "moving an edge is a removal under one source and an addition under another" do
       bootstrap_group("owner", "g_victim", ["todo.*", "ebb/link.*"])
       bootstrap_group("owner", "g_new", ["todo.*", "ebb/link.*"])
 
       hlc = generate_hlc()
       victim_id = "todo_victim_#{Nanoid.generate()}"
       new_id = "todo_new_#{Nanoid.generate()}"
-      edge = "rel_victim_#{Nanoid.generate()}"
+      target_id = "todo_target_#{Nanoid.generate()}"
 
       seed = %{
         "id" => "act_seed_#{Nanoid.generate()}",
@@ -1216,7 +1160,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
             membership_put("eg_#{Nanoid.generate()}", victim_id, "g_victim", hlc),
             todo_put(new_id, hlc),
             membership_put("eg_#{Nanoid.generate()}", new_id, "g_new", hlc),
-            relationship_put(edge, victim_id, "col_x", hlc)
+            edge_add(victim_id, target_id, hlc)
           ])
       }
 
@@ -1228,37 +1172,25 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
         "id" => remove_id,
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" => List.flatten([relationship_delete(edge, nil, hlc)])
+        "updates" => [edge_remove(victim_id, target_id, hlc)]
       }
 
       assert %{"rejected" => []} = submit(remove, "owner")
+      assert [%{"subject_id" => ^victim_id}] = action_updates("g_victim", "owner", remove_id)
+      assert action_updates("g_new", "owner", remove_id) == []
 
-      assert [%{"subject_id" => ^edge, "method" => "delete"}] =
-               action_updates("g_victim", "owner", remove_id)
+      add_id = "act_move_add_#{Nanoid.generate()}"
 
-      put_id = "act_move_put_#{Nanoid.generate()}"
-
-      put = %{
-        "id" => put_id,
+      add = %{
+        "id" => add_id,
         "actor_id" => "owner",
         "hlc" => hlc,
-        "updates" =>
-          List.flatten([
-            create_update("upd_create_#{Nanoid.generate()}", edge, "ebb", hlc),
-            link_update(edge, "replace", new_id, "col_x", hlc)
-          ])
+        "updates" => [edge_add(new_id, target_id, hlc)]
       }
 
-      assert %{"rejected" => []} = submit(put, "owner")
-
-      # What a moving edge actually sends: the create for its row and the one
-      # atomic link component. Both are scoped to the new source's group and
-      # neither reaches the old source's group.
-      updates = action_updates("g_new", "owner", put_id)
-      assert length(updates) == 2
-      assert updates |> Enum.map(& &1["method"]) |> Enum.sort() == ["create", "replace"]
-      assert Enum.all?(updates, &(&1["subject_id"] == edge))
-      assert action_updates("g_victim", "owner", put_id) == []
+      assert %{"rejected" => []} = submit(add, "owner")
+      assert [%{"subject_id" => ^new_id}] = action_updates("g_new", "owner", add_id)
+      assert action_updates("g_victim", "owner", add_id) == []
     end
   end
 
@@ -1329,47 +1261,31 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     ]
   end
 
-  defp relationship_put(rel_id, source_id, target_id, hlc) do
-    [
-      create_update(rel_id <> "_create", rel_id, "ebb", hlc),
-      link_update(rel_id, "replace", source_id, target_id, hlc)
-    ]
-  end
+  # One edge of a source row: `field → type → target → leaf`. `nil` is the
+  # wire's tombstone, which is how one edge is removed.
+  defp edge_add(source_id, target_id, hlc), do: edge_leaf(source_id, target_id, true, hlc)
+  defp edge_remove(source_id, target_id, hlc), do: edge_leaf(source_id, target_id, nil, hlc)
 
-  defp relationship_patch(rel_id, source_id, target_id, hlc) do
-    [link_update(rel_id, "replace", source_id, target_id, hlc)]
-  end
-
-  defp link_update(rel_id, method, source_id, target_id, hlc) do
+  defp edge_leaf(source_id, target_id, value, hlc) do
     %{
-      "id" => "upd_rel_#{Nanoid.generate()}",
-      "subject_id" => rel_id,
+      "id" => "upd_link_#{Nanoid.generate()}",
+      "subject_id" => source_id,
       "component" => "ebb/link",
-      "method" => method,
+      "method" => "merge",
       "data" => %{
-        "value" => %{
-          "source_id" => source_id,
-          "target_id" => target_id,
-          "type" => "todo",
-          "field" => "column"
-        },
-        "hlc" => hlc
+        "map" => %{
+          "column" => %{
+            "map" => %{
+              "todo" => %{
+                "map" => %{
+                  target_id => %{"value" => value, "hlc" => hlc, "update_id" => Nanoid.generate()}
+                }
+              }
+            }
+          }
+        }
       }
     }
-  end
-
-  # A delete names the row and carries no component, so the old wire form's
-  # `source_id` attack is not expressible: the stored row's source decides
-  # the scope. The third argument stays so the attack call sites read the same.
-  defp relationship_delete(rel_id, _source_id, _hlc) do
-    [
-      %{
-        "id" => "upd_rel_delete_#{Nanoid.generate()}",
-        "subject_id" => rel_id,
-        "method" => "delete",
-        "data" => nil
-      }
-    ]
   end
 
   defp action_id_list(group_id, actor_id) do

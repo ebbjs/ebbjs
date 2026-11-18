@@ -722,45 +722,6 @@ defmodule EbbServer.Storage.SQLiteTest do
       assert {:row, ["z"]} = Sqlite3.step(db, stmt)
       :ok = Sqlite3.release(db, stmt)
     end
-
-    test "a patched platform component recomputes its generated columns", context do
-      dir = tmp_dir(context)
-      %{name: name} = start_sqlite(dir)
-
-      seed_entity(
-        name,
-        "rel_1",
-        ~s({"fields":{"link":{"value":{"source_id":"src_old","target_id":"tgt_1","type":"owns","field":"x"},"hlc":1}}})
-      )
-
-      :ok =
-        SQLite.patch_entity(
-          "rel_1",
-          %{
-            "link" =>
-              ~s({"value":{"source_id":"src_new","target_id":"tgt_2","type":"owns","field":"x"},"hlc":2})
-          },
-          ["ebb/link"],
-          %{
-            model: "ebb",
-            created_hlc: 1000,
-            updated_hlc: 2000,
-            deleted_hlc: nil,
-            deleted_by: nil,
-            last_gsn: 2
-          },
-          name
-        )
-
-      db = open_readonly(dir)
-
-      {:ok, stmt} =
-        Sqlite3.prepare(db, "SELECT source_id, target_id FROM entities WHERE id = ?")
-
-      :ok = Sqlite3.bind(stmt, ["rel_1"])
-      assert {:row, ["src_new", "tgt_2"]} = Sqlite3.step(db, stmt)
-      :ok = Sqlite3.release(db, stmt)
-    end
   end
 
   describe "component existence index" do

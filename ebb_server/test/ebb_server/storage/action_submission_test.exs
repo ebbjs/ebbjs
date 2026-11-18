@@ -216,8 +216,7 @@ defmodule EbbServer.Storage.ActionSubmissionTest do
       grants_by_group: ctx.cache.grants_by_group,
       memberships: ctx.cache.memberships,
       memberships_by_id: ctx.cache.memberships_by_id,
-      entity_models: ctx.cache.entity_models,
-      relationships_by_id: ctx.cache.relationships_by_id
+      entity_models: ctx.cache.entity_models
     ]
   end
 

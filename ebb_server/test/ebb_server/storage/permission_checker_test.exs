@@ -64,8 +64,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
   @components %{
     "group" => "group",
     "grant" => "grant",
-    "membership" => "membership",
-    "relationship" => "link"
+    "membership" => "membership"
   }
 
   defp row_updates(subject_id, model, fields, opts \\ []) do
@@ -133,18 +132,16 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
     ]
   end
 
-  defp relationship_put_updates(id, source_id, target_id) do
-    [
-      create_update(id, "relationship"),
-      update(id, id, "ebb/link", "replace", %{
-        "value" => %{
-          "source_id" => source_id,
-          "target_id" => target_id,
-          "type" => "todo",
-          "field" => "owns"
-        }
-      })
-    ]
+  # One edge of a source row: `field → type → target → leaf`, and only the
+  # leaf carries presence.
+  defp link_update(id, source_id, target_id, hlc \\ nil) do
+    leaf = %{"value" => true, "hlc" => hlc || generate_hlc(), "update_id" => id}
+
+    update(id, source_id, "ebb/link", "merge", %{
+      "map" => %{
+        "blocked_by" => %{"map" => %{"todo" => %{"map" => %{target_id => leaf}}}}
+      }
+    })
   end
 
   defp new_id, do: "upd_" <> Nanoid.generate()
@@ -486,11 +483,13 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
       assert [%{action_id: "act_bad", reason: "not_authorized"}] = rejected
     end
 
-    test "accepts a relationship that follows an entity the same Action creates" do
+    test "accepts an edge on an entity the same Action creates" do
       tables = create_isolated_tables()
       opts = auth_opts(tables)
 
-      put_grant(tables, "g_a", ["todo.create", "todo.update"])
+      # The edge is the platform's subject, so the model grant over the row it
+      # rides does not authorize it.
+      put_grant(tables, "g_a", ["todo.create", "ebb/link.create"])
 
       action = %{
         "id" => "act_rel_owned",
@@ -499,7 +498,7 @@ defmodule EbbServer.Storage.PermissionCheckerTest do
         "updates" =>
           user_put_updates("todo_1") ++
             membership_put_updates("eg", "todo_1", "g_a") ++
-            relationship_put_updates("upd_rel", "todo_1", "target_1")
+            [link_update("upd_rel", "todo_1", "target_1")]
       }
 
       {accepted, rejected} = PermissionChecker.validate_and_authorize([action], "a_1", opts)

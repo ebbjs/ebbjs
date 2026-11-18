@@ -2,12 +2,15 @@ defmodule EbbServer.Storage.CacheTables do
   @moduledoc """
   Single resolution surface for cache module table names.
 
-  GrantCache, MembershipCache, EntityModelCache, RelationshipCache and
-  GroupAppsCache publish their ETS table names via `:persistent_term` at
-  boot. Callers that need to hand a table name to a downstream module
-  (Writer, EntityScope, SystemCache, etc.) read it through this module
-  rather than re-implementing the `:persistent_term.get(..., default)`
-  pattern.
+  GrantCache, MembershipCache, EntityModelCache and GroupAppsCache publish
+  their ETS table names via `:persistent_term` at boot. Callers that need to
+  hand a table name to a downstream module (Writer, EntityScope, SystemCache,
+  etc.) read it through this module rather than re-implementing the
+  `:persistent_term.get(..., default)` pattern.
+
+  The two derived indexes own their tables instead — they are not caches of
+  rows, so `EbbServer.Storage.ComponentEntityIndex.tables/1` and
+  `EbbServer.Storage.LinkTargetIndex.tables/1` are their resolution surfaces.
 
   Defaults are honored so unit tests can run without standing the
   supervisor up; production callers can rely on the supervisor having
@@ -18,8 +21,7 @@ defmodule EbbServer.Storage.CacheTables do
     EntityModelCache,
     GrantCache,
     GroupAppsCache,
-    MembershipCache,
-    RelationshipCache
+    MembershipCache
   }
 
   @default_grants :ebb_grants
@@ -30,8 +32,6 @@ defmodule EbbServer.Storage.CacheTables do
   @default_memberships_by_group :ebb_memberships_by_group
   @default_entity_models :ebb_entity_models
   @default_group_apps :ebb_group_apps
-  @default_relationships :ebb_relationships
-  @default_relationships_by_id :ebb_relationships_by_id
 
   @spec grants() :: atom()
   def grants,
@@ -72,16 +72,4 @@ defmodule EbbServer.Storage.CacheTables do
   @spec group_apps() :: atom()
   def group_apps,
     do: :persistent_term.get({GroupAppsCache, :group_apps}, @default_group_apps)
-
-  @spec relationships() :: atom()
-  def relationships,
-    do: :persistent_term.get({RelationshipCache, :relationships}, @default_relationships)
-
-  @spec relationships_by_id() :: atom()
-  def relationships_by_id,
-    do:
-      :persistent_term.get(
-        {RelationshipCache, :relationships_by_id},
-        @default_relationships_by_id
-      )
 end

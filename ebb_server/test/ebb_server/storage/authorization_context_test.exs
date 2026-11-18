@@ -12,7 +12,7 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert ctx.grants_by_group_table == :ebb_grants_by_group
       assert ctx.memberships_table == :ebb_memberships
       assert ctx.memberships_by_id_table == :ebb_memberships_by_id
-      assert ctx.relationships_by_id_table == :ebb_relationships_by_id
+      assert ctx.entity_models_table == :ebb_entity_models
     end
 
     test "accepts custom table names via opts" do
@@ -23,7 +23,7 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
           grants_by_group: :custom_gm_by_group,
           memberships: :custom_eg,
           memberships_by_id: :custom_eg_by_id,
-          relationships_by_id: :custom_rbi
+          entity_models: :custom_models
         )
 
       assert ctx.grants_table == :custom_gm
@@ -31,7 +31,7 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert ctx.grants_by_group_table == :custom_gm_by_group
       assert ctx.memberships_table == :custom_eg
       assert ctx.memberships_by_id_table == :custom_eg_by_id
-      assert ctx.relationships_by_id_table == :custom_rbi
+      assert ctx.entity_models_table == :custom_models
     end
 
     test "accepts mixed options" do
@@ -58,7 +58,7 @@ defmodule EbbServer.Storage.AuthorizationContextTest do
       assert Map.has_key?(ctx, :grants_by_group_table)
       assert Map.has_key?(ctx, :memberships_table)
       assert Map.has_key?(ctx, :memberships_by_id_table)
-      assert Map.has_key?(ctx, :relationships_by_id_table)
+      assert Map.has_key?(ctx, :entity_models_table)
     end
   end
 end

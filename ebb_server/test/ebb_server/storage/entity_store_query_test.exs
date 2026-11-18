@@ -114,8 +114,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       memberships: eg_table,
       memberships_by_id: eg_by_id_table,
       memberships_by_group: eg_by_group_table,
-      relationships: rel_table,
-      relationships_by_id: rbi_table
+      link_targets: link_targets_table,
+      link_target_labels: link_target_labels_table
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -131,8 +131,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         memberships: eg_table,
         memberships_by_id: eg_by_id_table,
         memberships_by_group: eg_by_group_table,
-        relationships: rel_table,
-        relationships_by_id: rbi_table
+        link_targets: link_targets_table,
+        link_target_labels: link_target_labels_table
       })
 
     %{
@@ -141,7 +141,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       writer_name: writer_name,
       dirty_set: dirty_set,
       gm_table: gm_table,
-      rel_table: rel_table
+      link_targets: link_targets_table
     }
   end
 
@@ -596,12 +596,8 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       %{gm_id: gm_id, eg_id: eg_id} = bootstrap_group(group_id, actor_id, writer_name)
 
-      rel_id = "rel_" <> Nanoid.generate()
-      write_relationship(rel_id, "todo_cross_a", "todo_cross_b", actor_id, writer_name)
-
       assert :not_found = SQLite.get_entity(gm_id, sqlite_name)
       assert :not_found = SQLite.get_entity(eg_id, sqlite_name)
-      assert :not_found = SQLite.get_entity(rel_id, sqlite_name)
 
       {:ok, _posts} =
         EntityStore.query("post", nil, actor_id,
@@ -612,7 +608,6 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       assert {:ok, _} = SQLite.get_entity(gm_id, sqlite_name)
       assert {:ok, _} = SQLite.get_entity(eg_id, sqlite_name)
-      assert {:ok, _} = SQLite.get_entity(rel_id, sqlite_name)
     end
 
     test "a cross-type query materializes a dirty group entity", %{
@@ -794,35 +789,6 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
 
       assert Enum.map(todos, & &1.id) == Enum.map(1..200, &"todo_seed_#{&1}")
     end
-  end
-
-  defp write_relationship(rel_id, source_id, target_id, actor_id, writer_name) do
-    hlc = generate_hlc()
-
-    action = %{
-      id: "act_" <> Nanoid.generate(),
-      actor_id: actor_id,
-      hlc: hlc,
-      updates: [
-        validated_create(rel_id, SystemComponent.model(), id: "#{rel_id}_create", hlc: hlc),
-        validated_component(
-          rel_id,
-          SystemComponent.component(:link),
-          %{
-            "value" => %{
-              "source_id" => source_id,
-              "target_id" => target_id,
-              "type" => "assignedTo",
-              "field" => "assignee"
-            },
-            "hlc" => hlc
-          }
-        )
-      ]
-    }
-
-    {:ok, {gsn, gsn}, []} = Writer.write_actions([action], writer_name)
-    %{rel_id: rel_id, gsn: gsn}
   end
 
   defp write_group(group_id, actor_id, writer_name) do

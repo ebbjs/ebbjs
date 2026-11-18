@@ -13,7 +13,7 @@ defmodule EbbServer.WritingActionsIntegrationTest do
   4. PermissionChecker validates structure, HLC, then authorizes
   5. Writer assigns GSNs and writes to RocksDB
   6. DirtyTracker marks affected entities as dirty
-  7. System caches (GrantCache, RelationshipCache) are updated
+  7. System caches and the derived indexes are updated
 
   ## Key Concepts
 

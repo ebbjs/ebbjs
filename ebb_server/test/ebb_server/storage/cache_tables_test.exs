@@ -2,7 +2,8 @@ defmodule EbbServer.Storage.CacheTablesTest do
   @moduledoc """
   Tests the single resolution surface for cache module table names.
 
-  GrantCache and RelationshipCache publish their ETS table names via
+  GrantCache, MembershipCache, EntityModelCache and GroupAppsCache publish
+  their ETS table names via
   `:persistent_term` at boot. `CacheTables` exposes those names as
   accessor functions so callers (Writer, EntityScope, etc.) read from
   one place rather than duplicating the `:persistent_term.get(..., default)`
@@ -22,20 +23,17 @@ defmodule EbbServer.Storage.CacheTablesTest do
     MembershipCache,
     EntityModelCache,
     GroupAppsCache,
-    GrantCache,
-    RelationshipCache
+    GrantCache
   }
 
   # Erase the published keys before any test in this module runs so a
   # prior test's leftover `:persistent_term` (e.g., from
-  # `entity_index_test.exs`, which starts RelationshipCache/GrantCache
-  # in-process and only cleans up the ETS tables) doesn't make the
+  # `entity_index_test.exs`, which starts GrantCache in-process and only
+  # cleans up the ETS tables) doesn't make the
   # "no publication yet" assertions fail. The test was order-dependent
   # on `mix test` ExUnit scheduling — see #197 follow-up.
   setup_all do
     for {module, key} <- [
-          {RelationshipCache, :relationships},
-          {RelationshipCache, :relationships_by_id},
           {GrantCache, :grants},
           {GrantCache, :grants_by_id},
           {GrantCache, :grants_by_group},
@@ -173,32 +171,6 @@ defmodule EbbServer.Storage.CacheTablesTest do
       publish_and_cleanup(GroupAppsCache, :group_apps, name)
 
       assert CacheTables.group_apps() == name
-    end
-  end
-
-  describe "relationships/0" do
-    test "returns the canonical default when RelationshipCache has not published" do
-      assert CacheTables.relationships() == :ebb_relationships
-    end
-
-    test "returns whatever RelationshipCache published" do
-      name = :"rel_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.RelationshipCache, :relationships, name)
-
-      assert CacheTables.relationships() == name
-    end
-  end
-
-  describe "relationships_by_id/0" do
-    test "returns the canonical default when RelationshipCache has not published" do
-      assert CacheTables.relationships_by_id() == :ebb_relationships_by_id
-    end
-
-    test "returns whatever RelationshipCache published" do
-      name = :"rbi_published_#{System.unique_integer([:positive])}"
-      publish_and_cleanup(EbbServer.Storage.RelationshipCache, :relationships_by_id, name)
-
-      assert CacheTables.relationships_by_id() == name
     end
   end
 end

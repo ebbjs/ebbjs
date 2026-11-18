@@ -81,7 +81,10 @@ defmodule EbbServer.Storage.EntityStore do
   row into a wire shape. `data.components` is the canonical sorted
   `<model>/<field>` set — recomputed from `data.fields` on every apply — that
   mirrors into SQLite's `entity_components` index. It is derived, never a
-  write truth: the field map is.
+  write truth: the field map is. Each field's *name* is the component its
+  writing Update carried, recorded with the row, because a field key alone
+  cannot tell a user component from an `ebb/*` overlay that shares its
+  name.
 
   A stored Update applies at `data["fields"][field]`, where `field` is the
   component's leaf:
@@ -421,8 +424,7 @@ defmodule EbbServer.Storage.EntityStore do
       deleted_by: deleted_by,
       max_gsn: max_gsn,
       data_mode: data_mode,
-      changed: changed,
-      written: written
+      changed: changed
     } = result
 
     entity_row = %{
@@ -435,12 +437,7 @@ defmodule EbbServer.Storage.EntityStore do
       last_gsn: max_gsn
     }
 
-    # `data.components` is derived, so it is recomputed from the fields this
-    # apply leaves behind. The component the delta wrote keeps its own name:
-    # that is the one place a namespace can disagree with the row's model.
-    components = component_names(fields_of(merged_data), model, written)
-
-    merged_data = Map.put(merged_data, "components", components)
+    components = Map.get(merged_data, "components", [])
 
     # The write — whole-blob or per-key — persists the tombstone columns;
     # that is what stops a later clean read from resurrecting the entity.
@@ -519,7 +516,7 @@ defmodule EbbServer.Storage.EntityStore do
         max_gsn: existing_meta(existing_row, :last_gsn) || 0,
         data_mode: :patch,
         changed: MapSet.new(),
-        written: nil,
+        components: components_of(initial_data),
         materialized?: existing_row != nil
       },
       fn {gsn, action}, acc ->
@@ -570,7 +567,7 @@ defmodule EbbServer.Storage.EntityStore do
 
       %{
         acc
-        | data: row_data(%{}, model, nil),
+        | data: row_data(%{}, %{}, model),
           model: model,
           created_hlc: update["hlc"],
           updated_hlc: action["hlc"],
@@ -578,7 +575,7 @@ defmodule EbbServer.Storage.EntityStore do
           deleted_hlc: nil,
           deleted_by: nil,
           changed: MapSet.new(),
-          written: nil,
+          components: %{},
           data_mode: :replace,
           materialized?: true
       }
@@ -594,10 +591,11 @@ defmodule EbbServer.Storage.EntityStore do
       existing_fields = fields_of(acc.data)
       fields = Map.update(existing_fields, field, incoming, &FieldMerge.merge(&1, incoming))
       model = acc.model || model
+      components = Map.put(acc.components, field, update["component"])
 
       %{
         acc
-        | data: row_data(fields, model, update["component"]),
+        | data: row_data(fields, components, model),
           # The model is fixed by the create; a later component's prefix must
           # agree with it (the authorizer refuses a relabel).
           model: model,
@@ -606,7 +604,7 @@ defmodule EbbServer.Storage.EntityStore do
           deleted_hlc: nil,
           deleted_by: nil,
           changed: MapSet.union(acc.changed, MapSet.new(changed_paths(field, incoming))),
-          written: update["component"],
+          components: components,
           materialized?: true
       }
     else
@@ -620,14 +618,16 @@ defmodule EbbServer.Storage.EntityStore do
   # tombstone columns alone: detaching a component is not a resurrection.
   defp apply_drop(action, update, gsn, acc) do
     if acc.materialized? do
-      fields = Map.delete(fields_of(acc.data), Component.field(update["component"]))
+      field = Component.field(update["component"])
+      fields = Map.delete(fields_of(acc.data), field)
+      components = Map.delete(acc.components, field)
 
       %{
         acc
-        | data: row_data(fields, acc.model, nil),
+        | data: row_data(fields, components, acc.model),
           updated_hlc: action["hlc"],
           max_gsn: max(acc.max_gsn, gsn),
-          written: nil,
+          components: components,
           data_mode: :replace
       }
     else
@@ -668,39 +668,53 @@ defmodule EbbServer.Storage.EntityStore do
   # keys in sorted order. Sorted, not insertion order: two materializers that
   # converged on the same fields must agree on the canonical JSON byte for
   # byte.
-  defp row_data(fields, model, written) do
-    %{"fields" => fields, "components" => component_names(fields, model, written)}
+  #
+  # The name each field belongs to is the one its writing Update carried, kept
+  # per field for the life of the row: a field's key is all `data.fields` has,
+  # and two components can share a field name across namespaces (`ebb/link`
+  # and a user model that declares `link`), so the row's model cannot name
+  # them. A field with no recorded name is one a row's `data` already carried,
+  # so the row's model is all there is to name it by.
+  defp row_data(fields, components, model) do
+    %{"fields" => fields, "components" => component_names(fields, components, model)}
   end
 
-  # A platform field names its component (`ebb/link`), a plain user field the
-  # row's model; the component the delta wrote keeps its own name.
-  defp component_names(fields, model, written) when is_binary(model) do
+  defp component_names(fields, components, model) do
     fields
     |> Map.keys()
     |> Enum.sort()
-    |> Enum.map(&component_name(&1, model, written))
+    |> Enum.map(&component_name(&1, components, model))
   end
 
-  defp component_names(_fields, _model, _written), do: []
+  defp component_name(field, components, model) do
+    Map.get(components, field) || derived_component_name(field, model)
+  end
 
-  defp component_name(field, model, written) do
-    cond do
-      is_binary(written) and Component.field(written) == field ->
-        written
-
-      model == SystemComponent.model() ->
-        platform_component(field) || model <> "/" <> field
-
-      true ->
-        model <> "/" <> field
+  defp derived_component_name(field, model) when is_binary(model) do
+    if model == SystemComponent.model() do
+      platform_component(field) || model <> "/" <> field
+    else
+      model <> "/" <> field
     end
   end
 
+  defp derived_component_name(field, _model), do: field
+
+  # A platform row's field names its component; nothing else does, because on
+  # any other row the same field belongs to that row's model.
   defp platform_component(field) do
     Enum.find_value(SystemComponent.kinds(), fn kind ->
       if SystemComponent.field(kind) == field, do: SystemComponent.component(kind)
     end)
   end
+
+  # An existing row states the names of the fields it already carries, so a
+  # delta that touches one field does not re-name its siblings.
+  defp components_of(%{"components" => names}) when is_list(names) do
+    Map.new(names, fn name -> {Component.field(name), name} end)
+  end
+
+  defp components_of(_data), do: %{}
 
   # A write changes the keys it carries, so the JSON paths that need writing
   # are exactly the leaves of the incoming value: a leaf contributes its field
