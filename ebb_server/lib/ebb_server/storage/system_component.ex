@@ -134,6 +134,29 @@ defmodule EbbServer.Storage.SystemComponent do
   @spec field(kind()) :: String.t()
   def field(kind), do: Atom.to_string(kind)
 
+  # The kind whose component occupies each platform field name.
+  @kinds_by_field Map.new(@declarations, fn {kind, _declaration} ->
+                    {Atom.to_string(kind), kind}
+                  end)
+
+  @doc """
+  The component name a row field's value is stored under.
+
+  A platform component may sit on a row of any model and never takes that
+  row's model as its namespace (#820), so a platform field name is always
+  `ebb/<field>`; every other field is `<model>/<field>`. The server keeps this
+  rule here rather than reading a schema: the platform field names are static
+  facts about the platform, not declarations. It mirrors `@ebbjs/core`'s
+  `fieldComponent`, the same two-sided duplication the scope table carries.
+  """
+  @spec component_of_field(String.t(), String.t()) :: String.t()
+  def component_of_field(model, field) do
+    case Map.fetch(@kinds_by_field, field) do
+      {:ok, kind} -> component(kind)
+      :error -> model <> "/" <> field
+    end
+  end
+
   @spec value(map() | nil, kind()) :: map() | nil
   def value(data, kind) do
     case unwrap(component_data(data, kind)) do

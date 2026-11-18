@@ -30,6 +30,13 @@ defmodule EbbServer.Storage.SystemComponentTest do
     assert SystemComponent.overlay?(nil) == false
   end
 
+  test "a platform field name is named under `ebb` on a row of any model" do
+    assert SystemComponent.component_of_field("note", "link") == "ebb/link"
+    assert SystemComponent.component_of_field("ebb", "link") == "ebb/link"
+    assert SystemComponent.component_of_field("ebb", "group") == "ebb/group"
+    assert SystemComponent.component_of_field("note", "title") == "note/title"
+  end
+
   test "component names round-trip through kind/1" do
     for kind <- SystemComponent.kinds() do
       assert SystemComponent.kind(SystemComponent.component(kind)) == kind

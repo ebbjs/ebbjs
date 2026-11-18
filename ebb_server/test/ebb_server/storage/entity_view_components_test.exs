@@ -36,6 +36,18 @@ defmodule EbbServer.Storage.EntityViewComponentsTest do
            }
   end
 
+  test "an overlay field is addressed as `ebb/link`, never `<model>/link`" do
+    row = view("note", %{"title" => 1, "link" => 2})
+
+    assert EntityView.filter_components(row, MapSet.new(["ebb/link"]))["data"] == %{
+             "fields" => %{"link" => 2}
+           }
+
+    assert EntityView.filter_components(row, MapSet.new(["note/link"]))["data"] == %{
+             "fields" => %{}
+           }
+  end
+
   test "unknown component names are ignored" do
     row = view("note", %{"title" => 1, "body" => 2})
 

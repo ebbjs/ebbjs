@@ -15,7 +15,7 @@ defmodule EbbServer.Storage.EntityView do
   OpenAPI clients.
   """
 
-  alias EbbServer.Storage.{EntityStore, PermissionChecker}
+  alias EbbServer.Storage.{EntityStore, PermissionChecker, SystemComponent}
 
   @type view :: %{String.t() => term()}
 
@@ -56,7 +56,7 @@ defmodule EbbServer.Storage.EntityView do
   def filter_components(view, _components), do: project_view(view)
 
   defp component_name(model, field) when is_binary(model) and is_binary(field),
-    do: model <> "/" <> field
+    do: SystemComponent.component_of_field(model, field)
 
   defp component_name(_model, _field), do: nil
 
