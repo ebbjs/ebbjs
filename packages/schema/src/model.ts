@@ -25,7 +25,7 @@ import type {
   Static,
 } from "@sinclair/typebox/type";
 
-import { EBB_MODEL_NAME } from "@ebbjs/core";
+import { EBB_MODEL_NAME, type ConflictScope } from "@ebbjs/core";
 
 import { assertEntityNameAvailable, assertFieldNamesAvailable } from "./reserved";
 
@@ -42,12 +42,10 @@ export type FieldMarker = {
 
 /**
  * Granularity at which a concurrent write is surfaced as a conflict.
- * `"field"` scopes detection to a shared map position; `"component"` holds
- * one component; `"entity"` surfaces any touch of an entity with offline
- * writes. A component declared `structural` opts out of detection entirely,
- * which is how the SDK's edge, membership, and grant rows behave.
+ * Declared once in `@ebbjs/core`; re-exported here because a model's
+ * components declare it.
  */
-export type ConflictScope = "field" | "component" | "entity";
+export type { ConflictScope } from "@ebbjs/core";
 
 /**
  * Client-side residency of an model. `"held"` keeps every row in

@@ -5,7 +5,7 @@
  * surface can't be shadowed.
  */
 
-import { EBB_MODEL_NAME } from "@ebbjs/core";
+import { EBB_MODEL_NAME, GROUPS_ACCESSOR } from "@ebbjs/core";
 
 /**
  * The namespace the platform's own components live under. An app may not declare
@@ -18,7 +18,7 @@ export const PLATFORM_NAMESPACE = EBB_MODEL_NAME;
  * The injected membership accessor. Also reserved as an entity field
  * name: the row accessor would otherwise shadow the projected field.
  */
-export const RESERVED_MEMBERSHIP_NAMES = ["groups"] as const;
+export const RESERVED_MEMBERSHIP_NAMES = [GROUPS_ACCESSOR] as const;
 
 /**
  * Model names the SDK reserves. `group` and `membership` are what `client.group`

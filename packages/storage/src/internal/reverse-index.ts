@@ -1,4 +1,4 @@
-import { EBB_COMPONENTS, systemValueString, type Entity } from "@ebbjs/core";
+import { EBB_COMPONENTS, GROUPS_ACCESSOR, systemValueString, type Entity } from "@ebbjs/core";
 import type { MembershipLink, RelationshipLink } from "../types/entity-store";
 
 /**
@@ -51,11 +51,11 @@ export const MEMBERSHIP_COMPONENT = EBB_COMPONENTS.membership;
 
 /**
  * Synthetic accessor name under which membership rows are indexed.
- * `queryByMembership` owns this key, so it must stay in step with the
- * client's reserved `GROUPS_ACCESSOR`; a real relationship accessor can
- * never collide with it because `groups` is reserved there.
+ * `queryByMembership` owns this key, so it is the same name
+ * `@ebbjs/core` reserves; a real relationship accessor can never collide
+ * with it.
  */
-const MEMBERSHIP_ACCESSOR = "groups";
+const MEMBERSHIP_ACCESSOR = GROUPS_ACCESSOR;
 
 /**
  * Composite index key. NUL is outside the nanoid alphabet, so it is

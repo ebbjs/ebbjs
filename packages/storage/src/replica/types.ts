@@ -64,21 +64,22 @@ export interface ReplicaOptions {
    */
   readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
-   * Maximum resident on-demand components. Defaults to 16. A non-positive or
-   * non-finite value keeps every opened component resident; opening past the
-   * window releases the least recently opened one.
+   * Maximum resident on-demand components. Defaults to
+   * {@link DEFAULT_PINNED_CAPACITY}. A non-positive or non-finite value keeps
+   * every opened component resident; opening past the window releases the least
+   * recently opened one.
    */
   readonly pinnedCapacity?: number;
   /**
    * How long a closed on-demand component stays cached before release. Defaults
-   * to 30_000 ms. A non-positive or non-finite value releases it immediately on
-   * close. An open component is never released by the TTL.
+   * to {@link DEFAULT_PINNED_TTL_MS}. A non-positive or non-finite value releases
+   * it immediately on close. An open component is never released by the TTL.
    */
   readonly pinnedTtlMs?: number;
   /**
-   * Maximum retained change-journal entries after trimming. Defaults to 1024.
-   * A non-positive or non-finite value keeps the journal unbounded; a
-   * positive fraction retains at least one entry.
+   * Maximum retained change-journal entries after trimming. Defaults to
+   * {@link DEFAULT_JOURNAL_CAPACITY}. A non-positive or non-finite value keeps
+   * the journal unbounded; a positive fraction retains at least one entry.
    */
   readonly journalCapacity?: number;
 }

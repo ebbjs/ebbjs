@@ -20,6 +20,15 @@ import { componentName, type ComponentName, type Entity, type FieldValue } from 
 
 export const EBB_MODEL_NAME = "ebb";
 
+/**
+ * The accessor the injected membership surface carries on every row: the
+ * synthetic relationship name a query addresses membership by, and the field
+ * name that surface is projected onto. Reserved, so no app model, relationship
+ * accessor, or component may answer to it — the platform's membership index
+ * owns the name.
+ */
+export const GROUPS_ACCESSOR = "groups";
+
 /** The four platform components, as `<model>/<leaf>` names. */
 const COMPONENTS_BY_KIND = Object.freeze({
   group: "ebb/group",
