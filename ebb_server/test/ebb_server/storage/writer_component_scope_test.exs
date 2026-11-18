@@ -2,8 +2,8 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
   @moduledoc """
   Pins that fan-out scope is a per-subject decision, not a per-component one.
 
-  A system row's scope is named by one of its component Updates — an
-  `membership` row's `group_id`, a relationship row's `source_id` — while its
+  A row's scope is named by one of its component Updates — a membership row's
+  `group_id`, a user row's fields, an `ebb/link` edge's subject — while its
   siblings carry none. Resolving scope per component Update would leave the
   sibling with an empty scope and silently drop its delivery.
   """
@@ -93,9 +93,9 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
     assert DirtyTracker.dirty_entity_ids_for_model("ebb", ctx.dirty_set) == ["eg_1"]
   end
 
-  test "a link create is scoped to its source's groups", ctx do
-    # The source entity's groups are the edge's scope; the source_id component
-    # is what names it, and its siblings must inherit the same list.
+  test "an edge is scoped to its source's groups", ctx do
+    # The subject *is* the source, so its groups are the edge's scope and the
+    # row's own fields must inherit the same list.
     MembershipCache.put_membership(
       %{id: "eg_1", entity_id: "todo_1", group_id: "g_1"},
       memberships: ctx.memberships,
@@ -105,15 +105,14 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     :ets.insert(ctx.entity_models, {"todo_1", "todo"})
 
+    leaf = %{"value" => true, "hlc" => 1, "update_id" => "upd_link"}
+
     updates = [
-      validated_component("rel_1", "ebb/link", %{
-        "value" => %{
-          "source_id" => "todo_1",
-          "target_id" => "g_2",
-          "type" => "note",
-          "field" => "link"
-        },
-        "hlc" => 1
+      validated_component("todo_1", "todo/title", %{"value" => "Title", "hlc" => 1}),
+      validated_component("todo_1", "ebb/link", %{
+        "map" => %{
+          "blocked_by" => %{"map" => %{"note" => %{"map" => %{"g_2" => leaf}}}}
+        }
       })
     ]
 
@@ -123,8 +122,12 @@ defmodule EbbServer.Storage.WriterComponentScopeTest do
 
     stored = stored_action(1, ctx.rocks_name)
 
-    assert stored["subject_scopes"] == [{"rel_1", ["g_1"]}]
-    assert Enum.map(stored["updates"], & &1["component"]) == ["ebb/link"]
+    assert stored["subject_scopes"] == [{"todo_1", ["g_1"]}]
+
+    assert Enum.sort(Enum.map(stored["updates"], & &1["component"])) == [
+             "ebb/link",
+             "todo/title"
+           ]
   end
 
   test "a delete uses its own subject's scope", ctx do

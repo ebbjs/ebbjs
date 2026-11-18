@@ -17,7 +17,7 @@ defmodule EbbServer.TestHelpers do
   - `put_actor/2` - Assign the actor `AuthPlug` would resolve, for suites that call a router directly
 
   **Storage Setup** (for unit tests)
-  - `start_isolated_cache/0` - Create isolated ETS caches (DirtyTracker, GrantCache, MembershipCache, EntityModelCache, RelationshipCache, WatermarkTracker, InFlightActions)
+  - `start_isolated_cache/0` - Create isolated ETS caches and derived indexes (DirtyTracker, GrantCache, MembershipCache, EntityModelCache, ComponentEntityIndex, LinkTargetIndex, WatermarkTracker, InFlightActions)
   - `start_rocks/1` - Start isolated RocksDB instance
   - `start_sqlite/1` - Start isolated SQLite instance
   - `start_writer/1` - Start isolated Writer instance
@@ -59,7 +59,7 @@ defmodule EbbServer.TestHelpers do
     GroupAppsCache,
     GrantCache,
     InFlightActions,
-    RelationshipCache,
+    LinkTargetIndex,
     RocksDB,
     SQLite,
     WatermarkTracker,
@@ -194,8 +194,8 @@ defmodule EbbServer.TestHelpers do
   @doc """
   Creates isolated persistent storage and cache components for tests.
 
-  Sets up unique DirtyTracker, GsnCounter, GrantCache, and RelationshipCache
-  instances and registers cleanup callbacks.
+  Sets up unique DirtyTracker, GsnCounter, and cache instances, plus the two
+  derived indexes, and registers cleanup callbacks.
 
   Returns a map with:
     - dirty_set: ETS set name for dirty tracking
@@ -207,8 +207,10 @@ defmodule EbbServer.TestHelpers do
     - memberships_by_id: ETS table name
     - memberships_by_group: ETS table name
     - entity_models: ETS table name
-    - relationships: ETS table name
-    - relationships_by_id: ETS table name
+    - component_index: ETS table name
+    - component_entity_labels: ETS table name
+    - link_targets: ETS table name
+    - link_target_labels: ETS table name
     - watermark_tracker: WatermarkTracker process name
     - in_flight_actions: InFlightActions process name
     - in_flight_table: ETS table name for the in-flight set
@@ -226,15 +228,15 @@ defmodule EbbServer.TestHelpers do
     component_index_table = :"ebb_component_index_#{unique_id}"
     component_entity_labels_table = :"ebb_component_entity_labels_#{unique_id}"
     group_apps_table = :"ebb_group_apps_#{unique_id}"
-    rel_table = :"ebb_rel_#{unique_id}"
-    rbi_table = :"ebb_rbi_#{unique_id}"
+    link_targets_table = :"ebb_link_targets_#{unique_id}"
+    link_target_labels_table = :"ebb_link_target_labels_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     egc_name = :"egc_#{unique_id}"
     gac_name = :"gac_#{unique_id}"
     etc_name = :"etc_#{unique_id}"
     cei_name = :"cei_#{unique_id}"
-    rc_name = :"rc_#{unique_id}"
+    lti_name = :"lti_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
     ifa_name = :"ifa_#{unique_id}"
@@ -250,8 +252,6 @@ defmodule EbbServer.TestHelpers do
     :persistent_term.put({MembershipCache, :memberships_by_group}, eg_by_group_table)
     :persistent_term.put({EntityModelCache, :entity_models}, entity_models_table)
     :persistent_term.put({GroupAppsCache, :group_apps}, group_apps_table)
-    :persistent_term.put({RelationshipCache, :relationships}, rel_table)
-    :persistent_term.put({RelationshipCache, :relationships_by_id}, rbi_table)
 
     {:ok, _pid_dt} = DirtyTracker.start_link(name: dt_name, dirty_set: dirty_set_name)
 
@@ -283,11 +283,11 @@ defmodule EbbServer.TestHelpers do
         component_entity_labels: component_entity_labels_table
       )
 
-    {:ok, _pid_rc} =
-      RelationshipCache.start_link(
-        name: rc_name,
-        relationships: rel_table,
-        relationships_by_id: rbi_table
+    {:ok, _pid_lti} =
+      LinkTargetIndex.start_link(
+        name: lti_name,
+        link_targets: link_targets_table,
+        link_target_labels: link_target_labels_table
       )
 
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
@@ -302,7 +302,7 @@ defmodule EbbServer.TestHelpers do
             gac_name,
             etc_name,
             cei_name,
-            rc_name,
+            lti_name,
             wt_name,
             ifa_name
           ],
@@ -319,7 +319,7 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityModelCache, :entity_models})
       :persistent_term.erase({GroupAppsCache, :group_apps})
       :persistent_term.erase({ComponentEntityIndex, :tables})
-      :persistent_term.erase({RelationshipCache, :relationships})
+      :persistent_term.erase({LinkTargetIndex, :tables})
       :persistent_term.erase({ifa_name, :table})
     end)
 
@@ -335,9 +335,9 @@ defmodule EbbServer.TestHelpers do
       entity_models: entity_models_table,
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
+      link_targets: link_targets_table,
+      link_target_labels: link_target_labels_table,
       group_apps: group_apps_table,
-      relationships: rel_table,
-      relationships_by_id: rbi_table,
       watermark_tracker: wt_name,
       in_flight_actions: ifa_name,
       in_flight_table: ifa_table
@@ -410,9 +410,7 @@ defmodule EbbServer.TestHelpers do
       :grants_by_id,
       :memberships,
       :memberships_by_id,
-      :memberships_by_group,
-      :relationships,
-      :relationships_by_id
+      :memberships_by_group
     ]
 
     missing = Enum.reject(required_keys, fn key -> Map.get(opts, key) end)
@@ -425,6 +423,8 @@ defmodule EbbServer.TestHelpers do
 
     {default_component_index, default_component_entity_labels} =
       ComponentEntityIndex.tables()
+
+    {default_link_targets, default_link_target_labels} = LinkTargetIndex.tables()
 
     writer_opts =
       [
@@ -441,9 +441,9 @@ defmodule EbbServer.TestHelpers do
         component_index: Map.get(opts, :component_index) || default_component_index,
         component_entity_labels:
           Map.get(opts, :component_entity_labels) || default_component_entity_labels,
+        link_targets: Map.get(opts, :link_targets) || default_link_targets,
+        link_target_labels: Map.get(opts, :link_target_labels) || default_link_target_labels,
         group_apps: Map.get(opts, :group_apps) || CacheTables.group_apps(),
-        relationships: opts.relationships,
-        relationships_by_id: opts.relationships_by_id,
         watermark_tracker: opts[:watermark_tracker],
         in_flight_actions: opts[:in_flight_actions],
         fan_out_router: opts[:fan_out_router],
@@ -492,8 +492,8 @@ defmodule EbbServer.TestHelpers do
       group_apps: Map.get(ctx, :group_apps) || CacheTables.group_apps(),
       component_index: Map.get(ctx, :component_index),
       component_entity_labels: Map.get(ctx, :component_entity_labels),
-      relationships: ctx.relationships,
-      relationships_by_id: ctx.relationships_by_id,
+      link_targets: Map.get(ctx, :link_targets),
+      link_target_labels: Map.get(ctx, :link_target_labels),
       watermark_tracker: ctx.watermark_tracker,
       in_flight_actions: Map.get(ctx, :in_flight_actions)
     }
@@ -529,10 +529,9 @@ defmodule EbbServer.TestHelpers do
   @doc """
   Creates isolated ETS tables for authorization testing.
 
-  Creates unique grants, grants_by_id,
-  grants_by_group, memberships, memberships_by_id,
-  memberships_by_group, relationships, and relationships_by_id
-  tables and registers cleanup callbacks.
+  Creates unique grants, grants_by_id, grants_by_group, memberships,
+  memberships_by_id, memberships_by_group, and entity_models tables and
+  registers cleanup callbacks.
 
   Returns a map with:
     - grants: ETS table name
@@ -541,8 +540,7 @@ defmodule EbbServer.TestHelpers do
     - memberships: ETS table name
     - memberships_by_id: ETS table name
     - memberships_by_group: ETS table name
-    - relationships: ETS table name
-    - relationships_by_id: ETS table name
+    - entity_models: ETS table name
   """
   def create_isolated_tables do
     uid = System.unique_integer([:positive])
@@ -553,8 +551,6 @@ defmodule EbbServer.TestHelpers do
     eg_by_id = :"test_eg_by_id_#{uid}"
     eg_by_group = :"test_eg_by_group_#{uid}"
     entity_models = :"test_entity_models_#{uid}"
-    rel = :"test_rel_#{uid}"
-    rbi = :"test_rbi_#{uid}"
 
     :ets.new(gm, [:bag, :public, :named_table])
     :ets.new(gm_by_id, [:set, :public, :named_table])
@@ -569,11 +565,9 @@ defmodule EbbServer.TestHelpers do
     )
 
     :ets.new(entity_models, [:set, :public, :named_table])
-    :ets.new(rel, [:bag, :public, :named_table])
-    :ets.new(rbi, [:set, :public, :named_table])
 
     on_exit(fn ->
-      for t <- [gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_models, rel, rbi] do
+      for t <- [gm, gm_by_id, gm_by_group, eg, eg_by_id, eg_by_group, entity_models] do
         try do
           :ets.delete(t)
         rescue
@@ -589,9 +583,7 @@ defmodule EbbServer.TestHelpers do
       memberships: eg,
       memberships_by_id: eg_by_id,
       memberships_by_group: eg_by_group,
-      entity_models: entity_models,
-      relationships: rel,
-      relationships_by_id: rbi
+      entity_models: entity_models
     }
   end
 
@@ -607,8 +599,7 @@ defmodule EbbServer.TestHelpers do
       grants_by_group: tables.grants_by_group,
       memberships: tables.memberships,
       memberships_by_id: tables.memberships_by_id,
-      entity_models: tables.entity_models,
-      relationships_by_id: tables.relationships_by_id
+      entity_models: tables.entity_models
     ]
   end
 

@@ -27,7 +27,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
   import EbbServer.SSEHelpers, only: [data_payloads: 1]
   import EbbServer.TestHelpers, only: [generate_hlc: 0]
 
-  alias EbbServer.Storage.{ActionLog, CacheTables, RelationshipCache, WatermarkTracker}
+  alias EbbServer.Storage.{ActionLog, WatermarkTracker}
   alias EbbServer.TestFunctions.Bundles
 
   alias EbbServer.TestFunctions.Bun, as: BunSupport
@@ -319,7 +319,7 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
       "todo.create",
       "todo.update",
       "project.create",
-      "ebb/link.delete"
+      "ebb/link.*"
     ])
 
     assert write_entity_in_group(actor_id, project_id, "project", group_id, fields("a project")).status ==
@@ -341,49 +341,44 @@ defmodule EbbServer.Functions.WriteBunIntegrationTest do
     assert [action] = ActionLog.read(before + 1, before + 1)
     assert action["gsn"] == before + 1
 
-    put_updates = Enum.filter(action["updates"], &(&1["component"] == "ebb/link"))
+    # The edge is a keyed component of its source, so both writes name the
+    # row the function created and only the leaf carries the edge: presence
+    # for the link, the tombstone for the unlink it reversed.
+    link_updates = Enum.filter(action["updates"], &(&1["component"] == "ebb/link"))
 
-    assert [put] = put_updates
-    assert put["method"] == "replace"
-    assert [relationship_id] = put_updates |> Enum.map(& &1["subject_id"]) |> Enum.uniq()
+    assert length(link_updates) == 2
+    assert Enum.all?(link_updates, &(&1["subject_id"] == created_id))
+    assert Enum.all?(link_updates, &(&1["method"] == "merge"))
 
-    assert [%{"method" => "delete"}] =
-             Enum.filter(
-               action["updates"],
-               &(&1["method"] == "delete" and &1["subject_id"] == relationship_id)
-             )
+    leaves =
+      for update <- link_updates,
+          {field, _type, _target, leaf} <- link_edges(update["data"]),
+          do: {field, leaf["value"]}
 
-    # The row the put created was deleted by the same Action, so it is gone
-    # from the cache the reader paths use.
-    assert RelationshipCache.get_relationship(
-             relationship_id,
-             CacheTables.relationships_by_id()
-           ) == nil
+    assert Enum.sort(leaves) == [{"assignee", nil}, {"assignee", true}]
 
-    # And the delete was scoped to the source's group, so a live subscriber
-    # receives it rather than a link that silently survives delivery.
+    # And both were scoped to the source's group, so a live subscriber
+    # receives them rather than a link that silently survives delivery.
     assert_receive {:chunk_written, bytes}, @await_timeout_ms
     assert [payload] = data_payloads(bytes)
     event = Jason.decode!(payload)
     assert event["gsn"] == before + 1
 
-    live_relationship_updates =
-      Enum.filter(
-        event["updates"],
-        &(&1["subject_id"] == relationship_id)
-      )
-
-    assert Enum.count(live_relationship_updates, &(&1["method"] == "replace")) == 1
-    assert Enum.count(live_relationship_updates, &(&1["method"] == "delete")) == 1
-
-    # The one relationship row is the only relationship subject the event
-    # carries; the todo the row links is its own subject.
-    assert Enum.all?(
+    assert Enum.count(
              Enum.filter(event["updates"], &(&1["component"] == "ebb/link")),
-             &(&1["subject_id"] == relationship_id)
-           )
+             &(&1["subject_id"] == created_id)
+           ) == 2
 
     Task.shutdown(stream, :brutal_kill)
+  end
+
+  # An edge's key levels: field, then type, then target id, then its leaf.
+  defp link_edges(%{"map" => fields}) do
+    for {field, %{"map" => types}} <- fields,
+        {type, %{"map" => targets}} <- types,
+        {target, leaf} <- targets do
+      {field, type, target, leaf}
+    end
   end
 
   test "a patch of a stored row reads back in the wire shape", %{dir: dir} do

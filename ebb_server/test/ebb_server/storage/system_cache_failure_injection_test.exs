@@ -188,8 +188,8 @@ defmodule EbbServer.Storage.SystemCacheFailureInjectionTest do
         entity_models: tables.entity_models,
         component_index: tables.component_index,
         component_entity_labels: tables.component_entity_labels,
-        relationships: tables.relationships,
-        relationships_by_id: tables.relationships_by_id
+        link_targets: tables.link_targets,
+        link_target_labels: tables.link_target_labels
       ],
       extra
     )

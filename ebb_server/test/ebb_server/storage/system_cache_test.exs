@@ -1,8 +1,8 @@
 defmodule EbbServer.Storage.SystemCacheTest do
   @moduledoc """
   Tests for SystemCache — specifically the startup `populate_system_caches`
-  logic that rebuilds the derived component existence index and the
-  `GrantCache`, `MembershipCache`, and `RelationshipCache` contents from the
+  logic that rebuilds the derived component and incoming-edge indexes and the
+  `GrantCache`, `MembershipCache` and `GroupAppsCache` contents from the
   action log.
   """
 
@@ -16,7 +16,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
     EntityStore,
     EntityModelCache,
     GroupAppsCache,
-    RelationshipCache,
+    LinkTargetIndex,
     RocksDB,
     SQLite,
     SystemCache,
@@ -39,8 +39,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
       group_apps: group_apps_table,
-      relationships: rel_table,
-      relationships_by_id: rbi_table
+      link_targets: link_targets_table,
+      link_target_labels: link_target_labels_table
     } = TestHelpers.start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = TestHelpers.start_rocks(%{test: "sys_cache_#{unique}"})
@@ -59,8 +59,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
         memberships_by_group: eg_by_group_table,
         component_index: component_index_table,
         component_entity_labels: component_entity_labels_table,
-        relationships: rel_table,
-        relationships_by_id: rbi_table
+        link_targets: link_targets_table,
+        link_target_labels: link_target_labels_table
       })
 
     %{
@@ -77,8 +77,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
       group_apps_table: group_apps_table,
-      rel_table: rel_table,
-      rbi_table: rbi_table
+      link_targets: link_targets_table,
+      link_target_labels: link_target_labels_table
     }
   end
 
@@ -86,6 +86,13 @@ defmodule EbbServer.Storage.SystemCacheTest do
     [
       component_index: ctx.component_index,
       component_entity_labels: ctx.component_entity_labels
+    ]
+  end
+
+  defp link_index_opts(ctx) do
+    [
+      link_targets: ctx.link_targets,
+      link_target_labels: ctx.link_target_labels
     ]
   end
 
@@ -102,16 +109,16 @@ defmodule EbbServer.Storage.SystemCacheTest do
       component_index: ctx[:component_index],
       component_entity_labels: ctx[:component_entity_labels],
       group_apps: ctx[:group_apps_table],
-      relationships: ctx.rel_table,
-      relationships_by_id: ctx.rbi_table
+      link_targets: ctx.link_targets,
+      link_target_labels: ctx.link_target_labels
     ]
   end
 
   describe "populate_system_caches/0" do
-    # The action log is the source of truth for the derived index, so a boot
-    # that starts with empty in-memory state still rebuilds the membership and
-    # relationship caches from it (#564, #849).
-    test "rebuilds membership and relationship caches from the action log", ctx do
+    # The action log is the source of truth for the derived state, so a boot
+    # that starts with empty in-memory state still rebuilds the membership
+    # cache and both derived indexes from it (#564, #849).
+    test "rebuilds the system caches and both derived indexes from the action log", ctx do
       %{writer_name: writer_name, eg_table: eg_table} = ctx
 
       hlc = TestHelpers.generate_hlc()
@@ -124,7 +131,9 @@ defmodule EbbServer.Storage.SystemCacheTest do
           TestHelpers.validated_create("grp_test", "ebb", hlc: hlc),
           TestHelpers.validated_create("gm_test", "ebb", hlc: hlc),
           TestHelpers.validated_create("eg_test", "ebb", hlc: hlc),
-          TestHelpers.validated_create("rel_test", "ebb", hlc: hlc),
+          # The edge's source is an ordinary row of its own model, so the
+          # edge rides it rather than being a row.
+          TestHelpers.validated_create("doc_test", "text_document", hlc: hlc),
           TestHelpers.validated_component("grp_test", "ebb/group", %{
             "value" => %{"name" => "Test"},
             "update_id" => "u1"
@@ -141,26 +150,23 @@ defmodule EbbServer.Storage.SystemCacheTest do
             "value" => %{"entity_id" => "doc_test", "group_id" => "grp_test"},
             "update_id" => "u1"
           }),
-          TestHelpers.validated_component("rel_test", "ebb/link", %{
-            "value" => %{
-              "source_id" => "doc_test",
-              "target_id" => "author_1",
-              "type" => "text_document",
-              "field" => "author"
-            },
-            "update_id" => "u1"
+          TestHelpers.validated_component("doc_test", "ebb/link", %{
+            "map" => %{
+              "author" => %{
+                "map" => %{
+                  "text_document" => %{
+                    "map" => %{"author_1" => %{"value" => true, "hlc" => hlc}}
+                  }
+                }
+              }
+            }
           })
         ]
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
 
-      # A restart loses every derived cache but keeps the action log.
-      RelationshipCache.reset(
-        relationships: ctx.rel_table,
-        relationships_by_id: ctx.rbi_table
-      )
-
+      # A restart loses every cache and index but keeps the action log.
       MembershipCache.reset(
         memberships: ctx.eg_table,
         memberships_by_id: ctx.eg_by_id_table
@@ -168,8 +174,10 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       ComponentEntityIndex.reset(index_opts(ctx))
       EntityModelCache.reset(entity_models: ctx.entity_models_table)
+      LinkTargetIndex.reset(link_index_opts(ctx))
 
       assert MembershipCache.memberships("doc_test", eg_table) == []
+      assert LinkTargetIndex.source_ids("text_document", "author_1", link_index_opts(ctx)) == []
 
       assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
@@ -180,24 +188,31 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert MembershipCache.get_membership("eg_test", ctx.eg_by_id_table).group_id ==
                "grp_test"
 
-      assert RelationshipCache.get_relationship("rel_test", ctx.rbi_table).target_id == "author_1"
+      # Incoming traversal answers from the rebuilt index.
+      assert LinkTargetIndex.source_ids("text_document", "author_1", link_index_opts(ctx)) == [
+               "doc_test"
+             ]
 
       # The seed reconstructed both key kinds, so a second restart without
-      # further writes still rebuilds correctly.
+      # further writes still rebuilds correctly. Three of the four platform
+      # components are rows of their own, committed under `ebb`.
       opts = index_opts(ctx)
-      # Every platform row commits under the model `ebb`; the component entry
-      # is what distinguishes the four kinds.
+
       assert ComponentEntityIndex.component_entry_ids("ebb", opts) == [
                "eg_test",
                "gm_test",
-               "grp_test",
-               "rel_test"
+               "grp_test"
              ]
 
       assert ComponentEntityIndex.component_entry_ids("ebb/grant", opts) == ["gm_test"]
       assert ComponentEntityIndex.component_entry_ids("ebb/membership", opts) == ["eg_test"]
-      assert ComponentEntityIndex.component_entry_ids("ebb/link", opts) == ["rel_test"]
       assert ComponentEntityIndex.component_entry_ids("ebb/group", opts) == ["grp_test"]
+
+      # The edge is an entry like any other: the source row keeps its own
+      # committed model, and the component entry names the platform's.
+      assert ComponentEntityIndex.component_entry_ids("ebb/link", opts) == ["doc_test"]
+      assert ComponentEntityIndex.component_entry_ids("text_document", opts) == ["doc_test"]
+      assert EntityModelCache.get_model("doc_test", ctx.entity_models_table) == "text_document"
     end
 
     test "fills GroupAppsCache from the group rows on boot",
@@ -350,7 +365,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
       assert measurements.grants == 0
       assert measurements.memberships == 0
       assert measurements.group_apps == 0
-      assert measurements.relationships == 0
     end
 
     test "reports the counts reached and outcome :error when the action log cannot be decoded",

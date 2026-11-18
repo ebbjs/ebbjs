@@ -39,7 +39,7 @@ defmodule EbbServer.Telemetry do
   | `ebb.writer.in_flight_batches`            | `count`                               | —                                                   |
   | `ebb.writer.oldest_unreleased_gsn`        | `gsn`                                 | —                                                   |
   | `ebb.writer.flush_phase_ms`               | one native measurement per phase (`writer_flush_phases/0`) | `gsn_start`, `gsn_end`, `outcome` (`:ok` / `:abandoned`), `reason` (abandoned only) |
-  | `ebb.system_cache.populated`              | `duration` (native), `entity_models`, `grants`, `memberships`, `relationships` | `outcome` (`:ok` / `:error`), `reason` |
+  | `ebb.system_cache.populated`              | `duration` (native), `entity_models`, `grants`, `memberships`, `group_apps` | `outcome` (`:ok` / `:error`), `reason` |
   | `ebb.watermark.lag`                       | `lag` (durability: max GSN − committed watermark) | —                                                   |
   | `ebb.dirty_set.size`                      | `size`                                | —                                                   |
   | `ebb.writer.in_flight_action_ids`         | `size`                                | —                                                   |

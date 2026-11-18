@@ -1,10 +1,11 @@
 defmodule EbbServer.Storage.SystemCache do
   @moduledoc """
   Supervisor that owns the in-memory state used on the hot paths:
-  permission checks, dirty entity tracking, entity/relationship
-  membership, and the GSN counter. The watermark's resolution frontier
-  lives in the sibling `WatermarkTracker`; the in-flight action-id guard
-  that makes retries idempotent lives in the sibling `InFlightActions`.
+  permission checks, dirty entity tracking, entity membership, the derived
+  component and incoming-edge indexes, and the GSN counter. The watermark's
+  resolution frontier lives in the sibling `WatermarkTracker`; the in-flight
+  action-id guard that makes retries idempotent lives in the sibling
+  `InFlightActions`.
 
   ## Why this exists
 
@@ -18,9 +19,9 @@ defmodule EbbServer.Storage.SystemCache do
 
   ## Lifecycle
 
-  On init, the supervisor rebuilds the derived component existence index
-  from `cf_actions`, then populates `GrantCache`, `MembershipCache`,
-  `GroupAppsCache` and `RelationshipCache` from the system entities before
+  On init, the supervisor rebuilds the derived component existence index and
+  the incoming-edge index from `cf_actions`, then populates `GrantCache`,
+  `MembershipCache` and `GroupAppsCache` from the system entities before
   returning. The same pass re-marks every modeled row dirty; dirty marks are
   in-memory and would otherwise be lost on a restart, leaving patch-only rows
   clean-but-stale and never-materialized rows missing (#564). The eager
@@ -45,8 +46,8 @@ defmodule EbbServer.Storage.SystemCache do
     EntityStore,
     GrantCache,
     GroupAppsCache,
+    LinkTargetIndex,
     MembershipCache,
-    RelationshipCache,
     RocksDB,
     RowMutations,
     SystemComponent
@@ -62,8 +63,7 @@ defmodule EbbServer.Storage.SystemCache do
     entity_models: 0,
     grants: 0,
     memberships: 0,
-    group_apps: 0,
-    relationships: 0
+    group_apps: 0
   }
 
   @populate_opt_keys [
@@ -71,15 +71,15 @@ defmodule EbbServer.Storage.SystemCache do
     :table,
     :grants_by_id,
     :grants_by_group,
-    :relationships,
-    :relationships_by_id,
     :memberships,
     :memberships_by_id,
     :memberships_by_group,
     :group_apps,
     :entity_models,
     :component_index,
-    :component_entity_labels
+    :component_entity_labels,
+    :link_targets,
+    :link_target_labels
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -132,14 +132,12 @@ defmodule EbbServer.Storage.SystemCache do
   # single cache set; a concurrent publish cannot split it across instances.
   defp populate_tables(opts) do
     {default_component_index, default_component_entity_labels} = ComponentEntityIndex.tables()
+    {default_link_targets, default_link_target_labels} = LinkTargetIndex.tables()
 
     %{
       grants: table_opt(opts, :table, CacheTables.grants()),
       grants_by_id: table_opt(opts, :grants_by_id, CacheTables.grants_by_id()),
       grants_by_group: table_opt(opts, :grants_by_group, CacheTables.grants_by_group()),
-      relationships: table_opt(opts, :relationships, CacheTables.relationships()),
-      relationships_by_id:
-        table_opt(opts, :relationships_by_id, CacheTables.relationships_by_id()),
       memberships: table_opt(opts, :memberships, CacheTables.memberships()),
       memberships_by_id: table_opt(opts, :memberships_by_id, CacheTables.memberships_by_id()),
       memberships_by_group:
@@ -148,7 +146,9 @@ defmodule EbbServer.Storage.SystemCache do
       entity_models: table_opt(opts, :entity_models, CacheTables.entity_models()),
       component_index: table_opt(opts, :component_index, default_component_index),
       component_entity_labels:
-        table_opt(opts, :component_entity_labels, default_component_entity_labels)
+        table_opt(opts, :component_entity_labels, default_component_entity_labels),
+      link_targets: table_opt(opts, :link_targets, default_link_targets),
+      link_target_labels: table_opt(opts, :link_target_labels, default_link_target_labels)
     }
   end
 
@@ -167,14 +167,13 @@ defmodule EbbServer.Storage.SystemCache do
     dirty_set_opts = Keyword.take(opts, [:dirty_set])
     group_cache_opts = Keyword.take(opts, [:table, :grants_by_id, :grants_by_group])
 
-    rel_cache_opts = Keyword.take(opts, [:relationships, :relationships_by_id])
-
     membership_cache_opts =
       Keyword.take(opts, [:memberships, :memberships_by_id, :memberships_by_group])
 
     group_apps_cache_opts = Keyword.take(opts, [:group_apps])
     entity_model_cache_opts = Keyword.take(opts, [:entity_models])
     component_index_opts = Keyword.take(opts, [:component_index, :component_entity_labels])
+    link_index_opts = Keyword.take(opts, [:link_targets, :link_target_labels])
 
     children = [
       {DirtyTracker, dirty_set_opts},
@@ -183,7 +182,7 @@ defmodule EbbServer.Storage.SystemCache do
       {MembershipCache, membership_cache_opts},
       {GroupAppsCache, group_apps_cache_opts},
       {EntityModelCache, entity_model_cache_opts},
-      {RelationshipCache, rel_cache_opts}
+      {LinkTargetIndex, link_index_opts}
     ]
 
     case Supervisor.start_link(__MODULE__.Children, {:start_children, children}) do
@@ -281,6 +280,7 @@ defmodule EbbServer.Storage.SystemCache do
                rocks_name,
                tables.entity_models,
                component_index_opts(tables),
+               link_index_opts(tables),
                dirty_set,
                counter
              )
@@ -296,12 +296,8 @@ defmodule EbbServer.Storage.SystemCache do
          {:ok, _group_apps, m4} <-
            phase(m3, :group_apps, fn counter ->
              populate_group_apps(rocks_name, tables, dirty_set, sqlite_opts, counter)
-           end),
-         {:ok, _relationships, m5} <-
-           phase(m4, :relationships, fn counter ->
-             populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter)
            end) do
-      {:ok, m5}
+      {:ok, m4}
     else
       {:error, _measurements, _kind, _reason, _stacktrace} = error -> error
     end
@@ -311,6 +307,13 @@ defmodule EbbServer.Storage.SystemCache do
     [
       component_index: tables.component_index,
       component_entity_labels: tables.component_entity_labels
+    ]
+  end
+
+  defp link_index_opts(tables) do
+    [
+      link_targets: tables.link_targets,
+      link_target_labels: tables.link_target_labels
     ]
   end
 
@@ -408,34 +411,7 @@ defmodule EbbServer.Storage.SystemCache do
     )
   end
 
-  defp populate_relationships(rocks_name, tables, dirty_set, sqlite_opts, counter) do
-    populate_component(
-      SystemComponent.component(:link),
-      rocks_name,
-      dirty_set,
-      &put_relationship(&1, tables),
-      component_index_opts(tables) ++ sqlite_opts,
-      counter
-    )
-  end
-
-  defp put_relationship(entity_data, tables) do
-    data = entity_data.data || %{}
-
-    RelationshipCache.put_relationship(
-      %{
-        id: entity_data.id,
-        source_id: SystemComponent.path(data, :link, "source_id"),
-        target_id: SystemComponent.path(data, :link, "target_id"),
-        type: SystemComponent.path(data, :link, "type"),
-        field: SystemComponent.path(data, :link, "field")
-      },
-      relationships: tables.relationships,
-      relationships_by_id: tables.relationships_by_id
-    )
-  end
-
-  # The model `ebb` would project all four kinds into every cache.
+  # The model `ebb` would project all three of its kinds into every cache.
   defp populate_component(component, rocks_name, dirty_set, insert_fn, opts, counter) do
     sqlite_name = Keyword.get(opts, :sqlite_name, EbbServer.Storage.SQLite)
 
@@ -464,6 +440,7 @@ defmodule EbbServer.Storage.SystemCache do
          rocks_name,
          entity_models_table,
          index_opts,
+         link_opts,
          dirty_set,
          counter
        ) do
@@ -473,7 +450,7 @@ defmodule EbbServer.Storage.SystemCache do
       |> Stream.chunk_every(@dirty_mark_chunk_size)
       |> Enum.reduce(%{}, fn chunk, models ->
         before = map_size(models)
-        models = replay_actions(chunk, models, entity_models_table, index_opts)
+        models = replay_actions(chunk, models, entity_models_table, index_opts, link_opts)
         :atomics.add(counter, 1, map_size(models) - before)
         models
       end)
@@ -496,43 +473,46 @@ defmodule EbbServer.Storage.SystemCache do
     |> Enum.each(&DirtyTracker.mark_dirty_batch(&1, dirty_set))
   end
 
-  defp replay_actions(actions, models, entity_models_table, index_opts) do
-    {models, ops} =
-      Enum.reduce(actions, {models, []}, fn action, {models, acc} ->
-        {models, action_ops} = replay_action(action["updates"] || [], models, entity_models_table)
-        {models, [action_ops | acc]}
+  # Both derived indexes are rebuilt in the same pass, so one walk of the log
+  # maintains them and each action's ops reach it in log order.
+  defp replay_actions(actions, models, entity_models_table, index_opts, link_opts) do
+    {models, {ops, link_ops}} =
+      Enum.reduce(actions, {models, {[], []}}, fn action, {models, {ops, link_ops}} ->
+        updates = Enum.map(action["updates"] || [], &RowMutations.from_stored/1)
+
+        {models, action_ops} = replay_action(updates, models, entity_models_table)
+
+        {models, {[action_ops | ops], [LinkTargetIndex.update_ops(updates) | link_ops]}}
       end)
 
     ComponentEntityIndex.apply_ops(ops |> Enum.reverse() |> :lists.append(), index_opts)
+    LinkTargetIndex.apply_ops(link_ops |> Enum.reverse() |> :lists.append(), link_opts)
     models
   end
 
   # The replay carries the last model each id was committed under, so a delete
-  # that names no component still writes the model entry. An id the log never
-  # modeled falls back to a record already in `EntityModelCache`; an id nothing
-  # knows has no entry to rebuild.
-  #
-  # A user row cannot carry `ebb` (`ActionValidator` refuses two component
-  # prefixes on one subject), so a platform prefix is never a relabel here.
-  defp replay_action(raw_updates, models, entity_models_table) do
-    updates = Enum.map(raw_updates, &RowMutations.from_stored/1)
+  # that names no component still writes the model entry. Model resolution is
+  # the same fold the live Writer runs, against the models the log has named so
+  # far, so boot and live agree on which row an `ebb/*` overlay belongs to.
+  defp replay_action(updates, models, entity_models_table) do
+    folded =
+      RowMutations.fold(updates,
+        model_resolver: fn subject_id ->
+          Map.get(models, subject_id) ||
+            EntityModelCache.get_model(subject_id, entity_models_table)
+        end
+      )
 
     models =
-      Enum.reduce(updates, models, fn update, models ->
-        model =
-          update.model || Map.get(models, update.subject_id) ||
-            EntityModelCache.get_model(update.subject_id, entity_models_table)
-
-        if model, do: Map.put(models, update.subject_id, model), else: models
+      Enum.reduce(folded, models, fn mutation, acc ->
+        if mutation.model,
+          do: Map.put(acc, mutation.subject_id, mutation.model),
+          else: acc
       end)
 
-    folded =
-      updates
-      |> Enum.map(& &1.subject_id)
-      |> Enum.uniq()
-      |> Enum.map(&{Map.get(models, &1), &1})
+    entries = Enum.map(folded, &{&1.model, &1.subject_id})
 
-    {models, ComponentEntityIndex.action_ops(updates, folded)}
+    {models, ComponentEntityIndex.action_ops(updates, entries)}
   end
 
   defp action_log(rocks_name) do

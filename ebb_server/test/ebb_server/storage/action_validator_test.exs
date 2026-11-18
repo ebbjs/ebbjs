@@ -78,16 +78,16 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert {:error, "invalid_structure", _} = ActionValidator.validate_structure(action)
     end
 
-    test "a system component update passes" do
+    test "a component update passes" do
       action =
         sample_action(%{
           "updates" => [
             %{
-              "id" => "rel_1",
-              "subject_id" => "rel_1",
-              "component" => "relationship/source_id",
+              "id" => "upd_title",
+              "subject_id" => "note_1",
+              "component" => "note/title",
               "method" => "merge",
-              "data" => %{"value" => "todo_1"}
+              "data" => %{"value" => "Title"}
             }
           ]
         })
@@ -131,9 +131,8 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
 
     # A row has one model: the fold keeps the first component's prefix, so a
-    # mixed Action would authorize and materialize a `note` row carrying an
-    # `ebb/link`. An `ebb/*` overlay on a user row has no write path until
-    # #819/#820, so the platform namespace is a prefix like any other here.
+    # mixed Action would authorize and materialize, say, a `note` row
+    # carrying `todo/body`.
     test "one subject cannot mix model prefixes" do
       action =
         sample_action(%{
@@ -148,9 +147,9 @@ defmodule EbbServer.Storage.ActionValidatorTest do
             %{
               "id" => "upd_2",
               "subject_id" => "note_1",
-              "component" => "ebb/link",
-              "method" => "replace",
-              "data" => %{"value" => %{"source_id" => "note_1", "target_id" => "col_1"}}
+              "component" => "todo/body",
+              "method" => "merge",
+              "data" => %{"value" => "x"}
             }
           ]
         })
@@ -159,8 +158,51 @@ defmodule EbbServer.Storage.ActionValidatorTest do
       assert details =~ "one model"
 
       # Two subjects, each with its own model, are two rows.
-      split = put_in(action, ["updates", Access.at(1), "subject_id"], "rel_1")
+      split = put_in(action, ["updates", Access.at(1), "subject_id"], "todo_1")
       assert ActionValidator.validate_structure(split) == :ok
+    end
+
+    # `ebb/link` is keyed on its source, so it rides a row it does not model
+    # (decision 13's storage consequence). The other `ebb/*` components are
+    # rows of their own, so a user create cannot carry one.
+    test "a user row may carry the link overlay and no other platform component" do
+      overlay =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "note_1",
+              "model" => "note",
+              "method" => "create",
+              "data" => nil,
+              "hlc" => 1
+            },
+            %{
+              "id" => "upd_2",
+              "subject_id" => "note_1",
+              "component" => "ebb/link",
+              "method" => "merge",
+              "data" => %{"map" => %{}}
+            }
+          ]
+        })
+
+      assert ActionValidator.validate_structure(overlay) == :ok
+
+      platform =
+        put_in(overlay, ["updates", Access.at(1), "component"], "ebb/grant")
+
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(platform)
+      assert details =~ "one model"
+
+      # An overlay is not a kind of platform row either, so it cannot be the
+      # component that makes an `ebb` create legal.
+      assert {:error, "invalid_structure", details} =
+               ActionValidator.validate_structure(
+                 put_in(overlay, ["updates", Access.at(0), "model"], "ebb")
+               )
+
+      assert details =~ "exactly one ebb/* component"
     end
 
     # A platform row carries exactly one of the four atomic components: two
@@ -407,7 +449,7 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
 
     test "deletes name the row and pass" do
-      for subject_id <- ["rel_1", "grp_1", "gm_1", "todo_1"] do
+      for subject_id <- ["note_1", "grp_1", "gm_1", "todo_1"] do
         action =
           sample_action(%{
             "updates" => [

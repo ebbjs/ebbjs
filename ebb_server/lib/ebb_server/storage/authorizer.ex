@@ -39,17 +39,19 @@ defmodule EbbServer.Storage.Authorizer do
 
   ## System components
 
-  `ebb/` is the platform namespace: `ebb/group`, `ebb/grant`,
-  `ebb/membership` and `ebb/link` are atomic components of rows committed
-  under the model `ebb`, and each row carries exactly one of them. Every
-  rule below dispatches on that **kind**, never on a model: the model is
-  `ebb` for all four. Which group set a write resolves to is not a rule
-  here — it is declared on the component and read through `SystemComponent`
-  and `EntityScope` (`fan_out_groups/2`) — so these are the **permission**
-  rules that ride on that scope. The subject is the component the write
-  names — `ebb/<kind>`, e.g. `ebb/grant.create` — and grants match by
-  ancestry, so `ebb.*` covers all four without a special case. The
-  permission verb follows from the two facts: a create asks for
+  `ebb/` is the platform namespace. `ebb/group`, `ebb/grant` and
+  `ebb/membership` are the components of rows committed under the model
+  `ebb`, and such a row carries exactly one of them. `ebb/link` is
+  different ([#820](https://github.com/ebbjs/ebbjs/issues/820)): it is a
+  **keyed component of its source row**, so the row carrying it is an
+  ordinary row of its own model and the edge's key is its source. Every rule
+  below dispatches on that **kind**, never on a model. Which group set a
+  write resolves to is not a rule here — it is declared on the component and
+  read through `SystemComponent` and `EntityScope` (`fan_out_groups/2`) — so
+  these are the **permission** rules that ride on that scope. The subject is
+  the component the write names — `ebb/<kind>`, e.g. `ebb/grant.create` —
+  and grants match by ancestry, so `ebb.*` covers all four without a special
+  case. The permission verb follows from the two facts: a create asks for
   `<subject>.create`, a delete asks for `<subject>.delete`, and a write to
   an existing row asks for `<subject>.update`.
 
@@ -95,34 +97,22 @@ defmodule EbbServer.Storage.Authorizer do
       group of the entity's current set (union/any-match). The delete
       names no component, so the row is resolved from the membership
       index.
-    - `ebb/link` create (always a domain edge) → the source entity's
-      `<model>.update` in the source's group set, where `<model>` is the
-      source entity's true model resolved from the entity index (#323).
-      The value's `type` is a descriptive label and is never consulted
-      for authorization, so a forged value cannot borrow another model's
-      permission. A link's `source_id` is its row identity (decision
-      13): a write whose wire `source_id` differs from the stored
-      row's source is refused (#624), whatever permission the caller
-      holds for the new source. Changing the target, type or field of an
-      edge keeps the source and stays a normal write. An `ebb/link`
-      delete → `ebb/link.delete`; a write to an existing edge →
-      `ebb/link.update`, both in the edge's source group set.
-    - An `ebb/link` delete is scoped by the **stored row's** source, never
-      by a wire `source_id` in a sibling component: honouring the wire
-      would let a caller delete another group's edge with their own
-      group's permissions (#624). `EntityScope.fan_out_groups/2` owns that
-      rule; only a delete with no stored row — an edge created earlier in
-      the request, or one already tombstoned — falls back to the wire
-      source.
+    - `ebb/link` → `ebb/link.<verb>` in the **source's** group set. The
+      source is the Update's subject: an edge is a keyed component of the
+      row it leaves, so the write is scoped and delivered exactly as that
+      row is, and its target never lends it a scope (an edge may point at a
+      `group` entity). The value's `type` is a descriptive label and is
+      never consulted for authorization, so a forged value cannot borrow
+      another model's permission (#323). Nothing is re-pointed: an edge
+      keyed on its source has no source field to move, so moving one is two
+      keys — a removal under the old source and an addition under the new —
+      not one row with two identities.
 
-  Moving an edge to another source is a delete plus a create in two Actions
-  of the same request (or in a later request): the request's own accepted
-  delete releases the row's source binding, so the write is a create in the
-  new source's groups. The two cannot ride in one Action: the fold collapses
-  any delete for a subject to a single row delete, so a same-Action pair
-  would discard the write. The delete still has to pass against the stored
-  row's groups, so naming the row as deleted is not a way around that
-  permission.
+  An `ebb/*` write to a user row is an overlay: it adds a component and
+  leaves the row's committed model alone, so an overlay write is authorized
+  as `ebb/link.*` and never as a grant on the row's model. That is the point
+  of naming the component rather than reusing a declared field — a
+  model-level grant for a row's data does not authorize an edge.
 
   ## User entities
 
@@ -226,8 +216,7 @@ defmodule EbbServer.Storage.Authorizer do
            member_overlay: %{String.t() => grant_row() | nil},
            members_by_group: members_by_group(),
            membership_rows: %{{String.t(), String.t()} => String.t()},
-           removed_membership_ids: MapSet.t(String.t()),
-           deleted_relationships: MapSet.t(String.t())
+           removed_membership_ids: MapSet.t(String.t())
          }
 
   @type rejection :: %{
@@ -265,8 +254,7 @@ defmodule EbbServer.Storage.Authorizer do
       member_overlay: %{},
       members_by_group: %{},
       membership_rows: %{},
-      removed_membership_ids: MapSet.new(),
-      deleted_relationships: MapSet.new()
+      removed_membership_ids: MapSet.new()
     }
 
   defp authorize_action(action, actor_id, ctx, sim) do
@@ -286,13 +274,7 @@ defmodule EbbServer.Storage.Authorizer do
 
     authz = %{
       intra: intra,
-      intra_opts:
-        opts
-        |> Keyword.put(:intra_action, intra)
-        |> Keyword.put(
-          :intra_relationship_sources,
-          PermissionHelper.build_intra_relationship_sources(action.updates)
-        ),
+      intra_opts: Keyword.put(opts, :intra_action, intra),
       bootstrap: PermissionHelper.bootstrap_group_permissions(mutations, actor_id, exists?),
       bootstrap_grant_ids:
         PermissionHelper.bootstrap_grant_row_ids(mutations, actor_id, member_exists?),
@@ -301,8 +283,6 @@ defmodule EbbServer.Storage.Authorizer do
       # only model ids the simulation does not know.
       created_models: Map.merge(PermissionHelper.created_models(mutations), sim.models),
       deleted_memberships: resolve_deleted_memberships(mutations, opts),
-      deleted_relationships:
-        MapSet.union(sim.deleted_relationships, deleted_relationship_ids(mutations)),
       # A user row's update is authorized against the components the wire
       # names, so the subject is read from the Updates, not the folded row.
       written_components: PermissionHelper.written_components(action.updates),
@@ -315,8 +295,7 @@ defmodule EbbServer.Storage.Authorizer do
          {:ok, sim} <- check_membership_rows(authz, sim),
          {:ok, sim} <- check_last_membership(authz, sim),
          {:ok, sim} <- check_last_grant(authz, sim) do
-      {:ok,
-       %{sim | models: authz.created_models, deleted_relationships: authz.deleted_relationships}}
+      {:ok, %{sim | models: authz.created_models}}
     end
   end
 
@@ -345,9 +324,9 @@ defmodule EbbServer.Storage.Authorizer do
 
   # Row identity is not a permission: the bootstrap exemption covers
   # *creating* a membership, never re-pointing an existing row, so this
-  # check runs before the exemption (#623). A relationship row's source is
-  # identity too (#624). An id's model is identity too: a component's prefix
-  # is client input, so a relabel may not ride the bootstrap either (#624).
+  # check runs before the exemption (#623). An id's model is identity too: a
+  # component's prefix is client input, so a relabel may not ride the
+  # bootstrap either (#624).
   defp check_update(update, actor_id, authz) do
     with :ok <- check_update_row_identity(update, authz),
          :ok <- check_update_model_identity(update, authz) do
@@ -374,7 +353,9 @@ defmodule EbbServer.Storage.Authorizer do
       :group -> authorize_group_update(update, actor_id, authz)
       :grant -> authorize_grant_update(update, actor_id, authz)
       :membership -> authorize_membership_update(update, actor_id, authz)
-      :link -> authorize_link_update(update, actor_id, authz)
+      # An edge is a component of its source, so the source's own membership
+      # set is its group set: the user path with `ebb/link` as the subject.
+      :link -> authorize_user_entity_update(update.model, update, actor_id, authz)
       nil -> authorize_user_entity_update(update.model, update, actor_id, authz)
     end
   end
@@ -825,14 +806,6 @@ defmodule EbbServer.Storage.Authorizer do
     check_membership_row_identity(update.subject_id, value, authz)
   end
 
-  defp check_update_row_identity(%{kind: :link, deleted?: false} = update, authz) do
-    check_link_row_source(
-      update.subject_id,
-      SystemComponent.path(update.data, :link, "source_id"),
-      authz
-    )
-  end
-
   defp check_update_row_identity(%{kind: :grant, deleted?: false} = update, authz) do
     check_grant_row_group(
       update.subject_id,
@@ -860,53 +833,6 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
-  # A link's source is its identity (#623, #624): the row fans out to the
-  # source's group set, so re-pointing it would hand the edge to the caller.
-  # Changing target/type/field keeps the source and stays a normal write;
-  # moving an edge is a delete plus a create.
-  #
-  # No committed source is not a refusal. A by-id row can be missing because
-  # the edge is new, because this request deleted it, or because it is
-  # already a tombstone — deleted rows keep their model entry, so the
-  # model index cannot tell those apart. All three authorize as a fresh row;
-  # failing closed here would refuse the delete-plus-create that moves an edge.
-  # A delete in the request releases the binding only: the delete itself is
-  # authorized against the stored row's groups, so a write cannot ride a
-  # delete the caller may not perform.
-  defp check_link_row_source(link_id, source_id, authz) do
-    committed = committed_link_source(link_id, authz)
-
-    cond do
-      is_nil(source_id) ->
-        :ok
-
-      is_nil(committed) ->
-        :ok
-
-      committed == source_id ->
-        :ok
-
-      true ->
-        {:error, "not_authorized", "an ebb/link row cannot be re-pointed at another source"}
-    end
-  end
-
-  defp committed_link_source(link_id, authz) do
-    if MapSet.member?(authz.deleted_relationships, link_id) do
-      nil
-    else
-      EntityScope.relationship_source(link_id, authz.opts)
-    end
-  end
-
-  # A link delete only has to release the row's source binding, so the id
-  # suffices: delete plus create is how an edge moves (#624).
-  defp deleted_relationship_ids(mutations) do
-    mutations
-    |> Enum.filter(&(&1.kind == :link and &1.deleted?))
-    |> MapSet.new(& &1.subject_id)
-  end
-
   # The model an id was committed under is authoritative; a component's
   # prefix is client input. Every stage downstream — the permission lookup,
   # the materialized row's model, the entity-model cache — keys on the prefix,
@@ -915,13 +841,36 @@ defmodule EbbServer.Storage.Authorizer do
   # prefix stands only for an id nothing has committed yet, and the committed
   # model is never echoed back.
   defp check_update_model_identity(update, authz) do
-    id = update.subject_id
+    if overlay_write?(update, authz) do
+      :ok
+    else
+      check_committed_model(update, authz)
+    end
+  end
 
-    case committed_model(id, authz.opts) do
+  defp check_committed_model(update, authz) do
+    case committed_model(update.subject_id, authz.opts) do
       nil -> check_unresolved_model(update, authz)
       committed -> require_model(committed, update)
     end
   end
+
+  # An `ebb/*` overlay names the platform's component, not the row's model:
+  # it is added to a row it does not re-model and the committed model is left
+  # alone (the ADR's storage consequence), so there is no model claim to
+  # check. Every other write claims one, and the fold reports it as
+  # `update.model`.
+  defp overlay_write?(%{created?: false, deleted?: false} = update, authz) do
+    case Map.get(authz.written_components, update.subject_id, []) do
+      [] -> false
+      components -> Enum.all?(components, &overlay_component?/1)
+    end
+  end
+
+  defp overlay_write?(_update, _authz), do: false
+
+  defp overlay_component?(component),
+    do: SystemComponent.overlay?(SystemComponent.kind(component))
 
   # A committed id can reach here unmodeled: the entity-model cache is a
   # projection that an ablation (`--ablate component_entities` on the bench,
@@ -1016,49 +965,6 @@ defmodule EbbServer.Storage.Authorizer do
     EntityScope.model(entity_id, authz.opts) || Map.get(authz.created_models, entity_id)
   end
 
-  # A relationship is always a domain edge, and is authorized against its
-  # source's membership set, never its own `target_id`: an app may hold a
-  # domain link to a group entity. A write carries the source on the wire;
-  # a delete drops the data, so the by-id index supplies the source.
-  # The permission model follows the source's **true** model, resolved from
-  # the entity index — never the row's `type` label, which a client can
-  # forge to borrow another model's permission (#323).
-  defp authorize_link_update(%{created?: true} = update, actor_id, authz) do
-    case link_source_model(update, authz) do
-      nil ->
-        {:error, "not_authorized", "ebb/link source model is unresolvable"}
-
-      source_model ->
-        check_group_permission(
-          EntityScope.fan_out_groups(update, authz.intra_opts),
-          actor_id,
-          source_model,
-          "update",
-          authz
-        )
-    end
-  end
-
-  defp authorize_link_update(update, actor_id, authz) do
-    check_group_permission(
-      EntityScope.fan_out_groups(update, authz.intra_opts),
-      actor_id,
-      SystemComponent.component(:link),
-      permission_for(update),
-      authz
-    )
-  end
-
-  # The source entity's committed model, or the one the same request created
-  # when the index does not know the id yet. A write with no `source_id`, or one
-  # the request cannot model, is unresolvable.
-  defp link_source_model(update, authz) do
-    case SystemComponent.path(update.data, :link, "source_id") do
-      nil -> nil
-      source_id -> entity_model(source_id, authz)
-    end
-  end
-
   # The subject a user row's write names: its model for a create or a
   # delete, since neither names a component, and every component named on the
   # wire for an update (#803). A write that names no component at all falls
@@ -1096,7 +1002,20 @@ defmodule EbbServer.Storage.Authorizer do
     end
   end
 
+  # A create names the row's model, which covers every *user* component of the
+  # row it creates — but not an `ebb/*` overlay, whose subject is its own
+  # name. A delete names no component and detaches the row with its edges.
+  defp write_subjects(%{created?: true} = update, model, authz) do
+    [model | overlay_components(update, authz)]
+  end
+
   defp write_subjects(_update, model, _authz), do: [model]
+
+  defp overlay_components(update, authz) do
+    authz.written_components
+    |> Map.get(update.subject_id, [])
+    |> Enum.filter(&overlay_component?/1)
+  end
 
   # Union semantics: the actor may hold the permission in any group of
   # the entity's set; the write is indexed into every group separately.

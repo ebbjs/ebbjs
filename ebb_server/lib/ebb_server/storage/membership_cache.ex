@@ -2,11 +2,10 @@ defmodule EbbServer.Storage.MembershipCache do
   @moduledoc """
   GenServer that owns the entity↔Group membership ETS tables.
 
-  This mirrors `RelationshipCache`'s table shape and API — keyword-list
-  options and `reset/1` — rather than `GrantCache`'s single-table
-  signatures. The split from `GrantCache` is deliberate: a grant carries
-  permissions and is the authorization primitive; a membership carries
-  sync scope only.
+  It takes keyword-list options and offers `reset/1` rather than
+  `GrantCache`'s single-table signatures. The split from `GrantCache` is
+  deliberate: a grant carries permissions and is the authorization
+  primitive; a membership carries sync scope only.
 
   The GenServer exists solely to own the ETS table lifetime and
   manage startup/shutdown. All public functions are lock-free.

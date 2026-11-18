@@ -317,17 +317,17 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
       assert Enum.sort(ids) == ["gm_abc", "grant_xyz"]
     end
 
-    test "handles relationship model regardless of ID shape" do
+    test "handles a model regardless of its ids' shape" do
       %{dirty_set: dirty_set} = with_isolated_tracker()
 
       :ok =
         DirtyTracker.mark_dirty_batch(
-          [{"rel_abc", "relationship"}, {"relationship_xyz", "relationship"}],
+          [{"c_abc", "comment"}, {"comment_xyz", "comment"}],
           dirty_set
         )
 
-      ids = DirtyTracker.dirty_entity_ids_for_model("relationship", dirty_set)
-      assert Enum.sort(ids) == ["rel_abc", "relationship_xyz"]
+      ids = DirtyTracker.dirty_entity_ids_for_model("comment", dirty_set)
+      assert Enum.sort(ids) == ["c_abc", "comment_xyz"]
     end
   end
 
@@ -340,7 +340,7 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
           [
             {"gm_abc", "grant"},
             {"eg_xyz", "membership"},
-            {"rel_1", "relationship"},
+            {"comment_1", "comment"},
             {"grp_1", "group"},
             {"todo_1", "todo"}
           ],
@@ -349,11 +349,11 @@ defmodule EbbServer.Storage.DirtyTrackerTest do
 
       ids =
         DirtyTracker.dirty_entity_ids_for_models(
-          ["group", "grant", "relationship", "membership"],
+          ["group", "grant", "comment", "membership"],
           dirty_set
         )
 
-      assert Enum.sort(ids) == ["eg_xyz", "gm_abc", "grp_1", "rel_1"]
+      assert Enum.sort(ids) == ["comment_1", "eg_xyz", "gm_abc", "grp_1"]
     end
 
     test "deduplicates repeated models" do

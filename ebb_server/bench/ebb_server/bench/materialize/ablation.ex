@@ -2,10 +2,10 @@ defmodule EbbServer.Bench.Materialize.Ablation do
   @moduledoc """
   Isolates the STORED generated-column cost with two throwaway SQLite tables.
 
-  The app's `entities` table has eight `json_extract` STORED generated
+  The app's `entities` table has four `json_extract` STORED generated
   columns that SQLite recomputes on every upsert. Reproducing that cost on
   the live bench table would mean altering the production schema, so the
-  ablation builds one table with the same eight columns and one without, in
+  ablation builds one table with the same four columns and one without, in
   a private in-memory database, and upserts the same blob into each with the
   app's upsert SQL.
   """
@@ -25,10 +25,6 @@ defmodule EbbServer.Bench.Materialize.Ablation do
   """
 
   @generated_columns """
-  , source_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.source_id.value')) STORED
-  , target_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.target_id.value')) STORED
-  , rel_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.type.value')) STORED
-  , rel_field TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.field.value')) STORED
   , actor_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.actor_id.value')) STORED
   , entity_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.entity_id.value')) STORED
   , group_id TEXT GENERATED ALWAYS AS (json_extract(data, '$.fields.group_id.value')) STORED

@@ -10,10 +10,10 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
   A row's scope is a per-subject decision, so the Action's per-component
   Updates fold into row mutations first
   (`EbbServer.Storage.RowMutations`): an `ebb/membership` row's `group_id`
-  and an `ebb/link` row's `source_id` each arrive in the row's one atomic
-  component value. Which owner that value names is the component's
-  declaration (`EbbServer.Storage.SystemComponent`), read through
-  `EntityScope`.
+  arrives in the row's one atomic component value, and an `ebb/link` write is
+  scoped by its subject, which is already the source. Which owner a value
+  names is the component's declaration
+  (`EbbServer.Storage.SystemComponent`), read through `EntityScope`.
   """
 
   alias EbbServer.Storage.{EntityScope, PermissionHelper, RowMutations}
@@ -32,11 +32,7 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolution do
     mutations = RowMutations.fold(updates, opts)
 
     opts =
-      opts
-      |> Keyword.put(:intra_action, PermissionHelper.build_intra_action_context(mutations))
-      |> Keyword.put_new_lazy(:intra_relationship_sources, fn ->
-        PermissionHelper.build_intra_relationship_sources(updates)
-      end)
+      Keyword.put(opts, :intra_action, PermissionHelper.build_intra_action_context(mutations))
 
     mutations
     |> Enum.flat_map(&resolve_mutation_group_ids(&1, opts))

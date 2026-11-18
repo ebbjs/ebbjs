@@ -14,7 +14,6 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   - A delete in a predecessor plan is visible to a successor's patch
   - Dropping a predecessor's overlay falls back to the pre-plan cache
   - Identical repeats are dropped, distinct rows for one id are not
-  - A relationship row merges the components its Updates do not carry
   """
 
   use ExUnit.Case, async: true
@@ -28,14 +27,12 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   setup do
     grants_by_id = :ets.new(:planner_grants_by_id, [:set, :public])
     memberships_by_id = :ets.new(:planner_memberships_by_id, [:set, :public])
-    relationships_by_id = :ets.new(:planner_relationships_by_id, [:set, :public])
     group_apps = :ets.new(:planner_group_apps, [:set, :public])
 
     %{
       tables: %{
         grants_by_id: grants_by_id,
         memberships_by_id: memberships_by_id,
-        relationships_by_id: relationships_by_id,
         group_apps: group_apps
       },
       grants_by_id: grants_by_id,
@@ -291,33 +288,6 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
       assert Overlay.fetch(overlay_3, :grants_by_id, "gm_1") == {:ok, :deleted}
     end
 
-    test "put -> patch -> delete chains across plans for one relationship", %{tables: tables} do
-      put =
-        create("relationship", "rel_1", %{
-          "source_id" => "todo_1",
-          "target_id" => "todo_2",
-          "type" => "parent",
-          "field" => "parent"
-        })
-
-      {_mutations_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
-
-      patch =
-        write("relationship", "rel_1", %{
-          "source_id" => "todo_1",
-          "target_id" => "todo_3",
-          "type" => "parent",
-          "field" => "parent"
-        })
-
-      {_mutations_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
-      delete = delete_row("relationship", "rel_1")
-
-      {_mutations_3, overlay_3} = CacheMutationPlanner.plan([delete], tables, overlay_2)
-
-      assert Overlay.fetch(overlay_3, :relationships_by_id, "rel_1") == {:ok, :deleted}
-    end
-
     test "a delete in the predecessor stays deleted after the successor's own plan", %{
       tables: tables,
       memberships_by_id: memberships_by_id
@@ -516,54 +486,6 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
     end
   end
 
-  describe "relationships" do
-    test "a link patch projects the whole value the wire carries", %{tables: tables} do
-      put =
-        create("relationship", "rel_1", %{
-          "source_id" => "todo_1",
-          "target_id" => "todo_2",
-          "type" => "parent",
-          "field" => "parent"
-        })
-
-      {_plan_1, overlay_1} = CacheMutationPlanner.plan([put], tables)
-
-      patch =
-        write("relationship", "rel_1", %{
-          "source_id" => "todo_1",
-          "target_id" => "todo_9",
-          "type" => "parent",
-          "field" => "parent"
-        })
-
-      {plan_2, overlay_2} = CacheMutationPlanner.plan([patch], tables, overlay_1)
-
-      assert [
-               {:entity_model, "rel_1", "ebb"},
-               {:relationship_put,
-                %{source_id: "todo_1", target_id: "todo_9", type: "parent", field: "parent"}}
-             ] = Enum.sort_by(plan_2, &elem(&1, 0))
-
-      assert {:ok,
-              %{
-                id: "rel_1",
-                source_id: "todo_1",
-                target_id: "todo_9",
-                type: "parent",
-                field: "parent"
-              }} = Overlay.fetch(overlay_2, :relationships_by_id, "rel_1")
-    end
-
-    test "a link value with no target is not projected", %{tables: tables} do
-      put = create("relationship", "rel_1", %{"source_id" => "todo_1"})
-
-      {plan, overlay} = CacheMutationPlanner.plan([put], tables)
-
-      assert plan == [{:entity_model, "rel_1", "ebb"}]
-      assert Overlay.fetch(overlay, :relationships_by_id, "rel_1") == :error
-    end
-  end
-
   defp group_apps_create(group_id, apps), do: group_create(group_id, %{"apps" => apps})
 
   defp group_apps_write(group_id, apps), do: group_write(group_id, %{"apps" => apps})
@@ -579,14 +501,13 @@ defmodule EbbServer.Storage.CacheMutationPlannerTest do
   end
 
   # A folded row mutation, the planner's input: one row per subject, whether
-  # the Action creates or deletes it, and its whole `fields` map. The four
-  # platform components are atomic, so a platform row's fields are the one
-  # leaf that carries the whole object.
+  # the Action creates or deletes it, and its whole `fields` map. The three
+  # cached platform components are atomic, so a platform row's fields are the
+  # one leaf that carries the whole object.
   @components %{
     "group" => {:group, "group"},
     "grant" => {:grant, "grant"},
-    "membership" => {:membership, "membership"},
-    "relationship" => {:link, "link"}
+    "membership" => {:membership, "membership"}
   }
 
   defp create(model, subject_id, fields \\ %{}),

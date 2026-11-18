@@ -200,23 +200,23 @@ defmodule EbbServer.Storage.RowMutationsTest do
     table = unknown_type_index()
 
     [resolved] =
-      RowMutations.fold([delete("u1", "rel_1")],
+      RowMutations.fold([delete("u1", "c_1")],
         entity_models: table,
-        model_resolver: fn _id -> "relationship" end
+        model_resolver: fn _id -> "comment" end
       )
 
-    assert resolved.model == "relationship"
+    assert resolved.model == "comment"
 
     [from_sibling] =
       RowMutations.fold(
         [
-          delete("u1", "rel_2"),
-          component("u2", "rel_2", "relationship/source_id", :merge, leaf("note_1", 1))
+          delete("u1", "c_2"),
+          component("u2", "c_2", "comment/body", :merge, leaf("Body", 1))
         ],
         entity_models: table
       )
 
-    assert from_sibling.model == "relationship"
+    assert from_sibling.model == "comment"
   end
 
   test "a delete keeps a platform component's kind and committed model" do

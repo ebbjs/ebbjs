@@ -7,11 +7,8 @@ defmodule EbbServer.Storage.EntityIndexTest do
   alias EbbServer.Storage.EntityModelCache
   alias EbbServer.Storage.GroupAppsCache
   alias EbbServer.Storage.GrantCache
-  alias EbbServer.Storage.RelationshipCache
 
   defp tables do
-    rel = :"ei_rel_#{System.unique_integer([:positive])}"
-    rbi = :"ei_rbi_#{System.unique_integer([:positive])}"
     gm = :"ei_gm_#{System.unique_integer([:positive])}"
     gm_by_id = :"ei_gmbi_#{System.unique_integer([:positive])}"
     gm_by_group = :"ei_gmbg_#{System.unique_integer([:positive])}"
@@ -21,13 +18,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
     entity_models = :"ei_et_#{System.unique_integer([:positive])}"
     group_apps = :"ei_ga_#{System.unique_integer([:positive])}"
     :ets.new(group_apps, [:set, :public, :named_table])
-
-    {:ok, _} =
-      RelationshipCache.start_link(
-        name: :"ei_rc_#{System.unique_integer([:positive])}",
-        relationships: rel,
-        relationships_by_id: rbi
-      )
 
     {:ok, _} =
       GrantCache.start_link(
@@ -52,11 +42,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
       )
 
     on_exit(fn ->
-      RelationshipCache.reset(
-        relationships: rel,
-        relationships_by_id: rbi
-      )
-
       GrantCache.reset(
         grants: gm,
         grants_by_id: gm_by_id,
@@ -72,8 +57,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
       EntityModelCache.reset(entity_models: entity_models)
 
       for t <- [
-            rel,
-            rbi,
             gm,
             gm_by_id,
             gm_by_group,
@@ -92,8 +75,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
     end)
 
     %{
-      relationships: rel,
-      relationships_by_id: rbi,
       grants: gm,
       grants_by_id: gm_by_id,
       grants_by_group: gm_by_group,
@@ -110,17 +91,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
       memberships: t.memberships,
       memberships_by_id: t.memberships_by_id,
       entity_models: t.entity_models,
-      relationships_by_id: t.relationships_by_id,
       grants_by_id: t.grants_by_id,
       group_apps: t.group_apps
     ]
-  end
-
-  defp put_rel(t, rel) do
-    RelationshipCache.put_relationship(rel,
-      relationships: t.relationships,
-      relationships_by_id: t.relationships_by_id
-    )
   end
 
   defp put_group(t, group_id, apps \\ []) do
@@ -134,10 +107,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
       memberships_by_id: t.memberships_by_id,
       memberships_by_group: t.memberships_by_group
     )
-  end
-
-  defp link_rel(id, source_id, target_id) do
-    %{id: id, source_id: source_id, target_id: target_id, type: "todo", field: "owns"}
   end
 
   # A folded platform row: one atomic component value, and its kind.
@@ -182,13 +151,14 @@ defmodule EbbServer.Storage.EntityIndexTest do
       assert EntityScope.resolve_groups(:membership, "eg_1", opts(t)) == ["g_1"]
     end
 
-    test "resolves a relationship subject via its source's membership set" do
+    # An edge declares no scope owner, so the subject's own membership set is
+    # its scope: the subject *is* the source.
+    test "resolves an edge write through the subject's own membership set" do
       t = tables()
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_member")
-      :ok = put_rel(t, link_rel("rel_link", "todo_1", "col_1"))
 
-      assert EntityScope.resolve_groups(:link, "rel_link", opts(t)) == ["g_1"]
+      assert EntityScope.resolve_groups(:link, "todo_1", opts(t)) == ["g_1"]
     end
 
     test "resolves a grant subject via the by-id table" do
@@ -230,19 +200,10 @@ defmodule EbbServer.Storage.EntityIndexTest do
              |> Enum.sort() == ["g_1", "g_2"]
     end
 
-    test "a domain link to a group is not treated as membership" do
-      t = tables()
-
-      :ok = put_rel(t, link_rel("rel_link", "todo_1", "g_1"))
-
-      assert EntityScope.resolve_groups("todo", "todo_1", opts(t)) == []
-      assert EntityScope.resolve_groups(:link, "rel_link", opts(t)) == []
-    end
-
     test "returns an empty list when the entity isn't in the index" do
       t = tables()
 
-      assert EntityScope.resolve_groups(:link, "rel_unknown", opts(t)) == []
+      assert EntityScope.resolve_groups(:link, "todo_unknown", opts(t)) == []
       assert EntityScope.resolve_groups(:grant, "gm_unknown", opts(t)) == []
       assert EntityScope.resolve_groups(:membership, "eg_unknown", opts(t)) == []
       assert EntityScope.resolve_groups("todo", "todo_unknown", opts(t)) == []
@@ -252,7 +213,7 @@ defmodule EbbServer.Storage.EntityIndexTest do
       _t = tables()
 
       assert_raise KeyError, fn ->
-        EntityScope.resolve_groups(:link, "rel_1", [])
+        EntityScope.resolve_groups(:link, "todo_1", [])
       end
 
       assert_raise KeyError, fn ->
@@ -347,11 +308,9 @@ defmodule EbbServer.Storage.EntityIndexTest do
         )
 
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
-      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
 
       assert EntityScope.kind("gm_1", opts(t)) == :grant
       assert EntityScope.kind("eg_1", opts(t)) == :membership
-      assert EntityScope.kind("rel_1", opts(t)) == :link
       assert EntityScope.kind("g_1", opts(t)) == :group
       assert EntityScope.kind("todo_1", opts(t)) == nil
     end
@@ -430,54 +389,27 @@ defmodule EbbServer.Storage.EntityIndexTest do
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
     end
 
-    test "resolves a relationship through its wire source" do
+    # An edge is scoped by its subject, which is its source, whatever the
+    # model the fold recorded for the row: the edge declares no scope owner
+    # and a target never lends one.
+    test "an edge fans out to its subject's membership set" do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
 
-      update = system_write(:link, "rel_1", %{"source_id" => "todo_1"})
+      update = system_write(:link, "todo_1", %{"blocked_by" => %{}})
 
       assert EntityScope.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
     end
 
-    test "resolves a relationship delete through its stored row's source" do
+    test "an edge's target is never a scope" do
       t = tables()
       :ok = put_membership(t, "todo_1", "g_1", "eg_1")
-      :ok = put_rel(t, link_rel("rel_1", "todo_1", "col_1"))
+      :ok = put_group(t, "g_target")
 
-      update = system_delete(:link, "rel_1")
+      update = system_write(:link, "todo_1", %{"blocked_by" => %{"todo" => "g_target"}})
 
-      assert EntityScope.fan_out_preference(update, opts(t)) == {:source, "todo_1"}
       assert EntityScope.fan_out_groups(update, opts(t)) == ["g_1"]
-    end
-
-    # A relationship row's source is its identity, so a delete is scoped to
-    # the groups the stored row belongs to. The wire source cannot widen
-    # that scope (#624).
-    test "scopes a relationship delete by the stored row, not a foreign wire source" do
-      t = tables()
-      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
-      :ok = put_membership(t, "todo_attacker", "g_attacker", "eg_attacker")
-      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
-
-      # The fold gives a delete no data; a wire source is supplied here to pin
-      # that fan-out ignores it even if one reaches this function.
-      update = %{
-        system_delete(:link, "rel_victim")
-        | data: system_data(:link, %{"source_id" => "todo_attacker"})
-      }
-
-      assert EntityScope.fan_out_groups(update, opts(t)) == ["g_victim"]
-    end
-
-    test "falls back to the stored row for a write that omits the source" do
-      t = tables()
-      :ok = put_membership(t, "todo_victim", "g_victim", "eg_victim")
-      :ok = put_rel(t, link_rel("rel_victim", "todo_victim", "col_1"))
-
-      update = system_write(:link, "rel_victim", %{"target_id" => "col_2"})
-
-      assert EntityScope.fan_out_groups(update, opts(t)) == ["g_victim"]
     end
 
     test "unions a user entity's cached membership with intra-action membership" do
@@ -557,32 +489,6 @@ defmodule EbbServer.Storage.EntityIndexTest do
       t = tables()
 
       assert EntityScope.membership("eg_unknown", opts(t)) == nil
-    end
-  end
-
-  # A link row the Action itself wrote has no stored row yet; the write's source
-  # is the only scope the delete can have (`:intra_relationship_sources`).
-  describe "resolve_groups/3 for a link row the Action wrote" do
-    test "falls back to the Action's own source when the row is not cached" do
-      t = tables()
-
-      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
-
-      opts = opts(t) ++ [intra_relationship_sources: %{"rel_new" => "todo_1"}]
-
-      assert EntityScope.resolve_groups(:link, "rel_new", opts) == ["g_1"]
-    end
-
-    test "scopes a link delete with no stored row through the Action's source" do
-      t = tables()
-
-      :ok = put_membership(t, "todo_1", "g_1", "eg_1")
-
-      update = system_delete(:link, "rel_new")
-      opts = opts(t) ++ [intra_relationship_sources: %{"rel_new" => "todo_1"}]
-
-      assert EntityScope.fan_out_preference(update, opts) == {:by_id, :link}
-      assert EntityScope.fan_out_groups(update, opts) == ["g_1"]
     end
   end
 end

@@ -229,16 +229,19 @@ defmodule EbbServer.Storage.RowMutations do
   end
 
   # The create's model is the row's committed model. Without a create, a row
-  # is committed under the model it was **committed** under: an `ebb/*`
-  # overlay on a user row does not re-model it, and a user component names
-  # its own prefix.
+  # is committed under the model it was **committed** under: a user component
+  # names its own prefix, the three platform *rows* are `ebb` because that is
+  # what they are, and an `ebb/link` overlay names no model at all — it is a
+  # component of a row it does not re-model, so it keeps the committed model
+  # and, when that is unknown, claims none rather than adopting `ebb`
+  # (decision 13's storage consequence).
   defp row_model(%{created?: true, model: model}, _resolve_model), do: model
 
   defp row_model(entry, resolve_model) do
-    if SystemComponent.component?(entry.component) do
-      resolve_model.(entry.subject_id) || SystemComponent.model()
-    else
-      entry.model
+    case SystemComponent.kind(entry.component) do
+      nil -> entry.model
+      :link -> resolve_model.(entry.subject_id)
+      _platform -> resolve_model.(entry.subject_id) || SystemComponent.model()
     end
   end
 

@@ -23,7 +23,7 @@ defmodule EbbServer.Storage.SystemCacheInitFailureTest do
     EbbServer.Storage.GrantCache,
     EbbServer.Storage.MembershipCache,
     EbbServer.Storage.EntityModelCache,
-    EbbServer.Storage.RelationshipCache
+    EbbServer.Storage.LinkTargetIndex
   ]
 
   setup do
