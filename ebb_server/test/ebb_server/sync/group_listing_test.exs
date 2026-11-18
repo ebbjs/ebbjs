@@ -316,6 +316,54 @@ defmodule EbbServer.Sync.GroupListingTest do
         assert fields_of(row)[SystemComponent.field(:link)]
       end
     end
+
+    # An edge's visibility is its source's membership, not the group the edge
+    # was written in, so a move carries the edge and leaves nothing behind
+    # (#789).
+    test "a source moving between groups takes its edge and leaves no stale one", %{
+      tmp_dir: _
+    } do
+      actor_id = unique("a")
+      g1 = unique("g")
+      g2 = unique("g")
+      bootstrap(actor_id, g1, ["todo.*", "ebb/link.*"])
+      bootstrap(actor_id, g2, ["todo.*", "ebb/link.*"])
+
+      [{todo_id, eg1, _}] = write_todos(actor_id, g1, 1)
+
+      type = unique("todo")
+      target_id = unique("doc")
+
+      write_action(actor_id, [link_update(todo_id, "assignee", type, target_id)])
+
+      # Add the new membership before removing the old one, so the entity
+      # never resolves to zero groups.
+      write_action(actor_id, [
+        membership_component_update(todo_id, g2, generate_hlc(), "eg_" <> todo_id <> "_" <> g2)
+      ])
+
+      write_action(actor_id, [membership_delete_update(eg1)])
+
+      # The old group keeps its rows, not the moved source or its edge.
+      {:ok, old_page} = GroupListing.list(g1, actor_id)
+      refute Enum.any?(old_page.entities, &(&1.id == todo_id))
+      refute target_id in Enum.flat_map(old_page.entities, &link_target_ids/1)
+
+      # The new group ships the source row with its edge inside it.
+      {:ok, new_page} = GroupListing.list(g2, actor_id)
+      moved = Enum.find(new_page.entities, &(&1.id == todo_id))
+
+      assert moved != nil
+      assert moved.model == "todo"
+
+      assert %{
+               "map" => %{
+                 "assignee" => %{"map" => %{^type => %{"map" => %{^target_id => leaf}}}}
+               }
+             } = fields_of(moved)[SystemComponent.field(:link)]
+
+      assert leaf["value"] == true
+    end
   end
 
   describe "GET /sync/groups/:group_id/entities — rows the cache cannot serve" do
@@ -778,6 +826,26 @@ defmodule EbbServer.Sync.GroupListingTest do
       "merge",
       %{"map" => %{field => %{"map" => %{type => %{"map" => %{target_id => target}}}}}}
     )
+  end
+
+  # Every target id a row's `ebb/link` field names, at any accessor and type.
+  defp link_target_ids(row) do
+    case fields_of(row)[SystemComponent.field(:link)] do
+      %{"map" => by_accessor} ->
+        for {_as, %{"map" => by_type}} <- by_accessor,
+            {_type, %{"map" => by_target}} <- by_type,
+            target_id <- Map.keys(by_target),
+            do: target_id
+
+      _absent ->
+        []
+    end
+  end
+
+  # A membership delete names no component: the server resolves the row's
+  # entity and group from the membership index.
+  defp membership_delete_update(eg_id) do
+    %{"id" => unique("upd"), "subject_id" => eg_id, "method" => "delete", "data" => nil}
   end
 
   defp write_delete(actor_id, entity_id) do

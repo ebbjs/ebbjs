@@ -39,7 +39,9 @@ import type { MembershipLink } from "../types/entity-store";
  * `id` is the entry's identity within the key: the source row id for a link,
  * the membership row id for a membership. `value` is the id the key yields: a
  * link yields its source, a membership yields the member (group side) or the
- * group (member side).
+ * group (member side). A link's `id` and `value` are therefore the same id —
+ * one source carries at most one entry per key — while a membership needs both
+ * to keep a duplicate row from erasing its sibling.
  */
 export interface IndexEntry {
   readonly key: string;
