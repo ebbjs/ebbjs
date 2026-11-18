@@ -8,9 +8,9 @@ defmodule EbbServer.Storage.CacheTables do
   etc.) read it through this module rather than re-implementing the
   `:persistent_term.get(..., default)` pattern.
 
-  The two derived indexes own their tables instead — they are not caches of
-  rows, so `EbbServer.Storage.ComponentEntityIndex.tables/1` and
-  `EbbServer.Storage.LinkTargetIndex.tables/1` are their resolution surfaces.
+  The derived component index owns its tables instead — it is not a cache of
+  rows, so `EbbServer.Storage.ComponentEntityIndex.tables/1` is its resolution
+  surface.
 
   Defaults are honored so unit tests can run without standing the
   supervisor up; production callers can rely on the supervisor having

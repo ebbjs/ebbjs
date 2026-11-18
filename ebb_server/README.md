@@ -350,7 +350,6 @@ concurrently.
 | `EbbServer.Storage.{DirtyTracker,GrantCache,MembershipCache,GroupAppsCache}` | In-memory state children of `SystemCache`                                               |
 | `EbbServer.Storage.EntityModelCache`                                         | Committed model per entity id, maintained with the component index                      |
 | `EbbServer.Storage.ComponentEntityIndex`                                     | Derived `(model, entity)` / `(component, entity)` existence index, rebuilt at boot      |
-| `EbbServer.Storage.LinkTargetIndex`                                          | Derived `(type, target)` → source ids for incoming edges, rebuilt at boot               |
 | `EbbServer.Storage.GsnCounter`                                               | Lock-free GSN claiming + restart reconcile (`:atomics`)                                 |
 | `EbbServer.Telemetry.Sampler`                                                | Periodic watermark / dirty-set / in-flight / fan-out gauges                             |
 | `EbbServer.Functions`                                                        | Boot-resolved enable flag, children, admin token, and bundle source                     |
@@ -423,8 +422,7 @@ EbbServer.Supervisor (one_for_one)
 │   │   ├── Storage.GrantCache
 │   │   ├── Storage.MembershipCache
 │   │   ├── Storage.GroupAppsCache
-│   │   ├── Storage.EntityModelCache
-│   │   └── Storage.LinkTargetIndex
+│   │   └── Storage.EntityModelCache
 │   ├── Storage.WatermarkTracker           — resolution-frontier ETS + :atomics
 │   ├── Storage.InFlightActions            — in-flight action-id ETS
 │   └── Storage.Writer                     — imperative shell: claim, resolve, apply

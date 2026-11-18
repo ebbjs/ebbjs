@@ -33,9 +33,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
         memberships: eg_table,
         memberships_by_id: eg_by_id_table,
         memberships_by_group: eg_by_group_table,
-        entity_models: entity_models_table,
-        link_targets: link_targets_table,
-        link_target_labels: link_target_labels_table
+        entity_models: entity_models_table
       } = TestHelpers.start_isolated_cache()
 
     %{name: rocks_name, dir: data_dir} = TestHelpers.start_rocks(%{test: "restart_mat"})
@@ -51,9 +49,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
         memberships: eg_table,
         memberships_by_id: eg_by_id_table,
         memberships_by_group: eg_by_group_table,
-        entity_models: entity_models_table,
-        link_targets: link_targets_table,
-        link_target_labels: link_target_labels_table
+        entity_models: entity_models_table
       })
 
     %{
@@ -341,9 +337,7 @@ defmodule EbbServer.Storage.RestartMaterializationTest do
       memberships: ctx.cache.memberships,
       memberships_by_id: ctx.cache.memberships_by_id,
       memberships_by_group: ctx.cache.memberships_by_group,
-      entity_models: ctx.cache.entity_models,
-      link_targets: ctx.cache.link_targets,
-      link_target_labels: ctx.cache.link_target_labels
+      entity_models: ctx.cache.entity_models
     ]
   end
 

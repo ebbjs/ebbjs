@@ -16,7 +16,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
     EntityStore,
     EntityModelCache,
     GroupAppsCache,
-    LinkTargetIndex,
     RocksDB,
     SQLite,
     SystemCache,
@@ -38,9 +37,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_models: entity_models_table,
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
-      group_apps: group_apps_table,
-      link_targets: link_targets_table,
-      link_target_labels: link_target_labels_table
+      group_apps: group_apps_table
     } = TestHelpers.start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = TestHelpers.start_rocks(%{test: "sys_cache_#{unique}"})
@@ -58,9 +55,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
         memberships_by_id: eg_by_id_table,
         memberships_by_group: eg_by_group_table,
         component_index: component_index_table,
-        component_entity_labels: component_entity_labels_table,
-        link_targets: link_targets_table,
-        link_target_labels: link_target_labels_table
+        component_entity_labels: component_entity_labels_table
       })
 
     %{
@@ -76,9 +71,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_models_table: entity_models_table,
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
-      group_apps_table: group_apps_table,
-      link_targets: link_targets_table,
-      link_target_labels: link_target_labels_table
+      group_apps_table: group_apps_table
     }
   end
 
@@ -86,13 +79,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
     [
       component_index: ctx.component_index,
       component_entity_labels: ctx.component_entity_labels
-    ]
-  end
-
-  defp link_index_opts(ctx) do
-    [
-      link_targets: ctx.link_targets,
-      link_target_labels: ctx.link_target_labels
     ]
   end
 
@@ -108,9 +94,7 @@ defmodule EbbServer.Storage.SystemCacheTest do
       entity_models: ctx[:entity_models_table],
       component_index: ctx[:component_index],
       component_entity_labels: ctx[:component_entity_labels],
-      group_apps: ctx[:group_apps_table],
-      link_targets: ctx.link_targets,
-      link_target_labels: ctx.link_target_labels
+      group_apps: ctx[:group_apps_table]
     ]
   end
 
@@ -174,10 +158,8 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       ComponentEntityIndex.reset(index_opts(ctx))
       EntityModelCache.reset(entity_models: ctx.entity_models_table)
-      LinkTargetIndex.reset(link_index_opts(ctx))
 
       assert MembershipCache.memberships("doc_test", eg_table) == []
-      assert LinkTargetIndex.source_ids("text_document", "author_1", link_index_opts(ctx)) == []
 
       assert :ok = SystemCache.populate_system_caches(populate_opts(ctx))
 
@@ -187,11 +169,6 @@ defmodule EbbServer.Storage.SystemCacheTest do
 
       assert MembershipCache.get_membership("eg_test", ctx.eg_by_id_table).group_id ==
                "grp_test"
-
-      # Incoming traversal answers from the rebuilt index.
-      assert LinkTargetIndex.source_ids("text_document", "author_1", link_index_opts(ctx)) == [
-               "doc_test"
-             ]
 
       # The seed reconstructed both key kinds, so a second restart without
       # further writes still rebuilds correctly. Three of the four platform

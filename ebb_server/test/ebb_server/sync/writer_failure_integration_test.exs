@@ -134,7 +134,6 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
     MembershipCache,
     EntityModelCache,
     GrantCache,
-    LinkTargetIndex,
     SystemCache
   }
 
@@ -144,7 +143,7 @@ defmodule EbbServer.Sync.WriterCacheEscalationStaleChildrenTest do
 
     children_before =
       Enum.map(
-        [DirtyTracker, GrantCache, MembershipCache, EntityModelCache, LinkTargetIndex],
+        [DirtyTracker, GrantCache, MembershipCache, EntityModelCache],
         &Process.whereis/1
       )
 

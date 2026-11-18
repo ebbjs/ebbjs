@@ -13,9 +13,8 @@ defmodule EbbServer.Storage.CacheMutationPlanner do
 
   `ebb/link` has no cache row here: since
   [#820](https://github.com/ebbjs/ebbjs/issues/820) it is a keyed component
-  of its source, so there is no link row to project. Incoming traversal is
-  `EbbServer.Storage.LinkTargetIndex`, whose entries are keyed by the
-  component's value rather than its subject and so are not row projections.
+  of its source, so there is no link row to project and nothing to project it
+  onto.
 
   The planner is pure: it reads only the `tables` map it is given and the
   `overlay` it is handed, and it writes no cache. `EbbServer.Storage.Writer`

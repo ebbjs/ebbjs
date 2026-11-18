@@ -51,9 +51,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships_by_group: memberships_by_group,
       entity_models: entity_models,
       component_index: component_index,
-      component_entity_labels: component_entity_labels,
-      link_targets: link_targets,
-      link_target_labels: link_target_labels
+      component_entity_labels: component_entity_labels
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -69,9 +67,7 @@ defmodule EbbServer.Storage.WriterTest do
         memberships_by_id: memberships_by_id,
         memberships_by_group: memberships_by_group,
         component_index: component_index,
-        component_entity_labels: component_entity_labels,
-        link_targets: link_targets,
-        link_target_labels: link_target_labels
+        component_entity_labels: component_entity_labels
       })
 
     %{
@@ -87,9 +83,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships_by_group: memberships_by_group,
       entity_models: entity_models,
       component_index: component_index,
-      component_entity_labels: component_entity_labels,
-      link_targets: link_targets,
-      link_target_labels: link_target_labels
+      component_entity_labels: component_entity_labels
     }
   end
 
@@ -627,9 +621,7 @@ defmodule EbbServer.Storage.WriterTest do
       grants_by_id: grants_by_id,
       memberships: memberships,
       memberships_by_id: memberships_by_id,
-      memberships_by_group: memberships_by_group,
-      link_targets: link_targets,
-      link_target_labels: link_target_labels
+      memberships_by_group: memberships_by_group
     } do
       dir =
         tmp_dir(%{module: __MODULE__, test: "durability_#{System.unique_integer([:positive])}"})
@@ -651,9 +643,7 @@ defmodule EbbServer.Storage.WriterTest do
           grants_by_id: grants_by_id,
           memberships: memberships,
           memberships_by_id: memberships_by_id,
-          memberships_by_group: memberships_by_group,
-          link_targets: link_targets,
-          link_target_labels: link_target_labels
+          memberships_by_group: memberships_by_group
         )
 
       Writer.write_actions([action], writer_name1)
@@ -676,9 +666,7 @@ defmodule EbbServer.Storage.WriterTest do
           grants_by_id: grants_by_id,
           memberships: memberships,
           memberships_by_id: memberships_by_id,
-          memberships_by_group: memberships_by_group,
-          link_targets: link_targets,
-          link_target_labels: link_target_labels
+          memberships_by_group: memberships_by_group
         )
 
       on_exit(fn ->
@@ -1382,8 +1370,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          link_targets: ctx.link_targets,
-          link_target_labels: ctx.link_target_labels,
           fan_out_router: router_name
         })
 
@@ -1413,8 +1399,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          link_targets: ctx.link_targets,
-          link_target_labels: ctx.link_target_labels,
           fan_out_router: router_name
         })
 
@@ -1446,9 +1430,7 @@ defmodule EbbServer.Storage.WriterTest do
       grants_by_id: grants_by_id,
       memberships: memberships,
       memberships_by_id: memberships_by_id,
-      memberships_by_group: memberships_by_group,
-      link_targets: link_targets,
-      link_target_labels: link_target_labels
+      memberships_by_group: memberships_by_group
     } do
       router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
       true = Process.register(self(), router_name)
@@ -1463,8 +1445,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: memberships,
           memberships_by_id: memberships_by_id,
           memberships_by_group: memberships_by_group,
-          link_targets: link_targets,
-          link_target_labels: link_target_labels,
           fan_out_router: router_name
         })
 
@@ -1509,9 +1489,7 @@ defmodule EbbServer.Storage.WriterTest do
       memberships: memberships,
       memberships_by_id: memberships_by_id,
       memberships_by_group: memberships_by_group,
-      entity_models: entity_models,
-      link_targets: link_targets,
-      link_target_labels: link_target_labels
+      entity_models: entity_models
     } do
       router_name = :"fan_out_router_test_#{System.unique_integer([:positive])}"
       true = Process.register(self(), router_name)
@@ -1527,8 +1505,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships_by_id: memberships_by_id,
           memberships_by_group: memberships_by_group,
           entity_models: entity_models,
-          link_targets: link_targets,
-          link_target_labels: link_target_labels,
           fan_out_router: router_name
         })
 
@@ -1589,8 +1565,6 @@ defmodule EbbServer.Storage.WriterTest do
           memberships: ctx.memberships,
           memberships_by_id: ctx.memberships_by_id,
           memberships_by_group: ctx.memberships_by_group,
-          link_targets: ctx.link_targets,
-          link_target_labels: ctx.link_target_labels,
           fan_out_router: router_name
         })
 

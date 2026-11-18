@@ -46,7 +46,6 @@ defmodule EbbServer.Storage.SystemCache do
     EntityStore,
     GrantCache,
     GroupAppsCache,
-    LinkTargetIndex,
     MembershipCache,
     RocksDB,
     RowMutations,
@@ -77,9 +76,7 @@ defmodule EbbServer.Storage.SystemCache do
     :group_apps,
     :entity_models,
     :component_index,
-    :component_entity_labels,
-    :link_targets,
-    :link_target_labels
+    :component_entity_labels
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -132,7 +129,6 @@ defmodule EbbServer.Storage.SystemCache do
   # single cache set; a concurrent publish cannot split it across instances.
   defp populate_tables(opts) do
     {default_component_index, default_component_entity_labels} = ComponentEntityIndex.tables()
-    {default_link_targets, default_link_target_labels} = LinkTargetIndex.tables()
 
     %{
       grants: table_opt(opts, :table, CacheTables.grants()),
@@ -146,9 +142,7 @@ defmodule EbbServer.Storage.SystemCache do
       entity_models: table_opt(opts, :entity_models, CacheTables.entity_models()),
       component_index: table_opt(opts, :component_index, default_component_index),
       component_entity_labels:
-        table_opt(opts, :component_entity_labels, default_component_entity_labels),
-      link_targets: table_opt(opts, :link_targets, default_link_targets),
-      link_target_labels: table_opt(opts, :link_target_labels, default_link_target_labels)
+        table_opt(opts, :component_entity_labels, default_component_entity_labels)
     }
   end
 
@@ -173,7 +167,6 @@ defmodule EbbServer.Storage.SystemCache do
     group_apps_cache_opts = Keyword.take(opts, [:group_apps])
     entity_model_cache_opts = Keyword.take(opts, [:entity_models])
     component_index_opts = Keyword.take(opts, [:component_index, :component_entity_labels])
-    link_index_opts = Keyword.take(opts, [:link_targets, :link_target_labels])
 
     children = [
       {DirtyTracker, dirty_set_opts},
@@ -181,8 +174,7 @@ defmodule EbbServer.Storage.SystemCache do
       {GrantCache, group_cache_opts},
       {MembershipCache, membership_cache_opts},
       {GroupAppsCache, group_apps_cache_opts},
-      {EntityModelCache, entity_model_cache_opts},
-      {LinkTargetIndex, link_index_opts}
+      {EntityModelCache, entity_model_cache_opts}
     ]
 
     case Supervisor.start_link(__MODULE__.Children, {:start_children, children}) do
@@ -280,7 +272,6 @@ defmodule EbbServer.Storage.SystemCache do
                rocks_name,
                tables.entity_models,
                component_index_opts(tables),
-               link_index_opts(tables),
                dirty_set,
                counter
              )
@@ -307,13 +298,6 @@ defmodule EbbServer.Storage.SystemCache do
     [
       component_index: tables.component_index,
       component_entity_labels: tables.component_entity_labels
-    ]
-  end
-
-  defp link_index_opts(tables) do
-    [
-      link_targets: tables.link_targets,
-      link_target_labels: tables.link_target_labels
     ]
   end
 
@@ -440,7 +424,6 @@ defmodule EbbServer.Storage.SystemCache do
          rocks_name,
          entity_models_table,
          index_opts,
-         link_opts,
          dirty_set,
          counter
        ) do
@@ -450,7 +433,7 @@ defmodule EbbServer.Storage.SystemCache do
       |> Stream.chunk_every(@dirty_mark_chunk_size)
       |> Enum.reduce(%{}, fn chunk, models ->
         before = map_size(models)
-        models = replay_actions(chunk, models, entity_models_table, index_opts, link_opts)
+        models = replay_actions(chunk, models, entity_models_table, index_opts)
         :atomics.add(counter, 1, map_size(models) - before)
         models
       end)
@@ -473,20 +456,19 @@ defmodule EbbServer.Storage.SystemCache do
     |> Enum.each(&DirtyTracker.mark_dirty_batch(&1, dirty_set))
   end
 
-  # Both derived indexes are rebuilt in the same pass, so one walk of the log
-  # maintains them and each action's ops reach it in log order.
-  defp replay_actions(actions, models, entity_models_table, index_opts, link_opts) do
-    {models, {ops, link_ops}} =
-      Enum.reduce(actions, {models, {[], []}}, fn action, {models, {ops, link_ops}} ->
+  # The derived component index is rebuilt from one walk of the log, and each
+  # action's ops reach it in log order.
+  defp replay_actions(actions, models, entity_models_table, index_opts) do
+    {models, ops} =
+      Enum.reduce(actions, {models, []}, fn action, {models, ops} ->
         updates = Enum.map(action["updates"] || [], &RowMutations.from_stored/1)
 
         {models, action_ops} = replay_action(updates, models, entity_models_table)
 
-        {models, {[action_ops | ops], [LinkTargetIndex.update_ops(updates) | link_ops]}}
+        {models, [action_ops | ops]}
       end)
 
     ComponentEntityIndex.apply_ops(ops |> Enum.reverse() |> :lists.append(), index_opts)
-    LinkTargetIndex.apply_ops(link_ops |> Enum.reverse() |> :lists.append(), link_opts)
     models
   end
 

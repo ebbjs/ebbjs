@@ -113,9 +113,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       grants_by_id: gm_by_id_table,
       memberships: eg_table,
       memberships_by_id: eg_by_id_table,
-      memberships_by_group: eg_by_group_table,
-      link_targets: link_targets_table,
-      link_target_labels: link_target_labels_table
+      memberships_by_group: eg_by_group_table
     } = start_isolated_cache()
 
     %{name: rocks_name, dir: rocks_dir} = start_rocks()
@@ -130,9 +128,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
         grants_by_id: gm_by_id_table,
         memberships: eg_table,
         memberships_by_id: eg_by_id_table,
-        memberships_by_group: eg_by_group_table,
-        link_targets: link_targets_table,
-        link_target_labels: link_target_labels_table
+        memberships_by_group: eg_by_group_table
       })
 
     %{
@@ -140,8 +136,7 @@ defmodule EbbServer.Storage.EntityStoreQueryTest do
       sqlite_name: sqlite_name,
       writer_name: writer_name,
       dirty_set: dirty_set,
-      gm_table: gm_table,
-      link_targets: link_targets_table
+      gm_table: gm_table
     }
   end
 

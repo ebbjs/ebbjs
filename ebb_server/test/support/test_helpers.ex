@@ -17,7 +17,7 @@ defmodule EbbServer.TestHelpers do
   - `put_actor/2` - Assign the actor `AuthPlug` would resolve, for suites that call a router directly
 
   **Storage Setup** (for unit tests)
-  - `start_isolated_cache/0` - Create isolated ETS caches and derived indexes (DirtyTracker, GrantCache, MembershipCache, EntityModelCache, ComponentEntityIndex, LinkTargetIndex, WatermarkTracker, InFlightActions)
+  - `start_isolated_cache/0` - Create isolated ETS caches and derived indexes (DirtyTracker, GrantCache, MembershipCache, EntityModelCache, ComponentEntityIndex, WatermarkTracker, InFlightActions)
   - `start_rocks/1` - Start isolated RocksDB instance
   - `start_sqlite/1` - Start isolated SQLite instance
   - `start_writer/1` - Start isolated Writer instance
@@ -59,7 +59,6 @@ defmodule EbbServer.TestHelpers do
     GroupAppsCache,
     GrantCache,
     InFlightActions,
-    LinkTargetIndex,
     RocksDB,
     SQLite,
     WatermarkTracker,
@@ -209,8 +208,6 @@ defmodule EbbServer.TestHelpers do
     - entity_models: ETS table name
     - component_index: ETS table name
     - component_entity_labels: ETS table name
-    - link_targets: ETS table name
-    - link_target_labels: ETS table name
     - watermark_tracker: WatermarkTracker process name
     - in_flight_actions: InFlightActions process name
     - in_flight_table: ETS table name for the in-flight set
@@ -228,15 +225,12 @@ defmodule EbbServer.TestHelpers do
     component_index_table = :"ebb_component_index_#{unique_id}"
     component_entity_labels_table = :"ebb_component_entity_labels_#{unique_id}"
     group_apps_table = :"ebb_group_apps_#{unique_id}"
-    link_targets_table = :"ebb_link_targets_#{unique_id}"
-    link_target_labels_table = :"ebb_link_target_labels_#{unique_id}"
     dt_name = :"dt_#{unique_id}"
     gc_name = :"gc_#{unique_id}"
     egc_name = :"egc_#{unique_id}"
     gac_name = :"gac_#{unique_id}"
     etc_name = :"etc_#{unique_id}"
     cei_name = :"cei_#{unique_id}"
-    lti_name = :"lti_#{unique_id}"
     wt_name = :"wt_#{unique_id}"
     wt_table = :"wt_ranges_#{unique_id}"
     ifa_name = :"ifa_#{unique_id}"
@@ -283,13 +277,6 @@ defmodule EbbServer.TestHelpers do
         component_entity_labels: component_entity_labels_table
       )
 
-    {:ok, _pid_lti} =
-      LinkTargetIndex.start_link(
-        name: lti_name,
-        link_targets: link_targets_table,
-        link_target_labels: link_target_labels_table
-      )
-
     {:ok, _pid_wt} = WatermarkTracker.start_link(name: wt_name, table: wt_table, initial_gsn: 0)
 
     {:ok, _pid_ifa} = InFlightActions.start_link(name: ifa_name, table: ifa_table)
@@ -302,7 +289,6 @@ defmodule EbbServer.TestHelpers do
             gac_name,
             etc_name,
             cei_name,
-            lti_name,
             wt_name,
             ifa_name
           ],
@@ -319,7 +305,6 @@ defmodule EbbServer.TestHelpers do
       :persistent_term.erase({EntityModelCache, :entity_models})
       :persistent_term.erase({GroupAppsCache, :group_apps})
       :persistent_term.erase({ComponentEntityIndex, :tables})
-      :persistent_term.erase({LinkTargetIndex, :tables})
       :persistent_term.erase({ifa_name, :table})
     end)
 
@@ -335,8 +320,6 @@ defmodule EbbServer.TestHelpers do
       entity_models: entity_models_table,
       component_index: component_index_table,
       component_entity_labels: component_entity_labels_table,
-      link_targets: link_targets_table,
-      link_target_labels: link_target_labels_table,
       group_apps: group_apps_table,
       watermark_tracker: wt_name,
       in_flight_actions: ifa_name,
@@ -424,8 +407,6 @@ defmodule EbbServer.TestHelpers do
     {default_component_index, default_component_entity_labels} =
       ComponentEntityIndex.tables()
 
-    {default_link_targets, default_link_target_labels} = LinkTargetIndex.tables()
-
     writer_opts =
       [
         name: name,
@@ -441,8 +422,6 @@ defmodule EbbServer.TestHelpers do
         component_index: Map.get(opts, :component_index) || default_component_index,
         component_entity_labels:
           Map.get(opts, :component_entity_labels) || default_component_entity_labels,
-        link_targets: Map.get(opts, :link_targets) || default_link_targets,
-        link_target_labels: Map.get(opts, :link_target_labels) || default_link_target_labels,
         group_apps: Map.get(opts, :group_apps) || CacheTables.group_apps(),
         watermark_tracker: opts[:watermark_tracker],
         in_flight_actions: opts[:in_flight_actions],
@@ -492,8 +471,6 @@ defmodule EbbServer.TestHelpers do
       group_apps: Map.get(ctx, :group_apps) || CacheTables.group_apps(),
       component_index: Map.get(ctx, :component_index),
       component_entity_labels: Map.get(ctx, :component_entity_labels),
-      link_targets: Map.get(ctx, :link_targets),
-      link_target_labels: Map.get(ctx, :link_target_labels),
       watermark_tracker: ctx.watermark_tracker,
       in_flight_actions: Map.get(ctx, :in_flight_actions)
     }

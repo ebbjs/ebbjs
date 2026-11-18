@@ -952,11 +952,14 @@ whole edge — and one Update writes one edge: a presence leaf to add it, a `mer
 tombstones the key to remove it. The edge row, its `rel_*` id, `RelationshipCache`'s two tables,
 and the `<source>/<as>` mirror are gone. Forward traversal is a component read (`linkTargets`); the
 client's reverse index is keyed `(field, type, target)` → source ids with the `rowId → yieldedId`
-layer deleted, while membership keeps its row-keyed index untouched. The server's
-`LinkTargetIndex` answers `(type, target_id) → source ids` from memory: applied after the range is
-durable, rebuilt at boot from `cf_actions` through the same op function, entries are candidates
-with the row tombstone as the liveness filter, and a patch of the wrong depth indexes nothing (the
-boot rebuild heals it). `SystemComponent` keeps the component's name and kind, drops its scope and
+layer deleted, while membership keeps its row-keyed index untouched. Incoming traversal has no
+server read path yet — the client's replica answers it — so the reverse index it would answer from
+was built and then **taken back out** before merge: it was derived state nothing read, paying one op
+per edge per Action and a second op list through every boot replay, which is the speculative cost
+this epic's own non-goals warn against. It returns with its reader; the follow-up issue carries the
+intended shape (`(type, target_id) → source ids` in memory, applied after the range is durable, rebuilt at
+boot from `cf_actions` through the same op function, entries are candidates with the row tombstone
+the liveness filter). `SystemComponent` keeps the component's name and kind, drops its scope and
 by-id declarations, and marks it an `overlay`: an `ebb/link` write on a user row adds a component
 entry and leaves the model entry alone, and a link write authorizes as `ebb/link.<verb>` in the
 source's group set. `GroupListing`'s relationship branch, the SQLite generated columns and index
