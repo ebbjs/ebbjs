@@ -35,10 +35,11 @@ describe("ctx.get overlay", () => {
     const view = await ctx.get(created.id);
 
     expect(view).toMatchObject({ id: "e_new", model: "issue", last_gsn: 0, deleted_hlc: null });
+    // `labels` is a relationship accessor, so an empty set writes no edge and
+    // no field: the edge is a key of the row's `ebb/link` component.
     expect(projectFields(view?.data.fields ?? {})).toEqual({
       title: "New",
       done: false,
-      labels: [],
     });
     // The leaf is a complete wire stamp of its own: the create carries the
     // row's creation time, the component write that follows carries a later one.
@@ -107,7 +108,6 @@ describe("ctx.get overlay", () => {
     expect(projectFields((await ctx.get(created.id))?.data.fields ?? {})).toEqual({
       title: "Draft",
       done: true,
-      labels: [],
     });
   });
 

@@ -2,31 +2,35 @@
  * Wire builders for relationship writes: the pure half of the client's
  * relationship module. Storage-backed traversal stays in `@ebbjs/client`.
  *
- * A link and a membership are each one atomic component, so every builder here
- * emits a row's create and its one component Update. The emitters themselves
- * live in `system-rows.ts`.
+ * A link is a keyed component of its **source row**: `ebb/link` holds
+ * `{<as>: {<type>: {<target_id>: true}}}`, so the three nesting levels are the
+ * edge's key and the leaf is presence. Every builder here merges keys on the
+ * source and no builder creates a row. One Update writes one edge — a presence
+ * leaf to add it, a tombstone (`value: null`) to remove it — except a
+ * one-cardinality move, which is one Update carrying the old key's tombstone
+ * and the new key's presence.
+ *
+ * Emitters for the three platform **rows** (group, grant, membership) live in
+ * `system-rows.ts`.
  */
 
-import { componentName, generateId, type Update } from "@ebbjs/core";
-
+import { ebbComponent, generateId, type FieldValue, type Update } from "@ebbjs/core";
 import { EntityValidationError, type ModelRegistry } from "@ebbjs/schema";
 
 import { membershipRowId } from "./membership";
 import { normalizePointer, type PointerValue } from "./pointer";
-import {
-  linkRowUpdates,
-  membershipRowUpdates,
-  systemRowDelete,
-  type SystemRowIds,
-} from "./system-rows";
+import { membershipRowUpdates, systemRowDelete, type SystemRowIds } from "./system-rows";
 
 /**
  * The value shape for `sourceCardinality: "many"` updates.
- *   - `{ replace: [...] }` — overwrite the whole set
+ *   - `{ replace: [...] }` — make the set exactly this
  *   - `{ add, remove }` — patch the set
  *
  * `null` is rejected for many-cardinality pointers (use `remove` to
- * clear). The two shapes are mutually exclusive at the type level.
+ * clear). The two shapes are mutually exclusive at the type level. A `replace`
+ * is an instruction to the planner, which resolves it to per-key presence
+ * leaves and tombstones against the live set; it never reaches the wire as an
+ * array-valued leaf.
  */
 export type ManyPointerValue =
   | { readonly replace: readonly PointerValue[] }
@@ -38,59 +42,117 @@ export interface BuildRelationshipWriteOptions {
   as: string;
   /** Optional override; defaults to the registry-stored relationship's `sourceCardinality`. */
   sourceCardinality?: "one" | "many";
+  /** The source entity's id: the `subject_id` of every Update and the edge's owner. */
+  sourceId: string;
   /**
-   * Source entity's id, the `subject_id` on the source's Update.
-   * Required for `sourceCardinality: "one"` — the one-cardinality
-   * wire carries the source id on the Relationship Update's
-   * `source_id` field rather than via a separate entity Update.
+   * The one-cardinality target: an id or entity shape, or `null` to remove the
+   * live edge. `undefined` writes nothing.
    */
-  sourceId?: string;
-  /**
-   * Source entity's Update. Required for `sourceCardinality: "many"`
-   * — the canonical FK set lives on the source's data field, so the
-   * entity Update carries `data.fields[as]`.
-   */
-  entityUpdate?: Update;
-  /** Pointer value for `sourceCardinality: "one"` (default). String id or entity. */
   targetId?: PointerValue;
   /** Pointer value(s) for `sourceCardinality: "many"`. */
   targetIds?: ManyPointerValue;
   /**
-   * Override the `subject_id` of the Relationship Update on the
-   * wire. When set, `buildRelationshipWrite` uses this value instead
-   * of minting a fresh id — required when deleting an existing
-   * relationship by natural key (the wire Update's `subject_id`
-   * must match the existing row's id for the server's authorizer
-   * to recover the relationship's group).
+   * The live targets of this accessor, when the caller can read them. A
+   * `replace` and a one-cardinality move are diffs against them: without them
+   * the builder cannot tombstone the keys the write drops.
    */
-  relationshipSubjectId?: string;
-  /** The local clock the link row is stamped with: its creation time and its value. */
+  currentTargets?: readonly string[];
+  /** The local clock every leaf is stamped with. */
   hlc: () => string;
   /**
-   * Mints the link row and Update ids. Defaults to core's
-   * nanoid `generateId`; a caller that needs a deterministic batch
-   * supplies its own seam.
+   * Mints the Update ids. Defaults to core's nanoid `generateId`; a caller that
+   * needs a deterministic batch supplies its own seam.
    */
   newId?: (prefix: string) => string;
 }
 
 export interface BuildRelationshipWriteResult {
-  /**
-   * The source entity's FK Update. Present for `sourceCardinality: "many"`,
-   * absent for `sourceCardinality: "one"`.
-   */
-  entityUpdate?: Update;
-  /**
-   * The link's Update — one at most — or one `delete`. Empty for
-   * `sourceCardinality: "many"` with no `targetIds`.
-   */
+  /** The `ebb/link` Updates on the source — one per edge written. */
   relationshipUpdates: readonly Update[];
 }
 
+/** The ids one edge write consumes: a fresh Update id each, and the local clock. */
+export interface LinkWriteIds {
+  updateId(): string;
+  hlc(): string;
+}
+
+/** The three-level value one Update carries: accessor, type label, then target leaves. */
+const linkComponentValue = (
+  as: string,
+  type: string,
+  leaves: Record<string, FieldValue>,
+): FieldValue => ({
+  map: { [as]: { map: { [type]: { map: leaves } } } },
+});
+
+/**
+ * One `ebb/link` Update on the source: a `merge` of the presence keys and the
+ * tombstone keys it carries. Removing one edge is a merge whose value
+ * tombstones that key, so `drop` keeps its `(entity, component)` granularity.
+ *
+ * A key named in both lists is removed: the tombstone is the newer intent.
+ */
+export const linkEdgeUpdate = (args: {
+  sourceId: string;
+  as: string;
+  type: string;
+  present: readonly string[];
+  removed: readonly string[];
+  ids: LinkWriteIds;
+}): Update => {
+  const updateId = args.ids.updateId();
+  const hlc = args.ids.hlc();
+  const removed = new Set(args.removed);
+  const leaves: Record<string, FieldValue> = {};
+  for (const targetId of args.present) {
+    if (removed.has(targetId)) continue;
+    leaves[targetId] = { value: true, update_id: updateId, hlc };
+  }
+  for (const targetId of removed) {
+    leaves[targetId] = { value: null, update_id: updateId, hlc };
+  }
+  return {
+    id: updateId,
+    subject_id: args.sourceId,
+    component: ebbComponent("link"),
+    method: "merge",
+    data: linkComponentValue(args.as, args.type, leaves),
+  };
+};
+
+/**
+ * Compile one edge delta into Updates. Each key gets its own Update — one
+ * Update, one edge — unless `combined` is set, which is the one-cardinality
+ * move: the previous target's tombstone and the new target's presence are one
+ * merged position set.
+ */
+export const linkEdgeUpdates = (args: {
+  sourceId: string;
+  as: string;
+  type: string;
+  present: readonly string[];
+  removed: readonly string[];
+  combined?: boolean;
+  ids: LinkWriteIds;
+}): Update[] => {
+  if (args.combined) {
+    if (args.present.length === 0 && args.removed.length === 0) return [];
+    return [linkEdgeUpdate(args)];
+  }
+  return [
+    ...args.present.map((targetId) =>
+      linkEdgeUpdate({ ...args, present: [targetId], removed: [] }),
+    ),
+    ...args.removed.map((targetId) =>
+      linkEdgeUpdate({ ...args, present: [], removed: [targetId] }),
+    ),
+  ];
+};
+
 /**
  * Normalize many-pointer values. Returns a flat array of distinct
- * string ids (or throws on bad input). For `{add, remove}` patches,
- * the caller computes the resulting set and passes it as `replace`.
+ * string ids (or throws on bad input).
  */
 export function normalizeManyPointers(value: ManyPointerValue, label: string): readonly string[] {
   const all: unknown[] = "replace" in value ? [...value.replace] : [...value.add, ...value.remove];
@@ -131,33 +193,6 @@ export function resolveCardinality(
   return "one";
 }
 
-/**
- * Build the wire-level Updates for a single link: one `ebb/link` Update carrying
- * the whole edge, or a single `delete` when the target is null.
- */
-export function buildRelationshipUpdate(args: {
-  relationshipId: string;
-  sourceId: string;
-  targetId: string | null;
-  field: string;
-  type: string;
-  ids: SystemRowIds;
-}): Update[] {
-  if (args.targetId === null) {
-    return [systemRowDelete(args.relationshipId, { updateId: () => args.ids.updateId() })];
-  }
-  return linkRowUpdates(
-    {
-      linkId: args.relationshipId,
-      sourceId: args.sourceId,
-      targetId: args.targetId,
-      field: args.field,
-      type: args.type,
-    },
-    args.ids,
-  );
-}
-
 /** The Updates for an `ebb/membership` row filing `entityId` into `groupId`. */
 export function buildMembershipUpdate(
   args: { membershipId: string; entityId: string; groupId: string },
@@ -196,62 +231,6 @@ export function buildMembershipUpdates(
 }
 
 /**
- * Build the Update for the source entity carrying the canonical FK set on its
- * declared component. Used by the many-cardinality relationship-write path:
- * the entity Update is one half of the wire shape, with N Relationship
- * Updates being the other half.
- *
- * It merges the one component: a replace would discard a concurrent writer's
- * siblings on a keyed component, and any other component of the row is
- * untouched either way.
- *
- * `hlc` is the freshly-minted local HLC; `updateId` is the Update's id. Both
- * surface in the leaf's `update_id` so the wire envelope is self-contained.
- */
-export function buildManyEntityUpdate(args: {
-  sourceId: string;
-  sourceEntityName: string;
-  as: string;
-  targetIds: readonly string[];
-  updateId: string;
-  hlc: string;
-}): Update {
-  return {
-    id: args.updateId,
-    subject_id: args.sourceId,
-    component: componentName(args.sourceEntityName, args.as),
-    method: "merge",
-    data: {
-      value: [...args.targetIds],
-      update_id: args.updateId,
-      hlc: args.hlc,
-    },
-  };
-}
-
-/**
- * Normalize a many-pointer patch to a deduplicated id list, dropping
- * `null` / `undefined` entries (the caller already validated they're
- * not present). Used by the namespace's many-cardinality entry
- * point before constructing the canonical-FK Update.
- */
-export function collectManyTargetIds(patch: ManyPointerValue): readonly string[] {
-  const all: readonly PointerValue[] =
-    "replace" in patch ? patch.replace : [...patch.add, ...patch.remove];
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const v of all) {
-    if (v === null || v === undefined) continue;
-    const id = typeof v === "string" ? v : v.id;
-    if (!seen.has(id)) {
-      seen.add(id);
-      ids.push(id);
-    }
-  }
-  return ids;
-}
-
-/**
  * Surface unknown source/target entity names as a typed
  * `EntityValidationError`. When no entities are registered at all
  * (validation is a no-op across the SDK) the call is skipped — the
@@ -282,68 +261,64 @@ function wireTypeFor(registry: ModelRegistry, sourceName: string, as: string): s
   return rel?.type ?? sourceName;
 }
 
-/** The row ids, drawn from the caller's id and clock seams. */
-function rowIds(newId: (prefix: string) => string, hlc: () => string): SystemRowIds {
-  return { updateId: () => newId("u"), hlc };
-}
-
-/** Build the link row's Updates for one many-cardinality target. */
-function makeManyRelationshipUpdate(
-  sourceId: string,
-  as: string,
-  wireType: string,
-  targetId: string,
-  newId: (prefix: string) => string,
-  hlc: () => string,
-): Update[] {
-  return buildRelationshipUpdate({
-    relationshipId: newId("rel"),
-    sourceId,
-    targetId,
-    field: as,
-    type: wireType,
-    ids: rowIds(newId, hlc),
-  });
-}
-
-/**
- * Resolve the `sourceId` from `BuildRelationshipWriteOptions`. The
- * one-cardinality wire doesn't carry an entity Update, so the caller
- * supplies `sourceId` directly.
- */
-function requireSourceId(opts: BuildRelationshipWriteOptions, as: string): string {
-  if (opts.sourceId !== undefined && opts.sourceId.length > 0) return opts.sourceId;
-  throw new EntityValidationError([
+const refreshError = (as: string, sourceId: string): EntityValidationError =>
+  new EntityValidationError([
     {
-      entityName: opts.source.name,
-      message: `buildRelationshipWrite: sourceId is required for one-cardinality relationship "${as}"`,
+      entityName: "",
+      message:
+        `buildRelationshipWrite: "${as}" on "${sourceId}" needs its live targets to diff a set ` +
+        `against; pass currentTargets, read from the replica that owns the write`,
     },
   ]);
-}
+
+/** The edge delta a caller's pointer value names, against the live set it supplies. */
+const oneDelta = (
+  opts: BuildRelationshipWriteOptions,
+  targetId: string | null,
+): { present: readonly string[]; removed: readonly string[] } => {
+  const current = opts.currentTargets;
+  if (targetId === null) {
+    if (current === undefined) throw refreshError(opts.as, opts.sourceId);
+    return { present: [], removed: current };
+  }
+  return {
+    present: [targetId],
+    removed: (current ?? []).filter((live) => live !== targetId),
+  };
+};
+
+const manyDelta = (
+  opts: BuildRelationshipWriteOptions,
+  targetIds: ManyPointerValue,
+): { present: readonly string[]; removed: readonly string[] } => {
+  if ("replace" in targetIds) {
+    const next = normalizeManyPointers(targetIds, `targetIds for "${opts.as}"`);
+    const current = opts.currentTargets;
+    if (current === undefined) throw refreshError(opts.as, opts.sourceId);
+    const keep = new Set(next);
+    return {
+      present: next.filter((targetId) => !current.includes(targetId)),
+      removed: current.filter((targetId) => !keep.has(targetId)),
+    };
+  }
+  return {
+    present: targetIds.add
+      .map((target) => normalizePointer(target, `targetIds.add for "${opts.as}"`))
+      .filter((id): id is string => id !== null),
+    removed: targetIds.remove
+      .map((target) => normalizePointer(target, `targetIds.remove for "${opts.as}"`))
+      .filter((id): id is string => id !== null),
+  };
+};
 
 /**
- * Resolve the entity Update from `BuildRelationshipWriteOptions`. The
- * many-cardinality wire carries the canonical FK set on the source
- * entity's data field, so the entity Update is required.
- */
-function requireEntityUpdate(opts: BuildRelationshipWriteOptions, as: string): Update {
-  if (opts.entityUpdate !== undefined) return opts.entityUpdate;
-  throw new EntityValidationError([
-    {
-      entityName: opts.source.name,
-      message: `buildRelationshipWrite: entityUpdate is required for many-cardinality relationship "${as}"`,
-    },
-  ]);
-}
-
-/**
- * Build the wire Update(s) for a single relationship write. The sole
- * builder, shared by `SyncClient.buildRelationshipWrite` and the
- * `writeRelationship` operation.
+ * Build the wire Update(s) for a single relationship write. The sole builder,
+ * shared by `SyncClient.buildRelationshipWrite` and the `writeRelationship`
+ * operation.
  *
- * One-cardinality: a single link Update addressed by `sourceId` +
- * `targetId` (`null` for a delete). Many-cardinality: one entity Update
- * carrying the canonical FK set plus one link Update per target.
+ * Every Update is an `ebb/link` merge on the source: a presence leaf per target
+ * the write adds, a tombstone per target it drops, and one Update for a
+ * one-cardinality move. A null / empty write emits nothing.
  *
  * Pointer values may be a string id or an entity-shape object
  * (anything with a string `.id`); both normalize to the id. Anything
@@ -359,49 +334,63 @@ export function buildRelationshipWrite(
 
   checkEntityRegistered(registry, sourceName, "source");
   const cardinality = resolveCardinality(registry, sourceName, as, opts.sourceCardinality);
+  const type = wireTypeFor(registry, sourceName, as);
+  const ids: LinkWriteIds = { updateId: () => newId("u"), hlc: opts.hlc };
 
   if (cardinality === "one") {
-    const sourceId = requireSourceId(opts, as);
+    if (opts.targetIds !== undefined) {
+      throw new EntityValidationError([
+        {
+          entityName: sourceName,
+          message: `buildRelationshipWrite: one-cardinality relationship "${as}" takes one target, not a set`,
+        },
+      ]);
+    }
+    if (opts.targetId === undefined) return { relationshipUpdates: [] };
     const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
-    const relationshipId = opts.relationshipSubjectId ?? newId("rel");
-    const relationshipUpdates = buildRelationshipUpdate({
-      relationshipId,
-      sourceId,
-      targetId,
-      field: as,
-      type: wireTypeFor(registry, sourceName, as),
-      ids: rowIds(newId, opts.hlc),
-    });
-    return { relationshipUpdates };
+    const delta = oneDelta(opts, targetId);
+    return {
+      relationshipUpdates: linkEdgeUpdates({
+        sourceId: opts.sourceId,
+        as,
+        type,
+        ...delta,
+        combined: true,
+        ids,
+      }),
+    };
   }
 
-  const entityUpdate = requireEntityUpdate(opts, as);
-  const sourceId = entityUpdate.subject_id;
-  const targetIds = opts.targetIds;
-  const wireType = wireTypeFor(registry, sourceName, as);
-  const hlc = opts.hlc;
-  const updates: Update[] = [];
-  if (targetIds === undefined) {
-    // No `targetIds` — emit the entity Update with no relationship
-    // edges, matching `targetId: null` on the one-cardinality side.
-    return { entityUpdate, relationshipUpdates: updates };
+  if (opts.targetIds === undefined) {
+    if (opts.targetId === undefined) return { relationshipUpdates: [] };
+    const targetId = normalizePointer(opts.targetId, `targetId for "${as}"`);
+    if (targetId === null) {
+      throw new EntityValidationError([
+        {
+          entityName: sourceName,
+          message: `buildRelationshipWrite: many-cardinality relationship "${as}" removes one target at a time; name the target`,
+        },
+      ]);
+    }
+    return {
+      relationshipUpdates: linkEdgeUpdates({
+        sourceId: opts.sourceId,
+        as,
+        type,
+        present: [targetId],
+        removed: [],
+        ids,
+      }),
+    };
   }
-  if ("replace" in targetIds) {
-    const normalized = normalizeManyPointers(targetIds, `targetIds for "${as}"`);
-    for (const targetId of normalized) {
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, targetId, newId, hlc));
-    }
-  } else {
-    for (const targetId of targetIds.add) {
-      const id = normalizePointer(targetId, `targetIds.add for "${as}"`);
-      if (id === null) continue;
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId, hlc));
-    }
-    for (const targetId of targetIds.remove) {
-      const id = normalizePointer(targetId, `targetIds.remove for "${as}"`);
-      if (id === null) continue;
-      updates.push(...makeManyRelationshipUpdate(sourceId, as, wireType, id, newId, hlc));
-    }
-  }
-  return { entityUpdate, relationshipUpdates: updates };
+
+  return {
+    relationshipUpdates: linkEdgeUpdates({
+      sourceId: opts.sourceId,
+      as,
+      type,
+      ...manyDelta(opts, opts.targetIds),
+      ids,
+    }),
+  };
 }

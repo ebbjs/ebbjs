@@ -37,17 +37,9 @@ import {
 
 import { projectFieldValue } from "./field-projection";
 import { lastMembershipViolation, membershipScope, type MembershipView } from "./membership";
-import type { PointerValue } from "./pointer";
+import { normalizePointer, type PointerValue } from "./pointer";
 import type { Rejection } from "./rejection";
-import {
-  buildMembershipDelete,
-  buildMembershipUpdates,
-  buildManyEntityUpdate,
-  collectManyTargetIds,
-  buildRelationshipUpdate,
-  buildRelationshipWrite,
-  type ManyPointerValue,
-} from "./relationship";
+import { buildMembershipDelete, buildMembershipUpdates, linkEdgeUpdates } from "./relationship";
 import { rowCreate } from "./row-create";
 import { systemRowCreate, systemRowUpdate } from "./system-rows";
 
@@ -107,10 +99,10 @@ export interface OperationIds {
   /** Advance the local clock and return a fresh HLC timestamp. */
   hlc(): string;
   /**
-   * Mint an id of a non-Update row the batch addresses — a link row, say. A
-   * seam rather than a direct `generateId` call so a caller that needs a
-   * deterministic batch (the function runtime's reference fixtures) can
-   * control every id the planner emits.
+   * Mint an id of a non-Update row the batch addresses. A seam rather than a
+   * direct `generateId` call so a caller that needs a deterministic batch (the
+   * function runtime's reference fixtures) can control every id the planner
+   * emits.
    */
   newId(prefix: string): string;
 }
@@ -129,7 +121,7 @@ export interface OpContext {
   readonly actorId: string;
 }
 
-/** Whose write this is — the named entity, not the link row. */
+/** Whose write this is: the named entity the write is attributed to. */
 export interface OperationSubject {
   readonly id: string;
   readonly type: string;
@@ -233,8 +225,8 @@ const platformComponentOf = (
 /**
  * Create one entity: the row's create, then one `replace` per leaf component (a
  * keyed component merges, because `replace` is refused for a key space), one
- * membership row per group, then one link row per resolved pointer. Field
- * validation runs here (never partially) unless the caller opted out.
+ * membership row per group, then one `ebb/link` Update per resolved pointer.
+ * Field validation runs here (never partially) unless the caller opted out.
  *
  * A platform row (`ebb`) is one atomic component, validated as a whole value.
  */
@@ -269,12 +261,12 @@ export const createEntity: Operation<CreateEntityInput> = (ctx, input) => {
 
   for (const pointer of input.pointers ?? []) {
     updates.push(
-      ...buildRelationshipUpdate({
-        relationshipId: ctx.ids.newId("rel"),
+      ...linkEdgeUpdates({
         sourceId: input.id,
-        targetId: pointer.targetId,
-        field: pointer.as,
+        as: pointer.as,
         type: pointer.type,
+        present: [pointer.targetId],
+        removed: [],
         ids: { updateId: () => ctx.ids.updateId(), hlc: () => ctx.ids.hlc() },
       }),
     );
@@ -713,24 +705,21 @@ export const changeGroups: Operation<ChangeGroupsInput> = (ctx, input) => {
   };
 };
 
-/** The pointer shape a relationship write carries per cardinality. */
-export interface RelationshipPointer {
-  readonly targetId?: PointerValue;
-  readonly targetIds?: ManyPointerValue;
-}
-
-/** Input for {@link writeRelationship}. */
+/** Input for {@link writeRelationship}: the edges one write sets or tombstones. */
 export interface WriteRelationshipInput {
   readonly entity: string;
   readonly sourceId: string;
   readonly as: string;
-  readonly pointer: RelationshipPointer;
+  /** The edges this write gives presence to. */
+  readonly present?: readonly PointerValue[];
+  /** The edges this write tombstones. */
+  readonly removed?: readonly PointerValue[];
   /**
-   * `subject_id` the one-cardinality delete must name. The draft
-   * planner resolves the existing link row's id (a storage read) and
-   * passes it in.
+   * Carry `present` and `removed` in one Update. A one-cardinality move is one
+   * Update holding the previous target's tombstone and the new target's
+   * presence; every other write is one Update per edge.
    */
-  readonly relationshipSubjectId?: string;
+  readonly combined?: boolean;
   /** The source entity's live membership set. */
   readonly groups: readonly string[];
 }
@@ -769,46 +758,36 @@ export const requireRelationship = (
   return rel;
 };
 
+/** The target ids a delta's pointer values name, dropping absent entries. */
+const edgeTargets = (values: readonly PointerValue[] | undefined, label: string): string[] =>
+  (values ?? []).flatMap((value) => {
+    const id = normalizePointer(value, label);
+    return id === null ? [] : [id];
+  });
+
 /**
- * Link, unlink, or set the links of one relationship. The built-in
- * membership accessor is refused (membership verbs own it), and an
- * undeclared relationship is refused before any wire Update exists.
- * Many-cardinality emits the source's canonical-FK component merge plus one
- * link Update per target; one-cardinality emits one link Update (or a
- * `delete`).
+ * Link, unlink, or set the links of one relationship. The built-in membership
+ * accessor is refused (membership verbs own it), and an undeclared relationship
+ * is refused before any Update exists.
+ *
+ * Every Update is an `ebb/link` merge on the source row: one presence leaf per
+ * added edge, one tombstone leaf per removed edge, one Update per edge unless
+ * `combined` carries both lists as one one-cardinality move. The operation
+ * never creates a row and never names a link id.
  */
 export const writeRelationship: Operation<WriteRelationshipInput> = (ctx, input) => {
   const { entity, sourceId, as } = input;
   const rel = requireRelationship(ctx.registry, entity, as);
 
-  let entityUpdate: Update | undefined;
-  if (rel.sourceCardinality === "many" && input.pointer.targetIds !== undefined) {
-    const updateId = ctx.ids.updateId();
-    entityUpdate = buildManyEntityUpdate({
-      sourceId,
-      sourceEntityName: entity,
-      as,
-      targetIds: collectManyTargetIds(input.pointer.targetIds),
-      updateId,
-      hlc: ctx.ids.hlc(),
-    });
-  }
-
-  const result = buildRelationshipWrite(ctx.registry, {
-    source: { name: entity },
-    target: { name: rel.target.name },
-    newId: ctx.ids.newId,
-    hlc: () => ctx.ids.hlc(),
-    as,
+  const updates = linkEdgeUpdates({
     sourceId,
-    entityUpdate,
-    relationshipSubjectId: input.relationshipSubjectId,
-    targetId: input.pointer.targetId,
-    targetIds: input.pointer.targetIds,
+    as,
+    type: rel.type ?? entity,
+    present: edgeTargets(input.present, `targets for "${entity}.${as}"`),
+    removed: edgeTargets(input.removed, `targets for "${entity}.${as}"`),
+    combined: input.combined,
+    ids: { updateId: () => ctx.ids.updateId(), hlc: () => ctx.ids.hlc() },
   });
-  const updates: Update[] = [];
-  if (result.entityUpdate !== undefined) updates.push(result.entityUpdate);
-  updates.push(...result.relationshipUpdates);
 
   return {
     updates,

@@ -1,15 +1,22 @@
 /**
- * The platform's own components: the `ebb` model's four atomic values.
+ * The platform's own components: the `ebb` model's four declarations.
  *
  * Its components may sit on any row, are authorized under their own component
- * name, and never change the row's committed model. Each is atomic — one Update
- * replaces the whole value — and the membership and link keys are immutable
- * after create, so a move is a delete plus a create.
+ * name, and never change the row's committed model. Three are atomic values on
+ * a row of their own — one Update carries the whole value — and their keys are
+ * immutable, so a grant or membership move is a delete plus a create.
  *
- * Each also declares its *scope owner*, the entity its write's group set
- * resolves against: `ebb/group` is `self`, `ebb/grant` and `ebb/membership`
- * name `group_id`, and `ebb/link` names `source_id`. Declared here because only
- * the `ebb/` namespace may name a group.
+ * `ebb/link` is a **keyed** component of its source row: `{<as>: {<type>:
+ * {<target_id>: boolean}}}`. Its whole key is the edge's identity, so one
+ * Update writes one edge and removing one tombstones that key. It is declared
+ * here because a component's declaration is where its merge granularity lives,
+ * and it declares no scope owner: it inherits its host row's membership, since
+ * the row carrying it *is* the source.
+ *
+ * The three row kinds declare their *scope owner*, the entity a write's group
+ * set resolves against: `ebb/group` is `self`, and `ebb/grant` and
+ * `ebb/membership` name `group_id`. Declared here because only the `ebb/`
+ * namespace may name a group.
  *
  * `defineSchema` registers this model alongside the app's models, so the public
  * write paths can submit their Updates without callers hand-registering
@@ -63,13 +70,11 @@ const membershipShape = e.object({
   group_id: e.string(),
 });
 
-/** One edge from a source entity. */
-const linkShape = e.object({
-  source_id: e.string(),
-  target_id: e.string(),
-  type: e.string(),
-  field: e.string(),
-});
+/**
+ * Every edge from one source: accessor, then type label, then target id. The
+ * three levels are the key, so the innermost value is presence alone.
+ */
+const linkShape = e.map(e.map(e.map(e.boolean())));
 
 const groupComponent = defineComponent(EBB_COMPONENTS.group, groupShape, {
   optional: true,
@@ -91,7 +96,6 @@ const membershipComponent = defineComponent(EBB_COMPONENTS.membership, membershi
 const linkComponent = defineComponent(EBB_COMPONENTS.link, linkShape, {
   optional: true,
   structural: true,
-  scope: "source_id",
 });
 
 /**

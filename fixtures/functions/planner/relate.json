@@ -1,30 +1,12 @@
 {
   "name": "relate",
-  "description": "a one-cardinality link and a many-cardinality FK set, each relationship row born in its create",
+  "description": "a one-cardinality link and a many-cardinality link set, each a presence leaf on the source row's ebb/link component",
   "schema": "schema",
   "invocation_id": "inv_goldenRelate",
   "actor_id": "a_golden",
   "ids": {
-    "u": [
-      "u_grelate1",
-      "u_grelate2",
-      "u_grelate3",
-      "u_grelate4",
-      "u_grelate5",
-      "u_grelate6",
-      "u_grelate7"
-    ],
-    "rel": ["rel_grelate1", "rel_grelate2", "rel_grelate3"],
-    "hlc": [
-      "111690000000000031",
-      "111690000000000032",
-      "111690000000000033",
-      "111690000000000034",
-      "111690000000000035",
-      "111690000000000036",
-      "111690000000000037",
-      "111690000000000038"
-    ]
+    "u": ["u_grelate1", "u_grelate2", "u_grelate3"],
+    "hlc": ["111690000000000001", "111690000000000002", "111690000000000003", "111690000000000004"]
   },
   "calls": [
     {
@@ -45,92 +27,79 @@
   "action": {
     "id": "a_d821b9aa2775e6a4",
     "actor_id": "a_golden",
-    "hlc": "111690000000000038",
+    "hlc": "111690000000000004",
     "gsn": 0,
     "updates": [
       {
         "id": "u_grelate1",
-        "subject_id": "rel_grelate1",
-        "model": "ebb",
-        "method": "create",
-        "hlc": "111690000000000031",
-        "data": null
+        "subject_id": "e_gissue1",
+        "component": "ebb/link",
+        "method": "merge",
+        "data": {
+          "map": {
+            "project": {
+              "map": {
+                "issue": {
+                  "map": {
+                    "e_gproject1": {
+                      "value": true,
+                      "update_id": "u_grelate1",
+                      "hlc": "111690000000000001"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       {
         "id": "u_grelate2",
-        "subject_id": "rel_grelate1",
+        "subject_id": "e_gissue1",
         "component": "ebb/link",
-        "method": "replace",
+        "method": "merge",
         "data": {
-          "value": {
-            "source_id": "e_gissue1",
-            "target_id": "e_gproject1",
-            "type": "issue",
-            "field": "project"
-          },
-          "update_id": "u_grelate2",
-          "hlc": "111690000000000032"
+          "map": {
+            "labels": {
+              "map": {
+                "issue": {
+                  "map": {
+                    "e_glabel1": {
+                      "value": true,
+                      "update_id": "u_grelate2",
+                      "hlc": "111690000000000002"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       },
       {
         "id": "u_grelate3",
         "subject_id": "e_gissue1",
-        "component": "issue/labels",
+        "component": "ebb/link",
         "method": "merge",
         "data": {
-          "value": ["e_glabel1", "e_glabel2"],
-          "update_id": "u_grelate3",
-          "hlc": "111690000000000033"
-        }
-      },
-      {
-        "id": "u_grelate4",
-        "subject_id": "rel_grelate2",
-        "model": "ebb",
-        "method": "create",
-        "hlc": "111690000000000034",
-        "data": null
-      },
-      {
-        "id": "u_grelate5",
-        "subject_id": "rel_grelate2",
-        "component": "ebb/link",
-        "method": "replace",
-        "data": {
-          "value": {
-            "source_id": "e_gissue1",
-            "target_id": "e_glabel1",
-            "type": "issue",
-            "field": "labels"
-          },
-          "update_id": "u_grelate5",
-          "hlc": "111690000000000035"
-        }
-      },
-      {
-        "id": "u_grelate6",
-        "subject_id": "rel_grelate3",
-        "model": "ebb",
-        "method": "create",
-        "hlc": "111690000000000036",
-        "data": null
-      },
-      {
-        "id": "u_grelate7",
-        "subject_id": "rel_grelate3",
-        "component": "ebb/link",
-        "method": "replace",
-        "data": {
-          "value": {
-            "source_id": "e_gissue1",
-            "target_id": "e_glabel2",
-            "type": "issue",
-            "field": "labels"
-          },
-          "update_id": "u_grelate7",
-          "hlc": "111690000000000037"
+          "map": {
+            "labels": {
+              "map": {
+                "issue": {
+                  "map": {
+                    "e_glabel2": {
+                      "value": true,
+                      "update_id": "u_grelate3",
+                      "hlc": "111690000000000003"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     ]
-  }
+  },
+  "notes": "Neither call can read the source row, so a set adds presence for its targets and moves nothing; a surface that can read supplies the live target and the move becomes one Update."
 }

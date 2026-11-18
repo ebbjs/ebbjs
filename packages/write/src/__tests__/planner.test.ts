@@ -16,9 +16,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildMembershipDelete,
-  buildManyEntityUpdate,
-  buildRelationshipUpdate,
   call,
+  linkEdgeUpdates,
   commit,
   createEntity,
   deleteEntity,
@@ -282,46 +281,60 @@ describe("@ebbjs/write", () => {
     expect(createsOf(updates)).toEqual([]);
   });
 
-  it("builds a relationship delete when the target is null, and no create with it", () => {
-    const updates = buildRelationshipUpdate({
-      relationshipId: "rel_1",
+  it("writes one edge as one presence leaf on the source, and creates no row", () => {
+    const updates = linkEdgeUpdates({
       sourceId: "e_issue",
-      targetId: null,
-      field: "project",
-      type: "project",
+      as: "project",
+      type: "issue",
+      present: ["e_project"],
+      removed: [],
       ids: { updateId: () => "u_1", hlc: () => "hlc-1" },
     });
 
-    expect(updates).toEqual([{ id: "u_1", subject_id: "rel_1", method: "delete", data: null }]);
+    expect(updates).toEqual([
+      {
+        id: "u_1",
+        subject_id: "e_issue",
+        component: "ebb/link",
+        method: "merge",
+        data: {
+          map: {
+            project: {
+              map: {
+                issue: { map: { e_project: { value: true, update_id: "u_1", hlc: "hlc-1" } } },
+              },
+            },
+          },
+        },
+      },
+    ]);
   });
 
-  it("creates a link row, then writes its one ebb/link component", () => {
-    const updates = buildRelationshipUpdate({
-      relationshipId: "rel_1",
+  it("rides a one-cardinality move as one Update: the old key's tombstone and the new key's presence", () => {
+    const updates = linkEdgeUpdates({
       sourceId: "e_issue",
-      targetId: "e_project",
-      field: "project",
-      type: "project",
+      as: "project",
+      type: "issue",
+      present: ["e_new"],
+      removed: ["e_old"],
+      combined: true,
       ids: { updateId: () => "u_1", hlc: () => "hlc-1" },
     });
 
-    expect(updates[0]).toEqual({
-      id: "u_1",
-      subject_id: "rel_1",
-      model: "ebb",
-      method: "create",
-      hlc: "hlc-1",
-      data: null,
-    });
+    expect(updates).toHaveLength(1);
     expect(componentOf(updates, "ebb/link").data).toEqual({
-      value: {
-        source_id: "e_issue",
-        target_id: "e_project",
-        type: "project",
-        field: "project",
+      map: {
+        project: {
+          map: {
+            issue: {
+              map: {
+                e_new: { value: true, update_id: "u_1", hlc: "hlc-1" },
+                e_old: { value: null, update_id: "u_1", hlc: "hlc-1" },
+              },
+            },
+          },
+        },
       },
-      update_id: "u_1",
-      hlc: "hlc-1",
     });
   });
 
@@ -372,16 +385,8 @@ describe("@ebbjs/write", () => {
     expect(updates.some((update) => update.method === "delete")).toBe(true);
   });
 
-  it("never creates a row for a membership delete or a many-cardinality FK merge", () => {
+  it("never creates a row for a membership delete", () => {
     const membershipDelete = buildMembershipDelete({ membershipId: "eg_1", updateId: "u_1" });
-    const entityUpdate = buildManyEntityUpdate({
-      sourceId: "e_issue",
-      sourceEntityName: "issue",
-      as: "projects",
-      targetIds: ["e_project"],
-      updateId: "u_2",
-      hlc: "hlc-1",
-    });
 
     expect(membershipDelete).toEqual({
       id: "u_1",
@@ -389,7 +394,6 @@ describe("@ebbjs/write", () => {
       method: "delete",
       data: null,
     });
-    expect(entityUpdate.method).toBe("merge");
   });
 
   it("refuses a drop naming no component", () => {
@@ -434,7 +438,7 @@ describe("@ebbjs/write", () => {
     try {
       dropEntity(
         { registry, ids: ids("u_"), actorId: "a_actor" },
-        { entity: "ebb", id: "rel_1", fields: ["link"], groups: ["g_project"] },
+        { entity: "ebb", id: "x_1", fields: ["link"], groups: ["g_project"] },
       );
     } catch (error) {
       caught = error;
@@ -461,32 +465,27 @@ describe("@ebbjs/write", () => {
     ]);
   });
 
-  it("keeps a relationship write pure under a shared OpContext, creating the link row", () => {
+  it("keeps a relationship write pure under a shared OpContext: one edge, on the source", () => {
     const registry = buildRegistry();
 
     const result = writeRelationship(ctxOf(registry), {
       entity: "issue",
       sourceId: "e_issue",
       as: "project",
-      pointer: { targetId: "e_project" },
+      present: ["e_project"],
       groups: ["g_project"],
     });
 
     expect(result.groups).toEqual(["g_project"]);
-    expect(result.updates).toHaveLength(2);
+    expect(result.updates).toHaveLength(1);
     expect(result.updates[0]).toMatchObject({
-      subject_id: "u_rel-1",
-      model: "ebb",
-      method: "create",
-    });
-    expect(result.updates[1]).toMatchObject({
-      subject_id: "u_rel-1",
+      subject_id: "e_issue",
       component: "ebb/link",
-      data: { value: { source_id: "e_issue", target_id: "e_project", field: "project" } },
+      method: "merge",
     });
   });
 
-  it("writes a many-cardinality relationship as the FK merge plus one created link row", () => {
+  it("writes a many-cardinality relationship as one presence leaf per target, and no other component", () => {
     const project = defineModel("project", { name: e.string(), issues: e.array(e.string()) });
     const issue = defineModel("issue", { title: e.string() });
     const hasIssues = defineRelationship({
@@ -505,17 +504,15 @@ describe("@ebbjs/write", () => {
       entity: "project",
       sourceId: "p_1",
       as: "issues",
-      pointer: { targetIds: { replace: ["i_1"] } },
+      present: ["i_1", "i_2"],
       groups: ["g_1"],
     });
 
-    expect(result.updates.map((update) => update.method)).toEqual(["merge", "create", "replace"]);
-    expect(result.updates[0]).toMatchObject({ subject_id: "p_1", component: "project/issues" });
-    expect(result.updates[1]).toMatchObject({ model: "ebb", method: "create" });
-    expect(result.updates[2]).toMatchObject({
-      component: "ebb/link",
-      subject_id: createdSubjectOf(result.updates[1]),
-    });
+    expect(result.updates.map((update) => update.method)).toEqual(["merge", "merge"]);
+    expect(
+      result.updates.map((update) => (isComponentUpdate(update) ? update.component : null)),
+    ).toEqual(["ebb/link", "ebb/link"]);
+    expect(result.updates.every((update) => update.subject_id === "p_1")).toBe(true);
   });
 
   it("creates the copy's row before writing the copied fields", () => {

@@ -97,10 +97,10 @@ export interface DropVerb {
 }
 
 /**
- * Link a relationship. One-cardinality relationships take a single
- * `target`; a many-cardinality relationship's canonical FK set lives on the
- * source row, so `targets` is the whole set the write carries (the client's
- * `setLinks({ replace })`).
+ * Link a relationship. One-cardinality relationships take a single `target`;
+ * a many-cardinality relationship takes the whole set the write carries (the
+ * client's `setLinks({ replace })`). The edge lives on the source row, so every
+ * target becomes a presence leaf on its `ebb/link` component.
  */
 export interface RelateVerb {
   readonly verb: "relate";
@@ -113,9 +113,10 @@ export interface RelateVerb {
 }
 
 /**
- * Remove a relationship. A one-cardinality edge is deleted by its
- * `relationship` row id; a many-cardinality write either drops `target` from
- * the current FK set or clears the set when no target is named.
+ * Remove a relationship: `target` names the edge's key, for either
+ * cardinality. With no target the write clears the accessor, which needs the
+ * live targets — the resolution's `targetsOf` supplies them and the verb
+ * refuses when the caller cannot read them.
  */
 export interface UnrelateVerb {
   readonly verb: "unrelate";
@@ -123,7 +124,6 @@ export interface UnrelateVerb {
   readonly id: string;
   readonly as: string;
   readonly target?: PointerTarget;
-  readonly relationshipId?: string;
   readonly groups?: readonly string[];
 }
 
@@ -138,21 +138,18 @@ export interface VerbResolution {
   /** The acting entity's fan-out groups; `[]` when locally unknown. */
   groupsOf(entityId: string): readonly string[];
   /**
-   * The live `relationship` row id of a one-cardinality edge:
-   * - a string — the row to delete;
-   * - `null` — known to be unlinked, so the verb emits nothing;
-   * - `undefined` — the caller cannot see it, so the verb refuses.
+   * The live targets of one `(source, as, type)` edge set, ascending:
+   * - an array — the edges the caller can see, possibly none;
+   * - `undefined` — the caller cannot see them, so a verb that must diff
+   *   against them refuses (or, for `relate`, writes presence alone).
    */
-  relationshipIdFor(sourceId: string, as: string, type: string): string | null | undefined;
-  /** The source row's current canonical FK set for a many-cardinality `as`. */
-  fkTargetsOf(sourceId: string, as: string): readonly string[] | undefined;
+  targetsOf(sourceId: string, as: string, type: string): readonly string[] | undefined;
 }
 
 /** A resolution for a batch whose reads are all unknown — no groups, no edges. */
 export const UNRESOLVED: VerbResolution = {
   groupsOf: () => [],
-  relationshipIdFor: () => undefined,
-  fkTargetsOf: () => undefined,
+  targetsOf: () => undefined,
 };
 
 const groupsOf = (
@@ -196,9 +193,6 @@ const collapseHandles = (value: unknown, seen: Set<object> = new Set()): unknown
   return resolved;
 };
 
-const declaresField = (def: ReturnType<ModelRegistry["get"]>, key: string): boolean =>
-  def !== undefined && Object.prototype.hasOwnProperty.call(def.shape.properties ?? {}, key);
-
 /**
  * Normalize a `groups` option: required, non-empty, de-duplicated. The
  * message matches the client draft surface's, so both refuse identically.
@@ -230,10 +224,13 @@ export const normalizeGroupIds = (
 };
 
 /**
- * Resolve a create into the create operation's input: field values with
- * handles collapsed and declared relationships split into pointers (and, for
- * a many-cardinality accessor the entity declares as a field, a canonical FK
- * value).
+ * Resolve a create into the create operation's input: field values with handles
+ * collapsed and declared relationships split into pointers.
+ *
+ * A relationship accessor names an edge and never a field: the edge is a key of
+ * the source row's `ebb/link` component, so nothing copies the target set onto
+ * a `<source>/<as>` component, even when the model declares a field of the same
+ * name.
  *
  * This is the only place the create shape is interpreted, so the runtime and
  * the fixtures cannot disagree about what a create field means.
@@ -241,7 +238,6 @@ export const normalizeGroupIds = (
 export const createEntityInput = (registry: ModelRegistry, verb: CreateVerb): CreateEntityInput => {
   const fields: Record<string, unknown> = {};
   const pointers: ResolvedPointer[] = [];
-  const def = registry.get(verb.entity);
 
   for (const [key, value] of Object.entries(verb.fields)) {
     const rel = registry.getRelationship(verb.entity, key);
@@ -255,9 +251,6 @@ export const createEntityInput = (registry: ModelRegistry, verb: CreateVerb): Cr
       `pointer for "${verb.entity}.${key}"`,
     );
     if (rel.sourceCardinality === "many") {
-      // A declared `as` field carries the canonical FK set on the entity;
-      // an undeclared one lives only on the Relationship records.
-      if (declaresField(def, key)) fields[key] = targets;
       for (const targetId of targets) pointers.push({ as: key, type: rel.type, targetId });
       continue;
     }
@@ -288,12 +281,41 @@ const unlinkTargetError = (verb: UnrelateVerb): EntityValidationError =>
   new EntityValidationError([
     {
       entityName: verb.entity,
+      field: verb.as,
       message:
-        `unrelate: no live "${verb.as}" relationship row is visible to this invocation. ` +
-        `A one-cardinality edge that predates the call is addressed by its row id: pass ` +
-        `{ relationshipId } (ctx.get cannot read relationship rows in v1).`,
+        `unrelate: cannot read the live "${verb.as}" edges of "${verb.id}" from this call. ` +
+        `Read the row with ctx.get and unrelate again, or name the target to remove.`,
     },
   ]);
+
+/** One write's delta: the keys it gives presence to and the keys it tombstones. */
+interface EdgeDelta {
+  readonly present: readonly string[];
+  readonly removed: readonly string[];
+  readonly combined: boolean;
+}
+
+/** Nothing to write: no key changes, so the verb emits no Update at all. */
+const isEmptyDelta = (delta: EdgeDelta): boolean =>
+  delta.present.length === 0 && delta.removed.length === 0;
+
+/** Apply a delta only when it changes something; a no-op write emits nothing. */
+const edgeCall = (
+  verb: RelateVerb | UnrelateVerb,
+  delta: EdgeDelta,
+  resolution: VerbResolution,
+): OperationCall | undefined =>
+  isEmptyDelta(delta)
+    ? undefined
+    : call(writeRelationship, {
+        entity: verb.entity,
+        sourceId: verb.id,
+        as: verb.as,
+        present: delta.present,
+        removed: delta.removed,
+        combined: delta.combined,
+        groups: groupsOf(verb, resolution),
+      });
 
 /**
  * Resolve a verb to the planner call that builds its Updates. Returns
@@ -301,9 +323,9 @@ const unlinkTargetError = (verb: UnrelateVerb): EntityValidationError =>
  * edge that is already gone.
  *
  * Throws where the verb cannot be resolved faithfully: an undeclared
- * relationship, a one-cardinality unlink with no visible row id, or a
- * many-cardinality unlink whose current FK set is unknown. Emitting an Update
- * that would lose links is worse than refusing the call.
+ * relationship, or an unlink with no target whose live edges the surface cannot
+ * read. Emitting an Update that would drop links the caller never saw is worse
+ * than refusing the call.
  */
 export const operationCallFor = (
   registry: ModelRegistry,
@@ -336,20 +358,25 @@ export const operationCallFor = (
       });
     case "relate": {
       const rel = requireRelationship(registry, verb.entity, verb.as);
-      const groups = groupsOf(verb, resolution);
+      const type = rel.type ?? verb.entity;
+      const current = resolution.targetsOf(verb.id, verb.as, type);
+      const known = current ?? [];
       if (rel.sourceCardinality === "many") {
         const targets = verb.targets ?? (verb.target === undefined ? [] : [verb.target]);
-        return call(writeRelationship, {
-          entity: verb.entity,
-          sourceId: verb.id,
-          as: verb.as,
-          pointer: {
-            targetIds: {
-              replace: pointerIds(targets, `target for "${verb.entity}.${verb.as}"`),
-            },
-          },
-          groups,
-        });
+        const next = pointerIds(targets, `target for "${verb.entity}.${verb.as}"`);
+        // A set is a diff when the live set is readable; without it the write
+        // can only add presence, never tombstone what it would drop.
+        return edgeCall(
+          verb,
+          current === undefined
+            ? { present: next, removed: [], combined: false }
+            : {
+                present: next.filter((targetId) => !known.includes(targetId)),
+                removed: known.filter((targetId) => !next.includes(targetId)),
+                combined: false,
+              },
+          resolution,
+        );
       }
       if (verb.targets !== undefined) {
         throw new EntityValidationError([
@@ -360,67 +387,40 @@ export const operationCallFor = (
           },
         ]);
       }
-      return call(writeRelationship, {
-        entity: verb.entity,
-        sourceId: verb.id,
-        as: verb.as,
-        pointer: {
-          targetId: pointerId(
-            verb.target as PointerTarget,
-            `target for "${verb.entity}.${verb.as}"`,
-          ),
+      const next = pointerId(
+        verb.target as PointerTarget,
+        `target for "${verb.entity}.${verb.as}"`,
+      );
+      // The move is one Update: the previous target's tombstone and the new
+      // target's presence are one merged position set.
+      return edgeCall(
+        verb,
+        {
+          present: [next],
+          removed: known.filter((targetId) => targetId !== next),
+          combined: true,
         },
-        groups,
-      });
+        resolution,
+      );
     }
     case "unrelate": {
       const rel = requireRelationship(registry, verb.entity, verb.as);
-      const groups = groupsOf(verb, resolution);
-      if (rel.sourceCardinality === "many") {
-        const current = verb.target === undefined ? [] : resolution.fkTargetsOf(verb.id, verb.as);
-        if (verb.target !== undefined && current === undefined) {
-          throw new EntityValidationError([
-            {
-              entityName: verb.entity,
-              field: verb.as,
-              message:
-                `unrelate: cannot resolve the current "${verb.as}" FK set for "${verb.id}"; ` +
-                `read the row with ctx.get before unlinking one target, or call unrelate without one to clear the set`,
-            },
-          ]);
-        }
-        const drop = verb.target === undefined ? undefined : pointerId(verb.target, "target");
-        const remaining = (current ?? []).filter((targetId) => targetId !== drop);
-        return call(writeRelationship, {
-          entity: verb.entity,
-          sourceId: verb.id,
-          as: verb.as,
-          pointer: { targetIds: { replace: remaining } },
-          groups,
-        });
-      }
+      const type = rel.type ?? verb.entity;
       if (verb.target !== undefined) {
-        throw new EntityValidationError([
+        // A named target is a key, so the removal needs no read at all.
+        return edgeCall(
+          verb,
           {
-            entityName: verb.entity,
-            field: verb.as,
-            message: `unrelate: a one-cardinality edge is addressed by its relationship row id, not a target id; pass { relationshipId }`,
+            present: [],
+            removed: [pointerId(verb.target, `target for "${verb.entity}.${verb.as}"`)],
+            combined: false,
           },
-        ]);
+          resolution,
+        );
       }
-      const resolved =
-        verb.relationshipId ??
-        resolution.relationshipIdFor(verb.id, verb.as, rel.type ?? verb.entity);
-      if (resolved === null) return undefined;
-      if (resolved === undefined) throw unlinkTargetError(verb);
-      return call(writeRelationship, {
-        entity: verb.entity,
-        sourceId: verb.id,
-        as: verb.as,
-        pointer: { targetId: null },
-        relationshipSubjectId: resolved,
-        groups,
-      });
+      const current = resolution.targetsOf(verb.id, verb.as, type);
+      if (current === undefined) throw unlinkTargetError(verb);
+      return edgeCall(verb, { present: [], removed: current, combined: false }, resolution);
     }
   }
 };
