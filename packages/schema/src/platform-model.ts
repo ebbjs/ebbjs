@@ -30,6 +30,7 @@ export {
   EBB_COMPONENT_KINDS,
   EBB_COMPONENTS,
   EBB_MODEL_NAME,
+  GROUPS_ACCESSOR,
   ebbComponent,
   ebbComponentField,
   ebbComponentKind,
@@ -109,6 +110,3 @@ export type GroupFields = Static<typeof groupShape>;
 
 /** The value map of a grant row. */
 export type GrantFields = Static<typeof grantShape>;
-
-/** Accessor name the built-in membership surface carries on every row. */
-export const GROUPS_ACCESSOR = "groups";

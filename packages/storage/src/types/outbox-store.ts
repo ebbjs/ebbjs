@@ -1,4 +1,4 @@
-import type { Action, Entity } from "@ebbjs/core";
+import type { Action, ConflictScope, Entity } from "@ebbjs/core";
 
 /**
  * Lifecycle status of a buffered local Action. The store persists
@@ -120,10 +120,9 @@ export interface OutboxConflict {
   /**
    * The looser of the losing positions' declared scopes. `"entity"` when
    * any losing position declared entity scope, else the next coarsest of
-   * `"component"` and `"field"`. The union is spelled inline so storage
-   * stays independent of the schema package.
+   * `"component"` and `"field"`.
    */
-  readonly scope: "field" | "component" | "entity";
+  readonly scope: ConflictScope;
   /**
    * The concurrent missed Actions that touched the losing subjects,
    * deduped by action id, in window order. The remote half of the

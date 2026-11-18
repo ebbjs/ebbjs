@@ -50,8 +50,15 @@
  * storage adapter and fetch.
  */
 
-import { compare, componentField, componentName, type Action, type Entity } from "@ebbjs/core";
-import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD, type ConflictScope } from "@ebbjs/schema";
+import {
+  compare,
+  componentField,
+  componentName,
+  type Action,
+  type ConflictScope,
+  type Entity,
+} from "@ebbjs/core";
+import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "@ebbjs/schema";
 import type {
   ConflictHold,
   ConflictRemoteAction,

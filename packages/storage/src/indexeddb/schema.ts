@@ -18,7 +18,7 @@ import type { IndexRows } from "../internal/reverse-index";
  * Pre-release reset: this was lowered from a shipped v2 to 1 with no
  * migration. `IndexedDB` refuses to open a database at a version below
  * the one it already holds (`VersionError`), so a browser carrying the
- * legacy `ebb-storage` database at v2 must clear it (or the caller must
+ * legacy `DEFAULT_DB_NAME` database at v2 must clear it (or the caller must
  * pass a new `dbName`) before this adapter can open. Version 3 added the
  * `outbox` store for issue #228; 2 is skipped so that any database below
  * 3 (v1, or the legacy v2) triggers the upgrade callback and gets the new
@@ -70,48 +70,67 @@ import type { IndexRows } from "../internal/reverse-index";
 export const EBB_SCHEMA_VERSION = 16;
 
 /**
- * The version at which the collaborative-text cell format changed
- * incompatibly. A database below it is reset at open; a later bump must
- * declare its own migration instead of inheriting this one.
+ * The IndexedDB database name an adapter opens when the caller passes none.
+ * Namespaced per app by passing `dbName`.
  */
-const TEXT_CELL_FORMAT_RESET_VERSION = 9;
+export const DEFAULT_DB_NAME = "ebb-storage";
+
+/** One version at which a persisted shape changed incompatibly. */
+export interface ResetGate {
+  /** The schema version the gate runs at. */
+  readonly version: number;
+  /** Why the shapes below it cannot be read as the ones above it. */
+  readonly reason: string;
+}
 
 /**
- * The version at which stored entity rows gained the denormalized component
- * names the `components` index reads. A database below it is reset at open,
- * like the cell-format reset above and for the same reason: there is no way to
- * infer the index entries of a row written before it.
+ * The versions at which an incompatible persisted shape is discarded instead
+ * of migrated: a database older than a gate is reset at open. Declared as one
+ * list so a gate's reason, its version, and its participation in the reset
+ * cannot drift apart — adding a gate is one entry, not a constant plus an
+ * array slot.
  */
-const COMPONENT_INDEX_RESET_VERSION = 11;
-
-/** The version at which a persisted conflict gained its component holds. */
-const COMPONENT_HOLD_RESET_VERSION = 12;
-
-/** The version at which the replica record gained component version stamps. */
-const COMPONENT_VERSION_RESET_VERSION = 13;
-
-/**
- * The version at which an adjacency key's segments became component names and a
- * stored system row became one atomic value. There is no way to infer the new
- * entries from the old ones, so a database below it is reset at open.
- */
-const SYSTEM_COMPONENT_RESET_VERSION = 14;
-
-/**
- * The version at which a row's committed model moved from `type` to `model`,
- * taking the `entities` index, the `dirty` index, and the `replica` key with
- * it. The old keys cannot be read as the new ones, so a database below it is
- * reset at open.
- */
-const MODEL_KEY_RESET_VERSION = 15;
-
-/**
- * The version at which row existence became the create's persisted fact. A row
- * written before it may carry existence the old inference gave it, and the
- * Actions that produced it may carry only component writes, so there is no way
- * to read the pair as the new shape: the database is reset at open.
- */
-const ROW_CREATE_RESET_VERSION = 16;
+export const RESET_VERSIONS: readonly ResetGate[] = Object.freeze([
+  {
+    version: 9,
+    reason:
+      "the collaborative-text cell format changed: text bodies carry immutable run cells " +
+      "plus additive cut cells and declare a `version` leaf (issue #764)",
+  },
+  {
+    version: 11,
+    reason:
+      "stored entity rows gained the denormalized component names the `components` index " +
+      "reads, which cannot be inferred for a row written before it (issue #799)",
+  },
+  {
+    version: 12,
+    reason: "a persisted conflict gained the component holds it keeps off the wire (issue #801)",
+  },
+  {
+    version: 13,
+    reason: "the replica cursor gained the version each component was materialized at (issue #804)",
+  },
+  {
+    version: 14,
+    reason:
+      "an adjacency key's segments became component names and a stored system row became " +
+      "one atomic value (issue #805)",
+  },
+  {
+    version: 15,
+    reason:
+      "a row's committed model moved from `type` to `model`, taking the `entities` index, " +
+      "the `dirty` index, and the `replica` key with it",
+  },
+  {
+    version: 16,
+    reason:
+      "row existence became the create's persisted fact: a row written before it may carry " +
+      "the existence the old inference gave it, and its Actions may carry only component " +
+      "writes (issue #817)",
+  },
+]);
 
 /**
  * The `sequence` row that holds the action log's append cursor. One row
@@ -258,16 +277,11 @@ export interface EbbDBSchema extends DBSchema {
  * 1-based, and the final count is written to the `sequence` counter. A fresh
  * database runs the same path over zero rows, leaving `sequence = 0`.
  *
- * From v9 an existing database is reset rather than upgraded: the text
- * cell format changed incompatibly, so every store is deleted before the
- * current stores are created and the action-position counter is opened at
- * zero. v11 resets for the same reason (stored rows lack the denormalized
- * component names), v12 because a persisted conflict gained the positions it
- * holds, v13 because a replica record gained component version stamps, and v14
- * because the four system types moved onto `ebb/*` components, which changes
- * both a stored row's fields and the adjacency key's segments. A database below
- * any of those versions is discarded; only a genuinely fresh database
- * (`oldVersion === 0`) skips the reset.
+ * An existing database older than any gate in {@link RESET_VERSIONS} is
+ * reset rather than upgraded: every store is deleted before the current stores
+ * are created and the action-position counter is opened at zero. Each entry
+ * carries why its shape cannot be read out of the previous one. Only a
+ * genuinely fresh database (`oldVersion === 0`) skips the reset.
  */
 export const createEbbStores = (
   database: IDBPDatabase<EbbDBSchema>,
@@ -275,24 +289,9 @@ export const createEbbStores = (
   _newVersion: number | null,
   transaction: IDBPTransaction<EbbDBSchema, StoreNames<EbbDBSchema>[], "versionchange">,
 ): void => {
-  // Incompatible persisted shapes are discarded instead of migrated: the text
-  // cell format (v9), the denormalized component names (v11), the conflict
-  // component holds (v12), the replica record's component versions (v13), and
-  // the four system types' `ebb/*` rows and adjacency keys (v14), the
-  // committed model's `type` → `model` key (v15), and the row create's
-  // existence fact (v16). Each gate is declared explicitly, so a later version
-  // bump must decide its own migration rather than inheriting one of these
-  // resets.
-  const resetVersions = [
-    TEXT_CELL_FORMAT_RESET_VERSION,
-    COMPONENT_INDEX_RESET_VERSION,
-    COMPONENT_HOLD_RESET_VERSION,
-    COMPONENT_VERSION_RESET_VERSION,
-    SYSTEM_COMPONENT_RESET_VERSION,
-    MODEL_KEY_RESET_VERSION,
-    ROW_CREATE_RESET_VERSION,
-  ];
-  const reset = oldVersion > 0 && resetVersions.some((version) => oldVersion < version);
+  // A gate is declared once, in `RESET_VERSIONS`, so a version bump cannot
+  // land a new incompatible shape without the reset that discards it.
+  const reset = oldVersion > 0 && RESET_VERSIONS.some(({ version }) => oldVersion < version);
   if (reset) {
     // `objectStoreNames` is live while stores are deleted, so iterate a copy.
     for (const name of Array.from(database.objectStoreNames)) {

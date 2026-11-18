@@ -3,7 +3,7 @@ import type { Action } from "@ebbjs/core";
 import { updateModel } from "../internal/materialize";
 import type { LoggedAction } from "../types/action-log";
 import type { StorageAdapter } from "../types/storage-adapter";
-import { createEbbStores, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
+import { createEbbStores, DEFAULT_DB_NAME, EBB_SCHEMA_VERSION, type EbbDBSchema } from "./schema";
 
 import { createIndexedDBActionLog } from "./action-log.indexeddb";
 import { createIndexedDBCursorStore } from "./cursor-store.indexeddb";
@@ -13,6 +13,7 @@ import { createIndexedDBOutboxStore } from "./outbox-store.indexeddb";
 import { createIndexedDBReplicaStore } from "./replica-store.indexeddb";
 
 export interface IndexedDBAdapterOptions {
+  /** The database to open. Defaults to `DEFAULT_DB_NAME`. */
   dbName?: string;
 }
 
@@ -41,7 +42,7 @@ export interface IndexedDBAdapterOptions {
 export const createIndexedDBAdapter = async (
   options: IndexedDBAdapterOptions = {},
 ): Promise<StorageAdapter> => {
-  const dbName = options.dbName ?? "ebb-storage";
+  const dbName = options.dbName ?? DEFAULT_DB_NAME;
 
   const db: IDBPDatabase<EbbDBSchema> = await openDB<EbbDBSchema>(dbName, EBB_SCHEMA_VERSION, {
     upgrade: createEbbStores,

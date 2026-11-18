@@ -65,7 +65,7 @@ export const holdAll: MaterializationPolicy = {
   holds: () => true,
 };
 
-const DEFAULT_JOURNAL_CAPACITY = 1024;
+export const DEFAULT_JOURNAL_CAPACITY = 1024;
 export const DEFAULT_PINNED_CAPACITY = 16;
 export const DEFAULT_PINNED_TTL_MS = 30_000;
 
