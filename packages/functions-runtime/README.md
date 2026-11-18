@@ -124,8 +124,12 @@ The handler sees the process's globals, not a sandbox: the runner replaces
 response-size shim that emits one `fetch_audit` frame per request, and restores
 it when the invocation ends. An empty `fetch_allowlist` is unrestricted; with
 an entry, only that hostname (and, when the entry names one, that port) is
-reachable and a blocked request rejects with an error the handler can catch.
-The shim's audit frame carries the method, URL, status, duration, and whether
+reachable and a blocked request rejects with an error the handler can catch. An
+entry the runner cannot read — a CIDR block, a wildcard, anything that is not a
+host, `host:port`, `[ipv6]:port`, or URL — fails the invocation before the
+handler runs, rather than being dropped from a list whose emptiness would mean
+"no restriction". The shim's audit frame carries the method, URL, status,
+duration, and whether
 the request was blocked — never headers or bodies.
 
 ## External effects are not rolled back

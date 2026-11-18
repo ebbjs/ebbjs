@@ -13,6 +13,13 @@
  *   reading, and a chunked body that grows past it errors the stream the
  *   handler is reading.
  *
+ * An allowlist is validated when the guard is built, before the handler runs.
+ * A list containing an entry this module cannot read fails the invocation
+ * rather than compiling to a shorter one: a dropped entry is wider egress, and
+ * the failure mode of the tempting spellings (`10.0.0.0/8`, `*.corp.example`)
+ * has to be a clear error, never a silently unrestricted or silently empty
+ * allowlist. Wildcards are not supported; list each host.
+ *
  * What it does not enforce: the same socket can be reached by other globals
  * (Bun's `Bun.fetch`, a native module), a handler can keep a response it
  * obtained before the shim was restored, and an audit frame records the
@@ -21,10 +28,10 @@
  * status, because the request completed.
  */
 
-import type { FetchAuditFields } from "@ebbjs/functions-protocol";
+import { DEFAULT_LIMITS, type FetchAuditFields } from "@ebbjs/functions-protocol";
 
 /** The response cap when the host states none. */
-export const DEFAULT_MAX_FETCH_RESPONSE_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_MAX_FETCH_RESPONSE_BYTES = DEFAULT_LIMITS.max_fetch_response_bytes;
 
 /** The response statuses that cannot carry a body, so cannot be rebuilt. */
 const BODYLESS_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
@@ -37,6 +44,25 @@ export class FetchBlockedError extends Error {
     super(`fetch blocked: ${url} is not on this function's fetch allowlist`);
     this.name = "FetchBlockedError";
     this.url = url;
+  }
+}
+
+/**
+ * An allowlist entry the shim cannot read, raised before the handler runs.
+ *
+ * Throwing is the fail-closed answer: a request the list did not name must not
+ * be reachable just because the list itself was malformed.
+ */
+export class FetchAllowlistError extends Error {
+  readonly entry: unknown;
+
+  constructor(entry: unknown, reason: string) {
+    super(
+      `fetch allowlist entry ${describeEntry(entry)} ${reason}; ` +
+        "refusing the invocation rather than running it with egress the list did not name",
+    );
+    this.name = "FetchAllowlistError";
+    this.entry = entry;
   }
 }
 
@@ -54,8 +80,13 @@ export class FetchResponseTooLargeError extends Error {
 }
 
 export interface FetchGuardOptions {
-  /** Empty means unrestricted. Entries are `host`, `host:port`, or a URL. */
-  readonly allowlist: readonly string[];
+  /**
+   * The host's allowlist as it arrived. `undefined`, `null`, or an empty list
+   * means unrestricted; a non-empty list is read as `host`, `host:port`,
+   * `[v6]:port`, or URL entries, and every other value — `*` included, and
+   * anything that is not a list of strings — is a `FetchAllowlistError`.
+   */
+  readonly allowlist: unknown;
   readonly maxResponseBytes?: number;
   /** Called once per request, on completion or failure. Must not throw. */
   readonly audit: (fields: FetchAuditFields) => void;
@@ -71,7 +102,9 @@ interface AllowlistEntry {
  * Installs the guarded `fetch` on `globalThis` and returns the restore.
  *
  * The shim is installed for every invocation, allowlist or not, because the
- * response cap and the audit frame apply either way.
+ * response cap and the audit frame apply either way. Throws
+ * `FetchAllowlistError` before touching `globalThis.fetch` when the allowlist
+ * does not compile.
  */
 export function installFetchGuard(options: FetchGuardOptions): () => void {
   const original = globalThis.fetch;
@@ -218,49 +251,82 @@ function methodOf(input: RequestInfo | URL, init: RequestInit | undefined): stri
 }
 
 /**
- * Compiles the host's allowlist.
+ * Compiles the host's allowlist, one entry at a time.
  *
  * An entry may be a bare hostname, `host:port`, a bracketed IPv6 literal, or a
  * full URL. An entry without a port allows every port on that host; an entry
- * with one requires it. An entry that names neither is dropped rather than
- * matching everything.
+ * with one requires it. Any other entry throws `FetchAllowlistError`: dropping
+ * it would narrow the list, and a narrowed list is not the one the host wrote.
+ * `undefined` and `null` mean the host stated no allowlist; a value that is
+ * not a list throws for the same reason.
  */
-export function compileAllowlist(entries: readonly string[]): readonly AllowlistEntry[] {
-  const compiled: AllowlistEntry[] = [];
+export function compileAllowlist(value: unknown): readonly AllowlistEntry[] {
+  if (value === undefined || value === null) return [];
 
-  for (const entry of entries) {
-    const parsed = parseAllowlistEntry(entry);
-    if (parsed !== null) compiled.push(parsed);
+  if (!Array.isArray(value)) {
+    throw new FetchAllowlistError(value, "is not a list of host entries");
   }
 
-  return compiled;
+  return value.map(parseAllowlistEntry);
 }
 
-function parseAllowlistEntry(entry: string): AllowlistEntry | null {
-  const trimmed = entry.trim().toLowerCase();
-  if (trimmed === "") return null;
-
-  if (trimmed.includes("://")) {
-    try {
-      const url = new URL(trimmed);
-      return url.hostname === "" ? null : { hostname: url.hostname, port: url.port || null };
-    } catch {
-      return null;
-    }
+function parseAllowlistEntry(entry: unknown): AllowlistEntry {
+  if (typeof entry !== "string") {
+    throw new FetchAllowlistError(entry, "is not a string");
   }
 
-  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(trimmed);
+  const trimmed = entry.trim().toLowerCase();
+  if (trimmed === "") {
+    throw new FetchAllowlistError(entry, "is empty");
+  }
+
+  if (trimmed.includes("*")) {
+    throw new FetchAllowlistError(entry, 'contains "*", but wildcards are not supported');
+  }
+
+  if (trimmed.includes("://")) {
+    const url = parseUrl(trimmed, entry);
+    if (url.hostname === "") {
+      throw new FetchAllowlistError(entry, "names no host");
+    }
+    return { hostname: url.hostname, port: url.port || null };
+  }
+
+  const bracketed = /^\[([^\]]+)\](?::(\d{1,5}))?$/.exec(trimmed);
   if (bracketed !== null) {
     const [, hostname, port] = bracketed;
+    if (hostname === undefined) throw new FetchAllowlistError(entry, "names no host");
     // `URL.hostname` keeps the brackets on an IPv6 literal, so the entry does too.
-    return hostname === undefined ? null : { hostname: `[${hostname}]`, port: port ?? null };
+    return { hostname: `[${hostname}]`, port: port ?? null };
   }
 
   const hostPort = /^([^:\s/]+)(?::(\d{1,5}))?$/.exec(trimmed);
-  if (hostPort === null) return null;
+  if (hostPort === null) {
+    throw new FetchAllowlistError(entry, "is not a host, host:port, [v6]:port, or URL");
+  }
 
   const [, hostname, port] = hostPort;
-  return hostname === undefined ? null : { hostname, port: port ?? null };
+  if (hostname === undefined) throw new FetchAllowlistError(entry, "names no host");
+  return { hostname, port: port ?? null };
+}
+
+function parseUrl(trimmed: string, entry: unknown): URL {
+  try {
+    return new URL(trimmed);
+  } catch {
+    throw new FetchAllowlistError(entry, "is not a URL");
+  }
+}
+
+/** The entry as the operator wrote it, for a message a human can act on. */
+function describeEntry(entry: unknown): string {
+  if (typeof entry === "string") return JSON.stringify(entry);
+
+  try {
+    return JSON.stringify(entry) ?? String(entry);
+  } catch {
+    return String(entry);
+  }
 }
 
 /** Whether `rawUrl` matches an allowlist entry. A relative URL matches none. */

@@ -4,6 +4,7 @@ import type { FetchAuditFields } from "@ebbjs/functions-protocol";
 
 import {
   DEFAULT_MAX_FETCH_RESPONSE_BYTES,
+  FetchAllowlistError,
   FetchBlockedError,
   compileAllowlist,
   createGuardedFetch,
@@ -23,7 +24,7 @@ const stub = (handler: (input: RequestInfo | URL, init?: RequestInit) => Promise
 
 const audits: FetchAuditFields[] = [];
 
-const guard = (fetch: Fetch, options: { allowlist?: readonly string[]; max?: number } = {}) => {
+const guard = (fetch: Fetch, options: { allowlist?: unknown; max?: number } = {}) => {
   audits.length = 0;
   return createGuardedFetch(fetch, {
     allowlist: options.allowlist ?? [],
@@ -60,8 +61,33 @@ describe("compileAllowlist", () => {
     ]);
   });
 
-  it("drops entries that cannot name a host", () => {
-    expect(compileAllowlist(["", "  ", "not a host", "a/b"])).toEqual([]);
+  it("treats an absent list as the host stating no restriction", () => {
+    expect(compileAllowlist(undefined)).toEqual([]);
+    expect(compileAllowlist(null)).toEqual([]);
+    expect(compileAllowlist([])).toEqual([]);
+  });
+
+  it("refuses an entry it cannot read instead of narrowing the list", () => {
+    for (const entry of ["", "  ", "not a host", "a/b", "10.0.0.0/8", "corp.example:443:1"]) {
+      expect(() => compileAllowlist([entry])).toThrow(FetchAllowlistError);
+    }
+
+    // A valid entry does not rescue a bad one: the list is all or nothing.
+    expect(() => compileAllowlist(["api.example.com", "10.0.0.0/8"])).toThrow(FetchAllowlistError);
+  });
+
+  it("names the offending entry so the operator can fix it", () => {
+    expect(() => compileAllowlist(["10.0.0.0/8"])).toThrow(/"10\.0\.0\.0\/8"/);
+    expect(() => compileAllowlist([7])).toThrow(/7 is not a string/);
+  });
+
+  it("refuses a wildcard, which is not supported", () => {
+    expect(() => compileAllowlist(["*.corp.example"])).toThrow(/wildcards are not supported/);
+    expect(() => compileAllowlist(["https://*.corp.example"])).toThrow(FetchAllowlistError);
+  });
+
+  it("refuses a value that is not a list", () => {
+    expect(() => compileAllowlist("api.example.com")).toThrow(/not a list of host entries/);
   });
 });
 
@@ -110,6 +136,19 @@ describe("createGuardedFetch", () => {
         blocked: true,
       },
     ]);
+  });
+
+  it("fails closed on a junk entry rather than leaving egress unrestricted", async () => {
+    // `10.0.0.0/8` is what an operator writes for "the corp network". It cannot
+    // name a host, so before this was a hard error it compiled to zero entries
+    // and every request went out.
+    const { fetch, calls } = stub(async () => ok());
+
+    expect(() => guard(fetch, { allowlist: ["10.0.0.0/8"] })).toThrow(FetchAllowlistError);
+    expect(() => guard(fetch, { allowlist: ["api.example.com", "10.0.0.0/8"] })).toThrow(
+      FetchAllowlistError,
+    );
+    expect(calls).toEqual([]);
   });
 
   it("blocks a relative URL under an allowlist", async () => {

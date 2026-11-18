@@ -27,17 +27,22 @@ a fresh context; the connection keeps only the frame-decode buffer.
 ## Budgets
 
 The invoke frame's `limits` are optional, and each field falls back to a
-documented default (`src/limits.ts`). The runner enforces, per invocation:
+documented default (`src/limits.ts`). The defaults are not restated here: they
+live in `DEFAULT_LIMITS`, exported by `@ebbjs/functions-protocol`, and the
+server hands that same table (minus `timeout_ms`, which the envelope owns) in
+its `invoke` frame. `fixtures/functions/frames/constants.json` pins it for both
+peers. The runner enforces, per invocation:
 
-| limit              | default    | enforced by                                                                                   |
-| ------------------ | ---------- | --------------------------------------------------------------------------------------------- |
-| `max_host_calls`   | 1000       | runner: past the cap `ctx.get`/`ctx.commit` reject with `HostCallLimitError`, nothing is sent |
-| `max_output_bytes` | 1 MiB      | runner: the result frame, clamped to the protocol's frame bound                               |
-| `max_log_lines`    | 200        | runner: `ctx.log` and captured `console` share one sink                                       |
-| `max_log_bytes`    | 64 KiB     | runner: message bytes, same sink                                                              |
-| `fetch_allowlist`  | empty      | runner: the fetch shim; empty means unrestricted                                              |
-| `timeout_ms`       | 30000      | host: it kills the process group at the deadline                                              |
-| `memory_bytes`     | host-owned | host: it sets the process group's limit                                                       |
+| limit                      | default    | enforced by                                                                                   |
+| -------------------------- | ---------- | --------------------------------------------------------------------------------------------- |
+| `max_host_calls`           | 1000       | runner: past the cap `ctx.get`/`ctx.commit` reject with `HostCallLimitError`, nothing is sent |
+| `max_output_bytes`         | 1 MiB      | runner: the result frame, clamped to the protocol's frame bound                               |
+| `max_log_lines`            | 200        | runner: `ctx.log` and captured `console` share one sink                                       |
+| `max_log_bytes`            | 64 KiB     | runner: message bytes, same sink                                                              |
+| `fetch_allowlist`          | empty      | runner: the fetch shim; empty means unrestricted, an unreadable entry fails the invocation    |
+| `max_fetch_response_bytes` | 10 MiB     | runner: the fetch shim refuses a declared length over it, and errors a stream that passes it  |
+| `timeout_ms`               | 30000      | host: it kills the process group at the deadline                                              |
+| `memory_bytes`             | host-owned | host: it sets the process group's limit                                                       |
 
 An oversize result is not a transport failure: the runner sends a small
 `{ "ok": false, "kind": "output_too_large" }` result and stays alive for the
@@ -60,8 +65,17 @@ throws.
 - `globalThis.fetch` becomes a shim that emits one `fetch_audit` frame per
   request (method, URL, status, duration, blocked — never headers or bodies).
   With a non-empty allowlist it refuses any other host before sending; every
-  response is capped at 10 MiB, by `content-length` when present and by a
-  streaming wrapper while the body is read.
+  response is capped at `max_fetch_response_bytes` (10 MiB by default), by
+  `content-length` when present and by a streaming wrapper while the body is
+  read.
+
+An allowlist entry is a host, `host:port`, `[ipv6]:port`, or a URL. Anything
+else — a CIDR block, a wildcard, an empty string, a value that is not a list of
+strings — fails the invocation with `FetchAllowlistError` before the handler
+runs, and leaves `globalThis.fetch` untouched. Nothing is dropped: a list with
+one unreadable entry would otherwise compile to a shorter list, and an empty
+list means unrestricted egress, so a permissive reading of the operator's
+typo is the one failure mode this shim must not have.
 
 This is a guardrail, not a sandbox: the process boundary is for resilience, and
 another global fetch implementation or a native module can still reach the

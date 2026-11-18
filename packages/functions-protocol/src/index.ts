@@ -1,5 +1,6 @@
 export {
   compatibleVersion,
+  DEFAULT_LIMITS,
   LOG_LEVELS,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,

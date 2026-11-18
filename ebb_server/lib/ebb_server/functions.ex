@@ -88,12 +88,19 @@ defmodule EbbServer.Functions do
   @default_queue_limit 20
   @default_queue_timeout_ms 5_000
   @default_memory_bytes 256 * 1024 * 1024
+  @default_max_fetch_response_bytes 10 * 1024 * 1024
   # Bun's runtime reserves address space before a handler allocates anything
   # (JSC's heap reservations, the thread pool, mapped libraries). A `ulimit -v`
   # at the function's budget alone kills a perfectly ordinary worker at boot, so
   # the OS cap is the budget plus this headroom; it bounds what a runaway
   # handler can allocate rather than pretending to be a byte-exact heap limit.
   @address_space_overhead_bytes 768 * 1024 * 1024
+
+  # The entry shapes the runner's allowlist parser reads. Kept in step with
+  # `parseAllowlistEntry` in `packages/runner/src/fetch.ts`: an entry this
+  # rejects is one the runner would refuse to run a function with.
+  @allowlist_ipv6 ~r/^\[[^\]]+\](?::\d{1,5})?$/
+  @allowlist_host ~r/^[^:\s\/]+(?::\d{1,5})?$/
 
   @doc """
   Whether functions are enabled on this node.
@@ -144,6 +151,7 @@ defmodule EbbServer.Functions do
       |> Keyword.put(:enabled, resolve())
       |> put_resolved(:admin_token, resolve_admin_token())
       |> resolve_secrets()
+      |> Keyword.put(:fetch_allowlist, fetch_allowlist())
       |> Keyword.put(:services, validate_services!(Keyword.get(config(), :services, [])))
 
     Application.put_env(:ebb_server, @config_key, resolved)
@@ -343,7 +351,8 @@ defmodule EbbServer.Functions do
       "max_log_lines" => Keyword.get(config(), :max_log_lines, @default_max_log_lines),
       "max_log_bytes" => Keyword.get(config(), :max_log_bytes, @default_max_log_bytes),
       "max_output_bytes" => max_output_bytes(),
-      "fetch_allowlist" => fetch_allowlist()
+      "fetch_allowlist" => fetch_allowlist(),
+      "max_fetch_response_bytes" => max_fetch_response_bytes()
     }
   end
 
@@ -366,18 +375,33 @@ defmodule EbbServer.Functions do
   @spec max_log_bytes() :: pos_integer()
   def max_log_bytes, do: Keyword.get(config(), :max_log_bytes, @default_max_log_bytes)
 
+  @spec max_fetch_response_bytes() :: pos_integer()
+  def max_fetch_response_bytes do
+    Keyword.get(config(), :max_fetch_response_bytes, @default_max_fetch_response_bytes)
+  end
+
   @doc """
   The hosts a handler's `fetch` may reach, or `[]` for no restriction.
 
   An empty list is the trusted-author default: egress policy is the control,
   not a wrapper the author can bypass. A non-empty list is a guardrail the
   runner enforces around the global `fetch` and audits per call.
+
+  Each entry is read as a host, `host:port`, `[ipv6]:port`, or a URL, trimmed
+  and downcased; an entry without a port allows every port on that host. Any
+  other entry raises, and `resolve!/0` runs this at boot so a bad list is a
+  boot failure rather than a surprise at the first egress. Raising is the
+  fail-closed answer: the runner drops nothing, because dropping an entry
+  leaves egress wider than the list states — a list of one CIDR block the
+  parser cannot read would otherwise compile to an empty (unrestricted) one.
+  Wildcards are not supported; list each host.
   """
   @spec fetch_allowlist() :: [String.t()]
   def fetch_allowlist do
     case config(:fetch_allowlist) do
-      hosts when is_list(hosts) -> Enum.filter(hosts, &is_binary/1)
-      _hosts -> []
+      nil -> []
+      hosts when is_list(hosts) -> Enum.map(hosts, &validate_allowlist_entry!/1)
+      other -> raise_invalid_allowlist!(other, "is not a list of host entries")
     end
   end
 
@@ -588,6 +612,49 @@ defmodule EbbServer.Functions do
 
   defp validate_service!(other) do
     raise ":ebb_server, :functions, services entries must be maps, got #{inspect(other)}"
+  end
+
+  defp validate_allowlist_entry!(entry) when is_binary(entry) do
+    trimmed = entry |> String.trim() |> String.downcase()
+
+    cond do
+      trimmed == "" ->
+        raise_invalid_allowlist!(entry, "is empty")
+
+      String.contains?(trimmed, "*") ->
+        raise_invalid_allowlist!(entry, "contains a wildcard, which is not supported")
+
+      String.contains?(trimmed, "://") ->
+        validate_allowlist_url!(entry, trimmed)
+
+      Regex.match?(@allowlist_ipv6, trimmed) or Regex.match?(@allowlist_host, trimmed) ->
+        trimmed
+
+      true ->
+        raise_invalid_allowlist!(entry, "is not a host, host:port, [ipv6]:port, or URL")
+    end
+  end
+
+  defp validate_allowlist_entry!(entry) do
+    raise_invalid_allowlist!(entry, "is not a string")
+  end
+
+  defp validate_allowlist_url!(entry, trimmed) do
+    case URI.parse(trimmed) do
+      %URI{host: host, port: port}
+      when is_binary(host) and host != "" and (is_nil(port) or port <= 65_535) ->
+        trimmed
+
+      _other ->
+        raise_invalid_allowlist!(entry, "is not a URL naming a host")
+    end
+  end
+
+  defp raise_invalid_allowlist!(entry, reason) do
+    raise ":ebb_server, :functions, fetch_allowlist entry #{inspect(entry)} #{reason}. " <>
+            "Each entry is a host, host:port, [ipv6]:port, or URL, and the runner " <>
+            "refuses to run a function whose allowlist it cannot read: dropping an " <>
+            "entry would leave egress wider than the list states"
   end
 
   defp fetch_sha256!(service) do

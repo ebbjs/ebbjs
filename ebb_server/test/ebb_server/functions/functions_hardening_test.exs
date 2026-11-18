@@ -206,11 +206,27 @@ defmodule EbbServer.Functions.HardeningTest do
       assert Functions.max_log_lines() == 200
       assert Functions.max_log_bytes() == 64 * 1024
       assert Functions.fetch_allowlist() == []
+      assert Functions.max_fetch_response_bytes() == 10 * 1024 * 1024
       assert Functions.queue_limit() == 20
 
       limits = Functions.limits()
       assert limits["max_host_calls"] == 1_000
       assert limits["fetch_allowlist"] == []
+      assert limits["max_fetch_response_bytes"] == 10 * 1024 * 1024
+    end
+
+    test "match the protocol's DEFAULT_LIMITS table" do
+      # The runner falls back to `DEFAULT_LIMITS` for every field the host omits;
+      # this is the assertion that keeps the compiled `@default_*` in step.
+      %{"default_limits" => defaults} = EbbServer.TestFunctions.load_constants!()
+
+      configure([])
+
+      # `timeout_ms` is not a node-wide default: the router fills it in from the
+      # deployed version's envelope, and `Invocation` enforces the deadline.
+      for {field, value} <- Map.delete(defaults, "timeout_ms") do
+        assert Functions.limits()[field] == value, "#{field} drifted from DEFAULT_LIMITS"
+      end
     end
 
     test "read a configured value" do
@@ -219,14 +235,77 @@ defmodule EbbServer.Functions.HardeningTest do
         max_host_calls: 5,
         max_log_lines: 2,
         max_log_bytes: 16,
+        max_fetch_response_bytes: 2_048,
         fetch_allowlist: ["api.example.com"]
       )
 
       assert Functions.max_invoke_body_bytes() == 1_024
+      assert Functions.max_fetch_response_bytes() == 2_048
       assert Functions.limits()["fetch_allowlist"] == ["api.example.com"]
+    end
+  end
 
-      configure(fetch_allowlist: ["api.example.com", :not_a_host])
-      assert Functions.fetch_allowlist() == ["api.example.com"]
+  describe "the fetch allowlist" do
+    test "normalizes the entries the runner will read" do
+      configure(
+        fetch_allowlist: [
+          "API.Example.com",
+          " api.example.com:8443 ",
+          "[::1]:8080",
+          "https://api.example.com/v1"
+        ]
+      )
+
+      assert Functions.fetch_allowlist() == [
+               "api.example.com",
+               "api.example.com:8443",
+               "[::1]:8080",
+               "https://api.example.com/v1"
+             ]
+    end
+
+    test "rejects an entry the runner cannot read instead of narrowing the list" do
+      for entry <- ["", "  ", "not a host", "a/b", "10.0.0.0/8", "corp.example:443:1"] do
+        # The valid entry does not rescue the bad one: the list is all or nothing.
+        configure(fetch_allowlist: ["api.example.com", entry])
+
+        assert_raise RuntimeError,
+                     ~r/fetch_allowlist entry #{Regex.escape(inspect(entry))}/,
+                     fn ->
+                       Functions.fetch_allowlist()
+                     end
+      end
+    end
+
+    test "rejects a wildcard, which the runner does not support" do
+      configure(fetch_allowlist: ["*.corp.example"])
+
+      assert_raise RuntimeError, ~r/wildcard/, fn -> Functions.fetch_allowlist() end
+    end
+
+    test "rejects a value that is not a list, and an entry that is not a string" do
+      configure(fetch_allowlist: "api.example.com")
+
+      assert_raise RuntimeError, ~r/not a list of host entries/, fn ->
+        Functions.fetch_allowlist()
+      end
+
+      configure(fetch_allowlist: [:not_a_host])
+      assert_raise RuntimeError, ~r/not a string/, fn -> Functions.fetch_allowlist() end
+    end
+
+    test "fails boot rather than the first egress" do
+      configure(fetch_allowlist: ["10.0.0.0/8"])
+
+      assert_raise RuntimeError, ~r/fetch_allowlist entry/, fn -> Functions.resolve!() end
+    end
+
+    test "keeps a valid list through resolve! and into the invoke frame" do
+      configure(fetch_allowlist: ["api.example.com:8443"])
+
+      assert :ok = Functions.resolve!()
+      assert Functions.fetch_allowlist() == ["api.example.com:8443"]
+      assert Functions.limits()["fetch_allowlist"] == ["api.example.com:8443"]
     end
   end
 
