@@ -20,6 +20,13 @@
  * A non-2xx response is an error naming the endpoint; a 2xx response whose
  * body is not JSON is an error naming the endpoint and echoing the body,
  * rather than a bare `SyntaxError` from `response.json()`.
+ *
+ * ## Teardown
+ *
+ * {@link withAbortSignal} is the one place a request learns how to be
+ * cancelled: the sync client wraps its `fetch` with it at construction, so
+ * `close()` reaches every call site that goes through {@link exchange}
+ * without any of them naming a signal.
  */
 
 /** Header carrying the acting identity on every sync request. */
@@ -109,3 +116,52 @@ export const requestJson = async <T>(
   if (!response.ok) throw httpError(response, label, text);
   return parseJsonBody<T>(text, label);
 };
+
+/**
+ * Wrap `base` so every request carries `clientSignal`, merged with whatever
+ * `signal` the call site supplied.
+ *
+ * One wrap, not a parameter per call site: {@link exchange} and
+ * {@link requestJson} are the only ways a request leaves the client, so
+ * handshake, catch-up, writes, entity reads, function calls, and the group
+ * listing all inherit teardown from the constructor.
+ *
+ * `AbortSignal.any` would express the merge in one call, but it is Node 20.3+
+ * while `sse.ts` documents Node 18 for consumers, so the listeners are managed
+ * here. Two things follow from `clientSignal` being the one long-lived signal:
+ *
+ * - With no caller signal it is passed through unchanged, which keeps the
+ *   whole response — body included — cancellable and registers no listener.
+ * - With one, the two are merged and the client's listener detaches when the
+ *   fetch settles (at the response headers, for a stream), so a request cannot
+ *   leave a listener behind on the session-long signal. From there the caller
+ *   owns the body, which is how `eventsource-client` tears a stream down.
+ */
+export const withAbortSignal =
+  (base: typeof fetch, clientSignal: AbortSignal): typeof fetch =>
+  (input, init) => {
+    const callerSignal = init?.signal;
+    if (callerSignal === undefined || callerSignal === null) {
+      return base(input, { ...init, signal: clientSignal });
+    }
+    const merged = new AbortController();
+    const abortFromClient = (): void => merged.abort(clientSignal.reason);
+    const abortFromCaller = (): void => merged.abort(callerSignal.reason);
+    const detachClient = (): void => {
+      clientSignal.removeEventListener("abort", abortFromClient);
+    };
+    clientSignal.addEventListener("abort", abortFromClient, { once: true });
+    callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+    // An already-aborted signal fires no event, so it is forwarded by hand.
+    if (clientSignal.aborted) abortFromClient();
+    if (callerSignal.aborted) abortFromCaller();
+    let request: Promise<Response>;
+    try {
+      request = base(input, { ...init, signal: merged.signal });
+    } catch (error) {
+      // A malformed request throws before a promise exists to settle.
+      detachClient();
+      throw error;
+    }
+    return request.finally(detachClient);
+  };

@@ -217,14 +217,15 @@ export interface Backfill {
   run(): Promise<void>;
 }
 
+/** The default read-failure report: one line per entity, with the error. */
+export const warnBackfillReadFailed = (error: unknown, entityId?: string): void => {
+  // eslint-disable-next-line no-console
+  console.warn("[backfill] entity read failed:", entityId, error);
+};
+
 export function createBackfill(opts: BackfillOptions): Backfill {
   const { storage, fetchEntity, onAppended } = opts;
-  const onError =
-    opts.onError ??
-    ((error: unknown, entityId?: string) => {
-      // eslint-disable-next-line no-console
-      console.warn("[backfill] entity read failed:", entityId, error);
-    });
+  const onError = opts.onError ?? warnBackfillReadFailed;
 
   const pending = createObservable<readonly string[]>([]);
   const waiters: (() => void)[] = [];

@@ -77,6 +77,7 @@ import {
   parseJsonBody,
   requestJson,
   tryParseJson,
+  withAbortSignal,
 } from "./http";
 import { createOutbox, type Outbox } from "./outbox";
 import {
@@ -132,8 +133,13 @@ import {
 import { buildEntityNamespaces, type EntityNamespaces } from "./namespace";
 import { readEntityMemberships } from "./entity-group";
 import { grantsOf } from "@ebbjs/write";
-import { createBackfill, type Backfill } from "./backfill";
-import { createGroupListing, LISTING_SEED_ACTOR_ID, type GroupListing } from "./group-listing";
+import { createBackfill, type Backfill, warnBackfillReadFailed } from "./backfill";
+import {
+  createGroupListing,
+  LISTING_SEED_ACTOR_ID,
+  type GroupListing,
+  warnGroupListingSeedFailed,
+} from "./group-listing";
 import {
   ActionRejectedError,
   createActionRuntime,
@@ -330,6 +336,13 @@ export class SyncClient<
   readonly status: ReadonlyObservable<ClientStatus>;
   /** The status observable's write side (`markSynced`), private to the client. */
   private readonly statusController: ClientStatusController;
+  /**
+   * Fired only by {@link close()}: one teardown point for every request the
+   * client has in flight, so none of them resolves into a closed storage
+   * adapter.
+   */
+  private readonly abortController = new AbortController();
+  /** The caller's fetch, carrying the abort signal above. */
   private readonly fetchImpl: typeof fetch;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
@@ -479,7 +492,8 @@ export class SyncClient<
     this.queries = createQueryCache(this.replica, this.replicaSignal, {
       ttlMs: opts.queryTtlMs,
     });
-    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.fetchImpl = withAbortSignal(rawFetch, this.abortController.signal);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.replicaSaveEvery = opts.replicaSaveEvery ?? DEFAULT_REPLICA_SAVE_EVERY;
@@ -491,7 +505,11 @@ export class SyncClient<
     this.presenceRuntime = createPresence({
       serverUrl: this.serverUrl,
       actorId: this.actorId,
-      fetchImpl: this.fetchImpl,
+      // A `keepalive` post is sent from an unload handler, where nobody can
+      // await it, so it has to outlive the `close()` that normally follows.
+      // Every other presence request is teardown-scoped like the rest.
+      fetchImpl: (input, init) =>
+        init?.keepalive === true ? rawFetch(input, init) : this.fetchImpl(input, init),
       registry: opts.presence,
     });
     // The runtime's untyped methods are the same call shape the typed surface
@@ -546,6 +564,11 @@ export class SyncClient<
     this.backfillRunner = createBackfill({
       storage: this.storage,
       fetchEntity: (entityId) => this.getEntity(entityId),
+      // A read `close()` aborted is a teardown, not a failure to report.
+      onError: (error, entityId) => {
+        if (this.abortController.signal.aborted) return;
+        warnBackfillReadFailed(error, entityId);
+      },
       onAppended: (entry) => {
         this.replica.ingest(entry.action, entry.added, entry.position);
         this.noteReplicaMutation();
@@ -556,6 +579,11 @@ export class SyncClient<
       actorId: this.actorId,
       fetchImpl: this.fetchImpl,
       storage: this.storage,
+      // Same teardown rule as backfill: an aborted seed is not a failure.
+      onError: (error, groupId) => {
+        if (this.abortController.signal.aborted) return;
+        warnGroupListingSeedFailed(error, groupId);
+      },
       onAppended: (entries) => {
         for (const entry of entries) {
           this.noteSeededAction(entry.action);
@@ -1393,7 +1421,11 @@ export class SyncClient<
    */
   async backfill(): Promise<void> {
     await this.hydrateReplica();
+    // `close()` aborts every read this pass would issue, and a pass entered
+    // after it can only write through an adapter that is already closed.
+    if (this.abortController.signal.aborted) return;
     await this.backfillRunner.run();
+    if (this.abortController.signal.aborted) return;
     await this.persistReplica();
   }
 
@@ -1615,14 +1647,33 @@ export class SyncClient<
    * Tear down all subscriptions and timers. After `close()` the client is
    * unusable; create a new one with `createClient`.
    *
+   * Requests still in flight are aborted rather than left to finish: one whose
+   * response has not arrived applies no rows and marks no outbox entry
+   * acknowledged. The `AbortError` reaches the caller — a `write()` rejects
+   * with it and its outbox entry stays `pending` — with one exception: a
+   * request aborted after its headers but mid-body hits the HTTP layer's
+   * unreadable-body rule and surfaces as that endpoint's own error. Abort
+   * cannot retract work already past the fetch, and the final replica save
+   * below still runs, so a clean teardown does not lose local writes.
+   *
    * Local teardown only: it cancels pending presence writes and drops the
    * observed peers, and deliberately sends no presence leave, because a
    * transient remount must not broadcast an absence. An app that knows the tab
    * is going away can call `client.presence.leave({ keepalive: true })` from
-   * its own unload handler.
+   * its own unload handler, and a `keepalive` post is the one request this
+   * method leaves on the wire.
    */
   close(): void {
-    // Stop timers and in-flight retries first: no flush should start while
+    // Order matters. `abort()` rejects an in-flight fetch on a microtask while
+    // the rest of this method runs synchronously, so `sub.cancelled` (set
+    // below by `cancelSubscription`) is already true when `connectAndDrain`'s
+    // catch resumes: `runSubscriptionLoop` returns instead of arming a
+    // reconnect against a torn-down client. Nothing between here and
+    // `cancelSubscription` awaits today, so this is a guard rail rather than a
+    // live constraint: an `await` added above that call would let the aborted
+    // pass resume as one belonging to a live client.
+    this.abortController.abort();
+    // Stop timers and in-flight retries next: no flush should start while
     // the rest of the client is tearing down.
     this.flushScheduler.stop();
     this.clearReplicaSaveTimer();
