@@ -37,7 +37,7 @@ import {
 } from "@ebbjs/core";
 import type { LoggedAction, StorageAdapter } from "@ebbjs/storage/types";
 
-import { fieldComponent } from "./component-name";
+import { fieldComponent } from "@ebbjs/core";
 import { liveMemberships } from "./entity-group";
 import { createObservable, type ReadonlyObservable } from "./observable";
 import type { EntityResponse } from "./types";

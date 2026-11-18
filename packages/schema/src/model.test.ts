@@ -76,6 +76,14 @@ describe("defineModel reserved names", () => {
     expect(() => defineModel("todo", { groups: e.string() })).toThrow(/reserved/);
   });
 
+  it.each(["link", "group", "grant", "membership"])(
+    "rejects a field named %s — a platform component may sit on any row",
+    (name) => {
+      expect(() => defineModel("todo", { [name]: e.string() })).toThrow(ReservedNameError);
+      expect(() => defineModel("todo", { [name]: e.string() })).toThrow(new RegExp(`ebb/${name}`));
+    },
+  );
+
   it("still accepts app names and fields that don't collide", () => {
     const todo = defineModel("todo", { title: e.string(), grouping: e.string() });
     expect(todo.name).toBe("todo");

@@ -49,7 +49,7 @@ import {
   type QueryRow,
 } from "./query-builder";
 import { emptyQuery, type Predicate, type Query } from "./query";
-import { fieldComponent } from "./component-name";
+import { fieldComponent } from "@ebbjs/core";
 import { componentRowView, type GrantFieldMap, type GroupFieldMap } from "./system-row";
 import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";

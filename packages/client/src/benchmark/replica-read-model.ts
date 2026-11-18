@@ -28,7 +28,7 @@ import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
-import { fieldComponent } from "../sync/component-name";
+import { fieldComponent } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
 import { createReplicaExecutor, executePlan } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";

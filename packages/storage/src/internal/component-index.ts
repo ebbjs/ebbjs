@@ -1,12 +1,4 @@
-import {
-  componentName,
-  EBB_COMPONENT_KINDS,
-  EBB_MODEL_NAME,
-  ebbComponent,
-  ebbComponentField,
-  type EbbComponentKind,
-  type Entity,
-} from "@ebbjs/core";
+import { fieldComponent, type Entity } from "@ebbjs/core";
 
 import { sortSourceIds } from "./reverse-index";
 
@@ -26,22 +18,6 @@ import { sortSourceIds } from "./reverse-index";
 
 /** Component name → ids currently carrying it. Immutable by convention. */
 export type ComponentIndex = ReadonlyMap<string, ReadonlySet<string>>;
-
-/** The platform kind whose value lives at each platform field name. */
-const PLATFORM_FIELD_KINDS: ReadonlyMap<string, EbbComponentKind> = new Map(
-  EBB_COMPONENT_KINDS.map((kind) => [ebbComponentField(kind), kind]),
-);
-
-/**
- * The component a row's `field` is named under. An `ebb/*` component may sit on
- * a row of any model and never takes the row's model as its namespace, so a
- * platform field name is always `ebb/<field>`; every other field is
- * `<model>/<field>`.
- */
-export const fieldComponent = (model: string, field: string): string => {
-  const kind = model === EBB_MODEL_NAME ? undefined : PLATFORM_FIELD_KINDS.get(field);
-  return kind === undefined ? componentName(model, field) : ebbComponent(kind);
-};
 
 /** The component names a row carries, one per present field of its type. */
 export const componentsOf = (entity: Entity): readonly string[] =>

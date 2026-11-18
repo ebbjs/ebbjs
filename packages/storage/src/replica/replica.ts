@@ -2,6 +2,7 @@ import {
   componentField,
   componentModel,
   EBB_MODEL_NAME,
+  fieldComponent,
   isComponentUpdate,
   isRowCreate,
   linkTargets,
@@ -22,7 +23,6 @@ import {
   buildComponentIndexFrom,
   componentSetDelta,
   componentIds,
-  fieldComponent,
   touchedComponentSet,
   type ComponentIndex,
 } from "../internal/component-index";

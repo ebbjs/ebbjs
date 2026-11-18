@@ -205,3 +205,22 @@ export const linkTargets = (
     .map(([targetId]) => targetId)
     .sort();
 };
+
+/** The platform kind whose value lives at each platform field name. */
+const KIND_BY_FIELD: ReadonlyMap<string, EbbComponentKind> = new Map(
+  EBB_COMPONENT_KINDS.map((kind) => [ebbComponentField(kind), kind]),
+);
+
+/**
+ * The component a row's `field` is named under.
+ *
+ * `ebb/` is the platform's namespace, not the row's: an `ebb/*` component may
+ * sit on a row of any model and never takes that row's model as its namespace,
+ * so a platform field name is always `ebb/<field>`. Every other field is a
+ * component of the row's own model. The one way to name a component, so a
+ * reader and an index cannot disagree about where an overlay lives.
+ */
+export const fieldComponent = (model: string, field: string): ComponentName => {
+  const kind = model === EBB_MODEL_NAME ? undefined : KIND_BY_FIELD.get(field);
+  return kind === undefined ? componentName(model, field) : ebbComponent(kind);
+};

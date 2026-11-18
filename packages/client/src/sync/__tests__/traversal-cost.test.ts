@@ -30,7 +30,7 @@ import {
   membershipGroups,
   reverse,
 } from "../relationship";
-import { fieldComponent } from "../component-name";
+import { fieldComponent } from "@ebbjs/core";
 import { entityRow, linkRow, platformEntity } from "../test-utils";
 import { traversalCounter } from "../traversal-counter";
 

@@ -85,13 +85,13 @@ describe("ModelRegistry.isLwwField", () => {
 
 describe("ModelRegistry.isStructural", () => {
   const structural = defineModel("edge", {
-    link: defineComponent("edge/link", e.string(), { structural: true }),
+    contains: defineComponent("edge/contains", e.string(), { structural: true }),
   });
   const r = new ModelRegistry();
   r.register(structural);
 
   it("reports a component that opted out of detection", () => {
-    expect(r.isStructural("edge", "link")).toBe(true);
+    expect(r.isStructural("edge", "contains")).toBe(true);
   });
 
   it("defaults an ordinary, unknown, and undeclared component to detectable", () => {

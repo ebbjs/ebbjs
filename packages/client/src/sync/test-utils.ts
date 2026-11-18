@@ -45,7 +45,7 @@ import {
 } from "@ebbjs/core";
 import type { Replica } from "@ebbjs/storage/types";
 import { defineAction } from "../schema/action";
-import { fieldComponent } from "./component-name";
+import { fieldComponent } from "@ebbjs/core";
 import type { createClient } from "./client";
 import type { ActionDrafts, DuplicateAt, GroupRef } from "./drafts";
 import { isGroupListingUrl } from "./endpoints";
