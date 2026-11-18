@@ -11,10 +11,8 @@ import { describe, expect, it } from "vitest";
 import { format, pack, type HLCTimestamp } from "@ebbjs/core";
 import * as schema from "../index";
 import {
-  compareAnchors,
   compareInsertOrder,
   compareStamped,
-  isCovered,
   normalizeCutIntervals,
   ROOT_ANCHOR,
   ROOT_ID,
@@ -43,12 +41,7 @@ describe("compareStamped", () => {
   });
 });
 
-describe("compareAnchors", () => {
-  it("orders by run id, then offset", () => {
-    expect(compareAnchors({ runId: "a", offset: 9 }, { runId: "b", offset: 0 })).toBeLessThan(0);
-    expect(compareAnchors({ runId: "a", offset: 1 }, { runId: "a", offset: 2 })).toBeLessThan(0);
-  });
-
+describe("ROOT_ANCHOR", () => {
   it("has one root anchor", () => {
     expect(ROOT_ANCHOR).toEqual({ runId: ROOT_ID, offset: 0 });
   });
@@ -106,21 +99,12 @@ describe("retraction algebra", () => {
     expect(normalizeCutIntervals([...cuts, ...cuts])).toEqual(normalizeCutIntervals(cuts));
     expect(normalizeCutIntervals([...cuts].reverse())).toEqual(normalizeCutIntervals(cuts));
   });
-
-  it("reports coverage with a half-open end", () => {
-    const cuts = normalizeCutIntervals([{ from: 2, to: 5 }]);
-    expect(isCovered(cuts, 2)).toBe(true);
-    expect(isCovered(cuts, 4)).toBe(true);
-    expect(isCovered(cuts, 5)).toBe(false);
-    expect(isCovered(cuts, 1)).toBe(false);
-  });
 });
 
 describe("public surface", () => {
   it("does not export the position primitives from the package entry point", () => {
     expect("compareInsertOrder" in schema).toBe(false);
     expect("normalizeCutIntervals" in schema).toBe(false);
-    expect("compareAnchors" in schema).toBe(false);
   });
 
   it("is imported only by the text module", () => {

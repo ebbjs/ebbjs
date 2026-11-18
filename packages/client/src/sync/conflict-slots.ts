@@ -12,8 +12,7 @@
  *
  * Detection (#390) uses this to find overlapping positions; resolution
  * (#392) reads the persisted slots back. The module is pure: it folds
- * Actions and reports sides, and reads the LWW component oracle through an
- * injected predicate.
+ * Actions and reports sides.
  */
 
 import {
@@ -44,9 +43,6 @@ export const coarsestScope = (scopes: readonly ConflictScope[]): ConflictScope =
     "field",
   );
 
-/** The component-kind oracle the outbox injects; `undefined` defaults to LWW. */
-export type LwwFieldOracle = ((model: string, component: string) => boolean) | undefined;
-
 /** The effective inbound state for one subject an Action writes. */
 export interface InboundSubject {
   /** The model the row is committed under. */
@@ -62,7 +58,7 @@ export interface InboundSubject {
 }
 
 /** The components a buffered Action writes to one subject. */
-export interface PendingWrite {
+interface PendingWrite {
   readonly model: string;
   readonly components: ReadonlyMap<string, FieldValue>;
 }
@@ -151,7 +147,7 @@ export const actionWrites = (action: Action): Map<string, PendingWrite> => {
  * A leaf tombstone (`value: null`) is absence, so its side value is
  * `undefined` — the read model has no stored null.
  */
-export const conflictSide = (value: FieldValue): ConflictSide => {
+const conflictSide = (value: FieldValue): ConflictSide => {
   if (isFieldMap(value)) return { value: projectFieldValue(value) };
   const side: { value: unknown; update_id?: string; hlc?: string } = {
     value: value.value ?? undefined,
@@ -161,7 +157,7 @@ export const conflictSide = (value: FieldValue): ConflictSide => {
   return side;
 };
 
-export const nodeAtPath = (value: FieldValue, path: readonly string[]): FieldValue | undefined => {
+const nodeAtPath = (value: FieldValue, path: readonly string[]): FieldValue | undefined => {
   let node: FieldValue | undefined = value;
   for (const key of path) {
     if (node === undefined || !isFieldMap(node)) return undefined;

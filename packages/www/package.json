@@ -24,7 +24,6 @@
     "@tailwindcss/typography": "^0.5.16",
     "@tailwindcss/vite": "^4.2.1",
     "astro": "^5",
-    "codemirror": "^6.0.1",
     "motion": "^12.38.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

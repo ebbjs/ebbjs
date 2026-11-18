@@ -274,15 +274,9 @@ importers:
 
   packages/cli:
     dependencies:
-      '@ebbjs/functions-protocol':
-        specifier: workspace:*
-        version: link:../functions-protocol
       '@ebbjs/server':
         specifier: workspace:*
         version: link:../server
-      '@standard-schema/spec':
-        specifier: ^1.1.0
-        version: 1.1.0
       esbuild:
         specifier: ^0.27.0
         version: 0.27.4
@@ -349,9 +343,6 @@ importers:
       happy-dom:
         specifier: ^17.4.4
         version: 17.6.3
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
@@ -455,9 +446,6 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.4(react@19.2.4)
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
@@ -559,9 +547,6 @@ importers:
       '@ebbjs/client':
         specifier: workspace:*
         version: link:../client
-      tsx:
-        specifier: ^4.20.4
-        version: 4.21.0
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.12)(@types/node@25.5.0)(happy-dom@17.6.3)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.9.1)
@@ -632,9 +617,6 @@ importers:
       astro:
         specifier: ^5
         version: 5.18.1(@netlify/blobs@10.7.4)(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.31.1)(rollup@4.59.0)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.1)
-      codemirror:
-        specifier: ^6.0.1
-        version: 6.0.2
       motion:
         specifier: ^12.38.0
         version: 12.38.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)

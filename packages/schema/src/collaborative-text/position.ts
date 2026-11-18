@@ -13,7 +13,7 @@
 import { compare as compareHlc, type HLCTimestamp } from "@ebbjs/core";
 
 /** The identity of one cell in a document's cell map. */
-export type CellId = string;
+type CellId = string;
 
 /** A point in a run: `offset` characters in, or `0` for the root. */
 export type Anchor = {
@@ -56,14 +56,6 @@ export const compareStamped = (a: StampedCell, b: StampedCell): number =>
   compareHlc(a.stamp, b.stamp) || compareString(a.author, b.author) || compareString(a.id, b.id);
 
 /**
- * Where two anchors sit relative to one another. This is a canonical order
- * over anchors, not document order: a projection resolves `runId` to a
- * position. Used for grouping and for stable diagnostics.
- */
-export const compareAnchors = (a: Anchor, b: Anchor): number =>
-  compareString(a.runId, b.runId) || compareNumber(a.offset, b.offset);
-
-/**
  * The sibling order at one anchor: offset ascending, then **newer write
  * first**. Newer-first preserves the typing order users expect — inserting
  * twice at the same point leaves the second insertion before the first.
@@ -100,13 +92,4 @@ export const normalizeCutIntervals = (cuts: readonly CutInterval[]): readonly Cu
     }
   }
   return out;
-};
-
-/** True when `offset` falls inside any normalized interval. */
-export const isCovered = (cuts: readonly CutInterval[], offset: number): boolean => {
-  for (const cut of cuts) {
-    if (offset < cut.from) return false;
-    if (offset < cut.to) return true;
-  }
-  return false;
 };

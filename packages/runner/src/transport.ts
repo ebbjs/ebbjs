@@ -145,10 +145,6 @@ export class SocketHostTransport implements RunnerTransport {
     this.#failAll(reason);
   }
 
-  failAll(error: unknown): void {
-    this.#failAll(error);
-  }
-
   #failAll(error: unknown): void {
     for (const [callId, pending] of this.#pending) {
       this.#pending.delete(callId);

@@ -3,11 +3,11 @@ import { makeHlc, type Entity, type FieldValue } from "@ebbjs/core";
 
 import {
   applyComponentDelta,
-  buildComponentIndex,
+  buildComponentIndexFrom,
   componentDelta,
   componentIds,
   componentsOf,
-  touchedComponents,
+  touchedComponentSet,
 } from "./component-index";
 
 const leaf = (value: unknown): FieldValue => ({ value, update_id: "u", hlc: makeHlc(1) });
@@ -79,18 +79,26 @@ describe("applyComponentDelta", () => {
   });
 });
 
-describe("touchedComponents", () => {
+describe("touchedComponentSet", () => {
   it("touches nothing when neither side differs", () => {
     const before = row("e_1", "todo", { title: leaf("a") });
-    expect(touchedComponents(undefined, undefined)).toEqual([]);
-    expect(touchedComponents(null, null)).toEqual([]);
-    expect(touchedComponents(before, before)).toEqual([]);
+    const components = componentsOf(before);
+    expect(touchedComponentSet(undefined, [], undefined, [])).toEqual([]);
+    expect(touchedComponentSet(null, [], null, [])).toEqual([]);
+    expect(touchedComponentSet(before, components, before, [...components])).toEqual([]);
   });
 
   it("touches every component the row carries when a row arrives or leaves", () => {
     const attached = row("e_1", "todo", { title: leaf("a"), status: leaf("open") });
-    expect(touchedComponents(null, attached)).toEqual(["todo/title", "todo/status"]);
-    expect(touchedComponents(attached, null)).toEqual(["todo/title", "todo/status"]);
+    const components = componentsOf(attached);
+    expect(touchedComponentSet(null, [], attached, components)).toEqual([
+      "todo/title",
+      "todo/status",
+    ]);
+    expect(touchedComponentSet(attached, components, null, [])).toEqual([
+      "todo/title",
+      "todo/status",
+    ]);
   });
 
   it("touches only the component whose value changed", () => {
@@ -98,43 +106,61 @@ describe("touchedComponents", () => {
     const body = leaf("b");
     const before = row("e_1", "note", { title: leaf("a"), status, body });
     const after = row("e_1", "note", { title: leaf("a2"), status, body });
-    expect(touchedComponents(before, after)).toEqual(["note/title"]);
+    expect(touchedComponentSet(before, componentsOf(before), after, componentsOf(after))).toEqual([
+      "note/title",
+    ]);
   });
 
   it("touches a component on either side of an attach or a drop", () => {
     const title = leaf("a");
     const before = row("e_1", "note", { title, draft: leaf("d") });
     const after = row("e_1", "note", { title });
-    expect(touchedComponents(before, after)).toEqual(["note/draft"]);
-    expect(touchedComponents(after, before)).toEqual(["note/draft"]);
+    expect(touchedComponentSet(before, componentsOf(before), after, componentsOf(after))).toEqual([
+      "note/draft",
+    ]);
+    expect(touchedComponentSet(after, componentsOf(after), before, componentsOf(before))).toEqual([
+      "note/draft",
+    ]);
   });
 
   it("touches every component on a tombstone transition", () => {
     const live = row("e_1", "note", { title: leaf("a"), status: leaf("open") });
     const dead = { ...live, deleted_hlc: makeHlc(2) };
-    expect(touchedComponents(live, dead)).toEqual(["note/title", "note/status"]);
-    expect(touchedComponents(dead, live)).toEqual(["note/title", "note/status"]);
+    const components = componentsOf(live);
+    expect(touchedComponentSet(live, components, dead, componentsOf(dead))).toEqual([
+      "note/title",
+      "note/status",
+    ]);
+    expect(touchedComponentSet(dead, componentsOf(dead), live, components)).toEqual([
+      "note/title",
+      "note/status",
+    ]);
   });
 
   it("touches every component on either side of a model change", () => {
     const before = row("e_1", "note", { title: leaf("a") });
     const after = row("e_1", "page", { title: leaf("a") });
-    expect(touchedComponents(before, after)).toEqual(["note/title", "page/title"]);
+    expect(touchedComponentSet(before, componentsOf(before), after, componentsOf(after))).toEqual([
+      "note/title",
+      "page/title",
+    ]);
   });
 
   it("reads a freshly built value as a touch even when it is structurally equal", () => {
     const before = row("e_1", "note", { title: leaf("a") });
     const after = row("e_1", "note", { title: leaf("a") });
-    expect(touchedComponents(before, after)).toEqual(["note/title"]);
+    expect(touchedComponentSet(before, componentsOf(before), after, componentsOf(after))).toEqual([
+      "note/title",
+    ]);
   });
 });
 
-describe("buildComponentIndex", () => {
+describe("buildComponentIndexFrom", () => {
   it("keeps ids per component in ascending order", () => {
-    const index = buildComponentIndex([
-      row("e_2", "todo", { title: leaf("b") }),
-      row("e_1", "todo", { title: leaf("a") }),
-      row("e_3", "todo", {}),
+    const index = buildComponentIndexFrom([
+      { id: "e_2", components: ["todo/title"] },
+      { id: "e_1", components: ["todo/title"] },
+      { id: "e_3", components: [] },
     ]);
     expect(componentIds(index, "todo/title")).toEqual(["e_1", "e_2"]);
   });

@@ -88,7 +88,7 @@ const isReplicaBacked = (query: Query): boolean => query.source !== "";
  * the components it depends on reads a model whole rather than dropping the
  * dependency; a change that names no component invalidates it.
  */
-export const modelComponents = (model: string): string => `${model}/*`;
+const modelComponents = (model: string): string => `${model}/*`;
 
 /**
  * The components a join onto `target` reads. A platform target names the exact
