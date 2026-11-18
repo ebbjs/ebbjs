@@ -35,8 +35,6 @@ defmodule EbbServer.Functions.Store.Version do
     :version,
     :code,
     :digest,
-    :signature,
-    :signer_key_id,
     :runtime,
     :entry,
     :access,
@@ -61,8 +59,6 @@ defmodule EbbServer.Functions.Store.Version do
           version: String.t(),
           code: binary(),
           digest: String.t(),
-          signature: String.t() | nil,
-          signer_key_id: String.t() | nil,
           runtime: String.t(),
           entry: String.t(),
           access: String.t(),
@@ -175,10 +171,9 @@ defmodule EbbServer.Functions.Store do
   # deviation documented in the moduledoc. New columns go at the end so no
   # existing statement has to be reordered.
   @columns """
-  id, name, version, code, digest, signature, signer_key_id, runtime, entry,
-  access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-  status, created_at, activated_at, created_by, pinned, previous_version_id,
-  deployment_hash
+  id, name, version, code, digest, runtime, entry, access, params_schema,
+  output_schema, contract, timeout_ms, memory_bytes, status, created_at,
+  activated_at, created_by, pinned, previous_version_id, deployment_hash
   """
 
   @pragmas """
@@ -197,6 +192,7 @@ defmodule EbbServer.Functions.Store do
       version TEXT NOT NULL,
       code TEXT NOT NULL,
       digest TEXT NOT NULL,
+      -- Reserved for the deferred signing slice (#597); never read or written.
       signature TEXT,
       signer_key_id TEXT,
       runtime TEXT NOT NULL,
@@ -235,11 +231,10 @@ defmodule EbbServer.Functions.Store do
 
   @insert_sql """
   INSERT INTO function_versions (
-    id, name, version, code, digest, signature, signer_key_id, runtime, entry,
-    access, params_schema, output_schema, contract, timeout_ms, memory_bytes,
-    status, created_at, activated_at, created_by, pinned, previous_version_id,
-    deployment_hash
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, name, version, code, digest, runtime, entry, access, params_schema,
+    output_schema, contract, timeout_ms, memory_bytes, status, created_at,
+    activated_at, created_by, pinned, previous_version_id, deployment_hash
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   """
 
   @get_sql "SELECT #{@columns} FROM function_versions WHERE name = ? AND version = ?"
@@ -625,8 +620,6 @@ defmodule EbbServer.Functions.Store do
          version: attrs.version,
          code: attrs.code,
          digest: attrs.digest,
-         signature: Map.get(attrs, :signature),
-         signer_key_id: Map.get(attrs, :signer_key_id),
          runtime: attrs.runtime,
          entry: attrs.entry,
          access: attrs.access,
@@ -658,8 +651,6 @@ defmodule EbbServer.Functions.Store do
   ]
 
   @optional_attrs [
-    signature: :binary,
-    signer_key_id: :binary,
     created_by: :binary,
     pinned: :boolean,
     deployment_hash: :binary
@@ -702,8 +693,6 @@ defmodule EbbServer.Functions.Store do
       version: attrs.version,
       code: attrs.code,
       digest: attrs.digest,
-      signature: attrs.signature,
-      signer_key_id: attrs.signer_key_id,
       runtime: attrs.runtime,
       entry: attrs.entry,
       access: attrs.access,
@@ -819,8 +808,6 @@ defmodule EbbServer.Functions.Store do
       version.version,
       version.code,
       version.digest,
-      version.signature,
-      version.signer_key_id,
       version.runtime,
       version.entry,
       version.access,
@@ -938,8 +925,6 @@ defmodule EbbServer.Functions.Store do
          version,
          code,
          digest,
-         signature,
-         signer_key_id,
          runtime,
          entry,
          access,
@@ -962,8 +947,6 @@ defmodule EbbServer.Functions.Store do
       version: version,
       code: code,
       digest: digest,
-      signature: signature,
-      signer_key_id: signer_key_id,
       runtime: runtime,
       entry: entry,
       access: access,
