@@ -34,7 +34,7 @@
  * result change even when the source rows are untouched.
  */
 
-import { componentModel } from "@ebbjs/core";
+import { componentModel, structuralEqual } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
@@ -45,6 +45,7 @@ import {
   type CompiledReadComponents,
 } from "./query-plan";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
+import { keyOf } from "./keys";
 
 /**
  * How long a result stays cached after its last subscriber leaves. Long
@@ -181,33 +182,10 @@ const encode = (value: unknown): string => {
 
 /** The cache key: surface plus the canonical form of the lowered query. */
 export const queryKey = (surface: QuerySurface, query: Query): string =>
-  `${surface}\n${encode(query)}`;
-
-/** Structural equality over the result rows, which are plain JSON values. */
-const sameValue = (a: unknown, b: unknown): boolean => {
-  if (a === b) return true;
-  if (Array.isArray(a)) {
-    return (
-      Array.isArray(b) && a.length === b.length && a.every((entry, i) => sameValue(entry, b[i]))
-    );
-  }
-  if (a !== null && b !== null && typeof a === "object" && typeof b === "object") {
-    const aKeys = Object.keys(a);
-    const bKeys = Object.keys(b);
-    return (
-      aKeys.length === bKeys.length &&
-      aKeys.every(
-        (key) =>
-          Object.prototype.hasOwnProperty.call(b, key) &&
-          sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]),
-      )
-    );
-  }
-  return false;
-};
+  keyOf(surface, encode(query));
 
 const sameRows = (a: readonly unknown[], b: readonly unknown[]): boolean =>
-  a.length === b.length && a.every((row, i) => sameValue(row, b[i]));
+  a.length === b.length && a.every((row, i) => structuralEqual(row, b[i]));
 
 const toError = (thrown: unknown): Error =>
   thrown instanceof Error ? thrown : new Error(String(thrown));
@@ -237,7 +215,7 @@ export const createQueryCache = (
   const compilations = new Map<string, { reads: CompiledReads; refs: number }>();
 
   const acquireReads = (components: readonly string[]): CompiledReads => {
-    const key = [...new Set(components)].sort().join("\n");
+    const key = keyOf(...[...new Set(components)].sort());
     const existing = compilations.get(key);
     if (existing !== undefined) {
       existing.refs += 1;

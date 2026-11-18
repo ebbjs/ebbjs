@@ -6,6 +6,8 @@
 import type { MigrationRegistry } from "@ebbjs/schema";
 import type { ModelRegistry } from "@ebbjs/schema";
 
+import { keyOf } from "./keys";
+
 /** Raised when a stored component is newer than the client's declaration. */
 export class ComponentVersionAheadError extends Error {
   readonly component: string;
@@ -60,7 +62,7 @@ export const createComponentMigrations = (opts: ComponentMigrationOptions): Comp
       if (stored > declared) throw new ComponentVersionAheadError(component, stored, declared);
       if (!opts.migrations.has(component)) return value;
 
-      const key = `${component}\u0000${stored}\u0000${declared}`;
+      const key = keyOf(component, String(stored), String(declared));
       let cache = memo.get(key);
       if (cache === undefined) {
         cache = new WeakMap();

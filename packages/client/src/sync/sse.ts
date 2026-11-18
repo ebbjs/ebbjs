@@ -35,6 +35,8 @@
  */
 
 import { createEventSource, type EventSourceOptions } from "eventsource-client";
+import { live } from "./endpoints";
+import { actorHeaders, httpError, normalizeBaseUrl, readBody } from "./http";
 import type { SSEEvent } from "./types";
 
 const KNOWN_EVENT_TYPES = ["data", "control", "presence"] as const;
@@ -85,24 +87,22 @@ export function openSSEStream(opts: SSEOpenOptions): SSESubscription {
   const fetchImpl: typeof fetch = async (input, init) => {
     const response = await baseFetch(input as Request | string | URL, init);
     if (response.ok) return response;
-    const body = await response.text().catch(() => "");
-    capturedOpenError = new Error(`SSE open failed: ${response.status} ${body}`.trim());
+    capturedOpenError = httpError(response, "SSE open", await readBody(response));
     // Return a 204 so eventsource-client closes the iterator cleanly
     // (it special-cases 204 as a graceful server-initiated close).
     return new Response(null, { status: 204 });
   };
-  const url = buildSSEUrl(opts.serverUrl, opts.groupIds, opts.cursor);
+  const url = `${normalizeBaseUrl(opts.serverUrl)}${live(opts.groupIds, opts.cursor)}`;
 
   const source = createEventSource({
     url,
     // The library's `FetchLike` type is a strict subset of DOM `fetch`
     // — single assertion because TS can't bridge the variance.
     fetch: fetchImpl as EventSourceOptions["fetch"],
-    headers: {
+    headers: actorHeaders(opts.actorId, {
       Accept: "text/event-stream",
-      "x-ebb-actor-id": opts.actorId,
       "Cache-Control": "no-cache",
-    },
+    }),
   } as never);
 
   const queue: SSEEvent[] = [];
@@ -255,21 +255,6 @@ function makeEvent(name: string, parsed: unknown): SSEEvent | null {
     default:
       return null;
   }
-}
-
-/**
- * Build the SSE endpoint URL with required query params.
- *
- * Note: there is intentionally NO `actor_id=` query param here. Auth is
- * always via the `x-ebb-actor-id` header. Past versions appended
- * `?actor_id=` to work around the native browser EventSource not
- * accepting custom headers; switching to fetch-based consumers (via
- * eventsource-client) removed that requirement.
- */
-function buildSSEUrl(serverUrl: string, groupIds: readonly string[], cursor: number): string {
-  const base = serverUrl.replace(/\/$/, "");
-  const params = new URLSearchParams({ groups: groupIds.join(","), cursor: String(cursor) });
-  return `${base}/sync/live?${params.toString()}`;
 }
 
 /**

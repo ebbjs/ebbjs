@@ -28,6 +28,7 @@ import type { ConflictScope } from "@ebbjs/schema";
 import type { ConflictSide, ConflictSlot } from "@ebbjs/storage/types";
 
 import { projectFieldValue } from "./query-builder";
+import { keyOf } from "./keys";
 
 /** Granularity ordering for a conflict: `field` < `component` < `entity`. */
 const SCOPE_RANK: Readonly<Record<ConflictScope, number>> = {
@@ -192,7 +193,7 @@ export const overlappingPaths = (
 
 /** Stable key for one position, so detection can dedupe overlapping reports. */
 export const slotKey = (slot: Pick<ConflictSlot, "subjectId" | "component" | "path">): string =>
-  `${slot.subjectId}\u0000${slot.component}\u0000${slot.path.join("\u0001")}`;
+  keyOf(slot.subjectId, slot.component, slot.path);
 
 /**
  * A contested slot with its local side and the `remote` value the server

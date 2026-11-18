@@ -8,7 +8,7 @@
  * diff reads like the merge's verdict rather than a structural object walk.
  */
 
-import { componentName, isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
+import { canonicalKey, componentName, isFieldMap, type Entity, type FieldValue } from "@ebbjs/core";
 
 import { projectFieldValue } from "./field-projection";
 
@@ -36,25 +36,16 @@ export interface EntityDiff {
 const rowFields = (entity: Entity | null): Record<string, FieldValue> => entity?.data.fields ?? {};
 
 /**
- * Canonical string for a projected value. A tombstone already projects as
- * absent (`undefined`), so only absence needs its own spelling. Mirrors
- * `stableStringify` in `client.ts`: object keys sorted at every level,
- * arrays in order.
+ * How the diff spells an absent projected value. A tombstone projects as
+ * absent (`undefined`), and presence, absence, and a stored `null` are three
+ * different states: keeping `undefined` distinct from `null` is what stops
+ * one from reading as another.
  */
-const stableValueString = (value: unknown): string => {
-  if (value === undefined) return "undefined";
-  if (Array.isArray(value)) return `[${value.map(stableValueString).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableValueString(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
-};
+const ABSENT_AS_UNDEFINED = { undefinedAs: "undefined" } as const;
 
 /** A position only emits when the two projected values differ. */
 const projectedEqual = (before: unknown, after: unknown): boolean =>
-  stableValueString(before) === stableValueString(after);
+  canonicalKey(before, ABSENT_AS_UNDEFINED) === canonicalKey(after, ABSENT_AS_UNDEFINED);
 
 /**
  * A nested map entry that projects to `null` is a tombstone, not a

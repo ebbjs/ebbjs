@@ -46,6 +46,8 @@ import type { Action, Entity } from "@ebbjs/core";
 import type { CursorRecord, LoggedAction, StorageAdapter } from "@ebbjs/storage/types";
 
 import { snapshotActionWithIds, toRuntimeEntity } from "./backfill";
+import { groupListing } from "./endpoints";
+import { actorHeaders, exchange, httpError, normalizeBaseUrl, tryParseJson } from "./http";
 import type { GroupListingResponse } from "./types";
 
 /**
@@ -153,7 +155,8 @@ const isListingEnvelope = (body: unknown): body is GroupListingResponse => {
 const isLive = (entity: Entity): boolean => entity.deleted_hlc === null;
 
 export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
-  const { storage, serverUrl, actorId, fetchImpl } = opts;
+  const { storage, actorId, fetchImpl } = opts;
+  const serverUrl = normalizeBaseUrl(opts.serverUrl);
   const onError =
     opts.onError ??
     ((error: unknown, groupId: string) => {
@@ -162,26 +165,18 @@ export const createGroupListing = (opts: GroupListingOptions): GroupListing => {
     });
 
   const readPage = async (groupId: string, token: string | undefined): Promise<PageRead> => {
-    const query = new URLSearchParams();
-    if (token !== undefined) query.set("cursor", token);
-    if (opts.pageLimit !== undefined) query.set("limit", String(opts.pageLimit));
-    const search = query.size === 0 ? "" : `?${query.toString()}`;
-    const url = `${serverUrl}/sync/groups/${encodeURIComponent(groupId)}/entities${search}`;
-
-    const response = await fetchImpl(url, {
+    const url = `${serverUrl}${groupListing(groupId, token, opts.pageLimit)}`;
+    const { response, text } = await exchange(fetchImpl, url, {
       method: "GET",
-      headers: { "x-ebb-actor-id": actorId },
+      headers: actorHeaders(actorId),
     });
     // An older server has no such route, and a rolling deployment must
     // degrade to the log path rather than break the connection.
     if (response.status === 404 || response.status === 501) return { kind: "unsupported" };
     if (response.status === 400 && token !== undefined) return { kind: "bad-token" };
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`group listing failed: ${response.status} ${text}`);
-    }
+    if (!response.ok) throw httpError(response, "group listing", text);
 
-    const body = await response.json().catch(() => null);
+    const body = tryParseJson<unknown>(text);
     // A body that is not the envelope is a server the client cannot seed
     // from; the log path still converges.
     if (!isListingEnvelope(body)) return { kind: "unsupported" };

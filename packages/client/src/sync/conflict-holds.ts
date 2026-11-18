@@ -9,9 +9,11 @@
 import { isComponentUpdate, type Action } from "@ebbjs/core";
 import type { ConflictHold } from "@ebbjs/storage/types";
 
+import { keyOf } from "./keys";
+
 /** Stable key for one held position: the subject, and `*` for the whole subject. */
 export const holdKey = (hold: ConflictHold): string =>
-  `${hold.subjectId}\u0000${hold.kind === "component" ? hold.component : "*"}`;
+  keyOf(hold.subjectId, hold.kind === "component" ? hold.component : "*");
 
 /**
  * Whether an Action writes any held position. An Action cannot be submitted
