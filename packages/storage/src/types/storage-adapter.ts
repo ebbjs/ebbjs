@@ -1,4 +1,4 @@
-import type { ActionLog, LoggedAction } from "./action-log";
+import type { ActionLog } from "./action-log";
 import type { DirtyTracker } from "./dirty-tracker";
 import type { EntityStore } from "./entity-store";
 import type { CursorStore } from "./cursor-store";
@@ -41,15 +41,3 @@ export interface StorageAdapter {
   isDirty(entityId: string): Promise<boolean>;
   reset(): Promise<void>;
 }
-
-export type { ActionLog, LoggedAction, DirtyTracker, EntityStore, CursorStore };
-export type { CursorRecord, SeedMarker } from "./cursor-store";
-export type { ReplicaRecord, ReplicaStore } from "./replica-store";
-export type {
-  OutboxStore,
-  OutboxEntry,
-  OutboxStatus,
-  OutboxConflict,
-  ConflictSide,
-  ConflictSlot,
-} from "./outbox-store";

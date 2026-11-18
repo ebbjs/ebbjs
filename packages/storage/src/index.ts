@@ -7,34 +7,8 @@
  * path remains valid so existing imports of `StorageAdapter`
  * (and other shared types) keep working without a subpath, but
  * runtime adapter imports must move to the per-adapter subpath.
+ *
+ * The type list lives in `./types`; this entry re-exports it whole so the two
+ * paths can never disagree about what `@ebbjs/storage` publishes.
  */
-export type { ActionLog, LoggedAction } from "./types/action-log";
-export type { DirtyTracker } from "./types/dirty-tracker";
-export type {
-  EntityStore,
-  RelationshipIndexQuery,
-  RelationshipSourceQuery,
-  RelationshipLink,
-  MembershipLink,
-} from "./types/entity-store";
-export type { CursorRecord, CursorStore, SeedMarker } from "./types/cursor-store";
-export type { ReplicaRecord, ReplicaStore } from "./types/replica-store";
-export type {
-  MaterializationPolicy,
-  MembershipQuery,
-  Replica,
-  ReplicaChange,
-  ReplicaOptions,
-  RelationshipQuery,
-  Revision,
-} from "./replica/types";
-export type {
-  OutboxEntry,
-  OutboxStatus,
-  OutboxStore,
-  OutboxConflict,
-  ConflictSide,
-  ConflictSlot,
-  ConflictSubjectState,
-} from "./types/outbox-store";
-export type { StorageAdapter } from "./types/storage-adapter";
+export type * from "./types";
