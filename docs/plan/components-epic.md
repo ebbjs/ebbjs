@@ -940,6 +940,37 @@ incoming traversal is answered by the reverse index at parity with the other cac
 
 **Depends on.** 11, #790.
 
+**Current state.** Shipped in [#820](https://github.com/ebbjs/ebbjs/issues/820). `ebb/link` is a
+keyed component of its source — value `{<field>: {<type>: {<target_id>: true}}}`, so the key is the
+whole edge — and one Update writes one edge: a presence leaf to add it, a `merge` whose leaf
+tombstones the key to remove it. The edge row, its `rel_*` id, `RelationshipCache`'s two tables,
+and the `<source>/<as>` mirror are gone. Forward traversal is a component read (`linkTargets`); the
+client's reverse index is keyed `(field, type, target)` → source ids with the `rowId → yieldedId`
+layer deleted, while membership keeps its row-keyed index untouched. The server's
+`LinkTargetIndex` answers `(type, target_id) → source ids` from memory: applied after the range is
+durable, rebuilt at boot from `cf_actions` through the same op function, entries are candidates
+with the row tombstone as the liveness filter, and a patch of the wrong depth indexes nothing (the
+boot rebuild heals it). `SystemComponent` keeps the component's name and kind, drops its scope and
+by-id declarations, and marks it an `overlay`: an `ebb/link` write on a user row adds a component
+entry and leaves the model entry alone, and a link write authorizes as `ebb/link.<verb>` in the
+source's group set. `GroupListing`'s relationship branch, the SQLite generated columns and index
+that existed only for it, and `PermissionHelper`'s intra-Action source lookup are deleted. Edges
+ship inside the source row, which is what makes a link a replica missed arrive with a backfill of
+its source (#789).
+
+Six things are recorded rather than resolved. The functions runtime's `ctx.relate` is synchronous,
+so a one-cardinality relate there writes presence only; a client or planner write is one Update
+carrying the old key's tombstone and the new key's presence, and closing the runtime gap needs an
+async `ctx` port. `client.can(row, "update")` answers the row's model rule, so it is coarser than
+the `ebb/link.<verb>` check the write path makes. A model that declares a field with the same name
+as one of its relationship accessors used to have both copies kept in step by the
+many-cardinality writer; the field and the edges are now independent, and the schema does not
+refuse the pair. The client's read of the live set behind a `{replace}` or a one-cardinality move
+goes through the storage row rather than the replica, so it does not refuse on a fresh client. A
+platform field name is named under `ebb` by the server's own static table, the same two-sided
+duplication the scope table carries. And the four platform field names are reserved on a user
+model, because an overlay shares `data.fields.<name>` with the row it rides.
+
 ---
 
 ### 14. `feat(schema)`: per-component version and read migrations
