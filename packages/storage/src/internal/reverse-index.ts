@@ -79,7 +79,7 @@ export const reverseIndexKey = (field: string, type: string, targetId: string): 
  * around it are outside the nanoid alphabet and accessor names, so neither
  * separator can occur in a key component.
  */
-export const forwardIndexKey = (field: string, type: string, sourceId: string): string =>
+const forwardIndexKey = (field: string, type: string, sourceId: string): string =>
   `\u0001${reverseIndexKey(field, type, sourceId)}`;
 
 /** The reverse-index key a membership row with this group id contributes. */
@@ -162,7 +162,7 @@ export const liveSourceIds = (rows: IndexRows | undefined): string[] =>
  * Deterministic regardless of insertion order, so both adapters return the
  * same sequence for the same rows.
  */
-export const liveIndexRows = (
+const liveIndexRows = (
   rows: IndexRows | undefined,
 ): readonly { readonly id: string; readonly value: string }[] =>
   Object.entries(rows ?? {})

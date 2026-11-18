@@ -1243,7 +1243,7 @@ defmodule EbbServer.Storage.WriterTest do
         updates:
           [todo_update("upd_todo", "todo_link", "x", hlc)] ++
             membership_updates("eg_member", "todo_link", "g_1", hlc) ++
-            link_updates("upd_link", "todo_link", "owns", "doc", "doc_1", hlc)
+            link_updates("upd_link", "owns", "doc", "doc_1", hlc)
       }
 
       assert {:ok, {1, 1}, []} = Writer.write_actions([action], writer_name)
@@ -1678,7 +1678,7 @@ defmodule EbbServer.Storage.WriterTest do
 
   # One edge: `field → type → target → leaf`, where only the leaf carries
   # presence.
-  defp link_updates(id, source_id, field, type, target_id, hlc) do
+  defp link_updates(id, field, type, target_id, hlc) do
     [
       validated_component(id, "ebb/link", %{
         "map" => %{

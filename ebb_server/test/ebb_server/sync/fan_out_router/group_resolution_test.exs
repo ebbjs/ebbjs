@@ -111,15 +111,6 @@ defmodule EbbServer.Sync.FanOutRouter.GroupResolutionTest do
     }
   end
 
-  defp delete_update(subject_id) do
-    %{
-      "id" => "upd_" <> subject_id,
-      "subject_id" => subject_id,
-      "method" => "delete",
-      "data" => nil
-    }
-  end
-
   defp put_membership(t, entity_id, group_id, id) do
     MembershipCache.put_membership(
       %{id: id, entity_id: entity_id, group_id: group_id},

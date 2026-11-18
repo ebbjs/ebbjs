@@ -17,6 +17,7 @@
 import {
   EBB_COMPONENTS,
   EBB_MODEL_NAME,
+  fieldComponent,
   linkTargets,
   type EbbComponentKind,
   type Entity,
@@ -49,7 +50,6 @@ import {
   type QueryRow,
 } from "./query-builder";
 import { emptyQuery, type Predicate, type Query } from "./query";
-import { fieldComponent } from "@ebbjs/core";
 import { componentRowView, type GrantFieldMap, type GroupFieldMap } from "./system-row";
 import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";

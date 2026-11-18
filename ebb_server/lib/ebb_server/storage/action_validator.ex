@@ -180,17 +180,50 @@ defmodule EbbServer.Storage.ActionValidator do
 
   # Ordered: the per-Update shape first, so every component below is well
   # formed; then one create per subject; the model check next, because it
-  # reads the create and the prefix; and the platform-component counts last.
-  # A create's own HLC is validated with the leaf HLCs, where the clock is
-  # available.
+  # reads the create and the prefix; the platform-component counts and the
+  # one-component-per-field rule last. A create's own HLC is validated with
+  # the leaf HLCs, where the clock is available.
   defp validate_updates(updates) do
     with :ok <- validate_updates_structure(updates),
          :ok <- validate_create_uniqueness(updates),
          :ok <- validate_subject_models(updates),
-         :ok <- validate_subject_components(updates) do
+         :ok <- validate_subject_components(updates),
+         :ok <- validate_subject_fields(updates) do
       validate_platform_creates(updates)
     end
   end
+
+  # One component per field: a component's value lives at
+  # `data.fields[<field>]`, and an `ebb/*` overlay shares that record with the
+  # row it rides. Two different components sharing a field on one subject would
+  # merge into a single leaf while the row's component list named one of them,
+  # so the pair is refused instead of silently overwriting its sibling. Naming
+  # the same component twice is a patch, which is legal.
+  defp validate_subject_fields(updates) do
+    case Enum.reduce_while(updates, %{}, &check_subject_field/2) do
+      {:error, _reason, _details} = error -> error
+      _fields -> :ok
+    end
+  end
+
+  defp check_subject_field(%{"component" => component, "subject_id" => subject_id}, seen)
+       when is_binary(component) do
+    case Map.fetch(seen, {subject_id, Component.field(component)}) do
+      :error ->
+        {:cont, Map.put(seen, {subject_id, Component.field(component)}, component)}
+
+      {:ok, ^component} ->
+        {:cont, seen}
+
+      {:ok, other} ->
+        {:halt,
+         {:error, "invalid_structure",
+          "two components of a row cannot share a field: " <>
+            "#{inspect(subject_id)} names both #{inspect(other)} and #{inspect(component)}"}}
+    end
+  end
+
+  defp check_subject_field(_update, seen), do: {:cont, seen}
 
   # One explicit create per subject: a second one cannot be ordered against
   # the first, so it would leave the row's model and creation time ambiguous.

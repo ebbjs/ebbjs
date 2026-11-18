@@ -542,7 +542,7 @@ describe("collectPermissionViolations — link edges", () => {
         kind: "missing-permission",
         permissionSubject: "ebb/link",
         subjectId: "todo_1",
-        required: "ebb/link.create",
+        required: "ebb/link.update",
         groupIds: ["g_source"],
       },
     ]);
@@ -550,13 +550,36 @@ describe("collectPermissionViolations — link edges", () => {
     expect(actionRequests(calls)).toHaveLength(0);
   });
 
-  it("authorizes a row's first edge as ebb/link.create over its group set", async () => {
-    const { client } = await mkClient([["g_source", ["ebb/link.create"]]]);
+  it("authorizes an edge on an existing row as ebb/link.update over its group set", async () => {
+    const { client } = await mkClient([["g_source", ["ebb/link.update"]]]);
     await seedSource(client, "g_source");
 
     await expect(client.write([action([linkUpdate("todo_1")])])).resolves.toEqual({
       rejected: [],
     });
+  });
+
+  it("authorizes an edge in the Action that creates its source as ebb/link.create", async () => {
+    // The verb follows the Action, not the store: the source row does not
+    // exist yet, but the create rides in this Action, so the write is a
+    // create — the same rule the server applies.
+    const { client } = await mkClient([["g_source", ["todo.create", "ebb/link.create"]]]);
+    await client.storage.entities.set(
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+
+    await expect(
+      client.write([action([create("todo", "todo_1"), linkUpdate("todo_1")])]),
+    ).resolves.toEqual({ rejected: [] });
+
+    const updated = await mkClient([["g_source", ["todo.create", "ebb/link.update"]]]);
+    await updated.client.storage.entities.set(
+      platformEntity("eg_src", "membership", { entity_id: "todo_1", group_id: "g_source" }),
+    );
+
+    await expect(
+      updated.client.write([action([create("todo", "todo_1"), linkUpdate("todo_1")])]),
+    ).rejects.toBeInstanceOf(PermissionError);
   });
 
   it("authorizes a row that already carries ebb/link as an update", async () => {
@@ -602,7 +625,7 @@ describe("collectPermissionViolations — link edges", () => {
 
   it("needs no grant in the target row's group", async () => {
     const { client } = await mkClient([
-      ["g_source", ["ebb/link.create"]],
+      ["g_source", ["ebb/link.update"]],
       ["g_target", []],
     ]);
     await seedSource(client, "g_source");

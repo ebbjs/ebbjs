@@ -1155,9 +1155,6 @@ defmodule EbbServer.Storage.AuthorizerTest do
 
     # A create names the row's model, and the model grant covers every user
     # component of the row it creates — but an `ebb/*` overlay is its own
-    # subject, so the create's Action needs both.
-    # A create names the row's model, and the model grant covers every user
-    # component of the row it creates — but an `ebb/*` overlay is its own
     # subject, so the create's Action needs the overlay's verb too.
     test "an edge riding a create needs the overlay's verb as well" do
       tables = create_isolated_tables()

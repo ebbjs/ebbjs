@@ -756,36 +756,6 @@ defmodule EbbServer.Sync.GroupListingTest do
       else: acc
   end
 
-  # A membership row written straight into the cache: the shape a data dir
-  # from before #623, or a commit landing between a page's two reads, can hold
-  # without the write path minting it here. `last_gsn: 0` puts it below every
-  # real row, so nothing materializes over it.
-  defp insert_cached_membership(eg_id, entity_id, group_id) do
-    :ok =
-      SQLite.upsert_entity(
-        %{
-          id: eg_id,
-          model: SystemComponent.model(),
-          data:
-            Jason.encode!(%{
-              "fields" => %{
-                SystemComponent.field(:membership) => %{
-                  "value" => %{"entity_id" => entity_id, "group_id" => group_id},
-                  "hlc" => 1
-                }
-              },
-              "components" => [SystemComponent.component(:membership)]
-            }),
-          created_hlc: 1,
-          updated_hlc: 1,
-          deleted_hlc: nil,
-          deleted_by: nil,
-          last_gsn: 0
-        },
-        SQLite
-      )
-  end
-
   defp write_action(actor_id, updates) do
     action = %{
       "id" => unique("act"),
@@ -797,16 +767,6 @@ defmodule EbbServer.Sync.GroupListingTest do
     conn = post_actions(msgpack_encode!(%{"actions" => [action]}), actor_id)
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
-  end
-
-  defp todo_update(entity_id, title) do
-    %{
-      "id" => unique("upd"),
-      "subject_id" => entity_id,
-      "component" => "todo/title",
-      "method" => "replace",
-      "data" => lww(title)
-    }
   end
 
   defp link_update(source_id, field, type, target_id) do
@@ -860,8 +820,6 @@ defmodule EbbServer.Sync.GroupListingTest do
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body) == %{"rejected" => []}
   end
-
-  defp lww(value), do: %{"type" => "lww", "value" => value, "hlc" => generate_hlc()}
 
   defp leaf(value, hlc), do: %{"value" => value, "hlc" => hlc}
 

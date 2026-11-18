@@ -222,8 +222,8 @@ defmodule EbbServer.Storage.ActionValidatorTest do
               "id" => "upd_2",
               "subject_id" => "ebb_1",
               "component" => "ebb/link",
-              "method" => "replace",
-              "data" => %{"value" => %{"source_id" => "note_1", "target_id" => "col_1"}}
+              "method" => "merge",
+              "data" => %{"map" => %{}}
             }
           ]
         })
@@ -233,6 +233,57 @@ defmodule EbbServer.Storage.ActionValidatorTest do
 
       # The same component twice is the retried write of one row.
       repeated = update_in(action, ["updates"], &(Enum.take(&1, 1) ++ [hd(&1)]))
+      assert ActionValidator.validate_structure(repeated) == :ok
+    end
+
+    # A component's value lives at `data.fields[<field>]`, and an overlay shares
+    # that record with the row it rides, so a user component of the same name
+    # would overwrite it while the row's component list named only one of them.
+    test "a user component cannot share a field with an overlay" do
+      action =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "note_1",
+              "component" => "note/link",
+              "method" => "merge",
+              "data" => %{"value" => "x"}
+            },
+            %{
+              "id" => "upd_2",
+              "subject_id" => "note_1",
+              "component" => "ebb/link",
+              "method" => "merge",
+              "data" => %{"map" => %{}}
+            }
+          ]
+        })
+
+      assert {:error, "invalid_structure", details} = ActionValidator.validate_structure(action)
+      assert details =~ "cannot share a field"
+
+      # The same component twice is one field written twice — a patch.
+      repeated =
+        sample_action(%{
+          "updates" => [
+            %{
+              "id" => "upd_1",
+              "subject_id" => "note_1",
+              "component" => "note/link",
+              "method" => "merge",
+              "data" => %{"value" => "x"}
+            },
+            %{
+              "id" => "upd_2",
+              "subject_id" => "note_1",
+              "component" => "note/link",
+              "method" => "merge",
+              "data" => %{"value" => "y"}
+            }
+          ]
+        })
+
       assert ActionValidator.validate_structure(repeated) == :ok
     end
 

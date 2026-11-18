@@ -122,7 +122,11 @@ const createPlaceholderRow = (
   const fields: Record<string, FieldValue> = { [write.field]: write.value };
   return {
     id: update.subject_id,
-    model: componentModel(update.component),
+    // A user component's prefix is the model the row was committed under. An
+    // `ebb/*` overlay never supplies one — it rides a row it does not model —
+    // so a placeholder carrying only the overlay keeps its model unknown
+    // instead of claiming `ebb` (ADR 0001, decision 1). The create supplies it.
+    model: isEbbComponent(update.component) ? "" : componentModel(update.component),
     data: { fields: options?.residentMapFields ? adoptMapFields(fields) : fields },
     exists: false,
     created_hlc: null,

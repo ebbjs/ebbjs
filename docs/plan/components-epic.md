@@ -745,9 +745,10 @@ one atomic component value, written by one Update: `Relationship` became `ebb/li
 carries the row's components and kind, and every dispatch that was on a model string now reads that
 kind (`EntityIndex.kind/2` answers it for a delete, which names no component). Atomicity deleted
 machinery rather than moving it: the cache planner projects the whole value with no "wire wins, cache
-supplies the rest" merge, and decision 13 makes the membership pair, a grant's `group_id` and a
-link's `source_id` immutable, so a move is a delete plus a create (the old "needs the permission in
-both groups" rule is gone). Permission subjects are `ebb/<leaf>.<verb>`, which preserves the four
+supplies the rest" merge, and decision 13 makes the membership pair and a grant's `group_id`
+immutable, so a move is a delete plus a create (the old "needs the permission in both groups" rule
+is gone). Slice 13 then moved `ebb/link` off its own row onto its source, which is what retired the
+`source_id` immutability with the field. Permission subjects are `ebb/<leaf>.<verb>`, which preserves the four
 distinct grants. SQLite follows the value into the component and guards each listing on the
 generated column's non-nullness — the component-existence guard, and indexable; `EXPLAIN QUERY PLAN`
 tests pin all four listings, and the read model now carries a schema version so an upgraded database
@@ -780,11 +781,16 @@ plus this Action's own prefix).
 | `ebb/group`      | `self`                  |
 | `ebb/grant`      | `group_id`              |
 | `ebb/membership` | `group_id`              |
-| `ebb/link`       | `source_id`             |
 | anything else    | the entity's membership |
 
 Groups and grants carry no membership row: a group's scope is itself and a grant's is the group it
 names. `ebb/membership` is never written for either.
+
+`ebb/link` left this table in [#820](https://github.com/ebbjs/ebbjs/issues/820). The table was
+written while a link was still a row naming its `source_id`; a link is now a keyed component of its
+source, so its write's subject **is** the source and the default path — the entity's membership — is
+already the answer. The `{:field, name, :entity}` scope shape went with the last declaration that
+used it.
 
 **Work.**
 

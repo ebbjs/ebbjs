@@ -432,6 +432,37 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
         ).toEqual(["todo_1"]);
       });
 
+      it("leaves a placeholder's model unknown when only an overlay lands on it", async () => {
+        const { actionLog, dirtyTracker, entityStore } = await factory();
+        // An `ebb/*` overlay never supplies a model (ADR 0001, decision 1): the
+        // row keeps it unknown until the create arrives rather than claiming
+        // `ebb` and showing up in that model's reads.
+        await actionLog.append(
+          buildLinkAction(
+            {
+              sourceId: "todo_1",
+              model: "todo",
+              present: [{ as: "list", type: "todo_list", targetId: "list_1" }],
+              create: false,
+            },
+            1,
+          ),
+        );
+        await dirtyTracker.mark("todo_1", "todo");
+
+        const row = await entityStore.get("todo_1");
+        expect(row!.exists).toBe(false);
+        expect(row!.model).toBe("");
+        expect(await entityStore.query("ebb")).toEqual([]);
+        expect(
+          await entityStore.queryByRelationship({
+            as: "list",
+            type: "todo_list",
+            targetId: "list_1",
+          }),
+        ).toEqual(["todo_1"]);
+      });
+
       it("materializes a create's row with no components", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
         await actionLog.append(buildCreateAction());

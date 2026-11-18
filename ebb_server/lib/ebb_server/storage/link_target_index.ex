@@ -40,10 +40,26 @@ defmodule EbbServer.Storage.LinkTargetIndex do
   A patch that is not exactly that shape — a leaf where a level should be a
   map, or a level that is not a map at all — indexes **nothing**. A
   wholesale re-write of a field or a type subtree would need the entries it
-  discards, which the patch does not restate; guessing would index edges the
-  row does not carry, so the patch is dropped and the boot rebuild is what
-  heals the index. The same applies to `drop` and `delete`, which carry no
-  patch at all.
+  discards, which the patch does not restate, and guessing would index edges
+  the row does not carry. The boot rebuild cannot recover one either: it
+  replays the same log through this same function, so a malformed patch
+  contributes nothing there too, and only a later well-formed write of the
+  same keys adds the entries back. Fail-closed beats a wrong answer, and the
+  write path the SDK emits is always three levels deep.
+  `drop` and `delete` carry no patch at all, so they index nothing for the
+  reason "entries are candidates" gives above.
+
+  ## No reader yet
+
+  `source_ids/3` has no caller in `lib/`: the server answers no incoming
+  traversal — the client's replica owns that read, derived from the rows it
+  materializes. The index is the derived state the schema-free server needs
+  once a wire query asks "who points at this target?", built now because the
+  slice that moves the edge onto its source is the slice that can build it
+  from the same patch. Until a reader exists it costs one op per edge per
+  Action and a second op list through every boot replay — the price
+  `RelationshipCache` paid for the same information, kept as memory instead
+  of a column family.
 
   ## Keys are encoded for the resident set
 

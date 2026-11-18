@@ -30,7 +30,9 @@ defmodule EbbServer.Storage.LinkTargetIndexTest do
     test "a field or type subtree replaced wholesale indexes nothing" do
       # A patch that re-writes a level instead of one leaf does not restate the
       # entries it discards, so guessing would index edges the row may not
-      # carry. The boot rebuild is what heals it.
+      # carry. The boot rebuild cannot recover one either — it runs this same
+      # function over the same log — so the dropped edges come back only when a
+      # later write names their keys.
       whole_type = %{
         "map" => %{"assignee" => %{"map" => %{"todo" => present_leaf()}}}
       }
@@ -286,7 +288,8 @@ defmodule EbbServer.Storage.LinkTargetIndexTest do
     end
 
     # A `drop` names the component and not the edges it held, so it cannot
-    # remove them; the boot rebuild is what heals the index, like a delete.
+    # remove them: the entries stay as candidates, exactly as a row `delete`
+    # leaves them, with the row tombstone the liveness filter.
     test "dropping the link component leaves the entries indexed", ctx do
       hlc = generate_hlc()
 

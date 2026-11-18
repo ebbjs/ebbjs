@@ -66,6 +66,13 @@ defmodule EbbServer.Storage.EntityScope do
     resolve_groups_cached(kind(subject_id, opts) || :unknown, subject_id, opts)
   end
 
+  # `kind/2` answers `nil` for a row that carries no platform component, and
+  # such a row's scope is its own membership set. Stated explicitly because
+  # `nil` is an atom and would otherwise match the scope-table clause below and
+  # take the default path only by accident.
+  def resolve_groups_cached(nil, subject_id, opts),
+    do: {source_groups_cached(subject_id, opts), subject_id}
+
   def resolve_groups_cached(key, subject_id, opts) when is_atom(key) do
     case SystemComponent.scope(key) do
       :self -> {[subject_id], nil}

@@ -2571,15 +2571,11 @@ defmodule EbbServer.Storage.EntityStoreTest do
             validated_component(
               note_id,
               "ebb/link",
-              leaf(
-                %{
-                  "source_id" => note_id,
-                  "target_id" => "doc_1",
-                  "type" => "owns",
-                  "field" => "body"
-                },
-                hlc
-              ),
+              %{
+                "map" => %{
+                  "body" => %{"map" => %{"owns" => %{"map" => %{"doc_1" => leaf(true, hlc)}}}}
+                }
+              },
               id: "upd_link"
             )
           ]
