@@ -1,6 +1,18 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { isWildcardOrigin, normalizeOrigin } from "./apps.ts";
+
+interface OriginVector {
+  readonly raw: string;
+  readonly canonical?: string;
+  readonly invalid_reason?: string;
+}
+
+/// Resolved from this module rather than the cwd, so the run's directory does not matter.
+const FIXTURE = fileURLToPath(new URL("../../../fixtures/origin_vectors.json", import.meta.url));
+const VECTORS = (JSON.parse(readFileSync(FIXTURE, "utf8")) as { vectors: OriginVector[] }).vectors;
 
 describe("normalizeOrigin", () => {
   it("canonicalizes scheme, host, default port, and a trailing slash", () => {
@@ -42,6 +54,25 @@ describe("normalizeOrigin", () => {
       "https://-example.com",
     ]) {
       expect(normalizeOrigin(raw), raw).toBeUndefined();
+    }
+  });
+});
+
+describe("shared origin vectors", () => {
+  it("loads a non-empty vector set", () => {
+    expect(VECTORS.length).toBeGreaterThan(0);
+  });
+
+  it("normalizes or rejects every shared vector", () => {
+    for (const vector of VECTORS) {
+      const origin = normalizeOrigin(vector.raw);
+
+      if (vector.canonical !== undefined) {
+        expect(origin, vector.raw).toBe(vector.canonical);
+      } else {
+        expect(vector.invalid_reason, vector.raw).toBe("invalid_origin");
+        expect(origin, vector.raw).toBeUndefined();
+      }
     }
   });
 });

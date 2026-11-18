@@ -1,7 +1,18 @@
 defmodule EbbServer.Apps.OriginTest do
+  @moduledoc """
+  Origin normalization, including the vectors `packages/cli` also reads.
+
+  `fixtures/origin_vectors.json` is the shared assertion: both
+  `EbbServer.Apps.Origin.normalize/1` and the CLI's `normalizeOrigin` must
+  reproduce every vector, so the two hand-mirrored implementations cannot
+  drift.
+  """
+
   use ExUnit.Case, async: true
 
   alias EbbServer.Apps.Origin
+
+  @vectors_path Path.expand("../../../../fixtures/origin_vectors.json", __DIR__)
 
   describe "normalize/1" do
     test "lowercases the scheme and host" do
@@ -155,5 +166,28 @@ defmodule EbbServer.Apps.OriginTest do
       refute Origin.match?(nil, "https://example.com")
       refute Origin.match?("https://example.com", nil)
     end
+  end
+
+  describe "shared origin vectors" do
+    test "reproduces every vector packages/cli also reads" do
+      vectors =
+        @vectors_path
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("vectors")
+
+      assert vectors != [], "expected #{@vectors_path} to contain vectors"
+
+      Enum.each(vectors, &assert_vector/1)
+    end
+  end
+
+  defp assert_vector(%{"raw" => raw, "canonical" => canonical}) do
+    assert Origin.normalize(raw) == {:ok, canonical}, "vector #{inspect(raw)} drifted"
+  end
+
+  defp assert_vector(%{"raw" => raw, "invalid_reason" => reason}) do
+    assert Origin.normalize(raw) == {:error, String.to_existing_atom(reason)},
+           "vector #{inspect(raw)} drifted"
   end
 end

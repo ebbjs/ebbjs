@@ -1,0 +1,277 @@
+{
+  "description": "Shared origin-normalization vectors. Both packages/cli's `normalizeOrigin` and ebb_server's `Apps.Origin.normalize` must render every `canonical` vector and reject every `invalid_reason` one (the CLI rejects with `undefined`). Only behaviour the two implementations already share is encoded here; cases where a WHATWG URL and Elixir's URI parse disagree (empty userinfo, percent-encoded or non-ASCII hosts, non-canonical IPv4 forms, empty query or fragment, dot-segment paths) are deliberately absent.",
+  "vectors": [
+    {
+      "raw": "https://example.com",
+      "canonical": "https://example.com"
+    },
+    {
+      "raw": "https://app.example.com",
+      "canonical": "https://app.example.com"
+    },
+    {
+      "raw": "http://localhost",
+      "canonical": "http://localhost"
+    },
+    {
+      "raw": "http://localhost:5173",
+      "canonical": "http://localhost:5173"
+    },
+    {
+      "raw": "https://example.com/",
+      "canonical": "https://example.com"
+    },
+    {
+      "raw": "  https://example.com  ",
+      "canonical": "https://example.com"
+    },
+    {
+      "raw": "HTTPS://Example.COM",
+      "canonical": "https://example.com"
+    },
+    {
+      "raw": "https://App.Example.com:443/",
+      "canonical": "https://app.example.com"
+    },
+    {
+      "raw": "http://app.example.com:80",
+      "canonical": "http://app.example.com"
+    },
+    {
+      "raw": "https://example.com:8443",
+      "canonical": "https://example.com:8443"
+    },
+    {
+      "raw": "https://example.com:80",
+      "canonical": "https://example.com:80"
+    },
+    {
+      "raw": "http://example.com:443",
+      "canonical": "http://example.com:443"
+    },
+    {
+      "raw": "https://example.com:0",
+      "canonical": "https://example.com:0"
+    },
+    {
+      "raw": "https://example.com:65535/",
+      "canonical": "https://example.com:65535"
+    },
+    {
+      "raw": "https://example.com:080",
+      "canonical": "https://example.com:80"
+    },
+    {
+      "raw": "https://*.example.com",
+      "canonical": "https://*.example.com"
+    },
+    {
+      "raw": "https://*.Example.com",
+      "canonical": "https://*.example.com"
+    },
+    {
+      "raw": "https://*.example.com:8443",
+      "canonical": "https://*.example.com:8443"
+    },
+    {
+      "raw": "https://*.EXAMPLE.COM:8443/",
+      "canonical": "https://*.example.com:8443"
+    },
+    {
+      "raw": "HTTPS://*.Example.COM:443",
+      "canonical": "https://*.example.com"
+    },
+    {
+      "raw": "https://[::1]",
+      "canonical": "https://[::1]"
+    },
+    {
+      "raw": "https://[::1]:8443/",
+      "canonical": "https://[::1]:8443"
+    },
+    {
+      "raw": "http://[2001:DB8::1]:80",
+      "canonical": "http://[2001:db8::1]"
+    },
+    {
+      "raw": "https://[::1]:80",
+      "canonical": "https://[::1]:80"
+    },
+    {
+      "raw": "https://[2001:db8:0:0:0:0:0:1]",
+      "canonical": "https://[2001:db8::1]"
+    },
+    {
+      "raw": "https://[::]",
+      "canonical": "https://[::]"
+    },
+    {
+      "raw": "https://[2a00:1450:4001:82f::200e]",
+      "canonical": "https://[2a00:1450:4001:82f::200e]"
+    },
+    {
+      "raw": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "canonical": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "raw": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "canonical": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "raw": "https://xn--exmple-cua.com",
+      "canonical": "https://xn--exmple-cua.com"
+    },
+    {
+      "raw": "https://1.2.3.4",
+      "canonical": "https://1.2.3.4"
+    },
+    {
+      "raw": "",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "   ",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "\t\n",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "null",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "NULL",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com.",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com.:8443",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://*.example.com.",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com/path",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com//",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com?x=1",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com#frag",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://user:pw@example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://exa mple.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example..com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://.example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://-example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example-.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://exa_mple.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com:abc",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com:65536",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com:99999",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://[::1",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://[not::ip]",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://*",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "*",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://*.*.example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://foo*.example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://*example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://*.example.com/path",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "https://example.com\u0000x",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "ftp://example.com",
+      "invalid_reason": "invalid_origin"
+    },
+    {
+      "raw": "ws://example.com",
+      "invalid_reason": "invalid_origin"
+    }
+  ]
+}

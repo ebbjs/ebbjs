@@ -4,7 +4,13 @@ import { describe, expect, it } from "vitest";
 
 import { decodeFrames, encodeFrame } from "./codec.ts";
 import { ready } from "./constructors.ts";
-import type { Frame } from "./frames.ts";
+import {
+  LOG_LEVELS,
+  MAX_FRAME_BYTES,
+  PROTOCOL_VERSION,
+  RESULT_KINDS,
+  type Frame,
+} from "./frames.ts";
 
 /// Resolved from this module rather than the cwd, so the run's directory does not matter.
 const FIXTURE_DIR = fileURLToPath(new URL("../../../fixtures/functions/frames/", import.meta.url));
@@ -25,10 +31,22 @@ interface Fixture {
 
 const STEP_KEYS = ["send", "expect", "exit", "script"] as const;
 
+/// The constants fixture carries values, not steps, so the frame sweep skips it.
+const CONSTANTS_FIXTURE = "constants";
+
+interface ConstantsFixture {
+  readonly max_frame_bytes: number;
+  readonly protocol_version: number;
+  readonly result_kinds: readonly string[];
+  readonly log_levels: readonly string[];
+  readonly log_levels_by_peer: Readonly<Record<string, readonly string[]>>;
+}
+
 function fixtureNames(): string[] {
   return readdirSync(FIXTURE_DIR)
     .filter((file) => file.endsWith(".json"))
     .map((file) => file.slice(0, -".json".length))
+    .filter((name) => name !== CONSTANTS_FIXTURE)
     .sort();
 }
 
@@ -53,6 +71,22 @@ function framesIn(step: FixtureStep): Frame[] {
 
 function stepKeys(step: FixtureStep): string[] {
   return STEP_KEYS.filter((key) => key in step);
+}
+
+function sorted(values: readonly string[]): string[] {
+  return [...values].sort();
+}
+
+function loadConstants(): ConstantsFixture {
+  const parsed: unknown = JSON.parse(
+    readFileSync(`${FIXTURE_DIR}${CONSTANTS_FIXTURE}.json`, "utf8"),
+  );
+
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`${CONSTANTS_FIXTURE}.json is not a JSON object`);
+  }
+
+  return parsed as ConstantsFixture;
 }
 
 /** Encodes, decodes, and re-encodes `frame`, asserting nothing changed on the way. */
@@ -120,5 +154,30 @@ describe("checked-in fixtures", () => {
     expect(
       ready(canonical.pid, String(canonical.runner_version), Number(canonical.protocol_version)),
     ).toEqual(canonical);
+  });
+});
+
+describe("shared constants", () => {
+  const constants = loadConstants();
+
+  it("pins the frame bound and protocol version the Elixir host also hard-codes", () => {
+    expect(MAX_FRAME_BYTES).toBe(constants.max_frame_bytes);
+    expect(PROTOCOL_VERSION).toBe(constants.protocol_version);
+  });
+
+  it("pins the result kinds the runner emits and the host maps", () => {
+    expect(sorted(RESULT_KINDS)).toEqual(sorted(constants.result_kinds));
+  });
+
+  it("pins this peer's log levels and covers the union both peers accept", () => {
+    const typescript = constants.log_levels_by_peer["typescript"];
+    const elixir = constants.log_levels_by_peer["elixir"];
+
+    expect(typescript).toBeDefined();
+    expect(elixir).toBeDefined();
+    expect(sorted(LOG_LEVELS)).toEqual(sorted(typescript ?? []));
+    expect(sorted([...new Set([...(typescript ?? []), ...(elixir ?? [])])])).toEqual(
+      sorted(constants.log_levels),
+    );
   });
 });

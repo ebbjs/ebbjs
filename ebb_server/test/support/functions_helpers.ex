@@ -7,6 +7,9 @@ defmodule EbbServer.TestFunctions do
 
   @fixture_dir Path.expand("../../../fixtures/functions/frames", __DIR__)
 
+  # `constants.json` carries values rather than steps, so the frame sweep skips it.
+  @constants_fixture "constants"
+
   @spec fixture_dir() :: String.t()
   def fixture_dir, do: @fixture_dir
 
@@ -16,8 +19,15 @@ defmodule EbbServer.TestFunctions do
     |> File.ls!()
     |> Enum.filter(&String.ends_with?(&1, ".json"))
     |> Enum.map(&Path.rootname/1)
+    |> Enum.reject(&(&1 == @constants_fixture))
     |> Enum.sort()
   end
+
+  @doc """
+  The frame constants both peers hard-code, as `constants.json` states them.
+  """
+  @spec load_constants!() :: map()
+  def load_constants!, do: load_fixture!(@constants_fixture)
 
   @spec load_fixture!(String.t()) :: map()
   def load_fixture!(name) do

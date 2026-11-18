@@ -11,7 +11,7 @@
 
 import { createClock, type HLCState } from "@ebbjs/core";
 import type { EntityResponse } from "@ebbjs/client";
-import type { LogLevel } from "@ebbjs/functions-protocol";
+import { LOG_LEVELS, type LogLevel } from "@ebbjs/functions-protocol";
 import type { ModelRegistry } from "@ebbjs/schema";
 import type { CreateHandle, OperationIds, PointerTarget } from "@ebbjs/write";
 
@@ -177,10 +177,10 @@ export function createContext(options: CreateContextOptions): Context {
 }
 
 /** The levels a `log` frame may carry; a handler's level is validated against them. */
-const LOG_LEVELS: ReadonlySet<string> = new Set(["debug", "info", "log", "warn", "error"]);
+const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
 
 const isLogLevel = (value: unknown): value is LogLevel =>
-  typeof value === "string" && LOG_LEVELS.has(value);
+  typeof value === "string" && LOG_LEVEL_SET.has(value);
 
 const logEntry = (message: unknown, level: unknown): LogEntry => ({
   level: isLogLevel(level) ? level : "info",
