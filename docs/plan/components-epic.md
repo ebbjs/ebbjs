@@ -930,10 +930,11 @@ so the write path pays nothing. The docs are corrected rather than implemented a
 
 **Work.**
 
-- [x] `ebb/link` as a keyed component of the source; one Update per `(source, field, target)`.
-- [x] Delete the edge row and `RelationshipCache`; `reverse-index.ts`'s relationship row layer.
-- [x] Server reverse index `(type, target_id) → source ids` in memory, rebuilt at boot like the
-      component index (#849).
+- [x] `ebb/link` as a keyed component of the source; one Update per edge, except a one-cardinality
+      move, which carries the old key's tombstone and the new key's presence in the same Update.
+- [x] Delete the edge row and `RelationshipCache`; `reverse-index.ts`'s link row layer.
+- [ ] Server reverse index `(type, target_id) → source ids`. Not shipped: no server read path
+      consumes it, so the in-memory index was removed before merge and returns with its first reader.
 - [x] Delete the containment option from `docs/documents.md` and its argument from
       `docs/research/membership-and-links-as-components.md` §4/§6.
 - [x] Backfill: a missed link arrives with its source; assert it.
@@ -941,8 +942,9 @@ so the write path pays nothing. The docs are corrected rather than implemented a
       component entry and leaves the source's model entry alone (slice 10's rule).
 
 **Acceptance.** Duplicate `(source, field, type, target)` edges are unrepresentable. Moving a source
-never leaves a link in a stale group (#789). A missed link arrives with its source on backfill, and
-incoming traversal is answered by the reverse index at parity with the other caches.
+never leaves a link in a stale group (#789). A missed link arrives with its source on backfill.
+Incoming traversal has no server read path yet; the client's replica answers it, and the server
+index returns with its first reader.
 
 **Depends on.** 11, #790.
 
@@ -974,11 +976,13 @@ async `ctx` port. `client.can(row, "update")` answers the row's model rule, so i
 the `ebb/link.<verb>` check the write path makes. A model that declares a field with the same name
 as one of its relationship accessors used to have both copies kept in step by the
 many-cardinality writer; the field and the edges are now independent, and the schema does not
-refuse the pair. The client's read of the live set behind a `{replace}` or a one-cardinality move
-goes through the storage row rather than the replica, so it does not refuse on a fresh client. A
-platform field name is named under `ebb` by the server's own static table, the same two-sided
-duplication the scope table carries. And the four platform field names are reserved on a user
-model, because an overlay shares `data.fields.<name>` with the row it rides.
+refuse the pair. The client's read of the live set goes through the storage row rather than the
+replica: a `{replace}` refuses when the row is unreadable, while a one-cardinality move still writes
+presence without a tombstone — the same gap as the runtime's `ctx.relate`. The overlay field is
+named under `ebb` by the server's own static table, the same two-sided duplication the scope table
+carries. And `link` is reserved as a user field name, because `ebb/link` is the one platform overlay
+that shares `data.fields.link` with the row it rides; `group`, `grant` and `membership` stay free on
+user models (the built-in `groups` accessor is reserved separately).
 
 ---
 

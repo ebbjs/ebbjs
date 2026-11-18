@@ -49,9 +49,11 @@ the client's draft planner and the functions runtime resolve into operations.
 `VerbResolution` for the state the verb needs but the caller owns — the acting
 entity's groups and the live targets of the edge set it writes — which is a
 materialized cache on the client and an invocation's write buffer and overlay in
-the functions runtime. The live targets are what turns a `replace`, a
-one-cardinality `relate`, and an accessor clear into per-key presence leaves and
-tombstones.
+the functions runtime. A many-cardinality `relate` is an add unless `replace` is
+set — presence only, never a sibling's tombstone — and `replace` refuses when the
+live targets are unknown rather than writing a partial set. The live targets are
+what turns a `replace`, a one-cardinality `relate`, and an accessor clear into
+per-key presence leaves and tombstones.
 
 Ids and clock stamps come from `OperationIds`: `updateId`, `hlc`, and
 `newId(prefix)` for the non-Update ids a batch mints (a row id, say).
