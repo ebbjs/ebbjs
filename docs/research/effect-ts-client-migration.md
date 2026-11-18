@@ -365,15 +365,15 @@ cost, keeps the read path. **[judgment] This is the option I would take now.**
 
 The abort controller is about 25 lines, because `fetchImpl` is already a single
 injected choke point (the `SyncClient` constructor wraps it once) and all six
-client request call sites go through `exchange` / `requestJson`. Five sharp edges
+client request call sites go through `exchange` / `requestJson`. Six sharp edges
 keep it from being a 20-minute patch:
 
-- **`presence/transport.ts` must be excluded — for its `keepalive` sends.** A
-  page leaving calls `leave({ keepalive: true })` from an unload handler, where
-  nobody can `await` it; a client-wide abort would kill exactly the request that
-  has to survive teardown. A `keepalive` presence post therefore gets the
-  unwrapped `fetch`; an ordinary presence send is teardown-scoped like every
-  other request, and its loss is already silent.
+- **A `keepalive` request must be excluded.** The only one today is
+  `presence.leave({ keepalive: true })`, sent from an unload handler where nobody
+  can `await` it; a client-wide abort would kill exactly the request that has to
+  survive teardown. The exemption belongs in the fetch wrapper, keyed on the
+  flag, not at the presence call site — one rule, one home, and an ordinary
+  presence send stays teardown-scoped like every other request.
 - **Fire the controller only from `close()`.** `cancelSubscription` is also
   called when `subscribe()` replaces a session, on plain unsubscribe, and when
   the live group set empties — none of which may kill the client.
@@ -386,12 +386,21 @@ keep it from being a 20-minute patch:
   adapter that may already be torn down; aborting replaces that with a
   rejection callers can see. That is a public-behaviour change and needs a
   sentence in the `close()` doc comment.
-- **`AbortSignal.any` is Node 20.3+**, while `sse.ts` advertises Node 18+ for
-  consumers; merge signals by hand or only set `signal` when none was supplied.
-  A hand-rolled merge also has to keep forwarding the caller's abort after the
+- **`AbortSignal.any` would collapse the merge, if you accept its browser
+  floor** (Safari 17.4, Firefox 124 — the package declares no browser baseline,
+  and `sse.ts`'s "Node 18+" describes its SSE dependency, not this package,
+  whose `engines.node` is 22.8). Merging by hand is what keeps older browsers
+  working. Either way the caller's abort has to keep reaching the body after the
   response headers arrive: an SSE `fetch` promise settles there, and it is the
   caller's abort, not ours, that closes the body. Detaching every listener on
   settle silently stops a live stream from being torn down.
+- **The body-read policy has to rethrow an abort.** `readBody` deliberately
+  degrades an unreadable body to `""`, and `invokeFunction` is the one caller
+  that parses tolerantly — a `close()` landing between the headers and the body
+  reads as `{ result: undefined, replayed: false }`, i.e. a void function that
+  succeeded. Keying the rethrow on the error name (`AbortError`) rather than on
+  a signal is what works, because the signal is added by the fetch wrapper and
+  never reaches the caller's `init`.
 
 I found no test covering "a request in flight when `close()` runs" (`close()`
 appears in 146 test call sites, all after an awaited step), so the work is
