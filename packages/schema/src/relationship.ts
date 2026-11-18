@@ -7,9 +7,10 @@
  * it, and the row accessors on `client.<model>.get(id)` consume it
  * for traversal.
  *
- * Both ends of the link must be `defineModel` outputs. The wire shape is
- * the `ebb/link` component in `@ebbjs/core`; this builder is the
- * schema-layer surface that produces its Updates.
+ * Both ends of the link must be `defineModel` outputs. The wire shape is the
+ * keyed `ebb/link` component of the source row in `@ebbjs/core`; this builder
+ * is the schema-layer surface that names the accessor, its cardinality, and its
+ * type label.
  */
 
 import type { ModelDef } from "./model";
@@ -51,9 +52,10 @@ export interface RelationshipDef<
   readonly as: A;
   readonly sourceCardinality: C;
   /**
-   * Wire-level `relationship_type` string carried on the `Relationship`
-   * Update's `data.fields.type` value. Defaults to the source entity
-   * name. Override for descriptive wire debugging.
+   * The middle level of an edge's key on the source's `ebb/link` component: the
+   * accessor, then this label, then the target id. Defaults to the source
+   * entity name, so two relationships from one source to different targets stay
+   * distinct even under the same accessor.
    */
   readonly type: string;
 }

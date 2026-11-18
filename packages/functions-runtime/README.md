@@ -41,10 +41,13 @@ group lands in the same Action.
 
 `relate` / `unrelate` follow the registry's declared cardinality:
 
-| cardinality | `relate`                                    | `unrelate`                              |
-| ----------- | ------------------------------------------- | --------------------------------------- |
-| `one`       | link one target (one `ebb/link` put)        | delete the edge by its link row id      |
-| `many`      | set the canonical FK list on the source row | drop one target, or clear the whole set |
+An edge is a key on its source row's `ebb/link` component, so both cardinalities
+name a target and one Update writes one edge:
+
+| cardinality | `relate`                                 | `unrelate`                         |
+| ----------- | ---------------------------------------- | ---------------------------------- |
+| `one`       | add the new target's presence            | tombstone the named target's key   |
+| `many`      | add presence for each target in the list | tombstone one target, or clear all |
 
 ## One Action per invocation
 
@@ -149,18 +152,19 @@ makes a rejection look like a rollback that never happened.
 
 ## v1 resolution gaps
 
-`ctx.get` is the only read. Some state the client planner resolves from its
-materialized cache is not reachable through it, and the verbs refuse rather
-than emit an Update that would fail or lose links:
+`ctx.get` is the only read. An edge is a keyed component of its source row, so
+a target names an edge for either cardinality and removing one never needs a
+read. Two cases still resolve through `ctx.get`, and refuse rather than emit an
+Update that would lose links:
 
-- **A one-cardinality unlink of an edge that predates the invocation** needs
-  the `relationship` row id: `ctx.unrelate("issue", id, "project", undefined,
-{ relationshipId })`. An edge the same invocation created is resolved from
-  the buffer and needs nothing. `ctx.get` cannot read relationship rows, so
-  there is no passive path to the id.
-- **A many-cardinality unlink of one target** reads the source row's current
-  FK list through `ctx.get` and refuses when the row is absent or not readable.
-  Clearing the set (`unrelate` with no target) needs no read.
+- **Clearing an accessor** (`unrelate` with no target) reads the source row's
+  live edges through `ctx.get` and refuses when the row is absent or not
+  readable.
+- **`relate` is synchronous**, so it cannot read the source row: a
+  one-cardinality `relate` adds the new target's presence and does not tombstone
+  a previous target it cannot see. The client's draft planner reads its replica
+  and writes the whole move as one Update; a handler that must move an edge it
+  did not create unrelates first.
 - **`last_grant`** is only provable for a group this invocation created:
   that group's roster is exactly the members written here. An existing group's
   member rows are not readable, so the check defers to the server, exactly as

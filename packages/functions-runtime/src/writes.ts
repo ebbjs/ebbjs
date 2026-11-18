@@ -18,9 +18,9 @@ import {
   generateId,
   isComponentUpdate,
   isFieldMap,
+  linkTargets,
   localEvent,
   type EbbComponentKind,
-  type FieldValue,
   type HLCState,
   type Update,
 } from "@ebbjs/core";
@@ -43,7 +43,6 @@ import {
   UNRESOLVED,
   type CommitOutcome,
   type CreateOptions,
-  type UnrelateOptions,
   type WriteOptions,
 } from "@ebbjs/write";
 
@@ -78,32 +77,10 @@ export interface WriteSurface extends PreflightView {
     as: string,
     targets: PointerTarget | readonly PointerTarget[],
   ): void;
-  unrelate(
-    entity: string,
-    sourceId: string,
-    as: string,
-    target?: PointerTarget,
-    options?: UnrelateOptions,
-  ): Promise<void>;
+  unrelate(entity: string, sourceId: string, as: string, target?: PointerTarget): Promise<void>;
   /** Submit the buffered Updates as one Action and seal the buffer. */
   commit(): Promise<CommitOutcome>;
 }
-
-/** The key a buffered link edge is found by. */
-const edgeKey = (type: string, sourceId: string, as: string): string =>
-  `${type}\u0000${sourceId}\u0000${as}`;
-
-const stringListField = (
-  fields: Record<string, FieldValue>,
-  key: string,
-): readonly string[] | undefined => {
-  const field = fields[key];
-  if (field === undefined || isFieldMap(field)) return undefined;
-  const value = field.value;
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
-    ? value
-    : undefined;
-};
 
 /** A component's projected plain value, from the buffered row so far. */
 const plainField = (fields: Record<string, unknown>, key: string): unknown => fields[key];
@@ -154,13 +131,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
   const membersByGroup = new Map<string, Map<string, readonly string[]>>();
   /** Grant row id → its group. */
   const memberGroup = new Map<string, string>();
-  /** Edge key → the live buffered edge, or `gone` when a buffered delete removed it. */
-  const edges = new Map<
-    string,
-    { readonly relationshipId: string; readonly targetId: string } | "gone"
-  >();
-  /** Link row id → the edge key it belongs to. */
-  const edgeKeys = new Map<string, string>();
 
   let sealed = false;
 
@@ -181,13 +151,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
 
   const removeGroup = (entityId: string, groupId: string): void => {
     groupsByEntity.get(entityId)?.delete(groupId);
-  };
-
-  const markEdgeGone = (relationshipId: string): void => {
-    const key = edgeKeys.get(relationshipId);
-    if (key === undefined) return;
-    edges.set(key, "gone");
-    edgeKeys.delete(relationshipId);
   };
 
   /**
@@ -228,7 +191,12 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     const id = update.subject_id;
 
     if (isComponentUpdate(update)) {
-      if (!createdSubjects.has(id)) models.set(id, componentModel(update.component));
+      // An `ebb/*` component is an overlay: it names no model and never
+      // changes the row's. The host's model is the answer, and a create of this
+      // invocation's own already set it.
+      if (!createdSubjects.has(id) && ebbComponentKind(update.component) === null) {
+        models.set(id, componentModel(update.component));
+      }
     } else if (update.method === "create") {
       models.set(id, update.model);
       createdSubjects.add(id);
@@ -241,10 +209,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
         removeGroup(membershipEntity.get(id) ?? "", membershipGroup.get(id) ?? "");
         membershipGroup.delete(id);
         membershipEntity.delete(id);
-        return;
-      }
-      if (kind === "link") {
-        markEdgeGone(id);
         return;
       }
       if (kind === "grant") {
@@ -265,7 +229,9 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     const values = foldRow(update);
     if (values === undefined) return;
     if (kind === null) return;
-    rowKinds.set(id, kind);
+    // `ebb/link` is an overlay, not a row kind: it never makes its subject a
+    // platform row.
+    if (kind !== "link") rowKinds.set(id, kind);
 
     const value = platformValue(values, kind);
     if (value === undefined) return;
@@ -278,24 +244,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
         membershipGroup.set(id, groupId);
         membershipEntity.set(id, entityId);
         addGroup(entityId, groupId);
-        return;
-      }
-      case "link": {
-        const sourceId = stringValue(value, "source_id");
-        const field = stringValue(value, "field");
-        const type = stringValue(value, "type");
-        const targetId = stringValue(value, "target_id");
-        if (
-          sourceId === undefined ||
-          field === undefined ||
-          type === undefined ||
-          targetId === undefined
-        ) {
-          return;
-        }
-        const key = edgeKey(type, sourceId, field);
-        edges.set(key, { relationshipId: id, targetId });
-        edgeKeys.set(id, key);
         return;
       }
       case "group": {
@@ -351,16 +299,6 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     if (!createdGroups.has(groupId)) return undefined;
     const roster = membersByGroup.get(groupId) ?? new Map<string, readonly string[]>();
     return [...roster].map(([id, permissions]) => ({ id, groupId, permissions }));
-  };
-
-  const relationshipIdFor = (
-    sourceId: string,
-    as: string,
-    type: string,
-  ): string | null | undefined => {
-    const edge = edges.get(edgeKey(type, sourceId, as));
-    if (edge === undefined) return undefined;
-    return edge === "gone" ? null : edge.relationshipId;
   };
 
   const preflightView: PreflightView = { groupsOf, groupOfMembership, grantsOf };
@@ -506,6 +444,10 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
           target: targets as PointerTarget,
           groups: groupsOf(sourceId),
         };
+    // `relate` is synchronous and cannot read the source row, so it carries no
+    // resolution: it writes presence for its targets and tombstones nothing. A
+    // one-cardinality move's tombstone needs the live target, which only a
+    // surface that can read the row (the client's planner) supplies.
     run(operationCallFor(schema, verb));
   };
 
@@ -514,31 +456,18 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
     sourceId: string,
     as: string,
     target?: PointerTarget,
-    unrelateOptions?: UnrelateOptions,
   ): Promise<void> => {
     assertWritable();
     const schema = requireRegistry();
     const rel = requireRelationship(schema, entity, as);
-    // A many-cardinality unlink of one target computes the remainder from the
-    // source row's canonical FK set, which only a read can supply.
-    let fkTargets: readonly string[] | undefined;
-    if (rel.sourceCardinality === "many" && target !== undefined) {
+    const type = rel.type ?? entity;
+    // A named target is a key, so removing it needs no read. Clearing the
+    // accessor needs the live edges, which `ctx.get` supplies through the
+    // overlay: an edge this invocation wrote is already in it.
+    let liveTargets: readonly string[] | undefined;
+    if (target === undefined) {
       const view = await read(sourceId);
-      fkTargets =
-        view === null
-          ? undefined
-          : stringListField(view.data.fields as Record<string, FieldValue>, as);
-      if (fkTargets === undefined) {
-        throw new EntityValidationError([
-          {
-            entityName: entity,
-            field: as,
-            message:
-              `unrelate: cannot resolve the current "${as}" FK set for "${sourceId}"; ` +
-              `read the row with ctx.get before unlinking one target, or call unrelate without one to clear the set`,
-          },
-        ]);
-      }
+      liveTargets = view === null ? undefined : linkTargets(view, as, type);
     }
     const verb: UnrelateVerb = {
       verb: "unrelate",
@@ -546,15 +475,13 @@ export const createWriteSurface = (options: WriteSurfaceOptions): WriteSurface =
       id: sourceId,
       as,
       target,
-      relationshipId: unrelateOptions?.relationshipId,
       groups: groupsOf(sourceId),
     };
     run(
       operationCallFor(schema, verb, {
         ...UNRESOLVED,
         groupsOf,
-        relationshipIdFor,
-        fkTargetsOf: () => fkTargets,
+        targetsOf: () => liveTargets,
       }),
     );
   };

@@ -54,7 +54,6 @@ const buildRepresentativeSeed = (): SeedData => ({
   ],
   relationships: [
     {
-      id: "rel_1",
       sourceId: "todo_1",
       targetId: "list_1",
       type: "todo",
@@ -63,6 +62,14 @@ const buildRepresentativeSeed = (): SeedData => ({
   ],
   memberships: [{ id: "eg_1", entityId: "todo_1", groupId: "grp_1" }],
 });
+
+/** Every leaf of a component value, walking nested maps to the innermost. */
+const seedLeaves = (value: unknown): Array<{ update_id?: string; hlc?: string }> => {
+  if (value !== null && typeof value === "object" && "map" in value) {
+    return Object.values((value as { map: Record<string, unknown> }).map).flatMap(seedLeaves);
+  }
+  return [value as { update_id?: string; hlc?: string }];
+};
 
 /** The one Update carrying `component`, or a failure naming the miss. */
 const componentOf = (action: Action, component: string, subjectId?: string): ComponentUpdate => {
@@ -135,15 +142,15 @@ describe("buildSeedAction", () => {
 
     expect(action.actor_id).toBe("actor_1");
     expect(Value.Check(ActionSchema, action)).toBe(true);
-    // Five rows, each a create plus its components: two a piece for the
-    // group, grant, link, and membership rows, three for the entity's patch.
-    expect(action.updates).toHaveLength(12);
+    // Four rows, each a create plus its components: two a piece for the
+    // group, grant, and membership rows, three for the entity's patch. The
+    // link is a keyed component of the entity, so it adds an Update and no row.
+    expect(action.updates).toHaveLength(11);
 
     const models: Array<[string, string]> = [
       ["grp_1", "ebb"],
       ["gm_1", "ebb"],
       ["todo_1", "todo"],
-      ["rel_1", "ebb"],
       ["eg_1", "ebb"],
     ];
     for (const [subjectId, model] of models) {
@@ -172,8 +179,9 @@ describe("buildSeedAction", () => {
     expect(componentOf(action, "todo/status", "todo_1").data).toMatchObject({ value: "todo" });
     expect(componentOf(action, "todo/assignee_id", "todo_1").data).toMatchObject({ value: null });
 
-    expect(componentOf(action, "ebb/link", "rel_1").data).toMatchObject({
-      value: { source_id: "todo_1", target_id: "list_1", type: "todo", field: "list" },
+    expect(componentOf(action, "ebb/link", "todo_1").method).toBe("merge");
+    expect(componentOf(action, "ebb/link", "todo_1").data).toMatchObject({
+      map: { list: { map: { todo: { map: { list_1: { value: true } } } } } },
     });
 
     expect(componentOf(action, "ebb/membership", "eg_1").data).toMatchObject({
@@ -240,10 +248,13 @@ describe("buildSeedAction", () => {
 
     for (const update of action.updates) {
       if (!isComponentUpdate(update) || update.method === "drop") continue;
-      const data = update.data as { value?: unknown; update_id?: string; hlc?: string };
-      expect(data.update_id).toBe("seed_update");
-      expect(data.hlc).toEqual(expect.any(String));
-      expect(data.hlc).not.toBe("");
+      // A keyed component's value is a nest of maps, so the envelope is at
+      // each innermost leaf rather than at the component's top level.
+      for (const leaf of seedLeaves(update.data)) {
+        expect(leaf.update_id).toBe("seed_update");
+        expect(leaf.hlc).toEqual(expect.any(String));
+        expect(leaf.hlc).not.toBe("");
+      }
     }
   });
 });

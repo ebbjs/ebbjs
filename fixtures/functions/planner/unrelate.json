@@ -1,14 +1,13 @@
 {
   "name": "unrelate",
-  "description": "a one-cardinality unlink by row id and a many-cardinality set clear",
-  "notes": "ctx.get cannot read relationship rows, so a one-cardinality edge that predates the invocation is named by its relationshipId.",
+  "description": "a one-cardinality unlink and a many-cardinality unlink, each tombstoning one key",
+  "notes": "A target names the edge's key for either cardinality, so neither unlink needs a read; both merge a tombstone onto the source row's ebb/link component.",
   "schema": "schema",
   "invocation_id": "inv_goldenUnrelate",
   "actor_id": "a_golden",
   "ids": {
     "u": ["u_gunrelate1", "u_gunrelate2"],
-    "rel": [],
-    "hlc": ["111690000000000041", "111690000000000042"]
+    "hlc": ["111690000000000001", "111690000000000002", "111690000000000003"]
   },
   "calls": [
     {
@@ -16,36 +15,66 @@
       "entity": "issue",
       "id": "e_gissue1",
       "as": "project",
-      "relationshipId": "rel_gknown"
+      "target": "e_gproject1"
     },
     {
       "verb": "unrelate",
       "entity": "issue",
       "id": "e_gissue1",
-      "as": "labels"
+      "as": "labels",
+      "target": "e_glabel1"
     }
   ],
   "action": {
     "id": "a_9d6d3fdc568b2ce8",
     "actor_id": "a_golden",
-    "hlc": "111690000000000042",
+    "hlc": "111690000000000003",
     "gsn": 0,
     "updates": [
       {
         "id": "u_gunrelate1",
-        "subject_id": "rel_gknown",
-        "method": "delete",
-        "data": null
+        "subject_id": "e_gissue1",
+        "component": "ebb/link",
+        "method": "merge",
+        "data": {
+          "map": {
+            "project": {
+              "map": {
+                "issue": {
+                  "map": {
+                    "e_gproject1": {
+                      "value": null,
+                      "update_id": "u_gunrelate1",
+                      "hlc": "111690000000000001"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       {
         "id": "u_gunrelate2",
         "subject_id": "e_gissue1",
-        "component": "issue/labels",
+        "component": "ebb/link",
         "method": "merge",
         "data": {
-          "value": [],
-          "update_id": "u_gunrelate2",
-          "hlc": "111690000000000041"
+          "map": {
+            "labels": {
+              "map": {
+                "issue": {
+                  "map": {
+                    "e_glabel1": {
+                      "value": null,
+                      "update_id": "u_gunrelate2",
+                      "hlc": "111690000000000002"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     ]

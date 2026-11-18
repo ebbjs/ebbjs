@@ -1,6 +1,7 @@
 /**
- * The values of the platform's four components, validated by `Value.Check`
- * exactly as an app entity is.
+ * The shapes of the platform's four components: the three atomic row values,
+ * validated by `Value.Check` exactly as an app entity is, and the keyed link
+ * component whose nesting is the edge's key.
  */
 
 import { Value } from "@sinclair/typebox/value";
@@ -9,12 +10,15 @@ import { describe, expect, it } from "vitest";
 
 import { EBB_COMPONENT_KINDS, ebbModel } from "./index";
 
+/** The three kinds that are one atomic value on a row of their own. */
+const ROW_KINDS = ["group", "grant", "membership"] as const;
+
 const componentShape = (kind: (typeof EBB_COMPONENT_KINDS)[number]): TSchema =>
   ebbModel.components[kind].shape;
 
 describe("platform component values are atomic", () => {
   it("closes every value's property set", () => {
-    for (const kind of EBB_COMPONENT_KINDS) {
+    for (const kind of ROW_KINDS) {
       const shape = componentShape(kind);
       const properties = (shape as unknown as { properties: Record<string, TSchema> }).properties;
       const sample = Object.fromEntries(
@@ -38,36 +42,37 @@ describe("platform component values are atomic", () => {
     expect(Value.Check(group, { name: "Team", apps: [] })).toBe(true);
     expect(Value.Check(group, { name: "Team", apps: { notes: true } })).toBe(false);
   });
+});
 
-  it("accepts a link's four fields and nothing else", () => {
+describe("ebb/link is keyed on its source", () => {
+  it("nests accessor, type, and target id, with presence at the leaf", () => {
     const link = componentShape("link");
 
-    expect(
-      Value.Check(link, {
-        source_id: "todo_1",
-        target_id: "todo_2",
-        type: "todo",
-        field: "dependsOn",
-      }),
-    ).toBe(true);
+    expect(Value.Check(link, { dependsOn: { todo: { todo_2: true } } })).toBe(true);
+    // A tombstoned key stays a boolean position; the wire leaf wraps it.
+    expect(Value.Check(link, { dependsOn: { todo: { todo_2: null } } })).toBe(false);
+    expect(Value.Check(link, { dependsOn: { todo: true } })).toBe(false);
+  });
+
+  it("declares no scope owner: it inherits its host row's membership", () => {
+    expect(ebbModel.components.link.scope).toBeUndefined();
   });
 });
 
 describe("platform components and conflict scope", () => {
   it("leaves a group row detectable, unlike the structural components", () => {
     // `group` is the one platform component a concurrent write should surface;
-    // the edge, membership, and grant are the three `structural` exemptions.
+    // the membership, grant, and link are the three `structural` exemptions.
     expect(ebbModel.components.group.structural).toBe(false);
   });
 });
 
 describe("platform components declare their scope owner", () => {
-  it("names the entity each write's group set resolves against", () => {
+  it("names the entity each atomic write's group set resolves against", () => {
     // A group's scope is itself and a grant's is the group it names, so neither
-    // carries a membership row; an edge resolves through its source.
+    // carries a membership row.
     expect(ebbModel.components.group.scope).toBe("self");
     expect(ebbModel.components.grant.scope).toBe("group_id");
     expect(ebbModel.components.membership.scope).toBe("group_id");
-    expect(ebbModel.components.link.scope).toBe("source_id");
   });
 });

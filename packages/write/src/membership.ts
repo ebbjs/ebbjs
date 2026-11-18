@@ -129,10 +129,11 @@ export const membershipRowId = (entityId: string, groupId: string): string =>
  *
  * - `ebb/group` → its own id (a group is its own group);
  * - `ebb/grant` / `ebb/membership` → the value's `group_id`;
- * - `ebb/link` → the source entity's groups;
  * - a delete → the membership row's group when the local view knows one, else
  *   the subject's own group set (a content row);
- * - anything else → the entity's groups.
+ * - anything else → the entity's groups. An `ebb/link` write is one of these:
+ *   the edge is a component of its source, so the subject *is* the source and
+ *   its groups are the write's.
  *
  * An unresolvable scope is `[]`: the committer reports it as
  * `missing_ownership` rather than guessing.
@@ -149,10 +150,6 @@ export const resolveSubjectGroups = (
     case "membership": {
       const groupId = platformValue(writes.components, writes.kind)?.["group_id"];
       return typeof groupId === "string" ? [groupId] : [];
-    }
-    case "link": {
-      const sourceId = platformValue(writes.components, "link")?.["source_id"];
-      return typeof sourceId === "string" ? view.groupsOf(sourceId) : [];
     }
     default:
       break;

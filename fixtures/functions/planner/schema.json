@@ -14,8 +14,7 @@
     "issue": {
       "fields": {
         "title": "string",
-        "done": "boolean",
-        "labels": "string[]"
+        "done": "boolean"
       }
     }
   },

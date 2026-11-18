@@ -10,6 +10,7 @@
 import {
   componentField,
   componentModel,
+  EBB_MODEL_NAME,
   isComponentUpdate,
   isFieldMap,
   isRowCreate,
@@ -273,11 +274,13 @@ export class ModelRegistry {
    * breaks a structural method rule that needs no schema.
    *
    * A row's committed model is the one its create named, so a create only has
-   * to name a declared model and every component of that row has to agree with
-   * it — the create decides, whichever Update arrives first. A component the
-   * model does not declare is the other membership question. A `delete` names
-   * no component and carries nothing to resolve, and a create is not checked
-   * as a component because it names none.
+   * to name a declared model and every **user** component of that row has to
+   * agree with it — the create decides, whichever Update arrives first. An
+   * `ebb/*` component may sit on any row: it is the platform's namespace, its
+   * entry is additive, and the row keeps the model its create named. A
+   * component the model does not declare is the other membership question. A
+   * `delete` names no component and carries nothing to resolve, and a create is
+   * not checked as a component because it names none.
    */
   validateAction(action: Action): ValidationViolation[] {
     const registered = this.models.size > 0 || this.relationships.size > 0;
@@ -313,7 +316,15 @@ export class ModelRegistry {
         });
       }
       const createdModel = createdModels.get(update.subject_id);
-      if (registered && createdModel !== undefined && createdModel !== modelName) {
+      // `ebb/` is the platform's namespace: an `ebb/*` component may sit on a
+      // row of any model, adds a component entry, and never changes the row's
+      // committed model. A user component still has to agree with the prefix.
+      if (
+        registered &&
+        createdModel !== undefined &&
+        modelName !== EBB_MODEL_NAME &&
+        createdModel !== modelName
+      ) {
         violations.push({
           entityName: createdModel,
           updateIndex: i,
