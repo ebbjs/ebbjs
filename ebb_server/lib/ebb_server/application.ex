@@ -6,6 +6,7 @@ defmodule EbbServer.Application do
   use Application
 
   alias EbbServer.Admin.Token
+  alias EbbServer.Config
   alias EbbServer.CORS.Policy
   alias EbbServer.Tailscale
 
@@ -225,12 +226,7 @@ defmodule EbbServer.Application do
     Application.get_env(:ebb_server, :apps_data_dir, data_dir)
   end
 
-  # The application env is checked first so that `MIX_ENV=test mix test`
-  # honors the path declared in `config/test.exs` instead of leaking test
-  # state into `./data` at the project root.
-  defp runtime_data_dir do
-    Application.get_env(:ebb_server, :data_dir) || System.get_env("EBB_DATA_DIR") || "./data"
-  end
+  defp runtime_data_dir, do: Config.data_dir()
 
   @doc false
   def runtime_port do
@@ -281,7 +277,7 @@ defmodule EbbServer.Application do
   end
 
   defp auth_mode do
-    case env_over_app("EBB_AUTH_MODE", :auth_mode) do
+    case Config.env_over_app("EBB_AUTH_MODE", :auth_mode) do
       nil ->
         raise "EBB_AUTH_MODE is not set and :ebb_server, :auth_mode has no compiled value. " <>
                 "Set EBB_AUTH_MODE to one of: #{@auth_mode_names}."
@@ -303,7 +299,7 @@ defmodule EbbServer.Application do
   defp auth_url(:tailscale), do: nil
 
   defp auth_url(:external) do
-    case env_over_app("EBB_AUTH_URL", :auth_url) do
+    case Config.env_over_app("EBB_AUTH_URL", :auth_url) do
       nil ->
         raise "EBB_AUTH_URL is required when EBB_AUTH_MODE=external. " <>
                 "Point it at the identity service that issues actor IDs."
@@ -325,22 +321,6 @@ defmodule EbbServer.Application do
   end
 
   defp normalize_auth_mode(_mode), do: :error
-
-  # Blank values are treated as unset so an unfilled compose variable
-  # cannot select a mode by accident.
-  defp env_over_app(env_key, app_key) do
-    case normalize_value(System.get_env(env_key)) do
-      nil -> normalize_value(Application.get_env(:ebb_server, app_key))
-      value -> value
-    end
-  end
-
-  defp normalize_value(nil), do: nil
-
-  defp normalize_value(value) when is_binary(value),
-    do: if(String.trim(value) == "", do: nil, else: value)
-
-  defp normalize_value(value), do: value
 
   defp parse_env_port do
     case System.get_env("EBB_PORT") do

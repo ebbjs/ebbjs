@@ -29,6 +29,8 @@ defmodule EbbServer.Admin.Token do
   digests do not.
   """
 
+  alias EbbServer.Config
+
   @server_env "EBB_ADMIN_TOKEN"
   @functions_env "EBB_FUNCTIONS_ADMIN_TOKEN"
   @server_key :admin_token
@@ -59,15 +61,15 @@ defmodule EbbServer.Admin.Token do
   """
   @spec resolve_value() :: String.t() | nil
   def resolve_value do
-    env(@server_env) ||
-      blank_to_nil(Application.get_env(:ebb_server, @server_key)) ||
-      env(@functions_env) ||
+    Config.env(@server_env) ||
+      Config.blank_to_nil(Application.get_env(:ebb_server, @server_key)) ||
+      Config.env(@functions_env) ||
       functions_value()
   end
 
   @spec value() :: String.t() | nil
   def value do
-    case blank_to_nil(Application.get_env(:ebb_server, @server_key)) do
+    case Config.blank_to_nil(Application.get_env(:ebb_server, @server_key)) do
       nil -> functions_value()
       token -> token
     end
@@ -81,7 +83,7 @@ defmodule EbbServer.Admin.Token do
         :error -> value()
       end
 
-    authorize_with(conn, blank_to_nil(token))
+    authorize_with(conn, Config.blank_to_nil(token))
   end
 
   defp authorize_with(_conn, nil), do: {:error, :not_configured}
@@ -99,23 +101,8 @@ defmodule EbbServer.Admin.Token do
     :ebb_server
     |> Application.get_env(@functions_key, [])
     |> Keyword.get(:admin_token)
-    |> blank_to_nil()
+    |> Config.blank_to_nil()
   end
-
-  defp env(name) do
-    name
-    |> System.get_env()
-    |> case do
-      nil -> nil
-      raw -> blank_to_nil(String.trim(raw))
-    end
-  end
-
-  defp blank_to_nil(value) when is_binary(value) do
-    if String.trim(value) == "", do: nil, else: value
-  end
-
-  defp blank_to_nil(_value), do: nil
 
   defp digest(value), do: :crypto.hash(:sha256, value)
 

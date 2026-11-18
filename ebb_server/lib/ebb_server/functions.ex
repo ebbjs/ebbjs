@@ -70,6 +70,7 @@ defmodule EbbServer.Functions do
   """
 
   alias EbbServer.Admin.Token
+  alias EbbServer.Config
   alias EbbServer.Functions.Bundle.{DirLoader, StoreLoader}
   alias EbbServer.Functions.BundleCache
   alias EbbServer.Functions.Store
@@ -105,7 +106,7 @@ defmodule EbbServer.Functions do
   def enabled? do
     case Keyword.fetch(config(), :enabled) do
       {:ok, nil} -> false
-      {:ok, raw} -> parse_enabled!(raw, @enabled_key)
+      {:ok, raw} -> Config.boolean!(raw, @enabled_key)
       :error -> false
     end
   end
@@ -118,9 +119,9 @@ defmodule EbbServer.Functions do
   """
   @spec resolve() :: boolean()
   def resolve do
-    case env_value(@enabled_env) do
+    case Config.env(@enabled_env) do
       nil -> enabled?()
-      raw -> parse_enabled!(raw, @enabled_env)
+      raw -> Config.boolean!(raw, @enabled_env)
     end
   end
 
@@ -296,7 +297,7 @@ defmodule EbbServer.Functions do
   @spec admin_token() :: String.t() | nil
   def admin_token do
     case config(:admin_token) do
-      token when is_binary(token) -> blank_to_nil(token)
+      token when is_binary(token) -> Config.blank_to_nil(token)
       _token -> nil
     end
   end
@@ -509,24 +510,7 @@ defmodule EbbServer.Functions do
     end
   end
 
-  defp data_dir(opts) do
-    Keyword.get_lazy(opts, :data_dir, fn ->
-      Application.get_env(:ebb_server, :data_dir, "./data")
-    end)
-  end
-
-  defp env_value(name) do
-    case System.get_env(name) do
-      nil -> nil
-      raw -> blank_to_nil(String.trim(raw))
-    end
-  end
-
-  defp blank_to_nil(value) when is_binary(value) do
-    if String.trim(value) == "", do: nil, else: value
-  end
-
-  defp blank_to_nil(_value), do: nil
+  defp data_dir(opts), do: Keyword.get_lazy(opts, :data_dir, &Config.data_dir/0)
 
   defp put_resolved(config, key, nil), do: Keyword.delete(config, key)
   defp put_resolved(config, key, value), do: Keyword.put(config, key, value)
@@ -635,18 +619,5 @@ defmodule EbbServer.Functions do
     end
 
     value
-  end
-
-  defp parse_enabled!(true, _source), do: true
-  defp parse_enabled!(false, _source), do: false
-  defp parse_enabled!("true", _source), do: true
-  defp parse_enabled!("false", _source), do: false
-  defp parse_enabled!("1", _source), do: true
-  defp parse_enabled!("0", _source), do: false
-
-  defp parse_enabled!(raw, source) do
-    raise "#{source} must be true or false, got #{inspect(raw)}. " <>
-            "Set it to true or false (the strings 1 and 0 are accepted for " <>
-            "#{@enabled_env}), or remove it to leave functions disabled."
   end
 end

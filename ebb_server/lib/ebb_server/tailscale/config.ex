@@ -17,13 +17,12 @@ defmodule EbbServer.Tailscale.Config do
   and adding a setting must not require a second definition to stay in step.
   """
 
+  alias EbbServer.Config
+
   @node_modes %{"embedded" => :embedded, "external" => :external}
   @https_modes %{"auto" => "auto", "on" => "on", "off" => "off"}
   @node_names "embedded, external"
   @https_names "auto, on, off"
-
-  @truthy ~w(true 1 yes on)
-  @falsy ~w(false 0 no off)
 
   @default_node :embedded
   @default_hostname "ebb"
@@ -111,7 +110,7 @@ defmodule EbbServer.Tailscale.Config do
   end
 
   defp resolve_node do
-    raw = env_over_app("EBB_TAILSCALE_NODE", :tailscale_node)
+    raw = Config.env_over_app("EBB_TAILSCALE_NODE", :tailscale_node)
 
     case raw && choice_key(raw) do
       nil -> @default_node
@@ -124,7 +123,7 @@ defmodule EbbServer.Tailscale.Config do
   end
 
   defp resolve_https do
-    raw = env_over_app("EBB_TAILSCALE_HTTPS", :tailscale_https)
+    raw = Config.env_over_app("EBB_TAILSCALE_HTTPS", :tailscale_https)
 
     case raw && choice_key(raw) do
       nil -> @default_https
@@ -144,7 +143,7 @@ defmodule EbbServer.Tailscale.Config do
   defp choice_key(value), do: value
 
   defp resolve_string(env_key, app_key, default) do
-    case env_over_app(env_key, app_key) do
+    case Config.env_over_app(env_key, app_key) do
       nil -> default
       value when is_binary(value) -> value
       other -> raise "#{env_key} must be a string, got #{inspect(other)}"
@@ -152,26 +151,14 @@ defmodule EbbServer.Tailscale.Config do
   end
 
   defp resolve_boolean(env_key, app_key, default) do
-    case env_over_app(env_key, app_key) do
+    case Config.env_over_app(env_key, app_key) do
       nil -> default
-      true -> true
-      false -> false
-      raw -> parse_boolean!(raw, env_key)
+      raw -> Config.boolean!(raw, env_key)
     end
   end
-
-  defp parse_boolean!(raw, source) do
-    case raw |> to_string() |> String.trim() |> String.downcase() do
-      flag when flag in @truthy -> true
-      flag when flag in @falsy -> false
-      _invalid -> raise "#{source} must be #{accepted_flags()}, got #{inspect(raw)}"
-    end
-  end
-
-  defp accepted_flags, do: Enum.join(@truthy ++ @falsy, ", ")
 
   defp resolve_tags do
-    case env_over_app("EBB_TAILSCALE_TAGS", :tailscale_tags) do
+    case Config.env_over_app("EBB_TAILSCALE_TAGS", :tailscale_tags) do
       nil -> []
       raw -> parse_tags!(raw)
     end
@@ -204,21 +191,4 @@ defmodule EbbServer.Tailscale.Config do
       Application.app_dir(:ebb_server, @default_proxy_bin)
     )
   end
-
-  # Blank values are treated as unset so an unfilled compose variable cannot
-  # select a mode, a tag, or a hostname by accident. Mirrors the resolution
-  # `EbbServer.Application` uses for the data directory and the auth mode.
-  defp env_over_app(env_key, app_key) do
-    case normalize_value(System.get_env(env_key)) do
-      nil -> normalize_value(Application.get_env(:ebb_server, app_key))
-      value -> value
-    end
-  end
-
-  defp normalize_value(nil), do: nil
-
-  defp normalize_value(value) when is_binary(value),
-    do: if(String.trim(value) == "", do: nil, else: value)
-
-  defp normalize_value(value), do: value
 end

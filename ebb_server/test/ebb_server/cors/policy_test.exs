@@ -43,17 +43,15 @@ defmodule EbbServer.CORS.PolicyTest do
     end
 
     test "EBB_CORS_ALLOW_ANY overrides the mode in both directions" do
-      System.put_env(@allow_any_env, "1")
-      assert Policy.resolve!(:tailscale).allow_any
+      for truthy <- ~w(1 true yes on) do
+        System.put_env(@allow_any_env, truthy)
+        assert Policy.resolve!(:tailscale).allow_any, "expected #{truthy} to allow any origin"
+      end
 
-      System.put_env(@allow_any_env, "true")
-      assert Policy.resolve!(:external).allow_any
-
-      System.put_env(@allow_any_env, "0")
-      refute Policy.resolve!(:bypass).allow_any
-
-      System.put_env(@allow_any_env, "false")
-      refute Policy.resolve!(:bypass).allow_any
+      for falsy <- ~w(0 false no off) do
+        System.put_env(@allow_any_env, falsy)
+        refute Policy.resolve!(:bypass).allow_any, "expected #{falsy} to deny any origin"
+      end
     end
 
     test "a blank value counts as unset" do
@@ -62,7 +60,7 @@ defmodule EbbServer.CORS.PolicyTest do
     end
 
     test "an unparseable value fails boot" do
-      System.put_env(@allow_any_env, "yes")
+      System.put_env(@allow_any_env, "maybe")
 
       assert_raise RuntimeError, ~r/EBB_CORS_ALLOW_ANY must be one of/, fn ->
         Policy.resolve!(:external)

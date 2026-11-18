@@ -23,6 +23,7 @@ defmodule EbbServer.Apps do
   require Logger
 
   alias EbbServer.Apps.{Origin, Store}
+  alias EbbServer.Config
 
   @default_key {__MODULE__, :apps}
   @id_prefix "app_"
@@ -106,11 +107,7 @@ defmodule EbbServer.Apps do
       Keyword.get(
         opts,
         :data_dir,
-        Application.get_env(
-          :ebb_server,
-          :apps_data_dir,
-          Application.get_env(:ebb_server, :data_dir, "./data")
-        )
+        Application.get_env(:ebb_server, :apps_data_dir, Config.data_dir())
       )
 
     key = Keyword.get(opts, :key, @default_key)
