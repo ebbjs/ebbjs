@@ -38,13 +38,16 @@ defmodule EbbServer.Storage.CommitterPool do
 
   Results and crashes are reported by `ref`, never by worker pid, so a
   replacement worker cannot inherit or resolve another range's failure.
+
+  The scheduling skeleton it shares with `EbbServer.Storage.PreparePool`
+  lives in `EbbServer.Storage.WorkerPool`; retirement is this pool's own.
   """
 
   use GenServer
 
   require Logger
 
-  alias EbbServer.Storage.Committer
+  alias EbbServer.Storage.{Committer, WorkerPool}
 
   @type job :: %{
           prepared: [EbbServer.Storage.PreparedAction.t()],
@@ -54,40 +57,21 @@ defmodule EbbServer.Storage.CommitterPool do
           started_at: integer() | nil
         }
 
-  @type t :: %__MODULE__{
-          owner: pid(),
-          owner_ref: reference(),
-          supervisor: pid(),
-          rocks_name: GenServer.name(),
-          commit_fn: fun(),
-          ablate: [atom()],
-          commit_timeout_ms: integer(),
-          sweep_interval_ms: pos_integer(),
-          workers: %{pid() => reference() | nil},
-          idle: [pid()],
-          jobs: %{reference() => job()},
-          retired: %{reference() => pid()},
-          waiting: [reference()]
-        }
+  @typedoc "This pool's state; the scheduling fields are typed in `WorkerPool.t/0`."
+  @type t :: %__MODULE__{}
 
-  defstruct [
-    :owner,
-    :owner_ref,
-    :supervisor,
-    :rocks_name,
-    :commit_fn,
-    :ablate,
-    :commit_timeout_ms,
-    :sweep_interval_ms,
-    workers: %{},
-    idle: [],
-    jobs: %{},
-    retired: %{},
-    waiting: []
-  ]
+  defstruct WorkerPool.shared_fields() ++
+              [
+                rocks_name: nil,
+                commit_fn: nil,
+                commit_timeout_ms: nil,
+                sweep_interval_ms: nil,
+                retired: %{}
+              ]
 
   @default_commit_timeout_ms 2_000
   @default_sweep_interval_ms 250
+  @default_size 1
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -115,14 +99,7 @@ defmodule EbbServer.Storage.CommitterPool do
 
   @impl true
   def init(opts) do
-    owner = Keyword.fetch!(opts, :owner)
-    size = Keyword.get(opts, :size, 1)
-
-    unless is_integer(size) and size > 0 do
-      raise ArgumentError, "CommitterPool size must be a positive integer, got: #{inspect(size)}"
-    end
-
-    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    size = WorkerPool.size!(opts, @default_size, "CommitterPool")
 
     commit_timeout_ms = Keyword.get(opts, :commit_timeout_ms, @default_commit_timeout_ms)
 
@@ -130,18 +107,19 @@ defmodule EbbServer.Storage.CommitterPool do
 
     validate_watchdog_opts!(commit_timeout_ms, sweep_interval_ms)
 
-    state = %__MODULE__{
-      owner: owner,
-      owner_ref: Process.monitor(owner),
-      supervisor: supervisor,
-      rocks_name: Keyword.fetch!(opts, :rocks_name),
-      commit_fn: Keyword.fetch!(opts, :commit_fn),
-      ablate: Keyword.get(opts, :ablate, []),
-      commit_timeout_ms: commit_timeout_ms,
-      sweep_interval_ms: sweep_interval_ms
-    }
+    state =
+      %__MODULE__{
+        rocks_name: Keyword.fetch!(opts, :rocks_name),
+        commit_fn: Keyword.fetch!(opts, :commit_fn),
+        ablate: Keyword.get(opts, :ablate, []),
+        commit_timeout_ms: commit_timeout_ms,
+        sweep_interval_ms: sweep_interval_ms
+      }
+      |> WorkerPool.start(Keyword.fetch!(opts, :owner))
+      |> WorkerPool.fill(size, &start_worker/1)
+      |> schedule_sweep()
 
-    {:ok, Enum.reduce(1..size, state, fn _, state -> start_worker(state) end) |> schedule_sweep()}
+    {:ok, state}
   end
 
   @impl true
@@ -154,40 +132,17 @@ defmodule EbbServer.Storage.CommitterPool do
       started_at: nil
     }
 
-    state = %{state | jobs: Map.put(state.jobs, ref, job), waiting: state.waiting ++ [ref]}
-
-    {:noreply, dispatch(state)}
+    {:noreply, WorkerPool.submit(state, ref, job, spec())}
   end
 
   @impl true
   def handle_info({:committer_result, ref, result}, state) do
-    case Map.fetch(state.jobs, ref) do
-      {:ok, %{worker: worker}} when is_pid(worker) ->
-        send(state.owner, {:committer_result, ref, result})
+    case WorkerPool.finish_job(state, ref, result, spec()) do
+      {:ok, state} ->
+        {:noreply, state}
 
-        state = %{
-          state
-          | jobs: Map.delete(state.jobs, ref),
-            workers: Map.put(state.workers, worker, nil),
-            idle: [worker | state.idle]
-        }
-
-        {:noreply, dispatch(state)}
-
-      _ ->
-        case Map.pop(state.retired, ref) do
-          {nil, _retired} ->
-            Logger.debug("CommitterPool received a result for unknown ref #{inspect(ref)}")
-            {:noreply, state}
-
-          {worker, retired} ->
-            # The late write landed and its worker is healthy enough to report;
-            # it has no pool slot left, so stop it instead of leaving an idle
-            # orphan under the supervisor.
-            Process.exit(worker, :shutdown)
-            Logger.debug("CommitterPool ignoring a late result from a retired worker")
-            {:noreply, %{state | retired: retired}}
-        end
+      :unknown ->
+        handle_stale_result(state, ref)
     end
   end
 
@@ -212,49 +167,47 @@ defmodule EbbServer.Storage.CommitterPool do
   end
 
   def handle_info({:DOWN, owner_ref, :process, _owner, _reason}, %{owner_ref: owner_ref} = state) do
-    {:stop, :normal, state}
+    WorkerPool.owner_down(state)
   end
 
   def handle_info({:DOWN, _monitor_ref, :process, pid, reason}, state) do
     case Map.fetch(state.workers, pid) do
       :error ->
+        # A retired worker has no slot, so only its retirement entry is left
+        # to drop.
         retired = Map.reject(state.retired, fn {_ref, worker} -> worker == pid end)
         Logger.debug("CommitterPool received DOWN for unknown worker #{inspect(pid)}")
         {:noreply, %{state | retired: retired}}
 
       {:ok, job_ref} ->
-        state = %{
+        state =
           state
-          | workers: Map.delete(state.workers, pid),
-            idle: List.delete(state.idle, pid)
-        }
+          |> WorkerPool.forget_worker(pid)
+          |> WorkerPool.fail_job(job_ref, reason, spec())
+          |> start_worker()
 
-        state = fail_job(state, job_ref, reason)
-        {:noreply, state |> start_worker() |> dispatch()}
+        {:noreply, dispatch(state)}
     end
   end
 
   @impl true
   def terminate(_reason, state) do
-    if Process.alive?(state.supervisor) do
-      DynamicSupervisor.stop(state.supervisor, :normal, 5_000)
-    end
-
-    :ok
-  catch
-    :exit, _ -> :ok
+    WorkerPool.shutdown(state)
   end
 
-  defp fail_job(state, nil, _reason), do: state
+  defp handle_stale_result(state, ref) do
+    case Map.pop(state.retired, ref) do
+      {nil, _retired} ->
+        Logger.debug("CommitterPool received a result for unknown ref #{inspect(ref)}")
+        {:noreply, state}
 
-  defp fail_job(state, ref, reason) do
-    case Map.pop(state.jobs, ref) do
-      {nil, _jobs} ->
-        state
-
-      {_job, jobs} ->
-        send(state.owner, {:committer_result, ref, {:crashed, reason}})
-        %{state | jobs: jobs}
+      {worker, retired} ->
+        # The late write landed and its worker is healthy enough to report;
+        # it has no pool slot left, so stop it instead of leaving an idle
+        # orphan under the supervisor.
+        Process.exit(worker, :shutdown)
+        Logger.debug("CommitterPool ignoring a late result from a retired worker")
+        {:noreply, %{state | retired: retired}}
     end
   end
 
@@ -266,7 +219,7 @@ defmodule EbbServer.Storage.CommitterPool do
     |> Enum.reduce(state, fn {ref, job}, state ->
       state = retire_worker(state, job.worker)
       state = retire_job(state, ref, job.worker)
-      fail_job(state, ref, :commit_timeout)
+      WorkerPool.fail_job(state, ref, :commit_timeout, spec())
     end)
   end
 
@@ -321,55 +274,42 @@ defmodule EbbServer.Storage.CommitterPool do
     end
   end
 
-  defp dispatch(%{waiting: [], jobs: _jobs} = state), do: state
+  defp start_worker(state) do
+    case WorkerPool.start_worker(state, spec()) do
+      {:ok, state} ->
+        state
 
-  defp dispatch(%{idle: []} = state), do: state
+      {:error, reason} ->
+        raise RuntimeError, "CommitterPool could not start a Committer: #{inspect(reason)}"
+    end
+  end
 
-  defp dispatch(state) do
-    [worker | idle] = state.idle
-    [ref | waiting] = state.waiting
-    job = Map.fetch!(state.jobs, ref)
+  defp dispatch(state), do: WorkerPool.dispatch(state, spec())
 
+  defp spec do
+    %{
+      worker: Committer,
+      worker_opts: &worker_opts/1,
+      assign: &assign/4,
+      result_tag: :committer_result,
+      crash_result: fn reason -> {:crashed, reason} end
+    }
+  end
+
+  defp worker_opts(state) do
+    [
+      owner: self(),
+      rocks_name: state.rocks_name,
+      commit_fn: state.commit_fn,
+      ablate: state.ablate
+    ]
+  end
+
+  defp assign(state, worker, ref, job) do
     send(state.owner, {:committer_assigned, ref, worker})
 
     GenServer.cast(worker, {:commit, ref, job.prepared, job.gsn_start, job.gsn_end})
 
-    state = %{
-      state
-      | idle: idle,
-        waiting: waiting,
-        workers: Map.put(state.workers, worker, ref),
-        jobs: Map.put(state.jobs, ref, %{job | worker: worker, started_at: now_ms()})
-    }
-
-    dispatch(state)
-  end
-
-  defp start_worker(state) do
-    spec = %{
-      id: {Committer, make_ref()},
-      start:
-        {Committer, :start_link,
-         [
-           [
-             owner: self(),
-             rocks_name: state.rocks_name,
-             commit_fn: state.commit_fn,
-             ablate: state.ablate
-           ]
-         ]},
-      restart: :temporary,
-      type: :worker
-    }
-
-    case DynamicSupervisor.start_child(state.supervisor, spec) do
-      {:ok, pid} ->
-        Process.monitor(pid)
-        %{state | workers: Map.put(state.workers, pid, nil), idle: [pid | state.idle]}
-
-      {:error, reason} ->
-        raise RuntimeError,
-              "CommitterPool could not start a Committer: #{inspect(reason)}"
-    end
+    %{job | worker: worker, started_at: now_ms()}
   end
 end
