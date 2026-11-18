@@ -10,7 +10,9 @@ defmodule EbbServer.Sync.SSEHandlerTest do
 
   import Plug.Test
   import Plug.Conn
-  import EbbServer.TestHelpers, only: [attach_telemetry: 1, telemetry_events: 1]
+
+  import EbbServer.TestHelpers,
+    only: [attach_telemetry: 1, put_config: 2, telemetry_events: 1]
 
   alias EbbServer.Storage.{GrantCache, WatermarkTracker}
   alias EbbServer.Sync.{GroupRegistry, Router, SSEConnectionSupervisor, SSEHandler}
@@ -225,6 +227,62 @@ defmodule EbbServer.Sync.SSEHandlerTest do
       assert Task.await(task, @await_timeout_ms) == :ok
       refute Process.alive?(connection)
       assert_subscriber_released(group_id, subscription)
+    end
+  end
+
+  describe "keepalive_interval_ms/0" do
+    test "defaults to 15 s" do
+      assert SSEHandler.keepalive_interval_ms() == 15_000
+    end
+
+    test "honours a configured interval" do
+      put_config(:sync_sse_keepalive_ms, 1_000)
+
+      assert SSEHandler.keepalive_interval_ms() == 1_000
+    end
+
+    test "a non-positive or non-integer value raises with the key name" do
+      for value <- [0, -1, "15000", nil] do
+        put_config(:sync_sse_keepalive_ms, value)
+
+        error = assert_raise ArgumentError, fn -> SSEHandler.keepalive_interval_ms() end
+        assert error.message =~ ":sync_sse_keepalive_ms"
+      end
+    end
+  end
+
+  describe "do_sse_loop" do
+    test "ticks at the configured interval instead of the default" do
+      put_config(:sync_sse_keepalive_ms, 25)
+      %{group_id: group_id, actor_id: actor_id} = put_member("sse_keepalive_config")
+
+      # Nothing sends :keepalive here: at 25 ms the loop's own timer has to
+      # produce the frame well inside the await timeout, which the 15 s
+      # default could not.
+      {task, _loop_pid} = start_stream(actor_id, group_id, :infinity)
+
+      assert_receive {:chunk_written, ": keepalive\n\n"}, @await_timeout_ms
+
+      Task.shutdown(task, :brutal_kill)
+    end
+
+    test "an invalid interval raises at request start instead of streaming" do
+      put_config(:sync_sse_keepalive_ms, 0)
+      %{group_id: group_id, actor_id: actor_id} = put_member("sse_keepalive_invalid")
+
+      conn =
+        Plug.Test.conn(:get, "/")
+        |> Map.put(:adapter, {
+          RecordingAdapter,
+          %{test: self(), writes_left: write_budget(:infinity)}
+        })
+
+      error =
+        assert_raise ArgumentError, fn ->
+          SSEHandler.open_sse(conn, [group_id], 0, actor_id)
+        end
+
+      assert error.message =~ ":sync_sse_keepalive_ms"
     end
   end
 

@@ -18,7 +18,8 @@ defmodule EbbServer.Sync.SSEHandler do
   @stale_cursor_event ~S(event: control
 data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
   @stale_cursor_suffix "}\n\n"
-  @keepalive_interval_ms 15_000
+  @default_keepalive_interval_ms 15_000
+  @keepalive_key :sync_sse_keepalive_ms
 
   @spec open_sse(Plug.Conn.t(), [String.t()], non_neg_integer(), String.t()) ::
           :ok | {:error, :not_member}
@@ -31,6 +32,9 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
   end
 
   defp open_sse_connection(conn, group_ids, cursor, actor_id) do
+    # Resolved before the response commits, so a bad value fails the request
+    # instead of a stream that never ticks.
+    keepalive_ms = keepalive_interval_ms()
     cursors = Map.new(group_ids, fn group_id -> {group_id, cursor} end)
 
     conn =
@@ -46,25 +50,25 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
     # "peer".
     FanOutRouter.subscribe(group_ids, sse_pid, actor_id)
 
-    run_sse_loop(conn, sse_pid)
+    run_sse_loop(conn, sse_pid, keepalive_ms)
     :ok
   end
 
-  defp run_sse_loop(conn, sse_pid) do
+  defp run_sse_loop(conn, sse_pid, keepalive_ms) do
     monitor_ref = Process.monitor(sse_pid)
-    Process.send_after(self(), :keepalive, @keepalive_interval_ms)
+    Process.send_after(self(), :keepalive, keepalive_ms)
 
-    do_sse_loop(conn, sse_pid, monitor_ref)
+    do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms)
   end
 
-  defp do_sse_loop(conn, sse_pid, monitor_ref) do
+  defp do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms) do
     receive do
       # A committed batch arrives as one binary covering every frame in it;
       # write them in a single chunk. SSE is a byte stream, so many events in
       # one chunk are equivalent to many chunks.
       {:sse_data, bytes} ->
         case chunk(conn, bytes) do
-          :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
+          :ok -> do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms)
           :closed -> :ok
         end
 
@@ -72,7 +76,7 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
         case chunk(conn, bytes) do
           :ok ->
             emit_conn_chunk(meta)
-            do_sse_loop(conn, sse_pid, monitor_ref)
+            do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms)
 
           :closed ->
             :ok
@@ -80,15 +84,15 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
 
       {:sse_chunk, kind, payload} ->
         case chunk(conn, SSEConnection.format_sse_event(kind, payload)) do
-          :ok -> do_sse_loop(conn, sse_pid, monitor_ref)
+          :ok -> do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms)
           :closed -> :ok
         end
 
       :keepalive ->
         case chunk(conn, ": keepalive\n\n") do
           :ok ->
-            Process.send_after(self(), :keepalive, @keepalive_interval_ms)
-            do_sse_loop(conn, sse_pid, monitor_ref)
+            Process.send_after(self(), :keepalive, keepalive_ms)
+            do_sse_loop(conn, sse_pid, monitor_ref, keepalive_ms)
 
           :closed ->
             :ok
@@ -96,6 +100,23 @@ data: {"reconnect":true,"reason":"behind_watermark","catchUpFrom":)
 
       {:DOWN, ^monitor_ref, :process, ^sse_pid, _reason} ->
         :ok
+    end
+  end
+
+  @doc """
+  Interval between keepalive comments on a live stream. Tunable because a
+  proxy with a shorter idle timeout, or a mobile link that wants a faster
+  tick, otherwise forces a recompile.
+  """
+  @spec keepalive_interval_ms() :: pos_integer()
+  def keepalive_interval_ms do
+    case Application.get_env(:ebb_server, @keepalive_key, @default_keepalive_interval_ms) do
+      ms when is_integer(ms) and ms > 0 ->
+        ms
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(@keepalive_key)} must be a positive integer, got: #{inspect(other)}"
     end
   end
 
