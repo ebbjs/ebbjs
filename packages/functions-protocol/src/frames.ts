@@ -37,9 +37,26 @@ export interface FunctionLimits {
   readonly max_log_lines?: number;
   readonly max_log_bytes?: number;
   readonly fetch_allowlist?: readonly string[];
+  readonly max_fetch_response_bytes?: number;
   readonly memory_bytes?: number;
   readonly [field: string]: unknown;
 }
+
+/**
+ * The budget per field when the host states none.
+ *
+ * Both sides read this table rather than restating the numbers: the server
+ * hands the values it resolves in its `invoke` frame, and the runner falls back
+ * to them for any field the host omitted. A default that changes here changes
+ * for both peers, which is the point.
+ */
+export const DEFAULT_LIMITS = {
+  timeout_ms: 30_000,
+  max_host_calls: 1_000,
+  max_log_lines: 200,
+  max_log_bytes: 65_536,
+  max_fetch_response_bytes: 10 * 1024 * 1024,
+} as const satisfies FunctionLimits;
 
 /** Host → runner: run one function. Omitted fields stay omitted. */
 export interface InvokeFrame {

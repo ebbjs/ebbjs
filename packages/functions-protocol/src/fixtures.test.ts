@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { decodeFrames, encodeFrame } from "./codec.ts";
 import { ready } from "./constructors.ts";
 import {
+  DEFAULT_LIMITS,
   LOG_LEVELS,
   MAX_FRAME_BYTES,
   PROTOCOL_VERSION,
@@ -37,6 +38,7 @@ const CONSTANTS_FIXTURE = "constants";
 interface ConstantsFixture {
   readonly max_frame_bytes: number;
   readonly protocol_version: number;
+  readonly default_limits: Readonly<Record<string, number>>;
   readonly result_kinds: readonly string[];
   readonly log_levels: readonly string[];
   readonly log_levels_by_peer: Readonly<Record<string, readonly string[]>>;
@@ -163,6 +165,10 @@ describe("shared constants", () => {
   it("pins the frame bound and protocol version the Elixir host also hard-codes", () => {
     expect(MAX_FRAME_BYTES).toBe(constants.max_frame_bytes);
     expect(PROTOCOL_VERSION).toBe(constants.protocol_version);
+  });
+
+  it("pins the default limits both peers restate", () => {
+    expect(DEFAULT_LIMITS).toEqual(constants.default_limits);
   });
 
   it("pins the result kinds the runner emits and the host maps", () => {

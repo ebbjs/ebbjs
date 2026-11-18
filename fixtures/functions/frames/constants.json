@@ -1,9 +1,16 @@
 {
   "name": "constants",
-  "description": "The frame constants and the string vocabularies both peers hard-code: the frame bytes bound, the protocol version, the result kinds, and the log levels.",
+  "description": "The frame constants and the string vocabularies both peers hard-code: the frame bytes bound, the protocol version, the result kinds, the log levels, and the default invocation limits.",
   "notes": "assertion-only: neither side generates code from this file, each side keeps a named constant and asserts it against the value here. `log_levels` is the union of both peers; `log_levels_by_peer` is what each side asserts exactly. `warning` is Logger's spelling of `warn` and is accepted by the host, but no TypeScript peer emits it.",
   "max_frame_bytes": 1048576,
   "protocol_version": 1,
+  "default_limits": {
+    "timeout_ms": 30000,
+    "max_host_calls": 1000,
+    "max_log_lines": 200,
+    "max_log_bytes": 65536,
+    "max_fetch_response_bytes": 10485760
+  },
   "result_kinds": ["handler_error", "host_call_limit", "output_too_large"],
   "log_levels": ["debug", "error", "info", "log", "warn", "warning"],
   "log_levels_by_peer": {

@@ -1,22 +1,34 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_FRAME_BYTES } from "@ebbjs/functions-protocol";
+import { DEFAULT_LIMITS, MAX_FRAME_BYTES } from "@ebbjs/functions-protocol";
 
 import { HostCallLimitError, resolveLimits } from "./limits.ts";
 
 describe("resolveLimits", () => {
-  it("uses the documented defaults when the host states nothing", () => {
+  it("uses the protocol's documented defaults when the host states nothing", () => {
     const limits = resolveLimits(undefined);
 
     expect(limits).toEqual({
-      timeoutMs: 30_000,
-      maxHostCalls: 1_000,
+      timeoutMs: DEFAULT_LIMITS.timeout_ms,
+      maxHostCalls: DEFAULT_LIMITS.max_host_calls,
       maxOutputBytes: MAX_FRAME_BYTES,
-      maxLogLines: 200,
-      maxLogBytes: 65_536,
-      fetchAllowlist: [],
+      maxLogLines: DEFAULT_LIMITS.max_log_lines,
+      maxLogBytes: DEFAULT_LIMITS.max_log_bytes,
+      fetchAllowlist: undefined,
+      maxFetchResponseBytes: DEFAULT_LIMITS.max_fetch_response_bytes,
     });
     expect(resolveLimits({})).toEqual(limits);
+  });
+
+  it("keeps the documented default values", () => {
+    // The table is shared with the server; these are the numbers it ships.
+    expect(DEFAULT_LIMITS).toEqual({
+      timeout_ms: 30_000,
+      max_host_calls: 1_000,
+      max_log_lines: 200,
+      max_log_bytes: 65_536,
+      max_fetch_response_bytes: 10 * 1024 * 1024,
+    });
   });
 
   it("takes the host's values", () => {
@@ -26,7 +38,8 @@ describe("resolveLimits", () => {
       max_output_bytes: 4_096,
       max_log_lines: 3,
       max_log_bytes: 512,
-      fetch_allowlist: ["api.example.com", 7 as never, ""],
+      fetch_allowlist: ["api.example.com"],
+      max_fetch_response_bytes: 2_048,
       memory_bytes: 1,
     });
 
@@ -37,6 +50,7 @@ describe("resolveLimits", () => {
       maxLogLines: 3,
       maxLogBytes: 512,
       fetchAllowlist: ["api.example.com"],
+      maxFetchResponseBytes: 2_048,
     });
   });
 
@@ -46,12 +60,14 @@ describe("resolveLimits", () => {
       max_host_calls: -1,
       max_log_lines: 1.5,
       max_log_bytes: "1024" as never,
+      max_fetch_response_bytes: 0,
     });
 
     expect(limits.timeoutMs).toBe(30_000);
     expect(limits.maxHostCalls).toBe(1_000);
     expect(limits.maxLogLines).toBe(200);
     expect(limits.maxLogBytes).toBe(65_536);
+    expect(limits.maxFetchResponseBytes).toBe(10 * 1024 * 1024);
   });
 
   it("clamps the output bound to the frame bound", () => {
@@ -60,9 +76,13 @@ describe("resolveLimits", () => {
     );
   });
 
-  it("treats a non-array allowlist as unrestricted", () => {
-    expect(resolveLimits({ fetch_allowlist: "api.example.com" as never }).fetchAllowlist).toEqual(
-      [],
+  it("hands the allowlist on untouched so the shim can refuse what it cannot read", () => {
+    // Filtering here would narrow the list, and a narrowed list is wider egress.
+    expect(
+      resolveLimits({ fetch_allowlist: ["api.example.com", ""] as never }).fetchAllowlist,
+    ).toEqual(["api.example.com", ""]);
+    expect(resolveLimits({ fetch_allowlist: "api.example.com" as never }).fetchAllowlist).toBe(
+      "api.example.com",
     );
   });
 });

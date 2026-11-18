@@ -488,6 +488,66 @@ describe("runInvocation guardrails", () => {
     }
   });
 
+  it("refuses to run a handler whose allowlist does not compile", async () => {
+    const { transport, calls } = journal();
+    const original = globalThis.fetch;
+    const stub = vi.fn(async () => new Response("hi", { status: 200 }));
+    globalThis.fetch = stub as unknown as typeof globalThis.fetch;
+
+    try {
+      await expect(
+        runInvocation({
+          transport,
+          invocationId: "inv_fetch_junk",
+          subjectActorId: "a_test",
+          bundle: bundle('await fetch("https://evil.example/x"); return { ran: true };'),
+          entry: "handler",
+          input: undefined,
+          limits: { fetch_allowlist: ["10.0.0.0/8"] },
+        }),
+      ).rejects.toThrow(/fetch allowlist entry "10\.0\.0\.0\/8"/);
+
+      // The handler never ran, nothing egressed, and no global stayed patched.
+      expect(stub).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(globalThis.fetch).toBe(stub);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("caps a response at the host's max_fetch_response_bytes", async () => {
+    const { transport } = journal();
+    const original = globalThis.fetch;
+    const stub = vi.fn(
+      async () => new Response("x", { status: 200, headers: { "content-length": "11" } }),
+    );
+    globalThis.fetch = stub as unknown as typeof globalThis.fetch;
+
+    try {
+      const value = await runInvocation({
+        transport,
+        invocationId: "inv_fetch_cap",
+        subjectActorId: "a_test",
+        bundle: bundle(`
+          try {
+            await fetch("https://api.example.com/x");
+            return { refused: false };
+          } catch (error) {
+            return { refused: true, name: error.name, limit: error.limit };
+          }
+        `),
+        entry: "handler",
+        input: undefined,
+        limits: { max_fetch_response_bytes: 10 },
+      });
+
+      expect(value).toEqual({ refused: true, name: "FetchResponseTooLargeError", limit: 10 });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it("restores fetch when the handler throws", async () => {
     const original = globalThis.fetch;
     const stub = vi.fn();

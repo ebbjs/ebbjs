@@ -49,10 +49,17 @@ export interface RunInvocationOptions {
  * - `globalThis.fetch` is replaced by an allowlist and response-cap shim that
  *   emits one `fetch_audit` per request — and restored afterwards, as are the
  *   `console` methods. One invocation runs per process at a time, so patching
- *   the globals for its duration is safe here.
+ *   the globals for its duration is safe here. The shim is installed before
+ *   anything else is patched, so an allowlist that does not compile fails the
+ *   invocation with a `FetchAllowlistError` and leaves the globals untouched.
  */
 export async function runInvocation(options: RunInvocationOptions): Promise<unknown> {
   const limits = resolveLimits(options.limits);
+  const restoreFetch = installFetchGuard({
+    allowlist: limits.fetchAllowlist,
+    maxResponseBytes: limits.maxFetchResponseBytes,
+    audit: (fields) => sendAudit(options.transport, fields),
+  });
   // Log lines do not pass through the call budget and calls do not pass
   // through the log budget, so both wrappers sit on the raw transport.
   const sink = createLogSink({
@@ -66,10 +73,6 @@ export async function runInvocation(options: RunInvocationOptions): Promise<unkn
     log: (entry) => sink.log(entry),
   });
   const restoreConsole = captureConsole((entry) => sink.log(entry));
-  const restoreFetch = installFetchGuard({
-    allowlist: limits.fetchAllowlist,
-    audit: (fields) => sendAudit(options.transport, fields),
-  });
 
   try {
     const module = evaluateBundle(options.bundle);

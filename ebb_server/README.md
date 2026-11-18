@@ -209,18 +209,19 @@ than serving a route that can only answer `503`.
 The one key is `config :ebb_server, :functions`; `EBB_FUNCTIONS_ENABLED` and
 `EBB_FUNCTIONS_ADMIN_TOKEN` overlay `:enabled` and `:admin_token` at boot.
 
-| Key                                              | Meaning                                                            |
-| ------------------------------------------------ | ------------------------------------------------------------------ |
-| `enabled`                                        | Boot flag; off removes every `/functions` route and starts nothing |
-| `admin_token`                                    | Deploy credential; unset means no admin credential, never open     |
-| `services`                                       | Static service credentials (`id`, `token_sha256`, subject, grants) |
-| `env`                                            | Per-function allowlist of environment variable names               |
-| `fetch_allowlist`                                | Hosts the runner's global `fetch` may reach; empty = unrestricted  |
-| `max_invoke_body_bytes`                          | Request body bound (256 KiB)                                       |
-| `max_host_calls`                                 | Host-call budget per invocation (1000)                             |
-| `max_log_lines` / `max_log_bytes`                | Per-invocation log cap (200 / 64 KiB)                              |
-| `pool_size` / `queue_limit` / `queue_timeout_ms` | Pool capacity and queue                                            |
-| `transport` / `worker_opts`                      | Worker seam; defaults to Bun and the shipped runner                |
+| Key                                              | Meaning                                                                        |
+| ------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `enabled`                                        | Boot flag; off removes every `/functions` route and starts nothing             |
+| `admin_token`                                    | Deploy credential; unset means no admin credential, never open                 |
+| `services`                                       | Static service credentials (`id`, `token_sha256`, subject, grants)             |
+| `env`                                            | Per-function allowlist of environment variable names                           |
+| `fetch_allowlist`                                | Hosts the runner's `fetch` may reach; empty = unrestricted, bad = boot failure |
+| `max_invoke_body_bytes`                          | Request body bound (256 KiB)                                                   |
+| `max_host_calls`                                 | Host-call budget per invocation (1000)                                         |
+| `max_log_lines` / `max_log_bytes`                | Per-invocation log cap (200 / 64 KiB)                                          |
+| `max_fetch_response_bytes`                       | Cap on one fetch response body (10 MiB)                                        |
+| `pool_size` / `queue_limit` / `queue_timeout_ms` | Pool capacity and queue                                                        |
+| `transport` / `worker_opts`                      | Worker seam; defaults to Bun and the shipped runner                            |
 
 ### Isolation and limits
 
@@ -244,7 +245,10 @@ Treat a deploy grant like write access to the server.
 
 The `fetch` allowlist and `fetch_audit` telemetry are a guardrail around the
 global `fetch` for trusted authors, not a sandbox an author cannot bypass; egress
-policy is the control for untrusted code. Bundle signing is deliberately not in
+policy is the control for untrusted code. The allowlist is read strictly: an
+entry outside `host`, `host:port`, `[ipv6]:port`, or a URL (a CIDR block or a
+wildcard, say) fails boot rather than compiling to a shorter — eventually
+empty, and therefore unrestricted — list. Bundle signing is deliberately not in
 v1: with a single-operator deploy story, the admin credential plus the digest is
 the trust boundary, and a half-checked signature path would be worse than an
 explicitly absent one.
