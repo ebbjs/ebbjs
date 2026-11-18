@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   carriesComponent,
   carriesLink,
+  fieldComponent,
   linkEdges,
   linkTargets,
   systemValue,
@@ -104,5 +105,28 @@ describe("ebb/link readers", () => {
 
     expect(systemValueString(grant, "grant", "group_id")).toBe("g_1");
     expect(carriesComponent(grant, "grant")).toBe(true);
+  });
+});
+
+describe("fieldComponent", () => {
+  it("names a user row's overlay field under the platform namespace", () => {
+    expect(fieldComponent("note", "link")).toBe("ebb/link");
+  });
+
+  it("names a user row's other platform-named fields under its own model", () => {
+    // `group`, `grant` and `membership` are rows of their own under `ebb`, so a
+    // user model's field of that name is an ordinary component of that model.
+    expect(fieldComponent("note", "group")).toBe("note/group");
+    expect(fieldComponent("note", "grant")).toBe("note/grant");
+    expect(fieldComponent("note", "membership")).toBe("note/membership");
+  });
+
+  it("names an `ebb` row's fields under the platform namespace", () => {
+    expect(fieldComponent("ebb", "group")).toBe("ebb/group");
+    expect(fieldComponent("ebb", "link")).toBe("ebb/link");
+  });
+
+  it("names an ordinary field under its own model", () => {
+    expect(fieldComponent("note", "title")).toBe("note/title");
   });
 });

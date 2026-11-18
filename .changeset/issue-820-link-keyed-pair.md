@@ -41,9 +41,9 @@ are gone, because a target names the key an unlink removes.
 `queryByRelationship` still answers the reverse direction. `DirtyTracker` gains `getDirty()` for the
 reads that must materialize every dirty row. The IndexedDB read model moves to v17 and starts empty.
 
-A platform component occupies its field name on any row it rides, so the four platform field names
-(`link`, `group`, `grant`, `membership`) are reserved on a user model — `defineModel` now refuses
-them. A link write authorizes as `ebb/link.<verb>` in the source's group set, so `ebb.*` covers it
-and a model grant does not.
+Only `link` is reserved on a user model, because `ebb/link` is the one platform overlay that shares
+a row's field name; `group`, `grant` and `membership` are rows of their own under `ebb`, so
+`defineModel` still accepts fields by those names. A link write authorizes as `ebb/link.<verb>` in
+the source's group set, so `ebb.*` covers it and a model grant does not.
 
 Server data is discarded: there is no migration and no dual shape.

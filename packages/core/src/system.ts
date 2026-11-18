@@ -21,6 +21,9 @@
  * present edge's leaf is `{value: true}`; removing one edge tombstones that key
  * with `{value: null}`. Read it with {@link linkEdges} / {@link linkTargets},
  * never with {@link systemValue}, which speaks only for the atomic kinds.
+ *
+ * As the one overlay, `ebb/link` is also the only platform component that can
+ * share a user row's field name; see {@link fieldComponent}.
  */
 
 import {
@@ -206,21 +209,30 @@ export const linkTargets = (
     .sort();
 };
 
-/** The platform kind whose value lives at each platform field name. */
-const KIND_BY_FIELD: ReadonlyMap<string, EbbComponentKind> = new Map(
-  EBB_COMPONENT_KINDS.map((kind) => [ebbComponentField(kind), kind]),
-);
+/**
+ * The one platform kind that is an overlay: a component the platform adds to a
+ * row it does not model. `ebb/link` is keyed on its source, so the row carrying
+ * it *is* the source and keeps whatever model committed it. `group`, `grant`
+ * and `membership` are rows of their own, committed under `ebb`.
+ */
+export const EBB_OVERLAY_KIND: EbbComponentKind = "link";
+
+/** The row field the one overlay occupies. */
+const OVERLAY_FIELD = ebbComponentField(EBB_OVERLAY_KIND);
 
 /**
  * The component a row's `field` is named under.
  *
- * `ebb/` is the platform's namespace, not the row's: an `ebb/*` component may
- * sit on a row of any model and never takes that row's model as its namespace,
- * so a platform field name is always `ebb/<field>`. Every other field is a
- * component of the row's own model. The one way to name a component, so a
- * reader and an index cannot disagree about where an overlay lives.
+ * `ebb/` is the platform's namespace, not the row's. A synthetic platform row
+ * carries `ebb/<field>`, and the one overlay — `ebb/link` — sits on a row of any
+ * model without taking that row's model as its namespace, so `link` is
+ * `ebb/link` wherever it lives. Every other field is a component of the row's
+ * own model: the atomic platform kinds are rows of their own, so a user model's
+ * `group` field is `<model>/group`, not `ebb/group`. The one way to name a
+ * component, so a reader and an index cannot disagree about where an overlay
+ * lives.
  */
-export const fieldComponent = (model: string, field: string): ComponentName => {
-  const kind = model === EBB_MODEL_NAME ? undefined : KIND_BY_FIELD.get(field);
-  return kind === undefined ? componentName(model, field) : ebbComponent(kind);
-};
+export const fieldComponent = (model: string, field: string): ComponentName =>
+  model !== EBB_MODEL_NAME && field === OVERLAY_FIELD
+    ? ebbComponent(EBB_OVERLAY_KIND)
+    : componentName(model, field);

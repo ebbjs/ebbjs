@@ -30,10 +30,11 @@ defmodule EbbServer.Storage.SystemComponentTest do
     assert SystemComponent.overlay?(nil) == false
   end
 
-  test "a platform field name is named under `ebb` on a row of any model" do
+  test "only the overlay field is named under `ebb` on a user row" do
     assert SystemComponent.component_of_field("note", "link") == "ebb/link"
     assert SystemComponent.component_of_field("ebb", "link") == "ebb/link"
     assert SystemComponent.component_of_field("ebb", "group") == "ebb/group"
+    assert SystemComponent.component_of_field("note", "group") == "note/group"
     assert SystemComponent.component_of_field("note", "title") == "note/title"
   end
 
