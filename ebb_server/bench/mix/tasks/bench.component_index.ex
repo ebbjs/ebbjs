@@ -28,7 +28,7 @@ defmodule Mix.Tasks.Bench.ComponentIndex do
   failure means a resident budget and lazy component ranges, never a return
   to the column family.
 
-  This is the measurement gate for slice 6 (`docs/plan/components-epic.md`).
+  This is the measurement gate for the component existence index (#799, #849).
   Throughput numbers are machine-specific; the shape — cost per component,
   not per byte — is what travels.
   """

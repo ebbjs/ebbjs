@@ -5,8 +5,8 @@ ebb were rebuilt around a real Entity-Component-System, and is that the right
 move?**
 
 > **Superseded in part.** This note is the rationale and the reading of the ECS sources. The
-> actionable plan is [`docs/plan/components-epic.md`](../plan/components-epic.md), and where the two
-> differ the epic wins. Two claims below were corrected while designing it: a document body _can_ be
+> decisions that landed are in [`docs/adr/0001-component-model.md`](../adr/0001-component-model.md),
+> and where the two differ the ADR wins. Two claims below were corrected during the design: a document body _can_ be
 > a component (an upgrade archives into a declared archive component, and a model's component set is
 > static per schema version, not immutable), and ebb's edges must _stay_ entities because membership
 > attaches to entities — so the special case dies, not the row.
