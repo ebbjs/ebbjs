@@ -75,6 +75,32 @@ describe("#830: removing an edge never creates one", () => {
     expect(leaves["e_label"]).toMatchObject({ value: null });
     expect(isFieldMap(leaves["e_label"]!)).toBe(false);
   });
+
+  it("keeps an add and a remove distinct in the same patch", () => {
+    const registry = buildRegistry();
+
+    const result = buildRelationshipWrite(registry, {
+      source: { name: "issue" },
+      target: { name: "label" },
+      sourceId: "e_issue",
+      as: "labels",
+      targetIds: { add: ["e_label_a"], remove: ["e_label_b"] },
+      hlc: () => "hlc_1",
+      newId: (() => {
+        let next = 0;
+        return () => `u_${++next}`;
+      })(),
+    });
+
+    // The reported shape: the union of the two lists used to decide both
+    // Updates, so the removed target was written as a second presence.
+    expect(
+      result.relationshipUpdates.map((update) => {
+        const leaves = edgeLeaves(update, "labels", "issue");
+        return Object.entries(leaves).map(([target, leaf]) => [target, leaf.value]);
+      }),
+    ).toEqual([[["e_label_a", true]], [["e_label_b", null]]]);
+  });
 });
 
 describe("one edge per Update", () => {
