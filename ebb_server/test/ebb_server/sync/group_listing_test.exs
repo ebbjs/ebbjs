@@ -274,7 +274,7 @@ defmodule EbbServer.Sync.GroupListingTest do
     end
   end
 
-  # An edge is a keyed component of its source (decision 13), so it ships
+  # An edge is a keyed component of its source (system components are atomic), so it ships
   # inside the row it belongs to rather than as a row the listing has to
   # enumerate separately.
   describe "GET /sync/groups/:group_id/entities — edges ride their source" do

@@ -163,7 +163,7 @@ defmodule EbbServer.Storage.ActionValidatorTest do
     end
 
     # `ebb/link` is keyed on its source, so it rides a row it does not model
-    # (decision 13's storage consequence). The other `ebb/*` components are
+    # (an overlay never supplies a model). The other `ebb/*` components are
     # rows of their own, so a user create cannot carry one.
     test "a user row may carry the link overlay and no other platform component" do
       overlay =

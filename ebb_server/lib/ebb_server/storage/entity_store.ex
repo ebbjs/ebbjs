@@ -582,7 +582,7 @@ defmodule EbbServer.Storage.EntityStore do
     end
   end
 
-  # A component write never invents a row (decision 2): with nothing
+  # A component write never invents a row: with nothing
   # materialized there is no row to write it to, so it is a no-op.
   defp apply_component(action, update, gsn, acc) do
     if acc.materialized? do

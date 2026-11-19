@@ -41,7 +41,7 @@ defmodule EbbServer.Storage.ActionValidator do
 
   An **overlay** component is the exception: `ebb/link` is a component of a
   row it does not model, so it is exempt from the one-model rule and may
-  ride a row committed under any model (decision 13's storage consequence).
+  ride a row committed under any model (an overlay never supplies a model — CONTEXT.md).
   The other `ebb/*` components still are the row's model — a `note` create
   cannot carry an `ebb/grant` — so the exemption is asked of
   `SystemComponent.overlay?/1` rather than of the namespace.
@@ -365,7 +365,7 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp overlay?(component), do: SystemComponent.overlay?(SystemComponent.kind(component))
 
-  # A row carries at most one platform component (decision 13), so a second
+  # A row carries at most one platform component (system components are atomic — CONTEXT.md), so a second
   # one would make its kind — and its cache projection — a guess.
   defp validate_subject_components(updates) do
     case Enum.reduce_while(updates, %{}, &check_subject_component/2) do

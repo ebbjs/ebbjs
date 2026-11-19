@@ -250,6 +250,56 @@ A declared component holding superseded values — a document body kept at an
 older codec — so an upgrade needs no new entity id.
 _Avoid_: history, backup, version
 
+### The component model
+
+**One Update names one component, or the row.** A component Update carries the
+component's own value, never a row's field record. `merge` is the only merge
+rule; `replace` is refused for a keyed component because it would discard a
+concurrent writer's siblings; `drop` detaches a whole component and leaves the
+row; `delete` tombstones the row. One entry of a keyed component is not a
+`drop`: it is a `merge` whose value tombstones that key.
+
+**Merge granularity is declared per component.** An atomic component is one
+merge position; a keyed component is one per key. Nesting one inside another
+loses the merge the inner one needs: an atomic value cannot wrap a map or a
+log, and a field-map component cannot wrap a log — the parent would replace or
+merge the child as part of one record. That is why a document body is two
+sibling components, an `engine` leaf and an `updates` log, not one component
+holding both.
+
+**The prefix is the brand.** A component is named `<model>/<field>`. For a user
+component the namespace is its model, so an entity carries components of exactly
+one user model and the server derives the permission subject from the name
+without a schema. `ebb/` is the platform's namespace: an `ebb/*` component may
+sit on any row, is its own permission subject under `ebb`, and never changes the
+row's committed model. A row with only platform components is committed under
+`ebb`; `ebb` is not a model an app declares.
+
+**The permission subject is the component the write names.** A grant
+`<subject>.<verb|*>` covers a write whose subject is equal to or descends from
+the grant's: `note.*` covers `note/body`, and `note/title.*` covers only
+`note/title`. A row create or delete names no component and checks the model
+(`note.create`). There is no deny: narrowing an actor means rewriting the grant.
+Writes can be field-granular; reads are not, because read filtering is a
+delivery-boundary property rather than a permission string.
+
+**System components are atomic with immutable keys.** One Update writes the
+whole `ebb/group`, `ebb/grant`, or `ebb/membership` value, so a torn one is
+unrepresentable; moving a membership or a grant between groups is a delete plus
+a create. `ebb/link` is keyed on its source instead, so its key is the edge's
+whole identity and one Update can move one edge. A row carries at most one
+system component.
+
+**Storage files a row under its committed model.** A row's model entry in the
+existence index is the model its `create` named, never the prefix of the
+component being written. An `ebb/*` write to a user row adds a component entry
+and leaves the model entry alone.
+
+**There is no wire or schema compatibility.** A breaking change resets the
+client store and discards server data; there is no alias or deprecation path.
+Component versions and read migrations are the in-client upgrade path for one
+component's stored shape.
+
 ### Systems
 
 **System**:

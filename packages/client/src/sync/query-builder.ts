@@ -16,7 +16,7 @@
  * built-in membership. `has` / `hasNot` ask whether the row carries a
  * declared component, which is an index read rather than a value filter.
  *
- * The chain accumulates a serializable {@link Query} (epic decision 13)
+ * The chain accumulates a serializable {@link Query}
  * exposed through {@link QueryBuilder.toQuery}. Predicates are a
  * disjunction of AND-groups (DNF): `.where` adds a conjunct to the
  * current group, `.or` closes it and starts a new one, so

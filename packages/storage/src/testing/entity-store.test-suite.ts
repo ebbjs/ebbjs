@@ -434,7 +434,7 @@ export const defineEntityStoreTests = ({ name, factory }: EntityStoreTestSuiteOp
 
       it("leaves a placeholder's model unknown when only an overlay lands on it", async () => {
         const { actionLog, dirtyTracker, entityStore } = await factory();
-        // An `ebb/*` overlay never supplies a model (ADR 0001, decision 1): the
+        // An `ebb/*` overlay never supplies a model: the
         // row keeps it unknown until the create arrives rather than claiming
         // `ebb` and showing up in that model's reads.
         await actionLog.append(

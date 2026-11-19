@@ -97,7 +97,7 @@ export const foldSubjects = (updates: readonly Update[]): Map<string, SubjectWri
       entry.kind = kind ?? entry.kind;
       // The create fixes identity: a component may only agree with it. An
       // overlay names no model of the row's — `ebb/link` rides a row it does
-      // not model — so it never supplies one (ADR 0001, decision 1).
+      // not model — so it never supplies one (an overlay never supplies a model).
       if (!entry.created && kind !== "link") entry.model = componentModel(update.component);
       entry.written.add(update.component);
       if (update.method !== "drop") entry.components.set(update.component, update.data);

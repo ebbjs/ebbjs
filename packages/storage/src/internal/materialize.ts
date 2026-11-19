@@ -111,7 +111,7 @@ export const withWireMapFields = (entity: Entity): Entity =>
  * The model a component write supplies a row it reaches before the row's
  * create: the component's prefix, except for the one **overlay** — `ebb/link`
  * rides a row it does not model, so it supplies none and the row keeps its
- * model unknown until the create arrives (ADR 0001, decision 1).
+ * model unknown until the create arrives (an overlay never supplies a model).
  */
 const placeholderModel = (component: string): string =>
   component === EBB_COMPONENTS.link ? "" : componentModel(component);

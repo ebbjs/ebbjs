@@ -14,7 +14,7 @@
  * on reads its model whole (`<model>/*`), the coarse fallback a change that
  * names no component answers.
  *
- * Status is derived, never stored ad hoc (epic decision 2):
+ * Status is derived, never stored ad hoc:
  *
  * - `unloaded` — never run, so `data` is `undefined` (never `[]`)
  * - `stale` — a usable result exists at an older revision and a re-run is in flight

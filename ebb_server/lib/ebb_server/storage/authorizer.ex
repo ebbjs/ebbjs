@@ -65,7 +65,7 @@ defmodule EbbServer.Storage.Authorizer do
       the bootstrap covers only the acting actor's own grant row, and
       only while that row is new. A write to an existing row is bound
       to the group the row already belongs to (#625), and that group is
-      immutable (decision 13): moving an actor between groups is a delete
+      immutable (a system component's key never moves): moving an actor between groups is a delete
       plus a create, so a grant write never runs on the Action's
       declared bootstrap permissions.
     - `ebb/membership` create → the added entity's `<model>.create` in the
@@ -84,7 +84,7 @@ defmodule EbbServer.Storage.Authorizer do
       Action is creating it, and a write naming the pair the row already
       has, because a no-op adds nothing to the group set and a retried
       Action (#285) was authored without the write permission it would
-      need. `(entity_id, group_id)` is immutable (decision 13): a
+      need. `(entity_id, group_id)` is immutable (a system component's key never moves): a
       re-write may name the pair the row already has, and any other pair is
       refused rather than applied. An entity the index knows but that
       owns no group is refused rather than claimed. A write may re-write the
@@ -169,7 +169,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   The check mirrors `last_membership`: the affected groups' cached
   members, plus the request's writes, minus its deletes. A
-  grant's group is immutable (decision 13), so a member never moves
+  grant's group is immutable (a system component's key never moves), so a member never moves
   between groups: moving one is a delete plus a create. The delta is
   carried across the Actions of one request, so two Actions that each
   remove one of a group's two capable members cannot both pass against
@@ -696,7 +696,7 @@ defmodule EbbServer.Storage.Authorizer do
   # A membership write is authorized against the row's real identity — the
   # entity and the group it names — so re-filing a live row is never a way to
   # mint one for an arbitrary entity (#623). The pair is immutable
-  # (decision 13); a write that names no entity is refused below.
+  # (a system component's key never moves); a write that names no entity is refused below.
   defp authorize_membership_update(%{deleted?: false} = update, actor_id, authz) do
     with {:ok, entity_id, group_id} <- membership_identity(update) do
       authorize_membership_write(entity_id, group_id, update.subject_id, actor_id, authz)
@@ -800,7 +800,7 @@ defmodule EbbServer.Storage.Authorizer do
   # A platform row's write carries both facts, so the identity check runs on
   # a create and on a write to an existing row alike: a key that disagrees
   # with the committed row is refused before any permission is consulted
-  # (decision 13).
+  # (a system component's key never moves).
   defp check_update_row_identity(%{kind: :membership, deleted?: false} = update, authz) do
     value = SystemComponent.value(update.data, :membership)
     check_membership_row_identity(update.subject_id, value, authz)
@@ -816,7 +816,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp check_update_row_identity(_update, _authz), do: :ok
 
-  # `ebb/grant`'s `group_id` is its identity (decision 13): moving a grant
+  # `ebb/grant`'s `group_id` is its identity (a system component's key never moves): moving a grant
   # between groups is a delete plus a create, so an existing row is authorized
   # only in the group it already belongs to (#625).
   defp check_grant_row_group(grant_id, group_id, authz) do
@@ -857,7 +857,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   # An `ebb/*` overlay names the platform's component, not the row's model:
   # it is added to a row it does not re-model and the committed model is left
-  # alone (the ADR's storage consequence), so there is no model claim to
+  # alone (an overlay never supplies a model), so there is no model claim to
   # check. Every other write claims one, and the fold reports it as
   # `update.model`.
   defp overlay_write?(%{created?: false, deleted?: false} = update, authz) do
@@ -899,7 +899,7 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp committed_model(entity_id, opts), do: EntityScope.committed_model(entity_id, opts)
 
-  # `ebb/membership`'s pair is immutable after create (decision 13): the old
+  # `ebb/membership`'s pair is immutable after create (a system component's key never moves): the old
   # owner would silently lose the membership without the last-membership guard
   # seeing it, and an orphaned entity could then be claimed by anyone (#623).
   defp check_membership_row_identity(membership_id, value, authz) do

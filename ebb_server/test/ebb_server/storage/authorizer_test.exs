@@ -1033,7 +1033,7 @@ defmodule EbbServer.Storage.AuthorizerTest do
     end
   end
 
-  # An edge is a keyed component of its source (decision 13, #820). The
+  # An edge is a keyed component of its source (#820). The
   # Update's subject *is* the source, so the write is scoped and delivered
   # exactly as that row is, an idempotent re-write is not a re-point, and the
   # permission subject is`ebb/link.<verb>` in the source's group set.
