@@ -1136,7 +1136,7 @@ export class SyncClient<
             violated.add(key);
           }
         }
-        if (violated.size > 0) throw new AppendOnlyViolationError([...violated]);
+        if (violated.size > 0) throw new AppendOnlyViolationError(update.component, [...violated]);
       }
     }
   }

@@ -160,7 +160,7 @@ describe("building content", () => {
 describe("append-only discipline", () => {
   it("permits keys that are new", () => {
     expect(appendOnlyViolations(["a", "b"], ["c"])).toEqual([]);
-    expect(() => assertAppendOnly(["a"], ["b"])).not.toThrow();
+    expect(() => assertAppendOnly("text_document/content", ["a"], ["b"])).not.toThrow();
   });
 
   it("reports every rewritten key", () => {
@@ -190,13 +190,16 @@ describe("append-only discipline", () => {
     expect(appendOnlyRewrites(incoming, existing)).toEqual([base.id]);
   });
 
-  it("throws with the existing key set", () => {
+  it("throws with the component and the existing key set", () => {
     try {
-      assertAppendOnly(["a"], ["a"]);
+      assertAppendOnly("text_document/content", ["a"], ["a"]);
       throw new Error("expected a refusal");
     } catch (error) {
       expect(error).toBeInstanceOf(AppendOnlyViolationError);
+      expect((error as AppendOnlyViolationError).component).toBe("text_document/content");
       expect((error as AppendOnlyViolationError).keys).toEqual(["a"]);
+      expect((error as Error).message).toContain("text_document/content");
+      expect((error as Error).message).toContain("may only be added");
     }
   });
 });

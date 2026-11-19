@@ -36,6 +36,7 @@
  */
 
 import {
+  componentName,
   generateId,
   ID_PREFIX_ACTION,
   type Action,
@@ -374,6 +375,7 @@ export class TextDocument {
 
     // The write path's discipline is checked before anything is queued.
     assertAppendOnly(
+      componentName(this.docModel, DOC_CONTENT_FIELD),
       cells.map((cell) => cell.id),
       this.state.cells.keys(),
     );

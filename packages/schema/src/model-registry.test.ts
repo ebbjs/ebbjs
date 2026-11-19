@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeHlc, type Action } from "@ebbjs/core";
+import { makeHlc, type Action, type FieldValue } from "@ebbjs/core";
 import {
   EBB_MODEL_NAME,
   ModelRegistry,
@@ -258,6 +258,129 @@ describe("ModelRegistry.validateAction", () => {
       { id: "u_del", subject_id: "todo_1", method: "delete", data: null },
     ]);
     expect(r.validateAction(action)).toEqual([]);
+  });
+});
+
+describe("ModelRegistry.validateAction log components", () => {
+  const doc = defineModel("doc", {
+    title: e.string(),
+    content: e.log(e.object({ text: e.string() })),
+  });
+  const logRegistry = (): ModelRegistry => {
+    const r = new ModelRegistry();
+    r.register(doc);
+    return r;
+  };
+
+  const entry = (value: unknown, updateId = "u_1"): FieldValue => ({
+    value,
+    update_id: updateId,
+  });
+  const merge = (map: Record<string, FieldValue>): Action["updates"][number] => ({
+    id: "u_1",
+    subject_id: "doc_1",
+    component: "doc/content",
+    method: "merge",
+    data: { map },
+  });
+
+  it("accepts an ordinary append of new entries", () => {
+    const v = logRegistry().validateAction(
+      buildAction([merge({ e1: entry({ text: "one" }), e2: entry({ text: "two" }) })]),
+    );
+
+    expect(v).toEqual([]);
+  });
+
+  it("refuses a tombstone entry, naming the component and the key", () => {
+    const v = logRegistry().validateAction(buildAction([merge({ e1: entry(null) })]));
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.entityName).toBe("doc");
+    expect(v[0]?.field).toBe("content");
+    expect(v[0]?.updateIndex).toBe(0);
+    expect(v[0]?.message).toContain("doc/content");
+    expect(v[0]?.message).toContain('"e1"');
+    expect(v[0]?.message).toMatch(/tombstone/);
+  });
+
+  it("refuses drop", () => {
+    const v = logRegistry().validateAction(
+      buildAction([
+        { id: "u_2", subject_id: "doc_1", component: "doc/content", method: "drop", data: null },
+      ]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toContain("doc/content");
+    expect(v[0]?.message).toMatch(/drop/);
+    expect(v[0]?.message).toMatch(/Delete the row/);
+  });
+
+  it("refuses replace with the log's rule, not the generic keyed-component one", () => {
+    const v = logRegistry().validateAction(
+      buildAction([
+        {
+          id: "u_2",
+          subject_id: "doc_1",
+          component: "doc/content",
+          method: "replace",
+          data: { map: { e1: entry({ text: "one" }) } },
+        },
+      ]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toContain("doc/content");
+    expect(v[0]?.message).toMatch(/merge of a map/);
+    expect(v[0]?.message).not.toMatch(/keyed component; replace is refused/);
+  });
+
+  it("refuses a merge whose data is not a map", () => {
+    const v = logRegistry().validateAction(
+      buildAction([
+        {
+          id: "u_2",
+          subject_id: "doc_1",
+          component: "doc/content",
+          method: "merge",
+          data: entry({ text: "not a map" }),
+        },
+      ]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toMatch(/merge of a map/);
+  });
+
+  it("refuses an entry that is a nested map", () => {
+    const v = logRegistry().validateAction(
+      buildAction([merge({ e1: { map: { deeper: entry({ text: "no" }) } } })]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toContain('"e1"');
+    expect(v[0]?.message).toMatch(/nested map/);
+  });
+
+  it("still refuses replace generically for a plain map field", () => {
+    const r = new ModelRegistry();
+    r.register(defineModel("page", { cells: e.map(e.string()) }));
+
+    const v = r.validateAction(
+      buildAction([
+        {
+          id: "u_3",
+          subject_id: "page_1",
+          component: "page/cells",
+          method: "replace",
+          data: { map: { a: entry("x") } },
+        },
+      ]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toMatch(/keyed component; replace is refused/);
   });
 });
 

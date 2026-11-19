@@ -56,7 +56,10 @@ import {
   type DocState,
   type TextCell,
 } from "./tree";
+import { AppendOnlyViolationError } from "../log";
 import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+
+export { AppendOnlyViolationError } from "../log";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -338,21 +341,6 @@ export const buildInitialDocumentFields = (
 // Write discipline
 // ---------------------------------------------------------------------------
 
-/** A write tried to rewrite a `content` key that already exists. */
-export class AppendOnlyViolationError extends Error {
-  readonly keys: readonly string[];
-
-  constructor(keys: readonly string[]) {
-    super(
-      `collaborative-text: refusing to rewrite existing content ${keys.length === 1 ? "key" : "keys"} ` +
-        `${keys.map((key) => JSON.stringify(key)).join(", ")}; ` +
-        "a text body's content map is append-only",
-    );
-    this.name = "AppendOnlyViolationError";
-    this.keys = keys;
-  }
-}
-
 /**
  * The append-only rule as a pure check. `incoming` are the keys a batch
  * would write; `existing` are the keys already present. A batch may only
@@ -371,9 +359,13 @@ export const appendOnlyViolations = (
 };
 
 /** Throw {@link AppendOnlyViolationError} if a batch rewrites a cell key. */
-export const assertAppendOnly = (incoming: Iterable<string>, existing: Iterable<string>): void => {
+export const assertAppendOnly = (
+  component: string,
+  incoming: Iterable<string>,
+  existing: Iterable<string>,
+): void => {
   const violated = appendOnlyViolations(incoming, existing);
-  if (violated.length > 0) throw new AppendOnlyViolationError(violated);
+  if (violated.length > 0) throw new AppendOnlyViolationError(component, violated);
 };
 
 /**
