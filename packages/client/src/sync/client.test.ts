@@ -314,7 +314,7 @@ describe("SyncClient schema option", () => {
       const blogPost = defineModel("blog_post", { title: e.string() });
       const textDocument = defineModel(
         "text_document",
-        { content: e.map(TextCellSchema), version: e.number() },
+        { content: e.log(TextCellSchema) },
         { materialization: "on-demand" },
       );
       return defineSchema({

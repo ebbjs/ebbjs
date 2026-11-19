@@ -33,7 +33,7 @@ const todo = defineModel("todo", {
 
 const runSchema = Type.Object({ text: Type.String() });
 const doc = defineModel("doc", {
-  content: e.map(runSchema),
+  content: e.log(runSchema),
 });
 
 const duplicateSchema = defineSchema({ models: { todo, doc }, version: 1 });

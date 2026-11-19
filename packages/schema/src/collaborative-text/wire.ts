@@ -9,13 +9,11 @@
  * whose value is a map from cell id to
  * `{ value: RunCell | CutCell, update_id, hlc }`.
  *
- * The component is a *keyed* component, so the merge is per key. Every write
+ * The component is an append-only log, so the merge is per key. Every write
  * only adds keys: a run is never rewritten, a cut is additive, and two
- * peers can never contest one position. The body's `version` leaf travels
- * with every write, in its own `<docModel>/version` Update, so a reader can
- * refuse a cell shape it does not know.
+ * peers can never contest one position.
  *
- * Wire-format shape for one edit (two Updates in the same Action):
+ * Wire-format shape for one edit (one Update in the Action):
  *
  * ```json
  * {
@@ -28,8 +26,6 @@
  *     }
  *   }
  * }
- * { "subject_id", "component": "text_document/version", "method": "merge",
- *   "data": { "value": 1, "update_id": "...", "hlc": "..." } }
  * ```
  */
 
@@ -56,7 +52,7 @@ import {
   type TextCell,
 } from "./tree";
 import { AppendOnlyViolationError } from "../log";
-import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import { DOC_CONTENT_FIELD } from "./schema";
 
 export { AppendOnlyViolationError } from "../log";
 
@@ -66,45 +62,6 @@ export { AppendOnlyViolationError } from "../log";
 
 /** Default document model for collaborative-text documents. */
 export const DEFAULT_DOC_MODEL = "text_document";
-
-// ---------------------------------------------------------------------------
-// Version
-// ---------------------------------------------------------------------------
-
-/** A document declares a cell format this client cannot read. */
-export class DocumentVersionError extends Error {
-  readonly found: unknown;
-  readonly expected: number;
-
-  constructor(found: unknown, expected: number = CURRENT_TEXT_VERSION) {
-    super(
-      `collaborative-text: document version ${String(found)} is not readable by this client ` +
-        `(expected ${expected})`,
-    );
-    this.name = "DocumentVersionError";
-    this.found = found;
-    this.expected = expected;
-  }
-}
-
-/**
- * Read a document's `version` leaf. Absent means the current version: a
- * freshly-seeded document may carry no content yet, and every real write
- * stamps the leaf. Any other value fails loudly rather than projecting a
- * wrong view.
- */
-export const assertKnownVersion = (field: FieldValue | undefined): void => {
-  if (field === undefined) return;
-  if (!isFieldLeaf(field)) throw new DocumentVersionError(field);
-  if (field.value !== CURRENT_TEXT_VERSION) throw new DocumentVersionError(field.value);
-};
-
-/** Build the `version` leaf a write carries. */
-export const versionField = (
-  hlc: HLCTimestamp,
-  updateId: string,
-  version: number = CURRENT_TEXT_VERSION,
-): FieldValue => ({ value: version, update_id: updateId, hlc });
 
 // ---------------------------------------------------------------------------
 // Filter helpers
@@ -179,7 +136,7 @@ export type AppliedCell = {
  *
  * This is delivery, not state: it merges the cells and re-projects. Skips
  * Actions targeting another subject type and Updates without a `content`
- * map. Throws {@link DocumentVersionError} for an unknown version.
+ * map.
  */
 export const applyActions = (
   state: DocState,
@@ -196,10 +153,6 @@ export const applyActions = (
 
       if (update.method === "drop") continue;
       const field = componentField(update.component);
-      if (field === DOC_VERSION_FIELD) {
-        assertKnownVersion(update.data);
-        continue;
-      }
       if (field !== DOC_CONTENT_FIELD) continue;
 
       const cells = parseContentField(update.data);
@@ -258,9 +211,8 @@ export const contentFieldFromCells = (
 });
 
 /**
- * Build the two Updates one edit emits: the new cells in the document's
- * `content` component, and the body's `version` leaf beside them, so every
- * write declares its cell format.
+ * Build the one Update one edit emits: the new cells in the document's
+ * `content` log component.
  */
 export const docActionToUpdate = (
   cells: readonly TextCell[],
@@ -268,7 +220,6 @@ export const docActionToUpdate = (
 ): Update[] | null => {
   if (cells.length === 0) return null;
   const docModel = opts.docModel ?? DEFAULT_DOC_MODEL;
-  const versionUpdateId = `${opts.updateId}v`;
   return [
     {
       id: opts.updateId,
@@ -277,21 +228,12 @@ export const docActionToUpdate = (
       method: "merge",
       data: contentFieldFromCells(cells, opts.updateId),
     },
-    {
-      id: versionUpdateId,
-      subject_id: opts.docId,
-      component: componentName(docModel, DOC_VERSION_FIELD),
-      method: "merge",
-      data: versionField(hlcOf(cells), versionUpdateId),
-    },
   ];
 };
 
-const hlcOf = (cells: readonly TextCell[]): HLCTimestamp => cells[0]!.stamp;
-
 /**
  * Build the first component values for a freshly-created document: one run
- * holding `text` in the content component, plus the version leaf.
+ * holding `text` in the content log.
  */
 export const buildInitialDocumentFields = (
   text: string,
@@ -313,7 +255,6 @@ export const buildInitialDocumentFields = (
         [run.id]: { value: run, update_id: updateId, hlc } as FieldValue,
       },
     },
-    [DOC_VERSION_FIELD]: versionField(hlc, updateId),
   };
 };
 

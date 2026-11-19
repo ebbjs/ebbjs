@@ -1,9 +1,8 @@
 /**
  * Wire adapter tests — cells in and out of ebb Actions.
  *
- * The body is a map field keyed by cell id with a `version` leaf written by
- * every edit. These tests cover parsing, building, the version gate, the
- * append-only rule, and delivery as re-projection.
+ * The body is an append-only log keyed by cell id. These tests cover
+ * parsing, building, the append-only rule, and delivery as re-projection.
  */
 
 import { describe, expect, it } from "vitest";
@@ -21,17 +20,14 @@ import {
   appendOnlyViolations,
   applyActions,
   assertAppendOnly,
-  assertKnownVersion,
   AppendOnlyViolationError,
   buildInitialDocumentFields,
   contentFieldFromCells,
   docActionToUpdate,
-  DocumentVersionError,
   isDocModelUpdate,
   parseContentField,
-  versionField,
 } from "./wire";
-import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import { DOC_CONTENT_FIELD } from "./schema";
 import { createDocState, type RunCell, type TextCell } from "./tree";
 
 const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
@@ -94,29 +90,14 @@ describe("parseContentField", () => {
   });
 });
 
-describe("version", () => {
-  it("treats an absent version as current and rejects an unknown one", () => {
-    // An empty seeded body may carry no version leaf yet.
-    expect(() => assertKnownVersion(undefined)).not.toThrow();
-    expect(() => assertKnownVersion(versionField(T, "u"))).not.toThrow();
-    expect(() => assertKnownVersion(versionField(T, "u", CURRENT_TEXT_VERSION + 1))).toThrow(
-      DocumentVersionError,
-    );
-    expect(() => assertKnownVersion(versionField(T, "u", "v9" as never))).toThrow(
-      /not readable by this client/,
-    );
-  });
-
-  it("writes one Update per component, the version leaf beside the cells", () => {
+describe("writing content", () => {
+  it("emits one Update for the content log", () => {
     const updates = docActionToUpdate([run("r1", "hi")], { docId: "doc_1", updateId: "u1" })!;
+    expect(updates).toHaveLength(1);
     const content = updates.find(
       (update) => isComponentUpdate(update) && update.component === "text_document/content",
     )!;
-    const version = updates.find(
-      (update) => isComponentUpdate(update) && update.component === "text_document/version",
-    )!;
 
-    expect(version.data).toMatchObject({ value: CURRENT_TEXT_VERSION });
     expect(content.data).toBeDefined();
   });
 });
@@ -128,9 +109,9 @@ describe("building content", () => {
     expect(field).toEqual({ map: { r1: { value: base, update_id: "u1", hlc: base.stamp } } });
   });
 
-  it("builds a first run at the root plus the version leaf", () => {
+  it("builds a first run at the root", () => {
     const fields = buildInitialDocumentFields("hello", T, "actor_a", "u1");
-    expect(fields[DOC_VERSION_FIELD]).toMatchObject({ value: CURRENT_TEXT_VERSION });
+    expect(Object.keys(fields)).toEqual([DOC_CONTENT_FIELD]);
 
     const parsed = parseContentField(
       buildInitialDocumentFields("hello", T, "actor_a", "u1")[DOC_CONTENT_FIELD]!,
@@ -174,7 +155,6 @@ describe("applyActions", () => {
     const base = run("r1", "hello");
     const updates = updatesWith({
       [DOC_CONTENT_FIELD]: contentOf([base]),
-      [DOC_VERSION_FIELD]: versionField(T, "u"),
     });
 
     const first = applyActions(createDocState(), [actionWith(...updates)]);

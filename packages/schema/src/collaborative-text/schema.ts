@@ -2,24 +2,14 @@
  * Schema fragments for a collaborative-text document entity.
  *
  * An app declares the document model itself and links it to the parent with
- * a declared relationship. The entity's cells live in its `content` component,
- * a map keyed by cell id (`RunCell` or `CutCell`).
+ * a declared relationship. The entity's cells live in its one `content` log
+ * component, keyed by cell id (`RunCell` or `CutCell`).
  */
 
 import { Type } from "@sinclair/typebox";
 
-/** Field on the document model holding the cell map. */
+/** Field on the document model holding the cell log. */
 export const DOC_CONTENT_FIELD = "content";
-
-/** Field on the document model carrying the cell-format version. */
-export const DOC_VERSION_FIELD = "version";
-
-/**
- * The cell format this client writes and can read. A document whose
- * `version` is anything else fails the read loudly (#698); there is no
- * legacy projection.
- */
-export const CURRENT_TEXT_VERSION = 1;
 
 /** Anchor of a run: a character offset in another run, or the root. */
 export const AnchorSchema = Type.Object({

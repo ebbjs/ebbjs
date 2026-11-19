@@ -10,12 +10,11 @@
  *
  * ## Wire format
  *
- * Each edit emits two Updates addressed to the document (`subject_id` =
- * docId), one per component:
+ * Each edit emits one Update addressed to the document (`subject_id` =
+ * docId):
  *
- * - `<docModel>/content`: a keyed component whose map is keyed by cell id,
- *   each `{ value: RunCell | CutCell, update_id, hlc }`;
- * - `<docModel>/version`: the cell-format leaf, written by every edit.
+ * - `<docModel>/content`: an append-only log whose map is keyed by cell id,
+ *   each `{ value: RunCell | CutCell, update_id, hlc }`.
  *
  * Runs are immutable and cuts are additive, so a write only ever adds map
  * keys. The map's per-key merge therefore never drops a peer's edit, and a
@@ -59,7 +58,6 @@ import {
 import {
   applyActions,
   assertAppendOnly,
-  assertKnownVersion,
   docActionToUpdate,
   DEFAULT_DOC_MODEL,
   parseContentField,
@@ -208,11 +206,9 @@ export class TextDocument {
    *
    * A repeat read of the same content version is a no-op. A stale read never
    * rewinds the document: the map merge keeps every key the local state
-   * already has. `version` is the body's declared cell format; an unknown
-   * value fails the read rather than projecting a wrong view.
+   * already has.
    */
-  hydrate(content: FieldValue | undefined, version?: FieldValue): void {
-    assertKnownVersion(version);
+  hydrate(content: FieldValue | undefined): void {
     if (content === undefined) return;
     this.state = applyCellFields(this.state, parseContentField(content));
   }

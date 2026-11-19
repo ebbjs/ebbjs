@@ -274,12 +274,9 @@ export {
   AppendOnlyViolationError,
   contentFieldFromCells,
   docActionToUpdate,
-  DocumentVersionError,
   isDocModelUpdate,
   parseContentField,
   DEFAULT_DOC_MODEL,
-  CURRENT_TEXT_VERSION,
-  DOC_VERSION_FIELD,
 } from "@ebbjs/schema";
 
 export {

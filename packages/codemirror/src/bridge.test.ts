@@ -121,13 +121,6 @@ function wireAction(actionId: string, cells: readonly TextCell[]): Action {
           ),
         },
       },
-      {
-        id: `${actionId}_version`,
-        subject_id: "doc_test",
-        component: "text_document/version",
-        method: "merge",
-        data: { value: 1, update_id: `${actionId}_version`, hlc },
-      },
     ],
   };
 }

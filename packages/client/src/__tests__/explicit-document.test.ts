@@ -21,7 +21,6 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import {
   AppendOnlyViolationError,
-  CURRENT_TEXT_VERSION,
   e,
   defineModel,
   defineRelationship,
@@ -44,7 +43,7 @@ import {
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(
   "text_document",
-  { content: e.log(TextCellSchema), version: e.number() },
+  { content: e.log(TextCellSchema) },
   { materialization: "on-demand" },
 );
 const noteBody = defineRelationship({
@@ -72,10 +71,7 @@ const initialContent = { [initialRun.id]: initialRun };
 
 const createNote = defineAction(schema, ({ note, text_document }) => {
   const createdNote = note.create({ title: "Greeting" }, { groups: ["g_1"] });
-  const createdDocument = text_document.create(
-    { content: initialContent, version: CURRENT_TEXT_VERSION },
-    { groups: ["g_1"] },
-  );
+  const createdDocument = text_document.create({ content: initialContent }, { groups: ["g_1"] });
   note.link(createdNote.id, "body", createdDocument.id);
   return { noteId: createdNote.id, documentId: createdDocument.id };
 });
@@ -144,13 +140,6 @@ const cellPatch = (
       method: "merge",
       data: { map: cells },
     },
-    {
-      id: `${updateId}_1`,
-      subject_id: docId,
-      component: "text_document/version",
-      method: "merge",
-      data: { value: CURRENT_TEXT_VERSION, update_id: updateId, hlc },
-    },
   ],
 });
 
@@ -198,7 +187,6 @@ describe("a document the app declares", () => {
     if (!isFieldMap(content)) throw new Error("document content is not a map field");
     expect(Object.keys(content.map)).toEqual([initialRun.id]);
     expect(content.map[initialRun.id]!.value).toEqual(initialRun);
-    expect(componentOf(documentRow!, "version").value).toBe(CURRENT_TEXT_VERSION);
 
     // The edge is a key of the note's own `ebb/link` component: one Update
     // carries one presence key.
@@ -223,7 +211,7 @@ describe("a document the app declares", () => {
     expect(row!.model).toBe("text_document");
 
     const document = client.textDocument(created.documentId, "text_document");
-    document.hydrate(row!.data.fields["content"], row!.data.fields["version"]);
+    document.hydrate(row!.data.fields["content"]);
 
     expect(document.text).toBe("Hello world");
   });
@@ -235,7 +223,7 @@ describe("a document the app declares", () => {
     const created = await client.actions.createNote();
     const document = client.openDerivedTextDocument(created.documentId, "text_document");
     const row = await client.readLocalEntity(created.documentId);
-    document.hydrate(row!.data.fields["content"], row!.data.fields["version"]);
+    document.hydrate(row!.data.fields["content"]);
 
     const before = written.length;
     document.localInsert("!");

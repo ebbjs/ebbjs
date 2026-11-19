@@ -50,15 +50,7 @@
  * storage adapter and fetch.
  */
 
-import {
-  compare,
-  componentField,
-  componentName,
-  type Action,
-  type ConflictScope,
-  type Entity,
-} from "@ebbjs/core";
-import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "@ebbjs/schema";
+import { compare, type Action, type ConflictScope, type Entity } from "@ebbjs/core";
 import type {
   ConflictHold,
   ConflictRemoteAction,
@@ -925,14 +917,6 @@ export function createOutbox(deps: OutboxDependencies): Outbox {
           if (deps.isStructural?.(inbound.model, component) ?? false) continue;
           // A non-LWW component never surfaces a position.
           if (!(deps.isLwwField?.(inbound.model, component) ?? true)) continue;
-          // A text body's `version` component declares its cell format; it
-          // is metadata, not state, so a concurrent write never contests it.
-          if (
-            componentField(component) === DOC_VERSION_FIELD &&
-            pending.components.has(componentName(inbound.model, DOC_CONTENT_FIELD))
-          ) {
-            continue;
-          }
           const remoteField = inbound.components.get(component);
           if (declared === "component") {
             // Any concurrent touch of this component contests it, even a

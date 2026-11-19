@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, isComponentUpdate, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, isFieldMap, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -596,6 +596,65 @@ describe("client.conflicts (#781)", () => {
       "act_later",
     ]);
     expect(await clientB.conflicts.list()).toEqual([]);
+  });
+
+  it("two writers appending different log keys converge under field scope", async () => {
+    const storage = createMemoryAdapter();
+    const stub = mkStubFetch();
+    const note = defineModel("note", {
+      entries: e.log(Type.Object({ text: Type.String() })),
+    });
+    const noteSchema = defineSchema({ models: { note }, version: 5 });
+    const client = createClient({
+      serverUrl: SERVER_URL,
+      actorId: ACTOR_ID,
+      schema: noteSchema,
+      fetchImpl: stub.fn,
+      storage,
+    });
+
+    const local: Action = {
+      id: "act_local",
+      actor_id: ACTOR_ID,
+      hlc: LOCAL_HLC,
+      gsn: 0,
+      updates: [
+        {
+          id: "u_local_0",
+          subject_id: "note_1",
+          component: "note/entries",
+          method: "merge",
+          data: { map: { a: { value: { text: "mine" }, update_id: "u_local", hlc: LOCAL_HLC } } },
+        },
+      ],
+    };
+    await client.outbox.enqueue(local);
+
+    const peer: Action = {
+      id: "act_peer",
+      actor_id: "actor_2",
+      hlc: PEER_HLC,
+      gsn: 9,
+      updates: [
+        {
+          id: "u_peer_0",
+          subject_id: "note_1",
+          component: "note/entries",
+          method: "merge",
+          data: { map: { b: { value: { text: "theirs" }, update_id: "u_peer", hlc: PEER_HLC } } },
+        },
+      ],
+    };
+    await callApplyAction(client, peer, "g_1");
+    await client.outbox.detectConflicts([peer], "cu_1");
+
+    expect(await client.conflicts.list()).toEqual([]);
+    const row = client.replica.get("note_1");
+    const entries = row?.data.fields["entries"];
+    if (entries === undefined || !isFieldMap(entries)) {
+      throw new Error("replica row carries no entries log");
+    }
+    expect(Object.keys(entries.map).sort()).toEqual(["a", "b"]);
   });
 
   it("entity-scope loss with no position overlap reports the diff and keeps the envelope", async () => {

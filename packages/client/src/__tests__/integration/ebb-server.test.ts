@@ -58,7 +58,6 @@ import {
 } from "@ebbjs/core";
 import { createClient, defineAction, type SyncClient } from "../..";
 import { itIfServer, runId, SERVER_URL, serverReachable } from "./server";
-import { CURRENT_TEXT_VERSION } from "@ebbjs/schema";
 import { defineModel, e } from "@ebbjs/schema";
 import { defineRelationship } from "@ebbjs/schema";
 import { ModelRegistry, EntityValidationError } from "@ebbjs/schema";
@@ -241,12 +240,6 @@ beforeAll(async () => {
       hlc,
     ),
     rowCreate(bootstrapDocId, "text_document", hlc),
-    {
-      subject_id: bootstrapDocId,
-      component: "text_document/version",
-      method: "replace",
-      data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
-    },
     ...platformUpdate(
       "membership",
       bootstrapMembershipId,
@@ -312,12 +305,6 @@ async function createTestDoc(docId: string): Promise<void> {
   const hlc = localEvent(clock);
   const updates: UpdateInput[] = [
     rowCreate(docId, "text_document", hlc),
-    {
-      subject_id: docId,
-      component: "text_document/version",
-      method: "replace",
-      data: { value: CURRENT_TEXT_VERSION, update_id: "seed", hlc },
-    },
     ...platformUpdate(
       "membership",
       `eg_${RUN_ID}_${docId}`,

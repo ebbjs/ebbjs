@@ -1108,7 +1108,7 @@ describe("SyncClient group listing", () => {
     const blogPost = defineModel("blog_post", { title: e.string() });
     const textDocument = defineModel(
       "text_document",
-      { content: e.map(TextCellSchema), version: e.number() },
+      { content: e.log(TextCellSchema) },
       { materialization: "on-demand" },
     );
     const schema = defineSchema({
@@ -1136,7 +1136,7 @@ describe("SyncClient group listing", () => {
             wire({
               id: documentId,
               type: "text_document",
-              fields: { content: {}, version: 1 },
+              fields: { content: {} },
               lastGsn: 5,
             }),
             withLink(

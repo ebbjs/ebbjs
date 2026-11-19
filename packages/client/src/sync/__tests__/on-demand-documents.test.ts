@@ -24,7 +24,6 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import type { TSchema } from "@sinclair/typebox/type";
 
 import {
-  CURRENT_TEXT_VERSION,
   e,
   defineComponent,
   defineModel,
@@ -95,7 +94,7 @@ function harness<S extends AnySchema>(
 const page = defineModel("page", { title: e.string() });
 const pageBody = defineModel(
   "page_body",
-  { content: e.map(TextCellSchema), version: e.number() },
+  { content: e.log(TextCellSchema) },
   { materialization: "on-demand" },
 );
 const pageSchema = defineSchema({
@@ -111,7 +110,7 @@ const pageSchema = defineSchema({
   version: 1,
 });
 const bodyDocModel = "page_body";
-const bodyComponents = ["page_body/content", "page_body/version"] as const;
+const bodyComponents = ["page_body/content"] as const;
 
 const closeBody = (
   client: { replica: { close(id: string, component: string): void } },
@@ -157,7 +156,7 @@ const createPage = async (
   const { pageId } = await client.actions.run(({ page: pageDraft, page_body }) => {
     const createdPage = pageDraft.create({ title: input.title }, { groups: ["g_1"] });
     const createdBody = page_body.create(
-      { content: initialContent(input.body), version: CURRENT_TEXT_VERSION },
+      { content: initialContent(input.body) },
       { groups: ["g_1"] },
     );
     pageDraft.link(createdPage.id, "body", createdBody.id);
@@ -245,7 +244,6 @@ describe("on-demand document residency", () => {
     expect(client.replicaStats.heldByModel[bodyDocModel]).toBeUndefined();
     expect(client.replicaStats.nonResidentComponents).toMatchObject({
       "page_body/content": 1,
-      "page_body/version": 1,
     });
 
     // Reading a body component still needs the residency path.
@@ -266,7 +264,7 @@ describe("on-demand document residency", () => {
     expect(textOf(body!.content ?? {})).toBe("hello");
     expect(client.replica.isOpen(bodyId, "page_body/content")).toBe(true);
     expect(client.replica.get(bodyId)).toBeDefined();
-    expect(client.replicaStats.pinned).toBe(2);
+    expect(client.replicaStats.pinned).toBe(1);
 
     closeBody(client, bodyId);
 
@@ -290,7 +288,7 @@ describe("on-demand document residency", () => {
   });
 
   it("releases the least recently opened body when the pinned window overflows", async () => {
-    const { client, written } = harness(pageSchema, { pinnedCapacity: 2, pinnedTtlMs: 0 });
+    const { client, written } = harness(pageSchema, { pinnedCapacity: 1, pinnedTtlMs: 0 });
     const first = await createPage(client, written, { title: "One", body: "hello" });
     const second = await createPage(client, written, { title: "Two", body: "world" });
 
