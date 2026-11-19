@@ -79,6 +79,7 @@ one value schema or a field map.
 | `e.enum(values)`   | the members' literal union    | closed set; a write outside it fails validation |
 | `e.array(value)`   | `Static<typeof value>[]`      |                                                 |
 | `e.map(value)`     | `Record<string, Static<...>>` | entries merge key by key, not the whole field   |
+| `e.log(value)`     | `Record<string, Static<...>>` | a map whose entries may only be added           |
 | `e.object(fields)` | the nested shape              | closed properties; one atomic value             |
 
 ### Enums
@@ -196,6 +197,7 @@ builders do.
 | ------------------------- | ------------------------------------------------------------------ |
 | `src/model.ts`            | `defineComponent`, `defineModel`, `e`, field markers, model types. |
 | `src/model-registry.ts`   | `ModelRegistry`, `validatePayload`, `EntityValidationError`.       |
+| `src/log.ts`              | Generic append-only log helpers and `AppendOnlyViolationError`.    |
 | `src/relationship.ts`     | `defineRelationship` and relationship types.                       |
 | `src/schema.ts`           | `defineSchema`, schema errors.                                     |
 | `src/system-entities.ts`  | `group`, `grant`, `membership`, `relationship` system models.      |
