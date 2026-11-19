@@ -44,7 +44,7 @@ import {
 const note = defineModel("note", { title: e.string() });
 const textDocument = defineModel(
   "text_document",
-  { content: e.map(TextCellSchema), version: e.number() },
+  { content: e.log(TextCellSchema), version: e.number() },
   { materialization: "on-demand" },
 );
 const noteBody = defineRelationship({
@@ -275,7 +275,12 @@ describe("a document the app declares", () => {
     );
 
     const submittedBefore = written.length;
-    await expect(client.write([rewrite])).rejects.toBeInstanceOf(AppendOnlyViolationError);
+    const refusal = client.write([rewrite]);
+    await expect(refusal).rejects.toBeInstanceOf(AppendOnlyViolationError);
+    await expect(refusal).rejects.toMatchObject({
+      component: "text_document/content",
+      keys: [cellId],
+    });
     expect(written).toHaveLength(submittedBefore);
 
     const addedHlc = (BigInt(rewriteHlc) + 1_000n).toString();

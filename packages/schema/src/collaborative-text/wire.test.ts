@@ -18,7 +18,6 @@ import {
   type Update,
 } from "@ebbjs/core";
 import {
-  appendOnlyRewrites,
   appendOnlyViolations,
   applyActions,
   assertAppendOnly,
@@ -26,16 +25,14 @@ import {
   AppendOnlyViolationError,
   buildInitialDocumentFields,
   contentFieldFromCells,
-  contentKeys,
   docActionToUpdate,
   DocumentVersionError,
   isDocModelUpdate,
   parseContentField,
-  readCellFields,
   versionField,
 } from "./wire";
 import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
-import { createDocState, makeRunId, type RunCell, type TextCell } from "./tree";
+import { createDocState, type RunCell, type TextCell } from "./tree";
 
 const hlc = (ts: number): HLCTimestamp => format(pack(BigInt(ts), 0n));
 const T = hlc(10);
@@ -97,14 +94,6 @@ describe("parseContentField", () => {
   });
 });
 
-describe("contentKeys", () => {
-  it("returns the map's keys and nothing for other shapes", () => {
-    expect(contentKeys(contentOf([run("r1", "a"), run("r2", "b")]))).toEqual(["r1", "r2"]);
-    expect(contentKeys(undefined)).toEqual([]);
-    expect(contentKeys({ value: 1 })).toEqual([]);
-  });
-});
-
 describe("version", () => {
   it("treats an absent version as current and rejects an unknown one", () => {
     // An empty seeded body may carry no version leaf yet.
@@ -142,7 +131,6 @@ describe("building content", () => {
   it("builds a first run at the root plus the version leaf", () => {
     const fields = buildInitialDocumentFields("hello", T, "actor_a", "u1");
     expect(fields[DOC_VERSION_FIELD]).toMatchObject({ value: CURRENT_TEXT_VERSION });
-    expect(contentKeys(fields[DOC_CONTENT_FIELD])).toEqual([makeRunId(T, "actor_a")]);
 
     const parsed = parseContentField(
       buildInitialDocumentFields("hello", T, "actor_a", "u1")[DOC_CONTENT_FIELD]!,
@@ -165,29 +153,6 @@ describe("append-only discipline", () => {
 
   it("reports every rewritten key", () => {
     expect(appendOnlyViolations(["a", "b", "c"], ["b", "c"])).toEqual(["b", "c"]);
-  });
-
-  it("compares cells structurally, not by JSON key order", () => {
-    const base = run("r1", "hello");
-    const reordered = {
-      anchor: { offset: base.anchor.offset, runId: base.anchor.runId },
-      stamp: base.stamp,
-      text: base.text,
-      author: base.author,
-      id: base.id,
-      kind: base.kind,
-    } as RunCell;
-    const incoming = new Map([[base.id, { value: reordered, update_id: "u1", hlc: base.stamp }]]);
-    const existing = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
-    expect(appendOnlyRewrites(incoming, existing)).toEqual([]);
-  });
-
-  it("reports a different value under an existing key", () => {
-    const base = run("r1", "hello");
-    const rewritten = { ...base, text: "goodbye" };
-    const incoming = new Map([[base.id, { value: rewritten, update_id: "u2", hlc: base.stamp }]]);
-    const existing = new Map([[base.id, { value: base, update_id: "u1", hlc: base.stamp }]]);
-    expect(appendOnlyRewrites(incoming, existing)).toEqual([base.id]);
   });
 
   it("throws with the component and the existing key set", () => {
@@ -238,10 +203,5 @@ describe("applyActions", () => {
     };
     expect(isDocModelUpdate(doc, "text_document")).toBe(true);
     expect(isDocModelUpdate(other, "text_document")).toBe(false);
-  });
-
-  it("reads cells out of an Update", () => {
-    const [update] = updatesWith({ [DOC_CONTENT_FIELD]: contentOf([run("r1", "hi")]) });
-    expect([...readCellFields(update!).keys()]).toEqual(["r1"]);
   });
 });

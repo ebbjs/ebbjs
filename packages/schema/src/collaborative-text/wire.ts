@@ -49,7 +49,6 @@ import {
 
 import {
   applyCellFields,
-  cellValuesEqual,
   makeRunId,
   ROOT_ANCHOR,
   type CellFieldValue,
@@ -161,25 +160,6 @@ export const parseContentField = (content: unknown): ReadonlyMap<string, CellFie
   }
   parsedContentFields.set(field, out);
   return out;
-};
-
-/** The raw keys of a `content` map, ignoring their values. */
-export const contentKeys = (content: unknown): readonly string[] => {
-  if (content === null || typeof content !== "object" || !("map" in content)) return [];
-  const map = (content as { map: unknown }).map;
-  if (map === null || typeof map !== "object") return [];
-  return Object.keys(map);
-};
-
-/**
- * Read the cells out of an Update that carries the document's `content`
- * component. Exported so the conflict path and the wire adapter unwrap the
- * envelope consistently.
- */
-export const readCellFields = (update: Update): ReadonlyMap<string, CellFieldValue> => {
-  if (!isComponentUpdate(update) || update.method === "drop") return new Map();
-  if (componentField(update.component) !== DOC_CONTENT_FIELD) return new Map();
-  return parseContentField(update.data);
 };
 
 // ---------------------------------------------------------------------------
@@ -366,23 +346,4 @@ export const assertAppendOnly = (
 ): void => {
   const violated = appendOnlyViolations(incoming, existing);
   if (violated.length > 0) throw new AppendOnlyViolationError(component, violated);
-};
-
-/**
- * The append-only rule over cell values: a key that already exists may only
- * be re-delivered unchanged. An identical value is the same cell (idempotent
- * re-delivery, or a local edit the optimistic state already carries); a
- * different value under an existing key is a rewrite.
- */
-export const appendOnlyRewrites = (
-  incoming: ReadonlyMap<string, CellFieldValue>,
-  existing: ReadonlyMap<string, CellFieldValue>,
-): readonly string[] => {
-  const violated: string[] = [];
-  for (const [id, cell] of incoming) {
-    const previous = existing.get(id);
-    if (previous === undefined) continue;
-    if (!cellValuesEqual(previous.value, cell.value)) violated.push(id);
-  }
-  return violated;
 };
