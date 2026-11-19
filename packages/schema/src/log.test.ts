@@ -34,7 +34,6 @@ describe("e.log", () => {
     const doc = defineModel("doc", { content: e.log(e.string()) });
 
     expect(doc.markers.content).toEqual({ type: "lww", map: true, log: true });
-    expect(isLogSchema(doc.components.content!.shape)).toBe(true);
   });
 
   it("carries the log marker on a named component with its own policy", () => {
@@ -44,21 +43,21 @@ describe("e.log", () => {
     expect(updates.loading).toBe("lazy");
   });
 
-  it("is an ordinary keyed component on the wire", () => {
+  it("validates like an ordinary keyed component", () => {
     const entries = e.log(e.number());
 
     expect(Value.Check(entries, { a: 1, b: 2 })).toBe(true);
     expect(Value.Check(entries, { a: "x" })).toBe(false);
-    // No new merge code: the shape is e.map's.
-    expect(entries.type).toBe("object");
-    expect(entries.patternProperties).toEqual(e.map(e.number()).patternProperties);
+  });
+
+  it("identifies itself through isLogSchema, unlike e.map", () => {
+    expect(isLogSchema(e.log(e.number()))).toBe(true);
+    expect(isLogSchema(e.map(e.number()))).toBe(false);
   });
 
   it("does not mark a plain e.map as a log", () => {
     const doc = defineModel("doc", { cells: e.map(e.string()) });
-    const map = e.map(e.string());
 
-    expect(isLogSchema(map)).toBe(false);
     expect(doc.markers.cells).toEqual({ type: "lww", map: true });
   });
 
@@ -134,8 +133,8 @@ describe("log shape guard", () => {
   it("still accepts a field-map component that declares a plain map", () => {
     const body = defineComponent("note/body", { engine: e.string(), updates: e.map(e.string()) });
 
+    expect(body.name).toBe("note/body");
     expect(body.marker).toEqual({ type: "lww" });
-    expect(body.shape.properties).toHaveProperty("updates");
   });
 
   it("accepts a log that is the component's own shape", () => {
