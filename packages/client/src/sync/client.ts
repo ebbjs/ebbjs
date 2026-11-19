@@ -1713,8 +1713,7 @@ export class SyncClient<
    * Return the `TextDocument` for a schema-declared document entity, bound
    * to the client's write path so local edits self-flush. `docModel` is the
    * document model; pass the name the schema registers it under. Does not
-   * read or pin the row: hydrate it from the
-   * document's `content` / `version`.
+   * read or pin the row: hydrate it from the document's `content` component.
    *
    * Deliberately separate from {@link textDocument}: the low-level API
    * keeps its manual `client.write(doc.pendingActions())` contract

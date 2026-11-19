@@ -246,9 +246,9 @@ export interface SyncClientOptions<
    */
   queryTtlMs?: number;
   /**
-   * Maximum resident on-demand entity rows. Defaults to 16. Opening past the
-   * window releases the least recently opened row; a non-positive or
-   * non-finite value keeps every opened row resident.
+   * Maximum resident on-demand components. Defaults to 64. Opening past the
+   * window releases the least recently opened component; a non-positive or
+   * non-finite value keeps every opened component resident.
    */
   pinnedCapacity?: number;
   /**

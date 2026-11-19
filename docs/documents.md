@@ -159,23 +159,37 @@ Decisions this fixes:
 
 ## Opening a document
 
-There is no document opener. A document is an on-demand entity, and the
-ordinary namespace opens it:
+There is no document opener. A document is a row and its log is a component, so
+the ordinary namespace reads it with a component-scoped read:
 
 ```ts
-const row = await client.note_body.get(id); // opens and pins the row
-row.subscribe((event) => {
+const note = await client.note.get(id, { components: ["note/content"] });
+const unsubscribe = note.subscribe((event) => {
+  // `component` names what was released; it is absent when the whole row
+  // left the replica. Either way the projection is gone.
   if (event.type === "unloaded") showReloadAffordance();
+  else render(event.row);
 });
 ```
 
-Read rule: held types read via `query()`, on-demand types read via `get(id)`.
+Read rule: held components read through `query()`; a lazy component (a log, an
+`engine`) reads through `get(id, { components })`. The selection opens only what
+it names, so it never drags in a sibling log:
 
-A subscription reports its own closure. `close()`, the pin TTL, and capacity
-eviction all deliver one `unloaded` event; re-open with `get(id)` and replay.
-Eviction is recoverable because the log is append-only. The pin capacity
-default will be raised well above the current 16; the exact number is a tuning
-value, and eviction stays observable either way.
+```ts
+// An engine kit checks the codec before paying for the log.
+const document = await client.note.get(id, { components: ["note/engine"] });
+if (document?.engine !== yjsEngine) return migrate(document);
+
+const log = await client.note.get(id, { components: ["note/content"] });
+```
+
+A subscription reports its own closure, per component. `close(component)`, the
+pin TTL, and capacity eviction each deliver one `unloaded` event carrying the
+component; when the whole row leaves the replica the event carries no component.
+Re-open with the component-scoped read and replay: the log is append-only, so
+nothing is lost. Lazy components are pinned in an LRU window; `pinnedCapacity`
+defaults to 64 components and is configurable per client.
 
 ## Conflicts
 

@@ -61,7 +61,13 @@ export const holdAll: MaterializationPolicy = {
 };
 
 export const DEFAULT_JOURNAL_CAPACITY = 1024;
-export const DEFAULT_PINNED_CAPACITY = 16;
+/**
+ * How many on-demand components stay resident before the LRU window releases
+ * the oldest. A released component is observable through the row subscription's
+ * `unloaded` event, so eviction is a real pressure valve rather than silent
+ * data loss.
+ */
+export const DEFAULT_PINNED_CAPACITY = 64;
 export const DEFAULT_PINNED_TTL_MS = 30_000;
 
 /**

@@ -71,6 +71,10 @@ export interface AdjacencyReader {
  * Source-mismatch (`source.model !== sourceName`) and missing-source
  * also return `undefined` to keep the surface uniform with the other
  * accessors.
+ *
+ * `readTargetEntity` reads the resolved target row. The namespace passes a
+ * residency-aware reader that opens the target's lazy components first; the
+ * default keeps the plain local read.
  */
 export async function forwardOne(
   readLocalEntity: (id: string) => Promise<Entity | null>,
@@ -79,6 +83,7 @@ export async function forwardOne(
   sourceName: string,
   field: string,
   type: string,
+  readTargetEntity: (id: string) => Promise<Entity | null> = readLocalEntity,
 ): Promise<Entity | null | undefined> {
   const source = await loadEntity(readLocalEntity, sourceId);
   if (source === null) return undefined;
@@ -89,7 +94,7 @@ export async function forwardOne(
   recordTraversalRows(targets.length);
   const first = targets[0];
   if (first === undefined) return null;
-  const target = await loadEntity(readLocalEntity, first);
+  const target = await loadEntity(readTargetEntity, first);
   return target ?? undefined;
 }
 

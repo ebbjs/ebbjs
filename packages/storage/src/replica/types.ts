@@ -61,9 +61,9 @@ export interface ReplicaOptions {
   readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
    * Maximum resident on-demand components. Defaults to
-   * {@link DEFAULT_PINNED_CAPACITY}. A non-positive or non-finite value keeps
-   * every opened component resident; opening past the window releases the least
-   * recently opened one.
+   * {@link DEFAULT_PINNED_CAPACITY} (64). A non-positive or non-finite value
+   * keeps every opened component resident; opening past the window releases the
+   * least recently opened one.
    */
   readonly pinnedCapacity?: number;
   /**

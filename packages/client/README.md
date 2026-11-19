@@ -60,10 +60,57 @@ the stale id cannot succeed. `resolveIdentity` throws
 
 `client.<entity>` is the schema-bound read API; a schema-bound client also
 carries the `client.group` / `client.membership` system namespaces, read-only
-like the rest. Reads go through `query()`; every write is an Action mounted as
-`client.actions.<name>`. The engine's single-row read (`get(id)`), its async row
-accessors, and the collection `subscribe(filter, cb)` are internal — they are
-not public read paths.
+like the rest. `query()` is the collection read and `get(id)` is the single-row
+read; every write is an Action mounted as `client.actions.<name>`. The
+collection `subscribe(filter, cb)` stays the engine's internal signal.
+
+### Reads — `client.<entity>.get(id)`
+
+`get(id)` resolves to one projected row with relationship accessors attached,
+or `null` when no row of that entity lives at the id:
+
+```typescript
+const issue = await client.issue.get(issueId);
+if (issue !== null) {
+  console.log(issue.title, await issue.assignee);
+}
+```
+
+`get(id, { components })` materializes only the named components. Each name is
+a field key (`"content"`) or a full component name (`"note/content"`); the
+schema's registry resolves it, and a component the model does not declare
+throws.
+
+```typescript
+const body = await client.note.get(noteId, { components: ["note/content"] });
+```
+
+A selection opens only those components that are not held, so reading one lazy
+log never materializes its siblings, and a provider can read an eager `engine`
+before paying for the log. Omit the selection and the read opens every
+component the stored row carries. Selection controls what is materialized and
+pinned, not projection: the returned row projects every resident field.
+Reading the same `(row, component)` again shares the existing pin.
+
+`row.subscribe(cb)` reports the row's materialization as an `EntityEvent`:
+
+```typescript
+const unsubscribe = row.subscribe((event) => {
+  if (event.type === "snapshot") render(event.row);
+  else if (event.component !== undefined) reload(event.component);
+  else reloadRow(); // the whole row left the replica
+});
+```
+
+`snapshot` carries the projected row. `unloaded` carries the component that
+stopped being resident, or no component when the whole row left the replica
+(its last component was released, capacity evicted it, or a same-id row of
+another model replaced it). `close(component)`, the pin TTL, and capacity
+eviction each deliver exactly one event per component. A soft delete is a
+normal snapshot: the row stays materialized with `deleted_hlc`. Re-open the
+component with `get(id, { components })` — the append-only log replays — and
+`subscribe` never fires on subscribe itself. Collection `subscribe` payloads
+stay `EntitySnapshot` rows.
 
 ### Reads — `client.<entity>.query()`
 
@@ -151,14 +198,18 @@ const pageContent = defineModel(
 
 A document entity declared `{ materialization: "on-demand" }` keeps the heavy
 body out of the replica while the page, its relationships, and its memberships
-stay held. Residency is per component: open one with
-`client.replica.open(id, "page_content/content")`; it is pinned in an LRU
-window (`pinnedCapacity`, default 16 components). `client.replica.close(id,
-component)` closes the pin; the component stays cached for `pinnedTtlMs`
-(default 30 s) so a remount reads it back, then leaves. A non-positive TTL
-releases it immediately on close, and an open component is never released by
-the TTL. The persisted replica record holds the held components only — a lazy
-component's existence survives in `notResident`, its value never does.
+stay held. Residency is per component: read one with
+`client.page_body.get(id, { components: ["content"] })` (or the lower-level
+`client.replica.open(id, "page_content/content")`); it is pinned in an LRU
+window (`pinnedCapacity`, default 64 components), and a component-scoped read
+of `content` never pins `versions`. `client.replica.close(id, component)`
+closes the pin; the component stays cached for `pinnedTtlMs` (default 30 s) so
+a remount reads it back, then leaves. A non-positive TTL releases it
+immediately on close, and an open component is never released by the TTL.
+Eviction is observable through `row.subscribe`'s `unloaded` event, so a
+consumer re-opens instead of rendering a stale row. The persisted replica
+record holds the held components only — a lazy component's existence survives
+in `notResident`, its value never does.
 
 A query whose **source** type is on-demand is refused with
 `OnDemandQueryError`, because a scan is held-only. A held source may join an

@@ -156,6 +156,8 @@ export {
 export { traversalCounter } from "./sync/traversal-counter";
 
 export {
+  type ComponentReadOptions,
+  type EntityEvent,
   type EntityNamespace,
   type EntityFields,
   type EntityValues,

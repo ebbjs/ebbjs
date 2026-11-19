@@ -59,8 +59,8 @@ describe("relationship accessor reactivity", () => {
     const unsubAccessor = before.subscribeAccessors(() => {
       accessorFires += 1;
     });
-    const unsubSnapshot = before.subscribe((snapshot) => {
-      snapshots.push(snapshot.id);
+    const unsubSnapshot = before.subscribe((event) => {
+      if (event.type === "snapshot") snapshots.push(event.row.id);
     });
     await seedRow(
       storage,
