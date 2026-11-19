@@ -5,18 +5,24 @@ description: "How to move from entity accessors and useEntity to the query read 
 
 > **Shipped.** This page tracks the docs and examples migration in [#502](https://github.com/ebbjs/ebbjs/issues/502), part of the [local query engine epic](https://github.com/ebbjs/ebbjs/issues/495). The React surface landed in [#501](https://github.com/ebbjs/ebbjs/issues/501); the engine, namespace split, and replica lifecycle ([#499](https://github.com/ebbjs/ebbjs/issues/499)) landed before it. [#500](https://github.com/ebbjs/ebbjs/issues/500) remains open.
 
-Queries are now the only public read path. The entity namespace stays — it is still the schema-bound API — but it is read-only: `query()` reads, and every write is an Action mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)). The engine's single-row helpers became internal.
+Queries are the collection read; a row the caller already addresses by id is
+read with `get(id)`, and a lazy component of that row with
+`get(id, { components })` ([#779](https://github.com/ebbjs/ebbjs/issues/779)).
+The entity namespace stays — it is still the schema-bound API — and it is
+read-only: `query()` and `get()` read, and every write is an Action mounted as
+`client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)).
+The collection `subscribe(filter, cb)` stays internal.
 
 ## What changed
 
 | Before                                       | After                                                                                                            |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `client.<entity>.get(id)` plus row accessors | `client.<entity>.query()`, narrowed by `where` / `or` / `orderBy` / `limit`                                      |
+| `client.<entity>.get(id)` plus row accessors | `get(id)` for one row; `query()` for a collection                                                                |
 | `await row.assignee`, `await row.comments`   | `.with({ assignee: true, comments: true })` on the chain                                                         |
 | `await row.groups`                           | `.with({ groups: true })`, or `row.groupIds` for the ids alone                                                   |
 | `client.<entity>.subscribe(filter, cb)`      | `useQuery` in React, `query().result()` / `query().subscribe(cb)` otherwise                                      |
 | `useEntity(build, deps)`                     | `useQuery((q: QueryRoot<Schema>) => ...)`                                                                        |
-| Single row by id                             | Query the collection and select the row with `find`                                                              |
+| Single row by id                             | `client.<entity>.get(id)` (a component name selects what a lazy row materializes)                                |
 | Writes                                       | One path: `defineAction`, mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)) |
 
 ## Reads: compose a query, not accessors
@@ -40,7 +46,14 @@ The chain is immutable, so a helper can return a partially-built query and the c
 
 ## Single rows
 
-The grammar has no `id` predicate yet, so there is no single-row query. Query the collection you can see and select the row — the result is cached and reactive, so the selected row still follows live changes.
+The query grammar has no `id` predicate yet ([#667](https://github.com/ebbjs/ebbjs/issues/667)),
+so a single-row _query_ is still "select from the collection you can see". A
+row the caller already addresses by id does not need one:
+`client.<entity>.get(id)` is the single-row read ([#779](https://github.com/ebbjs/ebbjs/issues/779)),
+and `get(id, { components })` materializes only the named components of a lazy
+row (a log, an `engine`). Outside a hook, `row.subscribe` reports the row and
+its unloads; inside one, the cached collection result below keeps the selected
+row live:
 
 ```tsx
 const { data: issues, status } = useQuery((q: QueryRoot<Schema>) => q.issue.query());
@@ -65,9 +78,13 @@ To filter by an edge instead of projecting it, use the relationship's `as` key a
 
 Every query row also carries `groupIds`, its live group ids, read from the same index. A workspace switcher or a board can read the ids straight off the row instead of denormalising a `group_id` field or projecting the group rows. The ids come from membership rows, so one can name a group whose row is not materialized; use `.with({ groups: true })` when you need the group's fields. Joined target rows and chains over already-materialized candidates are plain projections (fields plus `id`) and carry no `groupIds`.
 
-## `get()`, accessors, and `subscribe` are internal
+## Collection `subscribe` is internal
 
-`client.<entity>.get(id)`, the async row accessors it attached, and the collection `subscribe(filter, cb)` are marked `@internal`. The engine keeps them for its own callers; applications should not build on them. Projected query rows carry the entity `id` as an addressing key, so the id an action needs (`client.actions.<name>({ id, ... })`) comes from the row itself.
+`client.<entity>.query()` / `useQuery` is the public reactive read; projection,
+joins, and `groupIds` are how a read is shaped. The namespace's collection
+`subscribe(filter, cb)` stays the engine's signal. Projected query rows carry
+the entity `id` as an addressing key, so the id an action needs
+(`client.actions.<name>({ id, ... })`) comes from the row itself.
 
 `.toRaw()` remains the untyped escape hatch on a chain when you need the wire envelope rather than the projected row.
 
