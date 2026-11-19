@@ -182,8 +182,10 @@ Update { subject_id, method: "delete", data: nil }        # entity delete; names
    (`e.object({a, b})`) is **one** merge position — the record is replaced whole, so its fields
    cannot tear. A keyed component (`e.map({a, b})`, `e.log(entry)`) is **N** positions — each field
    merges on its own. A merge position may not contain a merge position of another kind: an atomic
-   value cannot wrap an append-only log, because the parent would replace the child wholesale. That
-   is why a document body is a keyed component holding `engine` and `updates`, not an object.
+   value cannot wrap a keyed component, and a field-map component is itself one merge position, so
+   it cannot wrap a log either — the parent would merge the log as part of that record. That is why
+   a document body is **two sibling components**, `<body>/engine` (one LWW leaf) and
+   `<body>/updates` (one append-only log), rather than one component holding both.
 2. **`indexed` defaults to off.** A component is indexed only if something filters on it.
 3. **Whether an `ebb/*` component may declare its own scope.** Decisions 11–13 are all of this kind
    and together they are the system-component contract: a component whose value names a group
