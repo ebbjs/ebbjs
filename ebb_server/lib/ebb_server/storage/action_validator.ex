@@ -365,8 +365,9 @@ defmodule EbbServer.Storage.ActionValidator do
 
   defp overlay?(component), do: SystemComponent.overlay?(SystemComponent.kind(component))
 
-  # A row carries at most one platform component (system components are atomic — CONTEXT.md), so a second
-  # one would make its kind — and its cache projection — a guess.
+  # A row carries at most one platform component (system components are
+  # atomic — CONTEXT.md), so a second one would make its kind — and its cache
+  # projection — a guess.
   defp validate_subject_components(updates) do
     case Enum.reduce_while(updates, %{}, &check_subject_component/2) do
       {:error, _reason, _details} = error -> error

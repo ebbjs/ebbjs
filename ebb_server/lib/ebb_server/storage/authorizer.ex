@@ -899,9 +899,10 @@ defmodule EbbServer.Storage.Authorizer do
 
   defp committed_model(entity_id, opts), do: EntityScope.committed_model(entity_id, opts)
 
-  # `ebb/membership`'s pair is immutable after create (a system component's key never moves): the old
-  # owner would silently lose the membership without the last-membership guard
-  # seeing it, and an orphaned entity could then be claimed by anyone (#623).
+  # `ebb/membership`'s pair is immutable after create (a system component's key
+  # never moves): the old owner would silently lose the membership without the
+  # last-membership guard seeing it, and an orphaned entity could then be
+  # claimed by anyone (#623).
   defp check_membership_row_identity(membership_id, value, authz) do
     case EntityScope.membership(membership_id, authz.opts) do
       nil ->

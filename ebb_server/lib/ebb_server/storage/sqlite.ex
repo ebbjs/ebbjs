@@ -75,8 +75,8 @@ defmodule EbbServer.Storage.SQLite do
   # The read model's shape. The DDL is `CREATE ... IF NOT EXISTS`, so an older
   # file would keep its old columns and answer every listing empty; a mismatch
   # is therefore a reset, not a migration. The cache rebuilds from
-  # `cf_actions` plus `cf_group_actions` (the store is greenfield, so a mismatch is a reset), and `cursors` is
-  # not part of the shape and survives.
+  # `cf_actions` plus `cf_group_actions` (the store is greenfield, so there is
+  # nothing to migrate), and `cursors` is not part of the shape and survives.
   @schema_version 4
 
   @pragmas """
