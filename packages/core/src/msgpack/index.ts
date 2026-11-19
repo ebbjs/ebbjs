@@ -1,24 +1,19 @@
 import { encode as msgpackEncode, decode as msgpackDecode } from "@msgpack/msgpack";
-import { convertHlcToInteger, convertIntegerToHlc } from "./convert";
 
 export async function encode<T>(value: T): Promise<Uint8Array> {
-  const converted = convertHlcToInteger(value);
-  return msgpackEncode(converted);
+  return msgpackEncode(value);
 }
 
 export async function decode<T>(data: Uint8Array): Promise<T> {
-  const decoded = (await msgpackDecode(data)) as T;
-  return convertIntegerToHlc(decoded);
+  return (await msgpackDecode(data)) as T;
 }
 
 export function encodeSync<T>(value: T): Uint8Array {
-  const converted = convertHlcToInteger(value);
-  return msgpackEncode(converted);
+  return msgpackEncode(value);
 }
 
 export function decodeSync<T>(data: Uint8Array): T {
-  const decoded = msgpackDecode(data) as T;
-  return convertIntegerToHlc(decoded);
+  return msgpackDecode(data) as T;
 }
 
 export default { encode, decode, encodeSync, decodeSync };
