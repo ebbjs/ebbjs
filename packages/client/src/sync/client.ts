@@ -1116,7 +1116,7 @@ export class SyncClient<
         // for a storage read.
         const incoming = logEntriesOf(update.data);
         const known = logEntriesOf(
-          this.componentValueOf(this.replica.get(update.subject_id), update.component),
+          componentValueOf(this.replica.get(update.subject_id), update.component),
         );
 
         const violated = new Set(logRewrites(incoming, known));
@@ -1125,7 +1125,7 @@ export class SyncClient<
           const stored = (await this.storage.entities.get(update.subject_id)) ?? undefined;
           for (const key of logRewrites(
             unknown,
-            logEntriesOf(this.componentValueOf(stored, update.component)),
+            logEntriesOf(componentValueOf(stored, update.component)),
           )) {
             violated.add(key);
           }
@@ -1133,12 +1133,6 @@ export class SyncClient<
         if (violated.size > 0) throw new AppendOnlyViolationError(update.component, [...violated]);
       }
     }
-  }
-
-  /** The stored value of `component` on `row`, or `undefined`. */
-  private componentValueOf(row: Entity | undefined, component: string): FieldValue | undefined {
-    if (row === undefined) return undefined;
-    return row.data.fields[componentField(component)];
   }
 
   /**
@@ -2457,6 +2451,12 @@ const fnv1a64 = (input: string): string => {
     hash = BigInt.asUintN(64, hash * FNV_PRIME_64);
   }
   return hash.toString(16).padStart(16, "0");
+};
+
+/** The stored value of `component` on `row`, or `undefined`. */
+const componentValueOf = (row: Entity | undefined, component: string): FieldValue | undefined => {
+  if (row === undefined) return undefined;
+  return row.data.fields[componentField(component)];
 };
 
 /**
