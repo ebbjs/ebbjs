@@ -34,7 +34,7 @@
  *
  * Two refusals mirror the server structurally, so no grant can make them pass:
  * a user write naming a model other than the id's committed one (#624), and a
- * re-pointed immutable key on `ebb/grant` or `ebb/membership` (decision 13). An
+ * re-pointed immutable key on `ebb/grant` or `ebb/membership` (a system component's key never moves). An
  * `ebb/link` write needs no re-point rule: an edge is a key of its source row,
  * so there is no source field to contradict, and moving one is a tombstone plus
  * a presence in the same Update.
@@ -107,7 +107,7 @@ export interface TypeMismatchViolation {
 /**
  * The write cannot be authorized at any permission: an `ebb/membership` pair
  * or an `ebb/grant`'s `group_id` was re-pointed, which is fixed after create
- * (decision 13). There is deliberately no `required`.
+ * (a system component's key never moves). There is deliberately no `required`.
  */
 export interface KeyMismatchViolation {
   readonly kind: "key-mismatch";

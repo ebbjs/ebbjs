@@ -1,9 +1,8 @@
 /**
  * Integration: the row-scoped create (#817) against a real ebb_server.
  *
- * The ADR's row-create amendment
- * (`docs/adr/0001-component-model.md`) is the contract this file proves end to
- * end; [#817](https://github.com/ebbjs/ebbjs/issues/817) carried the acceptance
+ * The row-create contract in `CONTEXT.md` (Create, Committed model) is what
+ * this file proves end to end; [#817](https://github.com/ebbjs/ebbjs/issues/817) carried the acceptance
  * list. A row's existence is an explicit, row-scoped Update —
  * `{ id, subject_id, model, method: "create", hlc, data: null }` — so a
  * zero-component row is a legal row, a component write never implies

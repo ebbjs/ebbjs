@@ -20,8 +20,7 @@ import {
   type Update,
 } from "@ebbjs/core";
 import { TextDocument, TextDocumentRegistry, type AppliedUpdate } from "./text-document";
-import { DocumentVersionError, versionField } from "./wire";
-import { DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import { DOC_CONTENT_FIELD } from "./schema";
 import type { CutCell, RunCell } from "./tree";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +70,7 @@ const seedBase = (): { readonly content: FieldValue; readonly runId: string } =>
 
 const openReplica = (content: FieldValue, actorId: string): TextDocument => {
   const doc = new TextDocument({ docId: DOC_ID, actorId });
-  doc.hydrate(content, versionField(makeHlc(1), "seed"));
+  doc.hydrate(content);
   return doc;
 };
 
@@ -86,9 +85,8 @@ const actionFrom = (doc: TextDocument, updates: Update[]): Action => ({
 
 const cellUpdate = (
   cells: readonly (RunCell | CutCell)[],
-  opts: { docId?: string; model?: string; hlc?: HLCTimestamp; version?: number } = {},
+  opts: { docId?: string; model?: string } = {},
 ): Update[] => {
-  const t = opts.hlc ?? makeHlc(999);
   const updateId = `u_${cells[0]?.id ?? "none"}`;
   const docModel = opts.model ?? "text_document";
   return [
@@ -102,13 +100,6 @@ const cellUpdate = (
           cells.map((cell) => [cell.id, { value: cell, update_id: updateId, hlc: cell.stamp }]),
         ),
       },
-    },
-    {
-      id: `${updateId}v`,
-      subject_id: opts.docId ?? DOC_ID,
-      component: componentName(docModel, DOC_VERSION_FIELD),
-      method: "merge",
-      data: versionField(t, `${updateId}v`, opts.version),
     },
   ];
 };
@@ -154,7 +145,7 @@ describe("hydrate", () => {
     const seed = seedBase();
     const doc = openReplica(seed.content, "actor_b");
     const before = doc.docState;
-    doc.hydrate(seed.content, versionField(makeHlc(1), "seed"));
+    doc.hydrate(seed.content);
     expect(doc.docState).toBe(before);
   });
 
@@ -164,7 +155,7 @@ describe("hydrate", () => {
     doc.localInsert("!", { afterRun: seed.runId, splitParentAt: BASE_TEXT.length });
     expect(doc.text).toBe(`${BASE_TEXT}!`);
 
-    doc.hydrate(seed.content, versionField(makeHlc(1), "seed"));
+    doc.hydrate(seed.content);
     expect(doc.text).toBe(`${BASE_TEXT}!`);
   });
 
@@ -176,17 +167,8 @@ describe("hydrate", () => {
       mergeFieldValue(seed.content, {
         map: { [peer.id]: { value: peer, update_id: "u_peer", hlc: peer.stamp } },
       }),
-      versionField(makeHlc(2), "u_peer"),
     );
     expect(doc.text).toBe("I thinkX I can");
-  });
-
-  it("fails loudly for an unknown version", () => {
-    const seed = seedBase();
-    const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
-    expect(() => doc.hydrate(seed.content, versionField(makeHlc(1), "u", 999))).toThrow(
-      DocumentVersionError,
-    );
   });
 });
 
@@ -433,13 +415,6 @@ describe("TextDocument.applyActions", () => {
     const state = doc.docState;
     doc.applyActions([action]);
     expect(doc.docState).toBe(state);
-  });
-
-  it("fails on a document from an unknown version", () => {
-    const doc = new TextDocument({ docId: DOC_ID, actorId: "a" });
-    const base = peerRun(doc, "hello", { runId: "ROOT", offset: 0 }, "r1");
-    const action = actionFrom(doc, cellUpdate([base], { version: 999 }));
-    expect(() => doc.applyActions([action])).toThrow(DocumentVersionError);
   });
 });
 

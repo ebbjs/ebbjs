@@ -9,7 +9,8 @@ This is the contract behind #775 and its sub-issues, plus the relationship
 model it depends on (#790). It is written before the engine packages exist so
 the boundary can be tested rather than argued.
 
-Status: `e.log`, the opener, and the presets are planned in #775. Link membership
+Status: `e.log` shipped in [#778](https://github.com/ebbjs/ebbjs/issues/778);
+the opener and the presets are planned in #775. Link membership
 is source-owned and shipped in [#820](https://github.com/ebbjs/ebbjs/issues/820):
 an `ebb/link` is a keyed component of its source row, so it is delivered wherever
 that row is and a source that moves needs no re-derivation.
@@ -76,9 +77,10 @@ Preset shape:
 defineModel(
   "note_body",
   {
-    engine: e.string().default("ebb.cells.v1"), // written once at create
-    version: e.number().default(1), // format version inside the codec
-    content: e.log(TextCellSchema), // or updates: e.log(e.string())
+    engine: defineComponent("note_body/engine", e.string().default("ebb.cells.v1")),
+    // Its own component, not nested beside `engine` in one field map: a field-map
+    // component is one atomic merge position, and `e.log` refuses that nesting.
+    updates: defineComponent("note_body/updates", e.log(TextCellSchema), { loading: "lazy" }),
   },
   { materialization: "on-demand", conflictScope: "field" },
 );
@@ -146,7 +148,7 @@ Decisions this fixes:
 
 | Step         | Plain text (`ebb.cells.v1`)         | Yjs (`yjs.update.v1`)                                 |
 | ------------ | ----------------------------------- | ----------------------------------------------------- |
-| create       | root run + version                  | empty log + version                                   |
+| create       | root run in the log                 | empty log                                             |
 | load         | project cells                       | `Y.applyUpdate` per entry                             |
 | remote entry | merge cell, re-project              | apply update (idempotent)                             |
 | local change | new run / cut cell                  | `Y.Doc` mutation                                      |

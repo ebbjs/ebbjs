@@ -1057,7 +1057,7 @@ defmodule EbbServer.PermissionAuthorizationIntegrationTest do
     end
   end
 
-  # An edge is a keyed component of its source (decision 13), so a write to
+  # An edge is a keyed component of its source (system components are atomic), so a write to
   # it is a write to that row: it is authorized and delivered in the source's
   # group set, and an outsider's own `ebb/link.*` grant reaches nothing.
   describe "an edge is scoped by its source (#820)" do

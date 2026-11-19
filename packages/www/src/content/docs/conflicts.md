@@ -31,7 +31,7 @@ const post = defineModel(
 );
 const body = defineModel(
   "text_document",
-  { content: e.map(TextCellSchema), version: e.number() },
+  { content: e.log(TextCellSchema) },
   { conflictScope: "entity", materialization: "on-demand" },
 );
 const schema = defineSchema({
@@ -57,7 +57,7 @@ The unit of a conflict is a **position**, produced by the generic map-key recurs
 - a map field merges key by key, so two writes to different keys are different positions and do not conflict;
 - a shared leaf, or the path where the two sides' kinds diverge, is one position.
 
-For a collaborative-text document, cells live in `content`, a map field keyed by cell
+For a collaborative-text document, cells live in `content`, a log keyed by cell
 id. Every write only adds keys — a run is immutable and a delete is an additive cut —
 so two concurrent edits never share a position:
 
@@ -66,8 +66,6 @@ so two concurrent edits never share a position:
 - text therefore surfaces no slots at all. Same-run delete-vs-insert and
   delete-vs-delete commute, so the rule #392 recorded for same-run text edits no
   longer applies ([#764](https://github.com/ebbjs/ebbjs/issues/764)).
-
-The body's `version` leaf is metadata declaring the cell format, never a position.
 
 There is no per-field "address a value" hook. A field type with non-map positions would extend the field marker.
 

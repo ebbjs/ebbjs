@@ -234,7 +234,7 @@ defmodule EbbServer.Storage.RowMutations do
   # what they are, and an `ebb/link` overlay names no model at all — it is a
   # component of a row it does not re-model, so it keeps the committed model
   # and, when that is unknown, claims none rather than adopting `ebb`
-  # (decision 13's storage consequence).
+  # (an overlay never supplies a model — CONTEXT.md).
   defp row_model(%{created?: true, model: model}, _resolve_model), do: model
 
   defp row_model(entry, resolve_model) do

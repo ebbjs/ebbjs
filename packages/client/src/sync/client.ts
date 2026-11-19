@@ -109,13 +109,11 @@ import {
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
 import { backoffDelayMs } from "./backoff";
 import {
-  appendOnlyRewrites,
   AppendOnlyViolationError,
-  isLogPosition,
+  logEntriesOf,
+  logRewrites,
   ModelRegistry,
-  parseContentField,
   type ConflictScope,
-  type CellFieldValue,
   EntityValidationError,
   TextDocument,
   TextDocumentRegistry,
@@ -1079,7 +1077,7 @@ export class SyncClient<
     if (permissionViolations.length > 0) {
       throw new PermissionError(permissionViolations);
     }
-    await this.refuseContentRewrites(actions);
+    await this.refuseLogRewrites(actions);
     for (const action of actions) {
       await this.outbox.enqueue(action);
     }
@@ -1099,52 +1097,42 @@ export class SyncClient<
   }
 
   /**
-   * Refuse an append-only log rewrite before it is queued. A log position's
-   * entries may only be added, never replaced: a batch may add cell keys,
+   * Refuse an append-only log rewrite before it is queued. A log component's
+   * entries may only be added, never replaced: a batch may add entry keys,
    * never rewrite one.
    */
-  private async refuseContentRewrites(actions: readonly Action[]): Promise<void> {
+  private async refuseLogRewrites(actions: readonly Action[]): Promise<void> {
     for (const action of actions) {
       for (const update of action.updates) {
         if (!isComponentUpdate(update)) continue;
         if (update.method === "drop") continue;
-        if (!isLogPosition(update.component, [])) continue;
+        if (!this.registry.isLogField(componentModel(update.component), update.component)) continue;
 
-        // The replica is the read path, but an on-demand body may not be
-        // materialized there yet. The open document is the other place the
-        // same cells live. An identical value is the same cell (a local edit's
-        // optimistic cell, or a re-delivery); only a different value under an
-        // existing key is a rewrite. A key neither source knows may still be
-        // durable, so only that residue pays for a storage read.
-        const incomingCells = parseContentField(update.data);
-        const known = new Map<string, CellFieldValue>();
-        const addCells = (field: unknown): void => {
-          for (const [key, cell] of parseContentField(field)) known.set(key, cell);
-        };
-        addCells(this.logFieldOf(this.replica.get(update.subject_id), update.component));
-        const open = this.textDocumentRegistry.get(update.subject_id);
-        if (open !== undefined) for (const [key, cell] of open.docState.cells) known.set(key, cell);
+        // The replica is the read path, but an on-demand row may not be
+        // materialized there yet. An identical value under an existing key is
+        // the same entry (a local write's optimistic entry, or a re-delivery);
+        // only a different value under an existing key is a rewrite. A key the
+        // replica does not know may still be durable, so only that residue pays
+        // for a storage read.
+        const incoming = logEntriesOf(update.data);
+        const known = logEntriesOf(
+          componentValueOf(this.replica.get(update.subject_id), update.component),
+        );
 
-        const violated = new Set(appendOnlyRewrites(incomingCells, known));
-        const unknown = new Map([...incomingCells].filter(([key]) => !known.has(key)));
+        const violated = new Set(logRewrites(incoming, known));
+        const unknown = new Map([...incoming].filter(([key]) => !known.has(key)));
         if (unknown.size > 0) {
           const stored = (await this.storage.entities.get(update.subject_id)) ?? undefined;
-          for (const key of appendOnlyRewrites(
+          for (const key of logRewrites(
             unknown,
-            parseContentField(this.logFieldOf(stored, update.component)),
+            logEntriesOf(componentValueOf(stored, update.component)),
           )) {
             violated.add(key);
           }
         }
-        if (violated.size > 0) throw new AppendOnlyViolationError([...violated]);
+        if (violated.size > 0) throw new AppendOnlyViolationError(update.component, [...violated]);
       }
     }
-  }
-
-  /** The stored value of `component` on `row`, or `undefined`. */
-  private logFieldOf(row: Entity | undefined, component: string): FieldValue | undefined {
-    if (row === undefined) return undefined;
-    return row.data.fields[componentField(component)];
   }
 
   /**
@@ -2463,6 +2451,12 @@ const fnv1a64 = (input: string): string => {
     hash = BigInt.asUintN(64, hash * FNV_PRIME_64);
   }
   return hash.toString(16).padStart(16, "0");
+};
+
+/** The stored value of `component` on `row`, or `undefined`. */
+const componentValueOf = (row: Entity | undefined, component: string): FieldValue | undefined => {
+  if (row === undefined) return undefined;
+  return row.data.fields[componentField(component)];
 };
 
 /**

@@ -273,20 +273,14 @@ export {
   assertAppendOnly,
   AppendOnlyViolationError,
   contentFieldFromCells,
-  contentKeys,
   docActionToUpdate,
-  DocumentVersionError,
   isDocModelUpdate,
   parseContentField,
-  readCellFields,
   DEFAULT_DOC_MODEL,
-  CURRENT_TEXT_VERSION,
-  DOC_VERSION_FIELD,
 } from "@ebbjs/schema";
 
 export {
   AnchorSchema,
-  CellFieldValueSchema,
   CutCellSchema,
   RunCellSchema,
   TextCellSchema,

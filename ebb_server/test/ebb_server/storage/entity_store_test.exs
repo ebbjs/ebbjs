@@ -2373,7 +2373,7 @@ defmodule EbbServer.Storage.EntityStoreTest do
       assert Jason.decode!(cached.data)["components"] == ["todo/title"]
     end
 
-    # `ebb/link` is a component of a row it does not model (decision 13), so a
+    # `ebb/link` is a component of a row it does not model (an overlay never supplies a model), so a
     # field key alone cannot name it. The name its writing Update carried is
     # kept with the row, and a later write to a sibling field does not re-name
     # it from the row's model.

@@ -38,6 +38,11 @@ export type FieldMarker = {
    * merges key by key instead of replacing the whole field.
    */
   map?: true;
+  /**
+   * Declared with `e.log(...)`: the map's entries may only be added, so a
+   * write that rewrites an existing key is refused before it is queued.
+   */
+  log?: true;
 };
 
 /**
@@ -236,6 +241,31 @@ const withFieldChain = <T extends TSchema>(schema: T): T => {
  */
 export type MapSchema<V extends TSchema> = TRecord<TString, V>;
 
+/**
+ * The key identifying a schema built by `e.log(entry)`. It serves as both
+ * the runtime stamp and its type brand, and it is non-enumerable so the
+ * schema hash and `Value.Check` never see it.
+ */
+const LOG_BRAND: unique symbol = Symbol("ebbjs.schema.log");
+
+/**
+ * The TypeBox schema produced by `e.log(entrySchema)`: a string-keyed map
+ * with the same wire shape and merge as `e.map`, whose entries may only be
+ * added.
+ */
+export interface LogSchema<V extends TSchema> extends MapSchema<V> {
+  readonly [LOG_BRAND]: true;
+}
+
+/** True when `schema` was built by `e.log(entry)` rather than `e.map(entry)`. */
+export const isLogSchema = (schema: TSchema): boolean =>
+  Object.prototype.hasOwnProperty.call(schema, LOG_BRAND);
+
+/** A log field builder: `.default()` takes the map's projected value. */
+export interface LogField<V extends TSchema> extends LogSchema<V> {
+  default(value: Static<MapSchema<V>>): DefaultedSchema<MapSchema<V>, Static<MapSchema<V>>>;
+}
+
 /** Last-writer-wins typed-field helpers. Each carries the `.default()` chain. */
 export const e = {
   string: (): StringField => withFieldChain(Type.String()) as StringField,
@@ -265,6 +295,22 @@ export const e = {
    */
   map: <V extends TSchema>(value: V): MapField<V> =>
     withFieldChain(Type.Record(Type.String(), value) as MapSchema<V>) as MapField<V>,
+  /**
+   * An append-only log: a map whose entries may only be added. The wire
+   * shape and merge are `e.map`'s; the brand is what lets validation and the
+   * write path refuse a write that rewrites an existing entry. The entry
+   * payload is opaque and the key is minted by the writer, never parsed.
+   */
+  log: <V extends TSchema>(entry: V): LogField<V> => {
+    const schema = Type.Record(Type.String(), entry);
+    Object.defineProperty(schema, LOG_BRAND, {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    return withFieldChain(schema as LogSchema<V>) as LogField<V>;
+  },
   /**
    * A nested-object field: one atomic value whose properties are closed by
    * default. Declared exactly as authored — a nested property is optional
@@ -335,8 +381,10 @@ const findNestedMap = (schema: TSchema, path: string): string | undefined => {
   return undefined;
 };
 
-const deriveMarker = (schema: TSchema): FieldMarker =>
-  isMapSchema(schema) ? { type: "lww", map: true } : { type: "lww" };
+const deriveMarker = (schema: TSchema): FieldMarker => {
+  if (!isMapSchema(schema)) return { type: "lww" };
+  return isLogSchema(schema) ? { type: "lww", map: true, log: true } : { type: "lww", map: true };
+};
 
 /**
  * True at the type level when a field declares a default. Keyed on the
@@ -536,6 +584,27 @@ export class ComponentLeafMismatchError extends Error {
   }
 }
 
+/**
+ * Raised when a field-map component declares an `e.log` among its fields.
+ * The component's value is one atomic merge position, so the log would merge
+ * as part of that record instead of entry by entry.
+ */
+export class NestedLogError extends Error {
+  readonly componentName: string;
+  readonly path: string;
+
+  constructor(componentName: string, path: string) {
+    super(
+      `Component "${componentName}" declares a log at "${path}". A field-map component is one ` +
+        `atomic merge position, so a nested log would merge as part of that record rather than ` +
+        `entry by entry. Declare the log as its own component.`,
+    );
+    this.name = "NestedLogError";
+    this.componentName = componentName;
+    this.path = path;
+  }
+}
+
 /** Raised when a component declares a version that is not an integer >= 1. */
 export class InvalidComponentVersionError extends Error {
   readonly componentName: string;
@@ -616,6 +685,18 @@ const isSchemaLike = (value: ComponentShapeInput): value is TSchema => {
 const normalizeComponentShape = (shape: ComponentShapeInput): TSchema => {
   if (isSchemaLike(shape)) return shape;
   return Type.Object(withReadOptional(shape as Record<string, TSchema>));
+};
+
+/**
+ * Reject a field map that carries an `e.log` as one of its properties. Only a
+ * field map is checked: a bare schema is the component's whole value, so an
+ * `e.log` there is the component's own shape.
+ */
+const assertNoNestedLog = (name: string, shape: ComponentShapeInput): void => {
+  if (isSchemaLike(shape)) return;
+  for (const [key, field] of Object.entries(shape as Record<string, TSchema>)) {
+    if (isLogSchema(field)) throw new NestedLogError(name, key);
+  }
 };
 
 const normalizeComponentCreateShape = (shape: ComponentShapeInput): TSchema => {
@@ -748,6 +829,7 @@ export function defineComponent<
   options: TOptions = {} as TOptions,
 ): ComponentDef<DeclaredComponentShape<TShape, TOptions>, TName> {
   assertComponentName(name);
+  assertNoNestedLog(name, shape);
   const normalized = normalizeComponentShape(shape) as ComponentShapeOf<TShape>;
   const stamped = options.optional === true ? stampAbsentable(normalized) : normalized;
   return buildComponentDef(

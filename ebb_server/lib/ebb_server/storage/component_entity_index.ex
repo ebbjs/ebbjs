@@ -18,7 +18,7 @@ defmodule EbbServer.Storage.ComponentEntityIndex do
 
   The index is **derived state**. It is not fsynced: the Writer applies its
   ops once the Action's range is durable, and `SystemCache` reconstructs it
-  from `cf_actions` on every boot. Greenfield is allowed (#793 decision 9), so
+  from `cf_actions` on every boot. The store is greenfield, so
   there is no column family to convert or migrate.
 
   A process death between the durable commit and that apply leaves the index

@@ -75,8 +75,8 @@ defmodule EbbServer.Storage.SQLite do
   # The read model's shape. The DDL is `CREATE ... IF NOT EXISTS`, so an older
   # file would keep its old columns and answer every listing empty; a mismatch
   # is therefore a reset, not a migration. The cache rebuilds from
-  # `cf_actions` plus `cf_group_actions` (#793 decision 9), and `cursors` is
-  # not part of the shape and survives.
+  # `cf_actions` plus `cf_group_actions` (the store is greenfield, so there is
+  # nothing to migrate), and `cursors` is not part of the shape and survives.
   @schema_version 4
 
   @pragmas """
@@ -759,7 +759,7 @@ defmodule EbbServer.Storage.SQLite do
     """
 
     # A component-sourced page returns the rows that carry it, whatever model
-    # each is committed under (ADR decision 12).
+    # each is committed under.
     #
     # Offset pagination needs a total order. `created_hlc` is the row's
     # creation time and is never NULL, so `id` only breaks same-millisecond

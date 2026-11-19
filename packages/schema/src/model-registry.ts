@@ -12,10 +12,12 @@ import {
   componentModel,
   EBB_MODEL_NAME,
   isComponentUpdate,
+  isFieldLeaf,
   isFieldMap,
   isRowCreate,
   isUnset,
   type Action,
+  type ComponentUpdate,
 } from "@ebbjs/core";
 import { Type } from "@sinclair/typebox";
 import { Value, type ValueError } from "@sinclair/typebox/value";
@@ -219,6 +221,17 @@ export class ModelRegistry {
   }
 
   /**
+   * Whether the component `name` is an append-only log (`e.log(...)`), so a
+   * write may only add entries. `name` is a field key or a full
+   * `<model>/<field>` component name; unknown models and undeclared
+   * components are not logs — a client without a schema has no marker to
+   * read.
+   */
+  isLogField(model: string, name: string): boolean {
+    return this.componentOf(model, name)?.marker.log === true;
+  }
+
+  /**
    * Register a relationship keyed by `(source, as)`. Re-registering
    * the same pair overwrites; the returned marker lets callers
    * detect the overwrite.
@@ -305,9 +318,12 @@ export class ModelRegistry {
       if (!isComponentUpdate(update)) continue;
       const modelName = componentModel(update.component);
       const field = componentField(update.component);
+      // A declared log has its own rule below, which already refuses replace;
+      // the generic keyed-component refusal would report the same update twice.
+      const isLog = this.isLogField(modelName, update.component);
       // A wholesale replace of a key space would discard a concurrent
       // writer's siblings, so it is refused on the value's shape alone.
-      if (update.method === "replace" && isFieldMap(update.data)) {
+      if (!isLog && update.method === "replace" && isFieldMap(update.data)) {
         violations.push({
           entityName: modelName,
           updateIndex: i,
@@ -350,7 +366,9 @@ export class ModelRegistry {
           field,
           message: `Component "${update.component}" is not declared on model "${model.name}"`,
         });
+        continue;
       }
+      if (isLog) violations.push(...logUpdateViolations(update, model.name, field, i));
     }
     return violations;
   }
@@ -439,6 +457,69 @@ export class ModelRegistry {
     return warnings;
   }
 }
+
+/**
+ * The violations a write to a declared log component commits.
+ *
+ * A log's entries may only be added, so the write has to be a `merge` of a
+ * map whose entries are leaves carrying a value. `drop` is refused because
+ * dropping discards the whole log without expressing removal as an entry;
+ * `delete` of the row is how everything is removed. A tombstone entry
+ * (`unset` or a literal `null`) is refused for the same reason: removal is a
+ * new entry, never a rewrite of an existing key.
+ */
+const logUpdateViolations = (
+  update: ComponentUpdate,
+  entityName: string,
+  field: string,
+  updateIndex: number,
+): ValidationViolation[] => {
+  const component = update.component;
+  const violation = (message: string): ValidationViolation => ({
+    entityName,
+    updateIndex,
+    field,
+    message,
+  });
+  if (update.method === "drop") {
+    return [
+      violation(
+        `Component "${component}" is an append-only log; drop would discard the log without ` +
+          `expressing removal as an entry. Delete the row instead.`,
+      ),
+    ];
+  }
+  if (update.method !== "merge" || !isFieldMap(update.data)) {
+    const shape = update.method === "merge" ? "a non-map value" : `a \`${update.method}\` write`;
+    return [
+      violation(
+        `Component "${component}" is an append-only log; a write must be a merge of a map of ` +
+          `entries, so ${shape} is refused`,
+      ),
+    ];
+  }
+  const violations: ValidationViolation[] = [];
+  for (const [key, entry] of Object.entries(update.data.map)) {
+    if (isUnset(entry) || (isFieldLeaf(entry) && (entry.value === null || isUnset(entry.value)))) {
+      violations.push(
+        violation(
+          `Component "${component}" is an append-only log; entry ${JSON.stringify(key)} is a ` +
+            `tombstone. A log's entries may only be added: removal is a new entry.`,
+        ),
+      );
+      continue;
+    }
+    if (!isFieldLeaf(entry)) {
+      violations.push(
+        violation(
+          `Component "${component}" is an append-only log; entry ${JSON.stringify(key)} is a ` +
+            `nested map, but a log's entry is one leaf value`,
+        ),
+      );
+    }
+  }
+  return violations;
+};
 
 /**
  * Validate a write-time payload against the entity's TypeBox shape.

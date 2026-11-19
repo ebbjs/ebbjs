@@ -265,7 +265,7 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
  * @internal `get()` is the engine's single-row read, not a public read
  * path. Applications query through `client.<entity>.query()` /
  * `useQuery`; `get()` and the async relationship accessors stay
- * internal / undocumented (epic decision 5).
+ * internal / undocumented.
  *
  * `id` is the entity's addressing key, not a wire-envelope passthrough:
  * `data` / `type` / HLC stamps stay off the row. The injected `id`
@@ -418,8 +418,8 @@ export type EntityNamespaces<S> =
  * The read root `useQuery` hands its callback: every entity namespace
  * narrowed to its `query()` method. It is the client's own namespaces
  * object at runtime, so `q.issue.query` and `client.issue.query` are the
- * same method and hook and imperative callers cannot drift (epic
- * decision 15). Mutations stay off `q` — write through `useClient()`.
+ * same method and hook and imperative callers cannot drift. Mutations stay
+ * off `q` — write through `useClient()`.
  */
 export type QueryRoot<S> = {
   readonly [K in keyof EntityNamespaces<S>]: EntityNamespaces<S>[K] extends {

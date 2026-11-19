@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { decodeSync, isComponentUpdate, makeHlc, type Action } from "@ebbjs/core";
+import { decodeSync, isComponentUpdate, isFieldMap, makeHlc, type Action } from "@ebbjs/core";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 
 import { createClient } from "../client";
@@ -596,6 +596,88 @@ describe("client.conflicts (#781)", () => {
       "act_later",
     ]);
     expect(await clientB.conflicts.list()).toEqual([]);
+  });
+
+  it("two writers appending different log keys converge under field scope", async () => {
+    const note = defineModel("note", {
+      entries: e.log(Type.Object({ text: Type.String() })),
+    });
+    const noteSchema = defineSchema({ models: { note }, version: 5 });
+    const openNoteClient = (actorId: string) =>
+      createClient({
+        serverUrl: SERVER_URL,
+        actorId,
+        schema: noteSchema,
+        fetchImpl: mkStubFetch().fn,
+        storage: createMemoryAdapter(),
+      });
+    const a = openNoteClient(ACTOR_ID);
+    const b = openNoteClient("actor_2");
+
+    const append = (args: {
+      actionId: string;
+      actorId: string;
+      key: string;
+      text: string;
+      updateId: string;
+      hlc: string;
+      gsn: number;
+    }): Action => ({
+      id: args.actionId,
+      actor_id: args.actorId,
+      hlc: args.hlc,
+      gsn: args.gsn,
+      updates: [
+        {
+          id: `${args.updateId}_0`,
+          subject_id: "note_1",
+          component: "note/entries",
+          method: "merge",
+          data: {
+            map: {
+              [args.key]: { value: { text: args.text }, update_id: args.updateId, hlc: args.hlc },
+            },
+          },
+        },
+      ],
+    });
+    const localA = append({
+      actionId: "act_a",
+      actorId: ACTOR_ID,
+      key: "a",
+      text: "mine",
+      updateId: "u_a",
+      hlc: LOCAL_HLC,
+      gsn: 0,
+    });
+    const localB = append({
+      actionId: "act_b",
+      actorId: "actor_2",
+      key: "b",
+      text: "theirs",
+      updateId: "u_b",
+      hlc: PEER_HLC,
+      gsn: 0,
+    });
+    await a.outbox.enqueue(localA);
+    await b.outbox.enqueue(localB);
+
+    // Each writer now receives the other's append in a catch-up window.
+    const inboundB = { ...localB, gsn: 9 };
+    const inboundA = { ...localA, gsn: 9 };
+    await callApplyAction(a, inboundB, "g_1");
+    await callApplyAction(b, inboundA, "g_1");
+    await a.outbox.detectConflicts([inboundB], "cu_a");
+    await b.outbox.detectConflicts([inboundA], "cu_b");
+
+    for (const client of [a, b]) {
+      expect(await client.conflicts.list()).toEqual([]);
+      const entries = client.replica.get("note_1")?.data.fields["entries"];
+      if (entries === undefined || !isFieldMap(entries)) {
+        throw new Error("replica row carries no entries log");
+      }
+      expect(Object.keys(entries.map).sort()).toEqual(["a", "b"]);
+    }
   });
 
   it("entity-scope loss with no position overlap reports the diff and keeps the envelope", async () => {

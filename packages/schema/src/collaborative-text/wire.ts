@@ -9,13 +9,11 @@
  * whose value is a map from cell id to
  * `{ value: RunCell | CutCell, update_id, hlc }`.
  *
- * The component is a *keyed* component, so the merge is per key. Every write
+ * The component is an append-only log, so the merge is per key. Every write
  * only adds keys: a run is never rewritten, a cut is additive, and two
- * peers can never contest one position. The body's `version` leaf travels
- * with every write, in its own `<docModel>/version` Update, so a reader can
- * refuse a cell shape it does not know.
+ * peers can never contest one position.
  *
- * Wire-format shape for one edit (two Updates in the same Action):
+ * Wire-format shape for one edit (one Update in the Action):
  *
  * ```json
  * {
@@ -28,8 +26,6 @@
  *     }
  *   }
  * }
- * { "subject_id", "component": "text_document/version", "method": "merge",
- *   "data": { "value": 1, "update_id": "...", "hlc": "..." } }
  * ```
  */
 
@@ -49,14 +45,14 @@ import {
 
 import {
   applyCellFields,
-  cellValuesEqual,
   makeRunId,
   ROOT_ANCHOR,
   type CellFieldValue,
   type DocState,
   type TextCell,
 } from "./tree";
-import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./schema";
+import { AppendOnlyViolationError } from "../log";
+import { DOC_CONTENT_FIELD } from "./schema";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,45 +60,6 @@ import { CURRENT_TEXT_VERSION, DOC_CONTENT_FIELD, DOC_VERSION_FIELD } from "./sc
 
 /** Default document model for collaborative-text documents. */
 export const DEFAULT_DOC_MODEL = "text_document";
-
-// ---------------------------------------------------------------------------
-// Version
-// ---------------------------------------------------------------------------
-
-/** A document declares a cell format this client cannot read. */
-export class DocumentVersionError extends Error {
-  readonly found: unknown;
-  readonly expected: number;
-
-  constructor(found: unknown, expected: number = CURRENT_TEXT_VERSION) {
-    super(
-      `collaborative-text: document version ${String(found)} is not readable by this client ` +
-        `(expected ${expected})`,
-    );
-    this.name = "DocumentVersionError";
-    this.found = found;
-    this.expected = expected;
-  }
-}
-
-/**
- * Read a document's `version` leaf. Absent means the current version: a
- * freshly-seeded document may carry no content yet, and every real write
- * stamps the leaf. Any other value fails loudly rather than projecting a
- * wrong view.
- */
-export const assertKnownVersion = (field: FieldValue | undefined): void => {
-  if (field === undefined) return;
-  if (!isFieldLeaf(field)) throw new DocumentVersionError(field);
-  if (field.value !== CURRENT_TEXT_VERSION) throw new DocumentVersionError(field.value);
-};
-
-/** Build the `version` leaf a write carries. */
-export const versionField = (
-  hlc: HLCTimestamp,
-  updateId: string,
-  version: number = CURRENT_TEXT_VERSION,
-): FieldValue => ({ value: version, update_id: updateId, hlc });
 
 // ---------------------------------------------------------------------------
 // Filter helpers
@@ -160,25 +117,6 @@ export const parseContentField = (content: unknown): ReadonlyMap<string, CellFie
   return out;
 };
 
-/** The raw keys of a `content` map, ignoring their values. */
-export const contentKeys = (content: unknown): readonly string[] => {
-  if (content === null || typeof content !== "object" || !("map" in content)) return [];
-  const map = (content as { map: unknown }).map;
-  if (map === null || typeof map !== "object") return [];
-  return Object.keys(map);
-};
-
-/**
- * Read the cells out of an Update that carries the document's `content`
- * component. Exported so the conflict path and the wire adapter unwrap the
- * envelope consistently.
- */
-export const readCellFields = (update: Update): ReadonlyMap<string, CellFieldValue> => {
-  if (!isComponentUpdate(update) || update.method === "drop") return new Map();
-  if (componentField(update.component) !== DOC_CONTENT_FIELD) return new Map();
-  return parseContentField(update.data);
-};
-
 // ---------------------------------------------------------------------------
 // Apply wire Actions to a DocState (read path)
 // ---------------------------------------------------------------------------
@@ -196,7 +134,7 @@ export type AppliedCell = {
  *
  * This is delivery, not state: it merges the cells and re-projects. Skips
  * Actions targeting another subject type and Updates without a `content`
- * map. Throws {@link DocumentVersionError} for an unknown version.
+ * map.
  */
 export const applyActions = (
   state: DocState,
@@ -213,10 +151,6 @@ export const applyActions = (
 
       if (update.method === "drop") continue;
       const field = componentField(update.component);
-      if (field === DOC_VERSION_FIELD) {
-        assertKnownVersion(update.data);
-        continue;
-      }
       if (field !== DOC_CONTENT_FIELD) continue;
 
       const cells = parseContentField(update.data);
@@ -275,9 +209,8 @@ export const contentFieldFromCells = (
 });
 
 /**
- * Build the two Updates one edit emits: the new cells in the document's
- * `content` component, and the body's `version` leaf beside them, so every
- * write declares its cell format.
+ * Build the one Update one edit emits: the new cells in the document's
+ * `content` log component.
  */
 export const docActionToUpdate = (
   cells: readonly TextCell[],
@@ -285,7 +218,6 @@ export const docActionToUpdate = (
 ): Update[] | null => {
   if (cells.length === 0) return null;
   const docModel = opts.docModel ?? DEFAULT_DOC_MODEL;
-  const versionUpdateId = `${opts.updateId}v`;
   return [
     {
       id: opts.updateId,
@@ -294,21 +226,12 @@ export const docActionToUpdate = (
       method: "merge",
       data: contentFieldFromCells(cells, opts.updateId),
     },
-    {
-      id: versionUpdateId,
-      subject_id: opts.docId,
-      component: componentName(docModel, DOC_VERSION_FIELD),
-      method: "merge",
-      data: versionField(hlcOf(cells), versionUpdateId),
-    },
   ];
 };
 
-const hlcOf = (cells: readonly TextCell[]): HLCTimestamp => cells[0]!.stamp;
-
 /**
  * Build the first component values for a freshly-created document: one run
- * holding `text` in the content component, plus the version leaf.
+ * holding `text` in the content log.
  */
 export const buildInitialDocumentFields = (
   text: string,
@@ -330,28 +253,12 @@ export const buildInitialDocumentFields = (
         [run.id]: { value: run, update_id: updateId, hlc } as FieldValue,
       },
     },
-    [DOC_VERSION_FIELD]: versionField(hlc, updateId),
   };
 };
 
 // ---------------------------------------------------------------------------
 // Write discipline
 // ---------------------------------------------------------------------------
-
-/** A write tried to rewrite a `content` key that already exists. */
-export class AppendOnlyViolationError extends Error {
-  readonly keys: readonly string[];
-
-  constructor(keys: readonly string[]) {
-    super(
-      `collaborative-text: refusing to rewrite existing content ${keys.length === 1 ? "key" : "keys"} ` +
-        `${keys.map((key) => JSON.stringify(key)).join(", ")}; ` +
-        "a text body's content map is append-only",
-    );
-    this.name = "AppendOnlyViolationError";
-    this.keys = keys;
-  }
-}
 
 /**
  * The append-only rule as a pure check. `incoming` are the keys a batch
@@ -371,26 +278,11 @@ export const appendOnlyViolations = (
 };
 
 /** Throw {@link AppendOnlyViolationError} if a batch rewrites a cell key. */
-export const assertAppendOnly = (incoming: Iterable<string>, existing: Iterable<string>): void => {
+export const assertAppendOnly = (
+  component: string,
+  incoming: Iterable<string>,
+  existing: Iterable<string>,
+): void => {
   const violated = appendOnlyViolations(incoming, existing);
-  if (violated.length > 0) throw new AppendOnlyViolationError(violated);
-};
-
-/**
- * The append-only rule over cell values: a key that already exists may only
- * be re-delivered unchanged. An identical value is the same cell (idempotent
- * re-delivery, or a local edit the optimistic state already carries); a
- * different value under an existing key is a rewrite.
- */
-export const appendOnlyRewrites = (
-  incoming: ReadonlyMap<string, CellFieldValue>,
-  existing: ReadonlyMap<string, CellFieldValue>,
-): readonly string[] => {
-  const violated: string[] = [];
-  for (const [id, cell] of incoming) {
-    const previous = existing.get(id);
-    if (previous === undefined) continue;
-    if (!cellValuesEqual(previous.value, cell.value)) violated.push(id);
-  }
-  return violated;
+  if (violated.length > 0) throw new AppendOnlyViolationError(component, violated);
 };

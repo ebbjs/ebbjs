@@ -605,7 +605,7 @@ describe("query cache: component-granular invalidation", () => {
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
     const cache = createQueryCache(replica);
     // An `ebb/*` component may sit on a row of any model and never determines
-    // the row's model (ADR 0001, decision 1), so a `todo/*` read's components
+    // the row's model (the prefix is the model namespace), so a `todo/*` read's components
     // are untouched by an edge write.
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("rows", emptyQuery("todo"), source);

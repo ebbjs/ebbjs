@@ -9,8 +9,7 @@
  * Pure by construction: no registry, no storage, no replica. Indexed
  * predicates (existence, adjacency, membership) are placed ahead of field
  * filters within a select so the pipeline documents the pushdown into the
- * replica's indices; field predicates scan the materialized rows (epic
- * decision 12).
+ * replica's indices; field predicates scan the materialized rows.
  */
 
 import { componentName, EBB_COMPONENTS, EBB_MODEL_NAME } from "@ebbjs/core";
