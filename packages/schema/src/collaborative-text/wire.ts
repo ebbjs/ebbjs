@@ -54,8 +54,6 @@ import {
 import { AppendOnlyViolationError } from "../log";
 import { DOC_CONTENT_FIELD } from "./schema";
 
-export { AppendOnlyViolationError } from "../log";
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------

@@ -78,8 +78,8 @@ defineModel(
   "note_body",
   {
     engine: defineComponent("note_body/engine", e.string().default("ebb.cells.v1")),
-    // A field-map component is one atomic merge position, so the log cannot be
-    // nested beside `engine`; the two are sibling components.
+    // Its own component, not nested beside `engine` in one field map: a field-map
+    // component is one atomic merge position, and `e.log` refuses that nesting.
     updates: defineComponent("note_body/updates", e.log(TextCellSchema), { loading: "lazy" }),
   },
   { materialization: "on-demand", conflictScope: "field" },
@@ -148,7 +148,7 @@ Decisions this fixes:
 
 | Step         | Plain text (`ebb.cells.v1`)         | Yjs (`yjs.update.v1`)                                 |
 | ------------ | ----------------------------------- | ----------------------------------------------------- |
-| create       | root run + version                  | empty log + version                                   |
+| create       | root run in the log                 | empty log                                             |
 | load         | project cells                       | `Y.applyUpdate` per entry                             |
 | remote entry | merge cell, re-project              | apply update (idempotent)                             |
 | local change | new run / cut cell                  | `Y.Doc` mutation                                      |

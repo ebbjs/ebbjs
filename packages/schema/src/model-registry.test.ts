@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeHlc, type Action, type FieldValue } from "@ebbjs/core";
+import { makeHlc, unset, type Action, type FieldValue } from "@ebbjs/core";
 import {
   EBB_MODEL_NAME,
   ModelRegistry,
@@ -301,6 +301,26 @@ describe("ModelRegistry.validateAction log components", () => {
     expect(v[0]?.updateIndex).toBe(0);
     expect(v[0]?.message).toContain("doc/content");
     expect(v[0]?.message).toContain('"e1"');
+    expect(v[0]?.message).toMatch(/tombstone/);
+  });
+
+  it("refuses a raw unset marker as an entry", () => {
+    const v = logRegistry().validateAction(
+      buildAction([merge({ e1: unset as unknown as FieldValue })]),
+    );
+
+    expect(v).toHaveLength(1);
+    expect(v[0]?.message).toContain("doc/content");
+    expect(v[0]?.message).toContain('"e1"');
+    expect(v[0]?.message).toMatch(/tombstone/);
+  });
+
+  it("refuses an entry leaf whose value is the unset marker", () => {
+    const v = logRegistry().validateAction(
+      buildAction([merge({ e1: { value: unset, update_id: "u_1" } as FieldValue })]),
+    );
+
+    expect(v).toHaveLength(1);
     expect(v[0]?.message).toMatch(/tombstone/);
   });
 

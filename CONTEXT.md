@@ -109,7 +109,9 @@ _Avoid_: object, struct, record
 **Keyed component**:
 A component whose value is a key space, so each field holds its own merge
 position and a concurrent write to one leaves its siblings alone. An append-only
-component (`e.log`) is a keyed component that refuses rewrites.
+component (`e.log`) is a keyed component that refuses rewrites: it also refuses
+`drop`, `replace`, and tombstone entries, because removal is a new entry or a
+`delete` of the row.
 _Avoid_: map, sparse, table
 
 **Anonymous component**:

@@ -318,10 +318,9 @@ export class ModelRegistry {
       if (!isComponentUpdate(update)) continue;
       const modelName = componentModel(update.component);
       const field = componentField(update.component);
-      // The log rule replaces both the keyed-replace refusal and the shape
-      // checks below, so the marker is resolved first.
-      const logComponent = this.models.get(modelName)?.components[field];
-      const isLog = logComponent !== undefined && logComponent.marker.log === true;
+      // A declared log has its own rule below, which already refuses replace;
+      // the generic keyed-component refusal would report the same update twice.
+      const isLog = this.isLogField(modelName, update.component);
       // A wholesale replace of a key space would discard a concurrent
       // writer's siblings, so it is refused on the value's shape alone.
       if (!isLog && update.method === "replace" && isFieldMap(update.data)) {
@@ -476,44 +475,47 @@ const logUpdateViolations = (
   updateIndex: number,
 ): ValidationViolation[] => {
   const component = update.component;
-  const one = (message: string): ValidationViolation[] => [
-    { entityName, updateIndex, field, message },
-  ];
+  const violation = (message: string): ValidationViolation => ({
+    entityName,
+    updateIndex,
+    field,
+    message,
+  });
   if (update.method === "drop") {
-    return one(
-      `Component "${component}" is an append-only log; drop would discard the log without ` +
-        `expressing removal as an entry. Delete the row instead.`,
-    );
+    return [
+      violation(
+        `Component "${component}" is an append-only log; drop would discard the log without ` +
+          `expressing removal as an entry. Delete the row instead.`,
+      ),
+    ];
   }
   if (update.method !== "merge" || !isFieldMap(update.data)) {
-    return one(
-      `Component "${component}" is an append-only log; a write must be a merge of a map of ` +
-        `entries, so ${update.method === "merge" ? "a non-map value" : `\`${update.method}\``} is ` +
-        `refused`,
-    );
+    const shape = update.method === "merge" ? "a non-map value" : `a \`${update.method}\` write`;
+    return [
+      violation(
+        `Component "${component}" is an append-only log; a write must be a merge of a map of ` +
+          `entries, so ${shape} is refused`,
+      ),
+    ];
   }
   const violations: ValidationViolation[] = [];
   for (const [key, entry] of Object.entries(update.data.map)) {
-    if (!isFieldLeaf(entry)) {
-      violations.push({
-        entityName,
-        updateIndex,
-        field,
-        message:
+    if (isUnset(entry) || (isFieldLeaf(entry) && (entry.value === null || isUnset(entry.value)))) {
+      violations.push(
+        violation(
           `Component "${component}" is an append-only log; entry ${JSON.stringify(key)} is a ` +
-          `nested map, but a log's entry is one leaf value`,
-      });
+            `tombstone. A log's entries may only be added: removal is a new entry.`,
+        ),
+      );
       continue;
     }
-    if (entry.value === null) {
-      violations.push({
-        entityName,
-        updateIndex,
-        field,
-        message:
+    if (!isFieldLeaf(entry)) {
+      violations.push(
+        violation(
           `Component "${component}" is an append-only log; entry ${JSON.stringify(key)} is a ` +
-          `tombstone. A log's entries may only be added: removal is a new entry.`,
-      });
+            `nested map, but a log's entry is one leaf value`,
+        ),
+      );
     }
   }
   return violations;

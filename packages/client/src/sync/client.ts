@@ -1116,7 +1116,7 @@ export class SyncClient<
         // for a storage read.
         const incoming = logEntriesOf(update.data);
         const known = logEntriesOf(
-          this.logFieldOf(this.replica.get(update.subject_id), update.component),
+          this.componentValueOf(this.replica.get(update.subject_id), update.component),
         );
 
         const violated = new Set(logRewrites(incoming, known));
@@ -1125,7 +1125,7 @@ export class SyncClient<
           const stored = (await this.storage.entities.get(update.subject_id)) ?? undefined;
           for (const key of logRewrites(
             unknown,
-            logEntriesOf(this.logFieldOf(stored, update.component)),
+            logEntriesOf(this.componentValueOf(stored, update.component)),
           )) {
             violated.add(key);
           }
@@ -1136,7 +1136,7 @@ export class SyncClient<
   }
 
   /** The stored value of `component` on `row`, or `undefined`. */
-  private logFieldOf(row: Entity | undefined, component: string): FieldValue | undefined {
+  private componentValueOf(row: Entity | undefined, component: string): FieldValue | undefined {
     if (row === undefined) return undefined;
     return row.data.fields[componentField(component)];
   }

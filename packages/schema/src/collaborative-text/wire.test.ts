@@ -20,13 +20,13 @@ import {
   appendOnlyViolations,
   applyActions,
   assertAppendOnly,
-  AppendOnlyViolationError,
   buildInitialDocumentFields,
   contentFieldFromCells,
   docActionToUpdate,
   isDocModelUpdate,
   parseContentField,
 } from "./wire";
+import { AppendOnlyViolationError } from "../log";
 import { DOC_CONTENT_FIELD } from "./schema";
 import { createDocState, type RunCell, type TextCell } from "./tree";
 
