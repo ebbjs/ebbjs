@@ -60,13 +60,6 @@ export interface ReplicaOptions {
    */
   readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
-   * Maximum resident on-demand components. Defaults to
-   * {@link DEFAULT_PINNED_CAPACITY}. A non-positive or non-finite value keeps
-   * every opened component resident; opening past the window releases the least
-   * recently opened one.
-   */
-  readonly pinnedCapacity?: number;
-  /**
    * How long a closed on-demand component stays cached before release. Defaults
    * to {@link DEFAULT_PINNED_TTL_MS}. A non-positive or non-finite value releases
    * it immediately on close. An open component is never released by the TTL.
@@ -181,10 +174,10 @@ export interface Replica {
   /**
    * Open one component. Reads it through `readComponent` when it is not
    * resident, installs its value, and pins it. Idempotent: a resident component
-   * is marked open and touched (LRU order) without another read, a concurrent
-   * open shares the in-flight read, and a held component is returned without
-   * installing or pinning. Resolves to the composed row, or `null` when the
-   * read misses.
+   * is returned without another read, a concurrent open shares the in-flight
+   * read, and a held component is returned without installing or pinning.
+   * Opening never releases another component: there is no cap. Resolves to the
+   * composed row, or `null` when the read misses.
    */
   open(id: string, component: string): Promise<Entity | null>;
   /**
@@ -263,8 +256,8 @@ export interface Replica {
    * `close`) that settles the composed view, so a derived reader can
    * resynchronise from `revision` and `changesSince`. A no-op write still
    * fires; readers cheaply ignore an unchanged revision. Re-opening a resident
-   * component only touches the LRU window, so it fires nothing. Returns an
-   * unsubscribe function.
+   * component installs nothing, so it fires nothing. Returns an unsubscribe
+   * function.
    */
   subscribe(listener: () => void): () => void;
 }

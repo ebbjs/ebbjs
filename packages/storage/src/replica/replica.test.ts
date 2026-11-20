@@ -1672,36 +1672,11 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.stats().pinned).toBe(0);
   });
 
-  it("releases the least recently opened row when the pinned window overflows", async () => {
-    const rows = {
-      doc_1: documentRow("doc_1"),
-      doc_2: documentRow("doc_2"),
-      doc_3: documentRow("doc_3"),
-    };
-    const replica = createReplica({
-      materialization: onDemand,
-      pinnedCapacity: 2,
-      pinnedTtlMs: 0,
-      readComponent: reader(rows),
-    });
-    await replica.open("doc_1", "document/text");
-    await replica.open("doc_2", "document/text");
-    await replica.open("doc_1", "document/text");
-    await replica.open("doc_3", "document/text");
-
-    expect(replica.isOpen("doc_2", "document/text")).toBe(false);
-    expect(replica.get("doc_2")).toBeUndefined();
-    expect(replica.isOpen("doc_1", "document/text")).toBe(true);
-    expect(replica.isOpen("doc_3", "document/text")).toBe(true);
-    expect(replica.stats().pinned).toBe(2);
-  });
-
-  it("retains every pinned row when the capacity is unbounded", async () => {
+  it("retains every opened row", async () => {
     const rows: Record<string, Entity> = {};
     for (let i = 1; i <= 20; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
     const replica = createReplica({
       materialization: onDemand,
-      pinnedCapacity: 0,
       pinnedTtlMs: 0,
       readComponent: reader(rows),
     });
@@ -1841,6 +1816,50 @@ describe("replica: on-demand residency (#500)", () => {
       expect(replica.stats().pinned).toBe(0);
       expect(replica.revision).toBe(revision);
     });
+  });
+});
+
+describe("replica: a read selects every component (#934)", () => {
+  // Every component of the row is on demand, so reading the row opens three.
+  const allOnDemand = { holds: (): boolean => false };
+  const noteId = "note_1";
+  const components = ["note/title", "note/body", "note/appendix"];
+  const lazyRow = (): Entity =>
+    entity({
+      id: noteId,
+      model: "note",
+      data: {
+        fields: {
+          title: leaf("One", "u_title", 10),
+          body: leaf("300 KB body", "u_body", 10),
+          appendix: leaf("1 MB appendix", "u_appendix", 10),
+        },
+      },
+      created_hlc: makeHlc(10),
+      updated_hlc: makeHlc(10),
+    });
+
+  it("returns all three components of a row after all three are read", async () => {
+    const replica = createReplica({
+      materialization: allOnDemand,
+      pinnedTtlMs: 0,
+      readComponent: async () => lazyRow(),
+    });
+    ingest(replica, create({ actionId: "a_1", updateId: "u_1", ms: 10 }), 1);
+
+    for (const component of components) await replica.open(noteId, component);
+
+    expect(Object.keys(replica.get(noteId)?.data.fields ?? {}).sort()).toEqual([
+      "appendix",
+      "body",
+      "title",
+    ]);
+    expect(components.map((component) => replica.isOpen(noteId, component))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(replica.stats().pinned).toBe(3);
   });
 });
 
