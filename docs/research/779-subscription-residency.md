@@ -96,7 +96,7 @@ Every way residency is decoupled from the subscription that reads the data.
 | F11 | A missed unsubscribe is permanent                       | An open pin leaks until trim; with a cap it silently truncates peers                                           | A missed unsubscribe leaks forever: no cap is also no pressure valve. Visibility is mandatory (risk R1)          |
 | F12 | Journal gaps become full re-runs                        | `changeFloor` trimming; empty changes on an advanced revision means "everything"                               | Same policy, but decided per subscription cursor; a gap is an explicit full re-run, not an accidental empty scan |
 | F13 | A cross-model write is reported twice                   | `touchedComponentSet` names fields under both prefixes                                                         | Keep: it is correct for invalidation; the index handles both names                                               |
-| F14 | A `loading` declaration decides memory, not the reader  | `eager` holds forever; `lazy` needs `open`                                                                     | Replaced: selection decides read residency; a separate persist policy decides the offline base                   |
+| F14 | A `loading` declaration decides memory, not the reader  | `eager` holds forever; `lazy` needs `open`                                                                     | Replaced: selection decides read residency; the durable store owns offline                                       |
 
 **What `unloaded` should still mean.** One event, one meaning: _a component the
 subscription selected left the replica while the subscription was still alive,
@@ -197,16 +197,18 @@ lease set, all at once" without qualification:
   bare create/delete (`components: []`) does **not** hit a component selection,
   so every query also needs a **membership** dependency on the source model and
   an **index** dependency for each predicate/join (`structuralReads`).
-- Offline persistence cannot be inferred from a subscription that has not
-  happened yet (G6).
+- Offline does not depend on a subscription at all: durability is the storage
+  adapter's job (G6). A selection decides memory, never whether the data can be
+  read offline.
 - An entity-scope conflict holds the whole row regardless of selection
   (dynamic lease, §6).
-- A cold start still needs a base to materialize; that is a persist policy, not
-  a read policy.
+- A cold start still needs a base to materialize; that is the record's startup
+  policy, not a read policy, and offline correctness does not depend on it.
 
-Verdict: `loading`/`materialization` are removable **after** a persist policy
-replaces the offline half; selection alone is not enough. Do not delete them in
-the same slice that introduces selection.
+Verdict: `loading`/`materialization` are removable. Read residency comes from
+selection, offline comes from the durable store, and the only persistence knob
+left is the record's automatic cold-start policy. Do not delete the declarations
+in the same slice that introduces selection.
 
 ### G4 — Incremental vs re-run: **confirmed for cost; patching is a narrow fast path, not the default**
 
@@ -265,27 +267,66 @@ Races are linearized on the lease table:
   invalidated; the resolving read installs nothing (today's `openEpoch` rule,
   kept).
 
-### G6 — Cold start/offline: **a separate persist policy is required**
+### G6 — Cold start/offline: **offline belongs to the storage adapter; the record is only a startup cache**
 
-S6 models the record as a set of `(row, component)` values and restores it as
-inactive leases (same TTL):
+The first draft of this note proposed a `retain` declaration for offline. That
+was wrong: it made a read policy responsible for durability. The three layers
+are separate:
 
-| Record policy              | Values persisted (50 rows, 4 components, 5 notes open) | Store reads on a same-session remount | Reads on a different 5-note session |
+| Layer                    | What it is                                | What it decides                                        |
+| ------------------------ | ----------------------------------------- | ------------------------------------------------------ |
+| Durable substrate        | action log, outbox, cursors, entity store | whether data survives a reload and is readable offline |
+| In-memory replica        | materialized rows and component values    | how fast a read is right now                           |
+| Persisted replica record | a snapshot of the replica                 | how fast a cold start is                               |
+
+The current code already behaves this way. `mirrorReplicaRows` writes the full
+row into `storage.entities` even when the replica holds none of its components,
+and for an on-demand model it applies the update to the stored row;
+`readStoredComponent` reads the body back from there. So `loading: "lazy"` never
+made data unavailable offline — it only kept it out of memory. `loading` can go
+without an offline replacement.
+
+What the record is for (same S6 workload as before):
+
+| Cold-start record          | Values persisted (50 rows, 4 components, 5 notes open) | Store reads on a same-session remount | Reads on a different 5-note session |
 | -------------------------- | ------------------------------------------------------ | ------------------------------------- | ----------------------------------- |
 | A. held-only (today)       | 50                                                     | 5                                     | 5                                   |
 | B. last active working set | 55                                                     | 0                                     | 5                                   |
 | C. full resident row       | 200                                                    | 0                                     | 0                                   |
 
-After the TTL, restored values leave and the next acquire reads the store. So
-"persist the last working set, restore as leases" gives the same cold-start win
-as full-row persistence at a quarter of the record, without pinning yesterday's
-working set forever.
+"Persist the working set, restore as leases" gives the same cold-start win as
+persisting every resident row at a quarter of the record, and it does not pin
+yesterday's working set: unleased values expire on the same TTL. So the record
+policy is **automatic**: the scope base plus the components leased at save time.
+If the record is absent or corrupt, the client rebuilds from the action log —
+slower, same result.
 
-Decision: **`retain` is a persist policy, separate from residency.** It names
-what the record keeps at rest; residency names what is in memory now. Group
-scope remains the offline base (a row in scope keeps its base row and declared
-persist components). Everything else is a lease acquired on read; a miss reads
-the entity store, and an absent store row is a backfill, not a silent hole.
+The honest contract for "offline by default":
+
+- It is true for data the client has actually synced, and only for that. A group
+  never joined, a row added elsewhere while offline, or a body outside app scope
+  still needs the network.
+- It requires a durable `StorageAdapter`. `createClient` defaults to
+  `createMemoryAdapter()`, which is ephemeral, so the adapter must expose a
+  durability capability and the client should warn when offline is expected but
+  the store cannot survive a reload.
+- A browser can still evict IndexedDB under storage pressure. Request persistent
+  storage (`navigator.storage.persist()`, which nothing does today), report
+  whether it was granted, and treat eviction as "offline data is gone until the
+  next sync" — catch-up from the cursor makes that recovery cheap.
+- Offline works per synced scope, not as "materialize the whole server at
+  startup". Hydration loads scope metadata; a body is materialized from the
+  local store when a subscription leases it.
+
+The consequence that replaces `retain`: **storage growth, not memory growth, is
+the thing left to manage.** Everything synced is durable, and scope eviction
+frees memory only — the store and log keep growing. A storage retention policy
+(drop groups no longer in app scope after a grace period, compact old log
+ranges) is a follow-up, and it is a storage concern, not a residency one.
+
+Verdict: offline-by-default is confirmed as a property of **adapter durability
+plus synced scope**. It needs no per-component declaration, and the record is
+only a cold-start optimization.
 
 ---
 
@@ -303,8 +344,8 @@ Evaluate, don't assume. Every row below was read in place.
 | `ReplicaStats.pinned`, `pinnedComponents`                                                                                                 | A total with no attribution; cannot answer "who is holding this?" (F10)                                                                | `leased`, `inactive`, `leasedComponents`, `oldestInactiveMs`                                                                                     |
 | `Replica.isOpen`                                                                                                                          | Openness is one bit of a lease, not a public state                                                                                     | `leaseRefs(id, component)` (engine-internal)                                                                                                     |
 | `Replica.open` / `Replica.close` as public API                                                                                            | A reader-shaped verb that no reader calls symmetrically; `get`/joins open without closing (F6, F7)                                     | `acquire(id, component) → release` (internal); public reads go through `get`/`query`/`subscribe`                                                 |
-| `MaterializationPolicy.holds`, `holdAll`, `resident()`'s `some(holds)`, `stripToResidency`, `dormant`                                     | A static declaration is a poor proxy for a dynamic reader                                                                              | Lease-driven residency + `retain` persist policy                                                                                                 |
-| Component `loading` (`"eager"`/`"lazy"`), model `materialization` (`client.ts` `residencyFromRegistry`, `query-builder.ts` `modelIsHeld`) | Read policy moves to selection; offline policy moves to `retain` (G3/G6)                                                               | `select(...)` on reads; `retain` on the schema/record                                                                                            |
+| `MaterializationPolicy.holds`, `holdAll`, `resident()`'s `some(holds)`, `stripToResidency`, `dormant`                                     | A static declaration is a poor proxy for a dynamic reader                                                                              | Lease-driven residency; the durable store owns offline                                                                                           |
+| Component `loading` (`"eager"`/`"lazy"`), model `materialization` (`client.ts` `residencyFromRegistry`, `query-builder.ts` `modelIsHeld`) | Read policy moves to selection; offline is the adapter's job (G3/G6)                                                                   | `select(...)` on reads; durable adapter + automatic record policy                                                                                |
 | `Replica.isRowHeld`                                                                                                                       | "All components held" is a static assumption; a row with leased bodies is resident but not held                                        | `fullyResident(row)` = every carried component resident (for the store-mirror rule); otherwise per-component                                     |
 | `OnDemandQueryError` (`query-builder.ts`)                                                                                                 | A scan over a lazy model is legal once the read declares what it needs; the error encodes the old held-only scan                       | Two-phase read: narrow ids on index/held data, then acquire the selected components for the page (requires `limit`/keyset for a body projection) |
 | `openJoinedRows`, `coldJoins`, `hasOnDemandJoin`, `modelIsHeld` special-casing                                                            | A join is a dependency: the query should lease the joined rows it projects, on every surface, and release them when the result settles | Join targets join the subscription's dependency set; the registry acquires/releases them                                                         |
@@ -327,18 +368,20 @@ carrying residency releases), and `scope-eviction`'s group rule.
 
 ## 5. Additions
 
-| Module / API                                               | Responsibility                                                                                                                                                          |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `storage/src/replica/leases.ts`                            | One lease table over `(id, component)`: refcount, one inactive TTL, generation-guarded expiry, `{leased, inactive, oldestInactiveMs}` stats. No cap.                    |
-| `client/src/sync/subscriptions.ts`                         | The registry: one entry per live query/row subscription; `revision` cursor; result snapshot; acquires/releases its dependency leases; terminal `unloaded`.              |
-| `client/src/sync/dependency-index.ts`                      | Inverted indices (`component →`, `model →`, `row →`, `index:<name> →`), reverse map for removal, one dispatcher cursor, gap handling.                                   |
-| `client/src/sync/selection.ts`                             | The `Selection` type, `selectionReadComponents` (projection ∪ predicates ∪ order ∪ joins), `structuralReads` (membership + indices), the cache key, and the projection. |
-| `Query.selected` + `query().select(...)`                   | One declaration for projection and lease set; `get(id, { select })` for a single row.                                                                                   |
-| `ReplicaChange` → `{ kind: "content"                       | "membership" }`(or`exists` bit)                                                                                                                                         | Make "a row entered/left the source set" explicit instead of overloading `components: []`. |
-| `ReplicaStats` lease fields                                | Leak visibility: who holds what, how long it has been inactive (F10).                                                                                                   |
-| `retain` persist policy                                    | What the replica record keeps at rest (G6), independent of residency.                                                                                                   |
-| `useRow` / `useQuery` acquire-on-mount, release-on-unmount | The React lifecycle owns the subscription; `useSyncExternalStore` already gives the unsubscribe path. A row hook subscribes to a row + selection.                       |
-| Dev-mode lease watchdog                                    | Warn on a subscription older than N minutes whose component set never changes, and on `close()` with live leases.                                                       |
+| Module / API                                                        | Responsibility                                                                                                                                                          |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage/src/replica/leases.ts`                                     | One lease table over `(id, component)`: refcount, one inactive TTL, generation-guarded expiry, `{leased, inactive, oldestInactiveMs}` stats. No cap.                    |
+| `client/src/sync/subscriptions.ts`                                  | The registry: one entry per live query/row subscription; `revision` cursor; result snapshot; acquires/releases its dependency leases; terminal `unloaded`.              |
+| `client/src/sync/dependency-index.ts`                               | Inverted indices (`component →`, `model →`, `row →`, `index:<name> →`), reverse map for removal, one dispatcher cursor, gap handling.                                   |
+| `client/src/sync/selection.ts`                                      | The `Selection` type, `selectionReadComponents` (projection ∪ predicates ∪ order ∪ joins), `structuralReads` (membership + indices), the cache key, and the projection. |
+| `Query.selected` + `query().select(...)`                            | One declaration for projection and lease set; `get(id, { select })` for a single row.                                                                                   |
+| `ReplicaChange.kind` (`content` / `membership`)                     | Make "a row entered or left the source set" explicit instead of overloading `components: []`.                                                                           |
+| `ReplicaStats` lease fields                                         | Leak visibility: who holds what, how long it has been inactive (F10).                                                                                                   |
+| Automatic cold-start record policy                                  | Scope base + the working set leased at save time; a missing record falls back to log replay.                                                                            |
+| `StorageAdapter` durability capability + persistent-storage request | Make "durable provider" checkable, warn when offline is expected from an ephemeral adapter, and request `navigator.storage.persist()`.                                  |
+| Storage retention policy (follow-up)                                | Trim durable groups and log ranges out of app scope; storage growth replaces memory growth as the resource to manage.                                                   |
+| `useRow` / `useQuery` acquire-on-mount, release-on-unmount          | The React lifecycle owns the subscription; `useSyncExternalStore` already gives the unsubscribe path. A row hook subscribes to a row + selection.                       |
+| Dev-mode lease watchdog                                             | Warn on a subscription older than N minutes whose component set never changes, and on `close()` with live leases.                                                       |
 
 ---
 
@@ -423,7 +466,7 @@ replica knows what to keep.
 ```
 
 - A component value enters the replica only on acquire (a durable write may
-  materialize it early if the persist policy says so) and leaves only at TTL
+  materialize it early when the record restored it) and leaves only at TTL
   expiry.
 - An active lease is never TTL-released, never evicted, and never truncated. A
   read that selects N components gets all N or a loud error.
@@ -462,7 +505,7 @@ const off = note?.subscribe((event) => {
   model fields. Unknown keys are a compile error and a runtime validation error.
 - `get(id)` with no selection keeps the historical "every component the stored
   row carries" behaviour for one release, then narrows to the model's
-  `retain` set. (This is the one place a deprecation-free narrowing is a real
+  declared component set. (This is the one place a deprecation-free narrowing is a real
   breaking change; it is pre-release, so it can be one step.)
 - `query().select(...)` is the only way to project a subset. `.select({})`
   returns `id` only. A query that projects a lazy component is legal: the plan
@@ -546,12 +589,18 @@ not masquerade as a write.
 
 ## 9. Persistence / offline decision
 
-The record is a **fast path, never correctness** (`ReplicaStore`'s contract).
-Under subscription-owned residency it persists:
+**Offline is a property of the durable storage provider plus the synced scope,
+not a read policy.** The durable substrate is the action log, the outbox, the
+cursors, and the entity store. The entity store already receives the full row
+even when the replica holds none of it (`mirrorReplicaRows` applies an update to
+the stored row for a partially resident row), and `readStoredComponent` reads a
+body back from there. So everything the client has synced is readable offline
+when the adapter is durable, including components that were never opened.
 
-1. every row in the client's group scope, with base metadata and its
-   `retain` components (`ebb/membership`, model metadata, whatever the app
-   declares durable);
+The replica record is a **cold-start cache**, never the offline contract. Under
+subscription-owned residency it persists:
+
+1. the base row and its metadata for every row in group scope;
 2. the component values **leased at save time** — the working set that was
    actually open — not every value that was ever materialized;
 3. `notResident` existence and `componentVersions`, as today.
@@ -562,25 +611,32 @@ outbox overlay is applied. Then the first subscriptions acquire:
 
 - a selected component already restored: **zero** store reads;
 - a selected component absent from the record but present in the entity store:
-  one store read;
-- absent from both: a backfill (server), never a silent empty field.
+  one local store read (no network);
+- absent from both: a backfill, never a silent empty field.
 
-This is S6 policy B. It gives the same cold-start win as persisting every
-resident row (policy C) at ~¼ of the record in the measured workload, and it
-does not pin yesterday's working set: unleased values expire on the same TTL.
+This is S6 policy B. If the record is absent or corrupt, the client rebuilds
+from the action log: slower to start, same data. There is no user-facing
+`retain` declaration; the working set is whatever subscriptions were actually
+holding when the record was written.
 
-What `retain` is not: it is not `loading`. `retain` answers "what must survive a
-restart for offline"; residency answers "what is in memory now". A `retain`
-component is materialized at hydrate and persisted; a non-`retain` component is
-acquired by a subscription and may never be persisted at all. Offline apps
-declare a group scope plus `retain` on the components they need with no network;
-everything else is a lease.
+The contract has three obligations:
 
-Open question recorded for review: whether `retain` is declared per component,
-per model, or as one record-level policy. The spike does not distinguish them;
-the model-level declaration matching today's `materialization` is the smallest
-migration, but it cannot express "persist a document body only after it has been
-opened once". Recommend component-level `retain` seeded from the model default.
+1. **Make durability explicit.** `createClient` defaults to
+   `createMemoryAdapter()`, which is ephemeral. The adapter exposes whether it is
+   durable; an app that expects offline without one gets a warning, not a false
+   promise.
+2. **Ask the platform to keep the data.** A browser may evict IndexedDB under
+   pressure. Request persistent storage (`navigator.storage.persist()`), record
+   whether it was granted, and treat eviction as "re-sync on reconnect" rather
+   than as a bug in residency.
+3. **Manage storage, not memory.** Scope eviction frees memory; it does not
+   delete durable rows or log entries. A retention policy that drops groups
+   outside app scope after a grace period, and compacts old log ranges, is the
+   follow-up that keeps "everything offline" from meaning "everything forever".
+
+What this deletes from the earlier draft: `retain` as a per-component or
+per-model declaration, and the claim that `loading` had to wait for an offline
+replacement. It did not. `loading` only ever decided memory.
 
 ---
 
@@ -668,18 +724,22 @@ predicate/order/limit/join write re-runs; re-run counts per change are asserted.
 Acceptance: patch paths for the G4-safe shapes only; every unsafe shape has a
 test asserting re-run; benchmark reports rows examined and re-runs per change.
 
-### Slice 6 — Remove `loading`/`materialization`, add `retain`
+### Slice 6 — Remove `loading`/`materialization`; make the durable store the offline base
 
 Files: `client.ts` `residencyFromRegistry`, `query-builder.ts` `modelIsHeld`,
-schema/registry declarations, `replica.ts` load policy, docs.
+schema/registry declarations, `storage` adapter capability + persistent-storage
+request, `replica.ts` load policy, docs.
 
-Failing test first: S6 ported — a record persists the working set; hydrate
-restores it as leases; a same-session remount reads nothing; a different session
-reads only its missing bodies; TTL clears.
+Failing test first: with a durable adapter and no network, a body that was
+synced but never opened reads from the entity store; a record written with a
+working set restores as leases; a same-session remount reads nothing; a
+different session reads only its missing bodies; deleting the record falls back
+to log replay with the same data.
 
-Acceptance: no `loading`/`materialization` in the read path; `retain` drives
-hydrate; offline tests (group scope, no network) pass; cold start counters
-match S6.
+Acceptance: no `loading`/`materialization` in the read path; offline works for
+every synced component, not only a declared subset; an ephemeral adapter warns
+when offline is expected; the record is optional; cold-start counters match S6.
+No `retain` declaration exists.
 
 Ordering note: slices 0–2 fix the bug and the leak shape without changing the
 query API. Slices 3–6 are breaking and may be one release. Do not interleave
@@ -692,16 +752,16 @@ change on top of the all-entries scan.
 
 ### Tests
 
-| Layer                                   | What it proves                                                                                                                                                        |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage/replica` lease tests           | share, release, TTL, remount, double release, 1k no-cap, expiry is not a content revision, unmount during in-flight read installs nothing                             |
-| `storage/replica` truncation regression | three components on one row always return three; an unrelated row's component is never released by a peer's acquire                                                   |
-| `client` dispatch tests                 | indexed set === scan set on fixtures; journal gap re-runs; batch touches each subscription once                                                                       |
-| `client` selection tests                | exact read set = projection ∪ predicates ∪ order ∪ joins ∪ membership; cache key includes selection; unselected change is silent; `unloaded` only on real departure   |
-| `client` type tests (`*.test-d.ts`)     | selection narrows the row, rejects unknown fields and non-`true` values, narrows `get`                                                                                |
-| `client` one-shot tests                 | `await qb.with(...)` releases its joined targets; a one-shot `get` release leaves the returned projection intact                                                      |
-| `react` tests                           | `useQuery`/`useRow` unsubscribe on unmount; remount inside TTL subscribes with no re-run; a thrown render still releases                                              |
-| offline integration                     | record → hydrate with no network → a subscription over `retain` components settles; a non-retained selection reports `unloaded{component}` rather than an empty field |
+| Layer                                   | What it proves                                                                                                                                                             |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage/replica` lease tests           | share, release, TTL, remount, double release, 1k no-cap, expiry is not a content revision, unmount during in-flight read installs nothing                                  |
+| `storage/replica` truncation regression | three components on one row always return three; an unrelated row's component is never released by a peer's acquire                                                        |
+| `client` dispatch tests                 | indexed set === scan set on fixtures; journal gap re-runs; batch touches each subscription once                                                                            |
+| `client` selection tests                | exact read set = projection ∪ predicates ∪ order ∪ joins ∪ membership; cache key includes selection; unselected change is silent; `unloaded` only on real departure        |
+| `client` type tests (`*.test-d.ts`)     | selection narrows the row, rejects unknown fields and non-`true` values, narrows `get`                                                                                     |
+| `client` one-shot tests                 | `await qb.with(...)` releases its joined targets; a one-shot `get` release leaves the returned projection intact                                                           |
+| `react` tests                           | `useQuery`/`useRow` unsubscribe on unmount; remount inside TTL subscribes with no re-run; a thrown render still releases                                                   |
+| offline integration                     | durable adapter + no network → a synced body that was never opened settles from the entity store; record absent → log replay yields the same rows; ephemeral adapter warns |
 
 ### Benchmarks
 
@@ -717,7 +777,7 @@ Report S3/S5/S6-style tables so a regression is a number, not an anecdote.
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | R1 A missed unsubscribe leaks forever  | No cap is no pressure valve; a React effect that forgets cleanup pins a body for the session                              | Dev-mode watchdog (age + never-changing refs), `useQuery`/`useRow` own cleanup, a test that throws during render, stats surfaced in the client             |
 | R2 One-shot reads leak again           | Easy to add a `get`/join path that acquires and forgets                                                                   | Acquire returns a release; lint/test helper; a leak test per new read path                                                                                 |
-| R3 Offline regression                  | `loading` removal changes what hydrate materializes                                                                       | `retain` policy + offline integration test before slice 6 merges; S6 counters                                                                              |
+| R3 Offline regression                  | `loading` removal changes what hydrate materializes                                                                       | Durable-adapter offline integration test before slice 6; S6 counters; assert the entity store, not a declaration, is the source                            |
 | R4 Type complexity                     | Selection generics can make `.select` unusable and `QueryRowOf` explode                                                   | Type tests first; field-key selection only; no nested selection; `QueryRowOf` derives from the same `SelectedRow`                                          |
 | R5 Server scope mismatch               | App scope (`group.apps`) is a sync filter, not authorization; a client can select a component the server will not deliver | Residency is a local optimization; a missing component is `unloaded{component}`/backfill, never a partial row. Do not infer authorization from a selection |
 | R6 Re-run storm returns via a new path | A patch path that bumps revision on acquire                                                                               | The "acquisition is not a write" invariant has its own test in slice 1                                                                                     |
@@ -730,8 +790,12 @@ Report S3/S5/S6-style tables so a regression is a number, not an anecdote.
 
 ## What this sprint could not settle
 
-- **`retain` granularity** (component vs model vs record). S6 measures the
-  policy, not the declaration shape.
+- **Storage retention.** Everything synced is durable, and scope eviction frees
+  memory only. When to drop groups no longer in app scope, and how to compact
+  old log ranges, is a storage-policy question this sprint did not size.
+- **Hydration split.** How much of scope to materialize eagerly versus on the
+  first lease is a startup-time tuning question; S6 measures the record policy,
+  not the split.
 - **Patch fast paths beyond row replacement.** S5 proves the 10k → 1 win for
   a filtered row set; order/limit/join patching needs a sorted structure
   (e.g. an order index) that this sprint did not prototype.
@@ -744,9 +808,9 @@ Report S3/S5/S6-style tables so a regression is a number, not an anecdote.
   delivers whole Actions. A read-filtered delta is out of scope (and
   `CONTEXT.md` says reads are not field-granular at the delivery boundary).
 - **Persisting the working set at save time is a snapshot, not a log.** A
-  component written while it was leased but saved after the lease ended is
-  persisted under the policy; whether the record should include it is a policy
-  question S6 does not answer.
+  component written while it was leased but saved after the lease ended may or
+  may not land in the record; the entity store has it either way, so this is a
+  cold-start cost question, not an offline one.
 
 ## Appendix — spike commands and baseline
 
