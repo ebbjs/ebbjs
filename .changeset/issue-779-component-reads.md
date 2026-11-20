@@ -22,8 +22,12 @@ eviction, and a same-id row of another model each produce exactly one
 leaves the replica — so a subscriber can reload instead of silently rendering a
 stale row. A soft delete stays a normal snapshot.
 
-Forward-one accessors materialize a lazy target component through the replica's
-component open. The default `pinnedCapacity` rises from 16 to 256.
+Only the window's names are new: `pinnedCapacity` / `pinnedTtlMs` are now
+`cacheCapacity` / `cacheTtlMs` (and `DEFAULT_PINNED_CAPACITY` /
+`DEFAULT_PINNED_TTL_MS` are `DEFAULT_CACHE_CAPACITY` / `DEFAULT_CACHE_TTL_MS`).
+No aliases remain. Forward-one accessors materialize a lazy target component
+through the replica's component open. The default `cacheCapacity` rises from 16
+to 256.
 
 The stale `version` leaf reference in `openDerivedTextDocument`'s doc comment
 now names the `content` component.

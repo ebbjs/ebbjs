@@ -44,8 +44,8 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import {
   applyUpdate,
   createReplica,
-  DEFAULT_PINNED_CAPACITY,
-  DEFAULT_PINNED_TTL_MS,
+  DEFAULT_CACHE_CAPACITY,
+  DEFAULT_CACHE_TTL_MS,
   type MaterializationPolicy,
   type Replica,
   type ReplicaStats,
@@ -483,8 +483,8 @@ export class SyncClient<
       materialization: residencyFromRegistry(this.registry),
       versions: { declared: (component) => this.registry.versionOf(component) },
       readComponent: (id, component) => this.readStoredComponent(id, component),
-      pinnedCapacity: opts.pinnedCapacity ?? DEFAULT_PINNED_CAPACITY,
-      pinnedTtlMs: opts.pinnedTtlMs ?? DEFAULT_PINNED_TTL_MS,
+      cacheCapacity: opts.cacheCapacity ?? DEFAULT_CACHE_CAPACITY,
+      cacheTtlMs: opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS,
     });
     this.componentMigrations =
       opts.schema?._migrations === undefined

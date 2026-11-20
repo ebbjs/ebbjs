@@ -90,7 +90,10 @@ log never materializes its siblings, and a provider can read an eager `engine`
 before paying for the log. Omit the selection and the read opens every
 component the stored row carries. Selection controls what is materialized and
 pinned, not projection: the returned row projects every resident field.
-Reading the same `(row, component)` again shares the existing pin.
+Reading the same `(row, component)` again shares the existing pin. A selection
+larger than `cacheCapacity` cannot all stay resident: the opens run in order, so
+the earliest components are evicted by the later ones and the row omits them.
+Keep a selection within the window, or raise `cacheCapacity`.
 
 `row.subscribe(cb)` reports the row's materialization as an `EntityEvent`:
 
@@ -201,9 +204,9 @@ body out of the replica while the page, its relationships, and its memberships
 stay held. Residency is per component: read one with
 `client.page_body.get(id, { components: ["content"] })` (or the lower-level
 `client.replica.open(id, "page_content/content")`); it is pinned in an LRU
-window (`pinnedCapacity`, default 256 components), and a component-scoped read
+window (`cacheCapacity`, default 256 components), and a component-scoped read
 of `content` never pins `versions`. `client.replica.close(id, component)`
-closes the pin; the component stays cached for `pinnedTtlMs` (default 30 s) so
+closes the pin; the component stays cached for `cacheTtlMs` (default 30 s) so
 a remount reads it back, then leaves. A non-positive TTL releases it
 immediately on close, and an open component is never released by the TTL.
 Eviction is observable through `row.subscribe`'s `unloaded` event, so a

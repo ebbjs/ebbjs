@@ -253,13 +253,13 @@ export interface SyncClientOptions<
    * holds; `row.subscribe` reports a release, so a released value reloads on
    * demand.
    */
-  pinnedCapacity?: number;
+  cacheCapacity?: number;
   /**
    * How long a closed on-demand row stays cached, in ms. Defaults to 30_000.
    * A non-positive or non-finite value releases it on close; an open row is
    * never released by the TTL.
    */
-  pinnedTtlMs?: number;
+  cacheTtlMs?: number;
   /**
    * Schema-layer entity registry. When provided, `client.write()` and
    * `client.queryEntities()` validate against it before any network

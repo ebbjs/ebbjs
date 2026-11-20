@@ -63,8 +63,8 @@ const setup = (n: number) => {
   const replica = createReplica({
     materialization: heldMetadata,
     readComponent: store.read,
-    pinnedCapacity: 1,
-    pinnedTtlMs: 0,
+    cacheCapacity: 1,
+    cacheTtlMs: 0,
   });
   replica.load(workspace.record);
   const index = createIndexCounter();

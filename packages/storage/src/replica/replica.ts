@@ -67,8 +67,8 @@ export const DEFAULT_JOURNAL_CAPACITY = 1024;
  * `unloaded` event, so eviction is a real pressure valve rather than silent
  * data loss.
  */
-export const DEFAULT_PINNED_CAPACITY = 256;
-export const DEFAULT_PINNED_TTL_MS = 30_000;
+export const DEFAULT_CACHE_CAPACITY = 256;
+export const DEFAULT_CACHE_TTL_MS = 30_000;
 
 /**
  * A capacity that retains everything is `Infinity`, so the trimmer never finds
@@ -82,7 +82,7 @@ const capacityOf = (capacity: number | undefined, fallback: number): number => {
 
 /** `Infinity` disables TTL release, so no timer is armed at all. */
 const pinnedTtlOf = (ttlMs: number | undefined): number => {
-  if (ttlMs === undefined) return DEFAULT_PINNED_TTL_MS;
+  if (ttlMs === undefined) return DEFAULT_CACHE_TTL_MS;
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
   return ttlMs;
 };
@@ -164,8 +164,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const effective = new Map<string, Entity | null>();
   const orphans = new Map<string, OrphanUpdate[]>();
   const journalCapacity = capacityOf(options?.journalCapacity, DEFAULT_JOURNAL_CAPACITY);
-  const pinnedCapacity = capacityOf(options?.pinnedCapacity, DEFAULT_PINNED_CAPACITY);
-  const pinnedTtlMs = pinnedTtlOf(options?.pinnedTtlMs);
+  const cacheCapacity = capacityOf(options?.cacheCapacity, DEFAULT_CACHE_CAPACITY);
+  const cacheTtlMs = pinnedTtlOf(options?.cacheTtlMs);
   // Iteration order is LRU order: a touch deletes and re-adds, so the first
   // key is the oldest pin.
   const pins = new Map<string, Pin>();
@@ -985,7 +985,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
 
   /** Release the least recently opened components past the configured window. */
   const trimPins = (): void => {
-    while (pins.size > pinnedCapacity) {
+    while (pins.size > cacheCapacity) {
       const oldest = pins.keys().next();
       if (oldest.done === true) return;
       releaseComponent(pinIdOf(oldest.value), pinComponentOf(oldest.value));
@@ -1003,11 +1003,11 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const pin = pins.get(pinKey(id, component));
     if (pin === undefined || !pin.open) return;
     pin.open = false;
-    if (!Number.isFinite(pinnedTtlMs)) {
+    if (!Number.isFinite(cacheTtlMs)) {
       releaseComponent(id, component);
       return;
     }
-    pin.timer = setTimeout(() => releaseComponent(id, component), pinnedTtlMs);
+    pin.timer = setTimeout(() => releaseComponent(id, component), cacheTtlMs);
     unrefTimer(pin.timer);
   };
 

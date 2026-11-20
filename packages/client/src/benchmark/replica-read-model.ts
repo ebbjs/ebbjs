@@ -268,8 +268,8 @@ const measureHeap = (
 const loadOptions = {
   materialization: heldMetadata,
   readComponent: store.read,
-  pinnedCapacity: 1,
-  pinnedTtlMs: 0,
+  cacheCapacity: 1,
+  cacheTtlMs: 0,
 } as const;
 
 const heapAccounts: HeapAccounts | null =
@@ -877,8 +877,8 @@ push(
   "## 5. Windowed bodies",
   "",
   `\`${ON_DEMAND_TYPE}\` is the schema's on-demand type: not held, so \`load\` drops it and`,
-  "`replica.open(id, component)` reads it through the store into a pinned window (`pinnedCapacity: 1`,",
-  "`pinnedTtlMs: 0`). Each open below follows a `close`, so every call is a cold read.",
+  "`replica.open(id, component)` reads it through the store into a pinned window (`cacheCapacity: 1`,",
+  "`cacheTtlMs: 0`). Each open below follows a `close`, so every call is a cold read.",
   "",
   "| measure | value |",
   "| --- | ---: |",

@@ -49,8 +49,8 @@ const schema = defineSchema({
 });
 
 interface HarnessOptions {
-  readonly pinnedCapacity?: number;
-  readonly pinnedTtlMs?: number;
+  readonly cacheCapacity?: number;
+  readonly cacheTtlMs?: number;
 }
 
 const harness = (opts: HarnessOptions = {}) => {
@@ -230,7 +230,7 @@ describe("client.<entity>.get(id, { components })", () => {
 
 describe("row.subscribe unloaded events", () => {
   it("reports exactly one unloaded event for an explicitly closed component", async () => {
-    const { client } = harness({ pinnedTtlMs: 0 });
+    const { client } = harness({ cacheTtlMs: 0 });
     await seedDoc(client, 1);
     const row = await client.doc.get(DOC, { components: ["doc/content"] });
     const seen: DocEvent[] = [];
@@ -244,7 +244,7 @@ describe("row.subscribe unloaded events", () => {
   });
 
   it("reports unloaded when the pin TTL releases the component", async () => {
-    const { client } = harness({ pinnedTtlMs: 10 });
+    const { client } = harness({ cacheTtlMs: 10 });
     await seedDoc(client, 1);
     const row = await client.doc.get(DOC, { components: ["doc/content"] });
     const seen: DocEvent[] = [];
@@ -257,7 +257,7 @@ describe("row.subscribe unloaded events", () => {
   });
 
   it("reports unloaded for the component capacity eviction releases", async () => {
-    const { client } = harness({ pinnedCapacity: 1, pinnedTtlMs: 0 });
+    const { client } = harness({ cacheCapacity: 1, cacheTtlMs: 0 });
     await seedDoc(client, 1, "doc_1");
     await seedDoc(client, 2, "doc_2");
     const first = await client.doc.get("doc_1", { components: ["doc/content"] });
@@ -272,7 +272,7 @@ describe("row.subscribe unloaded events", () => {
   });
 
   it("reports a whole-row unload when the replica drops the row", async () => {
-    const { client } = harness({ pinnedCapacity: 1, pinnedTtlMs: 0 });
+    const { client } = harness({ cacheCapacity: 1, cacheTtlMs: 0 });
     await seedBlob(client, 1, "blob_1");
     await seedBlob(client, 2, "blob_2");
     const first = await client.blob.get("blob_1", { components: ["blob/content"] });
@@ -286,7 +286,7 @@ describe("row.subscribe unloaded events", () => {
   });
 
   it("re-opens and replays the log after an unload", async () => {
-    const { client } = harness({ pinnedTtlMs: 0 });
+    const { client } = harness({ cacheTtlMs: 0 });
     await seedDoc(client, 1);
     const row = await client.doc.get(DOC, { components: ["doc/content"] });
     const seen: DocEvent[] = [];
@@ -331,7 +331,7 @@ describe("row.subscribe unloaded events", () => {
 
 describe("forward-one accessor to a lazy target", () => {
   it("materializes the target's lazy component through replica.open", async () => {
-    const { client } = harness({ pinnedTtlMs: 0 });
+    const { client } = harness({ cacheTtlMs: 0 });
     const hlc = makeHlc(1_711_036_800_000);
     await callApplyAction(
       client,

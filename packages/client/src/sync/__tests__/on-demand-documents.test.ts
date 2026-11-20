@@ -256,7 +256,7 @@ describe("on-demand document residency", () => {
   });
 
   it("opens a body through its namespace, pinning it, and releases it on close", async () => {
-    const { client, written } = harness(pageSchema, { pinnedTtlMs: 0 });
+    const { client, written } = harness(pageSchema, { cacheTtlMs: 0 });
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
     const body = await client.page_body.get(bodyId);
@@ -274,7 +274,7 @@ describe("on-demand document residency", () => {
   });
 
   it("keeps a closed body cached until its TTL, then releases it", async () => {
-    const { client, written } = harness(pageSchema, { pinnedTtlMs: 10 });
+    const { client, written } = harness(pageSchema, { cacheTtlMs: 10 });
     const { bodyId } = await createPage(client, written, { title: "One", body: "hello" });
 
     await client.page_body.get(bodyId);
@@ -288,7 +288,7 @@ describe("on-demand document residency", () => {
   });
 
   it("releases the least recently opened body when the pinned window overflows", async () => {
-    const { client, written } = harness(pageSchema, { pinnedCapacity: 1, pinnedTtlMs: 0 });
+    const { client, written } = harness(pageSchema, { cacheCapacity: 1, cacheTtlMs: 0 });
     const first = await createPage(client, written, { title: "One", body: "hello" });
     const second = await createPage(client, written, { title: "Two", body: "world" });
 
@@ -349,7 +349,7 @@ describe("residency per component", () => {
     );
 
   it("holds the metadata components and windows only the body", async () => {
-    const { client } = harness(noteSchema, { pinnedTtlMs: 0 });
+    const { client } = harness(noteSchema, { cacheTtlMs: 0 });
     await seedNote(client);
 
     expect(Object.keys(client.replica.get(noteId)?.data.fields ?? {}).sort()).toEqual([
@@ -446,7 +446,7 @@ describe("held source with an on-demand join", () => {
   };
 
   it("loads the joined row before projecting and shows stale then current on a re-run", async () => {
-    const { client, storage } = harness(joinSchema, { pinnedTtlMs: 0 });
+    const { client, storage } = harness(joinSchema, { cacheTtlMs: 0 });
     await seed(client);
 
     const store = client.page.query().with({ content: true }).result();

@@ -1446,7 +1446,7 @@ describe("replica: on-demand residency (#500)", () => {
     let release!: (row: Entity) => void;
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: () =>
         new Promise<Entity>((resolve) => {
           release = resolve;
@@ -1485,7 +1485,7 @@ describe("replica: on-demand residency (#500)", () => {
     let release!: (row: Entity) => void;
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: () =>
         new Promise<Entity>((resolve) => {
           release = resolve;
@@ -1565,7 +1565,7 @@ describe("replica: on-demand residency (#500)", () => {
   });
 
   it("drops a patch for an unopened on-demand row instead of retaining an orphan", () => {
-    const replica = createReplica({ materialization: onDemand, pinnedTtlMs: 0 });
+    const replica = createReplica({ materialization: onDemand, cacheTtlMs: 0 });
 
     ingest(
       replica,
@@ -1599,7 +1599,7 @@ describe("replica: on-demand residency (#500)", () => {
     const rows = { doc_0: documentRow("doc_0") };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
 
@@ -1632,7 +1632,7 @@ describe("replica: on-demand residency (#500)", () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
     ingest(
@@ -1680,8 +1680,8 @@ describe("replica: on-demand residency (#500)", () => {
     };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedCapacity: 2,
-      pinnedTtlMs: 0,
+      cacheCapacity: 2,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
     await replica.open("doc_1", "document/text");
@@ -1701,8 +1701,8 @@ describe("replica: on-demand residency (#500)", () => {
     for (let i = 1; i <= 20; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
     const replica = createReplica({
       materialization: onDemand,
-      pinnedCapacity: 0,
-      pinnedTtlMs: 0,
+      cacheCapacity: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
 
@@ -1717,7 +1717,7 @@ describe("replica: on-demand residency (#500)", () => {
     for (let i = 1; i <= 257; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
 
@@ -1732,7 +1732,7 @@ describe("replica: on-demand residency (#500)", () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
     ingest(
@@ -1759,7 +1759,7 @@ describe("replica: on-demand residency (#500)", () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({
       materialization: onDemand,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: reader(rows),
     });
     await replica.open("doc_1", "document/text");
@@ -1792,7 +1792,7 @@ describe("replica: on-demand residency (#500)", () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
+        cacheTtlMs: 1_000,
         readComponent: reader(rows),
       });
       await replica.open("doc_1", "document/text");
@@ -1811,7 +1811,7 @@ describe("replica: on-demand residency (#500)", () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
+        cacheTtlMs: 1_000,
         readComponent: reader(rows),
       });
       await replica.open("doc_1", "document/text");
@@ -1828,7 +1828,7 @@ describe("replica: on-demand residency (#500)", () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 0,
+        cacheTtlMs: 0,
         readComponent: reader(rows),
       });
       await replica.open("doc_1", "document/text");
@@ -1844,7 +1844,7 @@ describe("replica: on-demand residency (#500)", () => {
       const rows = { doc_1: documentRow("doc_1") };
       const replica = createReplica({
         materialization: onDemand,
-        pinnedTtlMs: 1_000,
+        cacheTtlMs: 1_000,
         readComponent: reader(rows),
       });
       await replica.open("doc_1", "document/text");
@@ -2017,7 +2017,7 @@ describe("replica: residency per component (#802)", () => {
     });
 
   const noteReplica = (): Replica => {
-    const replica = createReplica({ materialization: componentPolicy, pinnedTtlMs: 0 });
+    const replica = createReplica({ materialization: componentPolicy, cacheTtlMs: 0 });
     replica.load({
       format: REPLICA_RECORD_FORMAT,
       componentVersions: {},
@@ -2061,7 +2061,7 @@ describe("replica: residency per component (#802)", () => {
     const reads: string[] = [];
     const replica = createReplica({
       materialization: componentPolicy,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: async (id, component) => {
         reads.push(`${id}:${component}`);
         return id === noteId && component === "note/body" ? noteRow() : null;
@@ -2094,7 +2094,7 @@ describe("replica: residency per component (#802)", () => {
   it("releases a closed component back to non-resident without losing the row", async () => {
     const replica = createReplica({
       materialization: componentPolicy,
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: async () => noteRow(),
     });
     replica.load({
@@ -2176,7 +2176,7 @@ describe("replica: residency per component (#802)", () => {
   it("is not resident, and journals nothing, when every component is lazy", async () => {
     const replica = createReplica({
       materialization: { holds: () => false },
-      pinnedTtlMs: 0,
+      cacheTtlMs: 0,
       readComponent: async () =>
         entity({
           id: "doc_1",
