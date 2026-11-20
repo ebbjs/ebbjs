@@ -1712,6 +1712,22 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.stats().byModel).toEqual({ document: 20 });
   });
 
+  it("keeps 256 on-demand components resident by default", async () => {
+    const rows: Record<string, Entity> = {};
+    for (let i = 1; i <= 257; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
+    const replica = createReplica({
+      materialization: onDemand,
+      pinnedTtlMs: 0,
+      readComponent: reader(rows),
+    });
+
+    for (const id of Object.keys(rows)) await replica.open(id, "document/text");
+
+    expect(replica.stats().pinned).toBe(256);
+    expect(replica.isOpen("doc_1", "document/text")).toBe(false);
+    expect(replica.isOpen("doc_257", "document/text")).toBe(true);
+  });
+
   it("persists held rows only, never a pinned body", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({

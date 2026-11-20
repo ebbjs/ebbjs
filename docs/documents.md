@@ -189,7 +189,9 @@ pin TTL, and capacity eviction each deliver one `unloaded` event carrying the
 component; when the whole row leaves the replica the event carries no component.
 Re-open with the component-scoped read and replay: the log is append-only, so
 nothing is lost. Lazy components are pinned in an LRU window; `pinnedCapacity`
-defaults to 64 components and is configurable per client.
+defaults to 256 components and is configurable per client. Each held component
+can be a full document body, so the window bounds values, not rows: size it
+against the app's body sizes.
 
 ## Conflicts
 

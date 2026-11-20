@@ -246,9 +246,12 @@ export interface SyncClientOptions<
    */
   queryTtlMs?: number;
   /**
-   * Maximum resident on-demand components. Defaults to 64. Opening past the
+   * Maximum resident on-demand components. Defaults to 256. Opening past the
    * window releases the least recently opened component; a non-positive or
-   * non-finite value keeps every opened component resident.
+   * non-finite value keeps every opened component resident. Each component can
+   * be a full document body, so the window's cost is the sum of the values it
+   * holds; `row.subscribe` reports a release, so a released value reloads on
+   * demand.
    */
   pinnedCapacity?: number;
   /**

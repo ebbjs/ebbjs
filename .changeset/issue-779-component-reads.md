@@ -23,7 +23,7 @@ leaves the replica — so a subscriber can reload instead of silently rendering 
 stale row. A soft delete stays a normal snapshot.
 
 Forward-one accessors materialize a lazy target component through the replica's
-component open. The default `pinnedCapacity` rises from 16 to 64.
+component open. The default `pinnedCapacity` rises from 16 to 256.
 
 The stale `version` leaf reference in `openDerivedTextDocument`'s doc comment
 now names the `content` component.

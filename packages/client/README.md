@@ -201,7 +201,7 @@ body out of the replica while the page, its relationships, and its memberships
 stay held. Residency is per component: read one with
 `client.page_body.get(id, { components: ["content"] })` (or the lower-level
 `client.replica.open(id, "page_content/content")`); it is pinned in an LRU
-window (`pinnedCapacity`, default 64 components), and a component-scoped read
+window (`pinnedCapacity`, default 256 components), and a component-scoped read
 of `content` never pins `versions`. `client.replica.close(id, component)`
 closes the pin; the component stays cached for `pinnedTtlMs` (default 30 s) so
 a remount reads it back, then leaves. A non-positive TTL releases it
