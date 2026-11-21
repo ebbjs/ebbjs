@@ -1127,6 +1127,58 @@ describe("subscription registry: the lease watchdog (#944)", () => {
   });
 
   /**
+   * A host can also have a `process` that is not whole: some bundlers and test
+   * harnesses define a bare `process = {}`. The gate runs inside
+   * `createSubscriptionRegistry`, so a diagnostics flag that throws would crash
+   * the client at construction. No `env` reads as no flag, and no flag reads as
+   * development, so the watchdog stays armed exactly as it does in a test run.
+   *
+   * The expression is evaluated from its own source because a test run cannot
+   * exercise the module's copy: Vitest defines `process.env.NODE_ENV` to
+   * itself, and esbuild's define pass rewrites that member inside the optional
+   * chain — the very read the chain exists to avoid. Outside an identity define
+   * — a production build, Vite's dev server, plain ESM — the chain stays, which
+   * the bundler check below measures.
+   */
+  it("reads a bare `process` shim with no `env` as a development host", () => {
+    const gate = new Function("process", `return ${gateSource()};`) as (proc: unknown) => boolean;
+
+    expect(() => gate({})).not.toThrow();
+    expect(gate({})).toBe(true);
+    expect(gate(undefined)).toBe(false);
+    expect(gate({ env: {} })).toBe(true);
+    expect(gate({ env: { NODE_ENV: "production" } })).toBe(false);
+  });
+
+  /**
+   * The same partial shim, through the registry: a `process` whose `env` exists
+   * but carries no flag must not throw at construction, and must leave the
+   * watchdog armed. A test run's define rewrites only the optional chain, so
+   * this shape does reach the gate as written.
+   */
+  it("stays armed for a `process` whose `env` has no flag", async () => {
+    vi.useFakeTimers();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const warn = vi.fn();
+
+    vi.stubGlobal("process", { env: {} });
+    try {
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      const live = subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(1);
+
+      vi.advanceTimersByTime(HORIZON_MS + 1);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      live.release();
+      subscriptions.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
    * Foldability is a property of the source form, so it is pinned at the source.
    * A bundler substitutes `process.env.NODE_ENV` only as that exact member
    * expression and never folds `typeof process`, so the absent-`process` case
@@ -1134,16 +1186,24 @@ describe("subscription registry: the lease watchdog (#944)", () => {
    * `false` (esbuild emits `!1`). Written as an `||` alternative it keeps
    * `typeof process > "u"` in the bundle, which resolves to `true` there.
    *
+   * The optional chain on `env` does not survive the fold either: the defined
+   * member expression is still matched inside it, so the bundled gate is the
+   * same `() => !1` while a bare `process` shim reads without throwing.
+   *
    * Proved with esbuild over the built client for `platform: "browser"` and
    * `define: { "process.env.NODE_ENV": '"production"' }`, evaluated in a `vm`
    * with no `process`: this form emits no timer and no message, the previous
    * one warned past the horizon.
    */
-  it("writes the gate in the shape a production bundle folds away", () => {
+  /** The gate's body exactly as the source writes it, for the shape and shim tests. */
+  const gateSource = (): string => {
     const source = readFileSync(new URL("../subscriptions.ts", import.meta.url), "utf8");
-    const gate = /const devWatchdog = \(\): boolean =>([^;]*);/.exec(source)?.[1] ?? "";
-    expect(gate.replace(/\s+/g, " ").trim()).toBe(
-      'typeof process === "undefined" ? false : process.env.NODE_ENV !== "production"',
+    return (/const devWatchdog = \(\): boolean =>([^;]*);/.exec(source)?.[1] ?? "").trim();
+  };
+
+  it("writes the gate in the shape a production bundle folds away", () => {
+    expect(gateSource().replace(/\s+/g, " ")).toBe(
+      'typeof process === "undefined" ? false : process.env?.NODE_ENV !== "production"',
     );
   });
 });

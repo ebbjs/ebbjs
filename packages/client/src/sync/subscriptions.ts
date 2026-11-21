@@ -566,9 +566,16 @@ const DEFAULT_WATCHDOG_INTERVAL_MS = 60_000;
  * order is what makes the un-folded form safe too: a browser bundle carries no
  * `process` at all, so it reads as production rather than as "no flag, so
  * development".
+ *
+ * `env` is optional because a probe that exists is not a probe that is whole:
+ * some bundlers and test harnesses define a bare `process = {}`, and reading
+ * `env.NODE_ENV` off it would throw a `TypeError` while the client is being
+ * constructed. With the chain a bare shim answers "no flag" and runs the
+ * watchdog as it would in any other development host. The chain is free in a
+ * production build: the bundler still matches the defined member expression.
  */
 const devWatchdog = (): boolean =>
-  typeof process === "undefined" ? false : process.env.NODE_ENV !== "production";
+  typeof process === "undefined" ? false : process.env?.NODE_ENV !== "production";
 
 /** The watchdog settings an entry's lifecycle is measured against. */
 interface LeaseWatchdog {

@@ -225,10 +225,10 @@ describe("useQuery lease lifecycle (#944)", () => {
     expect(screen.getByTestId("status").textContent).toBe("current");
 
     // The entry this mount created: the remount has to take *this* one back.
-    // The read spies below cannot tell the difference — a fresh entry would
-    // leave the old one's claims holding the values resident, so neither a
-    // store read nor an `iterate` would happen either way. The identity is what
-    // covers the reuse path.
+    // The read and run assertions below catch a removal that reuses nothing —
+    // a fresh entry reads the store and runs the query, and both spies see it.
+    // Only the entry id tells a reused entry from a replacement that happens
+    // to answer with the same result.
     const entries = client.subscriptions.entries();
     expect(entries).toHaveLength(1);
     const entryId = client.subscriptions.peek("query", entries[0].key)?.id;
