@@ -161,6 +161,13 @@ its grace period, and for how long, per component. The persisted replica record
 holds the held components only — a lazy component's existence survives in
 `notResident`, its value never does.
 
+A live subscription owns what it read: `row.subscribe` claims the row's
+components until it unsubscribes, and a query subscription claims the components
+its result read, so a component cannot expire under a mounted screen. Two
+subscriptions reading one component share one copy and one claim, and
+unsubscribing starts the same grace period. `client.subscriptions` is the
+registry those live subscriptions live in.
+
 A query whose **source** type is on-demand is refused with
 `OnDemandQueryError`, because a scan is held-only. A held source may join an
 on-demand target: `with({ content: true })` reads the joined rows

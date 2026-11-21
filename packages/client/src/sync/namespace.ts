@@ -55,7 +55,8 @@ import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";
 import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
-import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
+import { createEntityWatcher, type EntityWatcher } from "./replica-signal";
+import type { SubscriptionRegistry } from "./subscriptions";
 import {
   type AdjacencyReader,
   forwardMany,
@@ -480,8 +481,8 @@ export interface ReplicaAccess {
   readonly replica: Replica;
   /** The reactive query-result cache every chain and collection subscribe shares. */
   readonly queries: QueryCache;
-  /** The engine signal behind the row-level watchers. */
-  readonly signal: ReplicaSignal;
+  /** The registry every row subscription is mounted on. */
+  readonly subscriptions: SubscriptionRegistry;
   /** Whether the replica is hydrated, so a query can run synchronously. */
   hydrated(): boolean;
   hydrate(): Promise<void>;
@@ -683,15 +684,10 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
     // fields, which is the shape `shape` projects.
     cb(toEntitySnapshot(visible, shape, migrations));
   };
-  const unsubscribeEntity = watcher.entity(id, fire);
-  // A relationship / membership write leaves the row's own fields untouched
-  // but changes its accessors; fire the same snapshot contract a field change
-  // would, so a consumer that compares projected fields still sees the row.
-  const unsubscribeAccessors = watcher.accessors(id, fire);
-  return () => {
-    unsubscribeEntity();
-    unsubscribeAccessors();
-  };
+  // One row subscription wakes on a content change and on an accessor
+  // (relationship / membership) change alike, so `subscribe` needs a single
+  // registration: the registry keeps one entry per row for both.
+  return watcher.entity(id, fire);
 };
 
 /**
@@ -734,7 +730,7 @@ export function createEntityNamespace<
 ): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = read.registry;
   const watcher =
-    replica === undefined ? null : createEntityWatcher(replica.replica, replica.signal);
+    replica === undefined ? null : createEntityWatcher(replica.replica, replica.subscriptions);
 
   /** Project one replica row and attach its accessors plus signal handles. */
   const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {

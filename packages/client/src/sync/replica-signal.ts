@@ -6,10 +6,16 @@
  * make a fast accessor watcher skip a batch. A revision jump with no journal
  * entries is a journal gap — a replica `load` replaces the journal wholesale —
  * and the reader treats it as "everything may have changed".
+ *
+ * Dispatch for query and row subscriptions lives in the registry (#937); this
+ * module keeps the raw fan-out for callers that only want the batches, and the
+ * row-subscription facade the row namespace mounts on the registry.
  */
 
-import { carriesComponent, carriesLink, systemValueString, type Entity } from "@ebbjs/core";
+import type { Entity } from "@ebbjs/core";
 import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
+
+import type { SubscriptionRegistry } from "./subscriptions";
 
 /** One derived reader's view of the replica's change stream. */
 export interface ReplicaSignal {
@@ -44,89 +50,25 @@ export interface EntityWatcher {
 }
 
 /**
- * The id an accessor change belongs to. A link is a key of its source row, so a
- * row carrying `ebb/link` is its own subject; a membership row names the member
- * entity it files.
+ * The row-level watcher over the shared registry. One registry row entry per
+ * watched id: a `row.subscribe` and a `subscribeAccessors` on the same row
+ * share it, so the row's components are claimed once, and the entry's own
+ * dependency set is what keeps them resident until the last listener leaves.
  */
-const accessorSubjectId = (entity: Entity): string | null => {
-  if (carriesLink(entity)) return entity.id;
-  if (!carriesComponent(entity, "membership")) return null;
-  const id = systemValueString(entity, "membership", "entity_id");
-  return id !== null && id.length > 0 ? id : null;
-};
-
-const addListener = <T>(map: Map<string, Set<T>>, id: string, listener: T): void => {
-  const bucket = map.get(id);
-  if (bucket === undefined) map.set(id, new Set([listener]));
-  else bucket.add(listener);
-};
-
-const removeListener = <T>(map: Map<string, Set<T>>, id: string, listener: T): void => {
-  const bucket = map.get(id);
-  if (bucket === undefined) return;
-  bucket.delete(listener);
-  if (bucket.size === 0) map.delete(id);
-};
-
-/**
- * Build the row-level watcher over the shared signal. One signal subscription
- * serves every mounted row; a batch reads each touched row once and notifies
- * the row's listeners with the settled entity.
- */
-export const createEntityWatcher = (replica: Replica, signal: ReplicaSignal): EntityWatcher => {
-  const entityListeners = new Map<string, Set<(entity: Entity | undefined) => void>>();
-  const accessorListeners = new Map<string, Set<(entity: Entity | undefined) => void>>();
-  let detach: (() => void) | null = null;
-
-  const dispatch = (changes: readonly ReplicaChange[]): void => {
-    // The ids a batch settles: every changed row, plus the accessor subject a
-    // platform row names. A link's subject is the row that changed, so the two
-    // sets overlap and one listener is notified once per id.
-    const subjects = new Set<string>();
-    for (const change of changes) {
-      subjects.add(change.id);
-      const row = replica.get(change.id);
-      if (row === undefined) continue;
-      const subject = accessorSubjectId(row);
-      if (subject !== null) subjects.add(subject);
-    }
-    for (const id of subjects) {
-      const listeners = new Set([
-        ...(accessorListeners.get(id) ?? []),
-        ...(entityListeners.get(id) ?? []),
-      ]);
-      if (listeners.size === 0) continue;
-      const row = replica.get(id);
-      for (const listener of listeners) listener(row);
-    }
+export const createEntityWatcher = (
+  replica: Replica,
+  subscriptions: SubscriptionRegistry,
+): EntityWatcher => {
+  const watch = (id: string, listener: (entity: Entity | undefined) => void): (() => void) => {
+    const subscription = subscriptions.open({ kind: "row", row: id });
+    const detach = subscription.onChange(() => listener(replica.get(id)));
+    return () => {
+      detach();
+      subscription.release();
+    };
   };
-
-  const subscribe = (): void => {
-    detach ??= signal.subscribe((changes) => dispatch(changes));
-  };
-
-  const release = (): void => {
-    if (entityListeners.size > 0 || accessorListeners.size > 0) return;
-    detach?.();
-    detach = null;
-  };
-
   return {
-    entity(id, listener) {
-      addListener(entityListeners, id, listener);
-      subscribe();
-      return () => {
-        removeListener(entityListeners, id, listener);
-        release();
-      };
-    },
-    accessors(id, listener) {
-      addListener(accessorListeners, id, listener);
-      subscribe();
-      return () => {
-        removeListener(accessorListeners, id, listener);
-        release();
-      };
-    },
+    entity: (id, listener) => watch(id, listener),
+    accessors: (id, listener) => watch(id, listener),
   };
 };

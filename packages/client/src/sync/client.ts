@@ -105,6 +105,7 @@ import {
   withRetainedRows,
 } from "./scope-eviction";
 import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
+import { createSubscriptionRegistry, type SubscriptionRegistry } from "./subscriptions";
 import { backoffDelayMs } from "./backoff";
 import {
   AppendOnlyViolationError,
@@ -281,7 +282,18 @@ export class SyncClient<
    * stream. Hydrated with the replica.
    */
   readonly queries: QueryCache;
-  /** The shared per-revision notification stream the cache and watchers read. */
+  /**
+   * Every live query and row subscription (#937): one entry each, with its own
+   * revision cursor and the residency claims its dependencies need. Dispatch
+   * and lease ownership live here, so a subscription that ends releases what
+   * it read.
+   */
+  readonly subscriptions: SubscriptionRegistry;
+  /**
+   * The raw per-revision notification stream. Dispatch for the query cache and
+   * row watchers lives in {@link subscriptions}; this stays for callers that
+   * only want the batches.
+   */
   readonly replicaSignal: ReplicaSignal;
   /**
    * Ephemeral presence: send on declared channels, read the peers observed on
@@ -492,7 +504,8 @@ export class SyncClient<
             versionOf: (id, component) => this.replica.componentVersion(id, component),
           });
     this.replicaSignal = createReplicaSignal(this.replica);
-    this.queries = createQueryCache(this.replica, this.replicaSignal, {
+    this.subscriptions = createSubscriptionRegistry(this.replica, this.replicaSignal);
+    this.queries = createQueryCache(this.replica, this.subscriptions, {
       ttlMs: opts.queryTtlMs,
     });
     const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -1672,6 +1685,7 @@ export class SyncClient<
     // then returns instead of arming a reconnect against a torn-down client.
     this.abortController.abort();
     this.stateMachine.transition("offline");
+    this.subscriptions.close();
     this.presenceRuntime.reset();
     this.presenceRuntime.close();
   }
@@ -2672,7 +2686,7 @@ export function createClient<
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
     queries: client.queries,
-    signal: client.replicaSignal,
+    subscriptions: client.subscriptions,
     hydrated: () => client.isReplicaHydrated(),
     // Arrow over the public method keeps the namespace free of the
     // `client → namespace → client` import cycle.

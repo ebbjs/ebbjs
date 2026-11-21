@@ -1,6 +1,6 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
-import type { LeaseStats } from "./leases";
+import type { LeaseStats, Release } from "./leases";
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
@@ -193,6 +193,20 @@ export interface Replica {
    * the row is not resident and every read misses.
    */
   read(id: string, components: readonly string[]): Promise<Entity | null>;
+  /**
+   * Claim the values of `components` on row `id` for as long as the caller needs
+   * them, installing any the replica does not hold. The returned release is
+   * idempotent; releasing the last claim makes the value inactive for one
+   * residency grace period, so it stays warm for a remount and leaves when that
+   * elapses. A held component needs no claim and is left to its policy, and a
+   * component the row does not carry is not claimed. Claims are shared: two
+   * callers on one value share one read and one residency entry.
+   *
+   * A long-lived reader (a subscription) holds a claim for its lifetime; a
+   * one-shot read takes one for the duration of the read instead (see
+   * {@link Replica.read}).
+   */
+  acquire(id: string, components: readonly string[]): Promise<Release>;
   /** Whether `component`'s value is in the composed view for `id`. */
   isComponentResident(id: string, component: string): boolean;
   /** Component names whose value is resident for `id`, in field order. */
