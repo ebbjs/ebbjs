@@ -61,7 +61,7 @@ Group rows are otherwise materialized on first read, so the handshake cannot
 read `data.fields.group.value.apps` per group from SQLite without a scan. A
 `GroupAppsCache` alongside `GroupCache` fills `group_id → apps` on the boot
 walk over the `ebb/group` component entries — which makes a group row one of
-the eagerly materialized system rows, paying full materialization once at boot.
+the system rows materialized at boot, paying full materialization once.
 
 Writes are `ebb/group.update` in the group. A new group's scope rides the
 bootstrap-exempt `ebb/group` put (creation via `client.seed()` or

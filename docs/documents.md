@@ -140,44 +140,53 @@ Decisions this fixes:
 4. **Idempotence is the codec's obligation.** Re-applying the local echo is a
    no-op.
 5. **Dirty state is the provider's obligation.** Flush before close or unmount.
-   Eviction never loses state; destroying a dirty provider does.
+   A residency expiry never loses state; destroying a dirty provider does.
 6. **Open reads the full log, then deltas.** Snapshots are a later
    optimization, not part of the contract.
 
 ### Traces
 
-| Step         | Plain text (`ebb.cells.v1`)         | Yjs (`yjs.update.v1`)                                 |
-| ------------ | ----------------------------------- | ----------------------------------------------------- |
-| create       | root run in the log                 | empty log                                             |
-| load         | project cells                       | `Y.applyUpdate` per entry                             |
-| remote entry | merge cell, re-project              | apply update (idempotent)                             |
-| local change | new run / cut cell                  | `Y.Doc` mutation                                      |
-| flush        | open run coalesced into one cell    | `Y.encodeStateAsUpdate(doc, stateVector)` → one entry |
-| echo         | key already present → no-op         | same update re-applied → no-op                        |
-| unloaded     | drop projection, keep the row cache | drop the provider; `Y.Doc` is rebuilt on re-open      |
-| mismatch     | `engine !== "ebb.cells.v1"` → throw | `engine !== "yjs.update.v1"` → throw                  |
+| Step         | Plain text (`ebb.cells.v1`)          | Yjs (`yjs.update.v1`)                                 |
+| ------------ | ------------------------------------ | ----------------------------------------------------- |
+| create       | root run in the log                  | empty log                                             |
+| load         | project cells                        | `Y.applyUpdate` per entry                             |
+| remote entry | merge cell, re-project               | apply update (idempotent)                             |
+| local change | new run / cut cell                   | `Y.Doc` mutation                                      |
+| flush        | open run coalesced into one cell     | `Y.encodeStateAsUpdate(doc, stateVector)` → one entry |
+| echo         | key already present → no-op          | same update re-applied → no-op                        |
+| unloaded     | drop the projection; re-open reloads | drop the provider; `Y.Doc` is rebuilt on re-open      |
+| mismatch     | `engine !== "ebb.cells.v1"` → throw  | `engine !== "yjs.update.v1"` → throw                  |
 
 ## Opening a document
 
-There is no document opener. A document is an on-demand entity, and the
-ordinary namespace opens it:
+There is no document opener. A document is store-backed until it syncs: the
+store serves a body the replica does not hold, and an Action folds one whole
+when it arrives. The ordinary namespace reads it either way:
 
 ```ts
-const row = await client.note_body.get(id); // opens and pins the row
-row.subscribe((event) => {
+const row = await client.note_body.get(id, { select: { engine: true, updates: true } });
+row?.subscribe((event) => {
   if (event.type === "unloaded") showReloadAffordance();
 });
 ```
 
 Read rule: `query()` reads any type, and `select` decides what each row
 projects. The read narrows ids before it acquires the page, so an unlimited
-projection reads the type whole — page it with `limit`. A single on-demand row
-is opened with `get(id)`; `get(id, { select })` opens only the components it
+projection reads the type whole — page it with `limit`. A single store-backed
+row is read with `get(id)`; `get(id, { select })` leases only the components it
 names.
 
-A subscription reports its own closure. `close()` and the pin TTL
-(`pinnedTtlMs`) both deliver one `unloaded` event; re-open with `get(id)` and
-replay.
+A live subscription owns the components its read selected: they are leased for
+as long as it is mounted, so they cannot expire underneath it. Its last
+unsubscribe starts one residency grace period (`residencyTtlMs`, default 60 s);
+a remount inside it reads nothing, and when it elapses the components a read
+installed leave the replica. A row the Action log folded is not reclaimed today
+(#957), so a synced document stays resident for the session.
+
+`unloaded` reports a real loss, not routine memory pressure: it carries the
+component when the replica loses one the subscription still holds, and no
+component when the row leaves, so re-read with `get(id, { select })` to
+re-acquire. A tombstone arrives as a `snapshot`, not an `unloaded`.
 
 ## Conflicts
 

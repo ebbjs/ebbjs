@@ -5,18 +5,18 @@ description: "How to move from entity accessors and useEntity to the query read 
 
 > **Shipped.** This page tracks the docs and examples migration in [#502](https://github.com/ebbjs/ebbjs/issues/502), part of the [local query engine epic](https://github.com/ebbjs/ebbjs/issues/495). The React surface landed in [#501](https://github.com/ebbjs/ebbjs/issues/501); the engine, namespace split, and replica lifecycle ([#499](https://github.com/ebbjs/ebbjs/issues/499)) landed before it. [#500](https://github.com/ebbjs/ebbjs/issues/500) remains open.
 
-Queries are now the only public read path. The entity namespace stays — it is still the schema-bound API — but it is read-only: `query()` reads, and every write is an Action mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)). The engine's single-row helpers became internal.
+The public read surface is `query()` for a collection and `get(id, { select })` for one row. The entity namespace stays — it is still the schema-bound API — but it is read-only: every write is an Action mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)). The async row accessors and the collection `subscribe` remain internal.
 
 ## What changed
 
 | Before                                       | After                                                                                                            |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `client.<entity>.get(id)` plus row accessors | `client.<entity>.query()`, narrowed by `where` / `or` / `orderBy` / `limit`                                      |
+| `client.<entity>.get(id)` plus row accessors | `query()` for lists, `get(id, { select })` for one row; accessors stay internal                                  |
 | `await row.assignee`, `await row.comments`   | `.with({ assignee: true, comments: true })` on the chain                                                         |
 | `await row.groups`                           | `.with({ groups: true })`, or `row.groupIds` for the ids alone                                                   |
 | `client.<entity>.subscribe(filter, cb)`      | `useQuery` in React, `query().result()` / `query().subscribe(cb)` otherwise                                      |
 | `useEntity(build, deps)`                     | `useQuery((q: QueryRoot<Schema>) => ...)`                                                                        |
-| Single row by id                             | Query the collection and select the row with `find`                                                              |
+| Single row by id                             | `get(id, { select })`                                                                                            |
 | Writes                                       | One path: `defineAction`, mounted as `client.actions.<name>` ([#692](https://github.com/ebbjs/ebbjs/issues/692)) |
 
 ## Reads: compose a query, not accessors
@@ -36,21 +36,25 @@ const issue = issues?.find((row) => row.id === issueId);
 const assignee = issue?.assignee;
 ```
 
-The chain is immutable, so a helper can return a partially-built query and the caller keeps narrowing it. `where` takes a field, a registered relationship `as`, or the reserved `groups` key; `or` starts a new AND-group (`.where(a).where(b).or(c)` is `(a AND b) OR c`).
+The chain is immutable, so a helper can return a partially-built query and the caller keeps narrowing it. `where` takes a field, a registered relationship `as`, or the reserved `groups` key; `or` starts a new AND-group (`.where(a).where(b).or(c)` is `(a AND b) OR c`). `select(...)` names the fields to project; the same declaration decides the components the read leases and re-runs on.
 
 ## Single rows
 
-The grammar has no `id` predicate yet, so there is no single-row query. Query the collection you can see and select the row — the result is cached and reactive, so the selected row still follows live changes.
+The grammar has no `id` predicate on a query, so one row is read through the
+namespace with the same selection a query takes:
 
-```tsx
-const { data: issues, status } = useQuery((q: QueryRoot<Schema>) => q.issue.query());
-
-if (status === "unloaded") return <span>loading…</span>;
-const issue = issues?.find((row) => row.id === issueId);
-if (issue === undefined) return <span>missing</span>;
+```ts
+const issue = await client.issue.get(issueId, { select: { title: true, status: true } });
+if (issue === null) return missing;
+const off = issue.subscribe((event) => {
+  if (event.type === "snapshot") render(event.row);
+});
 ```
 
-An `id` predicate is the natural follow-up once the grammar grows one.
+The selection narrows both the projection and the components the read leases.
+`subscribe` keeps those components leased until `off()`, and reports `snapshot`
+or `unloaded` events. A collection query plus `find` is still the way to read a
+row out of a filtered, ordered list.
 
 ## Relationships and membership are joins
 
@@ -65,9 +69,9 @@ To filter by an edge instead of projecting it, use the relationship's `as` key a
 
 Every query row also carries `groupIds`, its live group ids, read from the same index. A workspace switcher or a board can read the ids straight off the row instead of denormalising a `group_id` field or projecting the group rows. The ids come from membership rows, so one can name a group whose row is not materialized; use `.with({ groups: true })` when you need the group's fields. Joined target rows and chains over already-materialized candidates are plain projections (fields plus `id`) and carry no `groupIds`.
 
-## `get()`, accessors, and `subscribe` are internal
+## `get(id, { select })` is the single-row read
 
-`client.<entity>.get(id)`, the async row accessors it attached, and the collection `subscribe(filter, cb)` are marked `@internal`. The engine keeps them for its own callers; applications should not build on them. Projected query rows carry the entity `id` as an addressing key, so the id an action needs (`client.actions.<name>({ id, ... })`) comes from the row itself.
+`get(id, { select })` is public: it is the single-row read beside `query()`, and the selection is what it projects and leases. The async row accessors it attaches and the collection `subscribe(filter, cb)` remain `@internal`; applications should not build on those. Projected query rows carry the entity `id` as an addressing key, so the id an action needs (`client.actions.<name>({ id, ... })`) comes from the row itself.
 
 `.toRaw()` remains the untyped escape hatch on a chain when you need the wire envelope rather than the projected row.
 
@@ -113,9 +117,9 @@ A query result is `{ data, status, loading, error }`. `status` is derived from t
 
 ## Not here yet
 
-- **No `id` predicate.** Query the collection and `find` the row.
-- **Windowing is deferred.** `limit(n)` is the only windowing; there is no cursor, offset, or page-boundary API.
-- **On-demand document bodies are not a query ([#500](https://github.com/ebbjs/ebbjs/issues/500)).** A collaborative-text body is its own document entity, materialized when opened rather than scanned. Use the low-level `client.textDocument(id)` for it until that slice lands.
+- **No `id` predicate on a query.** Read one row with `get(id, { select })`, or query the collection and `find` it.
+- **Paging is deferred.** `limit(n)` is the only paging control; there is no cursor, offset, or page-boundary API.
+- **Document bodies are not a query ([#500](https://github.com/ebbjs/ebbjs/issues/500)).** A collaborative-text body is its own document entity, read when opened rather than scanned. Use the low-level `client.textDocument(id)` for it until that slice lands.
 
 ## Tracking
 

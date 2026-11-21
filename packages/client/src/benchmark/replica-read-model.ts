@@ -4,8 +4,9 @@
  * Measures the shipped materialized replica (`@ebbjs/storage/replica`) against
  * the workspace shape from the epic #495 spike, so #503's numbers are
  * comparable with it: resident metadata footprint, traversal cost (wall-clock and
- * rows touched), search over resident pages, the one-pass projection build, and
- * the store-backed body path.
+ * rows touched), search over resident pages, the one-pass projection build, the
+ * store-backed body path, patched versus re-run changes, change dispatch, and
+ * the residency counters a remount and a batch expose.
  *
  * The replica is seeded directly: one `ReplicaRecord` is built in memory and
  * handed to `replica.load(record)`. Seeding through the memory adapter's
@@ -30,6 +31,7 @@ import type { ReplicaRecord } from "@ebbjs/storage/types";
 
 import { fieldComponent, makeHlc } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
+import { createChangeDispatcher } from "../sync/dependency-index";
 import { createQueryCache, type QuerySource } from "../sync/query-cache";
 import { createReplicaExecutor, executePlan, patchResultRows } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
@@ -85,6 +87,12 @@ const LOAD_REPS = 5;
 const LATENCY_BATCHES = 5;
 const TRAVERSAL_CALLS_PER_BATCH = 2_000;
 const SEARCH_CALLS_PER_BATCH = 10;
+/** How many warm re-reads one remount measurement averages over. */
+const MOUNT_REMOUNTS = 100;
+/** Dispatch fixture: subscriptions indexed, and the size of the batch they see. */
+const DISPATCH_ROW_SUBSCRIPTIONS = 4_000;
+const DISPATCH_QUERY_SUBSCRIPTIONS = 1_000;
+const DISPATCH_CHANGES = 100;
 /** The #495 spike's one-pass projection build at the same 10k shape. */
 const SPIKE_PROJECTION_BUILD_MS = 37.0;
 
@@ -183,12 +191,15 @@ const measureHeap = (
   seed: Workspace["record"],
   options: typeof loadOptions,
 ): HeapAccounts => {
-  // The record's store-backed rows ride along with every rep, exactly as on
-  // the workspace record, so `load` adopts the same set either way.
-  const bodyRows = seed.entities.filter((entity) => entity.model === BODY_TYPE);
+  // The workspace record carries the metadata rows only: since #943 a body is
+  // the fixture's store's to serve, so a body read is observable as a store
+  // read. `rows` is built from the same `residentRowSet` as the record's
+  // metadata, so the guard below is one-directional (`>`): a row builder that
+  // grows past the record's set is drift, while the record carrying extra rows
+  // is not.
   const recordFor = (rows: readonly Entity[]): Workspace["record"] => ({
     ...seed,
-    entities: [...rows, ...bodyRows],
+    entities: rows,
   });
   const mapOf = (rows: readonly Entity[]): ReadonlyMap<string, Entity> =>
     new Map(rows.map((entity) => [entity.id, entity]));
@@ -230,7 +241,7 @@ const measureHeap = (
 
     if (
       rows.length === 0 ||
-      rows.length >= seed.entities.length ||
+      rows.length > seed.entities.length ||
       baseMap.size !== rows.length ||
       probe.stats().entities !== rows.length
     ) {
@@ -572,6 +583,28 @@ const readMedian = median(readSamples);
 store.reset();
 await replica.read(primaryBody, bodyComponents);
 const warmReads = store.snapshot().calls;
+
+// A remount is the same read again after the projection released its claim;
+// the inactive lease is what makes it free. Count the store reads over several
+// remounts rather than reading one sample as a rate.
+store.reset();
+for (let remount = 0; remount < MOUNT_REMOUNTS; remount += 1) {
+  const loaded = await replica.read(primaryBody, bodyComponents);
+  if (loaded === null) throw new Error("remount self-check: the warm body did not read");
+}
+const remountReads = store.snapshot().calls / MOUNT_REMOUNTS;
+
+// A mounted row subscription holds the same value under a live lease. The
+// registry is the shipped one; the test is whether a live claim is visible.
+const mounted = createSubscriptionRegistry(replica);
+const mountedBody = mounted.open({ kind: "row", row: primaryBody, components: bodyComponents });
+const mountedLeases = replica.stats().leases;
+mountedBody.release();
+mounted.close();
+
+// Let the released claims age a little so the oldest-inactive counter has a
+// non-zero age to report.
+await new Promise((resolve) => setTimeout(resolve, 20));
 const bodiesResident = replica.stats().byModel[BODY_TYPE] ?? 0;
 const bodyLeases = replica.stats().leases;
 if (coldReads !== 1) {
@@ -587,6 +620,12 @@ if (bodiesResident < bodySample.length) {
 }
 if (bodyLeases.leased !== 0) {
   throw new Error(`store-backed body self-check: ${bodyLeases.leased} leases outlived their read`);
+}
+if (remountReads !== 0) {
+  throw new Error(`store-backed body self-check: a remount read ${remountReads} store rows`);
+}
+if (mountedLeases.leased < 1) {
+  throw new Error("store-backed body self-check: a mounted subscription held no lease");
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +980,108 @@ const spliceMs = (() => {
 })();
 
 // ---------------------------------------------------------------------------
+// 1c. Production shape: a folded body is resident and lease-free (#943, #957)
+// ---------------------------------------------------------------------------
+
+/**
+ * The fixture keeps bodies in the store so sections 2 and 5 can measure the
+ * store-backed read. A synced body does not stay there: the log folds it whole
+ * and nothing reclaims it. Load the fixture's own body rows into a throwaway
+ * replica and measure the retention, so the footprint above is not read as
+ * production memory.
+ */
+const measureFoldedBodies = (): { readonly rows: number; readonly bytes: number } => {
+  const bodyRows = [...workspace.rows.values()].filter((entity) => entity.model === BODY_TYPE);
+  if (bodyRows.length === 0) throw new Error("folded-body measurement: no body rows");
+  const folded = createReplica(loadOptions);
+  folded.load({ ...workspace.record, entities: [...workspace.record.entities, ...bodyRows] });
+  const stats = folded.stats();
+  const rows = stats.byModel[BODY_TYPE] ?? 0;
+  if (rows !== bodyRows.length) {
+    throw new Error(
+      `folded-body measurement: ${rows} of ${bodyRows.length} bodies stayed resident`,
+    );
+  }
+  if (stats.leases.leased !== 0 || stats.leases.inactive !== 0) {
+    throw new Error("folded-body measurement: a folded row was lease-owned");
+  }
+  return { rows, bytes: jsonBytes(bodyRows) };
+};
+
+const foldedBodies = measureFoldedBodies();
+
+// ---------------------------------------------------------------------------
+// 7. Change dispatch (#938)
+// ---------------------------------------------------------------------------
+
+/**
+ * The shipped dispatcher over the benchmark replica, with subscriptions
+ * registered the way the registry registers them: row watchers on distinct
+ * rows, and query readers on one component. One Action delivers a batch of
+ * changes; the dispatcher's own counters say what finding the touched entries
+ * cost, and the scan work those indices replace.
+ */
+const measureDispatch = (): {
+  readonly subscriptions: number;
+  readonly changes: number;
+  readonly touched: number;
+  readonly lookups: number;
+  readonly scanWork: number;
+} => {
+  const rowSubscriptions = Math.min(DISPATCH_ROW_SUBSCRIPTIONS, config.n);
+  const changes = Math.min(DISPATCH_CHANGES, config.n);
+  const dispatcher = createChangeDispatcher<{ readonly id: number }>({
+    journal: replica,
+    indices: {},
+    onChange: () => {},
+  });
+  for (let index = 0; index < rowSubscriptions; index += 1) {
+    dispatcher.add({ id: index }, { rows: [pageId(index)] });
+  }
+  for (let index = 0; index < DISPATCH_QUERY_SUBSCRIPTIONS; index += 1) {
+    dispatcher.add(
+      { id: rowSubscriptions + index },
+      { components: ["page/title"], sources: ["page"] },
+    );
+  }
+  const updates = Array.from({ length: changes }, (_, index) => {
+    benchPosition += 1;
+    const updateId = `u_dispatch_${benchPosition}`;
+    return {
+      id: updateId,
+      subject_id: pageId(index),
+      component: "page/title" as const,
+      method: "replace" as const,
+      data: { value: `Dispatch ${index}`, update_id: updateId, hlc: makeHlc(benchPosition) },
+    };
+  });
+  benchPosition += 1;
+  replica.ingest(
+    {
+      id: `a_dispatch_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    updates,
+    benchPosition,
+  );
+  const stats = dispatcher.stats();
+  const subscriptions = dispatcher.size();
+  dispatcher.close();
+  return {
+    subscriptions,
+    changes,
+    touched: stats.touched,
+    lookups: stats.lookups,
+    scanWork: stats.scanWork,
+  };
+};
+
+const dispatch = measureDispatch();
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
@@ -1001,7 +1142,13 @@ push(
     workspace.counts.bodyRows,
   )} of them, not all ${grouped(config.n)}.`,
   `The record carries the metadata rows only: a \`${BODY_TYPE}\` row is the store's, and`,
-  "`replica.read` installs it under a lease.",
+  "`replica.read` installs it under a lease. That split is this fixture's, not the shape",
+  "production produces: a synced body folds whole and is resident (#943), and no claim owns it,",
+  "so nothing reclaims it today (#957). Loading the fixture's own body rows into a fresh replica",
+  `leaves **${grouped(foldedBodies.rows)} body rows resident (${mb(foldedBodies.bytes)} JSON)**`,
+  `with **0 leases and 0 inactive claims**; the metadata totals above therefore understate a`,
+  "real client's memory. #957 measured 500 bodies × 64 KiB ≈ 63.4 MiB retained with every",
+  "subscription ended.",
   "The totals run ~14% above the #495 spike's 15.1 MB for the same 50,000 rows because every",
   "field here carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–22",
   "chars, close to a 21-char nanoid) where the spike used short `u_${n}` placeholders, so the",
@@ -1236,10 +1383,12 @@ push(
   `| body row size (JSON) | ${kb(workspace.bodyBytes)} |`,
   `| store rows read per cold read | ${grouped(coldReads)} |`,
   `| store rows read by a warm re-read | ${grouped(warmReads)} |`,
+  `| store rows read per remount (mean over ${MOUNT_REMOUNTS}) | ${fixed(remountReads, 2)} |`,
   `| resident bodies after the sweep | ${grouped(bodiesResident)} |`,
-  `| leases live during the sweep | ${grouped(bodyLeases.leased)} |`,
+  `| lease count after the sweep (leased + inactive) | ${grouped(bodyLeases.leased + bodyLeases.inactive)} |`,
+  `| leases held by a mounted row subscription | ${grouped(mountedLeases.leased)} |`,
   `| claims waiting out their grace period | ${grouped(bodyLeases.inactive)} |`,
-  `| body rows resident after the sweep | ${grouped(stats.byModel[BODY_TYPE] ?? 0)} |`,
+  `| oldest inactive age | ${ms(bodyLeases.oldestInactiveMs)} |`,
   "",
 );
 
@@ -1292,14 +1441,14 @@ push(
   "not a query: its `1.00 re-reads` is the pre-existing one-row `get`, not a new fast path.",
   "",
   "The `patches / change` of the patch rows is the cache dispatcher's rate for a source whose",
-  "projection is always resident. It is not a guarantee for the shipped chain: an unselected",
+  "projection is always resident. It is not unconditional for the shipped chain: an unselected",
   "`client.<model>.query()` read expands `<model>/*` to every registered component and the",
-  "patch declines a row it cannot prove holds one of them, so an optional lazy component the",
-  "row does not carry turns each projected write on that row into a re-run. `patch-rate.test.ts`",
+  "patch declines a row it cannot prove holds one of them, so a projected component the row",
+  "does not carry turns each projected write on that row into a re-run. `patch-rate.test.ts`",
   "measures the shipped path at 200 pages: 40/40 projected writes patch when every projected",
-  "component is resident, and 4/40 when one optional lazy component is present on 10% of rows —",
-  "the rate tracks that component's presence, and a model whose optional lazy component is",
-  "absent drops to 0/40. Read the patch rows above as the best case, not the typical one.",
+  "component is resident, 4/40 at 10% optional-component presence, and 0/40 when the component",
+  "is absent. The rate tracks that component's presence; read the patch rows above as the best",
+  "case, not the typical one.",
   "",
   "The membership workload's result grows by one row per change, so its row count is an average",
   `over ${grouped(RE_RUN_ITERATIONS)} changes, and the later rows scan the rows it added. The predicate`,
@@ -1310,6 +1459,28 @@ push(
   "patch keeps the id set and its order, so it rebuilds the result array rather than carrying a",
   "mutable one. That O(result) copy is the price of the fast path at this size, and it is still",
   `well under the read it replaces.`,
+  "",
+);
+
+// 7. Change dispatch
+push(
+  "## 7. Change dispatch (#938)",
+  "",
+  "The shipped `createChangeDispatcher` over the benchmark replica, with the dependencies the",
+  "registry declares: row subscriptions watching one row each, and query subscriptions reading",
+  "`page/title` over the `page` row set. One Action delivers the whole batch, so the counters are",
+  "per batch, not per notification. **Subscriptions touched** is the entries any work happens",
+  "for; **index lookups** counts only the dependency lookups; **scan work** is the",
+  "changes × subscriptions pairs a scan of every entry would have examined.",
+  "",
+  "| measure | value |",
+  "| --- | ---: |",
+  `| subscriptions indexed | ${grouped(dispatch.subscriptions)} (${grouped(dispatch.subscriptions - DISPATCH_QUERY_SUBSCRIPTIONS)} row, ${grouped(DISPATCH_QUERY_SUBSCRIPTIONS)} query) |`,
+  `| changes in the batch | ${grouped(dispatch.changes)} |`,
+  `| subscriptions touched / batch | ${grouped(dispatch.touched)} |`,
+  `| subscriptions touched / change | ${fixed(dispatch.touched / dispatch.changes, 2)} |`,
+  `| index lookups / batch | ${grouped(dispatch.lookups)} |`,
+  `| scan work avoided (changes × subscriptions) | ${grouped(dispatch.scanWork)} |`,
   "",
   "---",
   "",

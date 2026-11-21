@@ -219,8 +219,8 @@ export type PatchValue<T extends TSchema> =
  * error.
  *
  * @internal The async row accessors are not part of the public read
- * surface. Reads go through `client.<entity>.query()` and `useQuery`;
- * the engine keeps `get()` and these accessors for internal callers.
+ * surface. Collection reads go through `client.<entity>.query()` and
+ * `useQuery`; the engine keeps these accessors for internal callers.
  *
  * `TAccessors` defaults to an empty record so erased usages
  * (`EntityWithAccessors<TFields>`) surface only the projected
@@ -281,12 +281,10 @@ export type EntityEvent<TFields extends Record<string, TSchema>> =
     };
 
 /**
- * Row returned by `client.<entity>.get(id)`.
- *
- * @internal `get()` is the engine's single-row read, not a public read
- * path. Applications query through `client.<entity>.query()` /
- * `useQuery`; `get()` and the async relationship accessors stay
- * internal / undocumented.
+ * Row returned by `client.<entity>.get(id)`, the public single-row read beside
+ * `client.<entity>.query()`. A selection narrows the projection and the
+ * components the read leases; without one the read returns every component the
+ * stored row carries.
  *
  * `id` is the entity's addressing key, not a wire-envelope passthrough:
  * `data` / `type` / HLC stamps stay off the row. The injected `id`
@@ -349,10 +347,11 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
 /**
  * Mount surface for one entity. `query()` returns a fresh
  * QueryBuilder over the entity's projected field map; awaiting it
- * resolves to the typed rows. `get(id)` reads a single row directly
- * via the storage adapter, projects it to the same TypeBox shape,
- * and attaches relationship accessors plus the per-entity
- * `subscribe(cb)` for every declared relationship on the entity.
+ * resolves to the typed rows. `get(id, { select })` is the public
+ * single-row read: the replica serves a row it holds, the entity
+ * store serves one it does not, and the row carries relationship
+ * accessors plus the per-entity `subscribe(cb)` for every declared
+ * relationship on the entity.
  *
  * `subscribe(filter, cb)` registers a reactive listener on the
  * engine's query cache. The callback fires whenever the set of
@@ -376,13 +375,10 @@ export interface EntityNamespace<
   /** The public read root: a typed chain over the entity's fields and joins. */
   query(): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>;
   /**
-   * Single-row read with relationship accessors attached. A selection narrows
-   * both the projection and the components the read leases, and is required to
-   * narrow: without one the read returns every component the stored row
-   * carries.
-   *
-   * @internal Reads go through {@link EntityNamespace.query} and
-   * `useQuery`; this stays for the engine's own callers.
+   * Single-row read with relationship accessors attached. The public row read
+   * beside {@link EntityNamespace.query}: a selection narrows both the
+   * projection and the components the read leases, and is required to narrow:
+   * without one the read returns every component the stored row carries.
    */
   get<TSelection extends Selection<TFields>>(
     id: string,

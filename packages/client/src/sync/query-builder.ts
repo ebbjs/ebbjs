@@ -699,7 +699,7 @@ export function buildReplicaQueryBuilder<
    * again to acquire and project the same page. That is deliberate for now:
    * only the narrowed page answers whether a row needs acquisition, so it has
    * to be planned before the answer exists. A cold read of a large projection
-   * therefore pays the plan twice; #946 owns that cost.
+   * therefore pays the plan twice; #962 owns that cost.
    */
   const syncRun = (query: Query): readonly unknown[] | null => {
     const executor = replicaExecutorFor(context, view);
