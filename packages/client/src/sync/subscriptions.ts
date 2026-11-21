@@ -1,13 +1,19 @@
 /**
- * The subscription registry (#937): one table of the client's live query and
- * row subscriptions, and the only place a read's component values are claimed.
+ * The subscription registry (#937): one table of the client's query and row
+ * subscriptions, and the only place a read's component values are claimed.
  *
  * A subscription owns the data it reads. Each entry carries its read set, its
  * own revision cursor, the result its consumer published, the leases its
  * dependencies need, and whether it is still live. Claims are refcounted by the
  * replica's lease table, so two subscriptions reading one `(row, component)`
- * share one resident value and one residency entry; releasing the last claim
- * starts the residency grace period and the value leaves when it elapses.
+ * share one resident value and one residency entry.
+ *
+ * A released query result does not end (#941). It goes inactive and keeps its
+ * result, its cursor, and the claims it owns for one residency TTL — the same
+ * lifetime a released component value gets — so a remount inside it re-reads
+ * neither the store nor the source. When the TTL elapses the result and its
+ * claims end together; a row entry, which holds a row for a mounted reader
+ * rather than a reusable result, ends on its last release.
  *
  * Dispatch is dependency-indexed (#938): the registry hands the change
  * dispatcher what each entry reads — its components and models, or the row it
@@ -25,22 +31,29 @@
  *
  * An entry's cursor is the revision its consumer has processed. Dispatch moves
  * it for a consumer that had caught up with the previous batch and only for
- * such a one, so a consumer whose result will lag — an async run in flight —
- * keeps the revision its result reflects through later batches, and a `stale`
- * status stays visible until the run settles and seeks forward. An entry a
- * batch does not touch is never visited: one that was caught up at its last
- * dispatch reports the dispatcher's own cursor, so an idle result stays
- * `current` without a write per entry, while one that declared lag keeps
- * reporting the revision its consumer is behind.
+ * such a one, so a consumer whose result will lag — an async run in flight, or
+ * an inactive result a relevant change left behind — keeps the revision its
+ * result reflects, and a `stale` status stays visible until a run settles and
+ * seeks forward. An entry a batch does not touch is never visited: one that was
+ * caught up at its last dispatch reports the dispatcher's own cursor, so an
+ * idle result stays `current` without a write per entry.
  *
  * A consumer owns the meaning of its own result: a query entry publishes its
  * snapshot and depends on the rows it projected, a row entry is leased on the
  * components its read selected — or on every component its row carries when it
- * selected nothing.
+ * selected nothing. The consumer's private run state rides on the entry too,
+ * so there is no second table beside the registry.
  */
 
 import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
-import type { Replica, ReplicaChange, Release, Revision } from "@ebbjs/storage/replica";
+import {
+  DEFAULT_RESIDENCY_TTL_MS,
+  type LeaseTimerHandle,
+  type Replica,
+  type ReplicaChange,
+  type Release,
+  type Revision,
+} from "@ebbjs/storage/replica";
 
 import {
   createChangeDispatcher,
@@ -56,11 +69,13 @@ export type SubscriptionId = number;
 export type SubscriptionKind = "query" | "row";
 
 /**
- * `live` while the entry holds its claims; `terminal` once it has ended and
- * released them. A terminal handle is inert, and so is a released one: every
- * operation after the handle's one release is a no-op.
+ * `live` while a subscriber holds the entry; `inactive` while a released query
+ * result still owns its claims and waits out the residency TTL; `terminal`
+ * once it has ended and released everything. A row entry never goes inactive:
+ * it holds a row for a mounted reader, not a result to reuse. A terminal
+ * handle is inert.
  */
-export type SubscriptionState = "live" | "terminal";
+export type SubscriptionState = "live" | "inactive" | "terminal";
 
 /** The components a subscription reads, split for change matching. */
 export type ReadSet = CompiledReadComponents;
@@ -106,23 +121,41 @@ export type SubscriptionSpec =
     };
 
 /**
- * A change batch, called on every live entry the batch touches. `unloaded`
- * names the values the entry was holding that the replica dropped with it — the
- * residency loss the journal does not describe, which `unloaded` events are
- * built on (#940). It is empty when the entry lost nothing.
+ * A change batch, called on every entry the batch touches. `unloaded` names the
+ * values the entry was holding that the replica dropped with it — the residency
+ * loss the journal does not describe, which `unloaded` events are built on
+ * (#940). It is empty when the entry lost nothing.
+ *
+ * `writer` mutates the entry the listener belongs to, whether or not the
+ * listener's own handle still holds a subscriber: an inactive result is still
+ * dispatched so it can mark itself stale, and it must publish that without a
+ * share. The writer never releases.
  */
-export type ChangeListener = (
+export type ChangeListener<TResult = unknown> = (
   changes: readonly ReplicaChange[],
   revision: Revision,
   unloaded: readonly string[],
+  writer: SubscriptionWriter<TResult>,
 ) => void;
 
+/** What a listener may do to its entry. Everything a handle can do but release. */
+export interface SubscriptionWriter<TResult = unknown> {
+  /** The result the entry currently holds; `undefined` before the first. */
+  readonly result: TResult | undefined;
+  /** Publish the result this entry currently holds. */
+  publish(result: TResult): void;
+  /** Advance the cursor: the entry has caught up through `revision`. */
+  seek(revision: Revision): void;
+  /** Hold exactly these values, releasing the ones dropped. */
+  depend(dependencies: readonly Dependency[]): void;
+}
+
 /**
- * One live entry's observable state. This is what {@link SubscriptionRegistry}
+ * One entry's observable state. This is what {@link SubscriptionRegistry}
  * introspection hands out: a view, never a share, so nothing it exposes can
  * release a claim it does not own.
  */
-export interface SubscriptionSnapshot<TResult = unknown> {
+export interface SubscriptionSnapshot<TResult = unknown, TConsumer = unknown> {
   readonly id: SubscriptionId;
   readonly kind: SubscriptionKind;
   /**
@@ -144,48 +177,94 @@ export interface SubscriptionSnapshot<TResult = unknown> {
   readonly cursor: Revision;
   /** The result the consumer last published; `undefined` before the first. */
   readonly result: TResult | undefined;
+  /**
+   * The consumer's own state for this entry. The registry stores the reference
+   * it was opened with and never reads it, so a consumer's run bookkeeping
+   * lives on the one entry rather than in a second table beside it.
+   */
+  readonly consumer: TConsumer;
   /** The values this entry keeps resident. */
   readonly dependencies: readonly Dependency[];
   readonly state: SubscriptionState;
-  /** Subscribers sharing this entry. It ends when the last one releases. */
+  /**
+   * Subscribers sharing this entry. A query entry at zero is inactive: it keeps
+   * its result and claims until the residency TTL, then ends. A row entry at
+   * zero ends immediately.
+   */
   readonly refs: number;
 }
 
-/** One live subscription. Ending it releases every claim it holds. */
-export interface Subscription<TResult = unknown> extends SubscriptionSnapshot<TResult> {
+/**
+ * One entry's handle: a share of the entry, plus the writer its owner uses while
+ * the entry exists. Releasing the last share makes a query entry inactive; the
+ * entry, not the handle, owns the claims and releases them when it ends.
+ */
+export interface Subscription<TResult = unknown, TConsumer = unknown>
+  extends SubscriptionSnapshot<TResult, TConsumer>, SubscriptionWriter<TResult> {
   /**
-   * Drop this handle's subscriber; the last one ends the entry and releases its
-   * claims. Idempotent per handle, so one subscriber releasing twice cannot end
-   * an entry a peer still holds.
+   * Drop this handle's subscriber; the last one makes a query entry inactive
+   * (or ends a row entry) and a timed query entry releases its claims when its
+   * TTL elapses. Idempotent per handle, so one subscriber releasing twice
+   * cannot end an entry a peer still holds.
    */
   release(): void;
-  /** Publish the result this entry currently holds. */
-  publish(result: TResult): void;
-  /** Advance the cursor: the entry has caught up through `revision`. */
-  seek(revision: Revision): void;
-  /** Hold exactly these values, releasing the ones dropped. */
-  depend(dependencies: readonly Dependency[]): void;
   /** Run `listener` on every batch that touches this entry; returns a detach. */
-  onChange(listener: ChangeListener): () => void;
+  onChange(listener: ChangeListener<TResult>): () => void;
 }
 
 /** Leak visibility: how many subscriptions are live and what they hold. */
 export interface SubscriptionStats {
   readonly live: number;
+  /**
+   * Released query results still owning their claims. Counted apart from
+   * `live` because nothing is subscribed, but their claims are not a leak
+   * until the residency TTL has elapsed.
+   */
+  readonly inactive: number;
   readonly byKind: Readonly<Record<SubscriptionKind, number>>;
-  /** Components the live entries declared they read, held or claimed. */
+  /** Components the entries declared they read, held or claimed. */
   readonly dependencies: number;
   /** Claims still resolving; a non-zero count after a settle is a leak. */
   readonly pending: number;
 }
 
+export interface SubscriptionRegistryOptions {
+  /**
+   * How long a released query result stays warm: its result, its cursor, and
+   * the claims it owns. Defaults to {@link DEFAULT_RESIDENCY_TTL_MS}, the same
+   * one lifetime a released component value gets, so one answer covers both.
+   * A non-positive or non-finite value keeps an inactive result until a later
+   * read claims it.
+   */
+  readonly residencyTtlMs?: number;
+}
+
 export interface SubscriptionRegistry {
   /**
    * Find or create the entry for `spec`, counting one subscriber. Two calls on
-   * one key share one entry, one cursor, and one lease set.
+   * one key share one entry, one cursor, and one lease set. An inactive entry
+   * is taken back as it stands — same result, same claims, same consumer state
+   * — and `consumer` is only stored when this call creates the entry.
    */
-  open<TResult = unknown>(spec: SubscriptionSpec): Subscription<TResult>;
-  /** A non-owning snapshot of every live entry, in creation order. */
+  open<TResult = unknown>(spec: SubscriptionSpec): Subscription<TResult, undefined>;
+  open<TResult = unknown, TConsumer = unknown>(
+    spec: SubscriptionSpec,
+    consumer: TConsumer,
+  ): Subscription<TResult, TConsumer>;
+  /**
+   * The entry for `kind` and `key` as it stands, counting no subscriber: what a
+   * consumer reads before subscribing, and how a remount finds the result it
+   * left inactive. Absent once the entry has ended.
+   *
+   * `key` is the entry's map key: a query key names one entry, while a row's
+   * identity also covers the components its read selected, so a row id names
+   * only the whole-row entry. Only query entries are looked up this way.
+   */
+  peek<TResult = unknown, TConsumer = unknown>(
+    kind: SubscriptionKind,
+    key: string,
+  ): SubscriptionSnapshot<TResult, TConsumer> | undefined;
+  /** A non-owning snapshot of every entry, live or inactive, in creation order. */
   entries(): readonly SubscriptionSnapshot<unknown>[];
   stats(): SubscriptionStats;
   /** End every entry, releasing its claims, and stop dispatching. */
@@ -294,7 +373,7 @@ const indexDependencies = (entry: {
       };
 
 /** Mutable entry state behind a read-only handle. */
-interface Entry<TResult> {
+interface Entry<TResult, TConsumer = unknown> {
   readonly id: SubscriptionId;
   readonly kind: SubscriptionKind;
   readonly key: string;
@@ -306,7 +385,9 @@ interface Entry<TResult> {
   readonly declaredSources: readonly string[];
   /** The components a row read selected; absent claims every resident one. */
   readonly rowComponents: readonly string[] | undefined;
-  readonly listeners: Set<ChangeListener>;
+  /** The consumer state the entry was opened with; never interpreted here. */
+  readonly consumer: TConsumer;
+  readonly listeners: Set<ChangeListener<TResult>>;
   reads: ReadSet;
   /** The revision this entry's consumer has processed. */
   cursor: Revision;
@@ -328,6 +409,18 @@ interface Entry<TResult> {
   dependencies: readonly Dependency[];
   state: SubscriptionState;
   refs: number;
+  /**
+   * The timer that ends an inactive result. Armed only while `inactive`, so a
+   * live or reopened entry holds no second timer; `null` when retention is
+   * disabled or the entry is not inactive.
+   */
+  retentionTimer: LeaseTimerHandle | null;
+  /**
+   * Guards the retention callback the same way the lease table guards expiry:
+   * a timer dispatched for one inactive period cannot end an entry that has
+   * been reopened since.
+   */
+  retentionGeneration: number;
   /** Claims the entry currently holds; swapped whenever dependencies change. */
   releases: readonly Release[];
   /**
@@ -349,8 +442,13 @@ interface Entry<TResult> {
 const rowSelectionKey = (components: readonly string[] | undefined): string =>
   components === undefined ? "" : `\u0000[${[...components].sort().join(",")}]`;
 
+const mapKeyOf = (kind: SubscriptionKind, key: string): string => `${kind}\u0000${key}`;
+
 const registryKey = (spec: SubscriptionSpec): string =>
-  `${spec.kind}\u0000${spec.kind === "query" ? spec.key : `${spec.row}${rowSelectionKey(spec.components)}`}`;
+  mapKeyOf(
+    spec.kind,
+    spec.kind === "query" ? spec.key : `${spec.row}${rowSelectionKey(spec.components)}`,
+  );
 
 const sharingKey = (spec: SubscriptionSpec): string =>
   spec.kind === "query" ? spec.key : spec.row;
@@ -361,18 +459,50 @@ const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
 const declaredSources = (spec: SubscriptionSpec): readonly string[] =>
   spec.kind === "query" ? (spec.sources ?? []) : [];
 
+/** `Infinity` disables retention, so no timer is armed at all. */
+const residencyTtlOf = (ttlMs: number | undefined): number => {
+  if (ttlMs === undefined) return DEFAULT_RESIDENCY_TTL_MS;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
+  return ttlMs;
+};
+
+/** A pending retention must not keep a Node process alive. */
+const unrefTimer = (timer: LeaseTimerHandle): void => {
+  if (typeof timer === "object" && timer !== null && "unref" in timer) {
+    const unref = (timer as { unref?: unknown }).unref;
+    if (typeof unref === "function") unref.call(timer);
+  }
+};
+
 /**
- * Build the registry over a live replica. Every live query and row subscription
- * goes through this one table, so this is also the one place that dispatches a
+ * Build the registry over a live replica. Every query and row subscription goes
+ * through this one table, so this is also the one place that dispatches a
  * change batch and the one place a read's leases are acquired and released.
+ *
+ * A released query result does not end: it owns the claims it read until the
+ * residency TTL elapses, then result and claims end together (#941). That is
+ * the one lifetime an unwatched read stays warm for, and a remount inside it
+ * takes the entry back without reading or acquiring anything.
  */
-export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegistry => {
+export const createSubscriptionRegistry = (
+  replica: Replica,
+  options: SubscriptionRegistryOptions = {},
+): SubscriptionRegistry => {
   const entries = new Map<string, Entry<unknown>>();
+  const residencyTtlMs = residencyTtlOf(options.residencyTtlMs);
   let nextId = 0;
   let closed = false;
 
-  const endEntry = <TResult>(entry: Entry<TResult>): void => {
+  const clearRetention = (entry: Entry<unknown>): void => {
+    entry.retentionGeneration += 1;
+    if (entry.retentionTimer === null) return;
+    clearTimeout(entry.retentionTimer);
+    entry.retentionTimer = null;
+  };
+
+  const endEntry = <TResult, TConsumer>(entry: Entry<TResult, TConsumer>): void => {
     if (entry.state === "terminal") return;
+    clearRetention(entry as unknown as Entry<unknown>);
     entry.state = "terminal";
     entry.generation += 1;
     const releases = entry.releases;
@@ -382,6 +512,34 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     entries.delete(entry.mapKey);
     dispatcher.remove(entry as unknown as Entry<unknown>);
     for (const release of releases) release();
+  };
+
+  /**
+   * Last subscriber left. A query result keeps its result and its claims for one
+   * residency TTL — the same lifetime a released component value gets — then
+   * ends, releasing both. A row entry ends at once: it holds a row for a mounted
+   * reader, and there is no result left to warm.
+   */
+  const retire = <TResult, TConsumer>(entry: Entry<TResult, TConsumer>): void => {
+    if (entry.kind !== "query") {
+      endEntry(entry);
+      return;
+    }
+    entry.state = "inactive";
+    // `residencyTtlMs: 0` disables expiry for the replica's values, so it
+    // disables it for the result holding them too: no timer, live until a
+    // remount takes it back.
+    if (!Number.isFinite(residencyTtlMs)) return;
+    entry.retentionGeneration += 1;
+    const generation = entry.retentionGeneration;
+    const timer = setTimeout(() => {
+      entry.retentionTimer = null;
+      if (entry.state !== "inactive" || entry.refs > 0) return;
+      if (entry.retentionGeneration !== generation) return;
+      endEntry(entry);
+    }, residencyTtlMs);
+    unrefTimer(timer);
+    entry.retentionTimer = timer;
   };
 
   /**
@@ -418,7 +576,9 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
   };
 
   const depend = <TResult>(entry: Entry<TResult>, dependencies: readonly Dependency[]): void => {
-    if (entry.state !== "live") return;
+    // An inactive result may still be settling a run it started while mounted;
+    // its claims follow the result it holds until the result ends.
+    if (entry.state === "terminal") return;
     const next = mergeComponents(dependencies);
     if (sameDependencies(entry.dependencies, next)) return;
     entry.dependencies = next;
@@ -433,8 +593,10 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     void acquire(entry as unknown as Entry<unknown>, next, entry.generation);
   };
 
-  /** A live, read-only view of one entry: accessors, no ownership. */
-  const snapshotOf = <TResult>(entry: Entry<TResult>): SubscriptionSnapshot<TResult> => ({
+  /** A view of one entry: accessors, no ownership. */
+  const snapshotOf = <TResult, TConsumer>(
+    entry: Entry<TResult, TConsumer>,
+  ): SubscriptionSnapshot<TResult, TConsumer> => ({
     id: entry.id,
     kind: entry.kind,
     key: entry.key,
@@ -454,6 +616,9 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     get result() {
       return entry.result;
     },
+    get consumer() {
+      return entry.consumer;
+    },
     get dependencies() {
       return entry.dependencies;
     },
@@ -466,14 +631,41 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
   });
 
   /**
+   * The writer a listener mutates its entry through. It acts while the entry
+   * exists — including after the listener's own share was released, while the
+   * result is inactive — because a result that settles behind its last
+   * subscriber must still keep the claims it read.
+   */
+  const writerOf = <TResult, TConsumer>(
+    entry: Entry<TResult, TConsumer>,
+  ): SubscriptionWriter<TResult> => ({
+    get result() {
+      return entry.result;
+    },
+    publish: (result: TResult) => {
+      if (entry.state !== "terminal") entry.result = result;
+    },
+    seek: (revision: Revision) => {
+      if (entry.state !== "terminal") entry.cursor = revision;
+    },
+    depend: (dependencies: readonly Dependency[]) => {
+      depend(entry, dependencies);
+    },
+  });
+
+  /**
    * Hand one touched entry its batch. The entry is level with the batch once its
    * own bookkeeping has succeeded, but its cursor moves only if the consumer had
    * caught up with the previous one, and that happens before any listener runs:
    * a listener that throws cannot leave a caught-up entry behind for a later
    * batch to jump past, and a batch cannot report a lagging one caught up.
+   *
+   * An inactive result is still dispatched: a change that touches what it read
+   * must reach it so a remount knows the result is stale without re-reading the
+   * journal, and so an unrelated change can leave it `current`.
    */
   const notify = (entry: Entry<unknown>, batch: ChangeBatch): void => {
-    if (entry.state !== "live") return;
+    if (entry.state === "terminal") return;
     // Caught up when the batch began: the consumer has processed everything the
     // entry was handed so far. A consumer that declared lag — its result still
     // reflects an older revision, an async run in flight — is not, and keeps
@@ -512,13 +704,13 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     }
     entry.dispatched = batch.revision;
     entry.stranded = false;
-    if (entry.state !== "live") return;
     if (caughtUp) entry.cursor = batch.revision;
+    const writer = writerOf(entry);
     // A listener may detach a peer, so iterate a snapshot, and report a failure
     // instead of letting one consumer skip the rest.
     for (const listener of Array.from(entry.listeners)) {
       try {
-        listener(batch.changes, batch.revision, lost);
+        listener(batch.changes, batch.revision, lost, writer);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[Subscriptions] change listener threw:", err);
@@ -545,33 +737,36 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     onChange: notify,
   });
 
-  const handleOf = <TResult>(entry: Entry<TResult>): Subscription<TResult> => {
+  const handleOf = <TResult, TConsumer>(
+    entry: Entry<TResult, TConsumer>,
+  ): Subscription<TResult, TConsumer> => {
     // SAFETY: the mutators are attached below, before the handle escapes.
-    const handle = snapshotOf(entry) as unknown as Subscription<TResult>;
+    const handle = snapshotOf(entry) as unknown as Subscription<TResult, TConsumer>;
     /** One handle releases once: a peer's share is not this handle's to drop. */
     let released = false;
-    const live = (): boolean => !released && entry.state === "live";
+    /** A released handle still acts on the entry while the entry exists. */
+    const writable = (): boolean => entry.state !== "terminal";
     // `Object.assign` defines the methods beside the snapshot's accessors;
     // spreading the snapshot would freeze every accessor at its current value.
     Object.assign(handle, {
       release: () => {
         if (released) return;
         released = true;
-        if (entry.state !== "live") return;
+        if (entry.state === "terminal") return;
         entry.refs -= 1;
-        if (entry.refs <= 0) endEntry(entry);
+        if (entry.refs <= 0) retire(entry);
       },
       publish: (result: TResult) => {
-        if (live()) entry.result = result;
+        if (writable()) entry.result = result;
       },
       seek: (revision: Revision) => {
-        if (live()) entry.cursor = revision;
+        if (writable()) entry.cursor = revision;
       },
       depend: (dependencies: readonly Dependency[]) => {
-        if (!released) depend(entry, dependencies);
+        depend(entry, dependencies);
       },
-      onChange: (listener: ChangeListener) => {
-        if (!live()) return () => {};
+      onChange: (listener: ChangeListener<TResult>) => {
+        if (!writable()) return () => {};
         entry.listeners.add(listener);
         return () => {
           entry.listeners.delete(listener);
@@ -582,16 +777,27 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
   };
 
   return {
-    open<TResult>(spec: SubscriptionSpec): Subscription<TResult> {
+    open<TResult, TConsumer>(
+      spec: SubscriptionSpec,
+      consumer?: TConsumer,
+    ): Subscription<TResult, TConsumer> {
       const mapKey = registryKey(spec);
       const existing = entries.get(mapKey);
       if (existing !== undefined) {
-        existing.refs += 1;
+        if (existing.state === "inactive") {
+          // The remount inside the TTL: take the entry back as it stands, so
+          // the result, its cursor, and the claims it owns all survive.
+          clearRetention(existing);
+          existing.refs = 1;
+          existing.state = "live";
+        } else {
+          existing.refs += 1;
+        }
         // SAFETY: the consumer that opened the entry restores the result type
         // it published under the same sharing key.
-        return handleOf(existing as unknown as Entry<TResult>);
+        return handleOf(existing as unknown as Entry<TResult, TConsumer>);
       }
-      const entry: Entry<unknown> = {
+      const entry: Entry<unknown, TConsumer> = {
         id: (nextId += 1),
         kind: spec.kind,
         key: sharingKey(spec),
@@ -600,6 +806,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         declaredReads: declaredReads(spec),
         declaredSources: declaredSources(spec),
         rowComponents: spec.kind === "row" ? spec.components : undefined,
+        consumer: consumer as TConsumer,
         listeners: new Set(),
         reads: compileReadComponents(declaredReads(spec), declaredSources(spec)),
         cursor: replica.revision,
@@ -609,13 +816,15 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         dependencies: [],
         state: "live",
         refs: 1,
+        retentionTimer: null,
+        retentionGeneration: 0,
         releases: [],
         generation: 0,
         pending: 0,
       };
       // SAFETY: an entry's state is independent of the result type it carries,
       // which the consumer that opened it restores on its own handle.
-      const handle = handleOf(entry) as unknown as Subscription<TResult>;
+      const handle = handleOf(entry) as unknown as Subscription<TResult, TConsumer>;
       // A registry closed before this subscription opened hands back an inert
       // handle: the caller's release path stays a no-op rather than leaking.
       if (closed) {
@@ -629,19 +838,31 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
       }
       return handle;
     },
+    peek<TResult, TConsumer>(kind: SubscriptionKind, key: string) {
+      const entry = entries.get(mapKeyOf(kind, key));
+      if (entry === undefined) return undefined;
+      // SAFETY: the consumer restores the types it opened the entry with.
+      return snapshotOf(entry as unknown as Entry<TResult, TConsumer>);
+    },
     entries: () => Array.from(entries.values()).map((entry) => snapshotOf(entry)),
     stats: () => {
+      let live = 0;
+      let inactive = 0;
       let query = 0;
       let row = 0;
       let dependencies = 0;
       let pending = 0;
       for (const entry of entries.values()) {
-        if (entry.kind === "query") query += 1;
-        else row += 1;
+        if (entry.state === "inactive") inactive += 1;
+        else {
+          live += 1;
+          if (entry.kind === "query") query += 1;
+          else row += 1;
+        }
         dependencies += entry.dependencies.reduce((count, dep) => count + dep.components.length, 0);
         pending += entry.pending;
       }
-      return { live: query + row, byKind: { query, row }, dependencies, pending };
+      return { live, inactive, byKind: { query, row }, dependencies, pending };
     },
     close: () => {
       if (closed) return;

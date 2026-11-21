@@ -7,23 +7,25 @@
  * result does not notify.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { componentName, makeHlc, type Entity, type FieldValue, type Update } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import { createQueryCache, type QuerySource } from "../query-cache";
+import { createSubscriptionRegistry, type SubscriptionRegistry } from "../subscriptions";
 import { EBB_COMPONENTS } from "@ebbjs/core";
-import { flushTasks, isPlatformModel, linkAction, rowComponents } from "../test-utils";
+import { flushTasks, isPlatformModel, linkAction, rowComponents, waitFor } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
 import { planQuery } from "../query-plan";
 import { queryCacheKey, selectionReadComponents } from "../selection";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
+// The fixture row's leaf is old, so any write the tests make wins the merge.
 const row = (id: string, title = id): Entity => ({
   id,
   model: "todo",
-  data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: makeHlc(1) } } },
+  data: { fields: { title: { value: title, update_id: `u_${id}`, hlc: makeHlc(0) } } },
   exists: true,
   created_hlc: "1",
   updated_hlc: "1",
@@ -766,69 +768,165 @@ describe("query cache: failure", () => {
   });
 });
 
-describe("query cache: inactive result TTL (#499)", () => {
+describe("query cache: one inactive lifetime (#941)", () => {
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-  it("evicts a result after its inactive TTL and remounts unloaded", async () => {
-    const replica = createReplica();
-    const cache = createQueryCache(replica, undefined, { ttlMs: 10 });
-    const first = cache.watch(
-      "rows",
-      todoQuery(),
-      sourceWith(() => [row("todo_1")]),
-    );
-    const detach = first.subscribe(() => {});
-    await flushTasks();
-    expect(first.getSnapshot().status).toBe("current");
-    detach();
-
-    await sleep(25);
-
-    const remountSource = sourceWith(() => [row("todo_2")]);
-    const second = cache.watch("rows", todoQuery(), remountSource);
-    expect(second.getSnapshot()).toMatchObject({
-      data: undefined,
-      status: "unloaded",
-      loading: true,
+  /**
+   * A replica whose `todo/title` is on demand, so a store read is observable.
+   * The result claims that component while it is live *and* while it is the
+   * inactive result that owns it.
+   */
+  const lazyReplica = (residencyTtlMs?: number) => {
+    const rows: Record<string, Entity> = { todo_1: row("todo_1") };
+    let reads = 0;
+    const replica = createReplica({
+      materialization: { holds: (component) => component !== "todo/title" },
+      readComponent: async (id) => {
+        reads += 1;
+        return rows[id] ?? null;
+      },
+      residencyTtlMs,
     });
-    second.subscribe(() => {});
-    await flushTasks();
-    expect(remountSource.runs).toBe(1);
-    expect(second.getSnapshot().data).toEqual([row("todo_2")]);
+    return { replica, reads: () => reads };
+  };
+
+  /**
+   * A source that reads the row's component through the replica, as a page read
+   * does. `runs` tallies every run across the sources one entry sees: a remount
+   * reuses the entry's original source, so the remount's own object never runs.
+   */
+  const readingSource = (
+    replica: ReturnType<typeof createReplica>,
+    counter: { runs: number },
+  ): QuerySource<Entity> => ({
+    ready: async (): Promise<void> => {},
+    isReady: (): boolean => true,
+    execute: async (): Promise<readonly Entity[]> => {
+      counter.runs += 1;
+      await replica.read("todo_1", ["todo/title"]);
+      const entity = replica.get("todo_1");
+      return entity === undefined ? [] : [entity];
+    },
   });
 
-  it("keeps a result that remounts before its TTL", async () => {
-    const replica = createReplica();
-    const cache = createQueryCache(replica, undefined, { ttlMs: 1_000 });
-    const source = sourceWith(() => [row("todo_1")]);
-    const detach = cache.watch("rows", todoQuery(), source).subscribe(() => {});
-    await flushTasks();
+  const cacheOver = (
+    replica: ReturnType<typeof createReplica>,
+    residencyTtlMs: number,
+  ): { cache: ReturnType<typeof createQueryCache>; registry: SubscriptionRegistry } => {
+    const registry = createSubscriptionRegistry(replica, { residencyTtlMs });
+    return { cache: createQueryCache(replica, registry), registry };
+  };
+
+  it("reuses a warm result on remount with no store read and no re-run", async () => {
+    const { replica, reads } = lazyReplica();
+    const { cache } = cacheOver(replica, 100);
+    const counter = { runs: 0 };
+    const first = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const detach = first.subscribe(() => {});
+    await waitFor(() => first.getSnapshot().status === "current");
+    expect(counter.runs).toBe(1);
+    expect(reads()).toBe(1);
     detach();
 
-    const remountSource = sourceWith(() => [row("todo_2")]);
-    const remount = cache.watch("rows", todoQuery(), remountSource);
+    // A change to another model is not a change to what the result read.
+    write(replica, "note_1", "note", { title: "Peer" });
+
+    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
     expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
-    expect(remount.getSnapshot().data).toEqual([row("todo_1")]);
-    expect(remountSource.runs).toBe(0);
+    expect(remount.getSnapshot().data).toHaveLength(1);
+    const off = remount.subscribe(() => {});
+    await flushTasks();
+    expect(counter.runs).toBe(1);
+    expect(reads()).toBe(1);
+    off();
   });
 
-  it("does not evict a result while it still has a subscriber", async () => {
-    const replica = createReplica();
-    const cache = createQueryCache(replica, undefined, { ttlMs: 10 });
-    const source = sourceWith(() => [row("todo_1")]);
-    const store = cache.watch("rows", todoQuery(), source);
-    store.subscribe(() => {});
-    await flushTasks();
+  it("re-runs once on remount when a relevant change landed while inactive", async () => {
+    const { replica, reads } = lazyReplica();
+    const { cache } = cacheOver(replica, 100);
+    const counter = { runs: 0 };
+    const source = readingSource(replica, counter);
+    const first = cache.watch("rows", todoQuery(), source);
+    const detach = first.subscribe(() => {});
+    await waitFor(() => first.getSnapshot().status === "current");
+    detach();
 
-    await sleep(25);
+    write(replica, "todo_1", "todo", { title: "Renamed" });
+    // The inactive result is marked stale without re-running: nobody is listening.
+    expect(counter.runs).toBe(1);
+    expect(cache.watch("rows", todoQuery(), source).getSnapshot()).toMatchObject({
+      status: "stale",
+      loading: false,
+    });
 
-    const remount = cache.watch(
-      "rows",
-      todoQuery(),
-      sourceWith(() => []),
-    );
-    expect(remount.getSnapshot().data).toEqual([row("todo_1")]);
-    expect(remount.getSnapshot().status).toBe("current");
+    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    remount.subscribe(() => {});
+    await waitFor(() => remount.getSnapshot().status === "current");
+    expect(counter.runs).toBe(2);
+    expect(reads()).toBe(1);
+    expect(remount.getSnapshot().data?.[0]?.data.fields.title?.value).toBe("Renamed");
+  });
+
+  it("keeps a result while it still has a subscriber, past the TTL", async () => {
+    const { replica } = lazyReplica();
+    const { cache } = cacheOver(replica, 10);
+    const counter = { runs: 0 };
+    const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const off = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+
+    // Only an inactive result has a lifetime; a live one is never ended by the
+    // clock, so its claims and its result stay as long as the subscriber does.
+    await sleep(30);
+    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
+    expect(counter.runs).toBe(1);
+    off();
+  });
+
+  it("drops the result after the residency TTL and releases the claims it owned", async () => {
+    const { replica, reads } = lazyReplica(20);
+    const { cache, registry } = cacheOver(replica, 20);
+    const counter = { runs: 0 };
+    const store = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    const detach = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+    detach();
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+    // The result's lifetime is the same one the released value gets: when it
+    // ends, the claims go and the value follows after its own grace period.
+    await waitFor(() => registry.peek("query", queryCacheKey("rows", todoQuery())) === undefined);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
+    await sleep(40);
+    expect(replica.stats().leases.resident).toBe(0);
+
+    const remount = cache.watch("rows", todoQuery(), readingSource(replica, counter));
+    expect(remount.getSnapshot()).toMatchObject({ data: undefined, status: "unloaded" });
+    remount.subscribe(() => {});
+    await waitFor(() => remount.getSnapshot().status === "current");
+    expect(counter.runs).toBe(2);
+    // The value is gone, so this run reads it from the store again.
+    expect(reads()).toBe(2);
+  });
+
+  it("owns no timer: unsubscribing arms the one retention timer", async () => {
+    const { replica } = lazyReplica();
+    const { cache } = cacheOver(replica, 40);
+    const store = cache.watch("rows", todoQuery(), readingSource(replica, { runs: 0 }));
+    const detach = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+
+    const armed = vi.spyOn(globalThis, "setTimeout");
+    armed.mockClear();
+    detach();
+    try {
+      expect(armed.mock.calls.filter(([, delay]) => delay === 40)).toHaveLength(1);
+      // The result still owns its claim, so the lease table arms nothing.
+      expect(replica.stats().leases.timers).toBe(0);
+    } finally {
+      armed.mockRestore();
+    }
   });
 });
 
@@ -877,14 +975,17 @@ describe("query cache: lease ownership (#937)", () => {
     return createReplica({
       materialization: { holds: (component) => component !== "todo/title" },
       readComponent: async (id) => rows[id] ?? null,
-      residencyTtlMs: 0,
+      residencyTtlMs: 20,
     });
   };
 
-  it("leases the components a live result read and releases them on unsubscribe", async () => {
+  const cacheOver = (replica: ReturnType<typeof createReplica>) =>
+    createQueryCache(replica, createSubscriptionRegistry(replica, { residencyTtlMs: 20 }));
+
+  it("leases the components a live result read and keeps them through its inactive lifetime", async () => {
     const replica = lazyReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = createQueryCache(replica);
+    const cache = cacheOver(replica);
     const store = cache.watch(
       "rows",
       todoQuery(),
@@ -901,14 +1002,18 @@ describe("query cache: lease ownership (#937)", () => {
       byComponent: { "todo/title": { leased: 1, inactive: 0 } },
     });
 
+    // The inactive result is the only owner left, so the value stays claimed
+    // for the one residency TTL and is released when the result ends.
     detach();
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+    await waitFor(() => replica.stats().leases.leased === 0);
     expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
   });
 
-  it("keeps its claims through a failed run and releases them on unsubscribe", async () => {
+  it("keeps its claims through a failed run and releases them when the result ends", async () => {
     const replica = lazyReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = createQueryCache(replica);
+    const cache = cacheOver(replica);
     let shouldFail = false;
     const source: QuerySource<Entity> = {
       ready: async () => {},
@@ -931,13 +1036,13 @@ describe("query cache: lease ownership (#937)", () => {
     expect(replica.stats().leases.leased).toBe(1);
 
     detach();
-    expect(replica.stats().leases.leased).toBe(0);
+    await waitFor(() => replica.stats().leases.leased === 0);
   });
 
-  it("releases its claims when the last listener throws on the first result", async () => {
+  it("keeps its claims through a render throw and releases them when the result ends", async () => {
     const replica = lazyReplica();
     await replica.read("todo_1", ["todo/title"]);
-    const cache = createQueryCache(replica);
+    const cache = cacheOver(replica);
     const store = cache.watch("rows", todoQuery(), {
       ready: async () => {},
       isReady: () => true,
@@ -952,8 +1057,12 @@ describe("query cache: lease ownership (#937)", () => {
       }),
     ).toThrow("render");
 
+    // The result is cached for the same lifetime as any other; the claim goes
+    // when the result ends rather than being handed to a subscriber that never
+    // existed.
     await flushTasks();
-    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
-    expect(replica.stats().leases.timers).toBe(0);
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+    await waitFor(() => replica.stats().leases.leased === 0);
+    expect(replica.stats().leases.timers).toBe(1);
   });
 });

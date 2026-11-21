@@ -240,16 +240,12 @@ export interface SyncClientOptions<
    */
   replicaSaveIntervalMs?: number;
   /**
-   * How long an inactive query result stays cached, in ms. Defaults to
-   * `DEFAULT_QUERY_TTL_MS` (five minutes). A non-positive or non-finite
-   * value keeps inactive results forever.
-   */
-  queryTtlMs?: number;
-  /**
-   * How long an on-demand value stays resident after the read that claimed it,
-   * in ms. Defaults to `DEFAULT_RESIDENCY_TTL_MS` (60s). A non-positive or
-   * non-finite value keeps a released value resident indefinitely; a leased
-   * value is never released by the TTL.
+   * How long an unwatched read stays warm, in ms: one lifetime for both a
+   * released component value and an inactive query result, which owns the
+   * claims its result read until it ends. Defaults to
+   * `DEFAULT_RESIDENCY_TTL_MS` (60s). A non-positive or non-finite value keeps
+   * them until a later read claims them; a leased value is never released by
+   * the TTL.
    */
   residencyTtlMs?: number;
   /**

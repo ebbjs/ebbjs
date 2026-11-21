@@ -275,16 +275,19 @@ export class SyncClient<
   /** Read migrations for stored component versions (#804); absent without a schema. */
   readonly componentMigrations: ComponentMigrations | undefined;
   /**
-   * The reactive query result cache (#512) over {@link replica}. Namespaces and
-   * hooks read query results through it, so a remount gets the cached result and
-   * every subscriber sees one invalidation stream. Hydrated with the replica.
+   * The reactive query result view (#512) over {@link subscriptions}. Namespaces
+   * and hooks read results through it, so a remount gets the result the registry
+   * still holds and every subscriber sees one invalidation stream. It owns no
+   * results and no timers: the registry holds them and one `residencyTtlMs`
+   * decides how long an unwatched result and its claims stay warm (#941).
    */
   readonly queries: QueryCache;
   /**
    * Every live query and row subscription (#937): one entry each, with its own
    * revision cursor and the residency claims its dependencies need. Dispatch
-   * and lease ownership live here, so a subscription that ends releases what
-   * it read.
+   * and lease ownership live here. A released query result goes inactive rather
+   * than away, keeping its result and claims for the one residency TTL, so the
+   * registry is also where a remount finds it.
    */
   readonly subscriptions: SubscriptionRegistry;
   /**
@@ -495,10 +498,10 @@ export class SyncClient<
             migrations: opts.schema._migrations,
             versionOf: (id, component) => this.replica.componentVersion(id, component),
           });
-    this.subscriptions = createSubscriptionRegistry(this.replica);
-    this.queries = createQueryCache(this.replica, this.subscriptions, {
-      ttlMs: opts.queryTtlMs,
+    this.subscriptions = createSubscriptionRegistry(this.replica, {
+      residencyTtlMs: opts.residencyTtlMs,
     });
+    this.queries = createQueryCache(this.replica, this.subscriptions);
     const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.fetchImpl = withAbortSignal(rawFetch, this.abortController.signal);
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;

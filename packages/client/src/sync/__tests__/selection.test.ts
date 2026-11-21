@@ -461,7 +461,7 @@ describe("selection: joins lease their targets", () => {
   });
 
   it("leases a joined target for the life of a cached read", async () => {
-    const { client, written } = harness(schema, { residencyTtlMs: 0 });
+    const { client, written } = harness(schema, { residencyTtlMs: 20 });
     const { contentId } = await createLinkedPage(client, written, {
       title: "One",
       text: "body",
@@ -478,7 +478,17 @@ describe("selection: joins lease their targets", () => {
     });
     expect(client.replica.isComponentResident(contentId, "page_content/text")).toBe(true);
 
+    // The inactive result still owns the target's component: nothing may take
+    // it away from a remount inside the one residency TTL.
     detach();
+    expect(client.replicaStats.leases.byComponent["page_content/text"]).toMatchObject({
+      leased: 1,
+      inactive: 0,
+    });
+
+    // When the result's lifetime ends the claim goes with it, and the value
+    // waits out the same TTL before it leaves.
+    await waitFor(() => client.replicaStats.leases.byComponent["page_content/text"]?.leased === 0);
     expect(client.replicaStats.leases.byComponent["page_content/text"]).toMatchObject({
       leased: 0,
       inactive: 1,
