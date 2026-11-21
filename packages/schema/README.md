@@ -41,7 +41,7 @@ schema._registry.get("issue");
 ```
 
 A bare field builder is an **anonymous component** named `<model>/<field>`.
-`defineComponent` declares a named one when it needs its own policy. The
+`defineComponent` declares a named one when it needs its own options. The
 registry answers the component questions later layers ask:
 
 ```ts
@@ -49,7 +49,6 @@ const registry = schema._registry;
 registry.componentsOf("issue"); // every component the model declares
 registry.componentOf("issue", "issue/body"); // by full name, or by field key
 registry.isOptional("issue", "body");
-registry.loadingOf("issue", "body"); // "lazy"
 registry.conflictScopeOf("issue", "body");
 ```
 
