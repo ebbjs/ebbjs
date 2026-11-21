@@ -120,9 +120,11 @@ export interface QuerySource<T> {
    *
    * The cache calls it only for a shape a patch may rewrite (no order, no
    * limit, no join) and an unsafe batch never reaches it, so an implementation
-   * may assume the rows' place in the result is unchanged. It is the
-   * synchronous run it replaces: a read that would have to install a value
-   * first leaves that to the async re-run and declines.
+   * may assume the rows' place in the result is unchanged. It must answer one
+   * row per id it was handed — the same ids, no duplicates and no others — or
+   * return `null`; a short or mismatched answer would leave a row serving a
+   * stale value. It is the synchronous run it replaces: a read that would have
+   * to install a value first leaves that to the async re-run and declines.
    */
   patch?(ids: readonly string[]): readonly T[] | null;
 }
@@ -179,6 +181,48 @@ const resultOf = <T>(writer: SubscriptionWriter<QueryResult<T>> | undefined): Qu
   writer?.result ?? (UNLOADED as QueryResult<T>);
 
 /**
+ * Whether a patch answered exactly the ids it was handed: one row per id, no
+ * duplicates, no extras. A short or mismatched answer would leave a row serving
+ * the value the patch never re-projected, so the patch is declined instead.
+ */
+const oneRowPerId = (
+  ids: readonly string[],
+  patched: readonly { readonly id: string }[],
+): boolean => {
+  if (patched.length !== ids.length) return false;
+  const returned = new Set(patched.map((row) => row.id));
+  return returned.size === ids.length && ids.every((id) => returned.has(id));
+};
+
+/**
+ * A patched entry's claim list with the rows the batch named replaced by their
+ * current claims. Rows the batch did not name keep the claims they had, and a
+ * claim that is new to the result is appended: the claim list is a set of
+ * rows to hold, not an ordering a result reads.
+ */
+const healClaims = (
+  held: readonly Dependency[],
+  patched: readonly string[],
+  claimed: readonly Dependency[],
+): readonly Dependency[] => {
+  const fresh = new Map(claimed.map((dependency) => [dependency.id, dependency]));
+  const named = new Set(patched);
+  const next: Dependency[] = [];
+  for (const dependency of held) {
+    if (!named.has(dependency.id)) {
+      next.push(dependency);
+      continue;
+    }
+    const replacement = fresh.get(dependency.id);
+    if (replacement === undefined) continue;
+    next.push(replacement);
+    fresh.delete(dependency.id);
+  }
+  next.push(...fresh.values());
+  return next;
+};
+
+/**
  * Build the cache over a live replica and the registry its results live in.
  * Without a registry one is built over the replica; the inactive lifetime is
  * the registry's, so the cache takes no lifetime option of its own.
@@ -217,11 +261,30 @@ export const createQueryCache = (
   };
 
   /**
-   * The values a result keeps resident: for each source or joined-target row it
-   * touches, the resident components its read set names. A selection claims
-   * exactly its components; a whole-model read (`todo/*`) claims every resident
-   * component of that model. Claims are not a projection: the row's other
-   * components stay wherever the policy put them.
+   * The values the rows `ids` keep resident: for each row, the resident
+   * components its read set names. A selection claims exactly its components;
+   * a whole-model read (`todo/*`) claims every resident component of that model.
+   * Claims are not a projection: the row's other components stay wherever the
+   * policy put them.
+   */
+  const claimsFor = <T>(run: QueryRun<T>, ids: Iterable<string>): readonly Dependency[] => {
+    const dependencies: Dependency[] = [];
+    for (const id of ids) {
+      if (replica.get(id) === undefined) continue;
+      const components = replica
+        .residentComponents(id)
+        .filter(
+          (component) =>
+            run.reads.components.has(component) || run.reads.models.has(componentModel(component)),
+        );
+      if (components.length > 0) dependencies.push({ id, components });
+    }
+    return dependencies;
+  };
+
+  /**
+   * The values a result keeps resident: every row it touches — a source row or
+   * a joined target — claimed by {@link claimsFor}.
    */
   const dependenciesOf = <T>(run: QueryRun<T>, result: QueryResult<T>): readonly Dependency[] => {
     const data = result.data;
@@ -245,18 +308,7 @@ export const createQueryCache = (
         }
       }
     }
-    const dependencies: Dependency[] = [];
-    for (const id of ids) {
-      if (replica.get(id) === undefined) continue;
-      const components = replica
-        .residentComponents(id)
-        .filter(
-          (component) =>
-            run.reads.components.has(component) || run.reads.models.has(componentModel(component)),
-        );
-      if (components.length > 0) dependencies.push({ id, components });
-    }
-    return dependencies;
+    return claimsFor(run, ids);
   };
 
   /** Point the entry at the revision the result reflects and the claims it needs. */
@@ -465,7 +517,13 @@ export const createQueryCache = (
       // failure, so a broken patch path degrades to the run it replaced.
       return false;
     }
-    if (patched === null) return false;
+    if (
+      patched === null ||
+      // SAFETY: only a `rows` result patches, and its `T` carries the id.
+      !oneRowPerId(ids, patched as readonly { readonly id: string }[])
+    ) {
+      return false;
+    }
     // SAFETY: only a `rows` result patches, and its `T` is a projected row
     // carrying the id the splice matches on.
     const next = patchResultRows(
@@ -473,11 +531,14 @@ export const createQueryCache = (
       patched as readonly { readonly id: string }[],
     ) as readonly T[] | null;
     if (next === null) return false;
-    // The id set is unchanged, so the claims a result holds are unchanged too:
-    // only the cursor moves. Recomputing them would walk the whole result, which
-    // is the re-run this replaces.
+    // The id set is unchanged, but a claim is a *resident* component, not a row
+    // id: the batch may have installed a projected component on a row the entry
+    // did not previously claim. Heal the claims of the rows the batch named and
+    // leave the rest alone, so this stays O(changed rows) rather than the walk
+    // a re-run would do.
     run.at = revision;
     writer.seek(revision);
+    writer.depend(healClaims(writer.dependencies, ids, claimsFor(run, ids)));
     if (next !== data) {
       writer.publish({ data: next, status: "current", loading: false, error: null });
     }

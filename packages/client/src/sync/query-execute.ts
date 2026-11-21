@@ -453,14 +453,19 @@ export const patchShapeOf = (query: Query): PatchShape => {
  * so a view re-renders only for a visible change.
  *
  * `null` means the patch cannot stand in for a run: a row it was handed is not
- * in the result, so placing it would silently change the result set.
+ * in the result, or the same id was handed back twice, so placing it would
+ * silently change the result set or leave one of the two answers out. The caller
+ * owns the rest of the contract — exactly one row per id it asked for — because
+ * only it knows the ids.
  */
 export const patchResultRows = <T extends { readonly id: string }>(
   current: readonly T[],
   patched: readonly T[],
 ): readonly T[] | null => {
-  if (patched.length === 0) return current;
   const fresh = new Map(patched.map((row) => [row.id, row]));
+  // A duplicate id means the patch did not re-project one row per id; the
+  // second answer would be dropped and the first silently kept.
+  if (fresh.size !== patched.length) return null;
   let changed = false;
   const next = current.map((row) => {
     const replacement = fresh.get(row.id);

@@ -128,6 +128,21 @@ type Snapshot = {
   getSnapshot(): { readonly data?: readonly { readonly id: string; readonly title?: string }[] };
 };
 
+/**
+ * The claims every query entry holds, one `id:components` string per claimed
+ * row. Claim order is not meaningful (it is a set of rows to hold), so both
+ * sides are sorted.
+ */
+const claims = (client: Client): string[][] =>
+  client.subscriptions
+    .entries()
+    .filter((entry) => entry.kind === "query")
+    .map((entry) =>
+      entry.dependencies
+        .map((dependency) => `${dependency.id}:${[...dependency.components].sort().join(",")}`)
+        .sort(),
+    );
+
 const titles = (store: Snapshot): string[] =>
   (store.getSnapshot().data ?? []).map((row) => `${row.id}:${row.title ?? ""}`);
 
@@ -249,6 +264,63 @@ describe("patched: a projected value of a resident row (#942)", () => {
     ]);
     detach();
   });
+
+  it("patches two changes to one row in a batch with one read of that row", async () => {
+    const client = makeClient();
+    await seedIssues(client);
+    const store = client.issue.query().result();
+    const detach = await subscribe(store);
+
+    const reads = readCounter(client);
+    reads.reset();
+    deliver(
+      client,
+      action(4, [
+        ...put(4, "issue_2", "issue", { title: "Two (edited)" }).updates,
+        ...put(4, "issue_2", "issue", { status: "done" }).updates,
+      ]),
+    );
+
+    // One row named twice is still one row to re-project, not two reads.
+    expect(reads.scans()).toBe(0);
+    expect(reads.rows()).toBe(1);
+    expect(titles(store)).toEqual(["issue_1:One", "issue_2:Two (edited)", "issue_3:Three"]);
+    expect(store.getSnapshot().data?.[1]?.status).toBe("done");
+    detach();
+  });
+
+  it("claims a projected component a patch newly installs on a row", async () => {
+    const client = makeClient();
+    // `issue_1` arrives without `status` and `issue_2` with it, so the result's
+    // claim set differs by row: a patch that installs `status` on `issue_1`
+    // makes a component claimable that the first run could not claim.
+    await seed(client, [
+      put(1, "issue_1", "issue", { title: "One" }),
+      put(2, "issue_2", "issue", { title: "Two", status: "open" }),
+    ]);
+    const store = client.issue.query().result();
+    const detach = await subscribe(store);
+    expect(claims(client)).toEqual([["issue_1:issue/title", "issue_2:issue/status,issue/title"]]);
+
+    const reads = readCounter(client);
+    reads.reset();
+    deliver(client, put(3, "issue_1", "issue", { status: "done" }));
+
+    expect(reads.scans()).toBe(0);
+    expect(store.getSnapshot().data?.[0]).toMatchObject({ id: "issue_1", status: "done" });
+    // A claim is residency, not membership: the patch re-projects `status`, so
+    // the entry must hold it even though the row set did not move.
+    const patched = claims(client);
+    expect(patched).toEqual([
+      ["issue_1:issue/status,issue/title", "issue_2:issue/status,issue/title"],
+    ]);
+
+    // A re-run at the same rows is the oracle: a replica load is a journal gap,
+    // so the entry runs the plan again and recomputes its claims.
+    client.replica.load(client.replica.toRecord());
+    expect(claims(client)).toEqual(patched);
+    detach();
+  });
 });
 
 describe("re-run: a change a patch cannot apply (#942)", () => {
@@ -348,6 +420,53 @@ describe("re-run: a change a patch cannot apply (#942)", () => {
 
     expect(reads.scans()).toBe(1);
     expect(store.getSnapshot().data?.map((row) => row.id)).toContain("issue_4");
+    detach();
+  });
+
+  it("re-runs on a membership join even when the change is a projected value", async () => {
+    const client = makeClient();
+    await seed(client, [
+      put(1, "issue_1", "issue", { title: "One", status: "open" }),
+      put(2, "group_1", "group", { name: "Workspace" }),
+      put(3, "eg_1", "membership", { entity_id: "issue_1", group_id: "group_1" }),
+    ]);
+    const store = client.issue.query().with({ groups: true }).result();
+    const detach = await subscribe(store);
+    expect(store.getSnapshot().data?.[0]?.groups).toEqual([{ name: "Workspace", id: "group_1" }]);
+
+    const reads = readCounter(client);
+    reads.reset();
+    deliver(client, put(4, "issue_1", "issue", { title: "One (edited)" }));
+
+    // A join's cardinality is not something a row splice can stand in for.
+    expect(reads.scans()).toBe(1);
+    expect(titles(store)).toEqual(["issue_1:One (edited)"]);
+    detach();
+  });
+
+  it("re-runs when a row changes model", async () => {
+    const client = makeClient();
+    await seed(client, [put(1, "issue_1", "issue", { title: "One", status: "open" })]);
+    const store = client.issue.query().result();
+    const detach = await subscribe(store);
+
+    const reads = readCounter(client);
+    reads.reset();
+    const gsn = 2;
+    // A create naming another model refiles the row: a membership change that
+    // moves it out of the set a patch would splice it back into.
+    const update: Update = {
+      id: `u_${gsn}`,
+      subject_id: "issue_1",
+      model: "note",
+      method: "create",
+      data: null,
+      hlc: makeHlc(1_711_036_800_000, gsn),
+    };
+    client.replica.ingest(action(gsn, [update]), [update], gsn);
+
+    expect(reads.scans()).toBe(1);
+    expect(store.getSnapshot().data).toEqual([]);
     detach();
   });
 
@@ -552,6 +671,146 @@ describe("query cache: patch source contract (#942)", () => {
     expect(source.patches).toBe(1);
     expect(source.runs).toBe(2);
     expect(store.getSnapshot().data?.map((candidate) => candidate.id)).toEqual(["todo_1"]);
+    detach();
+  });
+
+  /** The projected titles a store holds, in result order. */
+  const titlesOf = (store: { getSnapshot(): { readonly data?: readonly Entity[] } }): string[] =>
+    (store.getSnapshot().data ?? []).map((candidate) =>
+      String(candidate.data.fields.title?.value ?? ""),
+    );
+
+  it("re-runs when the patch answers fewer rows than it was handed", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One", todo_2: "Two" });
+    const cache = createQueryCache(replica);
+    // A source that filters out a row it cannot re-project: the row it drops
+    // would keep serving the value the patch never re-projected.
+    const source = countingSource(replica, (ids) => reRead(replica)(ids.slice(1)));
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!", todo_2: "Two!" });
+
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(2);
+    expect(titlesOf(store)).toEqual(["One!", "Two!"]);
+    detach();
+  });
+
+  it("re-runs when the patch answers no rows for a non-empty id set", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One", todo_2: "Two" });
+    const cache = createQueryCache(replica);
+    const source = countingSource(replica, () => []);
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!", todo_2: "Two!" });
+
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(2);
+    expect(titlesOf(store)).toEqual(["One!", "Two!"]);
+    detach();
+  });
+
+  it("re-runs when the patch answers one id twice", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One", todo_2: "Two" });
+    const cache = createQueryCache(replica);
+    const source = countingSource(replica, (ids) => {
+      const rows = reRead(replica)(ids);
+      // Same length as the ids, but one answer is missing and another repeats.
+      return rows[0] === undefined ? [] : [rows[0], rows[0]];
+    });
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!", todo_2: "Two!" });
+
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(2);
+    expect(titlesOf(store)).toEqual(["One!", "Two!"]);
+    detach();
+  });
+
+  it("re-runs when the patch answers a row it was not asked for", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One", todo_2: "Two", todo_3: "Three" });
+    const cache = createQueryCache(replica);
+    // The answer is in the result and the count matches, but it is not the row
+    // the batch named: splicing it would leave `todo_2` stale.
+    const source = countingSource(replica, () => reRead(replica)(["todo_1", "todo_3"]));
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!", todo_2: "Two!" });
+
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(2);
+    expect(titlesOf(store)).toEqual(["One!", "Two!", "Three"]);
+    detach();
+  });
+
+  it("patches an answer in a different order than the ids it was handed", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One", todo_2: "Two" });
+    const cache = createQueryCache(replica);
+    // Order is not part of the contract: the splice matches on id.
+    const source = countingSource(replica, (ids) => reRead(replica)([...ids].reverse()));
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!", todo_2: "Two!" });
+
+    expect(source.patches).toBe(1);
+    expect(source.runs).toBe(1);
+    expect(titlesOf(store)).toEqual(["One!", "Two!"]);
+    detach();
+  });
+
+  it("re-runs a collection result even when its source can patch", async () => {
+    const replica = createReplica();
+    write(replica, { todo_1: "One" });
+    const cache = createQueryCache(replica);
+    let runs = 0;
+    let patches = 0;
+    // A collection reads the plan's own components, so a title predicate is
+    // what makes a title write relevant to it.
+    const query: Query = {
+      ...todoQuery(),
+      groups: [[{ kind: "field", field: "title", value: "One!" }]],
+    };
+    const source: QuerySource<string> = {
+      ready: async (): Promise<void> => {},
+      isReady: (): boolean => true,
+      execute: (): readonly string[] => {
+        runs += 1;
+        return replica
+          .iterate("todo")
+          .filter((candidate) => candidate.data.fields.title?.value === "One!")
+          .map((candidate) => candidate.id);
+      },
+      patch: (): readonly string[] => {
+        patches += 1;
+        return ["todo_1"];
+      },
+    };
+    const store = cache.watch("collection", query, source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    write(replica, { todo_1: "One!" });
+
+    // A collection holds an id set, not projected rows: there is no row to
+    // splice, so it keeps the re-run.
+    expect(patches).toBe(0);
+    expect(runs).toBe(2);
     detach();
   });
 

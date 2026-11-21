@@ -649,7 +649,15 @@ const patchProjection =
     return rendered.length === ids.length ? rendered : null;
   };
 
-/** Re-apply the plan's field predicates to one row: a patch may narrow, never widen. */
+/**
+ * Re-apply the plan's field predicates to one row: a patch may narrow, never
+ * widen. A non-field predicate (an adjacency, membership, or existence test)
+ * reads an index rather than the row, so this cannot re-evaluate it and treats
+ * it as satisfied. That is safe only because such a predicate is a `keys`
+ * component: `patchableRows` declines the batch, so no row whose place depends
+ * on one ever reaches here through the cache. A source calling `patch` on its
+ * own must keep that contract, or it will widen a result it cannot re-narrow.
+ */
 const matchesEveryFilter = (row: Entity, query: Query): boolean =>
   query.groups.length === 0 ||
   query.groups.some((group) =>

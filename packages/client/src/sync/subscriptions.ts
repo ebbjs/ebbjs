@@ -144,6 +144,8 @@ export type ChangeListener<TResult = unknown> = (
 export interface SubscriptionWriter<TResult = unknown> {
   /** The result the entry currently holds; `undefined` before the first. */
   readonly result: TResult | undefined;
+  /** The values this entry currently claims, one per row. */
+  readonly dependencies: readonly Dependency[];
   /** Publish the result this entry currently holds. */
   publish(result: TResult): void;
   /** Advance the cursor: the entry has caught up through `revision`. */
@@ -674,6 +676,9 @@ export const createSubscriptionRegistry = (
   ): SubscriptionWriter<TResult> => ({
     get result() {
       return entry.result;
+    },
+    get dependencies() {
+      return entry.dependencies;
     },
     publish: (result: TResult) => {
       if (entry.state !== "terminal") entry.result = result;

@@ -610,13 +610,18 @@ if (bodyLeases.leased !== 0) {
  * materialized and a patch adds the rows it re-read by id. A row subscription's
  * consumer re-reads its one row per change, which is counted the same way.
  * "Re-runs" and "patches" are this benchmark's own count of the source calls
- * the cache made, one per change at most.
+ * the cache made, one per change at most. A row subscription has no patch path:
+ * its one row read per change is counted as a re-read, not a patch.
  */
 interface ChangeWorkload {
   readonly label: string;
   readonly changes: number;
   readonly runs: number;
   readonly patches: number;
+  /** Row re-reads for a workload that has no patch path, such as a row subscription. */
+  readonly reReads: number;
+  /** How the per-change read is labelled: a patch, or a re-read of the one row. */
+  readonly perChange: "patch" | "re-read";
   readonly rowsExamined: number;
   /**
    * Median time inside the source call a change caused: the plan run
@@ -816,6 +821,8 @@ const measureChanges = (
     changes,
     runs: runs.length,
     patches: patches.length,
+    reReads: 0,
+    perChange: "patch",
     rowsExamined: examined / changes,
     medianReadMs: median([...runs, ...patches]),
   };
@@ -848,10 +855,13 @@ const measureRowSubscription = (changes: number): ChangeWorkload => {
   subscription.release();
   registry.close();
   return {
-    label: "row subscription — projected `title` edit on the subscribed row",
+    label:
+      "row subscription — projected `title` edit on the subscribed row (one row re-read, no patch)",
     changes,
     runs: 0,
-    patches: reads,
+    patches: 0,
+    reReads: reads,
+    perChange: "re-read",
     rowsExamined: examined / changes,
     medianReadMs: median(readSamples),
   };
@@ -1250,6 +1260,12 @@ const rowsPerChange = (workload: ChangeWorkload): string =>
   Number.isInteger(workload.rowsExamined)
     ? grouped(workload.rowsExamined)
     : fixed(workload.rowsExamined, 1);
+/** A patch or re-read count, labelled so a row subscription does not read as a patch. */
+const readCell = (workload: ChangeWorkload): string =>
+  workload.perChange === "re-read"
+    ? `${fixed(workload.reReads / workload.changes, 2)} re-reads`
+    : fixed(workload.patches / workload.changes, 2);
+
 const beforeRows = rowsPerChange(changeWorkloads[0]!);
 push(
   "## 6. Patched result changes (#942)",
@@ -1265,7 +1281,8 @@ push(
   "executor records into: a re-run adds every row its plan scan materialized, a patch adds",
   "the rows it re-read by id, and a row subscription adds the one row its consumer re-reads",
   "(the read `namespace.ts` performs on a change). **Re-runs** and **patches** count the",
-  "source calls the cache made for each change. **Result work** is the median time inside that",
+  'source calls the cache made for each change; the row subscription\'s "re-reads" are its',
+  "consumer's one-row `get`, which is not a patch. **Result work** is the median time inside that",
   "call — the plan's scan, order, and projection for a re-run, the one-row re-projection for a",
   `patch — over ${grouped(CHANGE_ITERATIONS)} single-row edits or ${grouped(RE_RUN_ITERATIONS)} re-running changes.`,
   "The replica's own write path is excluded: it costs",
@@ -1275,9 +1292,8 @@ push(
   "| --- | ---: | ---: | ---: | ---: |",
   ...changeWorkloads.map(
     (workload) =>
-      `| ${workload.label} | ${fixed(workload.runs / workload.changes, 2)} | ${fixed(
-        workload.patches / workload.changes,
-        2,
+      `| ${workload.label} | ${fixed(workload.runs / workload.changes, 2)} | ${readCell(
+        workload,
       )} | ${rowsPerChange(workload)} | ${usPerCall(workload.medianReadMs)} |`,
   ),
   "",
@@ -1285,7 +1301,17 @@ push(
   "rows examined before #942, 1 after it. A membership change, a predicate field, an ordered",
   "result, and a row subscription all keep their one answer — re-run where the row's place can",
   "move, patch where it cannot — and the last row shows a row subscription is a one-row read,",
-  "not a query.",
+  "not a query: its `1.00 re-reads` is the pre-existing one-row `get`, not a new fast path.",
+  "",
+  "The `patches / change` of the patch rows is the cache dispatcher's rate for a source whose",
+  "projection is always resident. It is not a guarantee for the shipped chain: an unselected",
+  "`client.<model>.query()` read expands `<model>/*` to every registered component and the",
+  "patch declines a row it cannot prove holds one of them, so an optional lazy component the",
+  "row does not carry turns each projected write on that row into a re-run. `patch-rate.test.ts`",
+  "measures the shipped path at 200 pages: 40/40 projected writes patch when every projected",
+  "component is resident, and 4/40 when one optional lazy component is present on 10% of rows —",
+  "the rate tracks that component's presence, and a model whose optional lazy component is",
+  "absent drops to 0/40. Read the patch rows above as the best case, not the typical one.",
   "",
   "The membership workload's result grows by one row per change, so its row count is an average",
   `over ${grouped(RE_RUN_ITERATIONS)} changes, and the later rows scan the rows it added. The predicate`,
