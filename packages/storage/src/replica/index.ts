@@ -14,8 +14,11 @@ export type {
 } from "./leases";
 export { DEFAULT_JOURNAL_CAPACITY, createReplica, holdAll } from "./replica";
 export type {
+  ContentChange,
   MaterializationPolicy,
+  MembershipChange,
   MembershipQuery,
+  MembershipTransition,
   Replica,
   ReplicaChange,
   ReplicaOptions,

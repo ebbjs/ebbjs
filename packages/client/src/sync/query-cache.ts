@@ -16,8 +16,13 @@
  * projected rows, so it reads every component of its source and joined models;
  * a `collection` result holds only the matching id list, so it reads the
  * components its plan names. A query that cannot name the components it depends
- * on reads its model whole (`<model>/*`), the coarse fallback a change that
- * names no component answers.
+ * on reads its model whole (`<model>/*`).
+ *
+ * A change is one of two kinds (#939). A content change names the components it
+ * touched, so a result re-runs only when one of them is in its read set. A
+ * membership change is a row entering or leaving a model's set and names no
+ * component: every read of that model re-runs, because a row can enter carrying
+ * any component the plan reads — or leave carrying the only one that mattered.
  *
  * Status is derived, never stored ad hoc:
  *
@@ -256,8 +261,8 @@ export const createQueryCache = (
   /**
    * Whether a journal window can touch the entry. An empty window on an
    * advanced revision is a journal gap (a replica `load`), so treat it as
-   * relevant; otherwise test the changed components against the entry's
-   * compiled reads.
+   * relevant; otherwise match each change against the entry's compiled reads,
+   * by component for a content change and by model for a membership one.
    */
   const isRelevant = <T>(entry: CacheEntry<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;

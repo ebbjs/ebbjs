@@ -49,6 +49,7 @@ import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "
 import type {
   MaterializationPolicy,
   MembershipQuery,
+  MembershipTransition,
   Replica,
   ReplicaChange,
   ReplicaOptions,
@@ -318,12 +319,37 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     }
   };
 
-  /** Append one observable change. `components` is what the change touched. */
-  const bump = (id: string, deleted: boolean, components: readonly string[]): void => {
+  /** Append one content change: the values of a row that stayed in its set. */
+  const journalContent = (id: string, deleted: boolean, components: readonly string[]): void => {
     revision += 1;
-    journal.push({ revision, id, deleted, components });
+    journal.push({ revision, id, kind: "content", deleted, components });
     trimJournal();
   };
+
+  /**
+   * Append one membership change: the row's place in a model's set moved. It
+   * names no component, because a row can enter or leave carrying anything.
+   */
+  const journalMembership = (
+    id: string,
+    deleted: boolean,
+    membership: MembershipTransition,
+    models: readonly string[],
+  ): void => {
+    revision += 1;
+    journal.push({ revision, id, kind: "membership", deleted, membership, models });
+    trimJournal();
+  };
+
+  /**
+   * The row as the set a read is drawn from sees it: a tombstone is a value, so
+   * a tombstoned row is not in the set even while the replica holds its row, and
+   * a row no create has filed under a model yet belongs to none. Residency is
+   * not part of it: a row the policy keeps no value of is still a row `get` and
+   * `iterate` answer with, and a read draws its ids from there.
+   */
+  const sourceRow = (row: Entity | null): Entity | null =>
+    row !== null && row.model !== "" && row.deleted_hlc === null ? row : null;
 
   const retainedChanges = (): number => journal.length - journalStart;
 
@@ -604,38 +630,54 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Recompute the composed view after the base or overlay changed, bumping the
-   * revision iff a reader can see the difference. `previous` is the composed
-   * view captured before the change, which is what makes an echo of an
+   * Recompute the composed view after the base or overlay changed, journaling
+   * iff a reader can see the difference. `previous` is the composed view
+   * captured before the change, which is what makes an echo of an
    * already-visible optimistic write a no-op for the revision.
+   *
+   * A row arriving or leaving the set it is read from, or being filed under
+   * another model, is a membership change and stops there: its components are
+   * what it arrived or left carrying, not a value change a reader could already
+   * have seen. Everything else is a content change naming what it touched.
+   *
+   * Both sides are read from the same settled view — what `get` and `iterate`
+   * answer with — because that is the set a read draws from. Residency is a
+   * separate question: a row the policy retains no value of is still in the set,
+   * so a create that keeps nothing still enters it, and a write to it cannot
+   * make it leave.
    */
   const resync = (id: string, previous: Snapshot): void => {
     const { next, overlaid } = compose(id);
-    const settled = publish(id, next, overlaid, previous);
-    const retained = settled.row;
+    publish(id, next, overlaid, previous);
+    const view = viewOf(id);
+    const before = sourceRow(previous.row);
+    const after = sourceRow(view);
 
-    const journalChange = (deleted: boolean, components: readonly string[]): void =>
-      bump(id, deleted, components);
-
-    if (retained === null) {
-      if (next !== null) {
-        journalChange(
-          next.deleted_hlc !== null,
-          touchedComponentSet(previous.row, previous.components, null, []),
-        );
-      } else if (previous.row !== null) {
-        journalChange(true, touchedComponentSet(previous.row, previous.components, null, []));
+    if (after !== null) {
+      if (before === null) {
+        journalMembership(id, false, "entered", [after.model]);
+        return;
       }
+      if (before.model !== after.model) {
+        journalMembership(id, false, "changed-model", [before.model, after.model]);
+        return;
+      }
+    } else if (before !== null) {
+      journalMembership(id, view?.deleted_hlc != null, "left", [before.model]);
       return;
     }
+
+    // A row out of the set on both sides and absent now is unobservable: there
+    // is nothing left to name.
+    if (view === null) return;
     const touched = touchedComponentSet(
       previous.row,
       previous.components,
-      retained,
-      settled.components,
+      view,
+      presenceOfView(id),
     );
-    if (contentChanged(previous.row, retained) || touched.length > 0) {
-      journalChange(retained.deleted_hlc !== null, touched);
+    if (contentChanged(previous.row, view) || touched.length > 0) {
+      journalContent(id, view.deleted_hlc !== null, touched);
     }
   };
 
@@ -724,9 +766,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Eviction is a visible removal, so each dropped row journals exactly like
-   * a tombstone would — minus the tombstone. Traces an id leaves in the
-   * overlay or orphan buffer have no row to journal, but go with it.
+   * Eviction is a visible removal, so each dropped row journals one membership
+   * change naming the model it was filed under — it leaves that set, and which
+   * components it carried is not what a reader matches on. Traces an id leaves
+   * in the overlay or orphan buffer have no row to journal, but go with it.
    */
   const evict = (ids: readonly string[]): Revision => {
     const seen = new Set<string>();
@@ -740,7 +783,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       reconcileIndex(previous, { row: null, components: [] });
       if (previous.row === null) continue;
       removed = true;
-      bump(id, true, previous.components);
+      const filed = sourceRow(previous.row);
+      // A row no model has filed belongs to no set, so what a reader loses is
+      // the values it carried rather than a place in a model.
+      if (filed === null)
+        journalContent(id, previous.row.deleted_hlc !== null, previous.components);
+      else journalMembership(id, previous.row.deleted_hlc !== null, "left", [filed.model]);
     }
     if (removed) notify();
     return revision;

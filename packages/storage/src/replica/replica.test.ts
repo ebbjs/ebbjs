@@ -429,12 +429,21 @@ describe("replica: durable fold", () => {
       3,
     );
     expect(replica.revision).toBe(2);
+    // The put brings the row into the set; the losing patch is a content change
+    // on the leaf it rewrites.
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "e_1", deleted: false, components: ["todo/title"] },
-      { revision: 2, id: "e_1", deleted: false, components: ["todo/title"] },
+      {
+        revision: 1,
+        id: "e_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["todo"],
+      },
+      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", deleted: false, components: ["todo/title"] },
+      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["todo/title"] },
     ]);
     expect(replica.changesSince(2)).toEqual([]);
   });
@@ -457,8 +466,10 @@ describe("replica: durable fold", () => {
       {
         revision: 1,
         id: "e_1",
+        kind: "membership",
         deleted: false,
-        components: ["note/title", "note/status"],
+        membership: "entered",
+        models: ["note"],
       },
     ]);
 
@@ -477,7 +488,7 @@ describe("replica: durable fold", () => {
 
     // The plan component's leaf is untouched, so only the title changes.
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", deleted: false, components: ["note/title"] },
+      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["note/title"] },
     ]);
   });
 
@@ -508,11 +519,11 @@ describe("replica: durable fold", () => {
 
     expect(replica.get("e_1")?.data.fields.title).toBe(title);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_1", deleted: false, components: ["todo/draft"] },
+      { revision: 2, id: "e_1", kind: "content", deleted: false, components: ["todo/draft"] },
     ]);
   });
 
-  it("journals every component of a row a delete tombstoned", () => {
+  it("journals a delete as the row leaving the set it was read from", () => {
     const replica = createReplica();
     ingest(
       replica,
@@ -530,8 +541,10 @@ describe("replica: durable fold", () => {
       {
         revision: 2,
         id: "e_1",
+        kind: "membership",
         deleted: true,
-        components: ["todo/title", "todo/status"],
+        membership: "left",
+        models: ["todo"],
       },
     ]);
   });
@@ -1014,8 +1027,8 @@ describe("replica: materialization policy", () => {
     expect(replica.components("cold/body")).toEqual(["e_cold"]);
 
     // With the held component detached the lazy one is all the row carries, so
-    // it retains nothing and leaves the replica: one removal, naming every
-    // component it had.
+    // it retains nothing and leaves the replica: one removal, and the removal
+    // is the row leaving its model's set rather than a value that changed.
     ingest(
       replica,
       drop({
@@ -1035,7 +1048,14 @@ describe("replica: materialization policy", () => {
     expect(replica.components("cold/body")).toEqual([]);
     expect(replica.revision).toBe(2);
     expect(replica.changesSince(1)).toEqual([
-      { revision: 2, id: "e_cold", deleted: true, components: ["cold/keep", "cold/body"] },
+      {
+        revision: 2,
+        id: "e_cold",
+        kind: "membership",
+        deleted: false,
+        membership: "left",
+        models: ["cold"],
+      },
     ]);
   });
 });
@@ -1149,14 +1169,18 @@ describe("replica: evict (#499)", () => {
       {
         revision: 3,
         id: "src_1",
-        deleted: true,
-        components: ["ebb/link"],
+        kind: "membership",
+        deleted: false,
+        membership: "left",
+        models: ["page"],
       },
       {
         revision: 4,
         id: "m_1",
-        deleted: true,
-        components: ["ebb/membership"],
+        kind: "membership",
+        deleted: false,
+        membership: "left",
+        models: ["ebb"],
       },
     ]);
 
@@ -1210,9 +1234,30 @@ describe("replica: journal capacity (#499)", () => {
     expect(replica.changesSince(0)).toEqual([]);
     expect(replica.changesSince(2)).toEqual([]);
     expect(replica.changesSince(replica.changeFloor)).toEqual([
-      { revision: 4, id: "e_4", deleted: false, components: ["todo/title"] },
-      { revision: 5, id: "e_5", deleted: false, components: ["todo/title"] },
-      { revision: 6, id: "e_6", deleted: false, components: ["todo/title"] },
+      {
+        revision: 4,
+        id: "e_4",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["todo"],
+      },
+      {
+        revision: 5,
+        id: "e_5",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["todo"],
+      },
+      {
+        revision: 6,
+        id: "e_6",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["todo"],
+      },
     ]);
   });
 
@@ -1616,10 +1661,18 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "target_1" })).toEqual([
       "page_1",
     ]);
-    // The write is content, not residency: it journals, and the notification a
-    // subscriber receives last carries the replayed edge.
+    // The install is residency and journals nothing, so what a reader sees is
+    // the row arriving with the replayed edge: it entered its model, and the
+    // notification a subscriber receives last carries the edge.
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "page_1", deleted: false, components: ["ebb/link"] },
+      {
+        revision: 1,
+        id: "page_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["page"],
+      },
     ]);
     expect(seen.at(-1)).toBe("page_1");
   });
@@ -1645,7 +1698,14 @@ describe("replica: on-demand residency (#500)", () => {
       "page_1",
     ]);
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "page_1", deleted: false, components: ["ebb/link"] },
+      {
+        revision: 1,
+        id: "page_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["page"],
+      },
     ]);
   });
 
@@ -1752,7 +1812,14 @@ describe("replica: on-demand residency (#500)", () => {
     expect((await reading)?.data.fields.title).toEqual(leaf("Remote", "u_1", 20));
     expect(replica.get("page_1")?.data.fields.title).toEqual(leaf("Remote", "u_1", 20));
     expect(replica.changesSince(0)).toEqual([
-      { revision: 1, id: "page_1", deleted: false, components: ["page/title"] },
+      {
+        revision: 1,
+        id: "page_1",
+        kind: "membership",
+        deleted: false,
+        membership: "entered",
+        models: ["page"],
+      },
     ]);
   });
 
@@ -2291,6 +2358,297 @@ describe("replica: a read selects every component (#934)", () => {
   it("returns all twenty components of a row after all twenty are read", async () => {
     const { replica, revision } = await readEveryComponent(20);
     expectEveryComponentResident(replica, revision, 20);
+  });
+});
+
+describe("replica: content and membership changes (#939)", () => {
+  it("journals a create as one membership change that names no component", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Hello", "u_title", 10), status: leaf("open", "u_status", 10) },
+      }),
+      1,
+    );
+
+    // The row entered the set a reader draws from, which is a fact about the
+    // row, not about the components it happened to arrive carrying.
+    expect(replica.changesSince(0)).toEqual([
+      {
+        revision: 1,
+        id: "e_1",
+        kind: "membership",
+        membership: "entered",
+        models: ["todo"],
+        deleted: false,
+      },
+    ]);
+  });
+
+  it("journals a delete as one membership change that names no component", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("Hello", "u_title", 10), status: leaf("open", "u_status", 10) },
+      }),
+      1,
+    );
+    ingest(replica, remove({ actionId: "a_2", updateId: "u_2", gsn: 2, ms: 20 }), 2);
+
+    expect(replica.changesSince(1)).toEqual([
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "membership",
+        membership: "left",
+        models: ["todo"],
+        deleted: true,
+      },
+    ]);
+  });
+
+  it("journals a component write as one content change naming that component", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        ms: 10,
+        fields: { title: leaf("First", "u_title", 10), status: leaf("open", "u_status", 10) },
+      }),
+      1,
+    );
+    ingest(
+      replica,
+      patch({
+        actionId: "a_2",
+        updateId: "u_2",
+        gsn: 2,
+        ms: 20,
+        fields: { title: leaf("Second", "u_2", 20) },
+      }),
+      2,
+    );
+
+    expect(replica.changesSince(1)).toEqual([
+      { revision: 2, id: "e_1", kind: "content", components: ["todo/title"], deleted: false },
+    ]);
+  });
+
+  it("journals a model change as a membership change naming both models", () => {
+    const replica = createReplica();
+    // A component write before its create materializes a placeholder under the
+    // component's prefix; the create adopts it and names the row's model.
+    ingest(
+      replica,
+      patch({
+        actionId: "a_1",
+        updateId: "u_1",
+        model: "note",
+        ms: 10,
+        fields: { title: leaf("First", "u_1", 10) },
+      }),
+      1,
+    );
+    ingest(replica, create({ actionId: "a_2", updateId: "u_2", model: "todo", gsn: 2, ms: 20 }), 2);
+
+    expect(replica.changesSince(1)).toEqual([
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "membership",
+        membership: "changed-model",
+        models: ["note", "todo"],
+        deleted: false,
+      },
+    ]);
+  });
+
+  it("journals an evicted row as a membership change under the model it was filed in", () => {
+    const replica = createReplica();
+    ingest(
+      replica,
+      put({ actionId: "a_1", updateId: "u_1", ms: 10, fields: { title: leaf("T", "u_1", 10) } }),
+      1,
+    );
+
+    replica.evict(["e_1"]);
+
+    expect(replica.changesSince(1)).toEqual([
+      {
+        revision: 2,
+        id: "e_1",
+        kind: "membership",
+        membership: "left",
+        models: ["todo"],
+        deleted: false,
+      },
+    ]);
+  });
+
+  it("journals nothing for a cold read's install or its grace-period release", async () => {
+    vi.useFakeTimers();
+    const stored = entity({
+      id: "doc_1",
+      model: "document",
+      data: { fields: { text: leaf("body", "u_text", 5) } },
+    });
+    const rows: Record<string, Entity> = { doc_1: stored };
+    const replica = createReplica({
+      materialization: { holds: (component: string) => component !== "document/text" },
+      residencyTtlMs: 1_000,
+      readComponent: async (id) => rows[id] ?? null,
+    });
+    const revision = replica.revision;
+
+    await replica.read("doc_1", ["document/text"]);
+    expect(replica.revision).toBe(revision);
+    expect(replica.changesSince(revision)).toEqual([]);
+
+    // The release path is residency, not content: the value leaves the replica
+    // when the grace period elapses and nothing journals for it.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(replica.get("doc_1")).toBeUndefined();
+    expect(replica.revision).toBe(revision);
+    expect(replica.changesSince(revision)).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  // The set a read is drawn from is what `get` and `iterate` answer with, which
+  // is residency-independent: a row the policy does not retain still reaches a
+  // query, so the journal has to describe it.
+  describe("a row the policy does not retain", () => {
+    const noDocuments = { holds: (component: string) => !component.startsWith("document/") };
+
+    it("journals a create as entering its model even though it keeps no value", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        put({
+          actionId: "a_1",
+          updateId: "u_1",
+          entityId: "doc_1",
+          model: "document",
+          ms: 10,
+          fields: { text: leaf("body", "u_text", 10) },
+        }),
+        1,
+      );
+
+      // `get` and `iterate` both answer with the row; a reader that scans the
+      // model has to be told it arrived.
+      expect(replica.get("doc_1")?.model).toBe("document");
+      expect(replica.iterate("document").map((row) => row.id)).toEqual(["doc_1"]);
+      expect(replica.changesSince(0)).toEqual([
+        {
+          revision: 1,
+          id: "doc_1",
+          kind: "membership",
+          membership: "entered",
+          models: ["document"],
+          deleted: false,
+        },
+      ]);
+    });
+
+    it("journals no membership change for writes to a row that stays visible", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        create({ actionId: "a_1", updateId: "u_1", entityId: "doc_1", model: "document", ms: 10 }),
+        1,
+      );
+      const dormant = (gsn: number, text: string): Action =>
+        patch({
+          actionId: `a_${gsn}`,
+          updateId: `u_${gsn}`,
+          entityId: "doc_1",
+          model: "document",
+          gsn,
+          ms: gsn * 10,
+          fields: { text: leaf(text, `u_${gsn}`, gsn * 10) },
+        });
+
+      ingest(replica, dormant(2, "first"), 2);
+      ingest(replica, dormant(3, "second"), 3);
+
+      // The row never left the set a read draws from: the first write adds a
+      // component it knows exists, and the second changes nothing a reader can
+      // observe. Neither is a membership change.
+      expect(replica.iterate("document").map((row) => row.id)).toEqual(["doc_1"]);
+      expect(replica.changesSince(0)).toEqual([
+        {
+          revision: 1,
+          id: "doc_1",
+          kind: "membership",
+          membership: "entered",
+          models: ["document"],
+          deleted: false,
+        },
+        {
+          revision: 2,
+          id: "doc_1",
+          kind: "content",
+          components: ["document/text"],
+          deleted: false,
+        },
+      ]);
+    });
+
+    it("journals nothing for a write to a row that never became visible", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        patch({
+          actionId: "a_1",
+          updateId: "u_1",
+          entityId: "doc_1",
+          model: "document",
+          ms: 10,
+          fields: { text: leaf("body", "u_text", 10) },
+        }),
+        1,
+      );
+
+      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.iterate("document")).toEqual([]);
+      expect(replica.revision).toBe(0);
+      expect(replica.changesSince(0)).toEqual([]);
+    });
+  });
+
+  it("journals the values of a row no model has filed when it is evicted", () => {
+    const replica = createReplica();
+    // An edge write before its row's create materializes a row no model owns:
+    // it is in no model's set, so what leaves is the value it carried.
+    ingest(
+      replica,
+      patch({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "page_1",
+        ms: 10,
+        fields: { link: map({ author: map({ wrote: map({ target_1: leaf(true, "u_1", 10) }) }) }) },
+        keyedComponent: "ebb/link",
+      }),
+      1,
+    );
+    expect(replica.get("page_1")?.model).toBe("");
+
+    replica.evict(["page_1"]);
+
+    expect(replica.changesSince(1)).toEqual([
+      { revision: 2, id: "page_1", kind: "content", components: ["ebb/link"], deleted: false },
+    ]);
   });
 });
 

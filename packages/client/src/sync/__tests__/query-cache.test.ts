@@ -567,6 +567,36 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(2);
   });
 
+  it("invalidates a component-scoped read on a membership change to its model", async () => {
+    const replica = createReplica();
+    write(replica, "todo_1", "todo", { status: "open" });
+    const cache = createQueryCache(replica);
+    // A plan whose every branch names a component reads those components only;
+    // a row entering or leaving the model's set still changes its result.
+    const query: Query = {
+      ...emptyQuery("todo"),
+      groups: [[{ kind: "field", field: "status", value: "open" }]],
+    };
+    expect(planQuery(query).readComponents).toEqual(["todo/status"]);
+    const source = sourceWith(() => ["todo_1"]);
+    const store = cache.watch("collection", query, source);
+    store.subscribe(() => {});
+    await flushTasks();
+    expect(source.runs).toBe(1);
+
+    // A delete names no component: a membership change reaches the read
+    // through the model, and one of another model does not.
+    write(replica, "note_1", "note", { status: "open" });
+    expect(source.runs).toBe(1);
+
+    const before = replica.revision;
+    remove(replica, "todo_1");
+    expect(replica.changesSince(before)).toMatchObject([
+      { kind: "membership", membership: "left", models: ["todo"] },
+    ]);
+    expect(source.runs).toBe(2);
+  });
+
   it("re-runs a membership-only plan when membership changes", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open" });
@@ -589,6 +619,9 @@ describe("query cache: component-granular invalidation", () => {
   it("does not re-run a component-scoped read on another platform component's write", async () => {
     const replica = createReplica();
     write(replica, "g_1", "group", { name: "Team" });
+    // The grant row exists before the read: the write below is then a content
+    // change, not a row entering the platform model's set.
+    write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: [] });
     const cache = createQueryCache(replica);
     // A value view reads one component of the shared `ebb` model, not the model.
     const query: Query = {
@@ -601,7 +634,7 @@ describe("query cache: component-granular invalidation", () => {
     await flushTasks();
     expect(source.runs).toBe(1);
 
-    write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: [] });
+    write(replica, "gm_1", "grant", { actor_id: "a", group_id: "g_1", permissions: ["ebb.read"] });
     await flushTasks();
     expect(source.runs).toBe(1);
 
@@ -620,12 +653,14 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(1);
 
     // Detaching the last component leaves a row that exists with nothing
-    // attached; tombstoning it touches no component, so only a whole-model
-    // read can see it leave.
+    // attached; tombstoning it names no component, so only a whole-model read
+    // can see it leave.
     detach(replica, "todo_1", "todo", "status");
     const before = replica.revision;
     remove(replica, "todo_1");
-    expect(replica.changesSince(before)).toMatchObject([{ components: [] }]);
+    expect(replica.changesSince(before)).toMatchObject([
+      { kind: "membership", membership: "left", models: ["todo"] },
+    ]);
     await flushTasks();
     expect(source.runs).toBe(3);
   });
@@ -645,6 +680,49 @@ describe("query cache: component-granular invalidation", () => {
 
     write(replica, "todo_1", "ebb", { link: "x" });
     expect(source.runs).toBe(1);
+  });
+
+  it("re-runs a rows read for a row the replica does not retain", async () => {
+    // Every `document/*` component is materialized on demand, so the replica
+    // keeps the row without keeping a value of it — and `iterate` still answers
+    // with it, which is all a rows read scans.
+    const replica = createReplica({
+      materialization: { holds: (component) => !component.startsWith("document/") },
+    });
+    const cache = createQueryCache(replica);
+    const source = sourceWith(() => replica.iterate("document"));
+    const store = cache.watch("rows", emptyQuery("document"), source);
+    store.subscribe(() => {});
+    await flushTasks();
+    expect(source.runs).toBe(1);
+
+    gsn += 1;
+    replica.ingest(
+      { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
+      [
+        {
+          id: `u_${gsn}_create`,
+          subject_id: "doc_1",
+          model: "document",
+          method: "create",
+          hlc: makeHlc(gsn),
+          data: null,
+        },
+        {
+          id: `u_${gsn}_text`,
+          subject_id: "doc_1",
+          component: componentName("document", "text"),
+          method: "replace",
+          data: { value: "body", update_id: `u_${gsn}`, hlc: makeHlc(gsn) },
+        },
+      ],
+      gsn,
+    );
+
+    await flushTasks();
+    expect(source.runs).toBe(2);
+    expect(store.getSnapshot()).toMatchObject({ status: "current" });
+    expect((store.getSnapshot().data ?? []).map((row) => row.id)).toEqual(["doc_1"]);
   });
 });
 

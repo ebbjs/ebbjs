@@ -474,6 +474,84 @@ describe("subscription registry: indexed dispatch (#938)", () => {
     expect(seen).toEqual(["doc_2", "doc_1"]);
   });
 
+  /** Write one row's create and no component: a membership change. */
+  const createRow = (replica: Replica, id: string, model: string, gsn: number): Revision =>
+    replica.ingest(
+      { id: `a_${gsn}`, actor_id: "actor_1", hlc: makeHlc(gsn), gsn, updates: [] },
+      [
+        {
+          id: `u_${gsn}`,
+          subject_id: id,
+          model,
+          method: "create",
+          hlc: makeHlc(gsn),
+          data: null,
+        },
+      ],
+      gsn,
+    );
+
+  it("matches a content change by component and a membership change by model", () => {
+    const { replica, subscriptions } = harness();
+    const title = subscriptions.open({ kind: "query", key: "titles", reads: ["document/title"] });
+    const model = subscriptions.open({ kind: "query", key: "documents", reads: ["document/*"] });
+    const other = subscriptions.open({ kind: "query", key: "pages", reads: ["page/title"] });
+    const seen: string[] = [];
+    title.onChange(() => seen.push("title"));
+    model.onChange(() => seen.push("model"));
+    other.onChange(() => seen.push("other"));
+    void flushTasks();
+
+    // A component write is a content change: only the exact read and the
+    // whole-model read of that model are touched.
+    writeTitle(replica, "Renamed", 2);
+    expect(seen.sort()).toEqual(["model", "title"]);
+
+    // A row entering the model's set names no component, so the model is what
+    // matches it: the exact read of another model stays untouched.
+    seen.length = 0;
+    createRow(replica, "doc_2", "document", 3);
+    expect(seen.sort()).toEqual(["model", "title"]);
+
+    seen.length = 0;
+    createRow(replica, "page_1", "page", 4);
+    expect(seen).toEqual(["other"]);
+  });
+
+  it("hands a row subscription both kinds of change", async () => {
+    const { replica, subscriptions } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    await flushTasks();
+    const kinds: string[] = [];
+    row.onChange((changes) => {
+      for (const change of changes) kinds.push(change.kind);
+    });
+
+    writeTitle(replica, "Renamed", 2);
+    expect(kinds).toEqual(["content"]);
+
+    replica.evict(["doc_1"]);
+    expect(kinds).toEqual(["content", "membership"]);
+  });
+
+  it("reports a value a subscription held leaving the replica, not the journal entry", async () => {
+    const { replica, subscriptions } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const row = subscriptions.open({ kind: "row", row: "doc_1" });
+    await flushTasks();
+    const seen: { changes: number; unloaded: readonly string[] }[] = [];
+    row.onChange((changes, _revision, unloaded) =>
+      seen.push({ changes: changes.length, unloaded }),
+    );
+
+    // The eviction is a membership change; what the subscription lost is its
+    // claims, which is what `unloaded` has to be driven by (#940).
+    replica.evict(["doc_1"]);
+
+    expect(seen).toEqual([{ changes: 1, unloaded: ["document/title", LAZY] }]);
+  });
+
   it("re-runs every subscription after a journal gap", () => {
     const { replica, subscriptions } = harness();
     const title = subscriptions.open({ kind: "query", key: "titles", reads: ["document/title"] });
