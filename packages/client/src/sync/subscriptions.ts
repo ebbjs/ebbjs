@@ -12,7 +12,11 @@
  * Dispatch is dependency-indexed (#938): the registry hands the change
  * dispatcher what each entry reads — its components and models, or the row it
  * watches plus the membership subject that files it — and the dispatcher hands
- * back only the entries a batch touches. One dispatcher owns the one journal
+ * back only the entries a batch touches. A batch is matched by kind (#939): a
+ * content change by the component it names, a membership change by the model
+ * the row entered or left, which every reader of that model observes. What an
+ * entry was holding that the replica no longer has travels with the batch as
+ * the unload signal, read off the residency table rather than the journal. One dispatcher owns the one journal
  * cursor, reads the journal once per batch, and advances to the batch revision
  * before any listener runs, so a listener that throws cannot leave an entry
  * behind for a later batch to jump past; the throw is reported and never skips
@@ -83,8 +87,17 @@ export type SubscriptionSpec =
       readonly row: string;
     };
 
-/** A change batch, called on every live entry the batch touches. */
-export type ChangeListener = (changes: readonly ReplicaChange[], revision: Revision) => void;
+/**
+ * A change batch, called on every live entry the batch touches. `unloaded`
+ * names the values the entry was holding that the replica dropped with it — the
+ * residency loss the journal does not describe, which `unloaded` events are
+ * built on (#940). It is empty when the entry lost nothing.
+ */
+export type ChangeListener = (
+  changes: readonly ReplicaChange[],
+  revision: Revision,
+  unloaded: readonly string[],
+) => void;
 
 /**
  * One live entry's observable state. This is what {@link SubscriptionRegistry}
@@ -158,15 +171,27 @@ export interface SubscriptionRegistry {
   close(): void;
 }
 
-/** A change touches a read set when it names a component or a whole model read. */
+/**
+ * A content change touches a read set when it names a component the set reads
+ * or one of its model's whole. A membership change names no component: it
+ * touches every reader of the model the row entered or left, exact or whole,
+ * because a row can move the set carrying anything.
+ */
 export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean => {
+  if (change.kind === "membership") {
+    for (const model of change.models) {
+      if (reads.models.has(model)) return true;
+      for (const component of reads.components) {
+        if (componentModel(component) === model) return true;
+      }
+    }
+    return false;
+  }
   for (const component of change.components) {
     if (reads.components.has(component)) return true;
     if (reads.models.has(componentModel(component))) return true;
   }
-  // A change that names no component comes from a row that carried none (a
-  // tombstone or a scope eviction): only a whole-model read can observe it.
-  return change.components.length === 0 && reads.models.size > 0;
+  return false;
 };
 
 /**
@@ -399,7 +424,18 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     // reflects an older revision, an async run in flight — is not, and keeps
     // its cursor until the run settles and seeks forward.
     const caughtUp = entry.cursor >= entry.dispatched;
+    let lost: readonly string[] = [];
     try {
+      // What the entry held and the replica no longer has, read off the lease
+      // table rather than the journal: the change that took the value away can
+      // be a membership change, a tombstone, or no journal entry at all (#939).
+      // Captured before the row preamble moves the claims, and inside it so a
+      // lookup that throws strands the entry like any other bookkeeping.
+      lost = entry.dependencies.flatMap((dependency) =>
+        dependency.components.filter(
+          (component) => !replica.isComponentResident(dependency.id, component),
+        ),
+      );
       if (entry.kind === "row" && entry.row !== null) {
         // The row's resident components move with the change, and a row that
         // left the replica has nothing left to hold.
@@ -424,7 +460,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     // instead of letting one consumer skip the rest.
     for (const listener of Array.from(entry.listeners)) {
       try {
-        listener(batch.changes, batch.revision);
+        listener(batch.changes, batch.revision, lost);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[Subscriptions] change listener threw:", err);
@@ -435,8 +471,10 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
   const membershipSubjects = (change: ReplicaChange): readonly string[] => {
     // A membership row files a different row than the one it is, so the member
     // is only reachable by reading the changed row — once per change, not once
-    // per subscription.
-    if (!change.components.includes(EBB_COMPONENTS.membership)) return [];
+    // per subscription. A membership row arriving or leaving is a membership
+    // change that names no component, so the row itself says what it files.
+    if (change.kind === "content" && !change.components.includes(EBB_COMPONENTS.membership))
+      return [];
     const changed = replica.get(change.id);
     if (changed === undefined) return [];
     const id = systemValueString(changed, MEMBERSHIP_INDEX, "entity_id");

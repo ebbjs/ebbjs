@@ -11,19 +11,50 @@ import type { ReplicaRecord } from "../types/replica-store";
  */
 export type Revision = number;
 
-/** One observable entity change, appended to the revision journal. */
-export interface ReplicaChange {
+/** What a row's place in the set a read is drawn from did. */
+export type MembershipTransition = "entered" | "left" | "changed-model";
+
+/**
+ * One observable entity change, appended to the revision journal.
+ *
+ * A change is one of two things. A **content** change is a value a reader can
+ * project: it names the components it touched. A **membership** change is the
+ * row's place in a model's set moving; it carries no component list, because a
+ * row can enter or leave carrying anything. Kept apart, "a row entered or left"
+ * stops being encoded as an empty component list, and a reader can tell a value
+ * change from a set change without reading the row.
+ */
+export type ReplicaChange = ContentChange | MembershipChange;
+
+interface ChangeBase {
   readonly revision: Revision;
   readonly id: string;
+  /** Whether the row is tombstoned after the change. */
   readonly deleted: boolean;
+}
+
+/** A change to the values of a row that stayed in the set it was read from. */
+export interface ContentChange extends ChangeBase {
+  readonly kind: "content";
   /**
    * The components this change touched, so a derived reader invalidates on what
-   * it read rather than on the row's whole model. A tombstone transition touches
-   * every component the row carries, and a write that moves a row between models
-   * names each field under both prefixes. Empty only for a row that carried no
-   * component.
+   * it read rather than on the row's whole model. A write that moves a row
+   * between models and a row arriving or leaving are membership changes, not
+   * content ones.
    */
   readonly components: readonly string[];
+}
+
+/** A row entering a model's set, leaving it, or being filed under another. */
+export interface MembershipChange extends ChangeBase {
+  readonly kind: "membership";
+  readonly membership: MembershipTransition;
+  /**
+   * The models the row is filed under: the one it entered or left, or both
+   * sides of a model change. It is what a membership change matches on, since
+   * the change names no component.
+   */
+  readonly models: readonly string[];
 }
 
 /**

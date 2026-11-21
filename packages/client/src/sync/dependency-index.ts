@@ -40,10 +40,11 @@ export interface IndexDependency {
 }
 
 /**
- * Everything one subscription declared it reads. A component write is matched
- * by name, a whole-model read by the component's model prefix, a row watch by
- * the changed id, and a derived-index read by whatever the change resolves to
- * under that index.
+ * Everything one subscription declared it reads. A content change is matched by
+ * component name — or, for a whole-model read, by the component's model prefix;
+ * a membership change by the model the row entered or left, which every reader
+ * of that model observes; a row watch by the changed id; and a derived-index
+ * read by whatever the change resolves to under that index.
  */
 export interface SubscriptionDependencies {
   /** Exact component names (`note/content`). */
@@ -153,6 +154,20 @@ const collectInto = <T>(touched: Set<T>, bucket: ReadonlySet<T> | undefined): vo
   for (const entry of bucket) touched.add(entry);
 };
 
+/**
+ * The models whose row set an entry observes: the ones it declared whole plus
+ * the ones its exact component reads belong to. A component is named
+ * `<model>/<field>`, so an exact read still observes that model's set changing.
+ */
+const sourcesOf = (indexed: {
+  readonly components: readonly string[];
+  readonly models: readonly string[];
+}): ReadonlySet<string> => {
+  const sources = new Set(indexed.models);
+  for (const component of indexed.components) sources.add(componentModel(component));
+  return sources;
+};
+
 export const createChangeDispatcher = <T>(
   options: ChangeDispatcherOptions<T>,
 ): ChangeDispatcher<T> => {
@@ -160,12 +175,17 @@ export const createChangeDispatcher = <T>(
   const resolvers = Object.entries(options.indices ?? {});
   const entries = new Map<T, Indexed>();
   const byComponent = new Map<string, Set<T>>();
+  /** Readers of a model whole (`<model>/*`), for a content change. */
   const byModel = new Map<string, Set<T>>();
+  /**
+   * Every reader of a model's rows: whoever declared the model whole or reads
+   * any component of it. A membership change names no component, so its model
+   * is what reaches them.
+   */
+  const bySource = new Map<string, Set<T>>();
   const byRow = new Map<string, Set<T>>();
   /** `index:<name>` → key → entries. */
   const byIndex = new Map<string, Map<string, Set<T>>>();
-  /** Readers of a whole model: a change that names no component may be theirs. */
-  const modelReaders = new Set<T>();
   let nextSeq = 0;
   let cursor: Revision = journal.revision;
   let counts: DispatchCounts = { touched: 0, lookups: 0, scanWork: 0 };
@@ -177,6 +197,7 @@ export const createChangeDispatcher = <T>(
     entries.delete(entry);
     for (const component of indexed.components) removeFrom(byComponent, component, entry);
     for (const model of indexed.models) removeFrom(byModel, model, entry);
+    for (const model of sourcesOf(indexed)) removeFrom(bySource, model, entry);
     for (const row of indexed.rows) removeFrom(byRow, row, entry);
     for (const { index, key } of indexed.indices) {
       const bucket = byIndex.get(index);
@@ -184,14 +205,13 @@ export const createChangeDispatcher = <T>(
       removeFrom(bucket, key, entry);
       if (bucket.size === 0) byIndex.delete(index);
     }
-    if (indexed.models.length > 0) modelReaders.delete(entry);
   };
 
   /**
    * The subscriptions a batch touches, and what finding them cost. One lookup
-   * per dependency kind per change: the row watch, the components and their
-   * models, or — for a change that names no component — the readers of every
-   * model.
+   * per dependency kind per change: the row watch, then either the components
+   * and their models for a content change or the models the row moved between
+   * for a membership change.
    */
   const touchedBy = (changes: readonly ReplicaChange[]): { touched: Set<T>; lookups: number } => {
     const touched = new Set<T>();
@@ -199,9 +219,11 @@ export const createChangeDispatcher = <T>(
     for (const change of changes) {
       lookups += 1;
       collectInto(touched, byRow.get(change.id));
-      if (change.components.length === 0) {
-        lookups += 1;
-        for (const entry of modelReaders) touched.add(entry);
+      if (change.kind === "membership") {
+        for (const model of change.models) {
+          lookups += 1;
+          collectInto(touched, bySource.get(model));
+        }
       } else {
         for (const component of change.components) {
           lookups += 2;
@@ -277,13 +299,13 @@ export const createChangeDispatcher = <T>(
       entries.set(entry, indexed);
       for (const component of indexed.components) addTo(byComponent, component, entry);
       for (const model of indexed.models) addTo(byModel, model, entry);
+      for (const model of sourcesOf(indexed)) addTo(bySource, model, entry);
       for (const row of indexed.rows) addTo(byRow, row, entry);
       for (const { index, key } of indexed.indices) {
         let bucket = byIndex.get(index);
         if (bucket === undefined) byIndex.set(index, (bucket = new Map()));
         addTo(bucket, key, entry);
       }
-      if (indexed.models.length > 0) modelReaders.add(entry);
     },
     remove: drop,
     size: () => entries.size,

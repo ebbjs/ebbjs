@@ -21,11 +21,23 @@ interface Sub {
   readonly id: number;
 }
 
+/** A component write: the change names what a reader can project. */
 const change = (id: string, components: readonly string[], revision: Revision): ReplicaChange => ({
   revision,
   id,
+  kind: "content",
   deleted: false,
   components,
+});
+
+/** A row entering or leaving a model's set: no component list, just the model. */
+const membership = (id: string, models: readonly string[], revision: Revision): ReplicaChange => ({
+  revision,
+  id,
+  kind: "membership",
+  deleted: false,
+  membership: "entered",
+  models,
 });
 
 /**
@@ -114,18 +126,30 @@ const scanTouched = (
   const touched = new Set<number>();
   for (const { entry, dependencies } of fixture) {
     for (const next of changes) {
-      const modelRead = (dependencies.models ?? []).length > 0;
-      const named = next.components.some(
-        (component) =>
-          (dependencies.components ?? []).includes(component) ||
-          (dependencies.models ?? []).includes(component.slice(0, component.indexOf("/"))),
-      );
+      const components = dependencies.components ?? [];
+      const models = dependencies.models ?? [];
+      // A row entering or leaving a model's set is visible to every reader of
+      // that model; a content change is matched by name.
+      const named =
+        next.kind === "membership"
+          ? next.models.some(
+              (model) =>
+                models.includes(model) ||
+                components.some(
+                  (component) => component.slice(0, component.indexOf("/")) === model,
+                ),
+            )
+          : next.components.some(
+              (component) =>
+                components.includes(component) ||
+                models.includes(component.slice(0, component.indexOf("/"))),
+            );
       const rowRead = (dependencies.rows ?? []).includes(next.id);
       const keys = keysOf(next);
       const indexRead = (dependencies.indices ?? []).some(({ index, key }) =>
         (keys[index] ?? []).includes(key),
       );
-      if (named || rowRead || indexRead || (modelRead && next.components.length === 0)) {
+      if (named || rowRead || indexRead) {
         touched.add(entry.id);
         break;
       }
@@ -168,7 +192,14 @@ describe("dependency-indexed dispatch: correctness", () => {
     const journal = testJournal();
     const notified = new Set<number>();
     const keysOf: KeysOf = (next) => ({
-      membership: next.components.includes("ebb/membership") ? [next.id] : [],
+      membership:
+        next.kind === "content"
+          ? next.components.includes("ebb/membership")
+            ? [next.id]
+            : []
+          : next.models.includes("ebb")
+            ? [next.id]
+            : [],
       scope: next.id.startsWith("eg_") ? ["grp_1"] : [],
     });
     const dispatcher = createChangeDispatcher<Sub>({
@@ -201,12 +232,12 @@ describe("dependency-indexed dispatch: correctness", () => {
       [change("n_1", ["note/title"], 1)],
       [change("n_7", ["note/content"], 2)],
       [change("n_9", ["ebb/grant"], 3)],
-      [change("n_1", [], 4)],
+      [membership("n_1", ["note"], 4)],
       [change("eg_1", ["ebb/membership"], 5)],
       [
         change("n_2", ["note/title"], 6),
         change("n_7", ["note/content"], 7),
-        change("n_1", [], 8),
+        membership("n_1", ["note"], 8),
         change("eg_2", ["ebb/membership"], 9),
       ],
     ];
@@ -218,6 +249,25 @@ describe("dependency-indexed dispatch: correctness", () => {
         [...scanTouched(fixture, batch, keysOf)].sort((a, b) => a - b),
       );
     }
+  });
+
+  it("touches the readers of a model on a membership change, and only exact names on a component write", () => {
+    const journal = testJournal();
+    const { dispatcher, notified } = harness(journal);
+    dispatcher.add({ id: 1 }, { components: ["note/title"] });
+    dispatcher.add({ id: 2 }, { components: ["note/status"] });
+    dispatcher.add({ id: 3 }, { models: ["note"] });
+    dispatcher.add({ id: 4 }, { components: ["page/title"] });
+
+    // A row entering `note` names no component: every reader of `note`, exact
+    // or whole, is affected; a reader of another model is not.
+    journal.publish([membership("n_1", ["note"], 1)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+
+    // A component write is matched by name, so only its own readers see it.
+    notified.clear();
+    journal.publish([change("n_1", ["note/title"], 2)]);
+    expect([...notified].sort((a, b) => a - b)).toEqual([1, 3]);
   });
 
   it("hands every entry the batch when a resolver throws", () => {
@@ -287,7 +337,7 @@ describe("dependency-indexed dispatch: correctness", () => {
 });
 
 describe("dependency-indexed dispatch: cost", () => {
-  it("touches 2,621 of 5,000 subscriptions with 280 lookups for 100 changes", () => {
+  it("touches 3,810 of 5,000 subscriptions with 280 lookups for 100 changes", () => {
     const journal = testJournal();
     const { dispatcher, notified } = harness(journal);
     const random = mulberry32(42);
@@ -310,12 +360,15 @@ describe("dependency-indexed dispatch: cost", () => {
     for (const { entry, dependencies } of fixture) dispatcher.add(entry, dependencies);
 
     const changes: readonly ReplicaChange[] = Array.from({ length: 100 }, (_, i) =>
-      change(`n_${i}`, i % 5 === 0 ? [] : ["note/title"], i + 1),
+      i % 5 === 0 ? membership(`n_${i}`, ["note"], i + 1) : change(`n_${i}`, ["note/title"], i + 1),
     );
     journal.publish(changes);
 
-    expect(dispatcher.stats()).toEqual({ touched: 2_621, lookups: 280, scanWork: 500_000 });
-    expect(notified.size).toBe(2_621);
+    // A membership change names no component, so it reaches every reader of
+    // the model — 3,750 of them — where only whole-model readers used to be
+    // reachable; a content change still costs one lookup per component.
+    expect(dispatcher.stats()).toEqual({ touched: 3_810, lookups: 280, scanWork: 500_000 });
+    expect(notified.size).toBe(3_810);
     // Not just the count: the same fixture through the scan oracle has to name
     // exactly these subscriptions, which is the acceptance item the issue
     // states on these batches. The 500,000 pairs are worth the second here.
