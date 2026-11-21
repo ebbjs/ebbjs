@@ -260,7 +260,9 @@ export interface LeaseWatchdogOptions {
   /**
    * Whether the watchdog runs. Defaults to on outside a production build —
    * `process.env.NODE_ENV === "production"` makes it inert — so a shipped app
-   * pays neither the timer nor the messages and a development one is told.
+   * pays neither the timer nor the messages and a development one is told. A
+   * bundle that carries no `process` at all counts as production: a diagnostic
+   * must never assume development from an absent flag.
    */
   readonly enabled?: boolean;
   /** How long a claim set must sit unchanged before it is reported. Default 5m. */
@@ -557,14 +559,16 @@ const DEFAULT_WATCHDOG_STALE_MS = 5 * 60_000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 60_000;
 
 /**
- * A dev-only diagnostic must not run in a production build. `NODE_ENV` is the
- * one flag every bundler folds, so a build that sets it to `production` makes
- * the watchdog inert; a host that exposes no `process` at all has replaced the
- * flag wholesale, which says nothing about the build, so the watchdog keeps
- * running there.
+ * A dev-only diagnostic must not run in a production build, and the gate has to
+ * be provably inert there. A bundler folds the whole expression when it defines
+ * `process.env.NODE_ENV`, so this shape — absent `process` first, the flag
+ * second — folds to `false` outright and leaves no `typeof process` behind. The
+ * order is what makes the un-folded form safe too: a browser bundle carries no
+ * `process` at all, so it reads as production rather than as "no flag, so
+ * development".
  */
 const devWatchdog = (): boolean =>
-  typeof process === "undefined" || process.env?.NODE_ENV !== "production";
+  typeof process === "undefined" ? false : process.env.NODE_ENV !== "production";
 
 /** The watchdog settings an entry's lifecycle is measured against. */
 interface LeaseWatchdog {
@@ -591,7 +595,9 @@ export const createSubscriptionRegistry = (
 ): SubscriptionRegistry => {
   const entries = new Map<string, Entry<unknown>>();
   const residencyTtlMs = residencyTtlOf(options.residencyTtlMs);
-  const configured = options.watchdog === false ? {} : (options.watchdog ?? {});
+  // `false` is the off switch, not an empty config: falling through to the
+  // defaults would let the dev gate turn the watchdog back on.
+  const configured = options.watchdog === false ? { enabled: false } : (options.watchdog ?? {});
   const watchdog: LeaseWatchdog = {
     enabled: configured.enabled ?? devWatchdog(),
     staleAfterMs: configured.staleAfterMs ?? DEFAULT_WATCHDOG_STALE_MS,
@@ -1048,22 +1054,24 @@ export const createSubscriptionRegistry = (
       const live = Array.from(entries.values()).filter(
         (entry) => entry.state === "live" && entry.refs > 0,
       );
+      const claims = live.reduce(
+        (count, entry) =>
+          count +
+          entry.dependencies.reduce((held, dependency) => held + dependency.components.length, 0),
+        0,
+      );
+      disarmWatchdog();
+      for (const entry of Array.from(entries.values())) endEntry(entry);
+      dispatcher.close();
+      // Reported last, from numbers taken first: a sink that throws must not
+      // leave the registry closed while its entries still hold their claims.
       if (watchdog.enabled && live.length > 0) {
-        const claims = live.reduce(
-          (count, entry) =>
-            count +
-            entry.dependencies.reduce((held, dependency) => held + dependency.components.length, 0),
-          0,
-        );
         watchdog.warn(
           `[Subscriptions] lease watchdog: close() with ${live.length} live subscription(s) ` +
             `holding ${claims} claim(s). The client outlived its mounted readers, so their ` +
             "cleanup will never run (#944).",
         );
       }
-      disarmWatchdog();
-      for (const entry of Array.from(entries.values())) endEntry(entry);
-      dispatcher.close();
     },
   };
 };

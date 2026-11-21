@@ -8,6 +8,7 @@
  * the residency grace period — when the subscription ends.
  */
 
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   componentName,
@@ -28,7 +29,7 @@ import {
 } from "@ebbjs/storage/replica";
 
 import { createClient } from "../client";
-import { createSubscriptionRegistry } from "../subscriptions";
+import { createSubscriptionRegistry, type SubscriptionRegistryOptions } from "../subscriptions";
 import { callApplyAction, flushTasks, platformUpdate, rowComponents, waitFor } from "../test-utils";
 
 /** The heavy component: every other component of the row stays held. */
@@ -51,7 +52,12 @@ const documentRow = (id: string): Entity => ({
   last_gsn: 1,
 });
 
-const harness = (options: { residencyTtlMs?: number } = {}) => {
+const harness = (
+  options: {
+    residencyTtlMs?: number;
+    watchdog?: SubscriptionRegistryOptions["watchdog"];
+  } = {},
+) => {
   const rows: Record<string, Entity> = { doc_1: documentRow("doc_1") };
   const replica = createReplica({
     readComponent: async (id) => rows[id] ?? null,
@@ -60,6 +66,7 @@ const harness = (options: { residencyTtlMs?: number } = {}) => {
   seed(replica);
   const subscriptions = createSubscriptionRegistry(replica, {
     residencyTtlMs: options.residencyTtlMs,
+    watchdog: options.watchdog,
   });
   return { replica, subscriptions, rows };
 };
@@ -503,7 +510,10 @@ describe("subscription registry: inactive query results (#941)", () => {
   it("disables the inactive lifetime when residencyTtlMs is 0", async () => {
     vi.useFakeTimers();
     try {
-      const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+      // Closing with a live entry is a legal teardown order — a client outliving
+      // its mounted components — and this test is about the TTL, not about what
+      // the watchdog reports for that order. That has its own test below.
+      const { replica, subscriptions } = harness({ residencyTtlMs: 0, watchdog: false });
       await replica.read("doc_1", [LAZY]);
       const query = subscriptions.open({
         kind: "query",
@@ -974,6 +984,41 @@ describe("subscription registry: the lease watchdog (#944)", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  /**
+   * `false` is the off switch, not an empty config. An empty one falls through
+   * to the dev gate, which is on in a test run, so `false` has to mean
+   * `{ enabled: false }` rather than "leave the default to answer".
+   */
+  it("turns the watchdog off for `false` instead of leaving it on", async () => {
+    vi.useFakeTimers();
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { replica } = harness();
+      await replica.read("doc_1", [LAZY]);
+
+      // The default is the dev gate, and in a test that is on: one interval.
+      const byDefault = createSubscriptionRegistry(replica);
+      const live = byDefault.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(1);
+      live.release();
+      byDefault.close();
+
+      for (const off of [false, { enabled: false }] as const) {
+        const subscriptions = createSubscriptionRegistry(replica, { watchdog: off });
+        subscriptions.open({ kind: "row", row: "doc_1" });
+        expect(vi.getTimerCount()).toBe(0);
+
+        // Nothing past the horizon, and no `close()` report either.
+        vi.advanceTimersByTime(HORIZON_MS * 2);
+        expect(consoleWarn).not.toHaveBeenCalled();
+        subscriptions.close();
+        expect(consoleWarn).not.toHaveBeenCalled();
+      }
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
   it("warns once when it closes with live subscriptions still holding claims", async () => {
     const warn = vi.fn();
     const { replica } = harness();
@@ -996,6 +1041,40 @@ describe("subscription registry: the lease watchdog (#944)", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * A sink is host code, so it can throw. The report is measured before
+   * teardown and delivered after it: a throwing sink surfaces its own failure
+   * without leaving a closed registry that still holds its claims.
+   */
+  it("tears down before reporting, so a throwing sink cannot strand the entries", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn(() => {
+      throw new Error("sink failed");
+    });
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: true, warn },
+    });
+    const live = subscriptions.open({ kind: "row", row: "doc_1" });
+    subscriptions.open({ kind: "query", key: "rows:document", reads: ["document/*"] });
+    expect(replica.stats().leases.leased).toBeGreaterThan(0);
+
+    expect(() => subscriptions.close()).toThrow("sink failed");
+
+    // Closed *and* torn down: no entry left behind, and no claim still held.
+    expect(live.state).toBe("terminal");
+    expect(subscriptions.entries()).toEqual([]);
+    expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 0, dependencies: 0 });
+    // What survives is the released values' own residency grace period, not a
+    // subscription's claim.
+    await vi.advanceTimersByTimeAsync(DEFAULT_RESIDENCY_TTL_MS);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 0 });
+
+    // Closed, so a second teardown neither reports nor throws again.
+    expect(() => subscriptions.close()).not.toThrow();
+  });
+
   it("is inert in a production build", async () => {
     vi.useFakeTimers();
     const previous = process.env.NODE_ENV;
@@ -1006,6 +1085,7 @@ describe("subscription registry: the lease watchdog (#944)", () => {
       const warn = vi.fn();
       const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
       subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(0);
 
       vi.advanceTimersByTime(HORIZON_MS * 2);
       expect(warn).not.toHaveBeenCalled();
@@ -1015,5 +1095,55 @@ describe("subscription registry: the lease watchdog (#944)", () => {
     } finally {
       process.env.NODE_ENV = previous;
     }
+  });
+
+  /**
+   * The `NODE_ENV` test above only covers the Node path, which already worked.
+   * A shipped browser bundle has no `process` global at all — the define
+   * replaces the flag wholesale — so the gate has to answer off when it cannot
+   * read it. The previous `typeof process === "undefined" || ...` form read that
+   * absence as "development" and so enabled the watchdog in production.
+   */
+  it("is inert where there is no `process` to read, as in a browser bundle", async () => {
+    vi.useFakeTimers();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const warn = vi.fn();
+
+    // What a consumer's production build leaves behind: the flag folded out,
+    // no `process` in the bundle's scope.
+    vi.stubGlobal("process", undefined);
+    try {
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.advanceTimersByTime(HORIZON_MS * 2);
+      subscriptions.close();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * Foldability is a property of the source form, so it is pinned at the source.
+   * A bundler substitutes `process.env.NODE_ENV` only as that exact member
+   * expression and never folds `typeof process`, so the absent-`process` case
+   * has to come first and answer `false`: the whole expression then folds to
+   * `false` (esbuild emits `!1`). Written as an `||` alternative it keeps
+   * `typeof process > "u"` in the bundle, which resolves to `true` there.
+   *
+   * Proved with esbuild over the built client for `platform: "browser"` and
+   * `define: { "process.env.NODE_ENV": '"production"' }`, evaluated in a `vm`
+   * with no `process`: this form emits no timer and no message, the previous
+   * one warned past the horizon.
+   */
+  it("writes the gate in the shape a production bundle folds away", () => {
+    const source = readFileSync(new URL("../subscriptions.ts", import.meta.url), "utf8");
+    const gate = /const devWatchdog = \(\): boolean =>([^;]*);/.exec(source)?.[1] ?? "";
+    expect(gate.replace(/\s+/g, " ").trim()).toBe(
+      'typeof process === "undefined" ? false : process.env.NODE_ENV !== "production"',
+    );
   });
 });

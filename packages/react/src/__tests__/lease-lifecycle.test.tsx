@@ -224,10 +224,21 @@ describe("useQuery lease lifecycle (#944)", () => {
     await settled(client, 3);
     expect(screen.getByTestId("status").textContent).toBe("current");
 
+    // The entry this mount created: the remount has to take *this* one back.
+    // The read spies below cannot tell the difference — a fresh entry would
+    // leave the old one's claims holding the values resident, so neither a
+    // store read nor an `iterate` would happen either way. The identity is what
+    // covers the reuse path.
+    const entries = client.subscriptions.entries();
+    expect(entries).toHaveLength(1);
+    const entryId = client.subscriptions.peek("query", entries[0].key)?.id;
+    expect(entryId).toBeDefined();
+
     const storeReads = vi.spyOn(client.storage.entities, "get");
     const runs = vi.spyOn(client.replica, "iterate");
 
     first.unmount();
+    expect(client.subscriptions.stats()).toMatchObject({ live: 0, inactive: 1 });
     // A write to another model: the dependency index never hands the inactive
     // result the batch, so its cursor stays level with the replica.
     await act(async () => {
@@ -244,6 +255,10 @@ describe("useQuery lease lifecycle (#944)", () => {
     // The warm result is the result: no store read, and no run to produce it.
     expect(storeReads).not.toHaveBeenCalled();
     expect(runs).not.toHaveBeenCalled();
+    // Same entry, so the claims were taken back rather than orphaned behind a
+    // second one that would hydrate from the replica on its own.
+    expect(client.subscriptions.entries()).toHaveLength(1);
+    expect(client.subscriptions.peek("query", entries[0].key)?.id).toBe(entryId);
   });
 
   it("re-runs once on a remount whose held result went stale", async () => {

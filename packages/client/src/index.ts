@@ -148,6 +148,7 @@ export {
   touchesReadSet,
   type ChangeListener,
   type Dependency,
+  type LeaseWatchdogOptions,
   type ReadSet,
   type Subscription,
   type SubscriptionId,

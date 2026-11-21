@@ -15,9 +15,10 @@ the client; that is the one leak the model cannot heal by itself.
 claim set has sat unchanged past `staleAfterMs` (default 5 minutes), and a `close()` that leaves
 live readers behind. One warning per quiet period: the period runs from the last claim-set change,
 an entry already reported for its current claim set is not reported again for it, and a reader
-holding no claims is not reported at all. The watchdog is on outside a production build and inert
-under `process.env.NODE_ENV === "production"`; `watchdog: false` turns it off outright, and
-`warn` / `now` / `intervalMs` exist so a host can route or test the reports.
+holding no claims is not reported at all. The watchdog is on in development and inert in a
+production build — `process.env.NODE_ENV === "production"`, or a bundle with no `process` at all,
+arms no timer and prints nothing; `watchdog: false` turns it off outright, and `warn` / `now` /
+`intervalMs` exist so a host can route or test the reports.
 
 The query hook's contract is unchanged and now documented and covered by tests: a mounted result
 leases the components it reads, unmounting releases every one and starts the one `residencyTtlMs`,
