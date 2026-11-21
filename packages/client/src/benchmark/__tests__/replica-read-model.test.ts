@@ -8,10 +8,10 @@
  * shape properties, so they are asserted here at a few hundred rows.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
-import { carriesComponent, isFieldMap, linkEdges } from "@ebbjs/core";
-import type { Entity } from "@ebbjs/core";
+import { carriesComponent, componentName, isFieldMap, linkEdges, makeHlc } from "@ebbjs/core";
+import type { Action, Entity } from "@ebbjs/core";
 import { createReplica } from "@ebbjs/storage/replica";
 
 import {
@@ -258,15 +258,53 @@ describe("replica read-model workspace", () => {
   // #943: a synced body is resident whole, and #957 is where reclaiming it is
   // decided. The fixture's store-backed split measures the read path, not the
   // memory a real client keeps.
-  it("keeps a folded body resident with no lease to release it", () => {
-    const { workspace } = setup(N);
-    const body = workspace.rows.get(workspace.bodyIds[0] ?? "");
-    if (body === undefined) throw new Error("fixture produced no body row");
-    const folded = createReplica({});
-    folded.load({ ...workspace.record, entities: [...workspace.record.entities, body] });
+  it("keeps a folded body resident with no lease to expire it", async () => {
+    vi.useFakeTimers();
+    try {
+      const { workspace } = setup(N);
+      const body = workspace.rows.get(workspace.bodyIds[0] ?? "");
+      if (body === undefined) throw new Error("fixture produced no body row");
+      const content = body.data.fields.content;
+      if (content === undefined) throw new Error("fixture produced a body with no content");
 
-    expect(folded.stats().byModel[BODY_TYPE]).toBe(1);
-    expect(folded.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
+      // Synced through the log, not `load`ed: `load` adopts a record whole and
+      // never touches the lease table, so it could not fail this assertion.
+      const folded = createReplica({ residencyTtlMs: 1_000 });
+      const action: Action = {
+        id: "a_body",
+        actor_id: "bench",
+        hlc: makeHlc(1),
+        gsn: 1,
+        updates: [
+          {
+            id: "u_body_create",
+            subject_id: body.id,
+            model: BODY_TYPE,
+            method: "create",
+            hlc: makeHlc(1),
+            data: null,
+          },
+          {
+            id: "u_body_content",
+            subject_id: body.id,
+            component: componentName(BODY_TYPE, "content"),
+            method: "merge",
+            data: content,
+          },
+        ],
+      };
+      folded.ingest(action, action.updates, 1);
+
+      expect(folded.stats().byModel[BODY_TYPE]).toBe(1);
+      expect(folded.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
+
+      // The folded row is nobody's to release, so no grace period takes it.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(folded.get(body.id)?.data.fields.content).toEqual(content);
+      expect(folded.stats().leases).toMatchObject({ leased: 0, inactive: 0, resident: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reads traversals off the replica index, never the store", async () => {

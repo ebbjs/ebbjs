@@ -191,12 +191,15 @@ const measureHeap = (
   seed: Workspace["record"],
   options: typeof loadOptions,
 ): HeapAccounts => {
-  // The record's store-backed rows ride along with every rep, exactly as on
-  // the workspace record, so `load` adopts the same set either way.
-  const bodyRows = seed.entities.filter((entity) => entity.model === BODY_TYPE);
+  // The workspace record carries the metadata rows only: since #943 a body is
+  // the fixture's store's to serve, so a body read is observable as a store
+  // read. `rows` is built from the same `residentRowSet` as the record's
+  // metadata, so the guard below is one-directional (`>`): a row builder that
+  // grows past the record's set is drift, while the record carrying extra rows
+  // is not.
   const recordFor = (rows: readonly Entity[]): Workspace["record"] => ({
     ...seed,
-    entities: [...rows, ...bodyRows],
+    entities: rows,
   });
   const mapOf = (rows: readonly Entity[]): ReadonlyMap<string, Entity> =>
     new Map(rows.map((entity) => [entity.id, entity]));
@@ -240,7 +243,7 @@ const measureHeap = (
       rows.length === 0 ||
       rows.length > seed.entities.length ||
       baseMap.size !== rows.length ||
-      probe.stats().entities !== rows.length + bodyRows.length
+      probe.stats().entities !== rows.length
     ) {
       throw new Error("heap account: built object is not the resident row set");
     }
@@ -1144,7 +1147,7 @@ push(
   "so nothing reclaims it today (#957). Loading the fixture's own body rows into a fresh replica",
   `leaves **${grouped(foldedBodies.rows)} body rows resident (${mb(foldedBodies.bytes)} JSON)**`,
   `with **0 leases and 0 inactive claims**; the metadata totals above therefore understate a`,
-  "real client's memory. #943 measured 500 bodies × 64 KiB ≈ 63 MiB retained with every",
+  "real client's memory. #957 measured 500 bodies × 64 KiB ≈ 63.4 MiB retained with every",
   "subscription ended.",
   "The totals run ~14% above the #495 spike's 15.1 MB for the same 50,000 rows because every",
   "field here carries a per-field `update_id` of realistic length (`u_page_1234_title`, ~20–22",
