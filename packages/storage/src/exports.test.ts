@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
  *
  *   @ebbjs/storage/memory     — createMemoryAdapter
  *   @ebbjs/storage/indexeddb  — createIndexedDBAdapter, IndexedDBAdapterOptions
- *   @ebbjs/storage/replica    — createReplica, contentChanged, holdAll
+ *   @ebbjs/storage/replica    — createReplica, createLeaseTable, contentChanged, holdAll
  *   @ebbjs/storage/types      — ActionLog, DirtyTracker, EntityStore, CursorStore, StorageAdapter, OutboxStore
  */
 
@@ -28,14 +28,17 @@ describe("@ebbjs/storage subpaths", () => {
   it("@ebbjs/storage/replica re-exports the replica runtime", async () => {
     const mod = await import("./replica/index");
     expect(typeof mod.createReplica).toBe("function");
+    expect(typeof mod.createLeaseTable).toBe("function");
     expect(typeof mod.contentChanged).toBe("function");
     expect(typeof mod.holdAll.holds).toBe("function");
     expect(Object.keys(mod).sort()).toEqual([
       "DEFAULT_JOURNAL_CAPACITY",
       "DEFAULT_PINNED_TTL_MS",
+      "DEFAULT_RESIDENCY_TTL_MS",
       "REPLICA_RECORD_FORMAT",
       "applyUpdate",
       "contentChanged",
+      "createLeaseTable",
       "createReplica",
       "foldEntityAction",
       "holdAll",
