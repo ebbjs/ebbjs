@@ -83,7 +83,6 @@ export {
 export { ComponentVersionAheadError, type ComponentMigrations } from "./sync/migrations";
 
 export {
-  OnDemandQueryError,
   type QueryBuilder,
   type QueryContext,
   type ProjectedRow,
@@ -94,6 +93,7 @@ export {
   type JoinSelection,
   type JoinedRow,
   type NoJoins,
+  type SelectedRow,
   projectEntity,
   projectRow,
   projectRows,
@@ -120,8 +120,18 @@ export {
   type PlanPredicate,
   planQuery,
   readComponentsFor,
-  rowReadComponentsFor,
+  compileReadComponents,
+  type CompiledReadComponents,
 } from "./sync/query-plan";
+
+export {
+  type Selection,
+  type QuerySelection,
+  type StructuralReads,
+  selectionReadComponents,
+  structuralReads,
+  queryCacheKey,
+} from "./sync/selection";
 
 export {
   DEFAULT_QUERY_TTL_MS,
@@ -175,8 +185,10 @@ export {
   type EntityValues,
   type EntityPatch,
   type EntityNamespaces,
+  type EntityEvent,
   type EntityRow,
   type EntitySnapshot,
+  type SelectedEntityRow,
   type EntityWithAccessors,
   type MembershipNamespace,
   type GroupNamespace,

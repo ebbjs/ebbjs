@@ -12,7 +12,7 @@
  * replica's indices; field predicates scan the materialized rows.
  */
 
-import { componentName, EBB_COMPONENTS, EBB_MODEL_NAME } from "@ebbjs/core";
+import { componentModel, componentName, EBB_COMPONENTS, EBB_MODEL_NAME } from "@ebbjs/core";
 
 import type { Join, Predicate, Query } from "./query";
 import { hasJoinKind, hasPredicateKind } from "./query";
@@ -44,8 +44,8 @@ export interface Plan {
    * ordering name, the components its existence tests name, and the row models
    * its edge, membership, and join indices read. A `collection` result keeps
    * only the matching ids, so this set is its whole invalidation record; a
-   * `rows` result also projects whole rows and reads more — see
-   * {@link rowReadComponentsFor}.
+   * projected-row result adds its selection, its joined targets, and membership
+   * — see `selectionReadComponents`.
    */
   readonly readComponents: readonly string[];
 }
@@ -94,51 +94,12 @@ const modelComponents = (model: string): string => `${model}/*`;
  * component it projects, so a page joined to `groups` does not re-read on every
  * grant write.
  */
-const joinReadComponents = (join: Join): readonly string[] => {
+export const joinReadComponents = (join: Join): readonly string[] => {
   if (join.target !== EBB_MODEL_NAME) return [modelComponents(join.target)];
   // The only platform join today is the built-in `groups` membership join,
   // which projects group rows. A relationship declared onto the `ebb` model
   // cannot say which kind it means, so it reads the model whole.
   return join.kind === "membership" ? [EBB_COMPONENTS.group] : [modelComponents(EBB_MODEL_NAME)];
-};
-
-/**
- * A branch that constrains a component of the source row: a non-null equality
- * (it requires the row to carry the field) or a positive existence test. A
- * `hasNot`, a null equality, a membership, or an adjacency constrains no source
- * component, so a row can enter such a branch through a component the plan does
- * not read.
- */
-const namesSourceComponent = (predicate: Predicate): boolean => {
-  switch (predicate.kind) {
-    case "field":
-      return predicate.value !== null && predicate.value !== undefined;
-    case "existence":
-      return predicate.present;
-    default:
-      return false;
-  }
-};
-
-/**
- * Whether every disjunction branch requires a source component, so a row can
- * only enter the result through a component the plan reads. A query with no
- * branches is a full scan, which names none.
- */
-const everyBranchNamesComponent = (query: Query): boolean =>
-  query.groups.length > 0 && query.groups.every((group) => group.some(namesSourceComponent));
-
-/** The source components the predicates and ordering name. */
-const sourceComponentsFor = (query: Query): readonly string[] => {
-  const source = new Set<string>();
-  for (const group of query.groups) {
-    for (const predicate of group) {
-      if (predicate.kind === "field") source.add(componentName(query.source, predicate.field));
-      else if (predicate.kind === "existence") source.add(predicate.component);
-    }
-  }
-  if (query.order !== null) source.add(componentName(query.source, query.order.field));
-  return [...source];
 };
 
 /**
@@ -148,19 +109,20 @@ const sourceComponentsFor = (query: Query): readonly string[] => {
  *
  * A predicate names a source field component; existence names its component;
  * ordering reads its field; an adjacency or membership predicate reads the
- * edge/membership rows. The source itself is read whole — `<source>/*` — unless
- * every branch names a source component, because only then does a row's arrival
- * depend on a component the plan watches. A chain over a value view names its
- * exact components instead (see `Query.sourceComponents`).
+ * edge/membership rows. The source model's row set is watched separately (a
+ * create or delete names no component); only the components this read names
+ * are leased. A value-view chain seeds the exact component it projects.
  */
 export const readComponentsFor = (query: Query): readonly string[] => {
   if (!isReplicaBacked(query)) return [];
-  const reads = new Set<string>(
-    query.sourceComponents ??
-      (everyBranchNamesComponent(query)
-        ? sourceComponentsFor(query)
-        : [modelComponents(query.source)]),
-  );
+  const reads = new Set<string>(query.sourceComponents ?? []);
+  for (const group of query.groups) {
+    for (const predicate of group) {
+      if (predicate.kind === "field") reads.add(componentName(query.source, predicate.field));
+      else if (predicate.kind === "existence") reads.add(predicate.component);
+    }
+  }
+  if (query.order !== null) reads.add(componentName(query.source, query.order.field));
   // Exact components: an edge read depends on the source's link component only,
   // a membership read on membership rows only.
   if (hasPredicateKind(query, "relationship") || hasJoinKind(query, "relationship")) {
@@ -173,45 +135,37 @@ export const readComponentsFor = (query: Query): readonly string[] => {
 };
 
 /**
- * A read set split for matching a change: the exact components it names and the
- * models it reads whole. Compiling once keeps a change a pair of membership tests
- * instead of a rebuilt intersection.
+ * A read set split for matching a change: the exact components it names, the
+ * models it reads whole, and the models whose row set it observes. Compiling
+ * once keeps a change a pair of membership tests instead of a rebuilt
+ * intersection.
  */
 export interface CompiledReadComponents {
   readonly components: ReadonlySet<string>;
   readonly models: ReadonlySet<string>;
+  /** Models whose result set a membership change can alter. */
+  readonly sources: ReadonlySet<string>;
 }
 
 /**
  * Split a read set beside the {@link modelComponents} encoder, so the
- * `<model>/*` suffix is parsed in exactly one place.
+ * `<model>/*` suffix is parsed in exactly one place. A component read observes
+ * its model's row set, and so does every model named in `sources`.
  */
-export const compileReadComponents = (components: readonly string[]): CompiledReadComponents => {
+export const compileReadComponents = (
+  components: readonly string[],
+  sources: readonly string[] = [],
+): CompiledReadComponents => {
   const exact = new Set<string>();
   const models = new Set<string>();
   for (const component of components) {
     if (component.endsWith("/*")) models.add(component.slice(0, -2));
     else exact.add(component);
   }
-  return { components: exact, models };
-};
-
-/**
- * The components a `rows` result depends on: the plan's own reads plus every
- * component of the source and of each joined model, because a projected row
- * carries the whole shape, and membership for the `groupIds` it carries. Kept
- * out of {@link Plan} so the execution path never computes it.
- */
-export const rowReadComponentsFor = (query: Query): readonly string[] => {
-  if (!isReplicaBacked(query)) return [];
-  const reads = new Set(readComponentsFor(query));
-  if (query.sourceComponents === undefined) reads.add(modelComponents(query.source));
-  for (const join of query.joins)
-    for (const component of joinReadComponents(join)) reads.add(component);
-  // Every projected row carries the group ids it is a live member of, so a
-  // membership write changes a row even when nothing else about it did.
-  reads.add(EBB_COMPONENTS.membership);
-  return [...reads];
+  const observed = new Set<string>(sources);
+  for (const model of models) observed.add(model);
+  for (const component of exact) observed.add(componentModel(component));
+  return { components: exact, models, sources: observed };
 };
 
 export function planQuery(query: Query): Plan {

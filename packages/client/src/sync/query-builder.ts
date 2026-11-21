@@ -24,18 +24,19 @@
  * `(a AND b) OR (c AND d)`. A leading `.or` starts the first group
  * rather than matching every row.
  *
- * Every terminal plans the query and executes the plan synchronously:
- * a replica-backed chain hydrates the replica and reads its rows and
- * adjacency indices; a chain over an already-materialized candidate
- * list runs against those rows. The builder is async because
- * hydration, the candidate loader, and opening a joined on-demand
- * target are.
+ * Every terminal plans the query over the replica (or an
+ * already-materialized candidate list) and projects the survivors. A
+ * replica-backed terminal hydrates first; one whose page projects a component
+ * the replica does not hold acquires that page before projecting, so it awaits
+ * a store read.
  *
- * The source type must be held. A query whose source is materialized
- * on demand is refused with {@link OnDemandQueryError}: a scan is
- * held-only. A held source may join an on-demand target; the
- * projecting terminals open those rows before projecting, while
- * `.count()` / `.exists()` / `.toRaw()` never need them.
+ * A read declares the fields it needs with `.select({...})`. The selection is
+ * the projection, the lease set, and the invalidation key; system components
+ * (`ebb/link`, `ebb/membership`, joined targets) are planner-supplied. A
+ * projecting terminal narrows the ids first, then acquires the components the
+ * page projects — including an on-demand source or join target — while
+ * `.count()` / `.exists()` / `.toRaw()` never acquire the projection. An
+ * unlimited projection is therefore a full read: page it with `limit`.
  *
  * The terminal methods materialize the chain:
  * - `await qb` / `.then(...)` — projected rows.
@@ -59,11 +60,12 @@ import {
   carriesComponent,
   componentName,
   EBB_COMPONENTS,
+  fieldComponent,
   EBB_MODEL_NAME,
   type EbbComponentKind,
   type Entity,
 } from "@ebbjs/core";
-import type { Replica } from "@ebbjs/storage/replica";
+import type { Replica, Release } from "@ebbjs/storage/replica";
 import { Value } from "@sinclair/typebox/value";
 import type { Static, TObject, TSchema } from "@sinclair/typebox/type";
 import type { ShapeFields } from "@ebbjs/schema";
@@ -79,7 +81,7 @@ import type {
   TargetNameOf,
 } from "./definition-types";
 import { emptyQuery, type Join, type Predicate, type Query } from "./query";
-import { planQuery } from "./query-plan";
+import { joinReadComponents, planQuery } from "./query-plan";
 import {
   createComponentViewExecutor,
   createReplicaExecutor,
@@ -88,28 +90,17 @@ import {
   type FieldResolver,
   type PlanExecutor,
 } from "./query-execute";
+import {
+  projectSelectedFields,
+  querySelection,
+  selectionFieldKeys,
+  selectionProjection,
+  type ComponentFor,
+  type Selection,
+} from "./selection";
 import { componentRowView, type GroupFieldMap } from "./system-row";
 import { createLocalQueryStore, type QueryCache, type QueryStore } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
-
-/**
- * Raised when a chain's source type is materialized on demand. A scan is
- * held-only: reading a body is `get(id)`, not a query over its type. A held
- * source may still join an on-demand target.
- */
-export class OnDemandQueryError extends Error {
-  /** The on-demand model the refused query scanned. */
-  readonly entityName: string;
-
-  constructor(entityName: string) {
-    super(
-      `query("${entityName}"): "${entityName}" is materialized on demand, and a scan is held-only. ` +
-        `Open the row by id instead, or query a held type that relates to it.`,
-    );
-    this.name = "OnDemandQueryError";
-    this.entityName = entityName;
-  }
-}
 
 export { projectFieldValue } from "@ebbjs/write";
 
@@ -135,17 +126,20 @@ export { projectFieldValue } from "@ebbjs/write";
  * never the entity definition. A tombstone is absence with an HLC, not a
  * stored null: it reads exactly like an absent leaf. `projectFieldValue`
  * stays structural and knows nothing about defaults.
+ *
+ * `fields` narrows the projection to a selection; absent projects the whole
+ * shape.
  */
 export function projectEntity<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
   migrations?: ComponentMigrations,
+  fields?: readonly string[] | null,
 ): Static<TObject<ShapeFields<TFields>>> {
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(shape.properties) as (keyof TFields & string)[]) {
-    out[key] = resolveFieldValue(entity, key, shape.properties[key], migrations);
-  }
-  return out as Static<TObject<ShapeFields<TFields>>>;
+  const shapeFields = Object.keys(shape.properties);
+  return projectSelectedFields(fields ?? null, shapeFields, (field) =>
+    resolveFieldValue(entity, field, shape.properties[field], migrations),
+  ) as Static<TObject<ShapeFields<TFields>>>;
 }
 
 /**
@@ -222,6 +216,16 @@ export type QueryRow<TFields extends Record<string, TSchema>> = Omit<
 };
 
 /**
+ * A row narrowed by a selection: exactly the selected fields plus the
+ * structural keys the chain's base row carries — `id`, and `groupIds` on a
+ * replica-backed query row. A key the row does not have cannot be selected.
+ */
+export type SelectedRow<TRow extends { readonly id: string }, TSelection> = Pick<
+  TRow,
+  Extract<keyof TSelection, keyof TRow> | Extract<keyof TRow, "id" | "groupIds">
+>;
+
+/**
  * Project a materialized entity to a {@link ProjectedRow}: the shape's
  * fields plus the entity id. Pure; the id is injected last so it wins
  * over a same-named projected field.
@@ -230,8 +234,9 @@ export function projectRow<TFields extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TFields>,
   migrations?: ComponentMigrations,
+  fields?: readonly string[] | null,
 ): ProjectedRow<TFields> {
-  return { ...projectEntity(entity, shape, migrations), id: entity.id };
+  return { ...projectEntity(entity, shape, migrations, fields), id: entity.id };
 }
 
 /** Project every row in a list. Pure; each row carries the entity id. */
@@ -239,8 +244,9 @@ export function projectRows<TFields extends Record<string, TSchema>>(
   rows: readonly Entity[],
   shape: TObject<TFields>,
   migrations?: ComponentMigrations,
+  fields?: readonly string[] | null,
 ): readonly ProjectedRow<TFields>[] {
-  return rows.map((row) => projectRow(row, shape, migrations));
+  return rows.map((row) => projectRow(row, shape, migrations, fields));
 }
 
 /**
@@ -254,8 +260,9 @@ export function projectQueryRow<TFields extends Record<string, TSchema>>(
   shape: TObject<TFields>,
   groupIds: readonly string[],
   migrations?: ComponentMigrations,
+  fields?: readonly string[] | null,
 ): QueryRow<TFields> {
-  return { ...projectEntity(entity, shape, migrations), id: entity.id, groupIds };
+  return { ...projectEntity(entity, shape, migrations, fields), id: entity.id, groupIds };
 }
 
 /** What a query without schema relationships can join: nothing. */
@@ -493,6 +500,22 @@ export interface QueryBuilder<
    * Refused on a chain over already-materialized rows, which has no index.
    */
   hasNot(field: keyof TFields & string): QueryBuilder<TFields, TJoins, TJoined, TRow>;
+  /**
+   * Declare the model fields this read projects. The selection is also the
+   * lease set and the invalidation key; an unselected field is neither
+   * returned, leased, nor watched. System components are implicit and cannot
+   * be selected: `groupIds` is on every query row, `ebb/link` is added by a
+   * relationship predicate or join, and `ebb/membership` by a membership
+   * predicate or the `groups` join.
+   *
+   * An unknown key or a value other than `true` is rejected at the type level
+   * and at runtime. `.select({})` returns only the structural keys (`id`, and
+   * `groupIds` on a query row). A projection the replica does not hold is read
+   * by narrowing first and acquiring the page, so page an unlimited projection.
+   */
+  select<TSelection extends Selection<TFields>>(
+    selection: TSelection,
+  ): QueryBuilder<TFields, TJoins, TJoined, SelectedRow<TRow, TSelection>>;
   /** Maximum number of rows. */
   limit(n: number): QueryBuilder<TFields, TJoins, TJoined, TRow>;
   /**
@@ -572,8 +595,12 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
 ): QueryBuilder<TFields> {
   const loadExecutor = async (): Promise<PlanExecutor> =>
     createRowsExecutor(await loadCandidates());
-  const projectBase = (row: Entity): ProjectedRow<TFields> => projectRow(row, shape, migrations);
-  return buildChain(emptyQuery(""), shape, undefined, loadExecutor, projectBase);
+  const projectBase = (
+    row: Entity,
+    _executor: PlanExecutor,
+    fields: readonly string[] | null,
+  ): ProjectedRow<TFields> => projectRow(row, shape, migrations, fields);
+  return buildChain(emptyQuery(""), shape, undefined, loadExecutor, projectBase, () => null);
 }
 
 /**
@@ -592,36 +619,36 @@ export function buildReplicaQueryBuilder<
   context: QueryContext,
   view?: EbbComponentKind,
 ): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>> {
-  if (!modelIsHeld(context, source)) throw new OnDemandQueryError(source);
-  const projectBase = (row: Entity, executor: PlanExecutor): QueryRow<TFields> =>
-    projectQueryRow(row, shape, membershipRowIds(row.id, executor), context.migrations);
+  const projectBase = (
+    row: Entity,
+    executor: PlanExecutor,
+    fields: readonly string[] | null,
+  ): QueryRow<TFields> =>
+    projectQueryRow(row, shape, membershipRowIds(row.id, executor), context.migrations, fields);
+  const resolveField: FieldResolver = (entity, field) =>
+    projectedFieldValue(entity, field, shape, context.migrations);
   const syncRun = (query: Query): readonly unknown[] => {
     const executor = replicaExecutorFor(context, view);
     return projectResultRows(
-      executePlan(planQuery(query), executor, (entity, field) =>
-        projectedFieldValue(entity, field, shape, context.migrations),
-      ),
+      executePlan(planQuery(query), executor, resolveField),
       query,
       executor,
       context,
       projectBase,
     );
   };
-  const asyncRun = async (query: Query): Promise<readonly unknown[]> => {
-    const run = await runProjectingPlan(
-      query,
-      replicaExecutor(context, view),
-      context,
-      (entity, field) => projectedFieldValue(entity, field, shape, context.migrations),
-    );
-    return projectResultRows(run.rows, query, run.executor, context, projectBase);
-  };
+  const asyncRun = (query: Query): Promise<readonly unknown[]> =>
+    runProjected(query, replicaExecutor(context, view), context, resolveField, projectBase);
+  // A value view resolves every field to its one platform component.
+  const componentFor: ComponentFor =
+    context.componentFor ?? ((field) => fieldComponent(source, field));
   return buildChain<TFields, TJoins, NoJoins, QueryRow<TFields>>(
     emptyQuery(source, view === undefined ? undefined : [EBB_COMPONENTS[view]]),
     shape,
     context,
     replicaExecutor(context, view),
     projectBase,
+    componentFor,
     syncRun,
     asyncRun,
   );
@@ -688,74 +715,118 @@ const joinIds = (entity: Entity, join: Join, executor: PlanExecutor): readonly s
   }
 };
 
-/**
- * Whether a query may scan `model`: every declared component is eagerly
- * loaded. A model with any lazy component cannot be read row-shaped, because
- * its rows may be partial. An undeclared model has no lazy declaration.
- */
-const modelIsHeld = (context: QueryContext | undefined, model: string): boolean => {
-  if (context === undefined) return true;
-  return context.registry.componentsOf(model).every((component) => component.loading === "eager");
+/** Expand the planner's whole-model reads to the components a registry declares. */
+const expandReads = (reads: readonly string[], context: QueryContext): readonly string[] => {
+  const out = new Set<string>();
+  for (const read of reads) {
+    if (!read.endsWith("/*")) {
+      out.add(read);
+      continue;
+    }
+    const model = read.slice(0, -2);
+    for (const component of context.registry.componentsOf(model)) out.add(component.name);
+  }
+  return [...out];
 };
 
-/** The joins of this query whose target type the replica does not hold. */
-const coldJoins = (query: Query, context: QueryContext | undefined): readonly Join[] =>
-  context === undefined ? [] : query.joins.filter((join) => !modelIsHeld(context, join.target));
+/**
+ * The components a page's projection needs: the selection, or the whole row
+ * when the read selected nothing. A value view's source seed is a scan detail,
+ * not a projection, so `.select({})` projects nothing.
+ */
+const projectionComponents = (query: Query, context: QueryContext): readonly string[] => {
+  const reads =
+    query.selected !== undefined
+      ? query.selected.components
+      : (query.sourceComponents ?? [`${query.source}/*`]);
+  return expandReads(reads, context);
+};
 
-/** Whether any join of this query reads a target type the replica does not hold. */
-const hasOnDemandJoin = (query: Query, context: QueryContext | undefined): boolean =>
-  coldJoins(query, context).length > 0;
+/** The components a join's target rows must hold to project the join. */
+const joinLeaseComponents = (join: Join, context: QueryContext): readonly string[] =>
+  expandReads(joinReadComponents(join), context);
+
+/** Every component a projecting terminal must acquire for its page. */
+const acquiredComponents = (query: Query, context: QueryContext): readonly string[] => [
+  ...projectionComponents(query, context),
+  ...query.joins.flatMap((join) => joinLeaseComponents(join, context)),
+];
 
 /**
- * Materialize the on-demand rows a plan's joins read. A held target is already
- * resident, so only a cold join reads anything; a failed read rejects the run
- * rather than projecting a hole. The read releases its claims before returning,
- * so the values stay warm for one residency grace period.
+ * Whether the page needs a lease: a selected, projected, or joined component
+ * the replica does not already hold. A held page projects synchronously.
  */
-const readJoinedRows = async (
+const needsAcquisition = (query: Query, context: QueryContext): boolean =>
+  acquiredComponents(query, context).some((component) => !context.replica.isHeld(component));
+
+const noopRelease: Release = () => {};
+
+const releaseAll = (releases: readonly Release[]): Release => {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const release of releases) release();
+  };
+};
+
+/**
+ * Acquire the components the narrowed page projects, and each join target's,
+ * before projecting. The narrowing ops already picked the page, so only these
+ * rows are read — the two-phase read that makes an on-demand projection legal
+ * without materializing the type. The caller releases after projection; a
+ * cached result then holds the same components through its subscription.
+ */
+const acquirePage = async (
   rows: readonly Entity[],
   query: Query,
   executor: PlanExecutor,
   context: QueryContext | undefined,
-): Promise<void> => {
-  if (context === undefined) return;
-  const cold = coldJoins(query, context);
-  if (cold.length === 0) return;
-  // Read only the lazy components each cold target declares; a held component
-  // is already there, and reading one it does not carry would be a store miss.
-  const coldComponents = new Map<string, readonly string[]>();
-  for (const join of cold) {
-    if (coldComponents.has(join.target)) continue;
-    coldComponents.set(
-      join.target,
-      context.registry
-        .componentsOf(join.target)
-        .filter((component) => !context.replica.isHeld(component.name))
-        .map((component) => component.name),
-    );
-  }
-  const reads: Promise<unknown>[] = [];
-  for (const row of rows) {
-    for (const join of cold) {
-      const components = coldComponents.get(join.target) ?? [];
-      for (const id of joinIds(row, join, executor)) {
-        reads.push(context.replica.read(id, components));
+): Promise<Release> => {
+  if (context === undefined) return noopRelease;
+  const source = projectionComponents(query, context);
+  const joins = query.joins
+    .map((join) => ({ join, components: joinLeaseComponents(join, context) }))
+    .filter(({ components }) => components.length > 0);
+  if (source.length === 0 && joins.length === 0) return noopRelease;
+  const releases: Release[] = [];
+  try {
+    for (const row of rows) {
+      if (source.length > 0) releases.push(await context.replica.acquire(row.id, source));
+      for (const { join, components } of joins) {
+        for (const id of joinIds(row, join, executor)) {
+          releases.push(await context.replica.acquire(id, components));
+        }
       }
     }
+  } catch (thrown) {
+    releaseAll(releases)();
+    throw thrown;
   }
-  await Promise.all(reads);
+  return releaseAll(releases);
 };
 
-/** Run the plan, then read the on-demand rows its joins need before projecting. */
-const runProjectingPlan = async (
+/**
+ * Run the narrowing plan, acquire the page's projection, project, and release.
+ * The projection owns its values, so releasing after it is safe.
+ */
+const runProjected = async <TRow extends { readonly id: string }>(
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
   context: QueryContext | undefined,
   resolveField: FieldResolver,
-): Promise<QueryRun> => {
+  projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
+): Promise<readonly unknown[]> => {
   const run = await runPlan(query, loadExecutor, resolveField);
-  await readJoinedRows(run.rows, query, run.executor, context);
-  return run;
+  const release = await acquirePage(run.rows, query, run.executor, context);
+  try {
+    // Acquiring installs a component by replacing the row, so project the
+    // page's current rows rather than the pre-acquisition references.
+    const rows = run.rows.map((row) => run.executor.get(row.id) ?? row);
+    return projectResultRows(rows, query, run.executor, context, projectBase);
+  } finally {
+    release();
+  }
 };
 
 /**
@@ -819,18 +890,15 @@ const resolveJoin = (
  * widen it with the query's joins. Joined keys spread last so they win
  * a same-named base field, matching the row accessors.
  */
-const projectResultRows = <
-  TFields extends Record<string, TSchema>,
-  TRow extends ProjectedRow<TFields>,
->(
+const projectResultRows = <TRow extends { readonly id: string }>(
   rows: readonly Entity[],
   query: Query,
   executor: PlanExecutor,
   context: QueryContext | undefined,
-  projectBase: (row: Entity, executor: PlanExecutor) => TRow,
+  projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
 ): readonly (TRow & Record<string, unknown>)[] =>
   rows.map((row) => {
-    const base = projectBase(row, executor);
+    const base = projectBase(row, executor, selectionProjection(query.selected));
     if (query.joins.length === 0) return base;
     const widened: Record<string, unknown> = { ...base };
     for (const join of query.joins) {
@@ -928,7 +996,8 @@ function buildChain<
   shape: TObject<TFields>,
   context: QueryContext | undefined,
   loadExecutor: () => Promise<PlanExecutor>,
-  projectBase: (row: Entity, executor: PlanExecutor) => TRow,
+  projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => TRow,
+  componentFor: ComponentFor,
   syncRun?: (query: Query) => readonly unknown[],
   asyncRun?: (query: Query) => Promise<readonly unknown[]>,
 ): QueryBuilder<TFields, TJoins, TJoined, TRow> {
@@ -939,25 +1008,25 @@ function buildChain<
   const resultFor = (query: Query): QueryStore<JoinedRow<TFields, TJoined, TRow>> => {
     if (context === undefined || syncRun === undefined) {
       return createLocalQueryStore(async () => {
-        const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
         // SAFETY: the candidate chain's own shape and joins produced these rows.
-        return projectResultRows(
-          run.rows,
+        return (await runProjected(
           query,
-          run.executor,
+          loadExecutor,
           context,
+          resolveOrderField,
           projectBase,
-        ) as readonly JoinedRow<TFields, TJoined, TRow>[];
+        )) as readonly JoinedRow<TFields, TJoined, TRow>[];
       });
     }
     return context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
       ready: () => context.hydrate(),
       isReady: () => context.hydrated(),
-      // A chain with no on-demand join settles synchronously, so its refresh
-      // never flashes `stale`. One that must open a join returns the pending
-      // run, which the #512 cache publishes as `stale` until it settles.
+      // A page the replica already holds settles synchronously, so its refresh
+      // never flashes `stale`. One that must acquire a component or a join
+      // target returns the pending run, which the cache publishes as `stale`
+      // until it settles.
       execute: () =>
-        hasOnDemandJoin(query, context) && asyncRun !== undefined
+        needsAcquisition(query, context) && asyncRun !== undefined
           ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>)
           : // SAFETY: `syncRun` closes over this chain's shape and joins.
             (syncRun(query) as readonly JoinedRow<TFields, TJoined, TRow>[]),
@@ -984,6 +1053,16 @@ function buildChain<
     limit(n) {
       return make({ ...query, limit: n });
     },
+    select<TSelection extends Selection<TFields>>(selection: TSelection) {
+      const fields = selectionFieldKeys(selection, shape, context?.entityName ?? "(unknown)");
+      const selected = querySelection(fields, componentFor);
+      return make({ ...query, selected }) as unknown as QueryBuilder<
+        TFields,
+        TJoins,
+        TJoined,
+        SelectedRow<TRow, TSelection>
+      >;
+    },
     with<TSelection extends JoinSelection<TJoins>>(selection: JoinArgument<TJoins, TSelection>) {
       const joins = buildJoins(selection, context, query.joins);
       return make({ ...query, joins }) as unknown as QueryBuilder<
@@ -995,9 +1074,8 @@ function buildChain<
     },
     toQuery: () => query,
     async first() {
-      const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
-      const head = projectResultRows(run.rows, query, run.executor, context, projectBase)[0];
-      return head as unknown as JoinedRow<TFields, TJoined, TRow> | undefined;
+      const rows = await runProjected(query, loadExecutor, context, resolveOrderField, projectBase);
+      return rows[0] as unknown as JoinedRow<TFields, TJoined, TRow> | undefined;
     },
     async count() {
       return (await executeQuery(query, loadExecutor, resolveOrderField)).length;
@@ -1007,10 +1085,14 @@ function buildChain<
     },
     [Symbol.asyncIterator]() {
       const iter = async function* () {
-        const run = await runProjectingPlan(query, loadExecutor, context, resolveOrderField);
-        for (const row of projectResultRows(run.rows, query, run.executor, context, projectBase)) {
-          yield row as unknown as JoinedRow<TFields, TJoined, TRow>;
-        }
+        const rows = await runProjected(
+          query,
+          loadExecutor,
+          context,
+          resolveOrderField,
+          projectBase,
+        );
+        for (const row of rows) yield row as JoinedRow<TFields, TJoined, TRow>;
       };
       return iter();
     },
@@ -1032,8 +1114,7 @@ function buildChain<
       // projection step: a rejecting candidate loader or a failed
       // hydration must settle the awaited builder as a rejection rather
       // than leaving it pending.
-      return runProjectingPlan(query, loadExecutor, context, resolveOrderField)
-        .then((run) => projectResultRows(run.rows, query, run.executor, context, projectBase))
+      return runProjected(query, loadExecutor, context, resolveOrderField, projectBase)
         .then((rows) => rows as readonly JoinedRow<TFields, TJoined, TRow>[])
         .then(onfulfilled, onrejected);
     },

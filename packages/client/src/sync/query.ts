@@ -15,6 +15,8 @@
 
 import { EntityValidationError, type Filter } from "@ebbjs/schema";
 
+import type { QuerySelection } from "./selection";
+
 /** One query predicate, resolved against the schema by the builder. */
 export type Predicate =
   | { readonly kind: "field"; readonly field: string; readonly value: unknown }
@@ -96,6 +98,12 @@ export interface Query {
   readonly limit: number | null;
   /** One-level `with(...)` projections applied after the plan narrows rows. */
   readonly joins: readonly Join[];
+  /**
+   * The fields this read projects and the components it leases. Absent reads
+   * the whole row; `{ fields: [], components: [] }` returns only the structural
+   * keys (`id`, and `groupIds` on a query row).
+   */
+  readonly selected?: QuerySelection;
 }
 
 /** The unfiltered query over a source type. */

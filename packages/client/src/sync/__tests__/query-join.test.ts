@@ -20,7 +20,8 @@ import type { GroupFieldMap } from "../system-row";
 import { createClient } from "../client";
 import type { QueryRowOf } from "../../index";
 import type { EntityFields } from "../namespace";
-import { planQuery, rowReadComponentsFor } from "../query-plan";
+import { planQuery } from "../query-plan";
+import { selectionReadComponents } from "../selection";
 import type { ProjectedRow, QueryRow } from "../query-builder";
 import { callApplyAction, linkAction, rowComponents } from "../test-utils";
 
@@ -314,7 +315,7 @@ describe("with(...) — planning and adjacency", () => {
     ]);
 
     const plan = planQuery(query);
-    expect(rowReadComponentsFor(query)).toEqual([
+    expect(selectionReadComponents(query)).toEqual([
       "issue/*",
       "ebb/link",
       "user/*",

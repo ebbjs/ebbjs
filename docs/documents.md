@@ -169,7 +169,11 @@ row.subscribe((event) => {
 });
 ```
 
-Read rule: held types read via `query()`, on-demand types read via `get(id)`.
+Read rule: `query()` reads any type, and `select` decides what each row
+projects. The read narrows ids before it acquires the page, so an unlimited
+projection reads the type whole — page it with `limit`. A single on-demand row
+is opened with `get(id)`; `get(id, { select })` opens only the components it
+names.
 
 A subscription reports its own closure. `close()` and the pin TTL
 (`pinnedTtlMs`) both deliver one `unloaded` event; re-open with `get(id)` and

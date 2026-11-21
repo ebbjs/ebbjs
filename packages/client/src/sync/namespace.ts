@@ -56,6 +56,7 @@ import { createComponentViewExecutor, createReplicaExecutor, executePlan } from 
 import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
 import type { SubscriptionRegistry } from "./subscriptions";
+import { selectionFieldKeys, type Selection } from "./selection";
 import {
   type AdjacencyReader,
   forwardMany,
@@ -248,16 +249,35 @@ export type EntitySnapshotOf<TWire extends Record<string, TSchema>> = Static<
  * the wire envelope (`deleted_hlc`, HLC timestamps, etc.) without
  * losing the strict per-field typing.
  *
- * `client.<entity>.get(id)`'s row carries `subscribe(cb)` and
- * fires this shape on every materialization of the row — including a
- * relationship / membership write, which re-reads the row. The
- * snapshot is data, not a handle: relationship accessors are async
- * and stay on the row, not in the snapshot. Because an accessor-only
- * change leaves the projected fields identical, a consumer that
- * suppresses no-op snapshots uses the row's `subscribeAccessors` to
- * force a re-read.
+ * `client.<entity>.get(id)`'s row carries `subscribe(cb)`, which
+ * reports this shape as an {@link EntityEvent} `snapshot` on every
+ * materialization of the row. The snapshot is data, not a handle:
+ * relationship accessors are async and stay on the row, not in the
+ * snapshot. Because an accessor-only change leaves the projected fields
+ * identical, a consumer that suppresses no-op snapshots uses the row's
+ * `subscribeAccessors` to force a re-read.
  */
 export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnapshotOf<TFields>;
+
+/**
+ * What a row subscription reports. A `snapshot` is the row's current
+ * projection — a tombstone included, because a delete is still a row. An
+ * `unloaded` names the component whose lease was released (`component` set),
+ * or the row leaving the replica entirely (`component` absent). An unselected
+ * component leaving is not an unload: the subscription never held it.
+ */
+export type EntityEvent<TFields extends Record<string, TSchema>> =
+  | {
+      readonly type: "snapshot";
+      readonly id: string;
+      readonly row: EntitySnapshot<TFields>;
+    }
+  | {
+      readonly type: "unloaded";
+      readonly id: string;
+      /** The released component; absent when the row left the replica. */
+      readonly component?: string;
+    };
 
 /**
  * Row returned by `client.<entity>.get(id)`.
@@ -272,19 +292,18 @@ export type EntitySnapshot<TFields extends Record<string, TSchema>> = EntitySnap
  * always wins — over both a field named `id` and a relationship
  * accessor named `id`.
  *
- * `subscribe` fires an `EntitySnapshot<TFields>` on every
- * materialization of the row, and never on subscribe itself:
- * `get(id)` already materialized before the listener attaches.
- * Emits for a wrong-type row are skipped, mirroring `get`'s own
- * type guard. The trigger is the replica's change signal, not the
- * storage adapter's write path.
+ * `subscribe` fires a snapshot on every materialization of the row the
+ * read leased, and never on subscribe itself: `get(id)` already
+ * materialized before the listener attaches. Emits for a wrong-type row
+ * are skipped, mirroring `get`'s own type guard. The trigger is the
+ * replica's change signal, not the storage adapter's write path.
  */
 export type EntityRow<
   TFields extends Record<string, TSchema>,
   TAccessors extends object = NoAccessors,
 > = Omit<EntityWithAccessors<TFields, TAccessors>, "id"> & {
   readonly id: string;
-  subscribe(cb: (snapshot: EntitySnapshot<TFields>) => void): () => void;
+  subscribe(cb: (event: EntityEvent<TFields>) => void): () => void;
   /**
    * Subscribe to a change in one of the row's relationship / membership
    * accessors. The row's own fields are usually unchanged, so a consumer
@@ -292,6 +311,17 @@ export type EntityRow<
    */
   subscribeAccessors(cb: () => void): () => void;
 };
+
+/**
+ * A `get` row narrowed by a selection: exactly the selected fields as data,
+ * with the same handle and accessors. `groupIds` is not on a single-row read;
+ * it is a query-row structural key.
+ */
+export type SelectedEntityRow<
+  TFields extends Record<string, TSchema>,
+  TAccessors extends object,
+  TSelection,
+> = EntityRow<Pick<TFields, Extract<keyof TSelection, keyof TFields>>, TAccessors>;
 
 /**
  * Filter shape for `client.<entity>.subscribe(filter, cb)`.
@@ -345,11 +375,18 @@ export interface EntityNamespace<
   /** The public read root: a typed chain over the entity's fields and joins. */
   query(): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>;
   /**
-   * Single-row read with relationship accessors attached.
+   * Single-row read with relationship accessors attached. A selection narrows
+   * both the projection and the components the read leases, and is required to
+   * narrow: without one the read returns every component the stored row
+   * carries.
    *
    * @internal Reads go through {@link EntityNamespace.query} and
    * `useQuery`; this stays for the engine's own callers.
    */
+  get<TSelection extends Selection<TFields>>(
+    id: string,
+    options: { readonly select: TSelection },
+  ): Promise<SelectedEntityRow<TFields, TAccessors, TSelection> | null>;
   get(id: string): Promise<EntityRow<TFields, TAccessors> | null>;
   /**
    * Reactive subscribe on the matching set. Returns an
@@ -650,8 +687,9 @@ const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
   entity: Entity,
   shape: TObject<TWire>,
   migrations?: ComponentMigrations,
+  fields?: readonly string[] | null,
 ): EntitySnapshotOf<TWire> => ({
-  ...projectEntity(entity, shape, migrations),
+  ...projectEntity(entity, shape, migrations, fields),
   id: entity.id,
   entity,
 });
@@ -659,35 +697,51 @@ const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
 /**
  * Mount a row subscription for `id` on the registry. A namespace built without
  * a replica binding has no trigger, so the returned unsubscribe is a no-op. The
- * subscription claims the row's components until it is released.
+ * subscription claims the selected components until it is released.
  *
- * A row that left the replica entirely is dropped: the pinned
- * `EntitySnapshot` has no null variant; a soft delete stays a row with
- * `deleted_hlc` set and is delivered normally.
+ * A snapshot is the current projection, a tombstone included. An `unloaded`
+ * names a component the read leased that the replica released, or the row
+ * itself when it left the replica; a wrong-type row is skipped rather than
+ * reported.
  */
 const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   access: ReplicaAccess | null,
   entityName: string,
   id: string,
   shape: TObject<TWire>,
-  cb: (snapshot: EntitySnapshotOf<TWire>) => void,
+  cb: (event: EntityEvent<TWire>) => void,
   migrations?: ComponentMigrations,
   view?: EbbComponentKind,
+  fields?: readonly string[] | null,
+  components?: readonly string[] | null,
 ): (() => void) => {
   if (access === null) return () => {};
-  const fire = (): void => {
+  const fire = (released: readonly string[]): void => {
     const row = access.replica.get(id);
-    if (row === undefined || row.model !== entityName) return;
+    if (row === undefined) {
+      cb({ type: "unloaded", id });
+      return;
+    }
+    if (row.model !== entityName) return;
     const visible = visibleRow(row, view);
-    if (visible === null) return;
+    if (visible === null) {
+      // The row is here but the component a value view projects is not: that
+      // is a component release, not the row leaving.
+      if (view !== undefined) cb({ type: "unloaded", id, component: EBB_COMPONENTS[view] });
+      return;
+    }
+    if (released.length > 0) {
+      for (const component of released) cb({ type: "unloaded", id, component });
+      return;
+    }
     // SAFETY: the view is the same row with the component's value as its
     // fields, which is the shape `shape` projects.
-    cb(toEntitySnapshot(visible, shape, migrations));
+    cb({ type: "snapshot", id, row: toEntitySnapshot(visible, shape, migrations, fields) });
   };
   // One row subscription wakes on a content change and on an accessor
   // (relationship / membership) change alike, so `subscribe` needs a single
   // registration: the registry keeps one entry per row for both.
-  return mountRowSubscription(access, id, fire);
+  return mountRowSubscription(access, id, fire, components ?? undefined);
 };
 
 /**
@@ -704,10 +758,11 @@ const subscribeToAccessors = (
 const mountRowSubscription = (
   access: ReplicaAccess,
   id: string,
-  listener: () => void,
+  listener: (released: readonly string[]) => void,
+  components?: readonly string[],
 ): (() => void) => {
-  const subscription = access.subscriptions.open({ kind: "row", row: id });
-  const detach = subscription.onChange(listener);
+  const subscription = access.subscriptions.open({ kind: "row", row: id, components });
+  const detach = subscription.onChange((_changes, _revision, released) => listener(released));
   return () => {
     detach();
     subscription.release();
@@ -754,8 +809,18 @@ export function createEntityNamespace<
 ): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = read.registry;
 
+  /** The components a selection leases: a value view's one component, else its fields. */
+  const componentsForSelection = (fields: readonly string[]): readonly string[] =>
+    view === undefined
+      ? fields.map((field) => fieldComponent(entityName, field))
+      : [EBB_COMPONENTS[view]];
+
   /** Project one replica row and attach its accessors plus row subscriptions. */
-  const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {
+  const buildRow = (
+    entity: Entity,
+    fields: readonly string[] | null,
+    components: readonly string[] | null,
+  ): EntityRow<TFields, TAccessors> | null => {
     // Wrong-type reads (different `entity.model`) resolve to `null`
     // alongside unknown ids. Callers don't distinguish — a missing
     // row and a wrong-type row are both "no row here". A value namespace
@@ -771,15 +836,17 @@ export function createEntityNamespace<
       read.migrations,
       replica,
     );
-    const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
+    const subscribe = (cb: (event: EntityEvent<TFields>) => void): (() => void) =>
       subscribeToEntity(
         replica ?? null,
         entityName,
         entity.id,
         shape,
-        cb as unknown as (snapshot: EntitySnapshotOf<ShapeFields<TFields>>) => void,
+        cb as unknown as (event: EntityEvent<ShapeFields<TFields>>) => void,
         read.migrations,
         view,
+        fields,
+        components,
       );
     const subscribeAccessors = (cb: () => void): (() => void) =>
       subscribeToAccessors(replica ?? null, entity.id, cb);
@@ -787,12 +854,54 @@ export function createEntityNamespace<
     // same-named field; the entity id spreads after them so it wins
     // over both.
     return {
-      ...projectRow(row, shape, read.migrations),
+      ...projectRow(row, shape, read.migrations, fields),
       ...accessors,
       id: entity.id,
       subscribe,
       subscribeAccessors,
     } as unknown as EntityRow<TFields, TAccessors>;
+  };
+
+  /**
+   * The single-row read. `select` narrows both the projection and the
+   * components leased; without one the read returns every component the stored
+   * row carries and claims every one the replica does not hold.
+   */
+  const getRow = async (
+    id: string,
+    options?: { readonly select: Selection<TFields> },
+  ): Promise<EntityRow<TFields, TAccessors> | null> => {
+    // A selection is validated against the row's shape before any read, so an
+    // unknown field fails loudly instead of returning a narrower row.
+    const fields =
+      options === undefined ? null : selectionFieldKeys(options.select, shape, entityName);
+    const components = fields === null ? null : componentsForSelection(fields);
+    // The accessors read the replica's adjacency, so bring it up to date
+    // before building them. Memoized on the client, so this is one real await.
+    if (replica === undefined) {
+      const entity = await storage.entities.get(id);
+      return entity === null ? null : buildRow(entity, fields, components);
+    }
+    await replica.hydrate();
+    const entity = await storage.entities.get(id);
+    if (entity === null || entity.model !== entityName) return null;
+    if (fields === null && replica.replica.isRowHeld(entity)) {
+      return buildRow(entity, null, null);
+    }
+    // The store row is the full row; claim the components this read leases —
+    // the selection, or every carried component when it selected nothing — so
+    // an on-demand value is installed before projection. The claim is released
+    // once the row is projected: the returned row owns its values.
+    const leased = (
+      components ??
+      Object.keys(entity.data.fields).map((field) => fieldComponent(entity.model, field))
+    ).filter((component) => !replica.replica.isHeld(component));
+    const release = await replica.replica.acquire(id, leased);
+    try {
+      return buildRow(replica.replica.get(id) ?? entity, fields, components);
+    } finally {
+      release();
+    }
   };
 
   return {
@@ -825,30 +934,7 @@ export function createEntityNamespace<
         view,
       ) as unknown as QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>; // ShapeFields is idempotent at the type level; the runtime shape is the read shape.
     },
-    async get(id: string): Promise<EntityRow<TFields, TAccessors> | null> {
-      // The accessors read the replica's adjacency, so bring it up to
-      // date before building them. Memoized on the client, so this is
-      // one real await per client.
-      if (replica === undefined) {
-        const entity = await storage.entities.get(id);
-        return entity === null ? null : buildRow(entity);
-      }
-      await replica.hydrate();
-      // Held rows keep their durable read: a conflicted Action's optimistic
-      // overlay stays on the replica until resolution. An on-demand row is read
-      // through the replica, which leases what it installs.
-      const entity = await storage.entities.get(id);
-      if (entity === null) return null;
-      if (replica.replica.isRowHeld(entity)) return buildRow(entity);
-      // The store row is the full row; every non-held component it carries is
-      // read here, including one the replica has never seen and one whose
-      // current value is only an unacknowledged overlay write.
-      const read = Object.keys(entity.data.fields)
-        .map((field) => fieldComponent(entity.model, field))
-        .filter((component) => !replica.replica.isHeld(component));
-      const loaded = await replica.replica.read(id, read);
-      return buildRow(loaded ?? replica.replica.get(id) ?? entity);
-    },
+    get: getRow as EntityNamespace<TFields, TAccessors, TJoins>["get"],
     subscribe(
       filter: QueryFilter<TFields>,
       cb: (snapshot: CollectionSnapshot<TFields>) => void,

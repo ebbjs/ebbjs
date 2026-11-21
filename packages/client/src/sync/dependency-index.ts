@@ -51,6 +51,12 @@ export interface SubscriptionDependencies {
   readonly components?: readonly string[];
   /** Models read whole (`note` stands for every `note/*` component). */
   readonly models?: readonly string[];
+  /**
+   * Models whose row set the subscription observes. A membership change names
+   * no component, so the model the row entered or left is what reaches these
+   * readers; unlike `models`, it does not observe a content change.
+   */
+  readonly sources?: readonly string[];
   /** Row ids watched directly. */
   readonly rows?: readonly string[];
   readonly indices?: readonly IndexDependency[];
@@ -145,6 +151,7 @@ interface Indexed {
   readonly seq: number;
   readonly components: readonly string[];
   readonly models: readonly string[];
+  readonly sources: readonly string[];
   readonly rows: readonly string[];
   readonly indices: readonly IndexDependency[];
 }
@@ -162,8 +169,9 @@ const collectInto = <T>(touched: Set<T>, bucket: ReadonlySet<T> | undefined): vo
 const sourcesOf = (indexed: {
   readonly components: readonly string[];
   readonly models: readonly string[];
+  readonly sources: readonly string[];
 }): ReadonlySet<string> => {
-  const sources = new Set(indexed.models);
+  const sources = new Set([...indexed.models, ...indexed.sources]);
   for (const component of indexed.components) sources.add(componentModel(component));
   return sources;
 };
@@ -293,6 +301,7 @@ export const createChangeDispatcher = <T>(
         seq,
         components: dependencies.components ?? [],
         models: dependencies.models ?? [],
+        sources: dependencies.sources ?? [],
         rows: dependencies.rows ?? [],
         indices: dependencies.indices ?? [],
       };

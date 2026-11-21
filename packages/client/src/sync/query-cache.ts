@@ -12,17 +12,17 @@
  * cached result itself stays for `ttlMs` — so a remount before it expires reads
  * nothing from the store and re-runs only when a relevant change landed.
  *
- * What a result reads depends on what it keeps. A `rows` result holds whole
- * projected rows, so it reads every component of its source and joined models;
- * a `collection` result holds only the matching id list, so it reads the
- * components its plan names. A query that cannot name the components it depends
- * on reads its model whole (`<model>/*`).
+ * What a result reads is the query's selection (#940): a `rows` result reads
+ * the selected components, its predicates and ordering, its joined targets, and
+ * membership for `groupIds`; a query with no selection reads its source model
+ * whole. A `collection` result holds only the matching id list, so it reads the
+ * components its plan names.
  *
  * A change is one of two kinds (#939). A content change names the components it
  * touched, so a result re-runs only when one of them is in its read set. A
  * membership change is a row entering or leaving a model's set and names no
- * component: every read of that model re-runs, because a row can enter carrying
- * any component the plan reads — or leave carrying the only one that mattered.
+ * component: the model is the dependency, so every read that observes that
+ * model's row set re-runs.
  *
  * Status is derived, never stored ad hoc:
  *
@@ -48,12 +48,8 @@ import { componentModel, structuralEqual } from "@ebbjs/core";
 import type { Replica, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
-import {
-  compileReadComponents,
-  planQuery,
-  rowReadComponentsFor,
-  type CompiledReadComponents,
-} from "./query-plan";
+import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
+import { queryCacheKey, selectionReadComponents, structuralReads } from "./selection";
 import {
   createSubscriptionRegistry,
   touchesReadSet,
@@ -61,7 +57,6 @@ import {
   type Subscription,
   type SubscriptionRegistry,
 } from "./subscriptions";
-import { keyOf } from "./keys";
 
 /**
  * How long a result stays cached after its last subscriber leaves. Long
@@ -136,8 +131,12 @@ interface CacheEntry<T> {
   /** The cache key this result is held under, and its registry sharing key. */
   readonly key: string;
   readonly surface: QuerySurface;
+  /** The lowered query, kept so a joined target's rows can be leased. */
+  readonly query: Query;
   /** Component names this result reads, as declared by the query. */
   readonly readNames: readonly string[];
+  /** Models whose row set this result follows; a create or delete names none. */
+  readonly sources: readonly string[];
   /** The same read set compiled for change matching. */
   readonly reads: CompiledReadComponents;
   readonly source: QuerySource<T>;
@@ -162,33 +161,6 @@ interface LiveSubscription {
   readonly subscription: Subscription<QueryResult<unknown>>;
   readonly detach: () => void;
 }
-
-/**
- * Type-tagged, key-sorted encoding of a query value. `JSON.stringify` alone
- * drops `undefined` and flattens a `Date` / `NaN`, which would let two
- * different predicates share one cache entry.
- */
-const encode = (value: unknown): string => {
-  if (value === undefined) return "u";
-  if (value === null) return "n";
-  if (typeof value === "number") return `d:${Object.is(value, -0) ? "-0" : String(value)}`;
-  if (typeof value === "string") return `s:${JSON.stringify(value)}`;
-  if (typeof value === "boolean") return value ? "t" : "f";
-  if (value instanceof Date) return `D:${value.getTime()}`;
-  if (Array.isArray(value)) return `[${value.map(encode).join(",")}]`;
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${encode(record[key])}`).join(",")}}`;
-  }
-  // Functions and symbols cannot appear in a lowered query; a stable tag
-  // keeps the key total rather than throwing.
-  return `x:${String(value)}`;
-};
-
-/** The cache key: surface plus the canonical form of the lowered query. */
-export const queryKey = (surface: QuerySurface, query: Query): string =>
-  keyOf(surface, encode(query));
 
 const sameRows = (a: readonly unknown[], b: readonly unknown[]): boolean =>
   a.length === b.length && a.every((row, i) => structuralEqual(row, b[i]));
@@ -271,21 +243,36 @@ export const createQueryCache = (
   };
 
   /**
-   * The values a result keeps resident: for each row it touches, the resident
-   * components its read set names. A whole-model read (`todo/*`) names every
-   * component of that model, so the row's own components are claimed; an exact
-   * read (`todo/status`) claims only the ones the row carries. Claims are not a
-   * projection: the row's other components stay wherever the policy put them.
+   * The values a result keeps resident: for each source or joined-target row it
+   * touches, the resident components its read set names. A selection claims
+   * exactly its components; a whole-model read (`todo/*`) claims every resident
+   * component of that model. Claims are not a projection: the row's other
+   * components stay wherever the policy put them.
    */
   const dependenciesOf = <T>(entry: CacheEntry<T>): readonly Dependency[] => {
     const data = entry.data;
     if (data === undefined) return [];
-    const ids =
-      entry.surface === "collection"
-        ? (data as readonly string[])
-        : (data as readonly { readonly id: string }[]).map((row) => row.id);
+    const ids = new Set<string>();
+    if (entry.surface === "collection") {
+      for (const id of data as readonly string[]) ids.add(id);
+    } else {
+      for (const row of data as readonly Record<string, unknown>[]) {
+        ids.add(row.id as string);
+        // A joined target is a row this result projects too, so its values are
+        // leased exactly as a source row's are.
+        for (const join of entry.query.joins) {
+          const value = row[join.as];
+          for (const target of Array.isArray(value) ? value : [value]) {
+            if (target !== null && typeof target === "object") {
+              const id = (target as { readonly id?: unknown }).id;
+              if (typeof id === "string") ids.add(id);
+            }
+          }
+        }
+      }
+    }
     const dependencies: Dependency[] = [];
-    for (const id of new Set(ids)) {
+    for (const id of ids) {
       if (replica.get(id) === undefined) continue;
       const components = replica
         .residentComponents(id)
@@ -314,6 +301,7 @@ export const createQueryCache = (
       kind: "query",
       key: entry.key,
       reads: entry.readNames,
+      sources: entry.sources,
     });
     subscription.publish(entry.snapshot);
     const detach = subscription.onChange((_changes, revision) => reconcile(entry, revision));
@@ -507,18 +495,21 @@ export const createQueryCache = (
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
-      const key = queryKey(surface, query);
+      const key = queryCacheKey(surface, query);
       let entry = entries.get(key);
       if (entry === undefined) {
         // A collection result keeps ids, a projected row keeps the whole shape;
         // only the latter needs the source and joined models read whole.
         const readNames =
-          surface === "rows" ? rowReadComponentsFor(query) : planQuery(query).readComponents;
+          surface === "rows" ? selectionReadComponents(query) : planQuery(query).readComponents;
+        const sources = structuralReads(query).rows;
         const created: CacheEntry<unknown> = {
           key,
           surface,
+          query,
           readNames,
-          reads: compileReadComponents(readNames),
+          sources,
+          reads: compileReadComponents(readNames, sources),
           // SAFETY: the entry erases the result type; `watch` restores it at
           // the store boundary, and every key maps to one surface's shape.
           source: source as QuerySource<unknown>,
