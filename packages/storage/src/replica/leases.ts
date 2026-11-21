@@ -109,15 +109,19 @@ export interface LeaseTable {
 const KEY_SEPARATOR = "\u0000";
 const keyOf = (key: LeaseKey): string => `${key.entityId}${KEY_SEPARATOR}${key.component}`;
 
-/** `Infinity` disables expiry, so no timer is armed at all. */
-const residencyTtlOf = (ttlMs: number | undefined): number => {
+/**
+ * The one lifetime policy both stages of residency read: a component value's
+ * grace period, and the inactive query result holding the values it read.
+ * `Infinity` disables expiry, so no timer is armed at all.
+ */
+export const residencyTtlOf = (ttlMs: number | undefined): number => {
   if (ttlMs === undefined) return DEFAULT_RESIDENCY_TTL_MS;
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) return Number.POSITIVE_INFINITY;
   return ttlMs;
 };
 
 /** A pending expiry must not keep a Node process alive. */
-const unrefTimer = (timer: LeaseTimerHandle): void => {
+export const unrefTimer = (timer: LeaseTimerHandle): void => {
   if (typeof timer === "object" && timer !== null && "unref" in timer) {
     const unref = (timer as { unref?: unknown }).unref;
     if (typeof unref === "function") unref.call(timer);

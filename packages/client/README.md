@@ -173,7 +173,10 @@ A live subscription owns what it read: `row.subscribe` claims the components its
 read selected until it unsubscribes, and a query subscription claims the
 components its result read, so a component cannot expire under a mounted screen.
 Two subscriptions reading one component share one copy and one claim, and
-unsubscribing starts the same grace period. `client.subscriptions` is the
+unsubscribing starts the same grace period. A query result does not go away with
+its last subscriber: it becomes an inactive subscription that keeps its result
+and claims for the same `residencyTtlMs`, so a remount inside it reads nothing
+and re-runs only when a relevant change landed. `client.subscriptions` is the
 registry those live subscriptions live in. Two readers of one row that selected
 different components hold separate claims, so one cannot observe a partial row
 behind the other's lease.

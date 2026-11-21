@@ -134,9 +134,7 @@ export {
 } from "./sync/selection";
 
 export {
-  DEFAULT_QUERY_TTL_MS,
   type QueryCache,
-  type QueryCacheOptions,
   type QueryResult,
   type QuerySource,
   type QueryStatus,
@@ -156,9 +154,11 @@ export {
   type SubscriptionKind,
   type SubscriptionSnapshot,
   type SubscriptionRegistry,
+  type SubscriptionRegistryOptions,
   type SubscriptionSpec,
   type SubscriptionState,
   type SubscriptionStats,
+  type SubscriptionWriter,
 } from "./sync/subscriptions";
 export {
   DEFAULT_HISTORY_LIMIT,

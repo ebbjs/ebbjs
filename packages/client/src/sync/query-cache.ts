@@ -1,16 +1,19 @@
 /**
- * Reactive query-result cache (#512).
+ * Reactive query results (#512), a view over the subscription registry (#941).
  *
- * One cache entry per lowered {@link Query} and surface, ref-counted by its
- * subscribers and kept alive after the last one leaves so a remount reads the
- * cached result instead of re-running.
+ * A result is not cached here. The registry holds one entry per lowered
+ * {@link Query} and surface, and that entry is the result: its snapshot, its
+ * revision cursor, and the leases its dependencies need. This module only
+ * drives one — it runs the source, derives the result status, and tells the
+ * registry what to hold — so the lifetime question has one answer.
  *
- * An entry's live half is a subscription in the registry (#937): the registry
- * dispatches the changes that touch the entry's reads, and the entry claims the
- * components its result projected for as long as it is subscribed. Unsubscribing
- * releases those claims, which starts the residency grace period, while the
- * cached result itself stays for `ttlMs` — so a remount before it expires reads
- * nothing from the store and re-runs only when a relevant change landed.
+ * While a subscriber is attached the entry is live: the registry dispatches the
+ * changes that touch its reads, and the entry claims the components its result
+ * projected. When the last subscriber leaves the entry goes inactive, still
+ * owning those claims, and the result and claims end together when the one
+ * residency TTL elapses (default 60s). A remount inside it reads the result
+ * back with no store read and no re-run, unless a change that touched the read
+ * set landed meanwhile; then the result is `stale` and the remount re-runs once.
  *
  * What a result reads is the query's selection (#940): a `rows` result reads
  * the selected components, its predicates and ordering, its joined targets, and
@@ -39,7 +42,7 @@
  * `stale` while an async re-run is pending — that last one is what lets a
  * mounted view show usable-but-refreshing data. A synchronous re-run settles
  * before anyone is notified, so it never flashes `stale`. An invalidation
- * that re-runs to an equal result is otherwise silent. The cache holds
+ * that re-runs to an equal result is otherwise silent. The result holds
  * projected rows, so a join target change that rewrites a projection is a
  * result change even when the source rows are untouched.
  */
@@ -56,21 +59,16 @@ import {
   type Dependency,
   type Subscription,
   type SubscriptionRegistry,
+  type SubscriptionSpec,
+  type SubscriptionWriter,
 } from "./subscriptions";
 
-/**
- * How long a result stays cached after its last subscriber leaves. Long
- * enough that route flaps and remounts reuse held data, short enough that
- * abandoned query results do not accumulate.
- */
-export const DEFAULT_QUERY_TTL_MS = 5 * 60_000;
-
-/** Derived lifecycle of a cached query result. */
+/** Derived lifecycle of a query result. */
 export type QueryStatus = "unloaded" | "stale" | "current" | "failed";
 
 /**
- * The read surface a cached result belongs to. Same query on two surfaces
- * (projected rows vs. a collection's id list) keeps two entries.
+ * The read surface a result belongs to. Same query on two surfaces (projected
+ * rows vs. a collection's id list) keeps two entries.
  */
 export type QuerySurface = "rows" | "collection";
 
@@ -95,7 +93,7 @@ export interface QuerySubscribeOptions {
   readonly initial?: boolean;
 }
 
-/** The read-and-subscribe half of one cached query. */
+/** The read-and-subscribe half of one query result. */
 export interface QueryStore<T> {
   getSnapshot(): QueryResult<T>;
   subscribe(listener: () => void, options?: QuerySubscribeOptions): () => void;
@@ -114,53 +112,45 @@ export interface QuerySource<T> {
   execute(): readonly T[] | Promise<readonly T[]>;
 }
 
-export interface QueryCacheOptions {
-  /** Inactive-result lifetime in milliseconds; `0` or a non-finite value disables eviction. */
-  readonly ttlMs?: number;
-}
-
 export interface QueryCache {
   /**
-   * Read or start the cached result for `query` on `surface`. Two chains that
-   * lower to the same query and surface share one entry and one result.
+   * Read or start the result for `query` on `surface`. Two chains that lower to
+   * the same query and surface share one registry entry and one result.
    */
   watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T>;
 }
 
-interface CacheEntry<T> {
-  /** The cache key this result is held under, and its registry sharing key. */
-  readonly key: string;
+/**
+ * What the cache keeps on its registry entry: how to run the source, how far
+ * the result is current, and who is listening. The result itself and the claims
+ * it owns live on the entry, not here — this is a consumer's controls, not a
+ * second copy of the data.
+ */
+interface QueryRun<T> {
   readonly surface: QuerySurface;
   /** The lowered query, kept so a joined target's rows can be leased. */
   readonly query: Query;
   /** Component names this result reads, as declared by the query. */
-  readonly readNames: readonly string[];
-  /** Models whose row set this result follows; a create or delete names none. */
-  readonly sources: readonly string[];
-  /** The same read set compiled for change matching. */
   readonly reads: CompiledReadComponents;
   readonly source: QuerySource<T>;
-  data: readonly T[] | undefined;
-  error: Error | null;
-  /** Revision the data was produced at; `null` until the first success. */
-  revision: Revision | null;
-  snapshot: QueryResult<T>;
   /** Each listener, whether it wants the first run, and the revision it joined at. */
   readonly listeners: Map<() => void, { initial: boolean; revision: Revision }>;
-  /** Subscriber refcount; the entry stays cached at zero until its TTL. */
-  refs: number;
-  /** Inactive-entry eviction timer; `null` while subscribed or after expiry. */
-  evictTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The revision the published result reflects. Irrelevant changes fold into it
+   * so a result that nothing touched stays `current` without a re-run.
+   */
+  at: Revision | null;
   running: boolean;
-  /** The registry entry held while at least one listener is attached. */
-  live: LiveSubscription | null;
+  /** Whether the entry's change listener is attached; it is attached once. */
+  attached: boolean;
 }
 
-/** A registry entry plus the detach for this cache entry's change listener. */
-interface LiveSubscription {
-  readonly subscription: Subscription<QueryResult<unknown>>;
-  readonly detach: () => void;
-}
+const UNLOADED: QueryResult<never> = {
+  data: undefined,
+  status: "unloaded",
+  loading: true,
+  error: null,
+};
 
 const sameRows = (a: readonly unknown[], b: readonly unknown[]): boolean =>
   a.length === b.length && a.every((row, i) => structuralEqual(row, b[i]));
@@ -168,78 +158,45 @@ const sameRows = (a: readonly unknown[], b: readonly unknown[]): boolean =>
 const toError = (thrown: unknown): Error =>
   thrown instanceof Error ? thrown : new Error(String(thrown));
 
-const initialSnapshot = <T>(): QueryResult<T> => ({
-  data: undefined,
-  status: "unloaded",
-  loading: true,
-  error: null,
-});
+const resultOf = <T>(writer: SubscriptionWriter<QueryResult<T>> | undefined): QueryResult<T> =>
+  writer?.result ?? (UNLOADED as QueryResult<T>);
 
-/** Build the cache over a live replica and the registry its reads live in. */
+/**
+ * Build the cache over a live replica and the registry its results live in.
+ * Without a registry one is built over the replica; the inactive lifetime is
+ * the registry's, so the cache takes no lifetime option of its own.
+ */
 export const createQueryCache = (
   replica: Replica,
   subscriptions: SubscriptionRegistry = createSubscriptionRegistry(replica),
-  options: QueryCacheOptions = {},
 ): QueryCache => {
-  const entries = new Map<string, CacheEntry<unknown>>();
-  const ttlMs = options.ttlMs ?? DEFAULT_QUERY_TTL_MS;
-
-  const cancelEviction = (entry: CacheEntry<unknown>): void => {
-    if (entry.evictTimer === null) return;
-    clearTimeout(entry.evictTimer);
-    entry.evictTimer = null;
+  const isRelevant = <T>(run: QueryRun<T>, from: Revision): boolean => {
+    if (replica.revision === from) return false;
+    const changes = replica.changesSince(from);
+    // An empty window on an advanced revision is a journal gap (a replica
+    // `load`), so treat it as relevant; otherwise match each change against
+    // the read set, by component for content and by model for membership.
+    return changes.length === 0 || changes.some((change) => touchesReadSet(run.reads, change));
   };
 
-  const scheduleEviction = (key: string, entry: CacheEntry<unknown>): void => {
-    if (!Number.isFinite(ttlMs) || ttlMs <= 0 || entry.evictTimer !== null) return;
-    entry.evictTimer = setTimeout(() => {
-      entry.evictTimer = null;
-      if (entry.refs === 0 && entry.listeners.size === 0) entries.delete(key);
-    }, ttlMs);
-    // A pending result must not keep a Node process alive.
-    (entry.evictTimer as { unref?: () => void }).unref?.();
-  };
-
-  /**
-   * The revision the cached result reflects. While the entry is subscribed the
-   * registry's cursor owns it, so a batch the entry is not touched by still
-   * advances it; once unsubscribed the last cursor is kept for the remount.
-   */
-  const revisionOf = (entry: CacheEntry<unknown>): Revision | null =>
-    entry.live?.subscription.cursor ?? entry.revision;
-
-  const statusOf = <T>(entry: CacheEntry<T>): QueryStatus => {
-    if (entry.error !== null) return "failed";
-    if (entry.data === undefined) return "unloaded";
-    if (revisionOf(entry) === replica.revision) return "current";
-    return "stale";
+  const statusOf = <T>(run: QueryRun<T>, result: QueryResult<T>): QueryStatus => {
+    if (result.error !== null) return "failed";
+    if (result.data === undefined) return "unloaded";
+    return run.at === replica.revision ? "current" : "stale";
   };
 
   /**
    * Replace the snapshot only when a visible field changed, so
    * `useSyncExternalStore` reads a stable reference between result changes.
-   * The live subscription publishes the same snapshot, so the registry holds
-   * the result its entry currently stands for.
+   * The entry is the one place the snapshot lives; nothing copies it.
    */
-  const refresh = <T>(entry: CacheEntry<T>): void => {
-    const status = statusOf(entry);
-    const error = status === "failed" ? entry.error : null;
-    const current = entry.snapshot;
-    if (current.data === entry.data && current.status === status && current.error === error) return;
-    entry.snapshot = { data: entry.data, status, loading: status === "unloaded", error };
-    entry.live?.subscription.publish(entry.snapshot);
-  };
-
-  /**
-   * Whether a journal window can touch the entry. An empty window on an
-   * advanced revision is a journal gap (a replica `load`), so treat it as
-   * relevant; otherwise match each change against the entry's compiled reads,
-   * by component for a content change and by model for a membership one.
-   */
-  const isRelevant = <T>(entry: CacheEntry<T>, from: Revision): boolean => {
-    if (replica.revision === from) return false;
-    const changes = replica.changesSince(from);
-    return changes.length === 0 || changes.some((change) => touchesReadSet(entry.reads, change));
+  const refresh = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+    const current = resultOf(writer);
+    const status = statusOf(run, current);
+    const error = status === "failed" ? current.error : null;
+    const loading = status === "unloaded";
+    if (current.status === status && current.loading === loading && current.error === error) return;
+    writer.publish({ data: current.data, status, loading, error });
   };
 
   /**
@@ -249,18 +206,18 @@ export const createQueryCache = (
    * component of that model. Claims are not a projection: the row's other
    * components stay wherever the policy put them.
    */
-  const dependenciesOf = <T>(entry: CacheEntry<T>): readonly Dependency[] => {
-    const data = entry.data;
+  const dependenciesOf = <T>(run: QueryRun<T>, result: QueryResult<T>): readonly Dependency[] => {
+    const data = result.data;
     if (data === undefined) return [];
     const ids = new Set<string>();
-    if (entry.surface === "collection") {
+    if (run.surface === "collection") {
       for (const id of data as readonly string[]) ids.add(id);
     } else {
       for (const row of data as readonly Record<string, unknown>[]) {
         ids.add(row.id as string);
         // A joined target is a row this result projects too, so its values are
         // leased exactly as a source row's are.
-        for (const join of entry.query.joins) {
+        for (const join of run.query.joins) {
           const value = row[join.as];
           for (const target of Array.isArray(value) ? value : [value]) {
             if (target !== null && typeof target === "object") {
@@ -278,52 +235,23 @@ export const createQueryCache = (
         .residentComponents(id)
         .filter(
           (component) =>
-            entry.reads.components.has(component) ||
-            entry.reads.models.has(componentModel(component)),
+            run.reads.components.has(component) || run.reads.models.has(componentModel(component)),
         );
       if (components.length > 0) dependencies.push({ id, components });
     }
     return dependencies;
   };
 
-  /** Hand the registry the result the entry now holds and the claims it needs. */
-  const syncLive = <T>(entry: CacheEntry<T>): void => {
-    const live = entry.live;
-    if (live === null || entry.revision === null) return;
-    live.subscription.seek(entry.revision);
-    live.subscription.depend(dependenciesOf(entry));
+  /** Point the entry at the revision the result reflects and the claims it needs. */
+  const sync = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+    if (run.at === null) return;
+    writer.seek(run.at);
+    writer.depend(dependenciesOf(run, resultOf(writer)));
   };
 
-  /** Start the live half of an entry: its registry subscription and claims. */
-  const openLive = (entry: CacheEntry<unknown>): void => {
-    if (entry.live !== null) return;
-    const subscription = subscriptions.open<QueryResult<unknown>>({
-      kind: "query",
-      key: entry.key,
-      reads: entry.readNames,
-      sources: entry.sources,
-    });
-    subscription.publish(entry.snapshot);
-    const detach = subscription.onChange((_changes, revision) => reconcile(entry, revision));
-    entry.live = { subscription, detach };
-    syncLive(entry);
-  };
-
-  /** End the live half: the registry releases every claim the entry held. */
-  const closeLive = (entry: CacheEntry<unknown>): void => {
-    const live = entry.live;
-    if (live === null) return;
-    // The cursor is the revision the cached result reflects; keep it for the
-    // remount, which sees `stale` if anything relevant landed meanwhile.
-    entry.revision = live.subscription.cursor;
-    entry.live = null;
-    live.detach();
-    live.subscription.release();
-  };
-
-  const notifyAll = <T>(entry: CacheEntry<T>): void => {
+  const notifyAll = <T>(run: QueryRun<T>): void => {
     // Snapshot so a listener that unsubscribes mid-fan-out cannot skip a peer.
-    for (const listener of Array.from(entry.listeners.keys())) listener();
+    for (const listener of Array.from(run.listeners.keys())) listener();
   };
 
   /**
@@ -331,8 +259,8 @@ export const createQueryCache = (
    * it fire — plus a listener that joined before a relevant change landed, so
    * a subscribe that races the first run still wakes for the change it saw.
    */
-  const notifyInitial = <T>(entry: CacheEntry<T>): void => {
-    for (const [listener, state] of Array.from(entry.listeners)) {
+  const notifyInitial = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+    for (const [listener, state] of Array.from(run.listeners)) {
       if (state.initial) {
         listener();
         continue;
@@ -340,13 +268,16 @@ export const createQueryCache = (
       // A listener that joined before a relevant change landed sees the
       // first settle even though it opted out of the priming: that change is
       // what its subscription is about.
-      if (isRelevant(entry, state.revision)) listener();
+      if (isRelevant(run, state.revision)) listener();
     }
   };
 
-  /** Retry a failed entry rather than leaving it stuck until the next change. */
-  const retry = <T>(entry: CacheEntry<T>): void => {
-    if (entry.error !== null && entry.data === undefined && !entry.running) hydrate(entry);
+  /** Retry a failed result rather than leaving it stuck until the next change. */
+  const retry = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+    const result = resultOf(writer);
+    if (result.error !== null && result.data === undefined && !run.running) {
+      hydrate(writer, run);
+    }
   };
 
   /**
@@ -354,55 +285,73 @@ export const createQueryCache = (
    * starts, so a change that lands while the promise is pending is detected by
    * comparing it with the replica's revision after the result applies.
    */
-  const execute = <T>(entry: CacheEntry<T>, revision: Revision): void => {
-    const hadData = entry.data !== undefined;
-    const hadError = entry.error !== null;
-    const startedStale = entry.snapshot.status === "stale";
+  const execute = <T>(
+    writer: SubscriptionWriter<QueryResult<T>>,
+    run: QueryRun<T>,
+    revision: Revision,
+  ): void => {
+    const before = resultOf(writer);
+    const hadData = before.data !== undefined;
+    const hadError = before.error !== null;
+    const startedStale = before.status === "stale";
     let publishedStale = false;
     // The registry dispatches the batch through this entry, so the cursor is
     // already at the batch revision. The visible result is still the one
-    // produced at `entry.revision`, and recording that lag keeps the status
-    // `stale` until `settle` advances the cursor to the revision it produced.
-    if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
-    entry.running = true;
-    refresh(entry);
+    // produced at `run.at`, and holding that lag keeps the status `stale` until
+    // `settle` advances the cursor to the revision it produced.
+    if (run.at !== null) writer.seek(run.at);
+    run.running = true;
+    refresh(writer, run);
 
     const settle = (data: readonly T[]): void => {
-      entry.running = false;
-      const changed = !hadData || !sameRows(entry.data ?? [], data);
+      run.running = false;
+      const current = resultOf(writer);
+      const changed = !hadData || !sameRows(current.data ?? [], data);
       // Keep the previous array on an equal re-run so the snapshot's data
       // reference — and therefore `useSyncExternalStore`'s read — is stable.
-      if (changed) entry.data = data;
-      entry.error = null;
-      entry.revision = revision;
-      syncLive(entry);
-      refresh(entry);
+      if (changed || current.error !== null) {
+        writer.publish({
+          data: changed ? data : current.data,
+          status: current.status,
+          loading: current.loading,
+          error: null,
+        });
+      }
+      run.at = revision;
+      sync(writer, run);
+      refresh(writer, run);
       // A view that saw `stale` must see the settle even when the rows are
       // equal, or it would stay stale.
-      if (!hadData) notifyInitial(entry);
-      else if (changed || hadError || startedStale || publishedStale) notifyAll(entry);
+      if (!hadData) notifyInitial(writer, run);
+      else if (changed || hadError || startedStale || publishedStale) notifyAll(run);
       // A change that landed while this run was in flight was not reconciled
       // (a running entry is left alone), so settle from the current revision
       // before standing down.
-      if (replica.revision !== revision) reconcile(entry, replica.revision);
+      if (replica.revision !== revision) reconcile(writer, run, replica.revision);
     };
 
     const fail = (thrown: unknown): void => {
-      entry.running = false;
+      run.running = false;
+      const current = resultOf(writer);
       const error = toError(thrown);
-      const changed = entry.error?.message !== error.message;
-      entry.error = error;
-      refresh(entry);
+      const changed = current.error?.message !== error.message;
+      writer.publish({
+        data: current.data,
+        status: current.status,
+        loading: current.loading,
+        error,
+      });
+      refresh(writer, run);
       if (changed || startedStale || publishedStale) {
-        if (hadData) notifyAll(entry);
-        else notifyInitial(entry);
+        if (hadData) notifyAll(run);
+        else notifyInitial(writer, run);
       }
-      if (replica.revision !== revision) reconcile(entry, replica.revision);
+      if (replica.revision !== revision) reconcile(writer, run, replica.revision);
     };
 
     let result: readonly T[] | Promise<readonly T[]>;
     try {
-      result = entry.source.execute();
+      result = run.source.execute();
     } catch (thrown) {
       fail(thrown);
       return;
@@ -414,10 +363,10 @@ export const createQueryCache = (
       // async signature) flips to `current` first, so an equal re-run stays
       // silent; a slow refresh lets a mounted view show the usable result.
       queueMicrotask(() => {
-        const stillStale = entry.snapshot.status === "stale";
-        if (!entry.running || !hadData || startedStale || !stillStale) return;
+        const stillStale = resultOf(writer).status === "stale";
+        if (!run.running || !hadData || startedStale || !stillStale) return;
         publishedStale = true;
-        notifyAll(entry);
+        notifyAll(run);
       });
       return;
     }
@@ -425,26 +374,31 @@ export const createQueryCache = (
   };
 
   /** Bring a never-run entry up to date, then run it. */
-  const hydrate = <T>(entry: CacheEntry<T>): void => {
-    if (entry.running) return;
-    if (entry.source.isReady()) {
-      execute(entry, replica.revision);
+  const hydrate = <T>(writer: SubscriptionWriter<QueryResult<T>>, run: QueryRun<T>): void => {
+    if (run.running) return;
+    if (run.source.isReady()) {
+      execute(writer, run, replica.revision);
       return;
     }
-    entry.running = true;
+    run.running = true;
     const failed = (thrown: unknown): void => {
-      entry.running = false;
-      const error = toError(thrown);
-      entry.error = error;
-      refresh(entry);
-      notifyInitial(entry);
+      run.running = false;
+      const current = resultOf(writer);
+      writer.publish({
+        data: current.data,
+        status: current.status,
+        loading: current.loading,
+        error: toError(thrown),
+      });
+      refresh(writer, run);
+      notifyInitial(writer, run);
     };
     try {
-      const settled = entry.source.ready();
+      const settled = run.source.ready();
       if (settled instanceof Promise) {
         settled.then(() => {
-          entry.running = false;
-          execute(entry, replica.revision);
+          run.running = false;
+          execute(writer, run, replica.revision);
         }, failed);
         return;
       }
@@ -454,129 +408,127 @@ export const createQueryCache = (
       failed(thrown);
       return;
     }
-    entry.running = false;
-    execute(entry, replica.revision);
+    run.running = false;
+    execute(writer, run, replica.revision);
   };
 
   /**
    * Reconcile one entry against a revision. A journal gap (an empty change
    * list on an advanced revision) means the replica was replaced wholesale, so
    * every entry re-runs.
+   *
+   * An inactive result is not refreshed in the background: a relevant change
+   * holds its cursor back so a remount sees `stale`, and the re-run happens
+   * when someone is listening. Its TTL ends it otherwise.
    */
-  const reconcile = <T>(entry: CacheEntry<T>, revision: Revision): void => {
-    if (entry.running) {
+  const reconcile = <T>(
+    writer: SubscriptionWriter<QueryResult<T>>,
+    run: QueryRun<T>,
+    revision: Revision,
+  ): void => {
+    if (run.running) {
       // The run in flight will settle against the current revision; until then
-      // the entry's result reflects the revision it started from.
-      if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
+      // the result reflects the revision it started from.
+      if (run.at !== null) writer.seek(run.at);
       return;
     }
-    if (entry.data === undefined) {
-      if (entry.refs === 0) return;
-      if (entry.error !== null && isRelevant(entry, entry.revision ?? 0)) retry(entry);
+    const result = resultOf(writer);
+    if (result.data === undefined) {
+      if (run.listeners.size === 0) return;
+      if (result.error !== null && isRelevant(run, run.at ?? 0)) retry(writer, run);
       return;
     }
-    if (entry.revision === revision) return;
-    // An entry with no subscribers is not refreshed in the background: it
-    // stays `stale` (or `failed`) so a remount reads the cached result and
-    // the re-run happens when someone is actually listening. The inactive
-    // TTL evicts it.
-    if (entry.refs === 0) {
-      refresh(entry);
+    if (run.at === revision) return;
+    if (run.listeners.size === 0) {
+      if (run.at !== null) writer.seek(run.at);
+      refresh(writer, run);
       return;
     }
-    if (entry.revision !== null && !isRelevant(entry, entry.revision)) {
-      entry.revision = revision;
-      entry.live?.subscription.seek(revision);
-      refresh(entry);
+    if (run.at !== null && !isRelevant(run, run.at)) {
+      run.at = revision;
+      writer.seek(revision);
+      refresh(writer, run);
       return;
     }
-    execute(entry, revision);
+    execute(writer, run, revision);
   };
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
       const key = queryCacheKey(surface, query);
-      let entry = entries.get(key);
-      if (entry === undefined) {
-        // A collection result keeps ids, a projected row keeps the whole shape;
-        // only the latter needs the source and joined models read whole.
-        const readNames =
-          surface === "rows" ? selectionReadComponents(query) : planQuery(query).readComponents;
-        const sources = structuralReads(query).rows;
-        const created: CacheEntry<unknown> = {
-          key,
-          surface,
-          query,
-          readNames,
-          sources,
-          reads: compileReadComponents(readNames, sources),
-          // SAFETY: the entry erases the result type; `watch` restores it at
-          // the store boundary, and every key maps to one surface's shape.
-          source: source as QuerySource<unknown>,
-          data: undefined,
-          error: null,
-          revision: null,
-          snapshot: initialSnapshot(),
-          listeners: new Map(),
-          refs: 0,
-          evictTimer: null,
-          running: false,
-          live: null,
-        };
-        entries.set(key, created);
-        entry = created;
-      }
-      const settled: CacheEntry<unknown> = entry;
+      // A collection result keeps ids, a projected row keeps the whole shape;
+      // only the latter needs the source and joined models read whole.
+      const readNames =
+        surface === "rows" ? selectionReadComponents(query) : planQuery(query).readComponents;
+      const sources = structuralReads(query).rows;
+      const spec: SubscriptionSpec = { kind: "query", key, reads: readNames, sources };
+
+      const runFor = (): QueryRun<T> => ({
+        surface,
+        query,
+        reads: compileReadComponents(readNames, sources),
+        source,
+        listeners: new Map(),
+        at: null,
+        running: false,
+        attached: false,
+      });
+
+      /** Attach the entry's one change listener, and seed its snapshot. */
+      const attach = (
+        handle: Subscription<QueryResult<T>, QueryRun<T>>,
+        run: QueryRun<T>,
+      ): void => {
+        if (run.attached) return;
+        run.attached = true;
+        if (handle.result === undefined) handle.publish(UNLOADED as QueryResult<T>);
+        handle.onChange((_changes, revision, _unloaded, writer) =>
+          reconcile(writer, run, revision),
+        );
+      };
+
       return {
-        // SAFETY: one key maps to one surface's result shape; the entry
-        // erased it only so the cache can hold heterogeneous results.
-        //
-        // Status is derived from the replica's revision, and an entry with no
-        // subscribers has no dispatch left to refresh it, so reading recomputes
-        // it: a cached result that missed changes reads back `stale`. `refresh`
-        // only replaces the snapshot when a visible field changed and never
-        // notifies, so a read stays a pure observation for the caller.
         getSnapshot: () => {
-          refresh(settled);
-          return settled.snapshot as QueryResult<T>;
+          const entry = subscriptions.peek<QueryResult<T>, QueryRun<T>>("query", key);
+          return entry?.result ?? (UNLOADED as QueryResult<T>);
         },
         subscribe(listener, subscribeOptions) {
-          if (settled.refs === 0) cancelEviction(settled);
-          settled.refs += 1;
-          settled.listeners.set(listener, {
+          const handle = subscriptions.open<QueryResult<T>, QueryRun<T>>(spec, runFor());
+          const run = handle.consumer;
+          attach(handle, run);
+          run.listeners.set(listener, {
             initial: subscribeOptions?.initial ?? true,
             revision: replica.revision,
           });
-          openLive(settled);
           try {
-            if (settled.running) {
+            const result = resultOf(handle);
+            if (run.running) {
               // An in-flight run will settle against the current revision.
-            } else if (settled.data === undefined) {
-              hydrate(settled);
-            } else if (settled.error !== null || settled.revision !== replica.revision) {
+            } else if (result.data === undefined) {
+              hydrate(handle, run);
+            } else if (result.error !== null || handle.cursor !== replica.revision) {
               // A remount sees the cached (possibly stale) result first; the
               // re-run settles in the same tick for a hydrated replica.
-              execute(settled, replica.revision);
+              execute(handle, run, replica.revision);
+            } else {
+              // Nothing relevant landed while the result was inactive, so it is
+              // current at this revision: no read, no re-run.
+              run.at = handle.cursor;
+              refresh(handle, run);
             }
           } catch (thrown) {
             // A listener that throws on the first result, or a source that
             // throws outside its own run, must not leave a claim with no
             // handle left to release it.
-            settled.listeners.delete(listener);
-            settled.refs -= 1;
-            if (settled.refs === 0) {
-              closeLive(settled);
-              scheduleEviction(key, settled);
-            }
+            run.listeners.delete(listener);
+            handle.release();
             throw thrown;
           }
           return () => {
-            if (!settled.listeners.delete(listener)) return;
-            settled.refs -= 1;
-            if (settled.refs === 0) {
-              closeLive(settled);
-              scheduleEviction(key, settled);
-            }
+            if (!run.listeners.delete(listener)) return;
+            // The last release makes the result inactive; the registry keeps it
+            // and its claims for the one residency TTL.
+            handle.release();
           };
         },
       };
@@ -590,7 +542,7 @@ export const createQueryCache = (
  * subscriber, then replays its settled snapshot to later ones.
  */
 export const createLocalQueryStore = <T>(run: () => Promise<readonly T[]>): QueryStore<T> => {
-  let snapshot: QueryResult<T> = initialSnapshot();
+  let snapshot: QueryResult<T> = { ...UNLOADED };
   const listeners = new Set<() => void>();
   let started = false;
   const publish = (next: QueryResult<T>): void => {

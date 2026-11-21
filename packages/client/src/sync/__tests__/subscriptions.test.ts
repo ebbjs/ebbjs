@@ -21,6 +21,7 @@ import { defineComponent, defineModel, defineSchema, e } from "@ebbjs/schema";
 import { createMemoryAdapter } from "@ebbjs/storage/memory";
 import {
   createReplica,
+  DEFAULT_RESIDENCY_TTL_MS,
   REPLICA_RECORD_FORMAT,
   type Replica,
   type Revision,
@@ -59,7 +60,10 @@ const harness = (options: { residencyTtlMs?: number } = {}) => {
     residencyTtlMs: options.residencyTtlMs,
   });
   seed(replica);
-  return { replica, subscriptions: createSubscriptionRegistry(replica), rows };
+  const subscriptions = createSubscriptionRegistry(replica, {
+    residencyTtlMs: options.residencyTtlMs,
+  });
+  return { replica, subscriptions, rows };
 };
 
 /** Create `doc_1` with both components; the lazy one is known, not retained. */
@@ -388,12 +392,158 @@ describe("subscription registry: entries", () => {
     });
     query.depend([{ id: "doc_1", components: [LAZY] }]);
     query.release();
+    // The inactive result's lifetime ends before its claim has to be kept.
+    await waitFor(() => subscriptions.peek("query", "rows:document") === undefined);
     await flushTasks();
 
     expect(query.state).toBe("terminal");
     expect(subscriptions.stats().live).toBe(0);
     expect(replica.stats().leases.leased).toBe(0);
     await waitFor(() => replica.stats().leases.resident === 0);
+  });
+});
+
+describe("subscription registry: inactive query results (#941)", () => {
+  /**
+   * A query result owns the claims it read: releasing its last subscriber makes
+   * the result inactive, not gone. The result and its claims live one
+   * residency TTL, then both end together, so the result is the only owner
+   * answering "how long does an unwatched read stay warm".
+   */
+  it("keeps a released result and its claims for one residency TTL, then ends both", async () => {
+    const { replica, subscriptions } = harness({ residencyTtlMs: 20 });
+    await replica.read("doc_1", [LAZY]);
+    const query = subscriptions.open({
+      kind: "query",
+      key: "rows:document",
+      reads: ["document/*"],
+    });
+    query.depend([{ id: "doc_1", components: [LAZY] }]);
+    await flushTasks();
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+    query.release();
+
+    // The result still owns the claim, so a remount cannot lose the value.
+    expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 1 });
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+    // A remount inside the TTL takes the entry back, with its claims intact.
+    const remount = subscriptions.open({
+      kind: "query",
+      key: "rows:document",
+      reads: ["document/*"],
+    });
+    expect(remount.state).toBe("live");
+    expect(remount.refs).toBe(1);
+    expect(subscriptions.entries()).toHaveLength(1);
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+    // The TTL ends the result; only then do its claims go inactive.
+    remount.release();
+    await waitFor(() => subscriptions.peek("query", "rows:document") === undefined);
+    expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 0 });
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
+  });
+
+  it("defaults the inactive lifetime to the one residency TTL", () => {
+    vi.useFakeTimers();
+    try {
+      const { subscriptions } = harness();
+      subscriptions.open({ kind: "query", key: "titles", reads: ["document/title"] }).release();
+      expect(subscriptions.stats().inactive).toBe(1);
+
+      vi.advanceTimersByTime(DEFAULT_RESIDENCY_TTL_MS - 1);
+      expect(subscriptions.peek("query", "titles")).toBeDefined();
+
+      vi.advanceTimersByTime(1);
+      expect(subscriptions.peek("query", "titles")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reuses the consumer state an entry already carries", () => {
+    const { subscriptions } = harness();
+    const consumer = { runs: 0 };
+    const first = subscriptions.open({ kind: "query", key: "titles", reads: [] }, consumer);
+    const second = subscriptions.open({ kind: "query", key: "titles", reads: [] }, { runs: 99 });
+
+    expect(first.consumer).toBe(consumer);
+    expect(second.consumer).toBe(consumer);
+    expect(subscriptions.peek("query", "titles")?.consumer).toBe(consumer);
+  });
+
+  it("cancels the inactive lifetime when a result is remounted", async () => {
+    vi.useFakeTimers();
+    try {
+      const { subscriptions } = harness();
+      const first = subscriptions.open({ kind: "query", key: "titles", reads: [] });
+      first.release();
+
+      vi.advanceTimersByTime(DEFAULT_RESIDENCY_TTL_MS - 1);
+      const remount = subscriptions.open({ kind: "query", key: "titles", reads: [] });
+      vi.advanceTimersByTime(DEFAULT_RESIDENCY_TTL_MS * 10);
+
+      // The timer armed for the inactive period cannot end a live result.
+      expect(remount.state).toBe("live");
+      expect(subscriptions.peek("query", "titles")).toBeDefined();
+      remount.release();
+      vi.advanceTimersByTime(DEFAULT_RESIDENCY_TTL_MS);
+      expect(subscriptions.peek("query", "titles")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * `residencyTtlMs: 0` is the one disable switch, and it covers the query
+   * result exactly as it covers the values the result claims: no expiry, no
+   * timer. The session ends it, not the clock, which is why a result disabled
+   * this way keeps its claims until `close()`.
+   */
+  it("disables the inactive lifetime when residencyTtlMs is 0", async () => {
+    vi.useFakeTimers();
+    try {
+      const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+      await replica.read("doc_1", [LAZY]);
+      const query = subscriptions.open({
+        kind: "query",
+        key: "rows:document",
+        reads: ["document/*"],
+      });
+      query.depend([{ id: "doc_1", components: [LAZY] }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+      query.release();
+      expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 1 });
+      // The result still owns the claim while inactive, so the value cannot
+      // leave the replica behind it.
+      expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+      // No timer was armed, so no amount of time ends it.
+      await vi.advanceTimersByTimeAsync(DEFAULT_RESIDENCY_TTL_MS * 10);
+      expect(subscriptions.peek("query", "rows:document")).toBeDefined();
+      expect(replica.stats().leases.leased).toBe(1);
+
+      // Still claimable: a remount takes the same entry, and its claims, back.
+      const remount = subscriptions.open({
+        kind: "query",
+        key: "rows:document",
+        reads: ["document/*"],
+      });
+      expect(remount.state).toBe("live");
+      expect(subscriptions.entries()).toHaveLength(1);
+
+      // `close()` is what ends it, releasing the claims it owned.
+      subscriptions.close();
+      expect(remount.state).toBe("terminal");
+      expect(subscriptions.peek("query", "rows:document")).toBeUndefined();
+      expect(replica.stats().leases.leased).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -689,5 +839,41 @@ describe("subscription registry at the client seam", () => {
 
     off();
     expect(client.replicaStats.leases).toMatchObject({ leased: 0, inactive: 1 });
+  });
+
+  it("uses one residency TTL for a query result and the claims it owns", async () => {
+    const client = mkClient({ residencyTtlMs: 20 });
+    await callApplyAction(client, put(1, "todo_1", "todo", { title: "Ship" }), "grp_1");
+
+    const store = client.todo.query().result();
+    const off = store.subscribe(() => {});
+    await waitFor(() => store.getSnapshot().status === "current");
+    off();
+    // The released result is not gone: it is inactive and owns its claim.
+    expect(client.subscriptions.stats()).toMatchObject({ live: 0, inactive: 1 });
+
+    // A remount inside the TTL takes the same result back without a run.
+    const remount = client.todo.query().result();
+    expect(remount.getSnapshot()).toMatchObject({ status: "current", loading: false });
+    const offRemount = remount.subscribe(() => {});
+    await flushTasks();
+    expect(client.subscriptions.stats()).toMatchObject({ live: 1, inactive: 0 });
+
+    // A relevant change marks the inactive result stale instead of running it.
+    offRemount();
+    await callApplyAction(client, put(2, "todo_1", "todo", { title: "Renamed" }), "grp_1");
+    expect(remount.getSnapshot().status).toBe("stale");
+    const remountAgain = client.todo.query().result();
+    const offAgain = remountAgain.subscribe(() => {});
+    await waitFor(() => remountAgain.getSnapshot().status === "current");
+    expect(remountAgain.getSnapshot().data?.[0]).toMatchObject({ title: "Renamed" });
+    offAgain();
+
+    // After the one TTL the result has ended, so a remount starts unloaded.
+    await waitFor(() => client.subscriptions.stats().inactive === 0);
+    expect(client.todo.query().result().getSnapshot()).toMatchObject({
+      data: undefined,
+      status: "unloaded",
+    });
   });
 });
