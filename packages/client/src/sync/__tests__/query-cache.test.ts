@@ -15,7 +15,8 @@ import { createQueryCache, queryKey, type QuerySource } from "../query-cache";
 import { EBB_COMPONENTS } from "@ebbjs/core";
 import { flushTasks, isPlatformModel, linkAction, rowComponents } from "../test-utils";
 import { emptyQuery, type Query } from "../query";
-import { planQuery, rowReadComponentsFor } from "../query-plan";
+import { planQuery } from "../query-plan";
+import { rowReadComponentsFor } from "../selection";
 
 const todoQuery = (): Query => emptyQuery("todo");
 
@@ -508,12 +509,14 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(2);
   });
 
-  it("re-runs a full scan on any component of the model it scans", async () => {
+  it("re-runs a full-scan collection only when the model's row set changes", async () => {
     const replica = createReplica();
     write(replica, "todo_1", "todo", { status: "open", title: "Ship" });
     const cache = createQueryCache(replica);
     const query = emptyQuery("todo");
-    expect(planQuery(query).readComponents).toEqual(["todo/*"]);
+    // A scan with no predicate names no component: its id set depends on the
+    // model's membership, not on any value it carries.
+    expect(planQuery(query).readComponents).toEqual([]);
     const source = sourceWith(() => [row("todo_1")]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});
@@ -521,6 +524,9 @@ describe("query cache: component-granular invalidation", () => {
     expect(source.runs).toBe(1);
 
     write(replica, "todo_1", "todo", { title: "Ship it" });
+    expect(source.runs).toBe(1);
+
+    remove(replica, "todo_1");
     expect(source.runs).toBe(2);
   });
 
@@ -605,7 +611,7 @@ describe("query cache: component-granular invalidation", () => {
       ...emptyQuery("todo"),
       groups: [[{ kind: "membership", anyOf: ["group_1"] }]],
     };
-    expect(planQuery(query).readComponents).toEqual(["todo/*", "ebb/membership"]);
+    expect(planQuery(query).readComponents).toEqual(["ebb/membership"]);
     const source = sourceWith(() => ["todo_1"]);
     const store = cache.watch("collection", query, source);
     store.subscribe(() => {});

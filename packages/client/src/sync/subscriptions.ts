@@ -35,7 +35,8 @@
  *
  * A consumer owns the meaning of its own result: a query entry publishes its
  * snapshot and depends on the rows it projected, a row entry is leased on the
- * components its row carries.
+ * components its read selected — or on every component its row carries when it
+ * selected nothing.
  */
 
 import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
@@ -81,11 +82,21 @@ export type SubscriptionSpec =
       readonly key: string;
       /** Component names read: exact (`todo/title`) or whole-model (`todo/*`). */
       readonly reads: readonly string[];
+      /**
+       * Models whose row set the read observes. A create or delete names no
+       * component, so this is what carries a membership dependency.
+       */
+      readonly sources?: readonly string[];
     }
   | {
       readonly kind: "row";
       /** The row this subscription reads; also the entry's sharing key. */
       readonly row: string;
+      /**
+       * The components the row read selected. Absent claims every resident
+       * component, which is what an unrestricted row read observes.
+       */
+      readonly components?: readonly string[];
     };
 
 /**
@@ -181,10 +192,7 @@ export interface SubscriptionRegistry {
 export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean => {
   if (change.kind === "membership") {
     for (const model of change.models) {
-      if (reads.models.has(model)) return true;
-      for (const component of reads.components) {
-        if (componentModel(component) === model) return true;
-      }
+      if (reads.sources.has(model)) return true;
     }
     return false;
   }
@@ -203,10 +211,18 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
  */
 const MEMBERSHIP_INDEX = "membership";
 
-/** The values a row subscription claims: every component its row carries. */
-const rowDependencies = (replica: Replica, row: string): readonly Dependency[] => {
-  const components = replica.residentComponents(row);
-  return components.length === 0 ? [] : [{ id: row, components }];
+/**
+ * The values a row subscription claims: the components its read selected, or
+ * every component the row carries when it selected nothing.
+ */
+const rowDependencies = (
+  replica: Replica,
+  row: string,
+  selected?: readonly string[],
+): readonly Dependency[] => {
+  const components = selected ?? replica.residentComponents(row);
+  const unique = [...new Set(components)];
+  return unique.length === 0 ? [] : [{ id: row, components: unique }];
 };
 
 /** One dependency per row, with its components deduped. */
@@ -237,13 +253,14 @@ const sameDependencies = (a: readonly Dependency[], b: readonly Dependency[]): b
 const compileReads = (
   declared: readonly string[],
   dependencies: readonly Dependency[],
+  sources: readonly string[],
 ): ReadSet => {
-  if (dependencies.length === 0) return compileReadComponents(declared);
+  if (dependencies.length === 0) return compileReadComponents(declared, sources);
   const components = new Set(declared);
   for (const dependency of dependencies) {
     for (const component of dependency.components) components.add(component);
   }
-  return compileReadComponents([...components]);
+  return compileReadComponents([...components], sources);
 };
 
 /** What the dispatcher indexes for one entry: its reads, or the row it watches. */
@@ -254,7 +271,11 @@ const indexDependencies = (entry: {
 }): SubscriptionDependencies =>
   entry.kind === "row" && entry.row !== null
     ? { rows: [entry.row], indices: [{ index: MEMBERSHIP_INDEX, key: entry.row }] }
-    : { components: [...entry.reads.components], models: [...entry.reads.models] };
+    : {
+        components: [...entry.reads.components],
+        models: [...entry.reads.models],
+        sources: [...entry.reads.sources],
+      };
 
 /** Mutable entry state behind a read-only handle. */
 interface Entry<TResult> {
@@ -265,6 +286,10 @@ interface Entry<TResult> {
   /** The entry's place in the registry map: kind plus sharing key. */
   readonly mapKey: string;
   readonly declaredReads: readonly string[];
+  /** Models whose row set a query read observes; empty for a row read. */
+  readonly declaredSources: readonly string[];
+  /** The components a row read selected; absent claims every resident one. */
+  readonly rowComponents: readonly string[] | undefined;
   readonly listeners: Set<ChangeListener>;
   reads: ReadSet;
   /** The revision this entry's consumer has processed. */
@@ -306,6 +331,9 @@ const sharingKey = (spec: SubscriptionSpec): string =>
 
 const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
   spec.kind === "query" ? spec.reads : [];
+
+const declaredSources = (spec: SubscriptionSpec): readonly string[] =>
+  spec.kind === "query" ? (spec.sources ?? []) : [];
 
 /**
  * Build the registry over a live replica. Every live query and row subscription
@@ -368,7 +396,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     const next = mergeComponents(dependencies);
     if (sameDependencies(entry.dependencies, next)) return;
     entry.dependencies = next;
-    entry.reads = compileReads(entry.declaredReads, next);
+    entry.reads = compileReads(entry.declaredReads, next, entry.declaredSources);
     entry.generation += 1;
     // A query entry is indexed by the components it reads, so a claim that
     // added components re-indexes it in the same step. A row entry's record
@@ -440,7 +468,10 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
       if (entry.kind === "row" && entry.row !== null) {
         // The row's resident components move with the change, and a row that
         // left the replica has nothing left to hold.
-        depend(entry as unknown as Entry<unknown>, rowDependencies(replica, entry.row));
+        depend(
+          entry as unknown as Entry<unknown>,
+          rowDependencies(replica, entry.row, entry.rowComponents),
+        );
       }
     } catch (err) {
       // Dispatch bookkeeping is as load-bearing as a listener here: one entry
@@ -541,8 +572,10 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         row: spec.kind === "row" ? spec.row : null,
         mapKey,
         declaredReads: declaredReads(spec),
+        declaredSources: declaredSources(spec),
+        rowComponents: spec.kind === "row" ? spec.components : undefined,
         listeners: new Set(),
-        reads: compileReadComponents(declaredReads(spec)),
+        reads: compileReadComponents(declaredReads(spec), declaredSources(spec)),
         cursor: replica.revision,
         dispatched: replica.revision,
         stranded: false,
@@ -566,7 +599,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
       entries.set(mapKey, entry);
       dispatcher.add(entry, indexDependencies(entry));
       if (entry.kind === "row" && entry.row !== null) {
-        depend(entry, rowDependencies(replica, entry.row));
+        depend(entry, rowDependencies(replica, entry.row, entry.rowComponents));
       }
       return handle;
     },

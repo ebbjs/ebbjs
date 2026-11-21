@@ -37,7 +37,6 @@ import {
 import { defineRelationship, type RelationshipDef } from "@ebbjs/schema";
 import { defineSchema, type Schema } from "@ebbjs/schema";
 import { createClient } from "../client";
-import { OnDemandQueryError } from "../query-builder";
 import type { SyncClientOptions } from "../types";
 import {
   callApplyAction,
@@ -466,13 +465,6 @@ describe("a row with three on-demand components", () => {
 // ---------------------------------------------------------------------------
 
 describe("querying on-demand types", () => {
-  it("refuses a query whose source type is on demand", () => {
-    const { client } = harness(pageSchema);
-
-    expect(() => client.page_body.query()).toThrow(OnDemandQueryError);
-    expect(() => client.page_body.query()).toThrow(/held-only/);
-  });
-
   it("keeps a held-source query over held rows synchronous", async () => {
     const { client, written } = harness(pageSchema);
     await createPage(client, written, { title: "One", body: "hello" }, 1);

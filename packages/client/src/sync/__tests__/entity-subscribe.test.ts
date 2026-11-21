@@ -2,9 +2,11 @@
  * Tests for `client.<entity>.get(id)` → `row.subscribe(cb)` — the
  * per-entity reactive subscribe (Path C, #161).
  *
- * The callback receives a typed `EntitySnapshot<TFields>` on every
- * materialization of the row. `get(id)` already materialized before
- * the listener attaches, so `subscribe` never fires immediately.
+ * The callback receives a typed `EntityEvent<TFields>`: a `snapshot` on every
+ * materialization of the row, or an `unloaded` when the replica releases the
+ * row or one of the components the read leased. `get(id)` already
+ * materialized before the listener attaches, so `subscribe` never fires
+ * immediately.
  */
 
 import { describe, it, expect as globalExpect } from "vitest";
@@ -113,8 +115,9 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     const seen: { title: string; completed: boolean }[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push({ title: snapshot.title ?? "", completed: snapshot.completed ?? false });
+    const unsub = row.subscribe((event) => {
+      if (event.type !== "snapshot") return;
+      seen.push({ title: event.row.title ?? "", completed: event.row.completed ?? false });
     });
 
     await callApplyAction(client, mkAction(2, "todo_1", "T2", true), "grp_1");
@@ -133,8 +136,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     const seen: unknown[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot);
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") seen.push(event.row);
     });
 
     // An older Action whose field ties on HLC and loses the update_id
@@ -168,8 +171,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     const seen: unknown[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot);
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") seen.push(event.row);
     });
 
     globalExpect(seen).toHaveLength(0);
@@ -182,8 +185,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     const seen: unknown[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot);
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") seen.push(event.row);
     });
 
     await callApplyAction(client, mkAction(2, "todo_other", "Other", false), "grp_1");
@@ -198,8 +201,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "shared_id", "T1", false);
 
     const seen: unknown[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot);
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") seen.push(event.row);
     });
 
     // Same id, different type — the replica now holds a `user` under the
@@ -217,8 +220,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     const seen: string[] = [];
-    const unsub = row.subscribe((snapshot) => {
-      seen.push(snapshot.title ?? "");
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") seen.push(event.row.title ?? "");
     });
 
     await callApplyAction(client, mkAction(2, "todo_1", "T2", false), "grp_1");
@@ -235,8 +238,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     let snapshotShape: TodoSnapshot | null = null;
-    const unsub = row.subscribe((snapshot) => {
-      snapshotShape = snapshot;
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") snapshotShape = event.row as unknown as TodoSnapshot;
     });
 
     await callApplyAction(client, mkAction(2, "todo_1", "T2", true), "grp_1");
@@ -267,8 +270,8 @@ describe("client.<entity>.get(id).subscribe(cb)", () => {
     const row = await seedRow(client, 1, "todo_1", "T1", false);
 
     let deletedHlc: unknown = null;
-    const unsub = row.subscribe((snapshot) => {
-      deletedHlc = snapshot.entity.deleted_hlc;
+    const unsub = row.subscribe((event) => {
+      if (event.type === "snapshot") deletedHlc = event.row.entity.deleted_hlc;
     });
 
     await callApplyAction(client, mkDeleteAction(2, "todo_1"), "grp_1");
