@@ -50,18 +50,37 @@ export interface LeaseTableOptions {
   readonly onExpire?: (key: LeaseKey) => void;
 }
 
-/** Residency counts for leak visibility. */
+/** Residency counts for one component name. */
+export interface ComponentLeaseStats {
+  /** Keys of this component held by at least one live lease. */
+  readonly leased: number;
+  /** Keys of this component released but still inside their grace period. */
+  readonly inactive: number;
+  /** Age of this component's longest-inactive key, or 0 when none is inactive. */
+  readonly oldestInactiveMs: number;
+}
+
+/** Residency counts for leak visibility, overall and per component. */
 export interface LeaseStats {
   /** Keys held by at least one live lease. */
   readonly leased: number;
   /** Keys released but still inside their grace period. */
   readonly inactive: number;
-  /** Keys the table still holds a value for: leased plus inactive. */
+  /**
+   * Keys the table holds: leased plus inactive. The owner forgets a key whose
+   * value is gone, so a key counted here is one the replica is keeping a value
+   * warm for.
+   */
   readonly resident: number;
   /** Armed expiry timers, one per inactive key while expiry is enabled. */
   readonly timers: number;
   /** Age of the longest-inactive key, or 0 when nothing is inactive. */
   readonly oldestInactiveMs: number;
+  /**
+   * The same counts per component name. A key names one component of one
+   * entity, so this is where "who is holding the bodies" is answerable.
+   */
+  readonly byComponent: Readonly<Record<string, ComponentLeaseStats>>;
 }
 
 export interface LeaseTable {
@@ -75,6 +94,14 @@ export interface LeaseTable {
   isResident(key: LeaseKey): boolean;
   /** Live leases on `key`; 0 when it is not resident. */
   refsOf(key: LeaseKey): number;
+  /**
+   * Drop the key outright, including a value waiting out its grace period.
+   * The owner calls this when the value itself is gone — the row it belonged to
+   * left the replica, the read that claimed it installed nothing, or a write
+   * detached the component — so the table stops counting a claim on a value
+   * nobody can read.
+   */
+  forget(key: LeaseKey): void;
   stats(): LeaseStats;
 }
 
@@ -106,6 +133,13 @@ const defaultTimers: LeaseTimers = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
+/** `ComponentLeaseStats` while the one pass over the entries fills it in. */
+interface MutableLeaseCounts {
+  leased: number;
+  inactive: number;
+  oldestInactiveMs: number;
+}
+
 interface LeaseEntry {
   readonly key: LeaseKey;
   refs: number;
@@ -127,11 +161,18 @@ export const createLeaseTable = (options?: LeaseTableOptions): LeaseTable => {
   const now = options?.now ?? Date.now;
   const entries = new Map<string, LeaseEntry>();
 
+  /**
+   * Generation numbers are unique across the table, not per entry: a callback
+   * from a forgotten or replaced claim still carries its own number, so it can
+   * never match the entry that later took its place.
+   */
+  let nextGeneration = 0;
+
   const clearTimer = (entry: LeaseEntry): void => {
     if (entry.timer === null) return;
     timers.clearTimeout(entry.timer);
     entry.timer = null;
-    entry.generation += 1;
+    entry.generation = ++nextGeneration;
   };
 
   const expire = (id: string, generation: number): void => {
@@ -146,6 +187,7 @@ export const createLeaseTable = (options?: LeaseTableOptions): LeaseTable => {
   const goInactive = (id: string, entry: LeaseEntry): void => {
     entry.inactiveSince = now();
     if (!Number.isFinite(residencyTtlMs)) return;
+    entry.generation = ++nextGeneration;
     const generation = entry.generation;
     entry.timer = timers.setTimeout(() => expire(id, generation), residencyTtlMs);
   };
@@ -175,23 +217,46 @@ export const createLeaseTable = (options?: LeaseTableOptions): LeaseTable => {
     let inactive = 0;
     let armed = 0;
     let oldestInactiveMs = 0;
+    const byComponent: Record<string, MutableLeaseCounts> = {};
+    const bucketOf = (component: string): MutableLeaseCounts =>
+      (byComponent[component] ??= { leased: 0, inactive: 0, oldestInactiveMs: 0 });
     for (const entry of entries.values()) {
-      if (entry.refs > 0) leased += 1;
-      else {
+      const bucket = bucketOf(entry.key.component);
+      if (entry.refs > 0) {
+        leased += 1;
+        bucket.leased += 1;
+      } else {
         inactive += 1;
+        bucket.inactive += 1;
         if (entry.inactiveSince !== null) {
-          oldestInactiveMs = Math.max(oldestInactiveMs, at - entry.inactiveSince);
+          const age = at - entry.inactiveSince;
+          oldestInactiveMs = Math.max(oldestInactiveMs, age);
+          bucket.oldestInactiveMs = Math.max(bucket.oldestInactiveMs, age);
         }
       }
       if (entry.timer !== null) armed += 1;
     }
-    return { leased, inactive, resident: entries.size, timers: armed, oldestInactiveMs };
+    return {
+      leased,
+      inactive,
+      resident: entries.size,
+      timers: armed,
+      oldestInactiveMs,
+      byComponent,
+    };
   };
 
   return {
     acquire,
     isResident: (key) => entries.has(keyOf(key)),
     refsOf: (key) => entries.get(keyOf(key))?.refs ?? 0,
+    forget: (key) => {
+      const id = keyOf(key);
+      const entry = entries.get(id);
+      if (entry === undefined) return;
+      clearTimer(entry);
+      entries.delete(id);
+    },
     stats,
   };
 };

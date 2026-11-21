@@ -246,11 +246,12 @@ export interface SyncClientOptions<
    */
   queryTtlMs?: number;
   /**
-   * How long a closed on-demand row stays cached, in ms. Defaults to 30_000.
-   * A non-positive or non-finite value releases it on close; an open row is
-   * never released by the TTL.
+   * How long an on-demand value stays resident after the read that claimed it,
+   * in ms. Defaults to `DEFAULT_RESIDENCY_TTL_MS` (60s). A non-positive or
+   * non-finite value keeps a released value resident indefinitely; a leased
+   * value is never released by the TTL.
    */
-  pinnedTtlMs?: number;
+  residencyTtlMs?: number;
   /**
    * Schema-layer entity registry. When provided, `client.write()` and
    * `client.queryEntities()` validate against it before any network

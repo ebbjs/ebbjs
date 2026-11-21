@@ -1,5 +1,6 @@
 import type { Action, Entity, Update } from "@ebbjs/core";
 
+import type { LeaseStats } from "./leases";
 import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
@@ -28,8 +29,8 @@ export interface ReplicaChange {
 /**
  * Whether the replica retains a component's value. Residency is declared per
  * component (`<model>/<leaf>`), not per row: a note's metadata can be held
- * while its body is loaded only on demand (#802). A row is resident iff any of
- * its components is held, or the row is pinned.
+ * while its body is leased only while a read needs it (#802, #933). A row is
+ * resident iff any of its components is held or claimed by a lease.
  */
 export interface MaterializationPolicy {
   holds(component: string): boolean;
@@ -53,18 +54,18 @@ export interface ReplicaOptions {
    */
   readonly versions?: ComponentVersionPolicy;
   /**
-   * Reads one component from the local stores when `open(id, component)` misses.
-   * The returned row carries the component's value and the row metadata; the
-   * replica installs only what it is asked for. Without it an open stays a
-   * miss.
+   * Reads one component from the local stores when a `read` misses. The
+   * returned row carries the component's value and the row metadata; the
+   * replica installs only what it is asked for. Without it a read stays a miss.
    */
   readonly readComponent?: (id: string, component: string) => Promise<Entity | null>;
   /**
-   * How long a closed on-demand component stays cached before release. Defaults
-   * to {@link DEFAULT_PINNED_TTL_MS}. A non-positive or non-finite value releases
-   * it immediately on close. An open component is never released by the TTL.
+   * How long a component's value stays resident after its last lease is
+   * released. Defaults to {@link DEFAULT_RESIDENCY_TTL_MS}. A non-positive or
+   * non-finite value disables expiry, so a released value stays resident until
+   * a later read claims it. A leased value is never released by the TTL.
    */
-  readonly pinnedTtlMs?: number;
+  readonly residencyTtlMs?: number;
   /**
    * Maximum retained change-journal entries after trimming. Defaults to
    * {@link DEFAULT_JOURNAL_CAPACITY}. A non-positive or non-finite value keeps
@@ -81,18 +82,20 @@ export interface ReplicaStats {
   readonly byModel: Readonly<Record<string, number>>;
   /** Rows retained because at least one of their components is held. */
   readonly held: number;
-  /** Held row count per model; excludes rows resident only through a pin. */
+  /** Held row count per model; excludes rows resident only through a lease. */
   readonly heldByModel: Readonly<Record<string, number>>;
-  /** Resident on-demand components (open or closed and waiting out their TTL). */
-  readonly pinned: number;
-  /** Components present on resident rows: held, pinned, or overlaid. */
+  /**
+   * Lease counts: which `(entity, component)` values are leased, which are
+   * waiting out their grace period, and the age of the longest wait — overall
+   * and per component name.
+   */
+  readonly leases: LeaseStats;
+  /** Components present on resident rows: held, leased, or overlaid. */
   readonly components: number;
   /** Components whose value is in the composed view. */
   readonly residentComponents: number;
   /** Held component count per component name: the retained metadata footprint. */
   readonly heldComponents: Readonly<Record<string, number>>;
-  /** Pinned on-demand component count per component name. */
-  readonly pinnedComponents: Readonly<Record<string, number>>;
   /**
    * Components known to exist on a resident row but whose value is not
    * resident, per component name. A held note with a lazy body reports its body
@@ -108,6 +111,13 @@ export interface ReplicaStats {
   readonly changes: number;
   /** Oldest revision after which `changesSince` is complete. */
   readonly changeFloor: Revision;
+  /**
+   * Rows with at least one cold component read in flight. A read's bookkeeping
+   * lives exactly as long as the read, so this is 0 whenever nothing is being
+   * read — which is what makes a per-read entry the replica forgot to reclaim
+   * visible instead of silent.
+   */
+  readonly readsInFlight: number;
 }
 
 /**
@@ -142,7 +152,7 @@ export interface MembershipQuery {
  *
  * A row may be partial: components the policy does not hold are absent from its
  * fields while the replica still knows they exist (`components()` includes
- * them). Opening a component installs its value and pins it.
+ * them). Reading a component installs its value under a lease.
  */
 export interface Replica {
   readonly revision: Revision;
@@ -172,22 +182,17 @@ export interface Replica {
   /** Whether every component the row carries is held, so it needs no open. */
   isRowHeld(row: Entity): boolean;
   /**
-   * Open one component. Reads it through `readComponent` when it is not
-   * resident, installs its value, and pins it. Idempotent: a resident component
-   * is returned without another read, a concurrent open shares the in-flight
-   * read, and a held component is returned without installing or pinning.
-   * Opening never releases another component: there is no cap. Resolves to the
-   * composed row, or `null` when the read misses.
+   * Read one row for projection: install the named components the policy does
+   * not hold, claiming each for the duration of the read and releasing it
+   * before returning. A released value stays resident for one residency grace
+   * period, so a remount inside it reads nothing, and a leased value is never
+   * released at all. Idempotent and shared: a resident component is not
+   * re-read, a concurrent read of the same component shares the in-flight one,
+   * and a held component is returned as it is. Reading never releases another
+   * component: there is no cap. Resolves to the composed row, or `null` when
+   * the row is not resident and every read misses.
    */
-  open(id: string, component: string): Promise<Entity | null>;
-  /**
-   * Close one pinned component. It stays cached until `pinnedTtlMs` so a
-   * remount reads it back, then its value leaves; with the TTL disabled it
-   * leaves immediately. A no-op for held components.
-   */
-  close(id: string, component: string): void;
-  /** Whether the pin for `(id, component)` is currently open. */
-  isOpen(id: string, component: string): boolean;
+  read(id: string, components: readonly string[]): Promise<Entity | null>;
   /** Whether `component`'s value is in the composed view for `id`. */
   isComponentResident(id: string, component: string): boolean;
   /** Component names whose value is resident for `id`, in field order. */
@@ -252,12 +257,12 @@ export interface Replica {
 
   /**
    * Subscribe to post-change notifications. Fires after every mutating call
-   * (`ingest` / `optimistic` / `discard` / `load` / `evict` / `open` /
-   * `close`) that settles the composed view, so a derived reader can
-   * resynchronise from `revision` and `changesSince`. A no-op write still
-   * fires; readers cheaply ignore an unchanged revision. Re-opening a resident
-   * component installs nothing, so it fires nothing. Returns an unsubscribe
-   * function.
+   * (`ingest` / `optimistic` / `discard` / `load` / `evict` / `read`) and after
+   * a residency expiry, once the composed view has settled, so a derived reader
+   * can resynchronise from `revision` and `changesSince`. A no-op write still
+   * fires; readers cheaply ignore an unchanged revision. A residency move
+   * never advances the revision, so a reader that only tracks the journal sees
+   * nothing for it. Returns an unsubscribe function.
    */
   subscribe(listener: () => void): () => void;
 }

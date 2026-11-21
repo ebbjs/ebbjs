@@ -817,19 +817,19 @@ export function createEntityNamespace<
       }
       await replica.hydrate();
       // Held rows keep their durable read: a conflicted Action's optimistic
-      // overlay stays on the replica until resolution. An on-demand row is
-      // read through `open` so it lands and pins.
+      // overlay stays on the replica until resolution. An on-demand row is read
+      // through the replica, which leases what it installs.
       const entity = await storage.entities.get(id);
       if (entity === null) return null;
       if (replica.replica.isRowHeld(entity)) return buildRow(entity);
       // The store row is the full row; every non-held component it carries is
-      // opened here, including one the replica has never seen and one whose
+      // read here, including one the replica has never seen and one whose
       // current value is only an unacknowledged overlay write.
-      for (const field of Object.keys(entity.data.fields)) {
-        const component = fieldComponent(entity.model, field);
-        if (!replica.replica.isHeld(component)) await replica.replica.open(id, component);
-      }
-      return buildRow(replica.replica.get(id) ?? entity);
+      const read = Object.keys(entity.data.fields)
+        .map((field) => fieldComponent(entity.model, field))
+        .filter((component) => !replica.replica.isHeld(component));
+      const loaded = await replica.replica.read(id, read);
+      return buildRow(loaded ?? replica.replica.get(id) ?? entity);
     },
     subscribe(
       filter: QueryFilter<TFields>,

@@ -94,8 +94,8 @@ import type { ComponentMigrations } from "./migrations";
 
 /**
  * Raised when a chain's source type is materialized on demand. A scan is
- * held-only: reading a body is `get(id)` / `replica.open(id, component)`, not a query
- * over its type. A held source may still join an on-demand target.
+ * held-only: reading a body is `get(id)`, not a query over its type. A held
+ * source may still join an on-demand target.
  */
 export class OnDemandQueryError extends Error {
   /** The on-demand model the refused query scanned. */
@@ -708,10 +708,11 @@ const hasOnDemandJoin = (query: Query, context: QueryContext | undefined): boole
 
 /**
  * Materialize the on-demand rows a plan's joins read. A held target is already
- * resident, so only a cold join loads anything; a failed load rejects the read
- * rather than projecting a hole.
+ * resident, so only a cold join reads anything; a failed read rejects the run
+ * rather than projecting a hole. The read releases its claims before returning,
+ * so the values stay warm for one residency grace period.
  */
-const openJoinedRows = async (
+const readJoinedRows = async (
   rows: readonly Entity[],
   query: Query,
   executor: PlanExecutor,
@@ -720,8 +721,8 @@ const openJoinedRows = async (
   if (context === undefined) return;
   const cold = coldJoins(query, context);
   if (cold.length === 0) return;
-  // Open only the lazy components each cold target declares; a held component
-  // is already there, and opening one it does not carry would be a store miss.
+  // Read only the lazy components each cold target declares; a held component
+  // is already there, and reading one it does not carry would be a store miss.
   const coldComponents = new Map<string, readonly string[]>();
   for (const join of cold) {
     if (coldComponents.has(join.target)) continue;
@@ -733,19 +734,19 @@ const openJoinedRows = async (
         .map((component) => component.name),
     );
   }
-  const opens: Promise<unknown>[] = [];
+  const reads: Promise<unknown>[] = [];
   for (const row of rows) {
     for (const join of cold) {
       const components = coldComponents.get(join.target) ?? [];
       for (const id of joinIds(row, join, executor)) {
-        for (const component of components) opens.push(context.replica.open(id, component));
+        reads.push(context.replica.read(id, components));
       }
     }
   }
-  await Promise.all(opens);
+  await Promise.all(reads);
 };
 
-/** Run the plan, then open the on-demand rows its joins read before projecting. */
+/** Run the plan, then read the on-demand rows its joins need before projecting. */
 const runProjectingPlan = async (
   query: Query,
   loadExecutor: () => Promise<PlanExecutor>,
@@ -753,7 +754,7 @@ const runProjectingPlan = async (
   resolveField: FieldResolver,
 ): Promise<QueryRun> => {
   const run = await runPlan(query, loadExecutor, resolveField);
-  await openJoinedRows(run.rows, query, run.executor, context);
+  await readJoinedRows(run.rows, query, run.executor, context);
   return run;
 };
 

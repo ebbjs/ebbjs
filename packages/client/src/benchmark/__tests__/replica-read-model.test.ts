@@ -63,7 +63,8 @@ const setup = (n: number) => {
   const replica = createReplica({
     materialization: heldMetadata,
     readComponent: store.read,
-    pinnedTtlMs: 0,
+    // Disabled so a read stays warm across the assertions below.
+    residencyTtlMs: 0,
   });
   replica.load(workspace.record);
   const index = createIndexCounter();
@@ -226,7 +227,7 @@ describe("replica read-model workspace", () => {
     }
   });
 
-  it("keeps bodies windowed: not resident, one store read per open", async () => {
+  it("keeps bodies off the held set: one store read cold, none while warm", async () => {
     const { workspace, store, replica } = setup(N);
     const stats = replica.stats();
     expect(stats.heldByModel.page_content).toBeUndefined();
@@ -237,27 +238,25 @@ describe("replica read-model workspace", () => {
     expect(replica.get(body)).toBeUndefined();
 
     store.reset();
-    const opened = await replica.open(body, `${ON_DEMAND_TYPE}/content`);
-    expect(opened?.id).toBe(body);
+    const loaded = await replica.read(body, [`${ON_DEMAND_TYPE}/content`]);
+    expect(loaded?.id).toBe(body);
     expect(store.snapshot()).toEqual({ calls: 1, rows: 1 });
-    const content = opened?.data.fields["content"];
+    const content = loaded?.data.fields["content"];
     expect(content !== undefined && isFieldMap(content) ? Object.keys(content.map).length : 0).toBe(
       3,
     );
 
-    // A second open finds the pinned row: no second read.
-    await replica.open(body, `${ON_DEMAND_TYPE}/content`);
-    expect(store.snapshot().calls).toBe(1);
-
-    // Closed with TTL 0 the row leaves, so the next open reads it again.
-    replica.close(body, `${ON_DEMAND_TYPE}/content`);
-    expect(replica.get(body)).toBeUndefined();
-    await replica.open(body, `${ON_DEMAND_TYPE}/content`);
-    expect(store.snapshot().calls).toBe(2);
-
-    replica.close(body, `${ON_DEMAND_TYPE}/content`);
-    expect(replica.stats().pinned).toBe(0);
-    expect(replica.stats().byModel.page_content).toBeUndefined();
+    // The read released its claim before returning, so the body is resident on
+    // the grace period alone, and a warm re-read reads nothing.
+    store.reset();
+    await replica.read(body, [`${ON_DEMAND_TYPE}/content`]);
+    expect(store.snapshot().calls).toBe(0);
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 1,
+      resident: 1,
+      byComponent: { "page_content/content": { leased: 0, inactive: 1 } },
+    });
   });
 
   it("reads traversals off the replica index, never the store", async () => {

@@ -139,7 +139,7 @@ const issues: readonly IssueRow[] = await client.issue.query().with({ assignee: 
 ### Materialization
 
 An entity type is `held` (the replica materializes every row) or `on-demand`
-(a row materializes only while it is open). Declare it on the definition:
+(a row materializes only while a read leases it). Declare it on the definition:
 
 ```typescript
 const pageContent = defineModel(
@@ -151,21 +151,20 @@ const pageContent = defineModel(
 
 A document entity declared `{ materialization: "on-demand" }` keeps the heavy
 body out of the replica while the page, its relationships, and its memberships
-stay held. Residency is per component: open one with
-`client.replica.open(id, "page_content/content")` and it stays resident — there
-is no cap on how many components a client holds, so opening a second component
-never takes the first away from a screen still reading it.
-`client.replica.close(id, component)` releases it after `pinnedTtlMs` (default
-30 s) so a remount reads it back. A non-positive TTL releases it immediately on
-close, and an open component is never released by the TTL. The persisted replica
-record holds the held components only — a lazy component's existence survives in
+stay held. Residency is per component and owned by leases: a read claims the
+components it installs and releases them before it returns, so the value stays
+warm for `residencyTtlMs` (default 60 s) and a remount inside that reads
+nothing. There is no cap on how many components a client holds, so reading a
+second component never takes the first away from a screen still reading it.
+`client.replica.stats().leases` reports what is leased, what is only waiting out
+its grace period, and for how long, per component. The persisted replica record
+holds the held components only — a lazy component's existence survives in
 `notResident`, its value never does.
 
 A query whose **source** type is on-demand is refused with
 `OnDemandQueryError`, because a scan is held-only. A held source may join an
-on-demand target: `with({ content: true })` opens the joined rows
-asynchronously, and a cached result reads `stale` while the load is in flight
-and `current` once it settles.
+on-demand target: `with({ content: true })` reads the joined rows
+asynchronously before projecting them.
 
 ### Writes — actions
 

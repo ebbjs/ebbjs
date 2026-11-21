@@ -143,7 +143,7 @@ describe("replica map fields over the flip point", () => {
     expect(content !== undefined && isShardedMapField(content)).toBe(true);
   });
 
-  it("adopts a large map read through open", async () => {
+  it("adopts a large map read through the cold-read seam", async () => {
     const row: Entity = {
       id: "doc_1",
       model: "doc",
@@ -159,7 +159,7 @@ describe("replica map fields over the flip point", () => {
       readComponent: async () => row,
     });
 
-    const opened = await replica.open("doc_1", "doc/content");
+    const opened = await replica.read("doc_1", ["doc/content"]);
     const openedContent = contentOf(opened ?? undefined);
     expect(openedContent !== undefined && isShardedMapField(openedContent)).toBe(true);
   });
