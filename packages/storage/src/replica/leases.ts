@@ -66,7 +66,11 @@ export interface LeaseStats {
   readonly leased: number;
   /** Keys released but still inside their grace period. */
   readonly inactive: number;
-  /** Keys the table still holds a value for: leased plus inactive. */
+  /**
+   * Keys the table holds: leased plus inactive. The owner forgets a key whose
+   * value is gone, so a key counted here is one the replica is keeping a value
+   * warm for.
+   */
   readonly resident: number;
   /** Armed expiry timers, one per inactive key while expiry is enabled. */
   readonly timers: number;
@@ -93,8 +97,9 @@ export interface LeaseTable {
   /**
    * Drop the key outright, including a value waiting out its grace period.
    * The owner calls this when the value itself is gone — the row it belonged to
-   * left the replica, or the read that claimed it installed nothing — so the
-   * table stops counting a claim on a value nobody can read.
+   * left the replica, the read that claimed it installed nothing, or a write
+   * detached the component — so the table stops counting a claim on a value
+   * nobody can read.
    */
   forget(key: LeaseKey): void;
   stats(): LeaseStats;

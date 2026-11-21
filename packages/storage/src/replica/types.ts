@@ -111,6 +111,13 @@ export interface ReplicaStats {
   readonly changes: number;
   /** Oldest revision after which `changesSince` is complete. */
   readonly changeFloor: Revision;
+  /**
+   * Rows with at least one cold component read in flight. A read's bookkeeping
+   * lives exactly as long as the read, so this is 0 whenever nothing is being
+   * read — which is what makes a per-read entry the replica forgot to reclaim
+   * visible instead of silent.
+   */
+  readonly readsInFlight: number;
 }
 
 /**

@@ -1255,6 +1255,7 @@ describe("replica: journal capacity (#499)", () => {
       position: 9,
       changes: 0,
       changeFloor: 4,
+      readsInFlight: 0,
       leases: {
         leased: 0,
         inactive: 0,
@@ -1339,6 +1340,7 @@ describe("replica: stats (#499)", () => {
       position: 7,
       changes: 3,
       changeFloor: 0,
+      readsInFlight: 0,
       leases: {
         leased: 0,
         inactive: 0,
@@ -1467,6 +1469,171 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.revision).toBe(revision);
   });
 
+  it("retries the store after a read rejects, and folds the writes that waited", async () => {
+    // `note/title` is held, `note/body` is not: a wedged read must lose neither
+    // the held write that lands behind it nor the next attempt at the body.
+    const stored = entity({
+      id: "note_1",
+      model: "note",
+      data: { fields: { title: leaf("One", "u_title", 10), body: leaf("body", "u_body", 10) } },
+      created_hlc: makeHlc(10),
+      updated_hlc: makeHlc(10),
+      last_gsn: 10,
+    });
+    const reads: string[] = [];
+    let down = true;
+    const replica = createReplica({
+      materialization: { holds: (component) => component === "note/title" },
+      residencyTtlMs: 0,
+      readComponent: async (id, component) => {
+        reads.push(`${id}:${component}`);
+        if (down) throw new Error("store down");
+        return stored;
+      },
+    });
+
+    await expect(replica.read("note_1", ["note/body"])).rejects.toThrow("store down");
+    // A read that installed nothing leaves neither a claim nor bookkeeping.
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+    });
+    expect(replica.stats().readsInFlight).toBe(0);
+
+    ingest(
+      replica,
+      patch({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "note_1",
+        model: "note",
+        gsn: 1,
+        ms: 20,
+        fields: { title: leaf("Renamed", "u_1", 20) },
+      }),
+      1,
+    );
+
+    // The row is not wedged: the held write landed, and the next read asks the
+    // store again instead of replaying the stale rejection.
+    expect(replica.get("note_1")?.data.fields.title).toEqual(leaf("Renamed", "u_1", 20));
+    down = false;
+    const loaded = await replica.read("note_1", ["note/body"]);
+
+    expect(reads).toEqual(["note_1:note/body", "note_1:note/body"]);
+    expect(loaded?.data.fields.body).toEqual(leaf("body", "u_body", 10));
+    expect(loaded?.data.fields.title).toEqual(leaf("Renamed", "u_1", 20));
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1, resident: 1 });
+    expect(replica.stats().readsInFlight).toBe(0);
+  });
+
+  it("retries the store after a read throws synchronously", async () => {
+    const stored = entity({
+      id: "note_1",
+      model: "note",
+      data: { fields: { title: leaf("One", "u_title", 10), body: leaf("body", "u_body", 10) } },
+      created_hlc: makeHlc(10),
+      updated_hlc: makeHlc(10),
+      last_gsn: 10,
+    });
+    const reads: string[] = [];
+    let down = true;
+    const replica = createReplica({
+      materialization: { holds: (component) => component === "note/title" },
+      residencyTtlMs: 0,
+      readComponent: (id, component) => {
+        reads.push(`${id}:${component}`);
+        if (down) throw new Error("sync boom");
+        return Promise.resolve(stored);
+      },
+    });
+
+    await expect(replica.read("note_1", ["note/body"])).rejects.toThrow("sync boom");
+
+    down = false;
+    const loaded = await replica.read("note_1", ["note/body"]);
+
+    expect(reads).toEqual(["note_1:note/body", "note_1:note/body"]);
+    expect(loaded?.data.fields.body).toEqual(leaf("body", "u_body", 10));
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1, resident: 1 });
+    expect(replica.stats().readsInFlight).toBe(0);
+  });
+
+  it("shares one read failure with the readers waiting on it, then retries", async () => {
+    const reads: string[] = [];
+    let down = true;
+    const replica = createReplica({
+      materialization: onDemand,
+      residencyTtlMs: 0,
+      readComponent: async (id) => {
+        reads.push(id);
+        if (down) throw new Error("store down");
+        return documentRow("doc_1");
+      },
+    });
+
+    const [first, second] = await Promise.allSettled([
+      replica.read("doc_1", ["document/text"]),
+      replica.read("doc_1", ["document/text"]),
+    ]);
+    expect(first.status).toBe("rejected");
+    expect(second.status).toBe("rejected");
+    // One store read served both callers.
+    expect(reads).toEqual(["doc_1"]);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, resident: 0 });
+    expect(replica.stats().readsInFlight).toBe(0);
+
+    down = false;
+    expect(await replica.read("doc_1", ["document/text"])).toEqual(documentRow("doc_1"));
+    expect(reads).toEqual(["doc_1", "doc_1"]);
+  });
+
+  it("keeps no per-read bookkeeping once the reads settle", async () => {
+    const rows: Record<string, Entity> = {};
+    for (let i = 1; i <= 50; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
+    const replica = createReplica({
+      materialization: onDemand,
+      residencyTtlMs: 0,
+      readComponent: reader(rows),
+    });
+
+    for (const id of Object.keys(rows)) await replica.read(id, ["document/text"]);
+
+    // The values are warm; the read path kept nothing else. A leftover entry
+    // would show up here as a row with a read it never settled.
+    expect(replica.stats().readsInFlight).toBe(0);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 50, resident: 50 });
+  });
+
+  it("drops the reads in flight on load", async () => {
+    let deliver!: (row: Entity) => void;
+    const replica = createReplica({
+      materialization: onDemand,
+      residencyTtlMs: 0,
+      readComponent: () =>
+        new Promise<Entity>((resolve) => {
+          deliver = resolve;
+        }),
+    });
+
+    const reading = replica.read("doc_1", ["document/text"]);
+    expect(replica.stats().readsInFlight).toBe(1);
+
+    replica.load({
+      format: REPLICA_RECORD_FORMAT,
+      componentVersions: {},
+      position: 0,
+      revision: 5,
+      entities: [entity({ id: "e_9", model: "todo" })],
+    });
+    expect(replica.stats().readsInFlight).toBe(0);
+
+    deliver(documentRow("doc_1"));
+    expect(await reading).toBeNull();
+    expect(replica.get("doc_1")).toBeUndefined();
+  });
+
   it("holds the lease from before the store read until the value is installed", async () => {
     let deliver!: (row: Entity) => void;
     const replica = createReplica({
@@ -1592,6 +1759,15 @@ describe("replica: on-demand residency (#500)", () => {
     // the value the claim kept goes with the component.
     expect(replica.get("doc_1")?.model).toBe("document");
     expect(replica.get("doc_1")?.data.fields.text).toBeUndefined();
+    // The claim has nothing left to keep, so it does not report residency the
+    // composed view does not have.
+    expect(replica.stats().residentComponents).toBe(0);
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      byComponent: {},
+    });
   });
 
   it("keeps folding live updates into a read row", async () => {
@@ -1684,15 +1860,22 @@ describe("replica: on-demand residency (#500)", () => {
     });
   });
 
-  it("evicts a row and its value", async () => {
+  it("evicts a row, its value, and the claim waiting out its grace period", async () => {
     const rows = { doc_1: documentRow("doc_1") };
     const replica = createReplica({ materialization: onDemand, readComponent: reader(rows) });
     await replica.read("doc_1", ["document/text"]);
+    expect(replica.stats().leases).toMatchObject({ inactive: 1, resident: 1 });
 
     replica.evict(["doc_1"]);
 
     expect(replica.get("doc_1")).toBeUndefined();
     expect(replica.stats().residentComponents).toBe(0);
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      byComponent: {},
+    });
   });
 
   it("retains every read row", async () => {

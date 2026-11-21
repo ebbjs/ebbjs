@@ -97,9 +97,17 @@ interface Snapshot {
   readonly components: readonly string[];
 }
 
+/** One cold component read, shared by every caller that asked for it. */
+interface PendingRead {
+  /** Set when the row left the replica, so a late result installs nothing. */
+  cancelled: boolean;
+  /** The read's own outcome, awaited by every coalesced caller. */
+  promise: Promise<void>;
+}
+
 /**
  * Mutable in-place core. `entities` is the durable base (what `toRecord`
- * persists, once pinned components are filtered out), `overlay` composes
+ * persists, once on-demand components are filtered out), `overlay` composes
  * optimistic writes over it, and `effective` caches the composed view for
  * overlaid ids so a read never recomposes.
  *
@@ -111,7 +119,9 @@ interface Snapshot {
  * overrides on top of it. `componentIndex` tracks the composed view's component
  * set alongside the adjacency indices, and is likewise derived rather than
  * persisted. The lease table is keyed `(entity, component)`, so an on-demand
- * component is fetched, evicted and released on its own.
+ * component is fetched, evicted and released on its own, and a claim goes
+ * wherever the value it kept goes: expiry, eviction, a read that installed
+ * nothing, or a write that detached the component.
  */
 export const createReplica = (options?: ReplicaOptions): Replica => {
   const policy = options?.materialization ?? holdAll;
@@ -138,11 +148,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     residencyTtlMs: options?.residencyTtlMs,
     onExpire: (key) => dropResidentValue(key),
   });
-  /** Cold reads in flight, per row then component, shared by concurrent readers. */
-  const inFlightReads = new Map<string, Map<string, Promise<void>>>();
-  /** Cancels a cold read whose row left the replica while it was loading. */
-  const readEpochs = new Map<string, Map<string, number>>();
-  let nextReadEpoch = 0;
+  /**
+   * Cold reads in flight, per row then component, shared by concurrent readers.
+   * An entry lives exactly as long as its read: `settleRead` is the only way
+   * one goes away, and a row's map goes with its last entry.
+   */
+  const inFlightReads = new Map<string, Map<string, PendingRead>>();
   /** Updates that landed for a row while a cold read was in flight. */
   const pendingWrites = new Map<string, OrphanUpdate[]>();
   /**
@@ -230,17 +241,37 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return reads !== undefined && reads.size > 0;
   };
 
+  /** Cancel a row's cold reads: whatever they return must not land. */
   const cancelReadsFor = (id: string): void => {
     const reads = inFlightReads.get(id);
-    if (reads === undefined) {
-      pendingWrites.delete(id);
-      return;
+    if (reads !== undefined) {
+      for (const pending of reads.values()) pending.cancelled = true;
+      inFlightReads.delete(id);
     }
-    let epochs = readEpochs.get(id);
-    if (epochs === undefined) readEpochs.set(id, (epochs = new Map()));
-    for (const component of reads.keys()) epochs.set(component, ++nextReadEpoch);
-    inFlightReads.delete(id);
     pendingWrites.delete(id);
+  };
+
+  /**
+   * Drop one read's bookkeeping, whatever it returned. Identity-guarded, so a
+   * read that settles after its row was dropped cannot delete its successor.
+   */
+  const settleRead = (id: string, component: string, pending: PendingRead): void => {
+    const reads = inFlightReads.get(id);
+    if (reads === undefined || reads.get(component) !== pending) return;
+    reads.delete(component);
+    if (reads.size === 0) inFlightReads.delete(id);
+  };
+
+  /**
+   * Fold the writes that waited behind a read that installed nothing, rather
+   * than leaving them for a read that may never come.
+   */
+  const replayBufferedWrites = (id: string): void => {
+    const buffered = pendingWrites.get(id);
+    if (buffered === undefined) return;
+    pendingWrites.delete(id);
+    for (const entry of buffered)
+      applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
   };
 
   /** Drop every read in flight, so no result lands in a replaced view. */
@@ -374,7 +405,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     if (stamps.size === 0) componentVersions.delete(id);
   };
 
-  const applyBaseUpdate = (update: Update, gsn: number, hlc: string, position: number): void => {
+  const foldIntoBase = (update: Update, gsn: number, hlc: string, position: number): void => {
     const id = update.subject_id;
     const previous = entities.get(id) ?? null;
 
@@ -455,6 +486,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     entities.set(id, stripped);
     if (previous !== null && previous.model !== stripped.model) removeFromModel(previous.model, id);
     addToModel(stripped.model, id);
+  };
+
+  /**
+   * Fold one Update into the base, then drop the claim a `drop` left dangling:
+   * a claim keeps a value warm, so a component the row no longer carries has
+   * nothing to keep and must not report residency the view does not have. A
+   * live claim stays — it still owns the read that asked for the value.
+   */
+  const applyBaseUpdate = (update: Update, gsn: number, hlc: string, position: number): void => {
+    foldIntoBase(update, gsn, hlc, position);
+    if (update.method !== "drop") return;
+    const id = update.subject_id;
+    const component = update.component;
+    if (isComponentResident(id, component)) return;
+    const key = { entityId: id, component };
+    if (leases.refsOf(key) === 0) leases.forget(key);
   };
 
   /**
@@ -888,6 +935,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       position: lastPosition,
       changes: retainedChanges(),
       changeFloor,
+      readsInFlight: inFlightReads.size,
     };
   };
 
@@ -964,6 +1012,38 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return true;
   };
 
+  /** A cold read for one component that nobody else is already running. */
+  const startRead = (
+    reads: Map<string, PendingRead>,
+    id: string,
+    component: string,
+  ): PendingRead => {
+    const pending: PendingRead = { cancelled: false, promise: Promise.resolve() };
+    reads.set(component, pending);
+    pending.promise = (async (): Promise<void> => {
+      try {
+        const loaded = await readOne(id, component).finally(() => {
+          // Out of flight on every path, success or failure: a rejected read
+          // must not poison the component, and it must not leave later writes
+          // buffering behind a read that will never install.
+          settleRead(id, component, pending);
+        });
+        if (pending.cancelled) return;
+        if (loaded === null) {
+          replayBufferedWrites(id);
+          return;
+        }
+        const buffered = pendingWrites.get(id) ?? [];
+        pendingWrites.delete(id);
+        installComponent(id, component, loaded, buffered);
+      } catch (thrown) {
+        replayBufferedWrites(id);
+        throw thrown;
+      }
+    })();
+    return pending;
+  };
+
   /**
    * Materialize one component under a claim. The claim is taken before the
    * store read, so nothing can drop the value between reading and installing
@@ -978,30 +1058,8 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
       if (isComponentResident(id, component)) return;
       let reads = inFlightReads.get(id);
       if (reads === undefined) inFlightReads.set(id, (reads = new Map()));
-      const pending = reads.get(component);
-      if (pending !== undefined) {
-        await pending;
-        return;
-      }
-      let epochs = readEpochs.get(id);
-      if (epochs === undefined) readEpochs.set(id, (epochs = new Map()));
-      const epoch = ++nextReadEpoch;
-      epochs.set(component, epoch);
-      const reading = (async (): Promise<void> => {
-        const loaded = await readOne(id, component);
-        // A row that left the replica while the read was in flight wins: the
-        // component does not reappear behind the caller's back.
-        if (epochs.get(component) !== epoch) return;
-        // Out of flight before the install, or replaying the writes buffered
-        // behind the read would buffer them again.
-        reads.delete(component);
-        if (loaded === null) return;
-        const buffered = pendingWrites.get(id) ?? [];
-        pendingWrites.delete(id);
-        installComponent(id, component, loaded, buffered);
-      })();
-      reads.set(component, reading);
-      await reading;
+      const pending = reads.get(component) ?? startRead(reads, id, component);
+      await pending.promise;
     } finally {
       release();
       // A read that installed nothing leaves no value to keep, so it leaves no
