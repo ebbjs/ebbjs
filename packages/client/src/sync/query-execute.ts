@@ -15,6 +15,7 @@
 
 import {
   componentModel,
+  EBB_COMPONENTS,
   isFieldMap,
   structuralEqual,
   type EbbComponentKind,
@@ -23,8 +24,17 @@ import {
 } from "@ebbjs/core";
 import type { MembershipQuery, Replica, RelationshipQuery } from "@ebbjs/storage/replica";
 
-import type { Plan, PlanPredicate } from "./query-plan";
+import type { Query } from "./query";
+import {
+  compileReadComponents,
+  joinReadComponents,
+  readComponentsFor,
+  type CompiledReadComponents,
+  type Plan,
+  type PlanPredicate,
+} from "./query-plan";
 import { componentRowView } from "./system-row";
+import { recordResultRows } from "./traversal-counter";
 
 /**
  * The read seam a plan executes against: a whole-type scan, a by-id
@@ -45,12 +55,30 @@ export interface PlanExecutor {
 
 /** Read straight off the replica's materialized rows and indices. */
 export const createReplicaExecutor = (replica: Replica): PlanExecutor => ({
-  scan: (type) => replica.iterate(type),
-  get: (id) => replica.get(id),
+  scan: (type) => recordScan(replica.iterate(type)),
+  get: (id) => recordRowRead(replica.get(id)),
   relationships: (query) => replica.relationships(query),
   memberships: (query) => replica.memberships(query),
   components: (component) => replica.components(component),
 });
+
+/**
+ * Count the rows one materialization read, for the benchmark and the patch
+ * acceptance (#942). A scan counts every row it materialized; a by-id read
+ * counts the row it returned. The counter is a propagation cost, not a
+ * diagnostic: an executor built outside a propagating read (a one-shot
+ * terminal, a benchmark probe) records into it all the same, so a reader resets
+ * it around the work it measures.
+ */
+const recordScan = (rows: readonly Entity[]): readonly Entity[] => {
+  recordResultRows(rows.length);
+  return rows;
+};
+
+const recordRowRead = (row: Entity | undefined): Entity | undefined => {
+  if (row !== undefined) recordResultRows(1);
+  return row;
+};
 
 /**
  * Read a platform model through a component's value view: the rows carrying
@@ -63,10 +91,12 @@ export const createComponentViewExecutor = (
 ): PlanExecutor => {
   const view = (row: Entity): Entity | undefined => componentRowView(row, kind) ?? undefined;
   return {
-    scan: (type) => replica.iterate(type).flatMap((row) => view(row) ?? []),
+    scan: (type) => recordScan(replica.iterate(type).flatMap((row) => view(row) ?? [])),
     get: (id) => {
       const row = replica.get(id);
-      return row === undefined ? undefined : view(row);
+      if (row === undefined) return undefined;
+      const visible = view(row);
+      return visible === undefined ? undefined : recordRowRead(visible);
     },
     relationships: (query) => replica.relationships(query),
     memberships: (query) => replica.memberships(query),
@@ -138,7 +168,7 @@ const isNonScalar = (value: unknown): boolean => value !== null && typeof value 
  * on the wire, so a predicate object asks for "this value", never "this
  * reference".
  */
-const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
+export const matchesFieldValue = (field: FieldValue | undefined, expected: unknown): boolean => {
   if (field === undefined) return expected === null;
   if (isFieldMap(field)) return false;
   return expected === null ? field.value === null : structuralEqual(field.value, expected);
@@ -362,3 +392,84 @@ export function executePlan(
   }
   return current();
 }
+
+/**
+ * The shape a change can be patched into (#942). A patch rewrites one row's
+ * projection where it already sits, so it can only reproduce a re-run when the
+ * change cannot move the row: no ordering, no limit, and no join, whose
+ * membership and cardinality a projected value must never stand in for.
+ */
+export interface PatchShape {
+  /** Whether the plan's own shape can be patched at all. */
+  readonly allowed: boolean;
+  /** Components whose change only rewrites a row's projection. */
+  readonly projected: CompiledReadComponents;
+  /**
+   * Components whose change moves the row's place: the plan's predicates and
+   * ordering, a join's target, and membership for the `groupIds` every query
+   * row carries.
+   */
+  readonly keys: CompiledReadComponents;
+}
+
+/**
+ * The components a read projects before predicates widen its read set: the
+ * selection's components, or the source model whole. A value view seeds the one
+ * component it projects.
+ */
+const projectedComponents = (query: Query): readonly string[] =>
+  query.selected !== undefined
+    ? query.selected.components
+    : (query.sourceComponents ?? [`${query.source}/*`]);
+
+/**
+ * Classify a query for patch dispatch. A row read is patchable when it can be
+ * re-projected in place — no order, no limit, no join — and a change is only
+ * patchable when it names a projected component that is not also a key.
+ */
+export const patchShapeOf = (query: Query): PatchShape => {
+  const keys = new Set<string>(readComponentsFor(query));
+  for (const join of query.joins) {
+    for (const component of joinReadComponents(join)) keys.add(component);
+  }
+  // `groupIds` rides on every query row, so a membership write is structural
+  // even when the plan names no membership predicate.
+  keys.add(EBB_COMPONENTS.membership);
+  return {
+    allowed:
+      query.source !== "" &&
+      query.order === null &&
+      query.limit === null &&
+      query.joins.length === 0,
+    projected: compileReadComponents(projectedComponents(query)),
+    keys: compileReadComponents([...keys]),
+  };
+};
+
+/**
+ * Splice freshly projected rows into a cached result. The id set and its order
+ * are the caller's proof that nothing moved, so a row keeps its position; an
+ * unchanged row keeps its reference, and an unchanged result keeps the array,
+ * so a view re-renders only for a visible change.
+ *
+ * `null` means the patch cannot stand in for a run: a row it was handed is not
+ * in the result, so placing it would silently change the result set.
+ */
+export const patchResultRows = <T extends { readonly id: string }>(
+  current: readonly T[],
+  patched: readonly T[],
+): readonly T[] | null => {
+  if (patched.length === 0) return current;
+  const fresh = new Map(patched.map((row) => [row.id, row]));
+  let changed = false;
+  const next = current.map((row) => {
+    const replacement = fresh.get(row.id);
+    if (replacement === undefined) return row;
+    fresh.delete(row.id);
+    if (structuralEqual(replacement, row)) return row;
+    changed = true;
+    return replacement;
+  });
+  if (fresh.size > 0) return null;
+  return changed ? next : current;
+};

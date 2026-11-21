@@ -87,6 +87,7 @@ import {
   createReplicaExecutor,
   createRowsExecutor,
   executePlan,
+  matchesFieldValue,
   type FieldResolver,
   type PlanExecutor,
 } from "./query-execute";
@@ -604,6 +605,62 @@ export function buildLazyQueryBuilder<TFields extends Record<string, TSchema>>(
 }
 
 /**
+ * A patch of one projected page (#942): re-project the rows a change named
+ * against the current replica, or decline when a projection would not be the
+ * re-run it stands in for.
+ *
+ * The ids it returns are spliced into the cached result, so the run's own
+ * shape is already known to be patchable (no order, no limit, no join) and no
+ * change it is handed touches a predicate, an order key, or a join target. What
+ * remains is whether this row is the row a run would project:
+ *
+ * - a row that left the replica, changed model, or no longer satisfies the
+ *   filters is not in the result a re-run would produce;
+ * - a projected value the replica does not hold is an acquisition, which only
+ *   the async run performs (a held component needs no read, so the patch
+ *   projects it exactly as the run would).
+ *
+ * Either way the answer is `null`: the caller re-runs, which owns acquiring,
+ * filtering, and proving the row's place.
+ */
+const patchProjection =
+  (
+    query: Query,
+    context: QueryContext,
+    view: EbbComponentKind | undefined,
+    projectBase: (row: Entity, executor: PlanExecutor, fields: readonly string[] | null) => unknown,
+  ) =>
+  (ids: readonly string[]): readonly unknown[] | null => {
+    const executor = replicaExecutorFor(context, view);
+    const held = projectionComponents(query, context);
+    const fields = selectionProjection(query.selected);
+    const rendered = ids.flatMap((id) => {
+      const row = executor.get(id);
+      if (row === undefined || row.model !== query.source || row.deleted_hlc !== null) return [];
+      if (!matchesEveryFilter(row, query)) return [];
+      const missing = held.some(
+        (component) =>
+          !context.replica.isHeld(component) &&
+          !context.replica.isComponentResident(row.id, component),
+      );
+      if (missing) return [];
+      return [projectBase(row, executor, fields)];
+    });
+    return rendered.length === ids.length ? rendered : null;
+  };
+
+/** Re-apply the plan's field predicates to one row: a patch may narrow, never widen. */
+const matchesEveryFilter = (row: Entity, query: Query): boolean =>
+  query.groups.length === 0 ||
+  query.groups.some((group) =>
+    group.every(
+      (predicate) =>
+        predicate.kind !== "field" ||
+        matchesFieldValue(row.data?.fields?.[predicate.field], predicate.value),
+    ),
+  );
+
+/**
  * Build the chain `client.<entity>.query()` returns: predicates resolve
  * against `context`'s registry and every terminal executes the plan
  * synchronously over the client's replica, hydrated first. A projected
@@ -639,6 +696,8 @@ export function buildReplicaQueryBuilder<
   };
   const asyncRun = (query: Query): Promise<readonly unknown[]> =>
     runProjected(query, replicaExecutor(context, view), context, resolveField, projectBase);
+  const patchRun = (query: Query): ((ids: readonly string[]) => readonly unknown[] | null) =>
+    patchProjection(query, context, view, projectBase);
   // A value view resolves every field to its one platform component.
   const componentFor: ComponentFor =
     context.componentFor ?? ((field) => fieldComponent(source, field));
@@ -651,6 +710,7 @@ export function buildReplicaQueryBuilder<
     componentFor,
     syncRun,
     asyncRun,
+    patchRun,
   );
 }
 
@@ -1000,6 +1060,7 @@ function buildChain<
   componentFor: ComponentFor,
   syncRun?: (query: Query) => readonly unknown[],
   asyncRun?: (query: Query) => Promise<readonly unknown[]>,
+  patchRun?: (query: Query) => (ids: readonly string[]) => readonly unknown[] | null,
 ): QueryBuilder<TFields, TJoins, TJoined, TRow> {
   // Ordering reads the field as projection does, so a defaulted field sorts
   // by its default instead of sorting unset rows elsewhere.
@@ -1018,6 +1079,7 @@ function buildChain<
         )) as readonly JoinedRow<TFields, TJoined, TRow>[];
       });
     }
+    const patch = patchRun?.(query);
     return context.queries.watch<JoinedRow<TFields, TJoined, TRow>>("rows", query, {
       ready: () => context.hydrate(),
       isReady: () => context.hydrated(),
@@ -1030,6 +1092,12 @@ function buildChain<
           ? (asyncRun(query) as Promise<readonly JoinedRow<TFields, TJoined, TRow>[]>)
           : // SAFETY: `syncRun` closes over this chain's shape and joins.
             (syncRun(query) as readonly JoinedRow<TFields, TJoined, TRow>[]),
+      // A change that only rewrites a projected value re-projects these rows
+      // instead of re-running the plan (#942).
+      patch:
+        patch === undefined
+          ? undefined
+          : (ids) => patch(ids) as readonly JoinedRow<TFields, TJoined, TRow>[] | null,
     });
   };
   const make = (query: Query): QueryBuilder<TFields, TJoins, TJoined, TRow> => ({

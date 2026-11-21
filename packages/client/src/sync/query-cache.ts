@@ -48,13 +48,15 @@
  */
 
 import { componentModel, structuralEqual } from "@ebbjs/core";
-import type { Replica, Revision } from "@ebbjs/storage/replica";
+import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
+import { patchResultRows, patchShapeOf, type PatchShape } from "./query-execute";
 import { compileReadComponents, planQuery, type CompiledReadComponents } from "./query-plan";
 import { queryCacheKey, selectionReadComponents, structuralReads } from "./selection";
 import {
   createSubscriptionRegistry,
+  patchableRows,
   touchesReadSet,
   type Dependency,
   type Subscription,
@@ -110,6 +112,19 @@ export interface QuerySource<T> {
   ready(): Promise<void> | void;
   isReady(): boolean;
   execute(): readonly T[] | Promise<readonly T[]>;
+  /**
+   * Re-project `ids` against the current replica for a change that only
+   * rewrites a projected value of a resident row (#942), or `null` when this
+   * source cannot reproduce the run for those rows. Absent means every change
+   * re-runs.
+   *
+   * The cache calls it only for a shape a patch may rewrite (no order, no
+   * limit, no join) and an unsafe batch never reaches it, so an implementation
+   * may assume the rows' place in the result is unchanged. It is the
+   * synchronous run it replaces: a read that would have to install a value
+   * first leaves that to the async re-run and declines.
+   */
+  patch?(ids: readonly string[]): readonly T[] | null;
 }
 
 export interface QueryCache {
@@ -132,6 +147,8 @@ interface QueryRun<T> {
   readonly query: Query;
   /** Component names this result reads, as declared by the query. */
   readonly reads: CompiledReadComponents;
+  /** What a change may rewrite in this result, or re-run (#942). */
+  readonly patchShape: PatchShape;
   readonly source: QuerySource<T>;
   /** Each listener, whether it wants the first run, and the revision it joined at. */
   readonly listeners: Map<() => void, { initial: boolean; revision: Revision }>;
@@ -413,9 +430,72 @@ export const createQueryCache = (
   };
 
   /**
+   * Apply a batch as a patch instead of a re-run (#942): re-project the rows
+   * the batch changed and splice them into the cached result. Returns false
+   * when the batch is not one a patch may apply, so the caller re-runs.
+   *
+   * A patch is the run it replaces. `patchShapeOf` has already ruled out an
+   * order, a limit, and a join, and `patchableRows` a predicate, an order key, a
+   * join target, a structural key, or a membership change, so the changed rows
+   * keep their place and only their projection is rewritten. The id set and its
+   * order survive, and a row whose projection did not change keeps its array
+   * reference, so a view re-renders only for a visible change.
+   */
+  const patch = <T>(
+    writer: SubscriptionWriter<QueryResult<T>>,
+    run: QueryRun<T>,
+    revision: Revision,
+    changes: readonly ReplicaChange[],
+    unloaded: readonly string[],
+  ): boolean => {
+    if (run.surface !== "rows" || run.source.patch === undefined) return false;
+    // A value the entry was holding left the replica: the claims follow the
+    // values, so the re-run recomputes them instead of patching around them.
+    if (unloaded.length > 0) return false;
+    const current = resultOf(writer);
+    const data = current.data;
+    if (data === undefined) return false;
+    const ids = patchableRows(run.reads, run.patchShape, changes);
+    if (ids === null || ids.length === 0) return false;
+    let patched: readonly T[] | null;
+    try {
+      patched = run.source.patch(ids);
+    } catch {
+      // A patch that throws is not a result. The re-run owns reporting a
+      // failure, so a broken patch path degrades to the run it replaced.
+      return false;
+    }
+    if (patched === null) return false;
+    // SAFETY: only a `rows` result patches, and its `T` is a projected row
+    // carrying the id the splice matches on.
+    const next = patchResultRows(
+      data as readonly { readonly id: string }[],
+      patched as readonly { readonly id: string }[],
+    ) as readonly T[] | null;
+    if (next === null) return false;
+    // The id set is unchanged, so the claims a result holds are unchanged too:
+    // only the cursor moves. Recomputing them would walk the whole result, which
+    // is the re-run this replaces.
+    run.at = revision;
+    writer.seek(revision);
+    if (next !== data) {
+      writer.publish({ data: next, status: "current", loading: false, error: null });
+    }
+    refresh(writer, run);
+    if (next !== data || current.error !== null) notifyAll(run);
+    // A change that landed while this batch was being applied was not
+    // reconciled, so settle from the current revision before standing down.
+    if (replica.revision !== revision) reconcile(writer, run, replica.revision);
+    return true;
+  };
+
+  /**
    * Reconcile one entry against a revision. A journal gap (an empty change
    * list on an advanced revision) means the replica was replaced wholesale, so
    * every entry re-runs.
+   *
+   * A batch that only rewrites a projected value is patched in place; anything
+   * that could move matching, ordering, or the row set re-runs (#942).
    *
    * An inactive result is not refreshed in the background: a relevant change
    * holds its cursor back so a remount sees `stale`, and the re-run happens
@@ -425,6 +505,8 @@ export const createQueryCache = (
     writer: SubscriptionWriter<QueryResult<T>>,
     run: QueryRun<T>,
     revision: Revision,
+    changes?: readonly ReplicaChange[],
+    unloaded: readonly string[] = [],
   ): void => {
     if (run.running) {
       // The run in flight will settle against the current revision; until then
@@ -450,6 +532,13 @@ export const createQueryCache = (
       refresh(writer, run);
       return;
     }
+    if (
+      run.at !== null &&
+      changes !== undefined &&
+      patch(writer, run, revision, changes, unloaded)
+    ) {
+      return;
+    }
     execute(writer, run, revision);
   };
 
@@ -467,6 +556,7 @@ export const createQueryCache = (
         surface,
         query,
         reads: compileReadComponents(readNames, sources),
+        patchShape: patchShapeOf(query),
         source,
         listeners: new Map(),
         at: null,
@@ -482,8 +572,8 @@ export const createQueryCache = (
         if (run.attached) return;
         run.attached = true;
         if (handle.result === undefined) handle.publish(UNLOADED as QueryResult<T>);
-        handle.onChange((_changes, revision, _unloaded, writer) =>
-          reconcile(writer, run, revision),
+        handle.onChange((changes, revision, unloaded, writer) =>
+          reconcile(writer, run, revision, changes, unloaded),
         );
       };
 

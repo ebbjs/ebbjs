@@ -62,6 +62,7 @@ import {
   type SubscriptionDependencies,
 } from "./dependency-index";
 import { compileReadComponents, type CompiledReadComponents } from "./query-plan";
+import type { PatchShape } from "./query-execute";
 
 /** Registry-local sequence number; stable for the life of one entry. */
 export type SubscriptionId = number;
@@ -291,6 +292,42 @@ export const touchesReadSet = (reads: ReadSet, change: ReplicaChange): boolean =
     if (reads.models.has(componentModel(component))) return true;
   }
   return false;
+};
+
+/**
+ * The rows a batch lets a result patch in place (#942), or `null` when any
+ * change it makes to `reads` must re-run the query.
+ *
+ * A patch rewrites a row's projection where the row already sits, so it is the
+ * same result as a re-run only when the change cannot move it: a content change
+ * (not a tombstone) to a component the result projects, naming no predicate,
+ * order key, join target, or structural key. A membership change re-runs,
+ * because a row entering, leaving, or refiling can change the set the result is
+ * drawn from. A change the entry does not read is not its concern and does not
+ * block a patch.
+ */
+export const patchableRows = (
+  reads: ReadSet,
+  shape: PatchShape,
+  changes: readonly ReplicaChange[],
+): readonly string[] | null => {
+  if (!shape.allowed) return null;
+  const ids = new Set<string>();
+  for (const change of changes) {
+    if (!touchesReadSet(reads, change)) continue;
+    if (change.kind !== "content" || change.deleted) return null;
+    let patchable = false;
+    for (const component of change.components) {
+      const model = componentModel(component);
+      if (shape.keys.components.has(component) || shape.keys.models.has(model)) return null;
+      if (!shape.projected.components.has(component) && !shape.projected.models.has(model)) {
+        return null;
+      }
+      patchable = true;
+    }
+    if (patchable) ids.add(change.id);
+  }
+  return [...ids];
 };
 
 /**

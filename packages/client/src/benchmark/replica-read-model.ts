@@ -28,11 +28,14 @@ import { createReplica } from "@ebbjs/storage/replica";
 import type { Replica, ReplicaStats } from "@ebbjs/storage/replica";
 import type { ReplicaRecord } from "@ebbjs/storage/types";
 
-import { fieldComponent } from "@ebbjs/core";
+import { fieldComponent, makeHlc } from "@ebbjs/core";
 import { emptyQuery, type Query } from "../sync/query";
-import { createReplicaExecutor, executePlan } from "../sync/query-execute";
+import { createQueryCache, type QuerySource } from "../sync/query-cache";
+import { createReplicaExecutor, executePlan, patchResultRows } from "../sync/query-execute";
 import { planQuery } from "../sync/query-plan";
 import { forwardMany, forwardOne, membershipGroups, reverse } from "../sync/relationship";
+import { createSubscriptionRegistry } from "../sync/subscriptions";
+import { recordResultRows, traversalCounter } from "../sync/traversal-counter";
 import {
   arrayLength,
   createCounterSet,
@@ -596,6 +599,347 @@ if (bodyLeases.leased !== 0) {
 }
 
 // ---------------------------------------------------------------------------
+// 6. Patched result changes (#942)
+// ---------------------------------------------------------------------------
+
+/**
+ * One change workload, measured through the shipped query cache (#942).
+ *
+ * "Rows examined" is `traversalCounter.resultRowsRead`: the shipped counter the
+ * replica executor records into, so a re-run adds every row its plan scan
+ * materialized and a patch adds the rows it re-read by id. A row subscription's
+ * consumer re-reads its one row per change, which is counted the same way.
+ * "Re-runs" and "patches" are this benchmark's own count of the source calls
+ * the cache made, one per change at most.
+ */
+interface ChangeWorkload {
+  readonly label: string;
+  readonly changes: number;
+  readonly runs: number;
+  readonly patches: number;
+  readonly rowsExamined: number;
+  /**
+   * Median time inside the source call a change caused: the plan run
+   * (scan + order + project) or the one-row re-projection. The replica's
+   * write path is measured once and quoted separately, because it costs the
+   * same whether or not a result is watching.
+   */
+  readonly medianReadMs: number;
+}
+
+interface PageResultRow {
+  readonly id: string;
+  readonly title: string;
+}
+
+/** The projection a run and a patch share, so the two cannot drift. */
+const pageResult = (entity: Entity): PageResultRow => ({
+  id: entity.id,
+  title: stringField(entity, "title") ?? "",
+});
+
+/**
+ * A cached rows query over the benchmark replica: the shipped plan and the
+ * shipped executor, so a re-run really does scan the source type and a patch
+ * really does read the changed rows by id. The cache above it is the shipped
+ * patch dispatcher; only the source is local because the benchmark has no
+ * client schema to lower a builder chain through.
+ */
+const countedSource = (query: Query, withPatch = true) => {
+  const plan = planQuery(query);
+  const runs: number[] = [];
+  const patches: number[] = [];
+  const source: QuerySource<PageResultRow> = {
+    ready: (): void => {},
+    isReady: (): boolean => true,
+    execute: (): readonly PageResultRow[] => {
+      const start = performance.now();
+      const rows = executePlan(plan, createReplicaExecutor(replica)).map(pageResult);
+      runs.push(performance.now() - start);
+      return rows;
+    },
+  };
+  // Without the hook the cache re-runs every relevant change: the behaviour a
+  // source that cannot patch keeps, and the "before" this change is measured
+  // against.
+  if (withPatch) {
+    source.patch = (ids: readonly string[]): readonly PageResultRow[] | null => {
+      const start = performance.now();
+      const executor = createReplicaExecutor(replica);
+      const rows = ids.flatMap((id) => {
+        const found = executor.get(id);
+        return found === undefined ? [] : [found];
+      });
+      const projected = rows.length === ids.length ? rows.map(pageResult) : null;
+      patches.push(performance.now() - start);
+      return projected;
+    };
+  }
+  return { source, runs, patches };
+};
+
+/**
+ * Changes are delivered straight into the replica, which is what the sync
+ * stream does: the revision journal is the only thing a cached result reads.
+ */
+let benchPosition = 0;
+
+const deliverPageTitle = (pageIndex: number): void => {
+  benchPosition += 1;
+  replica.ingest(
+    {
+      id: `a_bench_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    [
+      {
+        id: `u_bench_${benchPosition}`,
+        subject_id: pageId(pageIndex),
+        component: "page/title",
+        method: "replace",
+        data: {
+          value: `Renamed ${benchPosition}`,
+          update_id: `u_bench_${benchPosition}`,
+          hlc: makeHlc(benchPosition),
+        },
+      },
+    ],
+    benchPosition,
+  );
+};
+
+const deliverPageUpdatedAt = (pageIndex: number): void => {
+  benchPosition += 1;
+  replica.ingest(
+    {
+      id: `a_bench_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    [
+      {
+        id: `u_bench_${benchPosition}`,
+        subject_id: pageId(pageIndex),
+        component: "page/updated_at",
+        method: "replace",
+        data: {
+          value: UPDATED_AT_BASE + config.n + benchPosition,
+          update_id: `u_bench_${benchPosition}`,
+          hlc: makeHlc(benchPosition),
+        },
+      },
+    ],
+    benchPosition,
+  );
+};
+
+/** A page row entering the model: a membership change, which always re-runs. */
+const deliverNewPage = (pageIndex: number): void => {
+  benchPosition += 1;
+  const id = `page_bench_${pageIndex}`;
+  replica.ingest(
+    {
+      id: `a_bench_${benchPosition}`,
+      actor_id: "bench",
+      hlc: makeHlc(benchPosition),
+      gsn: benchPosition,
+      updates: [],
+    },
+    [
+      {
+        id: `u_bench_${benchPosition}_create`,
+        subject_id: id,
+        model: "page",
+        method: "create",
+        data: null,
+        hlc: makeHlc(benchPosition),
+      },
+      {
+        id: `u_bench_${benchPosition}_title`,
+        subject_id: id,
+        component: "page/title",
+        method: "replace",
+        data: {
+          value: `New ${benchPosition}`,
+          update_id: `u_bench_${benchPosition}`,
+          hlc: makeHlc(benchPosition),
+        },
+      },
+    ],
+    benchPosition,
+  );
+};
+
+/**
+ * Prime one cached result, then time one change at a time and count what the
+ * cache did with it. The priming run is excluded from every counter and from
+ * the timing, so each row is a per-change cost.
+ */
+const measureChanges = (
+  label: string,
+  query: Query,
+  change: (index: number) => void,
+  changes: number,
+  options: { readonly patch?: boolean } = {},
+): ChangeWorkload => {
+  const registry = createSubscriptionRegistry(replica);
+  const cache = createQueryCache(replica, registry);
+  const { source, runs, patches } = countedSource(query, options.patch ?? true);
+  const store = cache.watch("rows", query, source);
+  const detach = store.subscribe(() => {
+    /* the result is read back through the snapshot */
+  });
+  const primed = store.getSnapshot();
+  if (primed.status !== "current" || primed.data === undefined) {
+    throw new Error(`${label}: the priming run did not settle`);
+  }
+  // The priming run is not a change: it is excluded from every counter and
+  // from the timing, so each row is a per-change cost.
+  runs.length = 0;
+  patches.length = 0;
+
+  traversalCounter.reset();
+  for (let index = 0; index < changes; index += 1) change(index);
+  const examined = traversalCounter.resultRowsRead;
+  const settled = store.getSnapshot();
+  if (settled.status !== "current") throw new Error(`${label}: a change left the result stale`);
+
+  detach();
+  registry.close();
+  return {
+    label,
+    changes,
+    runs: runs.length,
+    patches: patches.length,
+    rowsExamined: examined / changes,
+    medianReadMs: median([...runs, ...patches]),
+  };
+};
+
+/**
+ * A row subscription (#942): the consumer re-reads its one row per change, the
+ * same read `namespace.ts`'s `subscribeToEntity` performs.
+ */
+const measureRowSubscription = (changes: number): ChangeWorkload => {
+  const registry = createSubscriptionRegistry(replica);
+  const rowId = pageId(Math.floor(config.n / 2));
+  const subscription = registry.open({ kind: "row", row: rowId });
+  let reads = 0;
+  const readSamples: number[] = [];
+  subscription.onChange(() => {
+    const start = performance.now();
+    const row = replica.get(rowId);
+    readSamples.push(performance.now() - start);
+    if (row === undefined) return;
+    reads += 1;
+    recordResultRows(1);
+  });
+
+  traversalCounter.reset();
+  for (let index = 0; index < changes; index += 1) {
+    deliverPageTitle(Math.floor(config.n / 2));
+  }
+  const examined = traversalCounter.resultRowsRead;
+  subscription.release();
+  registry.close();
+  return {
+    label: "row subscription — projected `title` edit on the subscribed row",
+    changes,
+    runs: 0,
+    patches: reads,
+    rowsExamined: examined / changes,
+    medianReadMs: median(readSamples),
+  };
+};
+
+const CHANGE_ITERATIONS = 200;
+const RE_RUN_ITERATIONS = 20;
+const middlePage = Math.floor(config.n / 2);
+
+log("timing patched and re-run result changes");
+const changeWorkloads: readonly ChangeWorkload[] = [
+  measureChanges(
+    "rows query — projected `title` edit, before #942 (every change re-runs)",
+    emptyQuery("page"),
+    (index) => deliverPageTitle(spreadIndices(config.n, RE_RUN_ITERATIONS)[index] ?? middlePage),
+    RE_RUN_ITERATIONS,
+    { patch: false },
+  ),
+  measureChanges(
+    "rows query — projected `title` edit (patch)",
+    emptyQuery("page"),
+    (index) => deliverPageTitle(spreadIndices(config.n, CHANGE_ITERATIONS)[index] ?? middlePage),
+    CHANGE_ITERATIONS,
+  ),
+  measureChanges(
+    "rows query — a page row enters (membership, re-run)",
+    emptyQuery("page"),
+    deliverNewPage,
+    RE_RUN_ITERATIONS,
+  ),
+  measureChanges(
+    "rows query — predicate `updated_at` edit (re-run)",
+    {
+      ...emptyQuery("page"),
+      groups: [[{ kind: "field", field: "updated_at", value: UPDATED_AT_BASE }]],
+    },
+    deliverPageUpdatedAt,
+    RE_RUN_ITERATIONS,
+  ),
+  measureChanges(
+    "ordered rows query — projected `title` edit (re-run)",
+    { ...emptyQuery("page"), order: { field: "updated_at", direction: "asc" } },
+    (index) => deliverPageTitle(spreadIndices(config.n, RE_RUN_ITERATIONS)[index] ?? middlePage),
+    RE_RUN_ITERATIONS,
+  ),
+  measureRowSubscription(CHANGE_ITERATIONS),
+];
+
+/**
+ * The replica's write path on this fixture: what ingesting one action costs
+ * whether or not a result is watching. It is quoted once because it is not part
+ * of a re-run's or a patch's read cost, but it dominates a change's wall clock.
+ */
+const writePathMs = (() => {
+  const samples: number[] = [];
+  for (let index = 0; index < RE_RUN_ITERATIONS; index += 1) {
+    const start = performance.now();
+    deliverPageTitle(Math.floor(config.n / 2));
+    samples.push(performance.now() - start);
+  }
+  return median(samples);
+})();
+
+/**
+ * What splicing one row into a cached result costs beyond reading it: the
+ * patch keeps the array order by rebuilding the result, which is O(result).
+ */
+const spliceMs = (() => {
+  const registry = createSubscriptionRegistry(replica);
+  const cache = createQueryCache(replica, registry);
+  const { source } = countedSource(emptyQuery("page"));
+  const store = cache.watch("rows", emptyQuery("page"), source);
+  const detach = store.subscribe(() => {});
+  const data = store.getSnapshot().data ?? [];
+  const first = data[0];
+  if (first === undefined) throw new Error("splice measurement: no primed result");
+  const samples: number[] = [];
+  for (let index = 0; index < CHANGE_ITERATIONS; index += 1) {
+    const start = performance.now();
+    patchResultRows(data, [{ ...first, title: `spliced ${index}` }]);
+    samples.push(performance.now() - start);
+  }
+  detach();
+  registry.close();
+  return median(samples);
+})();
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
@@ -899,11 +1243,65 @@ push(
   `| inactive bodies waiting out their grace period | ${grouped(bodyLeases.inactive)} |`,
   `| held bodies (\`heldByModel\`) | ${grouped(stats.heldByModel[ON_DEMAND_TYPE] ?? 0)} |`,
   "",
+);
+
+// 6. Patched result changes
+const rowsPerChange = (workload: ChangeWorkload): string =>
+  Number.isInteger(workload.rowsExamined)
+    ? grouped(workload.rowsExamined)
+    : fixed(workload.rowsExamined, 1);
+const beforeRows = rowsPerChange(changeWorkloads[0]!);
+push(
+  "## 6. Patched result changes (#942)",
+  "",
+  "A cached rows query over the same replica, driven through the shipped",
+  "`createQueryCache` + `createSubscriptionRegistry`: a change that can only rewrite a",
+  "projected value of a resident row is patched into the cached result, and everything",
+  "else re-runs the plan. The source is local only because this benchmark has no client",
+  "schema to lower a builder chain through; its `execute` is the shipped `executePlan`",
+  "over the shipped replica executor, and its `patch` re-reads only the named rows.",
+  "",
+  "**Rows examined** is `traversalCounter.resultRowsRead`, the shipped counter the replica",
+  "executor records into: a re-run adds every row its plan scan materialized, a patch adds",
+  "the rows it re-read by id, and a row subscription adds the one row its consumer re-reads",
+  "(the read `namespace.ts` performs on a change). **Re-runs** and **patches** count the",
+  "source calls the cache made for each change. **Result work** is the median time inside that",
+  "call — the plan's scan, order, and projection for a re-run, the one-row re-projection for a",
+  `patch — over ${grouped(CHANGE_ITERATIONS)} single-row edits or ${grouped(RE_RUN_ITERATIONS)} re-running changes.`,
+  "The replica's own write path is excluded: it costs",
+  `${usPerCall(writePathMs)} per ingested action with or without a result watching.`,
+  "",
+  "| change | re-runs / change | patches / change | rows examined / change | result work (median) |",
+  "| --- | ---: | ---: | ---: | ---: |",
+  ...changeWorkloads.map(
+    (workload) =>
+      `| ${workload.label} | ${fixed(workload.runs / workload.changes, 2)} | ${fixed(
+        workload.patches / workload.changes,
+        2,
+      )} | ${rowsPerChange(workload)} | ${usPerCall(workload.medianReadMs)} |`,
+  ),
+  "",
+  `The same ${grouped(config.n)}-row result answers one projected-value edit two ways: ${beforeRows}`,
+  "rows examined before #942, 1 after it. A membership change, a predicate field, an ordered",
+  "result, and a row subscription all keep their one answer — re-run where the row's place can",
+  "move, patch where it cannot — and the last row shows a row subscription is a one-row read,",
+  "not a query.",
+  "",
+  "The membership workload's result grows by one row per change, so its row count is an average",
+  `over ${grouped(RE_RUN_ITERATIONS)} changes, and the later rows scan the rows it added. The predicate`,
+  `re-run reads the same ${grouped(config.n)}-row type but projects one matching row, so its result`,
+  "work is smaller: the scan is the floor, not the projection.",
+  "",
+  `Splicing the patched row back into the ${grouped(config.n)}-row result adds ${usPerCall(spliceMs)}: a`,
+  "patch keeps the id set and its order, so it rebuilds the result array rather than carrying a",
+  "mutable one. That O(result) copy is the price of the fast path at this size, and it is still",
+  `well under the read it replaces.`,
+  "",
   "---",
   "",
   `_Harness runtime: ${fixed((performance.now() - harnessStart) / 1000, 1)} s from module start ` +
     `(fixture generation, ${HEAP_REPS} heap reps, ${LOAD_REPS} build reps, ${LATENCY_BATCHES} batches ` +
-    `per timed read, one on-demand body sweep)._`,
+    `per timed read, one on-demand body sweep, ${changeWorkloads.length} change workloads)._`,
   "",
 );
 
