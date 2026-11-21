@@ -138,10 +138,11 @@ export interface StructuralReads {
    * Index reads: `relation:<as>/<type>`, `membership`, `exists:<component>`.
    *
    * Exported and tested, but not wired into change dispatch: the query cache
-   * registers only `rows` plus the component read set, and no resolver is
-   * registered for these names. An adjacency, membership, or existence
-   * predicate therefore re-runs on any change to that component anywhere, not
-   * only on the index key it reads (#946).
+   * registers only `rows` plus the component read set, never `indices`. The
+   * dispatcher has a `membership` resolver for row subscriptions, but no query
+   * subscription declares an index dependency, so an adjacency, membership, or
+   * existence predicate re-runs on any change to that component anywhere, not
+   * only on the index key it reads (#961).
    */
   readonly indices: readonly string[];
 }
@@ -150,7 +151,7 @@ export interface StructuralReads {
  * The structural dependencies of a read. A create or delete names no component,
  * so the source model's row set is a dependency in its own right; a predicate
  * or join that reads an index is named for the same reason, although only
- * {@link StructuralReads.rows} reaches the dispatcher today (#946).
+ * {@link StructuralReads.rows} reaches the dispatcher today (#961).
  */
 export const structuralReads = (query: Query): StructuralReads => {
   if (query.source === "") return { rows: [], indices: [] };

@@ -159,8 +159,9 @@ Decisions this fixes:
 
 ## Opening a document
 
-There is no document opener. A document is a store-backed entity, and the
-ordinary namespace reads it:
+There is no document opener. A document is store-backed until it syncs: the
+store serves a body the replica does not hold, and an Action folds one whole
+when it arrives. The ordinary namespace reads it either way:
 
 ```ts
 const row = await client.note_body.get(id, { select: { engine: true, updates: true } });

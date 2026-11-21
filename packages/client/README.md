@@ -183,9 +183,9 @@ A `row.subscribe` event is either a `snapshot` — the row's current projection,
 a tombstone included — or an `unloaded` that names the component the replica
 lost (`component` set) or the row leaving the replica (`component` absent).
 `unloaded` is not routine memory pressure: an active lease is never expired or
-truncated, so it takes a scope eviction or a `load` that replaces the row. A
-read that selected nothing observes the whole row; re-read with
-`get(id, { select })` to re-acquire after an unload.
+truncated, so it takes a scope eviction, a component `drop` write, or a `load`
+that replaces the row. A read that selected nothing observes the whole row;
+re-read with `get(id, { select })` to re-acquire after an unload.
 
 A read that projects a component the replica does not hold is not refused. It
 narrows the ids first — scan, predicates, order, `limit` — and then acquires only
@@ -203,7 +203,7 @@ rows before projecting them.
 
 A cold projection on a page that needs acquisition runs the narrowing plan
 twice: once to learn the page is not fully resident, then again to acquire and
-project it. A large cold projection therefore pays the plan twice (#946).
+project it. A large cold projection therefore pays the plan twice (#962).
 
 A relevant change patches the cached result only when it cannot move the row.
 An unselected `client.<model>.query()` reads `<model>/*`, so the patch rate
@@ -371,9 +371,12 @@ cursor pagination is deferred.
 
 A relationship, membership, or existence predicate re-runs on any change to that
 component anywhere, not only on the index key it reads. The dispatcher registers
-component, model, and row dependencies; the `relation:<as>/<type>`,
-`membership`, and `exists:<component>` reads that `structuralReads().indices`
-names are exported but have no registered resolver yet (#946).
+component, model, and row dependencies, and a `membership` resolver for row
+subscriptions; a query subscription declares no index dependency, so the
+`relation:<as>/<type>`, `membership`, and `exists:<component>` reads that
+`structuralReads().indices` names never reach the dispatcher (#961). A
+membership write anywhere still touches every query subscription, because every
+query row carries `groupIds` (#962).
 
 ## Seeding fixtures
 

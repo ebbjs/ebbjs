@@ -219,8 +219,8 @@ export type PatchValue<T extends TSchema> =
  * error.
  *
  * @internal The async row accessors are not part of the public read
- * surface. Reads go through `client.<entity>.query()` and `useQuery`;
- * the engine keeps `get()` and these accessors for internal callers.
+ * surface. Collection reads go through `client.<entity>.query()` and
+ * `useQuery`; the engine keeps these accessors for internal callers.
  *
  * `TAccessors` defaults to an empty record so erased usages
  * (`EntityWithAccessors<TFields>`) surface only the projected
@@ -347,10 +347,11 @@ export type CollectionSnapshot<TFields extends Record<string, TSchema>> = {
 /**
  * Mount surface for one entity. `query()` returns a fresh
  * QueryBuilder over the entity's projected field map; awaiting it
- * resolves to the typed rows. `get(id)` reads a single row directly
- * via the storage adapter, projects it to the same TypeBox shape,
- * and attaches relationship accessors plus the per-entity
- * `subscribe(cb)` for every declared relationship on the entity.
+ * resolves to the typed rows. `get(id, { select })` is the public
+ * single-row read: the replica serves a row it holds, the entity
+ * store serves one it does not, and the row carries relationship
+ * accessors plus the per-entity `subscribe(cb)` for every declared
+ * relationship on the entity.
  *
  * `subscribe(filter, cb)` registers a reactive listener on the
  * engine's query cache. The callback fires whenever the set of

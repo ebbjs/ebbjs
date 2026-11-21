@@ -7,7 +7,8 @@ This package ships the client plumbing plus the data hooks:
 - `EbbProvider` — context carrying the app's client.
 - `useClient<C>()` — read that client, typed by the _client type_ rather than
   a schema-plus-actions pair, so one generic covers reads and `client.actions`
-  together. Reads go through `useQuery`.
+  together. Collection reads go through `useQuery`; a single row goes through
+  `client.<entity>.get(id, { select })`.
 - `useConnection()` — `useSyncExternalStore` over `client.onStateChange`, returning the `ConnectionState`.
 - `useQuery()` — the reactive read root: build a query through the typed namespaces and subscribe to its cached result.
 - `usePresence()` — the peers observed on one presence channel of one entity, typed from the channel's declared schema when bound with `createEbbHooks`.
@@ -155,8 +156,22 @@ change that leaves the projected rows equal does not re-render.
 
 ## Single rows
 
-There is no single-row hook, and the query grammar has no `id` predicate
-yet. Query the collection and select the row; the result is cached and
+`get(id, { select })` is the single-row read beside `query()`. It takes the
+same selection a query does, and the selection narrows both the projection and
+the components the read leases. It is imperative, so there is no single-row
+hook: call it from an effect and keep the row's `subscribe` alive for as long
+as the component is mounted.
+
+```ts
+const issue = await client.issue.get(issueId, { select: { title: true, status: true } });
+if (issue === null) return missing;
+const off = issue.subscribe((event) => {
+  if (event.type === "snapshot") render(event.row);
+});
+```
+
+The query grammar has no `id` predicate yet, so a row out of a filtered,
+ordered list is still a collection query plus `find`; the cached result is
 reactive, so the selected row follows live changes:
 
 ```tsx
@@ -169,20 +184,20 @@ if (status === "unloaded") return <span>loading…</span>;
 if (issue === undefined) return <span>missing</span>;
 ```
 
-`client.<entity>.get()` and its async relationship accessors are
-internal / undocumented; `useEntity` was removed in #501.
+The row's async relationship accessors and the collection
+`subscribe(filter, cb)` are internal, not public read paths; project a
+relationship with `.with(...)` instead. `useEntity` was removed in #501.
 
 ## Not a query (yet)
 
-- **Windowing / cursor pagination is deferred.** `limit(n)` is the only
-  windowing; there is no cursor, offset, or page-boundary API. Query the
-  collection you can afford to hold and slice it in the component if you
-  must.
-- **On-demand document bodies are not yet a query (#500).** A
-  collaborative-text body is a separate document entity that the replica
-  will materialize when opened, not a row the query grammar returns. Open it
-  through the low-level `client.textDocument(id)` for now.
-- **There is no `id` predicate**, so a single row is a collection query plus
+- **Paging is deferred.** `limit(n)` is the only paging control; there is no
+  cursor, offset, or page-boundary API. Query the collection you can afford to
+  hold and slice it in the component if you must.
+- **Document bodies are not a query (#500).** A collaborative-text body is
+  its own document entity, read when opened rather than scanned, not a row the
+  query grammar returns. Its row is readable with `get(id, { select })`, and
+  `client.textDocument(id)` is still the low-level document API for now.
+- **There is no `id` predicate**, so a row out of a collection is a query plus
   `find`, as above.
 
 ## Presence
