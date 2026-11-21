@@ -222,6 +222,9 @@ describe("replica read-model workspace", () => {
     }
   });
 
+  // #946/#957: bodies reach the replica folded whole in production, so this
+  // fixture's metadata-plus-store split measures the benchmark's shape rather
+  // than shipped residency. Do not read it as the memory a client keeps.
   it("keeps bodies off the loaded set: one store read cold, none while warm", async () => {
     const { workspace, store, replica } = setup(N);
     const stats = replica.stats();

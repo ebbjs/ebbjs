@@ -279,7 +279,11 @@ export const createWorkspace = (config: BenchConfig): Workspace => {
   const bodies = bodyIndices.map((index) => bodyRow(index, content));
 
   // The record is the metadata base; a body is the store's to serve, which is
-  // what makes a body read observable as a store read.
+  // what makes a body read observable as a store read. This split is the
+  // benchmark's footprint fixture, not the shape production produces: a synced
+  // row is resident whole, so a real client keeps its bodies in the replica.
+  // Read the numbers as this fixture's footprint until #946 reworks it; #957
+  // is where reclaiming a folded body is decided.
   const record: ReplicaRecord = {
     format: REPLICA_RECORD_FORMAT,
     componentVersions: {},

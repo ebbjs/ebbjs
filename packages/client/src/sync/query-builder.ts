@@ -694,6 +694,12 @@ export function buildReplicaQueryBuilder<
    * Project the page synchronously when the replica already holds everything
    * it reads. `null` means a component must be acquired first, which only the
    * async run does.
+   *
+   * The check runs the whole narrowing plan, and the async path then runs it
+   * again to acquire and project the same page. That is deliberate for now:
+   * only the narrowed page answers whether a row needs acquisition, so it has
+   * to be planned before the answer exists. A cold read of a large projection
+   * therefore pays the plan twice; #946 owns that cost.
    */
   const syncRun = (query: Query): readonly unknown[] | null => {
     const executor = replicaExecutorFor(context, view);
