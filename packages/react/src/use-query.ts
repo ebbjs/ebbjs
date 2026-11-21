@@ -37,7 +37,11 @@ export interface UseQueryResult<
   readonly data: QueryRows<TFields, TJoined, TRow> | undefined;
   /** `unloaded` / `stale` / `current` / `failed`, from the engine cache. */
   readonly status: QueryStatus;
-  /** True only while no result exists yet (`unloaded`). */
+  /**
+   * True only while no result exists yet (`unloaded`). Derived from
+   * {@link status}, never a residency declaration: it is the first-mount UI
+   * flag, distinct from the component `loading` policy #943 removed.
+   */
   readonly loading: boolean;
   readonly error: Error | null;
 }
@@ -87,6 +91,13 @@ export function useQueryRoot<
  * back as `stale` / `current` rather than restarting. A held result renders
  * synchronously, so there is no loading flash; `failed` is sticky until a run
  * succeeds, and `unloaded` is never rendered as an empty list.
+ *
+ * The subscription is the component's, for as long as it is mounted: the
+ * cached result claims the components it reads, unmounting releases every one
+ * and starts the one residency TTL, and a remount inside that TTL reads neither
+ * the store nor the replica. `useSyncExternalStore` is the whole ownership
+ * path, so React's double-invoked effects, an abandoned concurrent render, and
+ * a render that throws after committing all end on that one release.
  */
 export function useQuery<
   S,

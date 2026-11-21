@@ -8,7 +8,7 @@
  * the residency grace period — when the subscription ends.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   componentName,
   makeHlc,
@@ -874,5 +874,146 @@ describe("subscription registry at the client seam", () => {
       data: undefined,
       status: "unloaded",
     });
+  });
+});
+
+/**
+ * The dev-only lease watchdog (#944). A subscription that never lets go is the
+ * one leak a refcounted, uncapped residency model cannot heal by itself, so the
+ * registry reports two shapes of it instead: a live entry whose claim set has
+ * not moved for the watchdog horizon, and a `close()` that leaves live readers
+ * behind.
+ */
+describe("subscription registry: the lease watchdog (#944)", () => {
+  const HORIZON_MS = 5 * 60_000;
+
+  /** A live row entry over the seeded document, on a registry with a spy sink. */
+  const watched = async (options: { enabled?: boolean } = {}) => {
+    const warn = vi.fn();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: options.enabled ?? true, warn },
+    });
+    const live = subscriptions.open({ kind: "row", row: "doc_1" });
+    return { replica, subscriptions, live, warn };
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("warns once about a live subscription older than the horizon with a fixed claim set", async () => {
+    vi.useFakeTimers();
+    const { warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS - 1);
+    expect(warn).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    // The report names the reader and how long it has been quiet, so a
+    // developer can find the component that owns it.
+    expect(message).toContain("lease watchdog");
+    expect(message).toContain("doc_1");
+    expect(message).toContain(String(HORIZON_MS / 1000));
+  });
+
+  it("does not repeat a warning while the claim set is unchanged", async () => {
+    vi.useFakeTimers();
+    const { warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS * 3);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays quiet for a subscription whose claim set churns", async () => {
+    vi.useFakeTimers();
+    const { live, warn } = await watched();
+
+    // A reader that keeps re-reading is working, not stuck: each change
+    // restarts the quiet period.
+    for (let step = 0; step < 4; step += 1) {
+      vi.advanceTimersByTime(HORIZON_MS - 1);
+      live.depend([{ id: "doc_1", components: step % 2 === 0 ? [LAZY] : ["document/title"] }]);
+    }
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reports a quiet period that starts again after a claim-set change", async () => {
+    vi.useFakeTimers();
+    const { live, warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS + 1);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The change starts a new quiet period, and the next scan past the horizon
+    // reports the new one; the set it already reported is not reported twice.
+    live.depend([{ id: "doc_1", components: [LAZY] }]);
+    vi.advanceTimersByTime(HORIZON_MS + 61_000);
+    expect(warn).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(HORIZON_MS);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not warn about a released subscription or an inactive result", async () => {
+    vi.useFakeTimers();
+    const { subscriptions, live, warn } = await watched();
+
+    live.release();
+    const query = subscriptions.open({
+      kind: "query",
+      key: "rows:document",
+      reads: ["document/*"],
+    });
+    query.release();
+
+    vi.advanceTimersByTime(HORIZON_MS * 2);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns once when it closes with live subscriptions still holding claims", async () => {
+    const warn = vi.fn();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: true, warn },
+    });
+    subscriptions.open({ kind: "row", row: "doc_1" });
+    subscriptions.open({ kind: "query", key: "rows:document", reads: ["document/*"] });
+
+    subscriptions.close();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    expect(message).toContain("close()");
+    expect(message).toContain("2 live subscription");
+    expect(message).toContain("claim");
+
+    // A second teardown is inert, and so is the watchdog after it.
+    subscriptions.close();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("is inert in a production build", async () => {
+    vi.useFakeTimers();
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const { replica } = harness();
+      await replica.read("doc_1", [LAZY]);
+      const warn = vi.fn();
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      subscriptions.open({ kind: "row", row: "doc_1" });
+
+      vi.advanceTimersByTime(HORIZON_MS * 2);
+      expect(warn).not.toHaveBeenCalled();
+
+      subscriptions.close();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
   });
 });
