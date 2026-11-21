@@ -43,6 +43,12 @@
  * components its read selected — or on every component its row carries when it
  * selected nothing. The consumer's private run state rides on the entry too,
  * so there is no second table beside the registry.
+ *
+ * A dev-only watchdog reports the one leak this model cannot heal by itself
+ * (#944): a subscription nothing ever releases. Residency has no cap and no
+ * eviction by size, so a mounted reader whose cleanup never runs holds its
+ * values for the session; the registry says so, in development only, rather
+ * than pinning a body in silence.
  */
 
 import { componentModel, EBB_COMPONENTS, systemValueString } from "@ebbjs/core";
@@ -235,6 +241,40 @@ export interface SubscriptionStats {
   readonly pending: number;
 }
 
+/**
+ * The dev-only lease watchdog (#944).
+ *
+ * A refcounted, uncapped residency model has no pressure valve, so the leak it
+ * cannot heal itself is a subscription that is never released: a mounted reader
+ * whose cleanup never ran holds its values for the life of the client. Two
+ * reports cover it — a live entry whose claim set has not moved for
+ * {@link LeaseWatchdogOptions.staleAfterMs}, and a `close()` that leaves live
+ * readers behind.
+ *
+ * Anti-spam rule: one warning per quiet period. The period runs from the last
+ * claim-set change, and an entry already reported for its current claim set is
+ * never reported again for it. A claim-set change proves the reader is working,
+ * so it starts a new period; nothing re-reports an unchanged set.
+ */
+export interface LeaseWatchdogOptions {
+  /**
+   * Whether the watchdog runs. Defaults to on outside a production build —
+   * `process.env.NODE_ENV === "production"` makes it inert — so a shipped app
+   * pays neither the timer nor the messages and a development one is told. A
+   * bundle that carries no `process` at all counts as production: a diagnostic
+   * must never assume development from an absent flag.
+   */
+  readonly enabled?: boolean;
+  /** How long a claim set must sit unchanged before it is reported. Default 5m. */
+  readonly staleAfterMs?: number;
+  /** How often the registry looks for one. Default 1m, so a report is prompt. */
+  readonly intervalMs?: number;
+  /** Milliseconds clock for the quiet period; defaults to `Date.now`. */
+  readonly now?: () => number;
+  /** Where a report goes; defaults to `console.warn`. */
+  readonly warn?: (message: string) => void;
+}
+
 export interface SubscriptionRegistryOptions {
   /**
    * How long a released query result stays warm: its result, its cursor, and
@@ -245,6 +285,8 @@ export interface SubscriptionRegistryOptions {
    * and its claims until a remount of the same read or `close()`.
    */
   readonly residencyTtlMs?: number;
+  /** The dev-only leak watchdog; `false` turns it off outright. */
+  readonly watchdog?: LeaseWatchdogOptions | false;
 }
 
 export interface SubscriptionRegistry {
@@ -474,6 +516,13 @@ interface Entry<TResult, TConsumer = unknown> {
   generation: number;
   /** Acquisitions in flight, so a leak is visible before it settles. */
   pending: number;
+  /**
+   * When its claim set last moved, on the watchdog's clock; the quiet period
+   * runs from here, so it starts at open and restarts on every change.
+   */
+  claimsSince: number;
+  /** The quiet period already reported, so one claim set warns once. */
+  warnedAt: number | null;
 }
 
 /**
@@ -503,6 +552,40 @@ const declaredReads = (spec: SubscriptionSpec): readonly string[] =>
 const declaredSources = (spec: SubscriptionSpec): readonly string[] =>
   spec.kind === "query" ? (spec.sources ?? []) : [];
 
+/** How long a claim set must sit unchanged before the watchdog reports it. */
+const DEFAULT_WATCHDOG_STALE_MS = 5 * 60_000;
+
+/** How often the watchdog looks, so a report lands within a minute of the horizon. */
+const DEFAULT_WATCHDOG_INTERVAL_MS = 60_000;
+
+/**
+ * A dev-only diagnostic must not run in a production build, and the gate has to
+ * be provably inert there. A bundler folds the whole expression when it defines
+ * `process.env.NODE_ENV`, so this shape — absent `process` first, the flag
+ * second — folds to `false` outright and leaves no `typeof process` behind. The
+ * order is what makes the un-folded form safe too: a browser bundle carries no
+ * `process` at all, so it reads as production rather than as "no flag, so
+ * development".
+ *
+ * `env` is optional because a probe that exists is not a probe that is whole:
+ * some bundlers and test harnesses define a bare `process = {}`, and reading
+ * `env.NODE_ENV` off it would throw a `TypeError` while the client is being
+ * constructed. With the chain a bare shim answers "no flag" and runs the
+ * watchdog as it would in any other development host. The chain is free in a
+ * production build: the bundler still matches the defined member expression.
+ */
+const devWatchdog = (): boolean =>
+  typeof process === "undefined" ? false : process.env?.NODE_ENV !== "production";
+
+/** The watchdog settings an entry's lifecycle is measured against. */
+interface LeaseWatchdog {
+  readonly enabled: boolean;
+  readonly staleAfterMs: number;
+  readonly intervalMs: number;
+  readonly now: () => number;
+  readonly warn: (message: string) => void;
+}
+
 /**
  * Build the registry over a live replica. Every query and row subscription goes
  * through this one table, so this is also the one place that dispatches a
@@ -519,8 +602,61 @@ export const createSubscriptionRegistry = (
 ): SubscriptionRegistry => {
   const entries = new Map<string, Entry<unknown>>();
   const residencyTtlMs = residencyTtlOf(options.residencyTtlMs);
+  // `false` is the off switch, not an empty config: falling through to the
+  // defaults would let the dev gate turn the watchdog back on.
+  const configured = options.watchdog === false ? { enabled: false } : (options.watchdog ?? {});
+  const watchdog: LeaseWatchdog = {
+    enabled: configured.enabled ?? devWatchdog(),
+    staleAfterMs: configured.staleAfterMs ?? DEFAULT_WATCHDOG_STALE_MS,
+    intervalMs: configured.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS,
+    now: configured.now ?? (() => Date.now()),
+    warn: configured.warn ?? ((message: string) => console.warn(message)),
+  };
   let nextId = 0;
   let closed = false;
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+  const disarmWatchdog = (): void => {
+    if (watchdogTimer === null) return;
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  };
+
+  /**
+   * Report every live entry that has held one claim set past the horizon. A
+   * reader holding nothing keeps no memory alive, so it is not reported; a
+   * reader already reported for this claim set is not reported again.
+   */
+  const scanWatchdog = (): void => {
+    if (closed) return;
+    const at = watchdog.now();
+    for (const entry of entries.values()) {
+      if (entry.state !== "live" || entry.refs <= 0) continue;
+      if (entry.warnedAt !== null) continue;
+      const quietMs = at - entry.claimsSince;
+      if (quietMs < watchdog.staleAfterMs) continue;
+      const claims = entry.dependencies.reduce(
+        (count, dependency) => count + dependency.components.length,
+        0,
+      );
+      if (claims === 0) continue;
+      entry.warnedAt = at;
+      watchdog.warn(
+        `[Subscriptions] lease watchdog: ${entry.kind} subscription ${JSON.stringify(entry.key)} ` +
+          `has held the same ${claims} claim(s) for ${Math.round(quietMs / 1000)}s with a live ` +
+          "subscriber. A mounted reader that never releases leaks what it holds — check that " +
+          "its cleanup runs (#944).",
+      );
+    }
+  };
+
+  /** Lazily armed: a registry with no entries runs no timer. */
+  const armWatchdog = (): void => {
+    if (!watchdog.enabled || watchdogTimer !== null || closed) return;
+    const timer = setInterval(scanWatchdog, watchdog.intervalMs);
+    unrefTimer(timer);
+    watchdogTimer = timer;
+  };
 
   const clearRetention = <TResult, TConsumer>(entry: Entry<TResult, TConsumer>): void => {
     entry.retentionGeneration += 1;
@@ -540,6 +676,7 @@ export const createSubscriptionRegistry = (
     entry.listeners.clear();
     entries.delete(entry.mapKey);
     dispatcher.remove(entry as unknown as Entry<unknown>);
+    if (entries.size === 0) disarmWatchdog();
     for (const release of releases) release();
   };
 
@@ -620,6 +757,10 @@ export const createSubscriptionRegistry = (
     const next = mergeComponents(dependencies);
     if (sameDependencies(entry.dependencies, next)) return;
     entry.dependencies = next;
+    // A claim set that moved proves this reader is working: its quiet period
+    // restarts and a report already made for the old set no longer applies.
+    entry.claimsSince = watchdog.now();
+    entry.warnedAt = null;
     entry.reads = compileReads(entry.declaredReads, next, entry.declaredSources);
     entry.generation += 1;
     // A query entry is indexed by the components it reads, so a claim that
@@ -831,6 +972,10 @@ export const createSubscriptionRegistry = (
           clearRetention(existing);
           existing.refs = 1;
           existing.state = "live";
+          // The watchdog measures a mounted reader, so a remount starts a new
+          // quiet period rather than inheriting the release it came out of.
+          existing.claimsSince = watchdog.now();
+          existing.warnedAt = null;
         } else {
           existing.refs += 1;
         }
@@ -862,6 +1007,8 @@ export const createSubscriptionRegistry = (
         releases: [],
         generation: 0,
         pending: 0,
+        claimsSince: watchdog.now(),
+        warnedAt: null,
       };
       // SAFETY: an entry's state is independent of the result type it carries,
       // which the consumer that opened it restores on its own handle.
@@ -874,6 +1021,7 @@ export const createSubscriptionRegistry = (
       }
       entries.set(mapKey, entry);
       dispatcher.add(entry, indexDependencies(entry));
+      armWatchdog();
       if (entry.kind === "row" && entry.row !== null) {
         depend(entry, rowDependencies(replica, entry.row, entry.rowComponents));
       }
@@ -908,8 +1056,29 @@ export const createSubscriptionRegistry = (
     close: () => {
       if (closed) return;
       closed = true;
+      // The last chance to name a reader that outlived its client: teardown
+      // ends every entry, so a live one here is a cleanup that never ran.
+      const live = Array.from(entries.values()).filter(
+        (entry) => entry.state === "live" && entry.refs > 0,
+      );
+      const claims = live.reduce(
+        (count, entry) =>
+          count +
+          entry.dependencies.reduce((held, dependency) => held + dependency.components.length, 0),
+        0,
+      );
+      disarmWatchdog();
       for (const entry of Array.from(entries.values())) endEntry(entry);
       dispatcher.close();
+      // Reported last, from numbers taken first: a sink that throws must not
+      // leave the registry closed while its entries still hold their claims.
+      if (watchdog.enabled && live.length > 0) {
+        watchdog.warn(
+          `[Subscriptions] lease watchdog: close() with ${live.length} live subscription(s) ` +
+            `holding ${claims} claim(s). The client outlived its mounted readers, so their ` +
+            "cleanup will never run (#944).",
+        );
+      }
     },
   };
 };

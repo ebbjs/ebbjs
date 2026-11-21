@@ -8,7 +8,8 @@
  * the residency grace period — when the subscription ends.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   componentName,
   makeHlc,
@@ -28,7 +29,7 @@ import {
 } from "@ebbjs/storage/replica";
 
 import { createClient } from "../client";
-import { createSubscriptionRegistry } from "../subscriptions";
+import { createSubscriptionRegistry, type SubscriptionRegistryOptions } from "../subscriptions";
 import { callApplyAction, flushTasks, platformUpdate, rowComponents, waitFor } from "../test-utils";
 
 /** The heavy component: every other component of the row stays held. */
@@ -51,7 +52,12 @@ const documentRow = (id: string): Entity => ({
   last_gsn: 1,
 });
 
-const harness = (options: { residencyTtlMs?: number } = {}) => {
+const harness = (
+  options: {
+    residencyTtlMs?: number;
+    watchdog?: SubscriptionRegistryOptions["watchdog"];
+  } = {},
+) => {
   const rows: Record<string, Entity> = { doc_1: documentRow("doc_1") };
   const replica = createReplica({
     readComponent: async (id) => rows[id] ?? null,
@@ -60,6 +66,7 @@ const harness = (options: { residencyTtlMs?: number } = {}) => {
   seed(replica);
   const subscriptions = createSubscriptionRegistry(replica, {
     residencyTtlMs: options.residencyTtlMs,
+    watchdog: options.watchdog,
   });
   return { replica, subscriptions, rows };
 };
@@ -503,7 +510,10 @@ describe("subscription registry: inactive query results (#941)", () => {
   it("disables the inactive lifetime when residencyTtlMs is 0", async () => {
     vi.useFakeTimers();
     try {
-      const { replica, subscriptions } = harness({ residencyTtlMs: 0 });
+      // Closing with a live entry is a legal teardown order — a client outliving
+      // its mounted components — and this test is about the TTL, not about what
+      // the watchdog reports for that order. That has its own test below.
+      const { replica, subscriptions } = harness({ residencyTtlMs: 0, watchdog: false });
       await replica.read("doc_1", [LAZY]);
       const query = subscriptions.open({
         kind: "query",
@@ -874,5 +884,326 @@ describe("subscription registry at the client seam", () => {
       data: undefined,
       status: "unloaded",
     });
+  });
+});
+
+/**
+ * The dev-only lease watchdog (#944). A subscription that never lets go is the
+ * one leak a refcounted, uncapped residency model cannot heal by itself, so the
+ * registry reports two shapes of it instead: a live entry whose claim set has
+ * not moved for the watchdog horizon, and a `close()` that leaves live readers
+ * behind.
+ */
+describe("subscription registry: the lease watchdog (#944)", () => {
+  const HORIZON_MS = 5 * 60_000;
+
+  /** A live row entry over the seeded document, on a registry with a spy sink. */
+  const watched = async (options: { enabled?: boolean } = {}) => {
+    const warn = vi.fn();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: options.enabled ?? true, warn },
+    });
+    const live = subscriptions.open({ kind: "row", row: "doc_1" });
+    return { replica, subscriptions, live, warn };
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("warns once about a live subscription older than the horizon with a fixed claim set", async () => {
+    vi.useFakeTimers();
+    const { warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS - 1);
+    expect(warn).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    // The report names the reader and how long it has been quiet, so a
+    // developer can find the component that owns it.
+    expect(message).toContain("lease watchdog");
+    expect(message).toContain("doc_1");
+    expect(message).toContain(String(HORIZON_MS / 1000));
+  });
+
+  it("does not repeat a warning while the claim set is unchanged", async () => {
+    vi.useFakeTimers();
+    const { warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS * 3);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays quiet for a subscription whose claim set churns", async () => {
+    vi.useFakeTimers();
+    const { live, warn } = await watched();
+
+    // A reader that keeps re-reading is working, not stuck: each change
+    // restarts the quiet period.
+    for (let step = 0; step < 4; step += 1) {
+      vi.advanceTimersByTime(HORIZON_MS - 1);
+      live.depend([{ id: "doc_1", components: step % 2 === 0 ? [LAZY] : ["document/title"] }]);
+    }
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reports a quiet period that starts again after a claim-set change", async () => {
+    vi.useFakeTimers();
+    const { live, warn } = await watched();
+
+    vi.advanceTimersByTime(HORIZON_MS + 1);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The change starts a new quiet period, and the next scan past the horizon
+    // reports the new one; the set it already reported is not reported twice.
+    live.depend([{ id: "doc_1", components: [LAZY] }]);
+    vi.advanceTimersByTime(HORIZON_MS + 61_000);
+    expect(warn).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(HORIZON_MS);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not warn about a released subscription or an inactive result", async () => {
+    vi.useFakeTimers();
+    const { subscriptions, live, warn } = await watched();
+
+    live.release();
+    const query = subscriptions.open({
+      kind: "query",
+      key: "rows:document",
+      reads: ["document/*"],
+    });
+    query.release();
+
+    vi.advanceTimersByTime(HORIZON_MS * 2);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `false` is the off switch, not an empty config. An empty one falls through
+   * to the dev gate, which is on in a test run, so `false` has to mean
+   * `{ enabled: false }` rather than "leave the default to answer".
+   */
+  it("turns the watchdog off for `false` instead of leaving it on", async () => {
+    vi.useFakeTimers();
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { replica } = harness();
+      await replica.read("doc_1", [LAZY]);
+
+      // The default is the dev gate, and in a test that is on: one interval.
+      const byDefault = createSubscriptionRegistry(replica);
+      const live = byDefault.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(1);
+      live.release();
+      byDefault.close();
+
+      for (const off of [false, { enabled: false }] as const) {
+        const subscriptions = createSubscriptionRegistry(replica, { watchdog: off });
+        subscriptions.open({ kind: "row", row: "doc_1" });
+        expect(vi.getTimerCount()).toBe(0);
+
+        // Nothing past the horizon, and no `close()` report either.
+        vi.advanceTimersByTime(HORIZON_MS * 2);
+        expect(consoleWarn).not.toHaveBeenCalled();
+        subscriptions.close();
+        expect(consoleWarn).not.toHaveBeenCalled();
+      }
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it("warns once when it closes with live subscriptions still holding claims", async () => {
+    const warn = vi.fn();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: true, warn },
+    });
+    subscriptions.open({ kind: "row", row: "doc_1" });
+    subscriptions.open({ kind: "query", key: "rows:document", reads: ["document/*"] });
+
+    subscriptions.close();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    expect(message).toContain("close()");
+    expect(message).toContain("2 live subscription");
+    expect(message).toContain("claim");
+
+    // A second teardown is inert, and so is the watchdog after it.
+    subscriptions.close();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * A sink is host code, so it can throw. The report is measured before
+   * teardown and delivered after it: a throwing sink surfaces its own failure
+   * without leaving a closed registry that still holds its claims.
+   */
+  it("tears down before reporting, so a throwing sink cannot strand the entries", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn(() => {
+      throw new Error("sink failed");
+    });
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const subscriptions = createSubscriptionRegistry(replica, {
+      watchdog: { enabled: true, warn },
+    });
+    const live = subscriptions.open({ kind: "row", row: "doc_1" });
+    subscriptions.open({ kind: "query", key: "rows:document", reads: ["document/*"] });
+    expect(replica.stats().leases.leased).toBeGreaterThan(0);
+
+    expect(() => subscriptions.close()).toThrow("sink failed");
+
+    // Closed *and* torn down: no entry left behind, and no claim still held.
+    expect(live.state).toBe("terminal");
+    expect(subscriptions.entries()).toEqual([]);
+    expect(subscriptions.stats()).toMatchObject({ live: 0, inactive: 0, dependencies: 0 });
+    // What survives is the released values' own residency grace period, not a
+    // subscription's claim.
+    await vi.advanceTimersByTimeAsync(DEFAULT_RESIDENCY_TTL_MS);
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 0 });
+
+    // Closed, so a second teardown neither reports nor throws again.
+    expect(() => subscriptions.close()).not.toThrow();
+  });
+
+  it("is inert in a production build", async () => {
+    vi.useFakeTimers();
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const { replica } = harness();
+      await replica.read("doc_1", [LAZY]);
+      const warn = vi.fn();
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.advanceTimersByTime(HORIZON_MS * 2);
+      expect(warn).not.toHaveBeenCalled();
+
+      subscriptions.close();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  });
+
+  /**
+   * The `NODE_ENV` test above only covers the Node path, which already worked.
+   * A shipped browser bundle has no `process` global at all — the define
+   * replaces the flag wholesale — so the gate has to answer off when it cannot
+   * read it. The previous `typeof process === "undefined" || ...` form read that
+   * absence as "development" and so enabled the watchdog in production.
+   */
+  it("is inert where there is no `process` to read, as in a browser bundle", async () => {
+    vi.useFakeTimers();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const warn = vi.fn();
+
+    // What a consumer's production build leaves behind: the flag folded out,
+    // no `process` in the bundle's scope.
+    vi.stubGlobal("process", undefined);
+    try {
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.advanceTimersByTime(HORIZON_MS * 2);
+      subscriptions.close();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * A host can also have a `process` that is not whole: some bundlers and test
+   * harnesses define a bare `process = {}`. The gate runs inside
+   * `createSubscriptionRegistry`, so a diagnostics flag that throws would crash
+   * the client at construction. No `env` reads as no flag, and no flag reads as
+   * development, so the watchdog stays armed exactly as it does in a test run.
+   *
+   * The expression is evaluated from its own source because a test run cannot
+   * exercise the module's copy: Vitest defines `process.env.NODE_ENV` to
+   * itself, and esbuild's define pass rewrites that member inside the optional
+   * chain — the very read the chain exists to avoid. Outside an identity define
+   * — a production build, Vite's dev server, plain ESM — the chain stays, which
+   * the bundler check below measures.
+   */
+  it("reads a bare `process` shim with no `env` as a development host", () => {
+    const gate = new Function("process", `return ${gateSource()};`) as (proc: unknown) => boolean;
+
+    expect(() => gate({})).not.toThrow();
+    expect(gate({})).toBe(true);
+    expect(gate(undefined)).toBe(false);
+    expect(gate({ env: {} })).toBe(true);
+    expect(gate({ env: { NODE_ENV: "production" } })).toBe(false);
+  });
+
+  /**
+   * The same partial shim, through the registry: a `process` whose `env` exists
+   * but carries no flag must not throw at construction, and must leave the
+   * watchdog armed. A test run's define rewrites only the optional chain, so
+   * this shape does reach the gate as written.
+   */
+  it("stays armed for a `process` whose `env` has no flag", async () => {
+    vi.useFakeTimers();
+    const { replica } = harness();
+    await replica.read("doc_1", [LAZY]);
+    const warn = vi.fn();
+
+    vi.stubGlobal("process", { env: {} });
+    try {
+      const subscriptions = createSubscriptionRegistry(replica, { watchdog: { warn } });
+      const live = subscriptions.open({ kind: "row", row: "doc_1" });
+      expect(vi.getTimerCount()).toBe(1);
+
+      vi.advanceTimersByTime(HORIZON_MS + 1);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      live.release();
+      subscriptions.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * Foldability is a property of the source form, so it is pinned at the source.
+   * A bundler substitutes `process.env.NODE_ENV` only as that exact member
+   * expression and never folds `typeof process`, so the absent-`process` case
+   * has to come first and answer `false`: the whole expression then folds to
+   * `false` (esbuild emits `!1`). Written as an `||` alternative it keeps
+   * `typeof process > "u"` in the bundle, which resolves to `true` there.
+   *
+   * The optional chain on `env` does not survive the fold either: the defined
+   * member expression is still matched inside it, so the bundled gate is the
+   * same `() => !1` while a bare `process` shim reads without throwing.
+   *
+   * Proved with esbuild over the built client for `platform: "browser"` and
+   * `define: { "process.env.NODE_ENV": '"production"' }`, evaluated in a `vm`
+   * with no `process`: this form emits no timer and no message, the previous
+   * one warned past the horizon.
+   */
+  /** The gate's body exactly as the source writes it, for the shape and shim tests. */
+  const gateSource = (): string => {
+    const source = readFileSync(new URL("../subscriptions.ts", import.meta.url), "utf8");
+    return (/const devWatchdog = \(\): boolean =>([^;]*);/.exec(source)?.[1] ?? "").trim();
+  };
+
+  it("writes the gate in the shape a production bundle folds away", () => {
+    expect(gateSource().replace(/\s+/g, " ")).toBe(
+      'typeof process === "undefined" ? false : process.env?.NODE_ENV !== "production"',
+    );
   });
 });
