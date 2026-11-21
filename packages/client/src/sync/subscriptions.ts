@@ -16,11 +16,12 @@
  * content change by the component it names, a membership change by the model
  * the row entered or left, which every reader of that model observes. What an
  * entry was holding that the replica no longer has travels with the batch as
- * the unload signal, read off the residency table rather than the journal. One dispatcher owns the one journal
- * cursor, reads the journal once per batch, and advances to the batch revision
- * before any listener runs, so a listener that throws cannot leave an entry
- * behind for a later batch to jump past; the throw is reported and never skips
- * a peer.
+ * the unload signal, read off the residency table rather than the journal.
+ *
+ * One dispatcher owns the one journal cursor, reads the journal once per batch,
+ * and advances to the batch revision before any listener runs, so a listener
+ * that throws cannot leave an entry behind for a later batch to jump past; the
+ * throw is reported and never skips a peer.
  *
  * An entry's cursor is the revision its consumer has processed. Dispatch moves
  * it for a consumer that had caught up with the previous batch and only for

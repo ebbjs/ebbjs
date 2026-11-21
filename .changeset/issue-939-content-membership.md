@@ -31,3 +31,13 @@ row that leaves the replica reads as an unloaded value rather than as a change.
 Query dispatch matches a content change by component as before, and a membership
 change against every reader of the model it names, exact or whole — which is why
 a component-scoped read is invalidated by a delete it never saw a component for.
+
+Dispatch cost moves with it: 100 changes over 5,000 subscriptions now report
+**3,810 touched** where #938 measured 2,621, at the same 280 lookups. The extra
+1,189 are required, not waste. A membership change names no component, so no
+read over `note` can prove it ignores a row entering or leaving `note`: every
+reader of that model — whole-model and exact-component alike — has to see it.
+The old 2,621 was a content-only count, because the one change kind that
+described a row leaving named every component it carried and was matched as
+content; the new count is the honest one for a set change. Exact readers of
+other models stay untouched, which is what the same test asserts.

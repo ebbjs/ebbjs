@@ -1661,10 +1661,9 @@ describe("replica: on-demand residency (#500)", () => {
     expect(replica.relationships({ as: "author", type: "wrote", targetId: "target_1" })).toEqual([
       "page_1",
     ]);
-    // The write is content, not residency: it journals, and the notification a
-    // subscriber receives last carries the replayed edge. The install is what
-    // makes the row visible, so the read's row entering its model is the change
-    // a reader sees.
+    // The install is residency and journals nothing, so what a reader sees is
+    // the row arriving with the replayed edge: it entered its model, and the
+    // notification a subscriber receives last carries the edge.
     expect(replica.changesSince(0)).toEqual([
       {
         revision: 1,
@@ -2522,6 +2521,134 @@ describe("replica: content and membership changes (#939)", () => {
     expect(replica.revision).toBe(revision);
     expect(replica.changesSince(revision)).toEqual([]);
     vi.useRealTimers();
+  });
+
+  // The set a read is drawn from is what `get` and `iterate` answer with, which
+  // is residency-independent: a row the policy does not retain still reaches a
+  // query, so the journal has to describe it.
+  describe("a row the policy does not retain", () => {
+    const noDocuments = { holds: (component: string) => !component.startsWith("document/") };
+
+    it("journals a create as entering its model even though it keeps no value", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        put({
+          actionId: "a_1",
+          updateId: "u_1",
+          entityId: "doc_1",
+          model: "document",
+          ms: 10,
+          fields: { text: leaf("body", "u_text", 10) },
+        }),
+        1,
+      );
+
+      // `get` and `iterate` both answer with the row; a reader that scans the
+      // model has to be told it arrived.
+      expect(replica.get("doc_1")?.model).toBe("document");
+      expect(replica.iterate("document").map((row) => row.id)).toEqual(["doc_1"]);
+      expect(replica.changesSince(0)).toEqual([
+        {
+          revision: 1,
+          id: "doc_1",
+          kind: "membership",
+          membership: "entered",
+          models: ["document"],
+          deleted: false,
+        },
+      ]);
+    });
+
+    it("journals no membership change for writes to a row that stays visible", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        create({ actionId: "a_1", updateId: "u_1", entityId: "doc_1", model: "document", ms: 10 }),
+        1,
+      );
+      const dormant = (gsn: number, text: string): Action =>
+        patch({
+          actionId: `a_${gsn}`,
+          updateId: `u_${gsn}`,
+          entityId: "doc_1",
+          model: "document",
+          gsn,
+          ms: gsn * 10,
+          fields: { text: leaf(text, `u_${gsn}`, gsn * 10) },
+        });
+
+      ingest(replica, dormant(2, "first"), 2);
+      ingest(replica, dormant(3, "second"), 3);
+
+      // The row never left the set a read draws from: the first write adds a
+      // component it knows exists, and the second changes nothing a reader can
+      // observe. Neither is a membership change.
+      expect(replica.iterate("document").map((row) => row.id)).toEqual(["doc_1"]);
+      expect(replica.changesSince(0)).toEqual([
+        {
+          revision: 1,
+          id: "doc_1",
+          kind: "membership",
+          membership: "entered",
+          models: ["document"],
+          deleted: false,
+        },
+        {
+          revision: 2,
+          id: "doc_1",
+          kind: "content",
+          components: ["document/text"],
+          deleted: false,
+        },
+      ]);
+    });
+
+    it("journals nothing for a write to a row that never became visible", () => {
+      const replica = createReplica({ materialization: noDocuments });
+      ingest(
+        replica,
+        patch({
+          actionId: "a_1",
+          updateId: "u_1",
+          entityId: "doc_1",
+          model: "document",
+          ms: 10,
+          fields: { text: leaf("body", "u_text", 10) },
+        }),
+        1,
+      );
+
+      expect(replica.get("doc_1")).toBeUndefined();
+      expect(replica.iterate("document")).toEqual([]);
+      expect(replica.revision).toBe(0);
+      expect(replica.changesSince(0)).toEqual([]);
+    });
+  });
+
+  it("journals the values of a row no model has filed when it is evicted", () => {
+    const replica = createReplica();
+    // An edge write before its row's create materializes a row no model owns:
+    // it is in no model's set, so what leaves is the value it carried.
+    ingest(
+      replica,
+      patch({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "page_1",
+        ms: 10,
+        fields: { link: map({ author: map({ wrote: map({ target_1: leaf(true, "u_1", 10) }) }) }) },
+        keyedComponent: "ebb/link",
+      }),
+      1,
+    );
+    expect(replica.get("page_1")?.model).toBe("");
+
+    replica.evict(["page_1"]);
+
+    expect(replica.changesSince(1)).toEqual([
+      { revision: 2, id: "page_1", kind: "content", components: ["ebb/link"], deleted: false },
+    ]);
   });
 });
 

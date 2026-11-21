@@ -681,6 +681,49 @@ describe("query cache: component-granular invalidation", () => {
     write(replica, "todo_1", "ebb", { link: "x" });
     expect(source.runs).toBe(1);
   });
+
+  it("re-runs a rows read for a row the replica does not retain", async () => {
+    // Every `document/*` component is materialized on demand, so the replica
+    // keeps the row without keeping a value of it — and `iterate` still answers
+    // with it, which is all a rows read scans.
+    const replica = createReplica({
+      materialization: { holds: (component) => !component.startsWith("document/") },
+    });
+    const cache = createQueryCache(replica);
+    const source = sourceWith(() => replica.iterate("document"));
+    const store = cache.watch("rows", emptyQuery("document"), source);
+    store.subscribe(() => {});
+    await flushTasks();
+    expect(source.runs).toBe(1);
+
+    gsn += 1;
+    replica.ingest(
+      { id: `a_${gsn}`, actor_id: "a", hlc: makeHlc(gsn), gsn, updates: [] },
+      [
+        {
+          id: `u_${gsn}_create`,
+          subject_id: "doc_1",
+          model: "document",
+          method: "create",
+          hlc: makeHlc(gsn),
+          data: null,
+        },
+        {
+          id: `u_${gsn}_text`,
+          subject_id: "doc_1",
+          component: componentName("document", "text"),
+          method: "replace",
+          data: { value: "body", update_id: `u_${gsn}`, hlc: makeHlc(gsn) },
+        },
+      ],
+      gsn,
+    );
+
+    await flushTasks();
+    expect(source.runs).toBe(2);
+    expect(store.getSnapshot()).toMatchObject({ status: "current" });
+    expect((store.getSnapshot().data ?? []).map((row) => row.id)).toEqual(["doc_1"]);
+  });
 });
 
 describe("query cache: failure", () => {

@@ -41,6 +41,11 @@ export interface ContentChange extends ChangeBase {
    * it read rather than on the row's whole model. A write that moves a row
    * between models and a row arriving or leaving are membership changes, not
    * content ones.
+   *
+   * Empty when the change moves no component: a second delete of a tombstoned
+   * row advances the row's tombstone stamp and names nothing. That is the only
+   * way this array is empty — a row entering or leaving is never described
+   * here, which is what the `membership` kind is for.
    */
   readonly components: readonly string[];
 }

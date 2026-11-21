@@ -344,7 +344,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   /**
    * The row as the set a read is drawn from sees it: a tombstone is a value, so
    * a tombstoned row is not in the set even while the replica holds its row, and
-   * a row no create has filed under a model yet belongs to none.
+   * a row no create has filed under a model yet belongs to none. Residency is
+   * not part of it: a row the policy keeps no value of is still a row `get` and
+   * `iterate` answer with, and a read draws its ids from there.
    */
   const sourceRow = (row: Entity | null): Entity | null =>
     row !== null && row.model !== "" && row.deleted_hlc === null ? row : null;
@@ -637,13 +639,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    * another model, is a membership change and stops there: its components are
    * what it arrived or left carrying, not a value change a reader could already
    * have seen. Everything else is a content change naming what it touched.
+   *
+   * Both sides are read from the same settled view — what `get` and `iterate`
+   * answer with — because that is the set a read draws from. Residency is a
+   * separate question: a row the policy retains no value of is still in the set,
+   * so a create that keeps nothing still enters it, and a write to it cannot
+   * make it leave.
    */
   const resync = (id: string, previous: Snapshot): void => {
     const { next, overlaid } = compose(id);
-    const settled = publish(id, next, overlaid, previous);
-    const retained = settled.row;
+    publish(id, next, overlaid, previous);
+    const view = viewOf(id);
     const before = sourceRow(previous.row);
-    const after = sourceRow(retained);
+    const after = sourceRow(view);
 
     if (after !== null) {
       if (before === null) {
@@ -655,21 +663,21 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
         return;
       }
     } else if (before !== null) {
-      journalMembership(id, retained?.deleted_hlc != null, "left", [before.model]);
+      journalMembership(id, view?.deleted_hlc != null, "left", [before.model]);
       return;
     }
 
-    // A row out of the set on both sides and absent now is unobservable: it
-    // retains nothing and there is nothing left to name.
-    if (retained === null) return;
+    // A row out of the set on both sides and absent now is unobservable: there
+    // is nothing left to name.
+    if (view === null) return;
     const touched = touchedComponentSet(
       previous.row,
       previous.components,
-      retained,
-      settled.components,
+      view,
+      presenceOfView(id),
     );
-    if (contentChanged(previous.row, retained) || touched.length > 0) {
-      journalContent(id, retained.deleted_hlc !== null, touched);
+    if (contentChanged(previous.row, view) || touched.length > 0) {
+      journalContent(id, view.deleted_hlc !== null, touched);
     }
   };
 
