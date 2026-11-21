@@ -2294,10 +2294,15 @@ export class SyncClient<
    * replica's composed view, clearing the dirty flag so a later read does
    * not replay the log over them.
    *
-   * Only a fully resident row mirrors the replica. A row the replica holds
-   * carries a value for every component it knows, so the guard is the proof
-   * that mirroring replaces the stored row rather than truncating it; a row
-   * that fails it is updated from the stored row instead.
+   * Mirroring replaces a stored row, so whether it can truncate the store is
+   * a question about the store's row: mirror only when
+   * `fullyResident(storeRow)`, meaning the replica covers every component
+   * the durable row carries. Asking it of the replica's own row proves
+   * nothing, because a row the replica holds carries a value for every
+   * component it knows — including a placeholder a single component write
+   * created before the replica had the row. The store row is then whole
+   * while the replica's is not, so the update is applied to the store row
+   * instead of replacing it.
    *
    * A subject the replica drops is normally left untouched — the shim
    * cannot represent absence, and the echo corrects it. A `delete` is the
@@ -2313,12 +2318,14 @@ export class SyncClient<
   ): Promise<void> {
     for (const update of action.updates) {
       const replicaRow = this.replica.get(update.subject_id);
-      if (replicaRow !== undefined && this.replica.fullyResident(replicaRow)) {
+      const base = await this.storage.entities.get(update.subject_id);
+      // Mirroring over a store row that carries a component this view lacks
+      // would drop that component durably.
+      if (replicaRow !== undefined && (base === null || this.replica.fullyResident(base))) {
         await this.storage.dirtyTracker.clear(update.subject_id);
         await this.storage.entities.set(replicaRow);
         continue;
       }
-      const base = await this.storage.entities.get(update.subject_id);
       const row = applyUpdate(base ?? replicaRow ?? null, update, 0, action.hlc);
       if (row === null) continue;
       if (options.revert === true && replicaRow === undefined && update.method === "delete") {

@@ -14,6 +14,7 @@ import {
   makeHlc,
   updateModel,
   type Action,
+  type Entity,
   type FieldValue,
   type Update,
 } from "@ebbjs/core";
@@ -61,8 +62,8 @@ type MountedClient<S extends AnySchema> = ReturnType<typeof harness<S>>["client"
 function harness<S extends AnySchema>(
   activeSchema: S,
   opts: Omit<SyncClientOptions, "serverUrl" | "actorId" | "schema"> = {},
+  storage = createMemoryAdapter(),
 ) {
-  const storage = createMemoryAdapter();
   const written: Action[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url =
@@ -396,6 +397,88 @@ describe("residency per row", () => {
     await client.note.get(noteId);
     const reopened = await client.note.get(noteId);
     expect(reopened?.body).toBe("300 KB body");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The store-mirror rule (#943)
+// ---------------------------------------------------------------------------
+
+describe("the store-mirror rule", () => {
+  const note = defineModel("note", { title: e.string(), body: e.string() });
+  const noteSchema = defineSchema({ models: { note }, version: 1 });
+  const noteId = "note_1";
+
+  const row = (fields: Record<string, unknown>): Entity => ({
+    id: noteId,
+    model: "note",
+    data: {
+      fields: Object.fromEntries(
+        Object.entries(fields).map(([name, value]) => [name, field(value, `u_${name}`)]),
+      ),
+    },
+    exists: true,
+    created_hlc: makeHlc(10),
+    updated_hlc: makeHlc(10),
+    deleted_hlc: null,
+    last_gsn: 1,
+  });
+
+  it("does not truncate the store row when a pre-#943 record carried only the held components", async () => {
+    const storage = createMemoryAdapter();
+    await storage.entities.set(row({ title: "One", body: "300 KB body" }));
+    // A format-6 record from a client whose body was `loading: "lazy"`: it kept
+    // the title and named the body in `notResident`, so the row it carries has
+    // no body to adopt.
+    await storage.replica.save({
+      format: 6,
+      // The record already folded the create, so the tail is empty and cannot
+      // supply the body the record left behind.
+      position: 1,
+      revision: 1,
+      entities: [row({ title: "One" })],
+      componentVersions: { [noteId]: { "note/title": 1, "note/body": 1 } },
+      notResident: { [noteId]: ["note/body"] },
+    } as unknown as Parameters<typeof storage.replica.save>[0]);
+    await storage.actions.append(put(1, noteId, "note", { title: "One", body: "300 KB body" }));
+
+    const { client } = harness(noteSchema, {}, storage);
+    await client.hydrateReplica();
+    // The record is a different shape, so it is not adopted: replaying the log
+    // rebuilds the row whole, body included.
+    expect(client.replicaLoad?.recordEntities).toBe(0);
+    expect(client.replicaLoad?.tailEntries).toBe(1);
+
+    await client.actions.run(({ note: notes }) => notes.update(noteId, { title: "Two" }));
+
+    const stored = await storage.entities.get(noteId);
+    expect(stored?.data.fields.title).toEqual(expect.objectContaining({ value: "Two" }));
+    expect(stored?.data.fields.body).toEqual(expect.objectContaining({ value: "300 KB body" }));
+  });
+
+  it("mirrors only when the replica covers every component the store row carries", async () => {
+    const { client, storage } = harness(noteSchema);
+    // The store's row is whole; the replica has never seen it, so a local patch
+    // only knows the component it writes. Mirroring that view would drop the
+    // body the store still carries.
+    await storage.entities.set(row({ title: "One", body: "300 KB body" }));
+
+    await client.actions.run(({ note: notes }) => notes.update(noteId, { title: "Two" }));
+
+    const stored = await storage.entities.get(noteId);
+    expect(stored?.data.fields.title).toEqual(expect.objectContaining({ value: "Two" }));
+    expect(stored?.data.fields.body).toEqual(expect.objectContaining({ value: "300 KB body" }));
+  });
+
+  it("mirrors a folded row whole into the store", async () => {
+    const { client, storage } = harness(noteSchema);
+    await callApplyAction(client, put(1, noteId, "note", { title: "One", body: "300 KB body" }));
+
+    await client.actions.run(({ note: notes }) => notes.update(noteId, { title: "Two" }));
+
+    const stored = await storage.entities.get(noteId);
+    expect(stored?.data.fields.title).toEqual(expect.objectContaining({ value: "Two" }));
+    expect(stored?.data.fields.body).toEqual(expect.objectContaining({ value: "300 KB body" }));
   });
 });
 

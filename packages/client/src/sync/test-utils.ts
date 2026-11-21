@@ -166,12 +166,12 @@ export const platformEntity = (
   model: EBB_MODEL_NAME,
   data: {
     fields: {
-      [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: "1-0" },
+      [ebbComponentField(kind)]: { value: values, update_id: "u_1", hlc: makeHlc(1) },
     },
   },
   exists: true,
-  created_hlc: "1-0",
-  updated_hlc: "1-0",
+  created_hlc: makeHlc(1),
+  updated_hlc: makeHlc(1),
   deleted_hlc: deletedHlc,
   last_gsn: 0,
 });
