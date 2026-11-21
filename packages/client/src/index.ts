@@ -144,6 +144,7 @@ export {
   type Subscription,
   type SubscriptionId,
   type SubscriptionKind,
+  type SubscriptionSnapshot,
   type SubscriptionRegistry,
   type SubscriptionSpec,
   type SubscriptionState,

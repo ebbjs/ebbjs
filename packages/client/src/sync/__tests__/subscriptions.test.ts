@@ -83,21 +83,32 @@ const seed = (replica: Replica): Revision => {
   );
 };
 
-/** Rewrite the held title, journaling one content change on `document/title`. */
-const writeTitle = (replica: Replica, title: string, gsn: number): Revision =>
+/** Write one component of one row, journaling exactly that component. */
+const write = (
+  replica: Replica,
+  id: string,
+  model: string,
+  field: string,
+  value: string,
+  gsn: number,
+): Revision =>
   replica.ingest(
     { id: `a_${gsn}`, actor_id: "actor_1", hlc: makeHlc(gsn), gsn, updates: [] },
     [
       {
         id: `u_${gsn}`,
-        subject_id: "doc_1",
-        component: "document/title",
+        subject_id: id,
+        component: componentName(model, field),
         method: "replace",
-        data: { value: title, update_id: `u_${gsn}`, hlc: makeHlc(gsn) },
+        data: { value, update_id: `u_${gsn}`, hlc: makeHlc(gsn) },
       },
     ],
     gsn,
   );
+
+/** Rewrite the held title, journaling one content change on `document/title`. */
+const writeTitle = (replica: Replica, title: string, gsn: number): Revision =>
+  write(replica, "doc_1", "document", "title", title, gsn);
 
 describe("subscription registry: entries", () => {
   it("holds a query subscription and a row subscription in one registry", async () => {
@@ -145,6 +156,49 @@ describe("subscription registry: entries", () => {
     // advances; the one whose result has not settled stays behind.
     expect(other.cursor).toBe(replica.revision);
     expect(lagging.cursor).toBe(before);
+  });
+
+  it("advances only the entries that were caught up", () => {
+    const { replica, subscriptions } = harness();
+    const lagging = subscriptions.open({
+      kind: "query",
+      key: "titles",
+      reads: ["document/title"],
+    });
+    const caughtUp = subscriptions.open({ kind: "query", key: "notes", reads: ["note/*"] });
+    const start = replica.revision;
+    // The entry starts a run on the relevant batch and declares that its result
+    // still reflects `start` until that run settles.
+    lagging.onChange((_changes, _revision) => lagging.seek(start));
+    write(replica, "doc_1", "document", "title", "Renamed", 2);
+    expect(lagging.cursor).toBe(start);
+
+    // A peer write touches the other entry only. The pending entry must not be
+    // advanced past the change its run has not picked up yet.
+    write(replica, "note_1", "note", "title", "Unrelated", 3);
+
+    expect(caughtUp.cursor).toBe(replica.revision);
+    expect(lagging.cursor).toBe(start);
+  });
+
+  it("hands out introspection entries that own no share", () => {
+    const { subscriptions } = harness();
+    const first = subscriptions.open({ kind: "query", key: "q", reads: ["document/*"] });
+    const second = subscriptions.open({ kind: "query", key: "q", reads: ["document/*"] });
+    expect(subscriptions.entries()[0].refs).toBe(2);
+
+    const snapshot = subscriptions.entries()[0];
+    // An introspection entry is a snapshot of the entry, not a handle: it
+    // exposes no mutators, and the runtime object carries none either.
+    expect("release" in snapshot).toBe(false);
+    // @ts-expect-error — a snapshot does not own a share to release.
+    void snapshot.release;
+
+    expect(subscriptions.entries()[0].refs).toBe(2);
+    expect(subscriptions.entries()[0].state).toBe("live");
+    first.release();
+    second.release();
+    expect(subscriptions.stats().live).toBe(0);
   });
 
   it("isolates a throwing listener so its peers still see the batch", () => {

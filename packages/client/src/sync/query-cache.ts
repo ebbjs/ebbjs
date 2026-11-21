@@ -537,7 +537,9 @@ export const createQueryCache = (
         //
         // Status is derived from the replica's revision, and an entry with no
         // subscribers has no dispatch left to refresh it, so reading recomputes
-        // it: a cached result that missed changes reads back `stale`.
+        // it: a cached result that missed changes reads back `stale`. `refresh`
+        // only replaces the snapshot when a visible field changed and never
+        // notifies, so a read stays a pure observation for the caller.
         getSnapshot: () => {
           refresh(settled);
           return settled.snapshot as QueryResult<T>;
