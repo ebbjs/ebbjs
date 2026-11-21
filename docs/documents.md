@@ -171,11 +171,9 @@ row.subscribe((event) => {
 
 Read rule: held types read via `query()`, on-demand types read via `get(id)`.
 
-A subscription reports its own closure. `close()`, the pin TTL, and capacity
-eviction all deliver one `unloaded` event; re-open with `get(id)` and replay.
-Eviction is recoverable because the log is append-only. The pin capacity
-default will be raised well above the current 16; the exact number is a tuning
-value, and eviction stays observable either way.
+A subscription reports its own closure. `close()` and the pin TTL
+(`pinnedTtlMs`) both deliver one `unloaded` event; re-open with `get(id)` and
+replay.
 
 ## Conflicts
 
