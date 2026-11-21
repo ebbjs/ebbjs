@@ -14,7 +14,7 @@ An Elixir/OTP application. Single-node sync server with a complete HTTP API. See
 | What                                                                              | Where                                                                                                                 | Tests                                                                                |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | Action log (RocksDB, single Writer in production; `enable_pipelined_write: true`) | `lib/ebb_server/storage/rocks_db.ex`, `writer.ex`                                                                     | `test/ebb_server/storage/rocks_db_test.exs`, `writer_test.exs`                       |
-| Entity materialization (lazy, on-demand)                                          | `lib/ebb_server/storage/entity_store.ex`, `sqlite.ex`                                                                 | `entity_store_test.exs` (~18kb), `sqlite_test.exs`                                   |
+| Entity materialization on read                                                    | `lib/ebb_server/storage/entity_store.ex`, `sqlite.ex`                                                                 | `entity_store_test.exs` (~18kb), `sqlite_test.exs`                                   |
 | Permissions, Groups, Grants, Relationships                                        | `lib/ebb_server/storage/permission_checker.ex`, `group_cache.ex`, `relationship_cache.ex`, `authorization_context.ex` | `permission_checker_test.exs`, `group_cache_test.exs`, `relationship_cache_test.exs` |
 | GSN watermark, dirty tracking                                                     | `lib/ebb_server/storage/watermark_tracker.ex`, `dirty_tracker.ex`                                                     | `watermark_tracker_test.exs`, `dirty_tracker_test.exs`                               |
 | Writer failure policy (abandon + resolve a failed commit)                         | `lib/ebb_server/storage/writer.ex`, `watermark_tracker.ex`                                                            | `writer_failure_policy_test.exs`, `writer_failure_integration_test.exs`              |
@@ -86,7 +86,7 @@ import { createMemoryAdapter } from "@ebbjs/storage/memory";
 const storage = createMemoryAdapter();
 
 await storage.actions.append(action); // append + mark dirty
-const entity = await storage.entities.get(id); // lazy materialization
+const entity = await storage.entities.get(id); // materialize on read
 const todos = await storage.entities.query("todo");
 ```
 
@@ -152,8 +152,8 @@ await client.actions.completeTodo({ id });
 
 Shipped primitives:
 
-- **Query engine** — `client.<entity>.query()` with `where` / `or` / `orderBy` / `limit` and one-level `with` joins. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface. Fields may declare a read-time `.default()`; a `null` filter value asks for "no live value" — see [Absence and defaults](/docs/absence-and-defaults).
-- **Schema-bound entity namespaces** — `client.<entity>` is the read API: `query()` for typed reads over the replica. Every write is a `defineAction` declared at module scope and mounted as `client.actions.<name>`; one call commits one Action spanning any number of entities and groups, and a rejection throws `ActionRejectedError`. `get()`, the async row accessors, and `subscribe(filter, cb)` are internal.
+- **Query engine** — `client.<entity>.query()` with `select` / `where` / `or` / `orderBy` / `limit` and one-level `with` joins. `select` is both the projection and the lease set. A chain lowers to a serializable query, so an identical chain shares one cached result; `status` is `unloaded` / `stale` / `current` / `failed`. In React, `useQuery` wraps this surface. Fields may declare a read-time `.default()`; a `null` filter value asks for "no live value" — see [Absence and defaults](/docs/absence-and-defaults).
+- **Schema-bound entity namespaces** — `client.<entity>` is the read API: `query()` for typed reads over the replica and `get(id, { select })` for one row. Every write is a `defineAction` declared at module scope and mounted as `client.actions.<name>`; one call commits one Action spanning any number of entities and groups, and a rejection throws `ActionRejectedError`. The async row accessors and `subscribe(filter, cb)` are internal.
 - **Reactive subscribe** — `client.onStateChange(cb)` tracks the connection state machine; live sync runs through `client.subscribe(groupIds, onEvent)`.
 - **Presence** — `client.presence` broadcasts and reads ephemeral cursors and selections.
 - **Collaborative text** — `client.textDocument(docId)` opens a causal-tree document with a local edit API; `@ebbjs/codemirror` bridges it to a CodeMirror 6 view. Writes that race while offline surface through [`client.conflicts`](/docs/conflicts).
@@ -255,9 +255,10 @@ exists yet, and `error` mirrors `failed`. A cached remount renders the held
 result immediately with `status: "current"` when it matches the replica's
 revision (`"stale"` when the replica has moved on), so there is no loading flash.
 
-Windowing is `limit(n)` only — cursor pagination is deferred. There is no `id`
-predicate, so a single row is a collection query plus `find`. On-demand document
-bodies are not a query yet ([#500](https://github.com/ebbjs/ebbjs/issues/500)).
+Paging is `limit(n)` only — cursor pagination is deferred. The grammar has no
+`id` predicate: read one row with `get(id, { select })`, or query the collection
+and `find` it. Document bodies are not a query yet
+([#500](https://github.com/ebbjs/ebbjs/issues/500)).
 
 See [`packages/react/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packages/react/README.md).
 
@@ -271,6 +272,6 @@ See [`packages/react/README.md`](https://github.com/ebbjs/ebbjs/blob/main/packag
 | CLI tooling                                | Not started | —                                                                                                   |
 | Persistent client storage (SQLite adapter) | Not started | `@ebbjs/storage` ships in-memory + IndexedDB adapters; SQLite is a future adapter                   |
 | Cursor-paginated queries                   | Not started | `limit(n)` only; deferred past the query engine ([#495](https://github.com/ebbjs/ebbjs/issues/495)) |
-| On-demand document bodies as queries       | Not started | [#500](https://github.com/ebbjs/ebbjs/issues/500); use `client.textDocument(id)` for now            |
+| Document bodies as queries                 | Not started | [#500](https://github.com/ebbjs/ebbjs/issues/500); use `client.textDocument(id)` for now            |
 
 For the marketing-facing roadmap, see [ebb.dev/#roadmap](https://ebb.dev/#roadmap). For an honest, repo-grounded roadmap, see the [GitHub README](https://github.com/ebbjs/ebbjs#current-state).

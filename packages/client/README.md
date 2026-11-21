@@ -154,16 +154,16 @@ entity store's to serve, and a read installs it:
 
 ```typescript
 // The store serves the row; the read projects it and releases it again.
-const page = await client.page.get(pageId);
+const page = await client.page.get(pageId, { select: { title: true } });
 ```
 
 A read claims what it installs. Releasing the last claim starts one residency
 grace period (`residencyTtlMs`, default 60 s), so a remount inside it reads
 nothing; when it elapses the row a read installed leaves the replica whole and
 the next read goes back to the store. A value the Action log folded is not the
-claim's to release: nothing evicts it, so no lease keeps it and no expiry takes
-it. There is no cap, so reading a second row never takes the first away from a
-screen still reading it.
+claim's to release: nothing reclaims it today, so no lease keeps it and no
+expiry takes it — it stays for the session (#957). There is no cap, so reading a
+second row never takes the first away from a screen still reading it.
 
 A live subscription owns what it read: `row.subscribe` claims the components its
 read selected until it unsubscribes, and a query subscription claims the
@@ -179,6 +179,14 @@ behind the other's lease. `client.replica.stats().leases` reports what is
 leased, what is only waiting out its grace period, and for how long, per
 component.
 
+A `row.subscribe` event is either a `snapshot` — the row's current projection,
+a tombstone included — or an `unloaded` that names the component the replica
+lost (`component` set) or the row leaving the replica (`component` absent).
+`unloaded` is not routine memory pressure: an active lease is never expired or
+truncated, so it takes a scope eviction or a `load` that replaces the row. A
+read that selected nothing observes the whole row; re-read with
+`get(id, { select })` to re-acquire after an unload.
+
 A read that projects a component the replica does not hold is not refused. It
 narrows the ids first — scan, predicates, order, `limit` — and then acquires only
 the page it projects:
@@ -192,6 +200,18 @@ A single row is read the same way, with `get(id, { select: { content: true } })`
 and its `subscribe` keeps claiming the selected components. A join leases its
 target after the page is chosen: `with({ content: true })` acquires the joined
 rows before projecting them.
+
+A cold projection on a page that needs acquisition runs the narrowing plan
+twice: once to learn the page is not fully resident, then again to acquire and
+project it. A large cold projection therefore pays the plan twice (#946).
+
+A relevant change patches the cached result only when it cannot move the row.
+An unselected `client.<model>.query()` reads `<model>/*`, so the patch rate
+depends on every projected component being resident: measured through the
+shipped path at 200 pages, 40/40 projected writes patch when every projected
+component is resident, 4/40 at 10% optional-component presence, and 0/40 when
+the component is absent (#942). A change to matching, ordering, limits, joins,
+or row existence re-runs.
 
 The persisted replica record is a snapshot of what memory held, not a durability
 claim: the entity store already has every synced row, so the record only makes a
@@ -345,8 +365,15 @@ surface.
 
 ### Not yet
 
-The grammar has no `id` predicate: query the collection and select the row.
-`limit(n)` is the only windowing — cursor pagination is deferred.
+The grammar has no `id` predicate: query the collection and select the row, or
+read one with `get(id, { select })`. `limit(n)` is the only paging control;
+cursor pagination is deferred.
+
+A relationship, membership, or existence predicate re-runs on any change to that
+component anywhere, not only on the index key it reads. The dispatcher registers
+component, model, and row dependencies; the `relation:<as>/<type>`,
+`membership`, and `exists:<component>` reads that `structuralReads().indices`
+names are exported but have no registered resolver yet (#946).
 
 ## Seeding fixtures
 

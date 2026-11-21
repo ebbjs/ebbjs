@@ -40,12 +40,15 @@ _Avoid_: hydrate, project, build, denormalize
 
 **Revision**:
 The replica's monotonic counter, advanced only when materialization changes
-observable state.
-_Avoid_: version, watermark, snapshot version
+observable state. A _Subscription revision_ and a _Dispatch revision_ are
+positions in it, not a group's log position.
+_Avoid_: version, watermark, snapshot version, cursor
 
 **Cursor**:
-The per-group position in the Action stream the replica has caught up to.
-_Avoid_: offset, checkpoint
+The per-group position in the Action stream the replica has caught up to. A
+group cursor is a log position, never a Revision and never a subscription's
+processed position.
+_Avoid_: offset, checkpoint, subscription cursor
 
 **Backfill**:
 Fetch entities a replica is missing, e.g. after joining a group.
@@ -337,6 +340,24 @@ unsubscribe makes the result inactive but keeps it, and its claims, for the same
 grace period, so a remount inside it reads nothing. Decides when memory is
 reclaimed: subscriptions end, not a slot count.
 _Avoid_: listener, watcher, observer, pin
+
+**Subscription revision**:
+The Revision a subscription's result reflects — the position its consumer has
+processed. Dispatch advances it only for an entry that was caught up, so an
+in-flight run or a stale inactive result keeps its older value visible.
+_Avoid_: cursor, watermark, offset
+
+**Dispatch revision**:
+The Revision of the last change batch handed to one subscription. It moves when
+dispatch reaches the entry, whether or not the consumer's result has caught up.
+_Avoid_: watermark, dispatch cursor, offset
+
+**Stranded**:
+A subscription whose dispatch bookkeeping threw while evaluating a batch. Its
+_Subscription revision_ and _Dispatch revision_ both stay behind, so a later gap
+hands it the batch again instead of letting it report an unevaluated batch as
+processed.
+_Avoid_: failed, lagging, skipped
 
 **Store-backed**:
 A row the replica does not hold, so the entity store is its source: a read

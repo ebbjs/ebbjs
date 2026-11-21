@@ -281,12 +281,10 @@ export type EntityEvent<TFields extends Record<string, TSchema>> =
     };
 
 /**
- * Row returned by `client.<entity>.get(id)`.
- *
- * @internal `get()` is the engine's single-row read, not a public read
- * path. Applications query through `client.<entity>.query()` /
- * `useQuery`; `get()` and the async relationship accessors stay
- * internal / undocumented.
+ * Row returned by `client.<entity>.get(id)`, the public single-row read beside
+ * `client.<entity>.query()`. A selection narrows the projection and the
+ * components the read leases; without one the read returns every component the
+ * stored row carries.
  *
  * `id` is the entity's addressing key, not a wire-envelope passthrough:
  * `data` / `type` / HLC stamps stay off the row. The injected `id`
@@ -376,13 +374,10 @@ export interface EntityNamespace<
   /** The public read root: a typed chain over the entity's fields and joins. */
   query(): QueryBuilder<TFields, TJoins, NoJoins, QueryRow<TFields>>;
   /**
-   * Single-row read with relationship accessors attached. A selection narrows
-   * both the projection and the components the read leases, and is required to
-   * narrow: without one the read returns every component the stored row
-   * carries.
-   *
-   * @internal Reads go through {@link EntityNamespace.query} and
-   * `useQuery`; this stays for the engine's own callers.
+   * Single-row read with relationship accessors attached. The public row read
+   * beside {@link EntityNamespace.query}: a selection narrows both the
+   * projection and the components the read leases, and is required to narrow:
+   * without one the read returns every component the stored row carries.
    */
   get<TSelection extends Selection<TFields>>(
     id: string,
