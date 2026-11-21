@@ -57,6 +57,7 @@ import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
 import type { SubscriptionRegistry } from "./subscriptions";
 import { selectionFieldKeys, type Selection } from "./selection";
+import { recordResultRows } from "./traversal-counter";
 import {
   type AdjacencyReader,
   forwardMany,
@@ -722,6 +723,8 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
       cb({ type: "unloaded", id });
       return;
     }
+    // One row re-read is what a row subscription costs per change (#942).
+    recordResultRows(1);
     if (row.model !== entityName) return;
     const visible = visibleRow(row, view);
     if (visible === null) {
