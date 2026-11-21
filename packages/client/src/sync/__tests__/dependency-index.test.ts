@@ -291,6 +291,7 @@ describe("dependency-indexed dispatch: cost", () => {
     const journal = testJournal();
     const { dispatcher, notified } = harness(journal);
     const random = mulberry32(42);
+    const fixture: Fixture[] = [];
     for (let i = 0; i < 5_000; i += 1) {
       // Every entry draws a row id, the way the design record's fixture did;
       // only the kinds that watch one index on it.
@@ -304,17 +305,22 @@ describe("dependency-indexed dispatch: cost", () => {
             : kind === 2
               ? { components: ["note/content"], rows: [row] }
               : { rows: [row] };
-      dispatcher.add({ id: i }, dependencies);
+      fixture.push({ entry: { id: i }, dependencies });
     }
+    for (const { entry, dependencies } of fixture) dispatcher.add(entry, dependencies);
 
-    journal.publish(
-      Array.from({ length: 100 }, (_, i) =>
-        change(`n_${i}`, i % 5 === 0 ? [] : ["note/title"], i + 1),
-      ),
+    const changes: readonly ReplicaChange[] = Array.from({ length: 100 }, (_, i) =>
+      change(`n_${i}`, i % 5 === 0 ? [] : ["note/title"], i + 1),
     );
+    journal.publish(changes);
 
     expect(dispatcher.stats()).toEqual({ touched: 2_621, lookups: 280, scanWork: 500_000 });
     expect(notified.size).toBe(2_621);
+    // Not just the count: the same fixture through the scan oracle has to name
+    // exactly these subscriptions, which is the acceptance item the issue
+    // states on these batches. The 500,000 pairs are worth the second here.
+    const scanned = [...scanTouched(fixture, changes, () => ({}))];
+    expect([...notified].sort((a, b) => a - b)).toEqual(scanned.sort((a, b) => a - b));
   });
 
   it("touches 100 of 5,000 subscriptions with 3 lookups for one change", () => {

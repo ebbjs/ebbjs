@@ -157,8 +157,9 @@ describe("subscription registry: entries", () => {
 
     writeTitle(replica, "Renamed", 2);
 
-    // Every live entry is dispatched through the batch, so an untouched one
-    // advances; the one whose result has not settled stays behind.
+    // The batch never visits `other` — nothing it reads changed — so it reports
+    // the dispatcher's cursor, which is already past the batch; the one whose
+    // result has not settled stays behind.
     expect(other.cursor).toBe(replica.revision);
     expect(lagging.cursor).toBe(before);
   });
@@ -206,7 +207,7 @@ describe("subscription registry: entries", () => {
     expect(lagging.cursor).toBe(replica.revision);
   });
 
-  it("keeps a cursor behind when dispatch bookkeeping throws", () => {
+  it("recovers a cursor stranded by dispatch bookkeeping that throws", () => {
     const { replica, subscriptions } = harness();
     const entry = subscriptions.open({ kind: "row", row: "doc_1" });
     const seen: Revision[] = [];
@@ -219,22 +220,33 @@ describe("subscription registry: entries", () => {
 
     writeTitle(replica, "Renamed", 2);
 
-    // The entry could not be evaluated: it is not handed the batch, and its
-    // cursor stays behind for a later gap to dispatch it again.
+    // The entry could not be evaluated: it is not handed the batch, and neither
+    // its cursor nor the revision it was dispatched through moves.
     expect(seen).toEqual([]);
     expect(entry.cursor).toBe(before);
+    expect(replica.revision).toBeGreaterThan(before);
     expect(reported).toHaveBeenCalled();
 
-    // A load replaces the journal, so every entry is dispatched again.
+    // A load replaces the journal, so every entry is dispatched again. Because
+    // the failed batch never counted as dispatched, the entry still counts as
+    // caught up with what it was handed and its cursor moves with the gap.
     refresh.mockRestore();
+    const gap = before + 4;
     replica.load({
       format: REPLICA_RECORD_FORMAT,
       position: 0,
-      revision: replica.revision + 3,
+      revision: gap,
       entities: [],
       componentVersions: {},
     });
-    expect(seen).toEqual([replica.revision]);
+    expect(seen).toEqual([gap]);
+    expect(entry.cursor).toBe(gap);
+
+    // And it stays current through a later batch that touches it instead of
+    // reporting `stale` from behind for the rest of its life.
+    writeTitle(replica, "Renamed again", 6);
+    expect(seen).toEqual([gap, replica.revision]);
+    expect(entry.cursor).toBe(replica.revision);
     reported.mockRestore();
   });
 

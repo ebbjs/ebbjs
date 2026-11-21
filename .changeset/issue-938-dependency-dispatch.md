@@ -14,6 +14,12 @@ per change — 5,000 subscriptions and 100 changes report 2,621 touched and 280
 lookups rather than 500,000 decisions, and one change over the same 5,000
 reports 100 touched and 3 lookups.
 
+A derived index is a namespace on the dispatcher: a resolver turns a change
+into keys, and a subscription matches on the bare key. `membership` is the only
+one production declares. `scope` exists as the generic namespace for the
+issue's scoped-subscription item — nothing declares it yet, so the
+`scope:<groupId>` item is a namespace awaiting an index, not a wired one.
+
 The dispatcher also owns the single journal cursor, so a batch reads the
 replica's journal once rather than once per entry, and an entry a batch does
 not touch is never visited: its cursor derives from the dispatcher's own. A
@@ -30,6 +36,7 @@ keeps that lag through later batches, touched or not, until the run settles and
 seeks forward. An entry no batch touches reports the dispatcher's cursor, so an
 idle result stays `current` without a write per entry, while a lagging one keeps
 reporting where its consumer is. Dispatch bookkeeping that throws skips that
-entry without moving its cursor, so a later gap dispatches it again, and a
-change the indices cannot resolve hands the batch to every entry — the same
-answer a gap gets — rather than losing it for all of them.
+entry without moving it past a batch it never evaluated, so a later gap hands
+it the batch again and its cursor recovers there; a change the indices cannot
+resolve hands the batch to every entry — the same answer a gap gets — rather
+than losing it for all of them.

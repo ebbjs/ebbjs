@@ -27,10 +27,15 @@ import type { ReplicaChange, Revision } from "@ebbjs/storage/replica";
 export interface IndexDependency {
   /**
    * The index name. `membership` keys a member entity id to the row
-   * subscriptions watching it, and `scope` keys `scope:<groupId>` to the
-   * subscriptions scoped to that group.
+   * subscriptions watching it. Any other name is a namespace the dispatcher
+   * serves generically: a change resolves to zero or more keys and a lookup
+   * matches the subscriber on that bare key, so `scope` groups on a group id
+   * rather than on a `scope:<groupId>` string. Nothing in production declares
+   * a non-membership index today; `scope` is the namespace the issue describes
+   * for a future one.
    */
   readonly index: string;
+  /** The key to match under that index: a bare id, not an `index:<key>` form. */
   readonly key: string;
 }
 
@@ -54,7 +59,14 @@ export interface SubscriptionDependencies {
 export interface DispatchCounts {
   /** Subscriptions the batch touched — the entries any work happens for. */
   readonly touched: number;
-  /** Index lookups performed: one per dependency kind per change, plus keys. */
+  /**
+   * Index lookups performed, and nothing else: one per change for its row
+   * watch, two per component it names (the component, then its model), one per
+   * model-reader set for a change that names no component, and one per key a
+   * change resolves to under each derived index. The per-batch registration
+   * order sort and the notify calls are outside it, so this is lookup cost, not
+   * total batch cost.
+   */
   readonly lookups: number;
   /** Change × subscription pairs a scan of every entry would have examined. */
   readonly scanWork: number;
@@ -99,6 +111,10 @@ export interface ChangeDispatcher<T> {
    * costs its own dependencies, never a scan of the table.
    */
   add(entry: T, dependencies: SubscriptionDependencies): void;
+  /**
+   * Drop `entry`, matched by object identity: an equal but distinct object is
+   * simply not indexed, so removing it does nothing.
+   */
   remove(entry: T): void;
   /** How many subscriptions are indexed. */
   size(): number;

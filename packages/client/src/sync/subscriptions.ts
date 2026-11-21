@@ -244,12 +244,19 @@ interface Entry<TResult> {
   /** The revision this entry's consumer has processed. */
   cursor: Revision;
   /**
-   * The revision of the last batch dispatch handed this entry. Only a touched
-   * entry gets one, which is what tells an entry no batch has touched since it
-   * was caught up — its cursor may derive from the dispatcher — apart from one
-   * whose consumer declared lag.
+   * The revision of the last batch dispatch handed this entry and finished
+   * evaluating. Only a touched entry gets one, which is what tells an entry no
+   * batch has touched since it was caught up — its cursor may derive from the
+   * dispatcher — apart from one whose consumer declared lag or whose last batch
+   * could not be evaluated.
    */
   dispatched: Revision;
+  /**
+   * Whether dispatch handed this entry a batch it could not finish. Its cursor
+   * and `dispatched` both stay behind, so it must not derive its cursor from
+   * the dispatcher's until a later dispatch succeeds and clears this.
+   */
+  stranded: boolean;
   result: TResult | undefined;
   dependencies: readonly Dependency[];
   state: SubscriptionState;
@@ -358,10 +365,11 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     get cursor() {
       // Level with the last batch it was handed: the entry is untouched by
       // anything since, so the dispatcher's cursor is the honest one. Behind
-      // it: the consumer declared the revision its result still reflects.
-      return entry.cursor >= entry.dispatched
-        ? Math.max(entry.cursor, dispatcher.cursor())
-        : entry.cursor;
+      // it: the consumer declared the revision its result still reflects, or
+      // dispatch could not finish the batch it was handed.
+      return entry.stranded || entry.cursor < entry.dispatched
+        ? entry.cursor
+        : Math.max(entry.cursor, dispatcher.cursor());
     },
     get result() {
       return entry.result;
@@ -378,10 +386,10 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
   });
 
   /**
-   * Hand one touched entry its batch. The entry is level with the batch as soon
-   * as it is handed one, but its cursor moves only if the consumer had caught
-   * up with the previous one, and that happens before any listener runs: a
-   * listener that throws cannot leave a caught-up entry behind for a later
+   * Hand one touched entry its batch. The entry is level with the batch once its
+   * own bookkeeping has succeeded, but its cursor moves only if the consumer had
+   * caught up with the previous one, and that happens before any listener runs:
+   * a listener that throws cannot leave a caught-up entry behind for a later
    * batch to jump past, and a batch cannot report a lagging one caught up.
    */
   const notify = (entry: Entry<unknown>, batch: ChangeBatch): void => {
@@ -391,7 +399,6 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
     // reflects an older revision, an async run in flight — is not, and keeps
     // its cursor until the run settles and seeks forward.
     const caughtUp = entry.cursor >= entry.dispatched;
-    entry.dispatched = batch.revision;
     try {
       if (entry.kind === "row" && entry.row !== null) {
         // The row's resident components move with the change, and a row that
@@ -400,12 +407,17 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
       }
     } catch (err) {
       // Dispatch bookkeeping is as load-bearing as a listener here: one entry
-      // it cannot evaluate must not starve the rest. Its cursor stays behind,
-      // so a later gap dispatches this entry again.
+      // it cannot evaluate must not starve the rest. The cursor and the
+      // dispatch revision both stay behind, and the entry is marked stranded so
+      // it cannot report the batch it never evaluated as processed; the next
+      // gap hands it the batch again as caught up, and that clears the mark.
       // eslint-disable-next-line no-console
       console.error("[Subscriptions] subscription match threw:", err);
+      entry.stranded = true;
       return;
     }
+    entry.dispatched = batch.revision;
+    entry.stranded = false;
     if (entry.state !== "live") return;
     if (caughtUp) entry.cursor = batch.revision;
     // A listener may detach a peer, so iterate a snapshot, and report a failure
@@ -494,6 +506,7 @@ export const createSubscriptionRegistry = (replica: Replica): SubscriptionRegist
         reads: compileReadComponents(declaredReads(spec)),
         cursor: replica.revision,
         dispatched: replica.revision,
+        stranded: false,
         result: undefined,
         dependencies: [],
         state: "live",
