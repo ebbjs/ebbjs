@@ -3,9 +3,14 @@
  *
  * One cache entry per lowered {@link Query} and surface, ref-counted by its
  * subscribers and kept alive after the last one leaves so a remount reads the
- * cached result instead of re-running. The cache listens to the replica's
- * revision journal and invalidates an entry only when a change touches a
- * component the entry read.
+ * cached result instead of re-running.
+ *
+ * An entry's live half is a subscription in the registry (#937): the registry
+ * dispatches the changes that touch the entry's reads, and the entry claims the
+ * components its result projected for as long as it is subscribed. Unsubscribing
+ * releases those claims, which starts the residency grace period, while the
+ * cached result itself stays for `ttlMs` — so a remount before it expires reads
+ * nothing from the store and re-runs only when a relevant change landed.
  *
  * What a result reads depends on what it keeps. A `rows` result holds whole
  * projected rows, so it reads every component of its source and joined models;
@@ -35,7 +40,7 @@
  */
 
 import { componentModel, structuralEqual } from "@ebbjs/core";
-import type { Replica, ReplicaChange, Revision } from "@ebbjs/storage/replica";
+import type { Replica, Revision } from "@ebbjs/storage/replica";
 
 import type { Query } from "./query";
 import {
@@ -44,7 +49,13 @@ import {
   rowReadComponentsFor,
   type CompiledReadComponents,
 } from "./query-plan";
-import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
+import {
+  createSubscriptionRegistry,
+  touchesReadSet,
+  type Dependency,
+  type Subscription,
+  type SubscriptionRegistry,
+} from "./subscriptions";
 import { keyOf } from "./keys";
 
 /**
@@ -117,8 +128,13 @@ export interface QueryCache {
 }
 
 interface CacheEntry<T> {
-  /** Compiled component reads; shared with every entry of the same dependency set. */
-  readonly reads: CompiledReads;
+  /** The cache key this result is held under, and its registry sharing key. */
+  readonly key: string;
+  readonly surface: QuerySurface;
+  /** Component names this result reads, as declared by the query. */
+  readonly readNames: readonly string[];
+  /** The same read set compiled for change matching. */
+  readonly reads: CompiledReadComponents;
   readonly source: QuerySource<T>;
   data: readonly T[] | undefined;
   error: Error | null;
@@ -132,30 +148,15 @@ interface CacheEntry<T> {
   /** Inactive-entry eviction timer; `null` while subscribed or after expiry. */
   evictTimer: ReturnType<typeof setTimeout> | null;
   running: boolean;
+  /** The registry entry held while at least one listener is attached. */
+  live: LiveSubscription | null;
 }
 
-/** A compiled dependency set plus the key it is shared under. */
-interface CompiledReads extends CompiledReadComponents {
-  readonly key: string;
+/** A registry entry plus the detach for this cache entry's change listener. */
+interface LiveSubscription {
+  readonly subscription: Subscription<QueryResult<unknown>>;
+  readonly detach: () => void;
 }
-
-/**
- * A change touches an entry when it names a component the entry read, or writes
- * any component of a model the entry reads whole.
- *
- * A row's model follows its last-written component, so a cross-model write
- * reports each field under both prefixes and the old model's readers still see
- * it. A change that names no component comes from a row that carried none: a
- * tombstone or eviction detaches it from its model, which only a whole-model
- * read can observe, so every such read treats it as a hit.
- */
-const matchesReads = (reads: CompiledReads, change: ReplicaChange): boolean => {
-  for (const component of change.components) {
-    if (reads.components.has(component)) return true;
-    if (reads.models.has(componentModel(component))) return true;
-  }
-  return change.components.length === 0 && reads.models.size > 0;
-};
 
 /**
  * Type-tagged, key-sorted encoding of a query value. `JSON.stringify` alone
@@ -197,41 +198,14 @@ const initialSnapshot = <T>(): QueryResult<T> => ({
   error: null,
 });
 
-/** Build the cache over a live replica. */
+/** Build the cache over a live replica and the registry its reads live in. */
 export const createQueryCache = (
   replica: Replica,
-  signal: ReplicaSignal = createReplicaSignal(replica),
+  subscriptions: SubscriptionRegistry = createSubscriptionRegistry(replica),
   options: QueryCacheOptions = {},
 ): QueryCache => {
   const entries = new Map<string, CacheEntry<unknown>>();
   const ttlMs = options.ttlMs ?? DEFAULT_QUERY_TTL_MS;
-
-  /**
-   * Compiled dependency sets, keyed by component set and ref-counted by the
-   * entries that read it. Two entries with the same reads share one pair of
-   * lookup sets, so a change is a membership test rather than a rebuilt
-   * intersection.
-   */
-  const compilations = new Map<string, { reads: CompiledReads; refs: number }>();
-
-  const acquireReads = (components: readonly string[]): CompiledReads => {
-    const key = keyOf(...[...new Set(components)].sort());
-    const existing = compilations.get(key);
-    if (existing !== undefined) {
-      existing.refs += 1;
-      return existing.reads;
-    }
-    const reads: CompiledReads = { key, ...compileReadComponents(components) };
-    compilations.set(key, { reads, refs: 1 });
-    return reads;
-  };
-
-  const releaseReads = (reads: CompiledReads): void => {
-    const entry = compilations.get(reads.key);
-    if (entry === undefined) return;
-    entry.refs -= 1;
-    if (entry.refs === 0) compilations.delete(reads.key);
-  };
 
   const cancelEviction = (entry: CacheEntry<unknown>): void => {
     if (entry.evictTimer === null) return;
@@ -243,25 +217,32 @@ export const createQueryCache = (
     if (!Number.isFinite(ttlMs) || ttlMs <= 0 || entry.evictTimer !== null) return;
     entry.evictTimer = setTimeout(() => {
       entry.evictTimer = null;
-      if (entry.refs === 0 && entry.listeners.size === 0) {
-        entries.delete(key);
-        releaseReads(entry.reads);
-      }
+      if (entry.refs === 0 && entry.listeners.size === 0) entries.delete(key);
     }, ttlMs);
     // A pending result must not keep a Node process alive.
     (entry.evictTimer as { unref?: () => void }).unref?.();
   };
 
+  /**
+   * The revision the cached result reflects. While the entry is subscribed the
+   * registry's cursor owns it, so a batch the entry is not touched by still
+   * advances it; once unsubscribed the last cursor is kept for the remount.
+   */
+  const revisionOf = (entry: CacheEntry<unknown>): Revision | null =>
+    entry.live?.subscription.cursor ?? entry.revision;
+
   const statusOf = <T>(entry: CacheEntry<T>): QueryStatus => {
     if (entry.error !== null) return "failed";
     if (entry.data === undefined) return "unloaded";
-    if (entry.revision === replica.revision) return "current";
+    if (revisionOf(entry) === replica.revision) return "current";
     return "stale";
   };
 
   /**
    * Replace the snapshot only when a visible field changed, so
    * `useSyncExternalStore` reads a stable reference between result changes.
+   * The live subscription publishes the same snapshot, so the registry holds
+   * the result its entry currently stands for.
    */
   const refresh = <T>(entry: CacheEntry<T>): void => {
     const status = statusOf(entry);
@@ -269,6 +250,7 @@ export const createQueryCache = (
     const current = entry.snapshot;
     if (current.data === entry.data && current.status === status && current.error === error) return;
     entry.snapshot = { data: entry.data, status, loading: status === "unloaded", error };
+    entry.live?.subscription.publish(entry.snapshot);
   };
 
   /**
@@ -280,7 +262,70 @@ export const createQueryCache = (
   const isRelevant = <T>(entry: CacheEntry<T>, from: Revision): boolean => {
     if (replica.revision === from) return false;
     const changes = replica.changesSince(from);
-    return changes.length === 0 || changes.some((change) => matchesReads(entry.reads, change));
+    return changes.length === 0 || changes.some((change) => touchesReadSet(entry.reads, change));
+  };
+
+  /**
+   * The values a result keeps resident: for each row it touches, the resident
+   * components its read set names. A whole-model read (`todo/*`) names every
+   * component of that model, so the row's own components are claimed; an exact
+   * read (`todo/status`) claims only the ones the row carries. Claims are not a
+   * projection: the row's other components stay wherever the policy put them.
+   */
+  const dependenciesOf = <T>(entry: CacheEntry<T>): readonly Dependency[] => {
+    const data = entry.data;
+    if (data === undefined) return [];
+    const ids =
+      entry.surface === "collection"
+        ? (data as readonly string[])
+        : (data as readonly { readonly id: string }[]).map((row) => row.id);
+    const dependencies: Dependency[] = [];
+    for (const id of new Set(ids)) {
+      if (replica.get(id) === undefined) continue;
+      const components = replica
+        .residentComponents(id)
+        .filter(
+          (component) =>
+            entry.reads.components.has(component) ||
+            entry.reads.models.has(componentModel(component)),
+        );
+      if (components.length > 0) dependencies.push({ id, components });
+    }
+    return dependencies;
+  };
+
+  /** Hand the registry the result the entry now holds and the claims it needs. */
+  const syncLive = <T>(entry: CacheEntry<T>): void => {
+    const live = entry.live;
+    if (live === null || entry.revision === null) return;
+    live.subscription.seek(entry.revision);
+    live.subscription.depend(dependenciesOf(entry));
+  };
+
+  /** Start the live half of an entry: its registry subscription and claims. */
+  const openLive = (entry: CacheEntry<unknown>): void => {
+    if (entry.live !== null) return;
+    const subscription = subscriptions.open<QueryResult<unknown>>({
+      kind: "query",
+      key: entry.key,
+      reads: entry.readNames,
+    });
+    subscription.publish(entry.snapshot);
+    const detach = subscription.onChange((_changes, revision) => reconcile(entry, revision));
+    entry.live = { subscription, detach };
+    syncLive(entry);
+  };
+
+  /** End the live half: the registry releases every claim the entry held. */
+  const closeLive = (entry: CacheEntry<unknown>): void => {
+    const live = entry.live;
+    if (live === null) return;
+    // The cursor is the revision the cached result reflects; keep it for the
+    // remount, which sees `stale` if anything relevant landed meanwhile.
+    entry.revision = live.subscription.cursor;
+    entry.live = null;
+    live.detach();
+    live.subscription.release();
   };
 
   const notifyAll = <T>(entry: CacheEntry<T>): void => {
@@ -321,6 +366,11 @@ export const createQueryCache = (
     const hadError = entry.error !== null;
     const startedStale = entry.snapshot.status === "stale";
     let publishedStale = false;
+    // The registry dispatches the batch through this entry, so the cursor is
+    // already at the batch revision. The visible result is still the one
+    // produced at `entry.revision`, and recording that lag keeps the status
+    // `stale` until `settle` advances the cursor to the revision it produced.
+    if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
     entry.running = true;
     refresh(entry);
 
@@ -332,13 +382,15 @@ export const createQueryCache = (
       if (changed) entry.data = data;
       entry.error = null;
       entry.revision = revision;
+      syncLive(entry);
       refresh(entry);
       // A view that saw `stale` must see the settle even when the rows are
       // equal, or it would stay stale.
       if (!hadData) notifyInitial(entry);
       else if (changed || hadError || startedStale || publishedStale) notifyAll(entry);
-      // Changes that landed during the run were skipped by the invalidation
-      // sweep, so settle from the current revision before standing down.
+      // A change that landed while this run was in flight was not reconciled
+      // (a running entry is left alone), so settle from the current revision
+      // before standing down.
       if (replica.revision !== revision) reconcile(entry, replica.revision);
     };
 
@@ -394,12 +446,19 @@ export const createQueryCache = (
       refresh(entry);
       notifyInitial(entry);
     };
-    const ready = entry.source.ready();
-    if (ready instanceof Promise) {
-      ready.then(() => {
-        entry.running = false;
-        execute(entry, replica.revision);
-      }, failed);
+    try {
+      const settled = entry.source.ready();
+      if (settled instanceof Promise) {
+        settled.then(() => {
+          entry.running = false;
+          execute(entry, replica.revision);
+        }, failed);
+        return;
+      }
+    } catch (thrown) {
+      // A source that cannot prime is a failed result, not a subscribe that
+      // throws: the caller keeps its unsubscribe path and its claims go away.
+      failed(thrown);
       return;
     }
     entry.running = false;
@@ -412,7 +471,12 @@ export const createQueryCache = (
    * every entry re-runs.
    */
   const reconcile = <T>(entry: CacheEntry<T>, revision: Revision): void => {
-    if (entry.running) return;
+    if (entry.running) {
+      // The run in flight will settle against the current revision; until then
+      // the entry's result reflects the revision it started from.
+      if (entry.revision !== null) entry.live?.subscription.seek(entry.revision);
+      return;
+    }
     if (entry.data === undefined) {
       if (entry.refs === 0) return;
       if (entry.error !== null && isRelevant(entry, entry.revision ?? 0)) retry(entry);
@@ -421,23 +485,20 @@ export const createQueryCache = (
     if (entry.revision === revision) return;
     // An entry with no subscribers is not refreshed in the background: it
     // stays `stale` (or `failed`) so a remount reads the cached result and
-    // the re-run happens when someone is actually listening. #499 owns
-    // evicting it.
+    // the re-run happens when someone is actually listening. The inactive
+    // TTL evicts it.
     if (entry.refs === 0) {
       refresh(entry);
       return;
     }
     if (entry.revision !== null && !isRelevant(entry, entry.revision)) {
       entry.revision = revision;
+      entry.live?.subscription.seek(revision);
       refresh(entry);
       return;
     }
     execute(entry, revision);
   };
-
-  signal.subscribe((_changes, revision) => {
-    for (const entry of entries.values()) reconcile(entry, revision);
-  });
 
   return {
     watch<T>(surface: QuerySurface, query: Query, source: QuerySource<T>): QueryStore<T> {
@@ -446,10 +507,13 @@ export const createQueryCache = (
       if (entry === undefined) {
         // A collection result keeps ids, a projected row keeps the whole shape;
         // only the latter needs the source and joined models read whole.
-        const reads =
+        const readNames =
           surface === "rows" ? rowReadComponentsFor(query) : planQuery(query).readComponents;
         const created: CacheEntry<unknown> = {
-          reads: acquireReads(reads),
+          key,
+          surface,
+          readNames,
+          reads: compileReadComponents(readNames),
           // SAFETY: the entry erases the result type; `watch` restores it at
           // the store boundary, and every key maps to one surface's shape.
           source: source as QuerySource<unknown>,
@@ -461,6 +525,7 @@ export const createQueryCache = (
           refs: 0,
           evictTimer: null,
           running: false,
+          live: null,
         };
         entries.set(key, created);
         entry = created;
@@ -469,27 +534,53 @@ export const createQueryCache = (
       return {
         // SAFETY: one key maps to one surface's result shape; the entry
         // erased it only so the cache can hold heterogeneous results.
-        getSnapshot: () => settled.snapshot as QueryResult<T>,
+        //
+        // Status is derived from the replica's revision, and an entry with no
+        // subscribers has no dispatch left to refresh it, so reading recomputes
+        // it: a cached result that missed changes reads back `stale`. `refresh`
+        // only replaces the snapshot when a visible field changed and never
+        // notifies, so a read stays a pure observation for the caller.
+        getSnapshot: () => {
+          refresh(settled);
+          return settled.snapshot as QueryResult<T>;
+        },
         subscribe(listener, subscribeOptions) {
           if (settled.refs === 0) cancelEviction(settled);
+          settled.refs += 1;
           settled.listeners.set(listener, {
             initial: subscribeOptions?.initial ?? true,
             revision: replica.revision,
           });
-          settled.refs += 1;
-          if (settled.running) {
-            // An in-flight run will settle against the current revision.
-          } else if (settled.data === undefined) {
-            hydrate(settled);
-          } else if (settled.error !== null || settled.revision !== replica.revision) {
-            // A remount sees the cached (possibly stale) result first; the
-            // re-run settles in the same tick for a hydrated replica.
-            execute(settled, replica.revision);
+          openLive(settled);
+          try {
+            if (settled.running) {
+              // An in-flight run will settle against the current revision.
+            } else if (settled.data === undefined) {
+              hydrate(settled);
+            } else if (settled.error !== null || settled.revision !== replica.revision) {
+              // A remount sees the cached (possibly stale) result first; the
+              // re-run settles in the same tick for a hydrated replica.
+              execute(settled, replica.revision);
+            }
+          } catch (thrown) {
+            // A listener that throws on the first result, or a source that
+            // throws outside its own run, must not leave a claim with no
+            // handle left to release it.
+            settled.listeners.delete(listener);
+            settled.refs -= 1;
+            if (settled.refs === 0) {
+              closeLive(settled);
+              scheduleEviction(key, settled);
+            }
+            throw thrown;
           }
           return () => {
             if (!settled.listeners.delete(listener)) return;
             settled.refs -= 1;
-            if (settled.refs === 0) scheduleEviction(key, settled);
+            if (settled.refs === 0) {
+              closeLive(settled);
+              scheduleEviction(key, settled);
+            }
           };
         },
       };

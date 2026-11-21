@@ -135,7 +135,21 @@ export {
   type QuerySurface,
 } from "./sync/query-cache";
 
-export type { ReplicaSignal } from "./sync/replica-signal";
+export {
+  createSubscriptionRegistry,
+  touchesReadSet,
+  type ChangeListener,
+  type Dependency,
+  type ReadSet,
+  type Subscription,
+  type SubscriptionId,
+  type SubscriptionKind,
+  type SubscriptionSnapshot,
+  type SubscriptionRegistry,
+  type SubscriptionSpec,
+  type SubscriptionState,
+  type SubscriptionStats,
+} from "./sync/subscriptions";
 export {
   DEFAULT_HISTORY_LIMIT,
   type HistoryEvent,

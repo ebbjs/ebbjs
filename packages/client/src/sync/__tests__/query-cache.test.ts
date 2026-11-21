@@ -389,6 +389,36 @@ describe("query cache: invalidation", () => {
     expect(notified).toBe(3);
   });
 
+  it("stays stale through an unrelated batch while the re-run is in flight", async () => {
+    const replica = createReplica();
+    ingest(replica, "todo", "todo_1");
+    const cache = createQueryCache(replica);
+    const source = deferredSource();
+    const store = cache.watch("rows", todoQuery(), source);
+    store.subscribe(() => {});
+    await flushTasks();
+    source.resolve([row("todo_1")]);
+    await flushTasks();
+    expect(store.getSnapshot().status).toBe("current");
+
+    // A relevant change starts a run that stays pending, so the visible result
+    // still reflects the older revision.
+    ingest(replica, "todo", "todo_1", "todo_1 next");
+    expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
+    expect(source.runs).toBe(2);
+
+    // A peer write touches nothing this result reads; it must not claim the
+    // pending run has caught up.
+    ingest(replica, "note", "note_1");
+    expect(store.getSnapshot()).toMatchObject({ status: "stale", loading: false });
+    expect(source.runs).toBe(2);
+
+    source.resolve([row("todo_1", "todo_1 next")]);
+    await flushTasks();
+    expect(store.getSnapshot()).toMatchObject({ status: "current", loading: false });
+    expect(store.getSnapshot().data).toEqual([row("todo_1", "todo_1 next")]);
+  });
+
   it("advances the revision and stays silent when no change touches its reads", async () => {
     const replica = createReplica();
     ingest(replica, "todo", "todo_1");
@@ -753,5 +783,93 @@ describe("query cache: change-journal floor (#499)", () => {
     await flushTasks();
     expect(store.getSnapshot().status).toBe("current");
     expect(store.getSnapshot().data).toEqual([row("todo_1", "todo_1 next")]);
+  });
+});
+
+describe("query cache: lease ownership (#937)", () => {
+  /** A replica whose `todo/title` is on demand, so a claim is observable. */
+  const lazyReplica = (): ReturnType<typeof createReplica> => {
+    const rows: Record<string, Entity> = { todo_1: row("todo_1") };
+    return createReplica({
+      materialization: { holds: (component) => component !== "todo/title" },
+      readComponent: async (id) => rows[id] ?? null,
+      residencyTtlMs: 0,
+    });
+  };
+
+  it("leases the components a live result read and releases them on unsubscribe", async () => {
+    const replica = lazyReplica();
+    await replica.read("todo_1", ["todo/title"]);
+    const cache = createQueryCache(replica);
+    const store = cache.watch(
+      "rows",
+      todoQuery(),
+      sourceWith(() => [row("todo_1")]),
+    );
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+
+    // A projected-row result reads its source model whole, so the live entry
+    // keeps the row's component resident.
+    expect(replica.stats().leases).toMatchObject({
+      leased: 1,
+      inactive: 0,
+      byComponent: { "todo/title": { leased: 1, inactive: 0 } },
+    });
+
+    detach();
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
+  });
+
+  it("keeps its claims through a failed run and releases them on unsubscribe", async () => {
+    const replica = lazyReplica();
+    await replica.read("todo_1", ["todo/title"]);
+    const cache = createQueryCache(replica);
+    let shouldFail = false;
+    const source: QuerySource<Entity> = {
+      ready: async () => {},
+      isReady: () => true,
+      execute: () => {
+        if (shouldFail) throw new Error("boom");
+        return [row("todo_1")];
+      },
+    };
+    const store = cache.watch("rows", todoQuery(), source);
+    const detach = store.subscribe(() => {});
+    await flushTasks();
+    expect(replica.stats().leases.leased).toBe(1);
+
+    shouldFail = true;
+    ingest(replica, "todo", "todo_1");
+    await flushTasks();
+    expect(store.getSnapshot()).toMatchObject({ status: "failed" });
+    // A retry is coming, so a failed entry keeps what it read.
+    expect(replica.stats().leases.leased).toBe(1);
+
+    detach();
+    expect(replica.stats().leases.leased).toBe(0);
+  });
+
+  it("releases its claims when the last listener throws on the first result", async () => {
+    const replica = lazyReplica();
+    await replica.read("todo_1", ["todo/title"]);
+    const cache = createQueryCache(replica);
+    const store = cache.watch("rows", todoQuery(), {
+      ready: async () => {},
+      isReady: () => true,
+      execute: () => [row("todo_1")],
+    });
+
+    // A synchronous source settles inside `subscribe`, so the render throw
+    // escapes with the store still holding a claim and no unsubscribe handle.
+    expect(() =>
+      store.subscribe(() => {
+        throw new Error("render");
+      }),
+    ).toThrow("render");
+
+    await flushTasks();
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
+    expect(replica.stats().leases.timers).toBe(0);
   });
 });

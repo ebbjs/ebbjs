@@ -2294,6 +2294,93 @@ describe("replica: a read selects every component (#934)", () => {
   });
 });
 
+describe("replica: a long-lived claim (#937)", () => {
+  const onDemand = { holds: (component: string): boolean => !component.startsWith("document/") };
+  const documentRow = (id: string): Entity =>
+    entity({
+      id,
+      model: "document",
+      data: { fields: { text: leaf(`body ${id}`, `u_${id}`, 5) } },
+      last_gsn: 5,
+    });
+  const reader =
+    (rows: Record<string, Entity>, reads: string[] = []) =>
+    async (id: string): Promise<Entity | null> => {
+      reads.push(id);
+      return rows[id] ?? null;
+    };
+
+  it("holds one value for two callers and clears it on the last release", async () => {
+    const rows = { doc_1: documentRow("doc_1") };
+    const reads: string[] = [];
+    const replica = createReplica({
+      materialization: onDemand,
+      residencyTtlMs: 1_000,
+      readComponent: reader(rows, reads),
+    });
+
+    const first = await replica.acquire("doc_1", ["document/text"]);
+    const second = await replica.acquire("doc_1", ["document/text"]);
+
+    // One store read, one value, one residency entry two claims share.
+    expect(reads).toEqual(["doc_1"]);
+    expect(replica.stats().leases).toMatchObject({
+      leased: 1,
+      inactive: 0,
+      resident: 1,
+      byComponent: { "document/text": { leased: 1, inactive: 0 } },
+    });
+
+    first();
+    first();
+    expect(replica.stats().leases).toMatchObject({ leased: 1, inactive: 0 });
+
+    second();
+    expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1, timers: 1 });
+    expect(replica.get("doc_1")).toEqual(documentRow("doc_1"));
+  });
+
+  it("does not claim a held component or one the row does not carry", async () => {
+    const replica = createReplica({
+      materialization: { holds: (component) => component === "document/text" },
+      readComponent: async () => documentRow("doc_1"),
+    });
+
+    const release = await replica.acquire("doc_1", ["document/text", "document/appendix"]);
+
+    // The held value needs no claim, and the absent one installs nothing.
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 0,
+      resident: 0,
+      byComponent: {},
+    });
+    release();
+  });
+
+  it("releases what it claimed when a later read throws", async () => {
+    const replica = createReplica({
+      materialization: { holds: () => false },
+      readComponent: async (_id, component) => {
+        if (component === "document/appendix") throw new Error("store down");
+        return documentRow("doc_1");
+      },
+    });
+
+    await expect(replica.acquire("doc_1", ["document/text", "document/appendix"])).rejects.toThrow(
+      "store down",
+    );
+
+    // The value the first read installed is released, not leaked: it waits out
+    // its grace period instead of staying claimed.
+    expect(replica.stats().leases).toMatchObject({
+      leased: 0,
+      inactive: 1,
+      byComponent: { "document/text": { leased: 0, inactive: 1 } },
+    });
+  });
+});
+
 describe("replica: component index (#798)", () => {
   it("indexes each present component as <type>/<field>, ascending", () => {
     const replica = createReplica();

@@ -45,7 +45,7 @@ import type { MembershipLink } from "../types/entity-store";
 import type { ReplicaRecord } from "../types/replica-store";
 
 import { contentChanged } from "./content-changed";
-import { createLeaseTable, type LeaseKey, type LeaseTable } from "./leases";
+import { createLeaseTable, type LeaseKey, type LeaseTable, type Release } from "./leases";
 import type {
   MaterializationPolicy,
   MembershipQuery,
@@ -1099,6 +1099,55 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return get(id) ?? null;
   };
 
+  /**
+   * Claim every value before reading any of them, so nothing a long-lived reader
+   * depends on can go inactive between the read installing it and the claim
+   * replacing the read's own one. A component the read installs nothing for
+   * keeps no claim: there is no value to hold.
+   */
+  const acquire = async (id: string, components: readonly string[]): Promise<Release> => {
+    /** A claim on a value that never arrived leaves no residency entry behind. */
+    const dropEmptyClaim = (entityId: string, component: string): void => {
+      if (
+        leases.refsOf({ entityId, component }) === 0 &&
+        !isComponentResident(entityId, component)
+      ) {
+        leases.forget({ entityId, component });
+      }
+    };
+    const claims: { component: string; release: Release }[] = [];
+    for (const component of new Set(components)) {
+      // A held value stays resident without a claim; counting one would report
+      // a lease on something no release could let go.
+      if (holds(component)) continue;
+      claims.push({ component, release: leases.acquire({ entityId: id, component }) });
+    }
+    try {
+      await Promise.all(claims.map(({ component }) => materialize(id, component)));
+    } catch (thrown) {
+      for (const { component, release } of claims) {
+        release();
+        dropEmptyClaim(id, component);
+      }
+      throw thrown;
+    }
+    const claimed: Release[] = [];
+    for (const { component, release } of claims) {
+      if (isComponentResident(id, component)) {
+        claimed.push(release);
+        continue;
+      }
+      release();
+      dropEmptyClaim(id, component);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const release of claimed) release();
+    };
+  };
+
   const componentVersion = (id: string, component: string): number | undefined => {
     // An optimistic write is at the declaration it was validated against.
     const writes = overlay.get(id);
@@ -1128,6 +1177,7 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     isHeld,
     isRowHeld,
     read,
+    acquire,
     isComponentResident,
     residentComponents,
     componentVersion,

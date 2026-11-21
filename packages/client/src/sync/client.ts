@@ -104,7 +104,7 @@ import {
   scopeEvictedGroupIds,
   withRetainedRows,
 } from "./scope-eviction";
-import { createReplicaSignal, type ReplicaSignal } from "./replica-signal";
+import { createSubscriptionRegistry, type SubscriptionRegistry } from "./subscriptions";
 import { backoffDelayMs } from "./backoff";
 import {
   AppendOnlyViolationError,
@@ -275,14 +275,18 @@ export class SyncClient<
   /** Read migrations for stored component versions (#804); absent without a schema. */
   readonly componentMigrations: ComponentMigrations | undefined;
   /**
-   * The engine signal over {@link replica} and its reactive query result
-   * cache (#512). Namespaces and hooks read query results through it, so a
-   * remount gets the cached result and every subscriber sees one invalidation
-   * stream. Hydrated with the replica.
+   * The reactive query result cache (#512) over {@link replica}. Namespaces and
+   * hooks read query results through it, so a remount gets the cached result and
+   * every subscriber sees one invalidation stream. Hydrated with the replica.
    */
   readonly queries: QueryCache;
-  /** The shared per-revision notification stream the cache and watchers read. */
-  readonly replicaSignal: ReplicaSignal;
+  /**
+   * Every live query and row subscription (#937): one entry each, with its own
+   * revision cursor and the residency claims its dependencies need. Dispatch
+   * and lease ownership live here, so a subscription that ends releases what
+   * it read.
+   */
+  readonly subscriptions: SubscriptionRegistry;
   /**
    * Ephemeral presence: send on declared channels, read the peers observed on
    * the live stream (#677). Keyed by the registry passed to
@@ -491,8 +495,8 @@ export class SyncClient<
             migrations: opts.schema._migrations,
             versionOf: (id, component) => this.replica.componentVersion(id, component),
           });
-    this.replicaSignal = createReplicaSignal(this.replica);
-    this.queries = createQueryCache(this.replica, this.replicaSignal, {
+    this.subscriptions = createSubscriptionRegistry(this.replica);
+    this.queries = createQueryCache(this.replica, this.subscriptions, {
       ttlMs: opts.queryTtlMs,
     });
     const rawFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -1672,6 +1676,7 @@ export class SyncClient<
     // then returns instead of arming a reconnect against a torn-down client.
     this.abortController.abort();
     this.stateMachine.transition("offline");
+    this.subscriptions.close();
     this.presenceRuntime.reset();
     this.presenceRuntime.close();
   }
@@ -2672,7 +2677,7 @@ export function createClient<
   const namespaces = buildEntityNamespaces(opts.schema, client.storage, readCap, {
     replica: client.replica,
     queries: client.queries,
-    signal: client.replicaSignal,
+    subscriptions: client.subscriptions,
     hydrated: () => client.isReplicaHydrated(),
     // Arrow over the public method keeps the namespace free of the
     // `client → namespace → client` import cycle.

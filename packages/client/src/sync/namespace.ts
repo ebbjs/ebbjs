@@ -55,7 +55,7 @@ import { planQuery } from "./query-plan";
 import { createComponentViewExecutor, createReplicaExecutor, executePlan } from "./query-execute";
 import type { QueryCache } from "./query-cache";
 import type { ComponentMigrations } from "./migrations";
-import { createEntityWatcher, type EntityWatcher, type ReplicaSignal } from "./replica-signal";
+import type { SubscriptionRegistry } from "./subscriptions";
 import {
   type AdjacencyReader,
   forwardMany,
@@ -480,8 +480,8 @@ export interface ReplicaAccess {
   readonly replica: Replica;
   /** The reactive query-result cache every chain and collection subscribe shares. */
   readonly queries: QueryCache;
-  /** The engine signal behind the row-level watchers. */
-  readonly signal: ReplicaSignal;
+  /** The registry every row subscription is mounted on. */
+  readonly subscriptions: SubscriptionRegistry;
   /** Whether the replica is hydrated, so a query can run synchronously. */
   hydrated(): boolean;
   hydrate(): Promise<void>;
@@ -657,16 +657,16 @@ const toEntitySnapshot = <TWire extends Record<string, TSchema>>(
 });
 
 /**
- * Attach the per-entity reactive listener for `id` to the replica's
- * signal. A namespace built without a replica binding has no trigger, so
- * the returned unsubscribe is a no-op.
+ * Mount a row subscription for `id` on the registry. A namespace built without
+ * a replica binding has no trigger, so the returned unsubscribe is a no-op. The
+ * subscription claims the row's components until it is released.
  *
  * A row that left the replica entirely is dropped: the pinned
  * `EntitySnapshot` has no null variant; a soft delete stays a row with
  * `deleted_hlc` set and is delivered normally.
  */
 const subscribeToEntity = <TWire extends Record<string, TSchema>>(
-  watcher: EntityWatcher | null,
+  access: ReplicaAccess | null,
   entityName: string,
   id: string,
   shape: TObject<TWire>,
@@ -674,8 +674,9 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
   migrations?: ComponentMigrations,
   view?: EbbComponentKind,
 ): (() => void) => {
-  if (watcher === null) return () => {};
-  const fire = (row: Entity | undefined): void => {
+  if (access === null) return () => {};
+  const fire = (): void => {
+    const row = access.replica.get(id);
     if (row === undefined || row.model !== entityName) return;
     const visible = visibleRow(row, view);
     if (visible === null) return;
@@ -683,14 +684,33 @@ const subscribeToEntity = <TWire extends Record<string, TSchema>>(
     // fields, which is the shape `shape` projects.
     cb(toEntitySnapshot(visible, shape, migrations));
   };
-  const unsubscribeEntity = watcher.entity(id, fire);
-  // A relationship / membership write leaves the row's own fields untouched
-  // but changes its accessors; fire the same snapshot contract a field change
-  // would, so a consumer that compares projected fields still sees the row.
-  const unsubscribeAccessors = watcher.accessors(id, fire);
+  // One row subscription wakes on a content change and on an accessor
+  // (relationship / membership) change alike, so `subscribe` needs a single
+  // registration: the registry keeps one entry per row for both.
+  return mountRowSubscription(access, id, fire);
+};
+
+/**
+ * Mount the accessor listener for `id`. It is the same row subscription
+ * `subscribe` uses, so the row's components are claimed once for both.
+ */
+const subscribeToAccessors = (
+  access: ReplicaAccess | null,
+  id: string,
+  cb: () => void,
+): (() => void) => (access === null ? () => {} : mountRowSubscription(access, id, cb));
+
+/** Open the row entry and attach one listener; the detach releases the share. */
+const mountRowSubscription = (
+  access: ReplicaAccess,
+  id: string,
+  listener: () => void,
+): (() => void) => {
+  const subscription = access.subscriptions.open({ kind: "row", row: id });
+  const detach = subscription.onChange(listener);
   return () => {
-    unsubscribeEntity();
-    unsubscribeAccessors();
+    detach();
+    subscription.release();
   };
 };
 
@@ -733,10 +753,8 @@ export function createEntityNamespace<
   view?: EbbComponentKind,
 ): EntityNamespace<TFields, TAccessors, TJoins> {
   const registry = read.registry;
-  const watcher =
-    replica === undefined ? null : createEntityWatcher(replica.replica, replica.signal);
 
-  /** Project one replica row and attach its accessors plus signal handles. */
+  /** Project one replica row and attach its accessors plus row subscriptions. */
   const buildRow = (entity: Entity): EntityRow<TFields, TAccessors> | null => {
     // Wrong-type reads (different `entity.model`) resolve to `null`
     // alongside unknown ids. Callers don't distinguish — a missing
@@ -755,7 +773,7 @@ export function createEntityNamespace<
     );
     const subscribe = (cb: (snapshot: EntitySnapshot<TFields>) => void): (() => void) =>
       subscribeToEntity(
-        watcher,
+        replica ?? null,
         entityName,
         entity.id,
         shape,
@@ -764,7 +782,7 @@ export function createEntityNamespace<
         view,
       );
     const subscribeAccessors = (cb: () => void): (() => void) =>
-      watcher === null ? () => {} : watcher.accessors(entity.id, cb);
+      subscribeToAccessors(replica ?? null, entity.id, cb);
     // Accessors spread last so a declared relationship shadows a
     // same-named field; the entity id spreads after them so it wins
     // over both.
