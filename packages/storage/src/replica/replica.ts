@@ -263,15 +263,23 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   };
 
   /**
-   * Fold the writes that waited behind a read that installed nothing, rather
-   * than leaving them for a read that may never come.
+   * Fold the writes that waited behind a cold read, and settle them like any
+   * other write: the base takes them, and `resync` republishes the composed
+   * view, reconciles the derived indices, and journals what they changed. A
+   * row they create is therefore visible to `components()` and the adjacency
+   * index, not only by id. `pending` is the view settled just before the fold,
+   * for a caller that has already published one. Returns whether anything was
+   * replayed, so the caller can notify once for the batch.
    */
-  const replayBufferedWrites = (id: string): void => {
+  const replayBufferedWrites = (id: string, pending?: Snapshot): boolean => {
     const buffered = pendingWrites.get(id);
-    if (buffered === undefined) return;
+    if (buffered === undefined) return false;
     pendingWrites.delete(id);
+    const previous = pending ?? capture(id);
     for (const entry of buffered)
       applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
+    resync(id, previous);
+    return true;
   };
 
   /** Drop every read in flight, so no result lands in a replaced view. */
@@ -579,14 +587,19 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     return settled;
   };
 
+  /** Publish one row's settled view: no journal entry, no notification. */
+  const publishRow = (id: string, previous: Snapshot): void => {
+    const { next, overlaid } = compose(id);
+    publish(id, next, overlaid, previous);
+  };
+
   /**
    * Settle the view after a residency move — an install or an expiry. Nothing
    * here journals: keeping or dropping a value is not a content change, so a
    * derived reader has nothing to re-run for (#936).
    */
   const refresh = (id: string, previous: Snapshot): void => {
-    const { next, overlaid } = compose(id);
-    publish(id, next, overlaid, previous);
+    publishRow(id, previous);
     notify();
   };
 
@@ -977,13 +990,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
   const readOne = async (id: string, component: string): Promise<Entity | null> =>
     options?.readComponent?.(id, component) ?? null;
 
-  /** Install a component read for `id`, replaying writes buffered behind it. */
-  const installComponent = (
-    id: string,
-    component: string,
-    loaded: Entity,
-    buffered: readonly OrphanUpdate[],
-  ): boolean => {
+  /**
+   * Install a component read for `id`, then replay the writes that waited
+   * behind it. The install itself is residency: it is published, never
+   * journalled. The writes are content, and journal through the replay.
+   */
+  const installComponent = (id: string, component: string, loaded: Entity): boolean => {
     const field = componentField(component);
     const adopted = withAdoptedMapFields(loaded);
     const value = adopted.data.fields[field];
@@ -1006,9 +1018,9 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     addToModel(row.model, id);
     forgetDormant(id, component);
     if (base === null) absorbPendingPresence(id);
-    for (const entry of buffered)
-      applyBaseUpdate(entry.update, entry.gsn, entry.hlc, entry.position);
-    refresh(id, previous);
+    publishRow(id, previous);
+    replayBufferedWrites(id, capture(id));
+    notify();
     return true;
   };
 
@@ -1029,15 +1041,12 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
           settleRead(id, component, pending);
         });
         if (pending.cancelled) return;
-        if (loaded === null) {
-          replayBufferedWrites(id);
-          return;
-        }
-        const buffered = pendingWrites.get(id) ?? [];
-        pendingWrites.delete(id);
-        installComponent(id, component, loaded, buffered);
+        // A read that installs nothing still leaves the writes that waited
+        // behind it: they are content, and none of them may be dropped.
+        const installed = loaded !== null && installComponent(id, component, loaded);
+        if (!installed && replayBufferedWrites(id)) notify();
       } catch (thrown) {
-        replayBufferedWrites(id);
+        if (replayBufferedWrites(id)) notify();
         throw thrown;
       }
     })();

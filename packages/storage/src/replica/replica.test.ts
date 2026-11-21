@@ -1589,6 +1589,173 @@ describe("replica: on-demand residency (#500)", () => {
     expect(reads).toEqual(["doc_1", "doc_1"]);
   });
 
+  it("replays a write behind a read that installs nothing into the indices and the journal", async () => {
+    // `ebb/link` is held, `page/body` is not. The read installs nothing, so the
+    // write that arrived during it must reach the replica whole: the base, the
+    // component index, the adjacency index, the journal, and the subscribers.
+    let deliver!: (row: Entity | null) => void;
+    const replica = createReplica({
+      materialization: { holds: (component: string) => component !== "page/body" },
+      residencyTtlMs: 0,
+      readComponent: () =>
+        new Promise<Entity | null>((resolve) => {
+          deliver = resolve;
+        }),
+    });
+    const seen: string[] = [];
+    replica.subscribe(() => {
+      seen.push(replica.components("ebb/link").join(","));
+    });
+
+    const reading = replica.read("page_1", ["page/body"]);
+    ingest(replica, relationship("a_1", "page_1", "target_1", 1, 10), 1);
+    deliver(null);
+    await reading;
+
+    expect(replica.components("ebb/link")).toEqual(["page_1"]);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "target_1" })).toEqual([
+      "page_1",
+    ]);
+    // The write is content, not residency: it journals, and the notification a
+    // subscriber receives last carries the replayed edge.
+    expect(replica.changesSince(0)).toEqual([
+      { revision: 1, id: "page_1", deleted: false, components: ["ebb/link"] },
+    ]);
+    expect(seen.at(-1)).toBe("page_1");
+  });
+
+  it("replays a write behind a rejected read into the indices and the journal", async () => {
+    let deliver!: (error: Error) => void;
+    const replica = createReplica({
+      materialization: { holds: (component: string) => component !== "page/body" },
+      residencyTtlMs: 0,
+      readComponent: () =>
+        new Promise<Entity | null>((_resolve, reject) => {
+          deliver = reject;
+        }),
+    });
+
+    const reading = replica.read("page_1", ["page/body"]);
+    ingest(replica, relationship("a_1", "page_1", "target_1", 1, 10), 1);
+    deliver(new Error("store down"));
+    await expect(reading).rejects.toThrow("store down");
+
+    expect(replica.components("ebb/link")).toEqual(["page_1"]);
+    expect(replica.relationships({ as: "author", type: "wrote", targetId: "target_1" })).toEqual([
+      "page_1",
+    ]);
+    expect(replica.changesSince(0)).toEqual([
+      { revision: 1, id: "page_1", deleted: false, components: ["ebb/link"] },
+    ]);
+  });
+
+  it("republishes an overlaid row when a buffered write replays", async () => {
+    let deliver!: (row: Entity | null) => void;
+    const replica = createReplica({
+      materialization: { holds: (component: string) => component !== "page/body" },
+      residencyTtlMs: 0,
+      readComponent: () =>
+        new Promise<Entity | null>((resolve) => {
+          deliver = resolve;
+        }),
+    });
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "page_1",
+        model: "page",
+        gsn: 1,
+        ms: 10,
+        fields: { title: leaf("One", "u_1", 10) },
+      }),
+      1,
+    );
+    replica.optimistic({
+      id: "a_opt",
+      actor_id: "user_2",
+      hlc: makeHlc(15),
+      gsn: 0,
+      updates: [
+        {
+          id: "u_opt",
+          subject_id: "page_1",
+          component: componentName("page", "title"),
+          method: "merge",
+          data: leaf("Local", "u_opt", 15),
+        },
+      ],
+    });
+    expect(replica.get("page_1")?.data.fields.title).toEqual(leaf("Local", "u_opt", 15));
+
+    const reading = replica.read("page_1", ["page/body"]);
+    ingest(
+      replica,
+      put({
+        actionId: "a_2",
+        updateId: "u_2",
+        entityId: "page_1",
+        model: "page",
+        gsn: 2,
+        ms: 30,
+        fields: { title: leaf("Remote", "u_2", 30) },
+      }),
+      2,
+    );
+    deliver(null);
+    await reading;
+
+    // The remote write beats the local one, so the composed view must be
+    // republished: `get` reads the base plus the overlay, and the two cannot
+    // disagree about what the row now holds.
+    expect(replica.base("page_1")?.data.fields.title).toEqual(leaf("Remote", "u_2", 30));
+    expect(replica.get("page_1")?.data.fields.title).toEqual(leaf("Remote", "u_2", 30));
+  });
+
+  it("replays the writes a read leaves behind when the store row lacks the component", async () => {
+    let deliver!: (row: Entity) => void;
+    const replica = createReplica({
+      materialization: { holds: (component: string) => component !== "page/body" },
+      residencyTtlMs: 0,
+      readComponent: () =>
+        new Promise<Entity>((resolve) => {
+          deliver = resolve;
+        }),
+    });
+
+    const reading = replica.read("page_1", ["page/body"]);
+    ingest(
+      replica,
+      put({
+        actionId: "a_1",
+        updateId: "u_1",
+        entityId: "page_1",
+        model: "page",
+        gsn: 1,
+        ms: 20,
+        fields: { title: leaf("Remote", "u_1", 20) },
+      }),
+      1,
+    );
+    // A store row without the requested component refuses the install; the
+    // write that waited behind it still lands.
+    deliver(
+      entity({
+        id: "page_1",
+        model: "page",
+        data: { fields: { title: leaf("Store", "u_store", 5) } },
+        last_gsn: 5,
+      }),
+    );
+
+    expect((await reading)?.data.fields.title).toEqual(leaf("Remote", "u_1", 20));
+    expect(replica.get("page_1")?.data.fields.title).toEqual(leaf("Remote", "u_1", 20));
+    expect(replica.changesSince(0)).toEqual([
+      { revision: 1, id: "page_1", deleted: false, components: ["page/title"] },
+    ]);
+  });
+
   it("keeps no per-read bookkeeping once the reads settle", async () => {
     const rows: Record<string, Entity> = {};
     for (let i = 1; i <= 50; i += 1) rows[`doc_${i}`] = documentRow(`doc_${i}`);
