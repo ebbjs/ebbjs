@@ -817,9 +817,10 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
    *
    * Only a claim owns a value: a row the log folded is the replica's own data,
    * and a lease that expired over it releases nothing. A row a read installed
-   * leaves whole, because every value it carries came from the same store copy.
-   * A component another live lease still claims keeps the row resident: an
-   * active lease is never expired (#933).
+   * leaves whole, because every value it carries came from the same store copy,
+   * and it leaves only once no sibling is leased or still inside its own grace
+   * period: each value gets its one grace period, and the row goes with the
+   * last of them. An active lease is never expired (#933).
    */
   const dropResidentValue = (key: LeaseKey): void => {
     // A timer armed by a table a `load` has since replaced must not drop a value
@@ -828,14 +829,22 @@ export const createReplica = (options?: ReplicaOptions): Replica => {
     const id = key.entityId;
     const base = entities.get(id);
     if (base === undefined) return;
-    if (base.data.fields[componentField(key.component)] === undefined) return;
-    // The log folded this row, so the value is the replica's own: the claim
-    // that just expired was bookkeeping over data nothing could take away.
+    // A row the log folded has no lease to run out: it is the replica's own
+    // data, so it stays resident for the session. Reclaiming it needs a memory
+    // budget this replica does not have yet (#957).
     if (!storeRows.has(id)) return;
-    const stillLeased = presenceOfRow(base).some(
-      (component) => component !== key.component && leases.refsOf({ entityId: id, component }) > 0,
+    // Components are read from the composed view: an overlay can carry one the
+    // base has never seen, and its claim is just as live.
+    const components = new Set(presenceOfRow(base));
+    const view = viewOf(id);
+    if (view !== null) {
+      for (const component of presenceOfRow(view)) components.add(component);
+    }
+    if (!components.has(key.component)) return;
+    const stillResident = [...components].some(
+      (component) => component !== key.component && leases.isResident({ entityId: id, component }),
     );
-    if (stillLeased) return;
+    if (stillResident) return;
     const previous = capture(id);
     removeRow(id);
     for (const component of previous.components) leases.forget({ entityId: id, component });

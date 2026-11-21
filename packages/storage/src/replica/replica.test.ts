@@ -3133,6 +3133,15 @@ describe("replica: residency from leases, not declarations (#943)", () => {
 
     const absent = storedNote();
     expect(replica.fullyResident(absent)).toBe(false);
+
+    // The replica's row is whole, but the store's copy carries a body it never
+    // installed: that component is not covered, so the store row is the one the
+    // mirror rule must refuse.
+    const wider = {
+      ...row!,
+      data: { fields: { ...row!.data.fields, body: leaf("body", "u_body", 10) } },
+    };
+    expect(replica.fullyResident(wider)).toBe(false);
   });
 
   it("keeps every component a synced action folds, with no declaration to consult", () => {
@@ -3179,6 +3188,93 @@ describe("replica: residency from leases, not declarations (#943)", () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       expect(replica.get("note_1")?.data.fields.body).toEqual(leaf("body", "u_body", 10));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("replica: one grace period per value (#943)", () => {
+  const noteId = "note_1";
+  const twoFieldRow = (): Entity =>
+    entity({
+      id: noteId,
+      model: "note",
+      data: {
+        fields: { title: leaf("One", "u_title", 10), body: leaf("body", "u_body", 10) },
+      },
+      created_hlc: makeHlc(10),
+      updated_hlc: makeHlc(10),
+    });
+
+  it("keeps a store-installed row while a sibling is still inside its own grace period", async () => {
+    vi.useFakeTimers();
+    try {
+      const replica = createReplica({
+        residencyTtlMs: 1_000,
+        readComponent: async () => twoFieldRow(),
+      });
+
+      // The body's read installs the whole row; its claim starts the row's
+      // first grace period at t=0.
+      await replica.read(noteId, ["note/body"]);
+      await vi.advanceTimersByTimeAsync(500);
+      // A later read of the title starts its own grace period at t=500. The row
+      // is whole, so this only refreshes the claim; it does not re-read.
+      await replica.read(noteId, ["note/title"]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      // t=1000: the body's grace is over, the title's is not. The row leaves
+      // with the last value, not the first.
+      expect(replica.get(noteId)).toBeDefined();
+      expect(replica.stats().leases).toMatchObject({ leased: 0, inactive: 1 });
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(replica.get(noteId)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a row whose only live claim is a component the overlay carries", async () => {
+    vi.useFakeTimers();
+    try {
+      const replica = createReplica({
+        residencyTtlMs: 1_000,
+        readComponent: async () => ({
+          ...twoFieldRow(),
+          data: { fields: { title: leaf("One", "u_title", 10) } },
+        }),
+      });
+
+      await replica.read(noteId, ["note/title"]);
+      const write: Action = {
+        id: "a_local",
+        actor_id: "user_1",
+        hlc: makeHlc(20),
+        gsn: 0,
+        updates: [
+          {
+            id: "u_local",
+            subject_id: noteId,
+            component: "note/body",
+            method: "replace",
+            data: leaf("local body", "u_body", 20),
+          },
+        ],
+      };
+      replica.optimistic(write);
+      const release = await replica.acquire(noteId, ["note/body"]);
+
+      // The title's grace ends at t=1000. Its sibling exists only in the
+      // composed view, and that claim is live, so the row stays.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(replica.get(noteId)?.data.fields.body).toEqual(leaf("local body", "u_body", 20));
+      expect(replica.isComponentResident(noteId, "note/body")).toBe(true);
+
+      release();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(replica.get(noteId)).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
